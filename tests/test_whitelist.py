@@ -5,6 +5,13 @@ from app.models.whitelist import Whitelist
 
 
 class TestWhitelist:
+    def setup_method(self):
+        self._tmp_files = []
+
+    def teardown_method(self):
+        for p in self._tmp_files:
+            Path(p).unlink(missing_ok=True)
+
     def make_whitelist(self, data=None):
         """Create a Whitelist pointing to a temp file."""
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
@@ -12,6 +19,7 @@ class TestWhitelist:
             json.dump(data, tmp)
             tmp.flush()
         tmp.close()
+        self._tmp_files.append(tmp.name)
         return Whitelist(tmp.name), tmp.name
 
     def test_empty_by_default(self):
@@ -57,11 +65,14 @@ class TestWhitelist:
         import_file = tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False
         )
-        import_file.write("PlayerA\nPlayerB\n  PlayerC  \n\n# comment\nPlayerD\n")
-        import_file.close()
-        count = wl.import_from_file(import_file.name)
-        assert count == 4
-        assert wl.get_all() == {"PlayerA", "PlayerB", "PlayerC", "PlayerD"}
+        try:
+            import_file.write("PlayerA\nPlayerB\n  PlayerC  \n\n# comment\nPlayerD\n")
+            import_file.close()
+            count = wl.import_from_file(import_file.name)
+            assert count == 4
+            assert wl.get_all() == {"PlayerA", "PlayerB", "PlayerC", "PlayerD"}
+        finally:
+            Path(import_file.name).unlink(missing_ok=True)
 
     def test_wildcard_star_match(self):
         wl, path = self.make_whitelist()

@@ -1,7 +1,10 @@
 import fnmatch
 import json
+import logging
 import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class Whitelist:
@@ -35,7 +38,7 @@ class Whitelist:
                 encoding="utf-8",
             )
         except OSError:
-            pass
+            logger.exception("Failed to save whitelist to %s", self._filepath)
 
     def get_all(self) -> set[str]:
         """Return a copy of all whitelist entries."""
