@@ -12,9 +12,6 @@ class Capturer:
     def find_eve_window(self, keyword: str = "EVE -") -> Optional[dict]:
         """Find the first window whose title contains ``keyword``.
 
-        Falls back to matching by process name ``exefile.exe`` if no title
-        match is found.
-
         Returns:
             dict with keys title, x, y, w, h (client-area screen coords),
             or None if no matching window is found.
@@ -24,8 +21,6 @@ class Capturer:
         def callback(hwnd, results):
             title = win32gui.GetWindowText(hwnd)
             if keyword.lower() in title.lower():
-                rect = win32gui.GetWindowRect(hwnd)
-                left, top, right, bottom = rect
                 # Convert client rect to screen coords
                 client_rect = win32gui.GetClientRect(hwnd)
                 pt = win32gui.ClientToScreen(hwnd, (0, 0))
