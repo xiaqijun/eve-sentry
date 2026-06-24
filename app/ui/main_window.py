@@ -4,14 +4,18 @@ import logging
 from datetime import datetime
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QStatusBar,
     QSystemTrayIcon,
     QTextEdit,
@@ -44,6 +48,13 @@ class MainWindow(QMainWindow):
         self._ocr = OCREngine(lang="ch", confidence_threshold=0.7)
         self._detector = Detector(self._whitelist, cooldown_seconds=60.0)
         self._worker: MonitorWorker | None = None
+
+        # ---- Alert dialog state ----
+        self._alert_visible = False
+        self._alert_queue: list[list[str]] = []
+
+        # ---- Manually selected region override ----
+        self._manual_region: dict | None = None
 
         # ---- Central widget ----
         central = QWidget()
@@ -138,19 +149,61 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _select_region(self) -> None:
-        """Pop up a full-screen overlay for drag-to-select."""
-        # This is a simplified version — the real overlay would be a
-        # transparent fullscreen widget.  For now, fall back to the
-        # detected window and show a message.
+        """Show a dialog for manual coordinate entry.
+
+        Pre-fills with auto-detected window values if available;
+        otherwise uses a reasonable default.
+        """
         self._detect_window()
-        if hasattr(self, "_detected_region"):
-            info = self._detected_region
-            self._log_message(f"使用窗口区域: {info['w']}×{info['h']}")
-        else:
-            QMessageBox.warning(
-                self,
-                "手动框选",
-                "请确保 EVE 已运行，或手动输入窗口关键词后再试。",
+        defaults = (
+            self._detected_region
+            if hasattr(self, "_detected_region") and self._detected_region
+            else {"x": 0, "y": 0, "w": 800, "h": 600}
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("手动选择截图区域")
+        form = QFormLayout(dlg)
+
+        x_spin = QSpinBox()
+        x_spin.setRange(0, 99999)
+        x_spin.setValue(defaults["x"])
+        form.addRow("X 坐标:", x_spin)
+
+        y_spin = QSpinBox()
+        y_spin.setRange(0, 99999)
+        y_spin.setValue(defaults["y"])
+        form.addRow("Y 坐标:", y_spin)
+
+        w_spin = QSpinBox()
+        w_spin.setRange(1, 99999)
+        w_spin.setValue(defaults["w"])
+        form.addRow("宽度:", w_spin)
+
+        h_spin = QSpinBox()
+        h_spin.setRange(1, 99999)
+        h_spin.setValue(defaults["h"])
+        form.addRow("高度:", h_spin)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._manual_region = {
+                "x": x_spin.value(),
+                "y": y_spin.value(),
+                "w": w_spin.value(),
+                "h": h_spin.value(),
+            }
+            self._log_message(
+                f"手动区域已设置: ({self._manual_region['x']}, "
+                f"{self._manual_region['y']}) "
+                f"{self._manual_region['w']}×{self._manual_region['h']}"
             )
 
     # ------------------------------------------------------------------
@@ -164,15 +217,37 @@ class MainWindow(QMainWindow):
             self._stop_monitor()
 
     def _start_monitor(self) -> None:
-        # Ensure we have a region
+        # Ensure we have a region — prefer manual override, fall back to auto-detect
         if not hasattr(self, "_detected_region") or self._detected_region is None:
             self._detect_window()
-        if not hasattr(self, "_detected_region") or self._detected_region is None:
+        region = self._manual_region or (
+            self._detected_region
+            if hasattr(self, "_detected_region")
+            else None
+        )
+        if region is None:
             QMessageBox.critical(self, "错误", "找不到 EVE 窗口，请确保游戏已运行。")
             self._monitor_btn.setChecked(False)
             return
 
-        r = self._detected_region
+        # Guard: if an old worker thread is still alive, try to stop it
+        if self._worker is not None:
+            if self._worker.isRunning():
+                self._log_message("正在停止旧的监控线程...")
+                self._worker.stop()
+                if not self._worker.wait(5000):
+                    logger.warning(
+                        "Old worker thread did not stop within 5 s — rejecting start"
+                    )
+                    self._monitor_btn.setChecked(False)
+                    QMessageBox.critical(
+                        self, "错误", "无法停止旧的监控线程，请重启应用。"
+                    )
+                    return
+                self._log_message("旧线程已停止")
+            self._disconnect_worker_signals()
+
+        r = region
         self._worker = MonitorWorker(self._capturer, self._ocr, self._detector)
         self._worker.set_region(r["x"], r["y"], r["w"], r["h"])
         self._worker.set_interval(self._settings.get_interval())
@@ -193,10 +268,37 @@ class MainWindow(QMainWindow):
         self._status_label.setStyleSheet("color: #228b22; font-weight: bold;")
         self._log_message("监控已启动")
 
+    def _disconnect_worker_signals(self) -> None:
+        """Safely disconnect all signals from the current worker."""
+        try:
+            self._worker.threat_detected.disconnect()
+        except TypeError:
+            pass
+        try:
+            self._worker.status_update.disconnect()
+        except TypeError:
+            pass
+        try:
+            self._worker.scan_complete.disconnect()
+        except TypeError:
+            pass
+
     def _stop_monitor(self) -> None:
         if self._worker:
             self._worker.stop()
-            self._worker.wait(3000)
+            if not self._worker.wait(3000):
+                logger.warning(
+                    "Worker thread did not stop within 3 s timeout — "
+                    "disconnecting signals and creating fresh engine instances"
+                )
+                self._disconnect_worker_signals()
+                # Old thread is still alive holding PaddleOCR — create fresh
+                # instances so the next start is safe
+                self._capturer = Capturer()
+                self._ocr = OCREngine(lang="ch", confidence_threshold=0.7)
+                self._detector = Detector(
+                    self._whitelist, cooldown_seconds=60.0
+                )
             self._worker = None
 
         self._monitor_btn.setText("开始监控")
@@ -214,9 +316,27 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_threat(self, threats: list[str]) -> None:
-        """Show alert dialog when threats are detected."""
+        """Show non-blocking alert dialog when threats are detected.
+
+        If an alert is already visible, queue the threat names so they
+        are shown once the current dialog closes — this prevents cascading
+        modal dialogs from blocking the main thread.
+        """
+        if self._alert_visible:
+            self._alert_queue.append(threats)
+            return
+
+        self._alert_visible = True
         dlg = AlertDialog(threats, self)
-        dlg.exec()
+        dlg.finished.connect(self._on_alert_closed)
+        dlg.show()
+
+    def _on_alert_closed(self) -> None:
+        """Called when the alert dialog is dismissed."""
+        self._alert_visible = False
+        if self._alert_queue:
+            next_threats = self._alert_queue.pop(0)
+            self._on_threat(next_threats)
 
     # ------------------------------------------------------------------
     # Logging
