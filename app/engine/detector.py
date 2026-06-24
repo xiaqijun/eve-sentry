@@ -1,7 +1,6 @@
 """Threat detection: compare OCR results against a whitelist."""
 
 import time
-from typing import Optional
 
 from app.models.whitelist import Whitelist
 

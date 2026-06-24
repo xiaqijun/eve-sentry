@@ -1,7 +1,6 @@
 """Background worker thread for the monitor loop."""
 
 import logging
-import time
 from typing import Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal

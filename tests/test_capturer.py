@@ -69,7 +69,11 @@ class TestFindEveWindow:
         assert result["h"] == 600  # client height = window height
 
     @patch("app.engine.capturer.win32gui")
-    def test_no_eve_window_returns_none(self, mock_win32gui):
+    @patch("app.engine.capturer.win32process")
+    @patch("app.engine.capturer.psutil")
+    def test_no_eve_window_returns_none(
+        self, mock_psutil, mock_win32process, mock_win32gui
+    ):
         windows = [
             (1, "Chrome", (0, 0, 500, 400)),
             (2, "Notepad", (0, 400, 300, 600)),
@@ -79,6 +83,11 @@ class TestFindEveWindow:
         mock_win32gui.GetWindowText = gwt
         mock_win32gui.GetClientRect = gcr
         mock_win32gui.ClientToScreen = cts
+
+        # Make the process-name fallback raise on every hwnd
+        mock_win32process.GetWindowThreadProcessId.side_effect = (
+            ValueError("invalid hwnd")
+        )
 
         c = Capturer()
         result = c.find_eve_window()
@@ -100,6 +109,113 @@ class TestFindEveWindow:
         result = c.find_eve_window(keyword="My App")
         assert result is not None
         assert result["title"] == "My App - Game"
+
+
+class TestFindEveWindowByProcess:
+    def make_windows(self, windows):
+        """windows: list of (hwnd, title, rect, pid, proc_name) tuples."""
+        hwnds = []
+        titles = {}
+        rects = {}
+        client_rects = {}
+        pids = {}
+        proc_names = {}
+
+        for hwnd, title, rect, pid, proc_name in windows:
+            hwnds.append(hwnd)
+            titles[hwnd] = title
+            rects[hwnd] = rect
+            client_rects[hwnd] = (0, 0, rect[2] - rect[0], rect[3] - rect[1])
+            pids[hwnd] = pid
+            proc_names[pid] = proc_name
+
+        def mock_enum_windows(callback, param):
+            for hwnd in hwnds:
+                callback(hwnd, param)
+
+        def mock_get_window_text(h):
+            return titles.get(h, "")
+
+        def mock_get_client_rect(h):
+            return client_rects.get(h, (0, 0, 0, 0))
+
+        def mock_client_to_screen(h, point):
+            wr = rects.get(h, (0, 0, 0, 0))
+            return (wr[0], wr[1])
+
+        def mock_get_window_thread_process_id(hwnd):
+            return (0, pids.get(hwnd, 0))
+
+        def mock_process(pid):
+            m = MagicMock()
+            m.name.return_value = proc_names.get(pid, "")
+            return m
+
+        return (
+            mock_enum_windows,
+            mock_get_window_text,
+            mock_get_client_rect,
+            mock_client_to_screen,
+            mock_get_window_thread_process_id,
+            mock_process,
+        )
+
+    @patch("app.engine.capturer.win32gui")
+    @patch("app.engine.capturer.win32process")
+    @patch("app.engine.capturer.psutil")
+    def test_find_by_process_name_fallback(
+        self, mock_psutil, mock_win32process, mock_win32gui
+    ):
+        """No title matches, but process name matches exefile.exe."""
+        windows = [
+            (1, "Chrome", (0, 0, 500, 400), 100, "chrome.exe"),
+            (2, "EVE Launcher", (50, 50, 850, 750), 200, "exefile.exe"),
+        ]
+        (
+            em, gwt, gcr, cts, gwtpid, mkproc
+        ) = self.make_windows(windows)
+
+        mock_win32gui.EnumWindows = em
+        mock_win32gui.GetWindowText = gwt
+        mock_win32gui.GetClientRect = gcr
+        mock_win32gui.ClientToScreen = cts
+
+        mock_win32process.GetWindowThreadProcessId = gwtpid
+        mock_psutil.Process = mkproc
+
+        c = Capturer()
+        result = c.find_eve_window(keyword="EVE -")
+
+        assert result is not None
+        assert result["title"] == "EVE Launcher"
+
+    @patch("app.engine.capturer.win32gui")
+    @patch("app.engine.capturer.win32process")
+    @patch("app.engine.capturer.psutil")
+    def test_no_match_in_either_pass(
+        self, mock_psutil, mock_win32process, mock_win32gui
+    ):
+        """Neither title nor process name matches."""
+        windows = [
+            (1, "Chrome", (0, 0, 500, 400), 100, "chrome.exe"),
+            (2, "Notepad", (0, 400, 300, 600), 200, "notepad.exe"),
+        ]
+        (
+            em, gwt, gcr, cts, gwtpid, mkproc
+        ) = self.make_windows(windows)
+
+        mock_win32gui.EnumWindows = em
+        mock_win32gui.GetWindowText = gwt
+        mock_win32gui.GetClientRect = gcr
+        mock_win32gui.ClientToScreen = cts
+
+        mock_win32process.GetWindowThreadProcessId = gwtpid
+        mock_psutil.Process = mkproc
+
+        c = Capturer()
+        result = c.find_eve_window()
+
+        assert result is None
 
 
 class TestScreenshot:
