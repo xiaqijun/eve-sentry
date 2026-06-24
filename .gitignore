@@ -1,16 +1,36 @@
 # Virtual environment
 .venv/
+venv/
+env/
 
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.egg-info/
+
+# Build artifacts
+dist/
+build/
+*.egg
+
+# uv
+.uv/
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
+
+# App user data (whitelist is per-user, not tracked)
+whitelist.json
+
+# Superpowers session artifacts
+.superpowers/
