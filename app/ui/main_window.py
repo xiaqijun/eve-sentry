@@ -7,15 +7,11 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QSpinBox,
     QStatusBar,
     QSystemTrayIcon,
     QTextEdit,
@@ -29,6 +25,7 @@ from app.engine.ocr import OCREngine
 from app.engine.worker import MonitorWorker
 from app.models.whitelist import Whitelist
 from app.ui.alert_dialog import AlertDialog
+from app.ui.region_selector import RegionSelector
 from app.ui.settings import SettingsPanel
 
 logger = logging.getLogger(__name__)
@@ -149,62 +146,18 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _select_region(self) -> None:
-        """Show a dialog for manual coordinate entry.
+        """Show fullscreen overlay for drag-to-select region."""
+        self.hide()  # Hide main window so user sees the game
+        self._selector = RegionSelector()
+        self._selector.region_selected.connect(self._on_region_selected)
+        self._selector.show()
 
-        Pre-fills with auto-detected window values if available;
-        otherwise uses a reasonable default.
-        """
-        self._detect_window()
-        defaults = (
-            self._detected_region
-            if hasattr(self, "_detected_region") and self._detected_region
-            else {"x": 0, "y": 0, "w": 800, "h": 600}
-        )
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle("手动选择截图区域")
-        form = QFormLayout(dlg)
-
-        x_spin = QSpinBox()
-        x_spin.setRange(0, 99999)
-        x_spin.setValue(defaults["x"])
-        form.addRow("X 坐标:", x_spin)
-
-        y_spin = QSpinBox()
-        y_spin.setRange(0, 99999)
-        y_spin.setValue(defaults["y"])
-        form.addRow("Y 坐标:", y_spin)
-
-        w_spin = QSpinBox()
-        w_spin.setRange(1, 99999)
-        w_spin.setValue(defaults["w"])
-        form.addRow("宽度:", w_spin)
-
-        h_spin = QSpinBox()
-        h_spin.setRange(1, 99999)
-        h_spin.setValue(defaults["h"])
-        form.addRow("高度:", h_spin)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        form.addRow(buttons)
-
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._manual_region = {
-                "x": x_spin.value(),
-                "y": y_spin.value(),
-                "w": w_spin.value(),
-                "h": h_spin.value(),
-            }
-            self._log_message(
-                f"手动区域已设置: ({self._manual_region['x']}, "
-                f"{self._manual_region['y']}) "
-                f"{self._manual_region['w']}×{self._manual_region['h']}"
-            )
+    def _on_region_selected(self, x: int, y: int, w: int, h: int) -> None:
+        """Handle region selected from the overlay."""
+        self._manual_region = {"x": x, "y": y, "w": w, "h": h}
+        self._window_label.setText(f"手动区域: ({x},{y}) {w}×{h}")
+        self._log_message(f"已设置手动区域: {w}×{h}")
+        self.show()  # Show main window again
 
     # ------------------------------------------------------------------
     # Monitor start / stop
