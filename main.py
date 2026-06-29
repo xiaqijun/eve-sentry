@@ -1,7 +1,13 @@
 """EVE Sentry — EVE Online hostile player early warning system."""
 
+import os
 import logging
 import sys
+
+# Skip PaddleOCR's slow connectivity check and unreachable huggingface.
+# Must be set before any PaddleOCR import.
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+os.environ.setdefault("PADDLE_PDX_MODEL_SOURCE", "modelscope")
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt

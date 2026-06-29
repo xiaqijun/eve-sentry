@@ -1,5 +1,10 @@
 PyQt6>=6.5.0
 paddleocr>=2.7.0
-paddlepaddle>=2.5.0
+# Install exactly one Paddle runtime package:
+#   CPU: paddlepaddle==3.1.1
+#   GPU: uv pip install --index-url https://www.paddlepaddle.org.cn/packages/stable/cu118 paddlepaddle-gpu==3.2.0
 pywin32>=306
 Pillow>=10.0.0
+numpy>=1.26.0
+zbl>=0.7.0
+psutil>=5.9.0

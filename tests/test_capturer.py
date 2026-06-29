@@ -110,6 +110,52 @@ class TestFindEveWindow:
         assert result is not None
         assert result["title"] == "My App - Game"
 
+    @patch("app.engine.capturer.win32gui")
+    def test_get_window_info_uses_selected_hwnd(self, mock_win32gui):
+        windows = [
+            (7, "EVE - Selected", (20, 30, 820, 630)),
+        ]
+        _em, gwt, _gwr, gcr, cts = self.make_windows(windows)
+        mock_win32gui.IsWindow.return_value = True
+        mock_win32gui.GetWindowText = gwt
+        mock_win32gui.GetClientRect = gcr
+        mock_win32gui.ClientToScreen = cts
+
+        c = Capturer()
+        result = c.get_window_info(7)
+
+        assert result == {
+            "title": "EVE - Selected",
+            "hwnd": 7,
+            "x": 20,
+            "y": 30,
+            "w": 800,
+            "h": 600,
+        }
+
+    @patch("app.engine.capturer.win32gui")
+    @patch("app.engine.capturer.win32process")
+    @patch("app.engine.capturer.psutil")
+    def test_zero_sized_eve_window_is_ignored(
+        self, mock_psutil, mock_win32process, mock_win32gui
+    ):
+        windows = [
+            (1, "EVE - Minimized", (-32000, -32000, -32000, -32000)),
+        ]
+        em, gwt, gwr, gcr, cts = self.make_windows(windows)
+        mock_win32gui.EnumWindows = em
+        mock_win32gui.GetWindowText = gwt
+        mock_win32gui.GetWindowRect = gwr
+        mock_win32gui.GetClientRect = gcr
+        mock_win32gui.ClientToScreen = cts
+        mock_win32process.GetWindowThreadProcessId.side_effect = ValueError(
+            "invalid hwnd"
+        )
+
+        c = Capturer()
+
+        assert c.find_eve_window() is None
+
 
 class TestFindEveWindowByProcess:
     def make_windows(self, windows):
@@ -231,3 +277,74 @@ class TestScreenshot:
             bbox=(100, 200, 400, 600), all_screens=True
         )
         assert result is mock_img
+
+
+class TestBackgroundCaptureLifecycle:
+    @patch("app.engine.capturer.win32gui")
+    def test_activate_window_restores_and_raises_target(self, mock_win32gui):
+        mock_win32gui.IsWindow.return_value = True
+
+        capturer = Capturer()
+
+        assert capturer.activate_window(123) is True
+        mock_win32gui.ShowWindow.assert_called_once()
+        assert mock_win32gui.SetWindowPos.call_count == 2
+        mock_win32gui.SetForegroundWindow.assert_called_once_with(123)
+
+    @patch("app.engine.capturer.win32gui")
+    def test_select_window_starts_and_close_stops_zbl_capture(self, mock_win32gui):
+        fake_capture = MagicMock()
+        fake_factory = MagicMock(return_value=fake_capture)
+        mock_win32gui.IsWindow.return_value = False
+
+        with patch("zbl.Capture", fake_factory):
+            capturer = Capturer()
+            capturer.select_window(123, "EVE - Pilot", 800, 600)
+
+            fake_factory.assert_called_once_with(window_handle=123)
+            fake_capture.__enter__.assert_called_once_with()
+            assert capturer._bg_capture_started is True
+
+            capturer.close()
+
+            fake_capture.__exit__.assert_called_once_with(None, None, None)
+            assert capturer._bg_capture_started is False
+
+    @patch("app.engine.capturer.win32gui")
+    def test_select_window_can_skip_zbl_start(self, mock_win32gui):
+        fake_factory = MagicMock()
+
+        with patch("zbl.Capture", fake_factory):
+            capturer = Capturer()
+            capturer.select_window(
+                123,
+                "EVE - Pilot",
+                800,
+                600,
+                start_capture=False,
+            )
+
+            fake_factory.assert_not_called()
+            assert capturer._hwnd == 123
+            assert capturer._bg_capture_started is False
+
+    @patch("app.engine.capturer.ImageGrab")
+    @patch("app.engine.capturer.win32gui")
+    def test_zbl_panic_falls_back_to_image_grab(self, mock_win32gui, mock_grab):
+        class PanicException(BaseException):
+            pass
+
+        fake_capture = MagicMock()
+        fake_capture.try_grab.side_effect = PanicException("wrong thread")
+        mock_win32gui.IsWindow.return_value = True
+        mock_grab.grab.return_value = MagicMock(spec=Image.Image)
+
+        capturer = Capturer()
+        capturer._hwnd = 123
+        capturer._bg_capture = fake_capture
+        capturer._bg_capture_started = True
+
+        result = capturer.screenshot(1, 2, 3, 4)
+
+        mock_grab.grab.assert_called_once_with(bbox=(1, 2, 4, 6), all_screens=True)
+        assert result is mock_grab.grab.return_value
