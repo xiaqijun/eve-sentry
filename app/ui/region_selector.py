@@ -1,135 +1,87 @@
-"""Transparent fullscreen overlay for mouse drag-to-select region.
+"""Overlay positioned over the EVE window for region selection."""
 
-Provides a frameless, translucent window that spans all monitors.
-The user presses and drags the mouse to draw a selection rectangle,
-then releases to confirm. Escape cancels the operation.
-"""
-
-import logging
-
-from PyQt6.QtCore import Qt, pyqtSignal, QRect
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QKeyEvent, QPainter, QPen
-from PyQt6.QtWidgets import QApplication, QWidget
-
-logger = logging.getLogger(__name__)
+from PyQt6.QtWidgets import QWidget
 
 
 class RegionSelector(QWidget):
-    """Fullscreen semi-transparent overlay for drag-to-select.
-
-    Covers all monitors with a dark translucent background.  The user
-    presses the left mouse button, drags to draw a rectangle, and
-    releases to confirm the region.  Pressing Escape cancels without
-    emitting a signal.
-    """
+    """Semi-transparent overlay used to drag-select a screen region."""
 
     region_selected = pyqtSignal(int, int, int, int)
-    """Emitted on mouse release: (x, y, w, h) in virtual-screen coordinates."""
+    selector_closed = pyqtSignal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, x: int, y: int, w: int, h: int, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
         )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setWindowOpacity(0.35)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setGeometry(x, y, w, h)
 
-        # Mouse drag state
-        self._start_point = None  # QPoint | None
-        self._end_point = None  # QPoint | None
-        self._is_dragging = False
-
-        # Cover every monitor (virtual desktop)
-        self._setup_geometry()
-
-    # ------------------------------------------------------------------
-    # Geometry
-    # ------------------------------------------------------------------
-
-    def _setup_geometry(self) -> None:
-        """Resize and position the widget over the entire virtual desktop."""
-        geom = QRect()
-        for screen in QApplication.screens():
-            geom = geom.united(screen.geometry())
-        self.setGeometry(geom)
-
-    # ------------------------------------------------------------------
-    # Painting
-    # ------------------------------------------------------------------
+        self._start = None
+        self._end = None
+        self._dragging = False
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        """Draw the semi-transparent overlay and the selection rectangle."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor(20, 20, 30))
 
-        # 1. Fill entire widget with a dark semi-transparent overlay
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
+        if self._dragging and self._start is not None and self._end is not None:
+            p1 = self.mapFromGlobal(self._start)
+            p2 = self.mapFromGlobal(self._end)
+            rx = min(p1.x(), p2.x())
+            ry = min(p1.y(), p2.y())
+            rw = abs(p2.x() - p1.x())
+            rh = abs(p2.y() - p1.y())
+            painter.setPen(QPen(QColor(0, 255, 100, 220), 2))
+            painter.setBrush(QColor(0, 255, 100, 40))
+            painter.drawRect(rx, ry, rw, rh)
 
-        # 2. If the user is dragging, cut a transparent hole where the
-        #    selection rectangle is, then draw a coloured border.
-        if self._is_dragging and self._start_point is not None:
-            rect = self._normalized_rect()
-
-            # Clear the area inside the selection (makes it transparent)
-            painter.setCompositionMode(
-                QPainter.CompositionMode.CompositionMode_Clear
-            )
-            painter.fillRect(rect, QColor(0, 0, 0, 0))
-            painter.setCompositionMode(
-                QPainter.CompositionMode.CompositionMode_SourceOver
-            )
-
-            # Draw a red border around the selection
-            painter.setPen(QPen(QColor(255, 50, 50, 255), 2))
-            painter.drawRect(rect)
-
-    def _normalized_rect(self) -> QRect:
-        """Return a non-negative-width/height rect from start/end points."""
-        x1 = self._start_point.x()
-        y1 = self._start_point.y()
-        x2 = self._end_point.x()
-        y2 = self._end_point.y()
-        return QRect(
-            min(x1, x2),
-            min(y1, y2),
-            abs(x2 - x1),
-            abs(y2 - y1),
-        )
-
-    # ------------------------------------------------------------------
-    # Mouse events
-    # ------------------------------------------------------------------
+        hint = "Drag to select the member list   |   ESC cancels"
+        metrics = painter.fontMetrics()
+        text_width = metrics.horizontalAdvance(hint)
+        painter.setPen(QColor(255, 255, 255, 200))
+        painter.drawText(int((self.width() - text_width) / 2), 30, hint)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
-            self._start_point = event.position().toPoint()
-            self._end_point = self._start_point
-            self._is_dragging = True
+            point = event.globalPosition().toPoint()
+            self._start = point
+            self._end = point
+            self._dragging = True
             self.update()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if self._is_dragging:
-            self._end_point = event.position().toPoint()
+        if self._dragging:
+            self._end = event.globalPosition().toPoint()
             self.update()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton and self._is_dragging:
-            self._is_dragging = False
-            rect = self._normalized_rect()
-            if rect.width() > 0 and rect.height() > 0:
-                self.region_selected.emit(
-                    rect.x(), rect.y(), rect.width(), rect.height()
-                )
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging:
+            self._dragging = False
+            x1, y1 = self._start.x(), self._start.y()
+            x2, y2 = self._end.x(), self._end.y()
+            sx = min(x1, x2)
+            sy = min(y1, y2)
+            sw = abs(x2 - x1)
+            sh = abs(y2 - y1)
+            if sw > 10 and sh > 10:
+                self.region_selected.emit(sx, sy, sw, sh)
             self.close()
-
-    # ------------------------------------------------------------------
-    # Keyboard
-    # ------------------------------------------------------------------
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         if event.key() == Qt.Key.Key_Escape:
             self.close()
         else:
             super().keyPressEvent(event)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.selector_closed.emit()
+        super().closeEvent(event)

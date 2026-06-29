@@ -31,6 +31,17 @@ Desktop.ini
 
 # App user data (whitelist is per-user, not tracked)
 whitelist.json
+region_prefs.json
+intel_reports.json
+
+# Local run/debug artifacts
+/_client_*.log
+/_server_*.log
+/_live_*
+/_zbl_*
+/_test_*.png
+/_test_*.py
+/.gitlog.txt
 
 # Superpowers session artifacts
 .superpowers/
