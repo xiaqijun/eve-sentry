@@ -59,6 +59,9 @@ class IntelReport:
     seen_at: str = field(default_factory=utc_now_iso)
     received_at: str = field(default_factory=utc_now_iso)
     report_id: str = field(default_factory=lambda: uuid4().hex)
+    acknowledged_at: str = ""
+    acknowledged_by: str = ""
+    acknowledgement_note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +79,10 @@ class IntelReport:
             "seen_at": self.seen_at,
             "received_at": self.received_at,
             "observation_id": self.report_id,
+            "acknowledged": bool(self.acknowledged_at),
+            "acknowledged_at": self.acknowledged_at,
+            "acknowledged_by": self.acknowledged_by,
+            "acknowledgement_note": self.acknowledgement_note,
         }
 
     def to_observation(self) -> Observation:
@@ -370,7 +377,7 @@ class IntelStore:
         for report in self._reports_snapshot():
             alert = self._alert_from_report(report)
             if alert is not None:
-                alerts.append(alert.to_dict())
+                alerts.append(self._alert_to_dict(report, alert))
 
         if since_query:
             alerts = [alert for alert in alerts if alert["created_at"] > since_query]
@@ -379,6 +386,61 @@ class IntelStore:
         if limit is not None:
             alerts = alerts[:max(0, limit)]
         return alerts
+
+    def ack_alert(
+        self,
+        alert_id: str,
+        acknowledged_by: str = "",
+        note: str = "",
+        acknowledged_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Mark a generated threat event as acknowledged."""
+        alert_id = str(alert_id or "").strip()
+        if not alert_id:
+            return None
+
+        with self._lock:
+            matched_report: IntelReport | None = None
+            matched_alert: ThreatEvent | None = None
+
+            for report in self._reports:
+                if (
+                    report.report_id == alert_id
+                    or f"evt_{report.report_id}" == alert_id
+                ):
+                    matched_report = report
+                    break
+
+            if matched_report is None:
+                for report in self._reports:
+                    alert = self._alert_from_report(report)
+                    if alert is not None and alert.event_id == alert_id:
+                        matched_report = report
+                        matched_alert = alert
+                        break
+
+            if matched_report is None:
+                return None
+
+            matched_alert = matched_alert or self._alert_from_report(matched_report)
+            if matched_alert is None:
+                return None
+
+            matched_report.acknowledged_at = (
+                str(acknowledged_at or "").strip()
+                or matched_report.acknowledged_at
+                or utc_now_iso()
+            )
+            matched_report.acknowledged_by = (
+                str(acknowledged_by or "").strip()
+                or matched_report.acknowledged_by
+            )
+            matched_report.acknowledgement_note = (
+                str(note or "").strip()
+                or matched_report.acknowledgement_note
+            )
+            self._save_reports()
+            return self._alert_to_dict(matched_report, matched_alert)
 
     def delete_report(self, report_id: str) -> bool:
         """Delete a report by id. Returns True when a report was removed."""
@@ -406,7 +468,7 @@ class IntelStore:
             for report in self._reports:
                 alert = self._alert_from_report(report)
                 if alert is not None:
-                    alerts.append(alert.to_dict())
+                    alerts.append(self._alert_to_dict(report, alert))
             system_intel = self._aggregate_by_system(reports)
             character_intel = self._aggregate_by_character(reports)
 
@@ -481,6 +543,18 @@ class IntelStore:
         with self._lock:
             self._alert_cache[report.report_id] = alert
         return alert
+
+    def _alert_to_dict(
+        self,
+        report: IntelReport,
+        alert: ThreatEvent,
+    ) -> dict[str, Any]:
+        data = alert.to_dict()
+        data["acknowledged"] = bool(report.acknowledged_at)
+        data["acknowledged_at"] = report.acknowledged_at
+        data["acknowledged_by"] = report.acknowledged_by
+        data["acknowledgement_note"] = report.acknowledgement_note
+        return data
 
     def _scoring_kwargs(self, observation: Observation) -> dict[str, Any]:
         if self._enricher is None:
@@ -613,6 +687,9 @@ class IntelStore:
                     received_at=str(
                         item.get("received_at") or item.get("seen_at") or utc_now_iso()
                     ),
+                    acknowledged_at=str(item.get("acknowledged_at") or ""),
+                    acknowledged_by=str(item.get("acknowledged_by") or ""),
+                    acknowledgement_note=str(item.get("acknowledgement_note") or ""),
                 )
             )
             self._ensure_system(system)

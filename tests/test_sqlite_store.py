@@ -25,6 +25,33 @@ def test_sqlite_store_persists_observations(tmp_path):
     assert alerts[0]["character_ids"] == [123]
 
 
+def test_sqlite_store_persists_alert_acknowledgement(tmp_path):
+    db_path = tmp_path / "intel.sqlite3"
+    store = SQLiteIntelStore(db_path, systems={}, links=[])
+    observation = store.add_observation(
+        {
+            "source": "intel_channel",
+            "system_name": "Tama",
+            "names": ["Alice"],
+            "received_at": "2026-06-29T12:00:01+00:00",
+        }
+    )
+    alert_id = f"evt_{observation.observation_id}"
+
+    acked = store.ack_alert(alert_id, acknowledged_by="client", note="sent")
+
+    assert acked is not None
+    assert acked["acknowledged"] is True
+    reloaded = SQLiteIntelStore(db_path, systems={}, links=[])
+
+    alert = reloaded.list_alerts()[0]
+
+    assert alert["acknowledged"] is True
+    assert alert["acknowledged_at"] == acked["acknowledged_at"]
+    assert alert["acknowledged_by"] == "client"
+    assert alert["acknowledgement_note"] == "sent"
+
+
 def test_sqlite_store_imports_legacy_json_once(tmp_path):
     json_path = tmp_path / "intel_reports.json"
     db_path = tmp_path / "intel.sqlite3"

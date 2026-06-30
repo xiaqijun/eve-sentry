@@ -298,6 +298,56 @@ def test_create_observation_and_query_alerts(tmp_path):
         server.stop()
 
 
+def test_ack_alert_route_marks_alert(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+                "seen_at": "2026-06-29T12:00:00+00:00",
+            },
+        )
+        assert status == 201
+        alert_id = created["alert"]["id"]
+
+        status, acked = request_json(
+            f"{server.url}/api/alerts/{alert_id}/ack",
+            method="POST",
+            payload={"acknowledged_by": "tester", "note": "handled"},
+        )
+
+        assert status == 200
+        assert acked["ok"] is True
+        assert acked["alert"]["id"] == alert_id
+        assert acked["alert"]["acknowledged"] is True
+        assert acked["alert"]["acknowledged_by"] == "tester"
+        assert acked["alert"]["acknowledgement_note"] == "handled"
+
+        status, alerts = request_json(f"{server.url}/api/alerts")
+        assert status == 200
+        assert alerts["alerts"][0]["acknowledged"] is True
+
+        try:
+            request_json(
+                f"{server.url}/api/alerts/missing/ack",
+                method="POST",
+                payload={},
+            )
+        except HTTPError as exc:
+            assert exc.code == 404
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert "alert" in payload["error"]
+        else:
+            raise AssertionError("expected HTTP 404")
+    finally:
+        server.stop()
+
+
 def test_events_stream_returns_alert_sse(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()

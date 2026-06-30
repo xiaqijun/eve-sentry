@@ -132,6 +132,9 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765
 # 长驻订阅，并弹出本地预警窗口
 uv run python -m app.alert_client --server http://127.0.0.1:8765 --popup
 
+# 输出/弹窗后回写已确认状态
+uv run python -m app.alert_client --server http://127.0.0.1:8765 --ack --ack-by alert-client
+
 # 一次性检查当前服务端 alert，适合联调或脚本验证
 uv run python -m app.alert_client --server http://127.0.0.1:8765 --once --include-existing --json --poll
 ```
@@ -408,6 +411,9 @@ GET  /api/map/snapshot
 
 当前服务端已实现:
 
+- `POST /api/alerts/{id}/ack`: 标记单个 alert 已确认，并在 JSON 和 SQLite
+  存储中保留 `acknowledged`、`acknowledged_at`、`acknowledged_by` 和
+  `acknowledgement_note`。
 - `GET /api/characters/{character_id}`: 需要启用 ESI，返回角色公开资料。
 - `GET /api/characters/by-name/{name}`: 需要启用 ESI，先解析名字再返回角色公开资料。
 - `GET /api/systems/by-name/{name}`: 需要启用 ESI，返回星系公开资料。

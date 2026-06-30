@@ -75,9 +75,30 @@ class SQLiteIntelStore(IntelStore):
                     note TEXT NOT NULL,
                     raw_text TEXT NOT NULL,
                     seen_at TEXT NOT NULL,
-                    received_at TEXT NOT NULL
+                    received_at TEXT NOT NULL,
+                    acknowledged_at TEXT NOT NULL DEFAULT '',
+                    acknowledged_by TEXT NOT NULL DEFAULT '',
+                    acknowledgement_note TEXT NOT NULL DEFAULT ''
                 )
                 """
+            )
+            self._ensure_column(
+                connection,
+                "intel_reports",
+                "acknowledged_at",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                "intel_reports",
+                "acknowledged_by",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                "intel_reports",
+                "acknowledgement_note",
+                "TEXT NOT NULL DEFAULT ''",
             )
             connection.execute(
                 """
@@ -106,7 +127,8 @@ class SQLiteIntelStore(IntelStore):
                 """
                 SELECT report_id, system, names_json, source, source_instance,
                        system_id, character_ids_json, confidence, note, raw_text,
-                       seen_at, received_at
+                       seen_at, received_at, acknowledged_at, acknowledged_by,
+                       acknowledgement_note
                 FROM intel_reports
                 ORDER BY seen_at ASC, received_at ASC
                 """
@@ -128,9 +150,10 @@ class SQLiteIntelStore(IntelStore):
                 INSERT INTO intel_reports (
                     report_id, system, names_json, source, source_instance,
                     system_id, character_ids_json, confidence, note, raw_text,
-                    seen_at, received_at
+                    seen_at, received_at, acknowledged_at, acknowledged_by,
+                    acknowledgement_note
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [self._row_from_report(report) for report in reports],
             )
@@ -159,6 +182,18 @@ class SQLiteIntelStore(IntelStore):
                 (key, value),
             )
 
+    def _ensure_column(
+        self,
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+        if column in {str(row["name"]) for row in rows}:
+            return
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
     def _report_from_row(self, row: sqlite3.Row) -> IntelReport | None:
         try:
             names = self._normalize_names(json.loads(str(row["names_json"])))
@@ -185,6 +220,9 @@ class SQLiteIntelStore(IntelStore):
             raw_text=str(row["raw_text"] or ""),
             seen_at=str(row["seen_at"] or utc_now_iso()),
             received_at=str(row["received_at"] or row["seen_at"] or utc_now_iso()),
+            acknowledged_at=str(row["acknowledged_at"] or ""),
+            acknowledged_by=str(row["acknowledged_by"] or ""),
+            acknowledgement_note=str(row["acknowledgement_note"] or ""),
         )
 
     def _row_from_report(self, report: IntelReport) -> tuple[Any, ...]:
@@ -201,4 +239,7 @@ class SQLiteIntelStore(IntelStore):
             report.raw_text,
             report.seen_at,
             report.received_at,
+            report.acknowledged_at,
+            report.acknowledged_by,
+            report.acknowledgement_note,
         )

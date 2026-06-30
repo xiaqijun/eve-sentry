@@ -233,6 +233,34 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        ack_prefix = "/api/alerts/"
+        if path.startswith(ack_prefix) and path.endswith("/ack"):
+            alert_id = unquote(path[len(ack_prefix):-len("/ack")]).strip()
+            if not alert_id:
+                self._send_json(
+                    {"error": "alert id is required"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                payload = self._read_optional_json()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+
+            alert = self._store().ack_alert(
+                alert_id,
+                acknowledged_by=str(
+                    payload.get("acknowledged_by") or payload.get("by") or ""
+                ),
+                note=str(payload.get("note") or ""),
+            )
+            if alert is None:
+                self._send_json({"error": "alert not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"ok": True, "alert": alert})
+            return
+
         if path not in {"/api/intel", "/api/observations"}:
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
@@ -337,6 +365,16 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length)
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("request body must be a JSON object")
+        return data
+
+    def _read_optional_json(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length)
+        if not raw.strip():
+            return {}
         data = json.loads(raw.decode("utf-8"))
         if not isinstance(data, dict):
             raise ValueError("request body must be a JSON object")

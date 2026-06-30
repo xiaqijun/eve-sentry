@@ -89,6 +89,39 @@ def test_add_observation_persists_and_lists_alerts(tmp_path):
     assert alerts[0]["id"] == f"evt_{observation.observation_id}"
     assert alerts[0]["score"] == 30
     assert alerts[0]["evidence"][0]["type"] == "intel_channel_observed"
+    assert alerts[0]["acknowledged"] is False
+
+
+def test_ack_alert_marks_alert_and_persists(tmp_path):
+    path = tmp_path / "intel_reports.json"
+    store = IntelStore(path, systems={}, links=[])
+    observation = store.add_observation(
+        {
+            "source": "intel_channel",
+            "system_name": "Tama",
+            "names": ["Alice"],
+            "received_at": "2026-06-29T12:00:01+00:00",
+        }
+    )
+    alert_id = f"evt_{observation.observation_id}"
+
+    acked = store.ack_alert(alert_id, acknowledged_by="tester", note="handled")
+
+    assert acked is not None
+    assert acked["id"] == alert_id
+    assert acked["acknowledged"] is True
+    assert acked["acknowledged_at"]
+    assert acked["acknowledged_by"] == "tester"
+    assert acked["acknowledgement_note"] == "handled"
+    assert store.ack_alert("missing") is None
+
+    reloaded = IntelStore(path, systems={}, links=[])
+    alert = reloaded.list_alerts()[0]
+
+    assert alert["acknowledged"] is True
+    assert alert["acknowledged_at"] == acked["acknowledged_at"]
+    assert alert["acknowledged_by"] == "tester"
+    assert alert["acknowledgement_note"] == "handled"
 
 
 def test_add_observation_uses_optional_resolver(tmp_path):
@@ -162,6 +195,7 @@ def test_list_alerts_uses_optional_scorer_and_caches_result(tmp_path):
     assert first_alerts[0]["score"] == 99
     assert first_alerts[0]["evidence"][0]["type"] == "custom"
     assert scorer.calls == 1
+    assert store.ack_alert(first_alerts[0]["id"])["acknowledged"] is True
 
 
 def test_list_alerts_scores_with_optional_enricher(tmp_path):
