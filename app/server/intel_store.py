@@ -420,6 +420,7 @@ class IntelStore:
         acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str | None = None,
+        include_since: bool = False,
     ) -> list[dict[str, Any]]:
         """Return generated phase-1 threat events from stored observations."""
         since_query = since.strip() if since else ""
@@ -439,7 +440,16 @@ class IntelStore:
                     alerts.append(alert_data)
 
         if since_query:
-            alerts = [alert for alert in alerts if alert["created_at"] > since_query]
+            if include_since:
+                alerts = [
+                    alert for alert in alerts
+                    if alert["created_at"] >= since_query
+                ]
+            else:
+                alerts = [
+                    alert for alert in alerts
+                    if alert["created_at"] > since_query
+                ]
 
         alerts.sort(key=lambda item: item["created_at"], reverse=True)
         if limit is not None:
@@ -472,6 +482,21 @@ class IntelStore:
                 ),
             }
         return None
+
+    def alert_cursor(self, alert_id: str) -> str:
+        """Return the created_at cursor for an alert id, if it is known."""
+        alert_id = str(alert_id or "").strip()
+        if not alert_id:
+            return ""
+
+        for report in self._reports_snapshot():
+            alert = self._alert_from_report(report)
+            if alert is None:
+                continue
+            alert_data = self._alert_to_dict(report, alert)
+            if self._alert_matches(alert_id, report, alert_data):
+                return str(alert_data.get("created_at") or "")
+        return ""
 
     def ack_alert(
         self,

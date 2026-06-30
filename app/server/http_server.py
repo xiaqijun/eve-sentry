@@ -308,8 +308,13 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
+            since, resume_after_id, include_since = self._event_stream_cursor(
+                query.get("since", [""])[0]
+            )
             self._stream_events(
-                since=query.get("since", [""])[0],
+                since=since,
+                resume_after_id=resume_after_id,
+                include_since=include_since,
                 limit=50 if parsed_limit is None else parsed_limit,
                 timeout_seconds=30.0 if parsed_timeout is None else parsed_timeout,
                 **filters,
@@ -675,9 +680,29 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             return None
         return number if number > 0 else None
 
+    def _event_stream_cursor(self, since: str) -> tuple[str, str, bool]:
+        """Resolve explicit since or browser Last-Event-ID into a stream cursor."""
+        since = str(since or "").strip()
+        if since:
+            return since, "", False
+
+        last_event_id = str(self.headers.get("Last-Event-ID") or "").strip()
+        if not last_event_id:
+            return "", "", False
+
+        cursor = self._store().alert_cursor(last_event_id)
+        if cursor:
+            return cursor, last_event_id, True
+
+        if "T" in last_event_id and last_event_id[:1].isdigit():
+            return last_event_id, "", False
+        return "", "", False
+
     def _stream_events(
         self,
         since: str = "",
+        resume_after_id: str = "",
+        include_since: bool = False,
         limit: int = 50,
         timeout_seconds: float = 30.0,
         acknowledged: bool | None = None,
@@ -691,20 +716,39 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         last_seen = since.strip()
+        resume_after_id = resume_after_id.strip()
         sent_ids: set[str] = set()
         deadline = time.monotonic() + max(0.0, timeout_seconds)
         while True:
             try:
+                current_include_since = bool(last_seen) and (
+                    include_since or bool(sent_ids)
+                )
                 alerts = self._store().list_alerts(
                     since=last_seen,
                     limit=limit,
+                    include_since=current_include_since,
                     acknowledged=acknowledged,
                     min_score=min_score,
                     min_level=min_level,
                 )
-                for alert in reversed(alerts):
+                ordered_alerts = sorted(
+                    alerts,
+                    key=lambda item: str(item.get("created_at") or ""),
+                )
+                if resume_after_id and not any(
+                    str(alert.get("id") or "") == resume_after_id
+                    for alert in ordered_alerts
+                ):
+                    resume_after_id = ""
+                for alert in ordered_alerts:
                     alert_id = str(alert.get("id") or "")
                     if not alert_id or alert_id in sent_ids:
+                        continue
+                    if resume_after_id:
+                        sent_ids.add(alert_id)
+                        if alert_id == resume_after_id:
+                            resume_after_id = ""
                         continue
                     self._write_sse("alert", alert_id, alert)
                     sent_ids.add(alert_id)

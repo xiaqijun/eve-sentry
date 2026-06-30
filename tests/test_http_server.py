@@ -25,8 +25,10 @@ def request_json(url, method="GET", payload=None):
         return response.status, json.loads(body) if body else {}
 
 
-def request_text(url):
-    request = Request(url, headers={"Accept": "text/event-stream"})
+def request_text(url, headers=None):
+    request_headers = {"Accept": "text/event-stream"}
+    request_headers.update(headers or {})
+    request = Request(url, headers=request_headers)
     with urlopen(request, timeout=3) as response:
         return response.status, response.headers, response.read().decode("utf-8")
 
@@ -961,6 +963,88 @@ def test_events_stream_returns_alert_sse(tmp_path):
         data_line = next(line for line in body.splitlines() if line.startswith("data:"))
         payload = json.loads(data_line[len("data:"):].strip())
         assert payload["id"] == created["alert"]["id"]
+    finally:
+        server.stop()
+
+
+def test_events_stream_resumes_from_last_event_id(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        _, first_created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+                "seen_at": "2026-06-29T12:00:00+00:00",
+                "received_at": "2026-06-29T12:30:00+00:00",
+            },
+        )
+        _, second_created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Bob"],
+                "source": "intel_channel",
+                "seen_at": "2026-06-29T12:01:00+00:00",
+                "received_at": "2026-06-29T12:30:00+00:00",
+            },
+        )
+
+        status, _, body = request_text(
+            f"{server.url}/api/events?{urlencode({'timeout': '0', 'limit': '5'})}",
+            headers={"Last-Event-ID": first_created["alert"]["id"]},
+        )
+
+        assert status == 200
+        assert first_created["alert"]["id"] not in body
+        assert second_created["alert"]["id"] in body
+    finally:
+        server.stop()
+
+
+def test_events_stream_since_parameter_remains_exclusive(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        _, first_created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+                "seen_at": "2026-06-29T12:00:00+00:00",
+                "received_at": "2026-06-29T12:00:00+00:00",
+            },
+        )
+        _, second_created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Bob"],
+                "source": "intel_channel",
+                "seen_at": "2026-06-29T12:01:00+00:00",
+                "received_at": "2026-06-29T12:01:00+00:00",
+            },
+        )
+
+        query = urlencode(
+            {
+                "timeout": "0",
+                "limit": "5",
+                "since": first_created["alert"]["created_at"],
+            }
+        )
+        status, _, body = request_text(f"{server.url}/api/events?{query}")
+
+        assert status == 200
+        assert first_created["alert"]["id"] not in body
+        assert second_created["alert"]["id"] in body
     finally:
         server.stop()
 

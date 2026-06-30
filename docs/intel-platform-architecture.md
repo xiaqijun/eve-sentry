@@ -569,6 +569,8 @@ GET  /api/map/snapshot
 
 - `/api/events` 提供 SSE alert 事件流，并复用 `/api/alerts` 的 `acknowledged`、
   `min_score` 和 `min_level` 等过滤参数。
+- 客户端可用 `since=<created_at>` 续接；浏览器 `EventSource` 重连时发送的
+  `Last-Event-ID` 会被服务端解析回对应 alert 的 `created_at` 游标。
 - Web 面板通过 `EventSource` 订阅 `/api/events`，收到 alert 后先本地合并展示，
   再排队刷新完整快照；浏览器或网络不支持 SSE 时回退到短轮询。
 - 独立预警客户端默认订阅同一事件流；事件流失败时先用轮询兜底，再按冷却时间
