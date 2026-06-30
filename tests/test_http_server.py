@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -25,11 +27,11 @@ def request_json(url, method="GET", payload=None):
         return response.status, json.loads(body) if body else {}
 
 
-def request_text(url, headers=None):
+def request_text(url, headers=None, timeout=3):
     request_headers = {"Accept": "text/event-stream"}
     request_headers.update(headers or {})
     request = Request(url, headers=request_headers)
-    with urlopen(request, timeout=3) as response:
+    with urlopen(request, timeout=timeout) as response:
         return response.status, response.headers, response.read().decode("utf-8")
 
 
@@ -980,6 +982,57 @@ def test_events_stream_sends_keepalive_comments_when_idle(tmp_path):
         assert headers["Content-Type"].startswith("text/event-stream")
         assert ": keepalive" in body
         assert "event: alert" not in body
+    finally:
+        server.stop()
+
+
+def test_events_stream_supports_multiple_concurrent_subscribers(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        url = (
+            f"{server.url}/api/events?"
+            f"{urlencode({'timeout': '0.2', 'heartbeat': '0', 'limit': '5'})}"
+        )
+        results: dict[str, tuple[int, str] | Exception] = {}
+        errors: list[Exception] = []
+
+        def consume(name: str) -> None:
+            try:
+                status, _, body = request_text(url, timeout=5)
+                results[name] = (status, body)
+            except Exception as exc:  # pragma: no cover - surfaced by assertions
+                results[name] = exc
+                errors.append(exc)
+
+        first = threading.Thread(target=consume, args=("first",), daemon=True)
+        second = threading.Thread(target=consume, args=("second",), daemon=True)
+        first.start()
+        second.start()
+
+        time.sleep(0.05)
+        _, created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+                "seen_at": "2026-06-29T12:00:00+00:00",
+            },
+        )
+
+        first.join(timeout=6)
+        second.join(timeout=6)
+
+        assert not errors
+        assert "first" in results and "second" in results
+        first_status, first_body = results["first"]
+        second_status, second_body = results["second"]
+        assert first_status == 200
+        assert second_status == 200
+        assert created["alert"]["id"] in first_body
+        assert created["alert"]["id"] in second_body
     finally:
         server.stop()
 
