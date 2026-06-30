@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
+import ctypes
 import hashlib
 import json
 import secrets
+import sys
 import threading
 import webbrowser
 from dataclasses import dataclass, field
@@ -31,6 +34,34 @@ DEFAULT_SCOPES = (
 
 class EsiSsoError(RuntimeError):
     """Raised when SSO authorization or token handling fails."""
+
+
+class TokenProtector:
+    """Encrypt and decrypt token payload bytes for local storage."""
+
+    name = "plain"
+
+    def protect(self, data: bytes) -> bytes:
+        raise NotImplementedError
+
+    def unprotect(self, data: bytes) -> bytes:
+        raise NotImplementedError
+
+
+class WindowsDpapiTokenProtector(TokenProtector):
+    """Protect local token files with the current Windows user profile."""
+
+    name = "windows-dpapi"
+
+    @classmethod
+    def is_available(cls) -> bool:
+        return sys.platform == "win32"
+
+    def protect(self, data: bytes) -> bytes:
+        return _crypt_protect_data(data)
+
+    def unprotect(self, data: bytes) -> bytes:
+        return _crypt_unprotect_data(data)
 
 
 @dataclass(frozen=True)
@@ -140,8 +171,17 @@ class TokenSet:
 class EsiTokenStore:
     """JSON-backed token storage for local desktop SSO sessions."""
 
-    def __init__(self, path: str | Path = "esi_tokens.json") -> None:
+    def __init__(
+        self,
+        path: str | Path = "esi_tokens.json",
+        protector: TokenProtector | None = None,
+    ) -> None:
         self.path = Path(path)
+        self.protector = protector
+
+    @property
+    def is_secure(self) -> bool:
+        return self.protector is not None
 
     def load(self) -> TokenSet | None:
         try:
@@ -150,15 +190,22 @@ class EsiTokenStore:
             return None
         if not isinstance(payload, dict):
             return None
+        if payload.get("protected") is True:
+            payload = self._unprotect_payload(payload)
+            if payload is None:
+                return None
         try:
             return TokenSet.from_payload(payload)
         except EsiSsoError:
             return None
 
     def save(self, tokens: TokenSet) -> None:
+        payload = tokens.to_dict()
+        if self.protector is not None:
+            payload = self._protect_payload(payload)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(
-            json.dumps(tokens.to_dict(), ensure_ascii=False, indent=2),
+            json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -167,6 +214,41 @@ class EsiTokenStore:
             self.path.unlink()
         except FileNotFoundError:
             return
+
+    def _protect_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.protector is None:
+            return payload
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        protected = self.protector.protect(raw)
+        return {
+            "version": 1,
+            "protected": True,
+            "provider": self.protector.name,
+            "payload": base64.b64encode(protected).decode("ascii"),
+        }
+
+    def _unprotect_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        protected = str(payload.get("payload") or "")
+        if not protected:
+            return None
+        protector = self.protector or token_protector_from_name(
+            str(payload.get("provider") or "")
+        )
+        if protector is None:
+            return None
+        try:
+            encrypted = base64.b64decode(protected.encode("ascii"), validate=True)
+            raw = protector.unprotect(encrypted)
+            data = json.loads(raw.decode("utf-8"))
+        except (
+            ValueError,
+            OSError,
+            binascii.Error,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ):
+            return None
+        return data if isinstance(data, dict) else None
 
 
 class LocalCallbackServer:
@@ -260,6 +342,99 @@ class LocalCallbackServer:
                 self.wfile.write(body)
 
         return Handler
+
+
+def build_token_store(
+    path: str | Path = "esi_tokens.json",
+    storage: str = "auto",
+) -> EsiTokenStore:
+    """Create a token store using plain or platform-protected storage."""
+    mode = str(storage or "auto").strip().casefold()
+    if mode == "plain":
+        return EsiTokenStore(path)
+    if mode not in {"auto", "secure"}:
+        raise ValueError("storage must be one of auto, secure, or plain")
+
+    protector = default_token_protector()
+    if protector is not None:
+        return EsiTokenStore(path, protector=protector)
+    if mode == "secure":
+        raise EsiSsoError("secure ESI token storage is not available")
+    return EsiTokenStore(path)
+
+
+def default_token_protector() -> TokenProtector | None:
+    """Return the best local token protector available on this platform."""
+    if WindowsDpapiTokenProtector.is_available():
+        return WindowsDpapiTokenProtector()
+    return None
+
+
+def token_protector_from_name(name: str) -> TokenProtector | None:
+    """Return a protector able to read a saved protected token payload."""
+    provider = name.strip().casefold()
+    if (
+        provider == WindowsDpapiTokenProtector.name
+        and WindowsDpapiTokenProtector.is_available()
+    ):
+        return WindowsDpapiTokenProtector()
+    return None
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = [
+        ("cbData", ctypes.c_ulong),
+        ("pbData", ctypes.POINTER(ctypes.c_byte)),
+    ]
+
+
+def _crypt_protect_data(data: bytes) -> bytes:
+    if not WindowsDpapiTokenProtector.is_available():
+        raise EsiSsoError("Windows DPAPI is not available")
+    return _crypt_data(data, protect=True)
+
+
+def _crypt_unprotect_data(data: bytes) -> bytes:
+    if not WindowsDpapiTokenProtector.is_available():
+        raise EsiSsoError("Windows DPAPI is not available")
+    return _crypt_data(data, protect=False)
+
+
+def _crypt_data(data: bytes, protect: bool) -> bytes:
+    buffer = ctypes.create_string_buffer(data)
+    data_in = _DataBlob(
+        len(data),
+        ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte)),
+    )
+    data_out = _DataBlob()
+    crypt32 = ctypes.windll.crypt32  # type: ignore[attr-defined]
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    if protect:
+        success = crypt32.CryptProtectData(
+            ctypes.byref(data_in),
+            "EVE Sentry ESI token",
+            None,
+            None,
+            None,
+            0,
+            ctypes.byref(data_out),
+        )
+    else:
+        success = crypt32.CryptUnprotectData(
+            ctypes.byref(data_in),
+            None,
+            None,
+            None,
+            None,
+            0,
+            ctypes.byref(data_out),
+        )
+    if not success:
+        raise ctypes.WinError()  # type: ignore[attr-defined]
+    try:
+        return ctypes.string_at(data_out.pbData, data_out.cbData)
+    finally:
+        kernel32.LocalFree(data_out.pbData)
 
 
 class EveSsoClient:
@@ -546,6 +721,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="http://127.0.0.1:8766/callback",
     )
     parser.add_argument("--token-file", default="esi_tokens.json")
+    parser.add_argument(
+        "--token-storage",
+        choices=["auto", "secure", "plain"],
+        default="auto",
+        help="token storage protection mode",
+    )
     parser.add_argument("--scope", action="append", dest="scopes")
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--no-browser", action="store_true")
@@ -559,7 +740,7 @@ def main(argv: list[str] | None = None) -> int:
         redirect_uri=args.redirect_uri,
         scopes=args.scopes or DEFAULT_SCOPES,
     )
-    token_store = EsiTokenStore(args.token_file)
+    token_store = build_token_store(args.token_file, storage=args.token_storage)
     tokens = run_local_sso_login(
         client,
         token_store,
@@ -568,7 +749,11 @@ def main(argv: list[str] | None = None) -> int:
         announce_url=lambda url: print(f"Open this URL to authorize:\n{url}"),
     )
     character = tokens.character_id or "unknown"
-    print(f"Saved ESI token for character {character} to {token_store.path}")
+    storage = "secure" if token_store.is_secure else "plain"
+    print(
+        f"Saved ESI token for character {character} to {token_store.path} "
+        f"({storage} storage)"
+    )
     return 0
 
 
