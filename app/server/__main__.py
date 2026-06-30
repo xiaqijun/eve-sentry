@@ -3,6 +3,7 @@
 import argparse
 import logging
 import time
+from typing import Any
 
 from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore
@@ -25,40 +26,52 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="http://127.0.0.1:8766/callback",
     )
     parser.add_argument("--esi-token-file", default="esi_tokens.json")
+    parser.add_argument(
+        "--esi-login",
+        action="store_true",
+        help="complete local EVE SSO authorization before starting the server",
+    )
+    parser.add_argument(
+        "--esi-login-only",
+        action="store_true",
+        help="complete local EVE SSO authorization, save tokens, and exit",
+    )
+    parser.add_argument("--esi-login-timeout", type=float, default=300.0)
+    parser.add_argument("--esi-no-browser", action="store_true")
+    parser.add_argument("--esi-scope", action="append", default=[], dest="esi_scopes")
     parser.add_argument("--enable-killboard", action="store_true")
     parser.add_argument("--zkill-cache", default="zkill_cache.json")
     return parser
 
 
-def main() -> None:
-    args = build_arg_parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    _validate_args(parser, args)
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    if args.esi_login or args.esi_login_only:
+        _run_esi_login(args)
+        if args.esi_login_only:
+            return 0
+
     resolver = None
     esi_session = None
     killboard = None
-    if args.enable_esi or args.enable_killboard:
+    enable_esi = _should_enable_esi(args)
+    if enable_esi or args.enable_killboard:
         from app.esi.cache import EsiCache
 
-    if args.enable_esi:
+    if enable_esi:
         from app.esi.resolver import EsiResolver
 
         resolver = EsiResolver(cache=EsiCache(args.esi_cache))
         if args.esi_client_id:
-            from app.esi.session import EsiAuthenticatedSession
-            from app.esi.sso import EsiTokenStore, EveSsoClient
-
-            esi_session = EsiAuthenticatedSession(
-                sso_client=EveSsoClient(
-                    client_id=args.esi_client_id,
-                    redirect_uri=args.esi_redirect_uri,
-                ),
-                token_store=EsiTokenStore(args.esi_token_file),
-            )
+            esi_session = _build_esi_session(args)
 
     if args.enable_killboard:
         from app.killboard.zkill_client import ZKillboardClient
@@ -111,7 +124,56 @@ def main() -> None:
             time.sleep(3600)
     except KeyboardInterrupt:
         server.stop()
+    return 0
+
+
+def _validate_args(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> None:
+    if (args.esi_login or args.esi_login_only) and not args.esi_client_id.strip():
+        parser.error("--esi-client-id is required when using ESI login")
+
+
+def _should_enable_esi(args: argparse.Namespace) -> bool:
+    return bool(args.enable_esi or (args.esi_login and not args.esi_login_only))
+
+
+def _build_esi_sso_client(args: argparse.Namespace) -> Any:
+    from app.esi.sso import DEFAULT_SCOPES, EveSsoClient
+
+    return EveSsoClient(
+        client_id=args.esi_client_id,
+        redirect_uri=args.esi_redirect_uri,
+        scopes=args.esi_scopes or DEFAULT_SCOPES,
+    )
+
+
+def _build_esi_session(args: argparse.Namespace) -> Any:
+    from app.esi.session import EsiAuthenticatedSession
+    from app.esi.sso import EsiTokenStore
+
+    return EsiAuthenticatedSession(
+        sso_client=_build_esi_sso_client(args),
+        token_store=EsiTokenStore(args.esi_token_file),
+    )
+
+
+def _run_esi_login(args: argparse.Namespace) -> Any:
+    from app.esi.sso import EsiTokenStore, run_local_sso_login
+
+    token_store = EsiTokenStore(args.esi_token_file)
+    tokens = run_local_sso_login(
+        _build_esi_sso_client(args),
+        token_store,
+        timeout_seconds=args.esi_login_timeout,
+        open_browser=not args.esi_no_browser,
+        announce_url=lambda url: print(f"Open this URL to authorize:\n{url}"),
+    )
+    character = tokens.character_id or "unknown"
+    print(f"Saved ESI token for character {character} to {token_store.path}")
+    return tokens
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

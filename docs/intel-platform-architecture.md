@@ -336,10 +336,11 @@ ESI 是身份和宇宙数据的权威补全源。
 python -m app.server --enable-esi --esi-cache esi_cache.json
 ```
 
-如需启用 authenticated ESI 会话，先用本地 SSO 登录保存 token:
+如需启用 authenticated ESI 会话，可先通过服务端入口完成一次 SSO 登录并保存
+token:
 
 ```bash
-python -m app.esi.sso --client-id YOUR_EVE_APP_CLIENT_ID --token-file esi_tokens.json
+python -m app.server --esi-login-only --esi-client-id YOUR_EVE_APP_CLIENT_ID --esi-token-file esi_tokens.json
 ```
 
 然后启动服务端并传入相同 token 文件:
@@ -347,6 +348,15 @@ python -m app.esi.sso --client-id YOUR_EVE_APP_CLIENT_ID --token-file esi_tokens
 ```bash
 python -m app.server --enable-esi --esi-cache esi_cache.json --esi-client-id YOUR_EVE_APP_CLIENT_ID --esi-token-file esi_tokens.json
 ```
+
+也可以在启动服务端前自动触发登录:
+
+```bash
+python -m app.server --enable-esi --esi-login --esi-client-id YOUR_EVE_APP_CLIENT_ID --esi-token-file esi_tokens.json
+```
+
+无浏览器环境可加 `--esi-no-browser`，终端会打印授权 URL；需要额外 scope 时可多次
+传入 `--esi-scope`。
 
 启用后，服务端会在保存 observation 时尽力补全 `system_id` 和
 `character_ids`，并在生成 alert 时把角色公开资料作为评分证据。角色公开

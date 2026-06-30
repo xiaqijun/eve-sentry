@@ -175,7 +175,9 @@
   注入角色 profile 参与 `hostile_standing` 评分。
 - 检测端已能从服务端 ESI session 同步当前位置，并以 `system_name`/`system_id`
   上报 observation。
-- 待继续: 完善登录引导和 token 安全存储。
+- 服务端入口已支持 `--esi-login-only` 和 `--esi-login`，用于完成本地 SSO 登录
+  引导并保存 token。
+- 待继续: 完善 token 安全存储。
 
 ## 阶段 7: SQLite 和事件推送
 
