@@ -39,11 +39,21 @@ def test_star_map_page_includes_esi_status_panel():
 
 def test_star_map_page_includes_alert_evidence_view():
     assert 'id="tab-alerts"' in INDEX_HTML
+    assert 'id="events-pill"' in INDEX_HTML
     assert "function renderAlerts()" in INDEX_HTML
     assert "snapshot.alerts" in INDEX_HTML
     assert "Score ${Number(alert.score || 0)}" in INDEX_HTML
     assert "evidence-item" in INDEX_HTML
     assert 'alert.names.join(", ")' in INDEX_HTML
+
+
+def test_star_map_page_subscribes_to_alert_event_stream():
+    assert "new EventSource(eventStreamUrl())" in INDEX_HTML
+    assert "function connectEventStream()" in INDEX_HTML
+    assert "function upsertAlert(alert)" in INDEX_HTML
+    assert "eventStream.addEventListener(\"alert\"" in INDEX_HTML
+    assert 'new URLSearchParams({ limit: "50", timeout: "30" })' in INDEX_HTML
+    assert "const refreshIntervalMs = streaming ? 15000 : 2000" in INDEX_HTML
 
 
 def test_star_map_page_includes_alert_detail_lookup_view():

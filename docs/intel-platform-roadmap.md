@@ -197,6 +197,13 @@
 - 增加 SSE 或 WebSocket。
 - 预警客户端从轮询切换为订阅，保留轮询 fallback。
 
+当前进展:
+
+- 服务端已提供 `/api/events` SSE alert 事件流，并与 `/api/alerts` 共用确认、
+  分数和等级过滤。
+- Web 面板已使用 `EventSource` 订阅 alert 事件，收到推送后即时合并预警列表，
+  同时保留轮询兜底。
+
 验收:
 
 - 旧 JSON 数据可导入。

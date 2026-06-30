@@ -558,10 +558,13 @@ GET  /api/map/snapshot
 - `GET /api/kill-activity/corporation/{corporation_id}`: 需要启用 killboard，返回军团近期击毁/损失画像。
 - `GET /api/kill-activity/alliance/{alliance_id}`: 需要启用 killboard，返回联盟近期击毁/损失画像。
 
-实时推送分两步:
+实时推送:
 
-1. MVP 继续使用轮询。
-2. 稳定后增加 SSE 或 WebSocket。
+- `/api/events` 提供 SSE alert 事件流，并复用 `/api/alerts` 的 `acknowledged`、
+  `min_score` 和 `min_level` 等过滤参数。
+- Web 面板通过 `EventSource` 订阅 `/api/events`，收到 alert 后先本地合并展示，
+  再排队刷新完整快照；浏览器或网络不支持 SSE 时回退到短轮询。
+- 独立预警客户端仍可按原轮询 API 工作，后续可切换为订阅同一事件流。
 
 ## 10. 存储规划
 

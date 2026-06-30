@@ -356,6 +356,7 @@ INDEX_HTML = """<!doctype html>
           <span class="pill" id="systems-pill">星系 0</span>
           <span class="pill" id="hostiles-pill">敌对 0</span>
           <span class="pill" id="reports-pill">情报 0</span>
+          <span class="pill" id="events-pill">推送 待连接</span>
         </div>
       </header>
     </section>
@@ -446,6 +447,7 @@ INDEX_HTML = """<!doctype html>
     const ctx = canvas.getContext("2d");
     const intelEl = document.getElementById("intel");
     const selectedEl = document.getElementById("selected");
+    const eventsPillEl = document.getElementById("events-pill");
     const esiStatusEl = document.getElementById("esi-status");
     const esiMessageEl = document.getElementById("esi-message");
     const esiRefreshButton = document.getElementById("esi-refresh");
@@ -478,6 +480,8 @@ INDEX_HTML = """<!doctype html>
     let selectedSystem = null;
     let listMode = "reports";
     let manualSystemId = 0;
+    let eventStream = null;
+    let refreshQueued = false;
     const alertDetails = new Map();
 
     function resize() {
@@ -899,6 +903,11 @@ INDEX_HTML = """<!doctype html>
       esiMessageEl.style.color = isError ? "var(--danger)" : "var(--muted)";
     }
 
+    function setEventStatus(text, isError = false) {
+      eventsPillEl.textContent = `推送 ${text}`;
+      eventsPillEl.style.color = isError ? "var(--danger)" : "var(--muted)";
+    }
+
     function esiCurrentSystem() {
       const location = esiSession && esiSession.location && typeof esiSession.location === "object"
         ? esiSession.location
@@ -1005,6 +1014,80 @@ INDEX_HTML = """<!doctype html>
         payload.system_id = manualSystemId;
       }
       return payload;
+    }
+
+    function latestAlertTimestamp() {
+      let latest = "";
+      for (const alert of Array.isArray(snapshot.alerts) ? snapshot.alerts : []) {
+        const value = String(alert.created_at || alert.seen_at || "");
+        if (value && value > latest) {
+          latest = value;
+        }
+      }
+      return latest;
+    }
+
+    function eventStreamUrl() {
+      const params = new URLSearchParams({ limit: "50", timeout: "30" });
+      const since = latestAlertTimestamp();
+      if (since) {
+        params.set("since", since);
+      }
+      return `/api/events?${params.toString()}`;
+    }
+
+    function upsertAlert(alert) {
+      if (!alert || typeof alert !== "object") return false;
+      const alertId = String(alert.id || alert.source_observation_id || "");
+      if (!alertId) return false;
+      const alerts = Array.isArray(snapshot.alerts) ? [...snapshot.alerts] : [];
+      const index = alerts.findIndex(item => String(item.id || item.source_observation_id || "") === alertId);
+      if (index >= 0) {
+        alerts[index] = { ...alerts[index], ...alert };
+      } else {
+        alerts.unshift(alert);
+      }
+      alerts.sort((a, b) => String(b.created_at || b.seen_at || "").localeCompare(String(a.created_at || a.seen_at || "")));
+      snapshot.alerts = alerts;
+      return true;
+    }
+
+    function queueRefresh(delayMs = 300) {
+      if (refreshQueued) return;
+      refreshQueued = true;
+      window.setTimeout(() => {
+        refreshQueued = false;
+        refresh().catch(console.error);
+      }, delayMs);
+    }
+
+    function connectEventStream() {
+      if (typeof EventSource === "undefined") {
+        setEventStatus("轮询", true);
+        return false;
+      }
+      if (eventStream) {
+        eventStream.close();
+      }
+      eventStream = new EventSource(eventStreamUrl());
+      eventStream.addEventListener("open", () => {
+        setEventStatus("已连接");
+      });
+      eventStream.addEventListener("alert", event => {
+        try {
+          const alert = JSON.parse(event.data);
+          if (upsertAlert(alert)) {
+            render();
+            queueRefresh();
+          }
+        } catch (error) {
+          console.error(error);
+        }
+      });
+      eventStream.addEventListener("error", () => {
+        setEventStatus("重连中", true);
+      });
+      return true;
     }
 
     function clearObservationForm({ keepSystem = false } = {}) {
@@ -1172,11 +1255,21 @@ INDEX_HTML = """<!doctype html>
       render();
     }
 
-    resize();
-    refresh().catch(console.error);
-    loadConfig().catch(console.error);
-    loadEsiStatus().catch(console.error);
-    setInterval(() => refresh().catch(console.error), 2000);
+    async function boot() {
+      resize();
+      await refresh();
+      const streaming = connectEventStream();
+      loadConfig().catch(console.error);
+      loadEsiStatus().catch(console.error);
+      const refreshIntervalMs = streaming ? 15000 : 2000;
+      setInterval(() => refresh().catch(console.error), refreshIntervalMs);
+    }
+
+    boot().catch(error => {
+      console.error(error);
+      setEventStatus("轮询", true);
+      setInterval(() => refresh().catch(console.error), 2000);
+    });
     setInterval(() => loadEsiStatus().catch(console.error), 30000);
   </script>
 </body>
