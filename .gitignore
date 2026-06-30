@@ -33,6 +33,7 @@ Desktop.ini
 whitelist.json
 region_prefs.json
 intel_reports.json
+channel_offsets.json
 
 # Local run/debug artifacts
 /_client_*.log
