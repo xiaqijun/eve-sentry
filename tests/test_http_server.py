@@ -6,6 +6,7 @@ from urllib.request import Request, urlopen
 
 from app.intel.enrichment import ThreatEnricher
 from app.intel.config import IntelConfigStore
+from app.intel.scoring import ScoringEngine
 from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore
 
@@ -325,6 +326,121 @@ def test_public_lookup_routes_report_disabled_sources(tmp_path):
             assert "alliance_id" in payload["error"]
         else:
             raise AssertionError("expected HTTP 400")
+    finally:
+        server.stop()
+
+
+def test_alert_detail_route_returns_explanation_context(tmp_path):
+    class FakeResolver:
+        def character_profile(self, character_id):
+            assert character_id == 123
+            return {
+                "character_id": 123,
+                "name": "Alice",
+                "corporation_id": 456,
+                "alliance_id": 789,
+            }
+
+    class FakeKillboard:
+        def character_recent(self, character_id):
+            assert character_id == 123
+            return [
+                {
+                    "killmail_id": 1,
+                    "killmail_time": "2026-06-30T10:00:00Z",
+                    "solar_system_id": 30002813,
+                    "victim": {"character_id": 999, "ship_type_id": 111},
+                    "attackers": [{"character_id": 123}],
+                }
+            ]
+
+        def corporation_recent(self, corporation_id):
+            assert corporation_id == 456
+            return [
+                {
+                    "killmail_id": 2,
+                    "killmail_time": "2026-06-30T11:00:00Z",
+                    "solar_system_id": 30002813,
+                    "victim": {"character_id": 999, "corporation_id": 777},
+                    "attackers": [{"character_id": 123, "corporation_id": 456}],
+                }
+            ]
+
+        def alliance_recent(self, alliance_id):
+            assert alliance_id == 789
+            return [
+                {
+                    "killmail_id": 3,
+                    "killmail_time": "2026-06-30T12:00:00Z",
+                    "solar_system_id": 30002813,
+                    "victim": {"character_id": 888, "alliance_id": 789},
+                    "attackers": [{"character_id": 123, "alliance_id": 111}],
+                }
+            ]
+
+    resolver = FakeResolver()
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+        enricher=ThreatEnricher(
+            resolver=resolver,
+            killboard=FakeKillboard(),
+            kill_window="7d",
+        ),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "source": "intel_channel",
+                "source_instance": "Alliance Intel",
+                "system_name": "Tama",
+                "raw_text": "Scout A: Tama +3 reds",
+                "seen_at": "2026-06-30T11:58:00+00:00",
+            },
+        )
+        status, created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "source": "local_ocr",
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "character_ids": [123],
+                "seen_at": "2026-06-30T12:00:00+00:00",
+            },
+        )
+        assert status == 201
+
+        status, payload = request_json(
+            f"{server.url}/api/alerts/{created['alert']['id']}"
+        )
+
+        assert status == 200
+        detail = payload["detail"]
+        assert detail["alert"]["id"] == created["alert"]["id"]
+        assert detail["observation"]["id"] == created["observation"]["id"]
+        assert detail["context"]["channel_mentions"][0]["relation"] == "same_system"
+        assert detail["context"]["character_profiles"][0]["character_id"] == 123
+        assert detail["context"]["kill_activities"][0]["character_id"] == 123
+        assert {
+            item["entity_type"]
+            for item in detail["context"]["group_activities"]
+        } == {"corporation", "alliance"}
+
+        try:
+            request_json(f"{server.url}/api/alerts/missing")
+        except HTTPError as exc:
+            assert exc.code == 404
+            error = json.loads(exc.read().decode("utf-8"))
+            assert "alert" in error["error"]
+        else:
+            raise AssertionError("expected HTTP 404")
     finally:
         server.stop()
 

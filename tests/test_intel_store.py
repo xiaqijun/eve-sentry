@@ -381,6 +381,16 @@ def test_list_alerts_uses_recent_channel_context(tmp_path):
         "intel_channel_adjacent_system_recent",
     ]
 
+    detail = store.alert_detail(alert["id"])
+
+    assert detail is not None
+    assert detail["alert"]["id"] == alert["id"]
+    assert detail["observation"]["id"] == observation.observation_id
+    assert [item["relation"] for item in detail["context"]["channel_mentions"]] == [
+        "same_system",
+        "adjacent_system",
+    ]
+
 
 def test_enricher_failure_falls_back_to_base_scoring(tmp_path):
     class FailingEnricher:

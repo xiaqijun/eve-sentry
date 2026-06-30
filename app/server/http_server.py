@@ -246,6 +246,14 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             )
             self._send_json({"alerts": alerts, "count": len(alerts)})
             return
+        if path.startswith("/api/alerts/"):
+            alert_id = unquote(path[len("/api/alerts/"):]).strip()
+            detail = self._store().alert_detail(alert_id)
+            if detail is None:
+                self._send_json({"error": "alert not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"detail": detail})
+            return
         if path == "/api/events":
             query = parse_qs(parsed.query)
             try:

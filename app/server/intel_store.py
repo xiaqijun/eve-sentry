@@ -428,6 +428,27 @@ class IntelStore:
             alerts = alerts[:max(0, limit)]
         return alerts
 
+    def alert_detail(self, alert_id: str) -> dict[str, Any] | None:
+        """Return one alert with its source observation and explanation context."""
+        alert_id = str(alert_id or "").strip()
+        if not alert_id:
+            return None
+
+        for report in self._reports_snapshot():
+            alert = self._alert_from_report(report)
+            if alert is None:
+                continue
+            alert_data = self._alert_to_dict(report, alert)
+            if not self._alert_matches(alert_id, report, alert_data):
+                continue
+            observation = report.to_observation()
+            return {
+                "alert": alert_data,
+                "observation": observation.to_dict(),
+                "context": self._alert_context(observation),
+            }
+        return None
+
     def ack_alert(
         self,
         alert_id: str,
@@ -620,6 +641,80 @@ class IntelStore:
         data["acknowledged_by"] = report.acknowledged_by
         data["acknowledgement_note"] = report.acknowledgement_note
         return data
+
+    def _alert_matches(
+        self,
+        alert_id: str,
+        report: IntelReport,
+        alert: dict[str, Any],
+    ) -> bool:
+        return alert_id in {
+            report.report_id,
+            f"evt_{report.report_id}",
+            str(alert.get("id") or ""),
+            str(alert.get("source_observation_id") or ""),
+        }
+
+    def _alert_context(self, observation: Observation) -> dict[str, Any]:
+        enrichment = self._best_effort_enrichment(observation)
+        character_profiles = list(
+            getattr(enrichment, "character_profiles", None) or []
+        )
+        if not character_profiles:
+            character_profiles = self._character_profiles_for_observation(observation)
+
+        return {
+            "channel_mentions": [
+                self._channel_mention_to_dict(mention)
+                for mention in self._channel_mentions_for_observation(observation)
+            ],
+            "character_profiles": character_profiles,
+            "kill_activities": [
+                item
+                for item in (
+                    self._activity_result(activity)
+                    for activity in getattr(enrichment, "kill_activities", []) or []
+                )
+                if item is not None
+            ],
+            "group_activities": [
+                item
+                for item in (
+                    self._activity_result(activity)
+                    for activity in getattr(enrichment, "group_activities", []) or []
+                )
+                if item is not None
+            ],
+        }
+
+    def _best_effort_enrichment(self, observation: Observation) -> Any:
+        if self._enricher is None:
+            return {}
+        try:
+            return self._enricher.enrich(observation) or {}
+        except Exception:
+            return {}
+
+    def _character_profiles_for_observation(
+        self,
+        observation: Observation,
+    ) -> list[dict[str, Any]]:
+        profiles = []
+        for character_id in self._normalize_ints(observation.character_ids):
+            profile = self.character_profile(character_id)
+            if profile is not None:
+                profiles.append(profile)
+        return profiles
+
+    def _channel_mention_to_dict(
+        self,
+        mention: ChannelMention,
+    ) -> dict[str, Any]:
+        return {
+            "relation": mention.relation,
+            "age_seconds": mention.age_seconds,
+            "observation": mention.observation.to_dict(),
+        }
 
     def _scoring_kwargs(self, observation: Observation) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}

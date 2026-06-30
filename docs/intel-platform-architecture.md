@@ -433,6 +433,7 @@ GET  /api/observations?source=&system=&name=&limit=
 POST /api/channel-lines
 
 GET  /api/alerts?since=&limit=
+GET  /api/alerts/{id}
 POST /api/alerts/{id}/ack
 
 GET  /api/characters/{character_id}
@@ -453,6 +454,8 @@ GET  /api/map/snapshot
 - `POST /api/alerts/{id}/ack`: 标记单个 alert 已确认，并在 JSON 和 SQLite
   存储中保留 `acknowledged`、`acknowledged_at`、`acknowledged_by` 和
   `acknowledgement_note`。
+- `GET /api/alerts/{id}`: 返回单个 alert 的解释详情，包括源 observation、
+  频道上下文、角色公开资料和击毁画像上下文。
 - `GET /api/characters/{character_id}`: 需要启用 ESI，返回角色公开资料。
 - `GET /api/characters/by-name/{name}`: 需要启用 ESI，先解析名字再返回角色公开资料。
 - `GET /api/systems/by-name/{name}`: 需要启用 ESI，返回星系公开资料。
