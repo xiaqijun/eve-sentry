@@ -847,6 +847,54 @@ def test_create_channel_line_keeps_low_confidence_raw_observation_without_alert(
         server.stop()
 
 
+def test_create_channel_line_suppresses_invalid_system_after_esi_resolution(tmp_path):
+    class FakeResolver:
+        def enrich_observation(self, observation):
+            metadata = dict(observation.metadata)
+            metadata["esi_resolution"] = {
+                "attempted": True,
+                "character_name_count": len(observation.names),
+                "resolved_character_count": len(observation.character_ids),
+                "system_name_matched": False,
+            }
+            observation.metadata = metadata
+            return observation
+
+    store = IntelStore(
+        tmp_path / "intel.json",
+        resolver=FakeResolver(),
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/channel-lines",
+            method="POST",
+            payload={
+                "channel": "Alliance Intel",
+                "line": "[ 2026.06.30 12:01:12 ] Scout A > Alice reds",
+            },
+        )
+
+        assert status == 201
+        assert created["ignored"] is False
+        assert created["parsed"]["system_name"] == "Alice"
+        assert created["alert"] is None
+        assert created["observation"]["metadata"]["esi_resolution"] == {
+            "attempted": True,
+            "character_name_count": 0,
+            "resolved_character_count": 0,
+            "system_name_matched": False,
+        }
+
+        status, alerts = request_json(f"{server.url}/api/alerts")
+        assert status == 200
+        assert alerts["count"] == 0
+    finally:
+        server.stop()
+
+
 def test_ack_alert_route_marks_alert(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()

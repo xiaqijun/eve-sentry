@@ -149,6 +149,9 @@
 - 服务端评分已按 observation `confidence` 对 OCR / `intel_channel` 做降噪：
   低置信度输入会降权，无法解析出目标或星系的频道原文会保留为
   observation，但不直接生成 alert。
+- 当服务端启用 ESI resolver 时，observation 会记录 `esi_resolution`
+  结果；评分器会利用未命中的角色名/星系名继续抑制误报，例如把误判成星系的
+  频道首词拦截在 observation 层。
 
 ## 阶段 6: ESI SSO
 

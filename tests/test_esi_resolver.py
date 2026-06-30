@@ -66,6 +66,15 @@ class FailingAffiliationClient(FakeEsiClient):
         raise EsiApiError("alliance offline")
 
 
+class PartialResolutionClient(FakeEsiClient):
+    def resolve_ids(self, names):
+        self.resolve_calls += 1
+        assert names == ["Ghost Pilot", "Tama"]
+        return {
+            "systems": [{"id": 30002813, "name": "Tama"}],
+        }
+
+
 def test_resolve_names_uses_client_then_cache(tmp_path):
     client = FakeEsiClient()
     resolver = EsiResolver(client=client, cache=EsiCache(tmp_path / "esi.json"))
@@ -147,6 +156,32 @@ def test_enrich_observation_fills_ids(tmp_path):
 
     assert enriched.system_id == 30002813
     assert enriched.character_ids == [123]
+
+
+def test_enrich_observation_records_resolution_metadata(tmp_path):
+    resolver = EsiResolver(
+        client=PartialResolutionClient(),
+        cache=EsiCache(tmp_path / "esi.json"),
+    )
+    observation = Observation(
+        source="intel_channel",
+        system_name="Tama",
+        names=["Ghost Pilot"],
+    )
+
+    enriched = resolver.enrich_observation(observation)
+    resolution = enriched.metadata["esi_resolution"]
+
+    assert enriched.system_id == 30002813
+    assert enriched.character_ids == []
+    assert resolution == {
+        "attempted": True,
+        "character_name_count": 1,
+        "resolved_character_count": 0,
+        "system_name_matched": True,
+        "unresolved_character_names": ["Ghost Pilot"],
+        "resolved_system_id": 30002813,
+    }
 
 
 def test_enrich_observation_returns_original_on_esi_failure(tmp_path):

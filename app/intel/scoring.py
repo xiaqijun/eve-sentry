@@ -156,16 +156,19 @@ class ScoringEngine:
         if source in {"local_ocr", "ocr", "eve-sentry-detector"}:
             if not self._has_character_target(observation):
                 return 0
-            return self._confidence_adjusted_weight(40, observation)
+            weight = self._confidence_adjusted_weight(40, observation)
+            return self._resolution_adjusted_weight(weight, observation)
         if source == "intel_channel":
             if not self._has_intel_target(observation):
                 return 0
-            return self._confidence_adjusted_weight(30, observation)
+            weight = self._confidence_adjusted_weight(30, observation)
+            return self._resolution_adjusted_weight(weight, observation)
         if source == "manual":
             return 50
         if source == "killboard":
             return 20
-        return self._confidence_adjusted_weight(25, observation)
+        weight = self._confidence_adjusted_weight(25, observation)
+        return self._resolution_adjusted_weight(weight, observation)
 
     def _confidence_adjusted_weight(
         self,
@@ -201,6 +204,27 @@ class ScoringEngine:
 
     def _is_unknown_system(self, observation: Observation) -> bool:
         return observation.system_name.strip().casefold() == "unknown"
+
+    def _resolution_adjusted_weight(
+        self,
+        weight: int,
+        observation: Observation,
+    ) -> int:
+        if weight <= 0:
+            return 0
+        resolution = _esi_resolution(observation.metadata.get("esi_resolution"))
+        if resolution is None or not _resolution_attempted(resolution):
+            return weight
+        if not _resolution_system_name_matched(resolution):
+            return 0
+        if (
+            observation.names
+            and not observation.character_ids
+            and _resolution_name_count(resolution, observation) > 0
+            and _resolution_resolved_character_count(resolution) <= 0
+        ):
+            return 0
+        return weight
 
     def _watchlist_evidence(self, names: list[str]) -> list[Evidence]:
         evidence = []
@@ -450,6 +474,42 @@ def _optional_float(value: Any) -> float | None:
 
 def _clean_meta_string(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _esi_resolution(value: Any) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, dict) else None
+
+
+def _resolution_attempted(value: dict[str, Any]) -> bool:
+    return bool(value.get("attempted"))
+
+
+def _resolution_system_name_matched(value: dict[str, Any]) -> bool:
+    matched = value.get("system_name_matched")
+    return True if matched is None else bool(matched)
+
+
+def _resolution_name_count(
+    value: dict[str, Any],
+    observation: Observation,
+) -> int:
+    raw = value.get("character_name_count")
+    if raw in {None, ""}:
+        return len(observation.names)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return len(observation.names)
+
+
+def _resolution_resolved_character_count(value: dict[str, Any]) -> int:
+    raw = value.get("resolved_character_count")
+    if raw in {None, ""}:
+        return 0
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _normalized_confidence(value: Any) -> float | None:

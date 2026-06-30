@@ -155,23 +155,66 @@ class EsiResolver:
         names_to_resolve = list(observation.names)
         if observation.system_id is None and observation.system_name:
             names_to_resolve.append(observation.system_name)
+        if not names_to_resolve:
+            return observation
 
         try:
             resolved = self.resolve_names(names_to_resolve)
         except EsiApiError:
             return observation
 
+        resolved_character_names: set[str] = set()
         character_ids = list(observation.character_ids)
+        system_name_matched = observation.system_id is not None
         for item in resolved:
-            if item.category == "character" and item.entity_id not in character_ids:
-                character_ids.append(item.entity_id)
+            if item.category == "character":
+                if item.entity_id not in character_ids:
+                    character_ids.append(item.entity_id)
+                resolved_character_names.add(item.name.casefold())
             if (
                 item.category == "solar_system"
                 and item.name.casefold() == observation.system_name.casefold()
             ):
                 observation.system_id = item.entity_id
+                system_name_matched = True
         observation.character_ids = character_ids
+        observation.metadata = self._resolution_metadata(
+            observation,
+            resolved_character_names,
+            system_name_matched,
+        )
         return observation
+
+    def _resolution_metadata(
+        self,
+        observation: Observation,
+        resolved_character_names: set[str],
+        system_name_matched: bool,
+    ) -> dict[str, Any]:
+        metadata = dict(observation.metadata)
+        resolved_names: list[str] = []
+        unresolved_names: list[str] = []
+        for name in observation.names:
+            if name.casefold() in resolved_character_names:
+                resolved_names.append(name)
+            else:
+                unresolved_names.append(name)
+
+        resolution: dict[str, Any] = {
+            "attempted": True,
+            "character_name_count": len(observation.names),
+            "resolved_character_count": len(resolved_names),
+            "system_name_matched": bool(system_name_matched),
+        }
+        if resolved_names:
+            resolution["resolved_character_names"] = resolved_names
+        if unresolved_names:
+            resolution["unresolved_character_names"] = unresolved_names
+        if observation.system_id is not None:
+            resolution["resolved_system_id"] = observation.system_id
+
+        metadata["esi_resolution"] = resolution
+        return metadata
 
     def _complete_character_affiliations(self, profile: dict[str, Any]) -> bool:
         """Best-effort corporation/alliance name enrichment."""

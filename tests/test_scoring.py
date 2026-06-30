@@ -14,7 +14,7 @@ def observation(
     return Observation(
         source=source,
         system_name=system_name,
-        names=list(names or ["Alice"]),
+        names=["Alice"] if names is None else list(names),
         character_ids=[123] if character_ids is None else list(character_ids),
         raw_text=raw_text,
         confidence=confidence,
@@ -66,6 +66,46 @@ def test_low_confidence_intel_channel_without_target_is_suppressed():
             confidence=0.2,
         )
     )
+
+    assert event is None
+
+
+def test_esi_resolution_suppresses_unresolved_named_target():
+    item = observation(source="intel_channel", character_ids=[])
+    item.metadata = {
+        "esi_resolution": {
+            "attempted": True,
+            "character_name_count": 1,
+            "resolved_character_count": 0,
+            "system_name_matched": True,
+            "unresolved_character_names": ["Alice"],
+        }
+    }
+
+    event = ScoringEngine(cooldown_seconds=0).score(item)
+
+    assert event is None
+
+
+def test_esi_resolution_suppresses_unresolved_system_match():
+    item = observation(
+        source="intel_channel",
+        names=[],
+        character_ids=[],
+        system_name="Alice",
+        raw_text="Scout A: Alice reds",
+    )
+    item.metadata = {
+        "hostile_count": 1,
+        "esi_resolution": {
+            "attempted": True,
+            "character_name_count": 0,
+            "resolved_character_count": 0,
+            "system_name_matched": False,
+        },
+    }
+
+    event = ScoringEngine(cooldown_seconds=0).score(item)
 
     assert event is None
 
