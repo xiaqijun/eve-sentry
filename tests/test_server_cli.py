@@ -130,3 +130,80 @@ def test_server_cli_login_only_runs_login_and_exits(monkeypatch):
 
     assert code == 0
     assert calls == ["client-id"]
+
+
+def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
+    calls = {"build_store": [], "server": []}
+
+    class DummyStore:
+        pass
+
+    class DummyServer:
+        url = "http://127.0.0.1:8765"
+
+        def __init__(self, store, host, port, config_store, esi_session):
+            calls["server"].append(
+                {
+                    "store": store,
+                    "host": host,
+                    "port": port,
+                    "config_store": config_store,
+                    "esi_session": esi_session,
+                }
+            )
+
+        def start(self):
+            return None
+
+        def stop(self):
+            return None
+
+    class DummyConfigStore:
+        def __init__(self, path):
+            self.path = path
+
+        def build_scorer(self):
+            return "dummy-scorer"
+
+    def fake_build_store(args, resolver=None, scorer=None, enricher=None):
+        calls["build_store"].append(
+            {
+                "storage": args.storage,
+                "db": args.db,
+                "data": args.data,
+                "resolver": resolver,
+                "scorer": scorer,
+                "enricher": enricher,
+            }
+        )
+        return DummyStore()
+
+    def fake_sleep(seconds):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(server_main, "_build_store", fake_build_store)
+    monkeypatch.setattr(server_main, "IntelHTTPServer", DummyServer)
+    monkeypatch.setattr(server_main.time, "sleep", fake_sleep)
+    monkeypatch.setattr(
+        "app.intel.config.IntelConfigStore",
+        DummyConfigStore,
+    )
+
+    code = server_main.main([])
+
+    assert code == 0
+    assert calls["build_store"] == [
+        {
+            "storage": "sqlite",
+            "db": "intel.sqlite3",
+            "data": "intel_reports.json",
+            "resolver": None,
+            "scorer": "dummy-scorer",
+            "enricher": None,
+        }
+    ]
+    assert len(calls["server"]) == 1
+    assert isinstance(calls["server"][0]["store"], DummyStore)
+    assert calls["server"][0]["host"] == "127.0.0.1"
+    assert calls["server"][0]["port"] == 8765
+    assert calls["server"][0]["esi_session"] is None

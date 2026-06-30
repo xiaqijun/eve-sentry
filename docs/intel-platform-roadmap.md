@@ -214,6 +214,8 @@
   接收同时间游标后的下一条 alert。
 - SQLite-backed 服务端已补重启验收测试，覆盖历史 alert、ack 状态和
   `Last-Event-ID` 续接游标在重启后的恢复。
+- 服务端入口已补默认 SQLite 启动路径测试，验证 `main()` 默认配置会构造
+  `SQLiteIntelStore`，并保留 `--storage json` 兼容分支。
 
 验收:
 
