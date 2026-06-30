@@ -23,6 +23,8 @@ class FakeApi:
     def __init__(self, batches):
         self.batches = list(batches)
         self.alert_filters = []
+        self.stream_since = []
+        self.stream_last_event_ids = []
 
     def list_reports(self, limit=50):
         _ = limit
@@ -42,6 +44,8 @@ class FakeApi:
 
     def stream_alerts(
         self,
+        since="",
+        last_event_id="",
         limit=50,
         timeout=30.0,
         acknowledged=None,
@@ -49,6 +53,8 @@ class FakeApi:
         min_level="",
     ):
         _ = timeout
+        self.stream_since.append(since)
+        self.stream_last_event_ids.append(last_event_id)
         self.alert_filters.append((acknowledged, min_score, min_level))
         return self.list_reports(limit=limit)
 
@@ -314,6 +320,53 @@ def test_alert_poller_reads_event_stream_in_stream_order():
     ]
 
 
+def test_alert_poller_sends_since_cursor_to_event_stream():
+    api = FakeApi(
+        [
+            [
+                {"id": "new-1", "created_at": "2", "names": ["Bob"]},
+                {"id": "new-2", "created_at": "3", "names": ["Carol"]},
+            ],
+            [
+                {"id": "new-3", "created_at": "4", "names": ["Dora"]},
+            ],
+        ]
+    )
+    poller = AlertPoller(api)
+
+    assert [alert["id"] for alert in poller.stream_new(timeout=0)] == [
+        "new-1",
+        "new-2",
+    ]
+    assert [alert["id"] for alert in poller.stream_new(timeout=0)] == ["new-3"]
+    assert api.stream_since == ["", ""]
+    assert api.stream_last_event_ids == ["", "new-2"]
+
+
+def test_alert_poller_seed_and_polling_advance_stream_cursor():
+    api = FakeApi(
+        [
+            [
+                {"id": "existing-2", "created_at": "2", "names": ["Old 2"]},
+                {"id": "existing-1", "created_at": "1", "names": ["Old 1"]},
+            ],
+            [
+                {"id": "new-3", "created_at": "3", "names": ["New"]},
+            ],
+            [
+                {"id": "new-4", "created_at": "4", "names": ["Stream"]},
+            ],
+        ]
+    )
+    poller = AlertPoller(api)
+
+    poller.seed_existing()
+    assert [alert["id"] for alert in poller.poll_new()] == ["new-3"]
+    assert [alert["id"] for alert in poller.stream_new(timeout=0)] == ["new-4"]
+    assert api.stream_since == [""]
+    assert api.stream_last_event_ids == ["new-3"]
+
+
 def test_alert_client_state_persists_recent_seen_ids(tmp_path):
     state_path = tmp_path / "alert_state.json"
     state = AlertClientState(state_path, max_seen_ids=2)
@@ -567,12 +620,15 @@ def test_alert_client_once_falls_back_to_polling_when_stream_fails(
 
         def stream_alerts(
             self,
+            since="",
+            last_event_id="",
             limit=50,
             timeout=30.0,
             acknowledged=None,
             min_score=None,
             min_level="",
         ):
+            _ = since, last_event_id
             self.stream_calls += 1
             raise IntelApiError("stream offline")
 

@@ -252,6 +252,7 @@ class IntelApiClient:
     def stream_alerts(
         self,
         since: str = "",
+        last_event_id: str = "",
         limit: int = 50,
         timeout: float = 30.0,
         acknowledged: bool | None = None,
@@ -269,9 +270,12 @@ class IntelApiClient:
         if min_level:
             params["min_level"] = min_level
         url = f"{self.base_url}/api/events?{urlencode(params)}"
+        headers = {"Accept": "text/event-stream"}
+        if last_event_id:
+            headers["Last-Event-ID"] = last_event_id
         request = Request(
             url,
-            headers={"Accept": "text/event-stream"},
+            headers=headers,
             method="GET",
         )
         try:
@@ -420,6 +424,8 @@ class AlertPoller:
             for alert_id in seen_ids or []
             if str(alert_id).strip()
         }
+        self._stream_since = ""
+        self._stream_last_event_id = ""
 
     def seed_existing(self) -> list[dict[str, Any]]:
         """Mark currently known alerts as already seen."""
@@ -434,6 +440,7 @@ class AlertPoller:
             if alert_id:
                 self._seen_ids.add(alert_id)
                 seeded.append(alert)
+        self._remember_alert_cursor(seeded)
         return seeded
 
     def poll_new(self) -> list[dict[str, Any]]:
@@ -444,18 +451,33 @@ class AlertPoller:
             min_score=self.min_score,
             min_level=self.min_level,
         )
+        self._remember_alert_cursor(alerts)
         return self._filter_new(alerts, newest_first=True)
 
     def stream_new(self, timeout: float = 30.0) -> list[dict[str, Any]]:
         """Return new alerts from the server-sent event stream."""
+        since = "" if self._stream_last_event_id else self._stream_since
         alerts = self.api.stream_alerts(
+            since=since,
+            last_event_id=self._stream_last_event_id,
             limit=self.limit,
             timeout=timeout,
             acknowledged=self.acknowledged,
             min_score=self.min_score,
             min_level=self.min_level,
         )
+        self._remember_alert_cursor(alerts)
         return self._filter_new(alerts, newest_first=False)
+
+    def _remember_alert_cursor(self, alerts: list[dict[str, Any]]) -> None:
+        for alert in alerts:
+            cursor = str(alert.get("created_at") or alert.get("seen_at") or "")
+            alert_id = str(alert.get("id") or "")
+            if cursor and cursor > self._stream_since:
+                self._stream_since = cursor
+                self._stream_last_event_id = alert_id
+            elif cursor and cursor == self._stream_since and alert_id:
+                self._stream_last_event_id = alert_id
 
     def _filter_new(
         self,
