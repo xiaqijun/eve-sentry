@@ -152,6 +152,9 @@
 - 当服务端启用 ESI resolver 时，observation 会记录 `esi_resolution`
   结果；评分器会利用未命中的角色名/星系名继续抑制误报，例如把误判成星系的
   频道首词拦截在 observation 层。
+- 对 `intel_channel` observation，服务端会在唯一 ESI 星系候选命中时修正
+  `system_name` 并重算 names / hostile_count，让像 `Alice reds Tama` 这类
+  行还能恢复成可用情报。
 
 ## 阶段 6: ESI SSO
 

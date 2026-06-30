@@ -847,6 +847,60 @@ def test_create_channel_line_keeps_low_confidence_raw_observation_without_alert(
         server.stop()
 
 
+def test_create_channel_line_repairs_unique_esi_system_match(tmp_path):
+    class FakeResolver:
+        def resolve_names(self, names):
+            assert names == ["Alice", "Tama"]
+            return [
+                SimpleNamespace(
+                    name="Alice",
+                    category="character",
+                    entity_id=123,
+                ),
+                SimpleNamespace(
+                    name="Tama",
+                    category="solar_system",
+                    entity_id=30002813,
+                ),
+            ]
+
+        def enrich_observation(self, observation):
+            observation.system_id = 30002813
+            observation.character_ids = [123]
+            return observation
+
+    store = IntelStore(
+        tmp_path / "intel.json",
+        resolver=FakeResolver(),
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/channel-lines",
+            method="POST",
+            payload={
+                "channel": "Alliance Intel",
+                "line": "[ 2026.06.30 12:01:12 ] Scout A > Alice reds Tama",
+            },
+        )
+
+        assert status == 201
+        assert created["ignored"] is False
+        assert created["observation"]["system_name"] == "Tama"
+        assert created["observation"]["system_id"] == 30002813
+        assert created["observation"]["names"] == ["Alice"]
+        assert created["observation"]["character_ids"] == [123]
+        assert created["alert"]["score"] == 30
+
+        status, observations = request_json(f"{server.url}/api/observations")
+        assert status == 200
+        assert observations["observations"][0]["system_name"] == "Tama"
+    finally:
+        server.stop()
+
+
 def test_create_channel_line_suppresses_invalid_system_after_esi_resolution(tmp_path):
     class FakeResolver:
         def enrich_observation(self, observation):

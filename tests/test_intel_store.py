@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from app.core.models import Evidence, ThreatEvent
 from app.intel.enrichment import ThreatEnrichment
 from app.intel.scoring import ScoringEngine, Watchlist
@@ -187,6 +189,51 @@ def test_add_observation_uses_optional_resolver(tmp_path):
     assert observation.system_id == 30002813
     assert observation.character_ids == [123]
     assert store.list_observations()[0]["character_ids"] == [123]
+
+
+def test_add_observation_repairs_invalid_channel_system_with_resolver(tmp_path):
+    class FakeResolver:
+        def resolve_names(self, names):
+            assert names == ["Alice", "Tama"]
+            return [
+                SimpleNamespace(
+                    name="Alice",
+                    category="character",
+                    entity_id=123,
+                ),
+                SimpleNamespace(
+                    name="Tama",
+                    category="solar_system",
+                    entity_id=30002813,
+                ),
+            ]
+
+        def enrich_observation(self, observation):
+            observation.system_id = 30002813
+            observation.character_ids = [123]
+            return observation
+
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        resolver=FakeResolver(),
+    )
+
+    observation = store.add_observation(
+        {
+            "source": "intel_channel",
+            "system_name": "Alice",
+            "raw_text": "Scout A: Alice reds Tama",
+            "metadata": {"sender": "Scout A", "hostile_count": 1},
+        }
+    )
+
+    assert observation.system_name == "Tama"
+    assert observation.system_id == 30002813
+    assert observation.names == ["Alice"]
+    assert observation.character_ids == [123]
+    assert store.list_observations()[0]["system_name"] == "Tama"
 
 
 def test_list_alerts_uses_optional_scorer_and_caches_result(tmp_path):

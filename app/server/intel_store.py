@@ -11,6 +11,14 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from app.channels.parser import (
+    extract_direction,
+    extract_hostile_count,
+    extract_jump_count,
+    extract_names,
+    extract_system_candidates,
+    remove_system,
+)
 from app.core.models import Observation, ThreatEvent
 from app.intel.scoring import ChannelMention
 
@@ -369,6 +377,7 @@ class IntelStore:
 
     def _enrich_observation(self, observation: Observation) -> Observation:
         """Optionally enrich an observation without blocking ingestion on failure."""
+        observation = self._repair_channel_observation(observation)
         if self._resolver is None:
             return observation
         try:
@@ -376,6 +385,126 @@ class IntelStore:
         except Exception:
             return observation
         return enriched if isinstance(enriched, Observation) else observation
+
+    def _repair_channel_observation(self, observation: Observation) -> Observation:
+        if self._resolver is None or not hasattr(self._resolver, "resolve_names"):
+            return observation
+        if observation.source.strip().casefold() != "intel_channel":
+            return observation
+        if observation.system_name.strip().casefold() != "unknown":
+            current_name = observation.system_name.strip()
+            if current_name and observation.system_id is not None:
+                return observation
+
+        message = self._channel_message_body(observation)
+        if not message:
+            return observation
+
+        candidates = extract_system_candidates(message)
+        if not candidates:
+            return observation
+        try:
+            resolved = self._resolver.resolve_names(candidates)
+        except Exception:
+            return observation
+
+        system_matches = [
+            item for item in resolved
+            if str(getattr(item, "category", "")).casefold() == "solar_system"
+        ]
+        resolved_system = self._pick_repair_system(observation, candidates, system_matches)
+        if resolved_system is None:
+            return observation
+
+        repaired_name = str(getattr(resolved_system, "name", "")).strip()
+        repaired_id = self._optional_int(getattr(resolved_system, "entity_id", None))
+        if not repaired_name or repaired_id is None:
+            return observation
+
+        observation.system_name = repaired_name
+        observation.system_id = repaired_id
+        self._reparse_channel_observation(observation, message)
+        return observation
+
+    def _channel_message_body(self, observation: Observation) -> str:
+        raw_text = observation.raw_text.strip()
+        if not raw_text:
+            return ""
+        sender = str(observation.metadata.get("sender") or "").strip()
+        if sender:
+            prefix = f"{sender}:"
+            if raw_text.startswith(prefix):
+                return raw_text[len(prefix):].strip()
+        if ":" in raw_text:
+            _, body = raw_text.split(":", 1)
+            return body.strip()
+        return raw_text
+
+    def _pick_repair_system(
+        self,
+        observation: Observation,
+        candidates: list[str],
+        resolved: list[Any],
+    ) -> Any | None:
+        query = observation.system_name.strip().casefold()
+        matches_by_name: dict[str, Any] = {}
+        for item in resolved:
+            name = str(getattr(item, "name", "")).strip()
+            if not name:
+                continue
+            matches_by_name[name.casefold()] = item
+        if query and query in matches_by_name:
+            return None
+
+        matched_candidates = []
+        for candidate in candidates:
+            item = matches_by_name.get(candidate.casefold())
+            if item is not None:
+                matched_candidates.append(item)
+        unique_by_id: dict[int, Any] = {}
+        for item in matched_candidates:
+            entity_id = self._optional_int(getattr(item, "entity_id", None))
+            if entity_id is not None and entity_id not in unique_by_id:
+                unique_by_id[entity_id] = item
+        if len(unique_by_id) != 1:
+            return None
+        return next(iter(unique_by_id.values()))
+
+    def _reparse_channel_observation(
+        self,
+        observation: Observation,
+        message: str,
+    ) -> None:
+        rest = remove_system(message, observation.system_name)
+        observation.names = self._normalize_names(extract_names(rest))
+        metadata = dict(observation.metadata)
+        self._set_optional_metadata(
+            metadata,
+            "hostile_count",
+            extract_hostile_count(rest),
+        )
+        self._set_optional_metadata(
+            metadata,
+            "jump_count",
+            extract_jump_count(rest),
+        )
+        self._set_optional_metadata(
+            metadata,
+            "direction",
+            extract_direction(rest).strip(),
+        )
+        observation.metadata = metadata
+
+    def _set_optional_metadata(
+        self,
+        metadata: dict[str, Any],
+        key: str,
+        value: Any,
+    ) -> None:
+        if value in {None, ""}:
+            metadata.pop(key, None)
+            return
+        metadata[key] = value
 
     def list_reports(
         self,
