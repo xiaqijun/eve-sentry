@@ -14,6 +14,7 @@ CHAT_LINE_RE = re.compile(
     r"(?P<sender>.*?)\s*>\s*(?P<message>.*)$"
 )
 LEADING_SYSTEM_RE = re.compile(rf"^(?P<system>{SYSTEM_TOKEN})\b")
+SYSTEM_TOKEN_RE = re.compile(rf"\b(?P<system>{SYSTEM_TOKEN})\b")
 LOCATED_SYSTEM_RE = re.compile(
     rf"\b(?:in|at|near|on)\s+(?P<system>{SYSTEM_TOKEN})\b"
     rf"|(?:\u5728|\u5230|\u53bb|\u5f80|\u5411)\s*(?P<system_cn>{SYSTEM_TOKEN})",
@@ -199,6 +200,36 @@ def extract_system(message: str) -> str:
         return ""
     system = match.group("system")
     return system if _is_system_candidate(system) else ""
+
+
+def extract_system_candidates(message: str) -> list[str]:
+    """Return ordered system-like tokens that may be worth resolver validation."""
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        token = value.strip()
+        key = token.casefold()
+        if not token or key in seen or not _is_system_candidate(token):
+            return
+        seen.add(key)
+        candidates.append(token)
+
+    located = LOCATED_SYSTEM_RE.search(message)
+    if located:
+        add(located.group("system") or located.group("system_cn") or "")
+
+    leading = LEADING_SYSTEM_RE.match(message.strip())
+    if leading:
+        add(leading.group("system"))
+
+    direction = DIRECTION_RE.search(message)
+    if direction:
+        add(direction.group("target") or direction.group("target_cn") or "")
+
+    for match in SYSTEM_TOKEN_RE.finditer(message):
+        add(match.group("system"))
+    return candidates
 
 
 def remove_system(message: str, system: str) -> str:
