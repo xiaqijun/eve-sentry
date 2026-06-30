@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from app.channels.parser import parse_chat_line
+from app.esi.sso import EsiSsoError
 from app.server.intel_store import IntelStore
 from app.server.star_map_page import INDEX_HTML
 
@@ -27,11 +28,13 @@ class IntelHTTPServer:
         host: str = "127.0.0.1",
         port: int = 8765,
         config_store: Any | None = None,
+        esi_session: Any | None = None,
     ) -> None:
         self.store = store
         self.host = host
         self.port = port
         self.config_store = config_store
+        self.esi_session = esi_session
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -48,6 +51,7 @@ class IntelHTTPServer:
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self._httpd.store = self.store  # type: ignore[attr-defined]
         self._httpd.config_store = self.config_store  # type: ignore[attr-defined]
+        self._httpd.esi_session = self.esi_session  # type: ignore[attr-defined]
         self.host, self.port = self._httpd.server_address[:2]
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
@@ -95,6 +99,27 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "config not enabled"}, HTTPStatus.NOT_FOUND)
                 return
             self._send_json({"config": config_store.to_dict()})
+            return
+        if path == "/api/esi/status":
+            self._send_json(self._esi_status_payload())
+            return
+        if path in {"/api/esi/session", "/api/esi/snapshot"}:
+            query = parse_qs(parsed.query)
+            try:
+                include_location = self._parse_optional_bool_default(
+                    query.get("location", [""])[0],
+                    default=True,
+                    label="location",
+                )
+                include_contacts = self._parse_optional_bool_default(
+                    query.get("contacts", [""])[0],
+                    default=True,
+                    label="contacts",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_esi_snapshot(include_location, include_contacts)
             return
         if path in {"/api/intel", "/api/systems"}:
             snapshot = self._store().snapshot()
@@ -413,6 +438,64 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
     def _config_store(self) -> Any | None:
         return self.server.config_store  # type: ignore[attr-defined,no-any-return]
 
+    def _esi_session(self) -> Any | None:
+        return self.server.esi_session  # type: ignore[attr-defined,no-any-return]
+
+    def _esi_status_payload(self) -> dict[str, Any]:
+        session = self._esi_session()
+        if session is None:
+            return {"enabled": False, "authenticated": False}
+        if not hasattr(session, "load_tokens"):
+            return {
+                "enabled": True,
+                "authenticated": False,
+                "error": "ESI session cannot load tokens",
+            }
+        try:
+            tokens = session.load_tokens(refresh_if_needed=False)
+        except EsiSsoError as exc:
+            return {"enabled": True, "authenticated": False, "error": str(exc)}
+        return {
+            "enabled": True,
+            "authenticated": True,
+            "character_id": tokens.character_id,
+            "character_owner_hash": tokens.character_owner_hash,
+            "scopes": list(tokens.scopes),
+            "expires_at": tokens.expires_at,
+            "expired": bool(tokens.is_expired()),
+        }
+
+    def _send_esi_snapshot(
+        self,
+        include_location: bool,
+        include_contacts: bool,
+    ) -> None:
+        session = self._esi_session()
+        if session is None or not hasattr(session, "snapshot"):
+            self._send_json({"error": "ESI session not enabled"}, HTTPStatus.NOT_FOUND)
+            return
+        try:
+            snapshot = session.snapshot(
+                include_location=include_location,
+                include_contacts=include_contacts,
+            )
+        except EsiSsoError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.UNAUTHORIZED)
+            return
+        except Exception as exc:
+            self._send_json(
+                {"error": f"ESI session unavailable: {exc}"},
+                HTTPStatus.BAD_GATEWAY,
+            )
+            return
+        self._send_json(
+            {
+                "enabled": True,
+                "authenticated": True,
+                "snapshot": snapshot.to_dict(),
+            }
+        )
+
     def _alert_for_observation(self, observation_id: str) -> dict[str, Any] | None:
         for alert in self._store().list_alerts():
             if alert.get("source_observation_id") == observation_id:
@@ -528,6 +611,15 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         if value in {"0", "false", "no", "n", "off"}:
             return False
         raise ValueError(f"{label} must be true or false")
+
+    def _parse_optional_bool_default(
+        self,
+        raw: str,
+        default: bool,
+        label: str,
+    ) -> bool:
+        value = self._parse_optional_bool(raw, label)
+        return default if value is None else value
 
     def _parse_path_int(self, path: str, prefix: str, label: str) -> int:
         raw = unquote(path[len(prefix):]).strip()

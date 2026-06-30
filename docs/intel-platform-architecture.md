@@ -327,10 +327,24 @@ ESI 是身份和宇宙数据的权威补全源。
 python -m app.server --enable-esi --esi-cache esi_cache.json
 ```
 
+如需启用 authenticated ESI 会话，先用本地 SSO 登录保存 token:
+
+```bash
+python -m app.esi.sso --client-id YOUR_EVE_APP_CLIENT_ID --token-file esi_tokens.json
+```
+
+然后启动服务端并传入相同 token 文件:
+
+```bash
+python -m app.server --enable-esi --esi-cache esi_cache.json --esi-client-id YOUR_EVE_APP_CLIENT_ID --esi-token-file esi_tokens.json
+```
+
 启用后，服务端会在保存 observation 时尽力补全 `system_id` 和
 `character_ids`，并在生成 alert 时把角色公开资料作为评分证据。角色公开
 资料会尽力补齐 `corporation_name` 和 `alliance_name`，相关查询结果写入本地
-ESI 缓存；ESI 查询失败时保留原 observation，不阻塞上报链路。
+ESI 缓存；ESI 查询失败时保留原 observation，不阻塞上报链路。若配置了
+authenticated ESI 会话，服务端会把 contacts/standings 缓存注入角色 profile，
+使 `hostile_standing` evidence 自动参与 alert 评分。
 
 官方参考:
 
@@ -478,6 +492,9 @@ POST /api/alerts/{id}/ack
 GET  /api/characters/{character_id}
 GET  /api/characters/by-name/{name}
 
+GET  /api/esi/status
+GET  /api/esi/session?location=&contacts=
+
 GET  /api/systems/by-name/{name}
 
 GET  /api/kill-activity/character/{character_id}
@@ -500,6 +517,11 @@ GET  /api/map/snapshot
   频道上下文、角色公开资料和击毁画像上下文。
 - `GET /api/characters/{character_id}`: 需要启用 ESI，返回角色公开资料。
 - `GET /api/characters/by-name/{name}`: 需要启用 ESI，先解析名字再返回角色公开资料。
+- `GET /api/esi/status`: 返回 authenticated ESI 会话是否启用、是否已有本地 token、
+  角色 ID、scope 和过期状态，不返回 access token 或 refresh token。
+- `GET /api/esi/session`: 需要配置 authenticated ESI，会刷新过期 token，并按
+  `location=true|false` 和 `contacts=true|false` 返回当前位置与 contacts/standings
+  快照；未登录返回 401，未启用返回 404。
 - `GET /api/systems/by-name/{name}`: 需要启用 ESI，返回星系公开资料。
 - `GET /api/kill-activity/character/{character_id}`: 需要启用 killboard，返回角色近期击毁画像。
 - `GET /api/kill-activity/system/{system_id}`: 需要启用 killboard，返回星系近期击毁热度。

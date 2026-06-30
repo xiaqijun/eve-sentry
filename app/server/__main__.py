@@ -19,6 +19,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="intel_config.json")
     parser.add_argument("--enable-esi", action="store_true")
     parser.add_argument("--esi-cache", default="esi_cache.json")
+    parser.add_argument("--esi-client-id", default="")
+    parser.add_argument(
+        "--esi-redirect-uri",
+        default="http://127.0.0.1:8766/callback",
+    )
+    parser.add_argument("--esi-token-file", default="esi_tokens.json")
     parser.add_argument("--enable-killboard", action="store_true")
     parser.add_argument("--zkill-cache", default="zkill_cache.json")
     return parser
@@ -33,6 +39,7 @@ def main() -> None:
     )
 
     resolver = None
+    esi_session = None
     killboard = None
     if args.enable_esi or args.enable_killboard:
         from app.esi.cache import EsiCache
@@ -41,6 +48,17 @@ def main() -> None:
         from app.esi.resolver import EsiResolver
 
         resolver = EsiResolver(cache=EsiCache(args.esi_cache))
+        if args.esi_client_id:
+            from app.esi.session import EsiAuthenticatedSession
+            from app.esi.sso import EsiTokenStore, EveSsoClient
+
+            esi_session = EsiAuthenticatedSession(
+                sso_client=EveSsoClient(
+                    client_id=args.esi_client_id,
+                    redirect_uri=args.esi_redirect_uri,
+                ),
+                token_store=EsiTokenStore(args.esi_token_file),
+            )
 
     if args.enable_killboard:
         from app.killboard.zkill_client import ZKillboardClient
@@ -51,7 +69,11 @@ def main() -> None:
     if resolver is not None or killboard is not None:
         from app.intel.enrichment import ThreatEnricher
 
-        enricher = ThreatEnricher(resolver=resolver, killboard=killboard)
+        enricher = ThreatEnricher(
+            resolver=resolver,
+            killboard=killboard,
+            esi_session=esi_session,
+        )
 
     from app.intel.config import IntelConfigStore
 
@@ -80,6 +102,7 @@ def main() -> None:
         host=args.host,
         port=args.port,
         config_store=config_store,
+        esi_session=esi_session,
     )
     server.start()
     print(f"Intel map: {server.url}")

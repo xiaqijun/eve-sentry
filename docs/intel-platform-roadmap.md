@@ -167,6 +167,14 @@
 - 检测端不再必须手工配置当前星系。
 - standings 能参与评分。
 
+当前进展:
+
+- 已提供 `app.esi.sso` 本地 PKCE 登录和 `app.esi.session` token refresh/session
+  snapshot。
+- 服务端已提供 `/api/esi/status` 和 `/api/esi/session`，并能把 contacts/standings
+  注入角色 profile 参与 `hostile_standing` 评分。
+- 待继续: 把当前位置同步接入检测/预警工作流，完善登录引导和 token 安全存储。
+
 ## 阶段 7: SQLite 和事件推送
 
 目标:
@@ -218,4 +226,3 @@
 - SSO scopes 要最小化，避免过早引入复杂授权。
 - 击毁活跃不等于当前威胁，只能作为证据之一。
 - JSON 存储会限制查询和去重能力，应尽早迁移 SQLite。
-

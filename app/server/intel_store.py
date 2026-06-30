@@ -841,9 +841,22 @@ class IntelStore:
                 affiliations.append(f"corp {corporation_id}")
             if alliance_id not in {None, ""}:
                 affiliations.append(f"alliance {alliance_id}")
+            standing = self._standing_label(
+                item.get("contact_standing", item.get("standing"))
+            )
+            if standing:
+                affiliations.append(f"standing {standing}")
             suffix = f": {', '.join(affiliations)}" if affiliations else ""
             summaries.append(f"ESI profile {label}{suffix}")
         return summaries
+
+    def _standing_label(self, value: Any) -> str:
+        if value in {None, ""}:
+            return ""
+        try:
+            return f"{float(value):g}"
+        except (TypeError, ValueError):
+            return str(value).strip()
 
     def _kill_context_summaries(self, value: Any) -> list[str]:
         if not isinstance(value, list):

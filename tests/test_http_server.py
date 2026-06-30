@@ -4,6 +4,8 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from app.esi.session import ContactStanding
+from app.esi.sso import EsiSsoError
 from app.intel.enrichment import ThreatEnricher
 from app.intel.config import IntelConfigStore
 from app.intel.scoring import ScoringEngine
@@ -42,6 +44,119 @@ def test_health_and_cors_preflight(tmp_path):
             assert response.status == 204
             assert response.headers["Access-Control-Allow-Origin"] == "*"
             assert "DELETE" in response.headers["Access-Control-Allow-Methods"]
+    finally:
+        server.stop()
+
+
+def test_esi_status_reports_disabled_session(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/esi/status")
+        assert status == 200
+        assert payload == {"enabled": False, "authenticated": False}
+
+        try:
+            request_json(f"{server.url}/api/esi/session")
+        except HTTPError as exc:
+            assert exc.code == 404
+            error = json.loads(exc.read().decode("utf-8"))
+            assert "ESI session" in error["error"]
+        else:
+            raise AssertionError("expected HTTP 404")
+    finally:
+        server.stop()
+
+
+def test_esi_session_routes_expose_status_and_snapshot(tmp_path):
+    class FakeTokens:
+        character_id = 123
+        character_owner_hash = "owner-hash"
+        scopes = ["esi-location.read_location.v1"]
+        expires_at = 2000
+
+        def is_expired(self):
+            return False
+
+    class FakeSnapshot:
+        def to_dict(self):
+            return {
+                "character_id": 123,
+                "character_owner_hash": "owner-hash",
+                "scopes": ["esi-location.read_location.v1"],
+                "location": {},
+                "contacts": [{"contact_id": 456, "standing": -10}],
+            }
+
+    class FakeSession:
+        def __init__(self):
+            self.load_calls = []
+            self.snapshot_calls = []
+
+        def load_tokens(self, refresh_if_needed=True):
+            self.load_calls.append(refresh_if_needed)
+            return FakeTokens()
+
+        def snapshot(self, include_location=True, include_contacts=True):
+            self.snapshot_calls.append((include_location, include_contacts))
+            return FakeSnapshot()
+
+    session = FakeSession()
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json"),
+        port=0,
+        esi_session=session,
+    )
+    server.start()
+    try:
+        status, status_payload = request_json(f"{server.url}/api/esi/status")
+        assert status == 200
+        assert status_payload["enabled"] is True
+        assert status_payload["authenticated"] is True
+        assert status_payload["character_id"] == 123
+        assert "access_token" not in status_payload
+        assert "refresh_token" not in status_payload
+        assert session.load_calls == [False]
+
+        status, snapshot = request_json(
+            f"{server.url}/api/esi/session?location=false&contacts=true"
+        )
+        assert status == 200
+        assert snapshot["authenticated"] is True
+        assert snapshot["snapshot"]["contacts"][0]["standing"] == -10
+        assert session.snapshot_calls == [(False, True)]
+    finally:
+        server.stop()
+
+
+def test_esi_session_snapshot_reports_missing_token(tmp_path):
+    class MissingTokenSession:
+        def load_tokens(self, refresh_if_needed=True):
+            raise EsiSsoError("no saved ESI token")
+
+        def snapshot(self, include_location=True, include_contacts=True):
+            raise EsiSsoError("no saved ESI token")
+
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json"),
+        port=0,
+        esi_session=MissingTokenSession(),
+    )
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/esi/status")
+        assert status == 200
+        assert payload["authenticated"] is False
+        assert "no saved ESI token" in payload["error"]
+
+        try:
+            request_json(f"{server.url}/api/esi/session")
+        except HTTPError as exc:
+            assert exc.code == 401
+            error = json.loads(exc.read().decode("utf-8"))
+            assert "no saved ESI token" in error["error"]
+        else:
+            raise AssertionError("expected HTTP 401")
     finally:
         server.stop()
 
@@ -326,6 +441,70 @@ def test_public_lookup_routes_report_disabled_sources(tmp_path):
             assert "alliance_id" in payload["error"]
         else:
             raise AssertionError("expected HTTP 400")
+    finally:
+        server.stop()
+
+
+def test_authenticated_standings_contribute_to_alert_scoring(tmp_path):
+    class FakeResolver:
+        def character_profile(self, character_id):
+            assert character_id == 123
+            return {
+                "character_id": 123,
+                "name": "Alice",
+                "corporation_id": 456,
+            }
+
+    class FakeSession:
+        def snapshot(self, include_location=True, include_contacts=True):
+            return SimpleNamespace(
+                contacts=[
+                    ContactStanding(
+                        contact_id=456,
+                        contact_type="corporation",
+                        standing=-10,
+                    )
+                ]
+            )
+
+    store = IntelStore(
+        tmp_path / "intel.json",
+        scorer=ScoringEngine(cooldown_seconds=0),
+        enricher=ThreatEnricher(
+            resolver=FakeResolver(),
+            esi_session=FakeSession(),
+        ),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "source": "local_ocr",
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "character_ids": [123],
+                "seen_at": "2026-06-30T12:00:00+00:00",
+            },
+        )
+
+        assert status == 201
+        evidence_types = {item["type"] for item in created["alert"]["evidence"]}
+        assert "hostile_standing" in evidence_types
+        assert created["alert"]["score"] == 110
+
+        status, payload = request_json(
+            f"{server.url}/api/alerts/{created['alert']['id']}"
+        )
+        assert status == 200
+        profile = payload["detail"]["context"]["character_profiles"][0]
+        assert profile["contact_standing"] == -10.0
+        assert "Hostile standing -10" in payload["detail"]["explanation"]["reasons"]
+        assert "ESI profile Alice: corp 456, standing -10" in (
+            payload["detail"]["explanation"]["context"]
+        )
     finally:
         server.stop()
 

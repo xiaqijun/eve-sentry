@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from time import time
+from typing import Any, Callable
 
 from app.core.models import Observation
+from app.esi.session import (
+    ContactStanding,
+    apply_contact_standing,
+    contact_standings_from_payload,
+)
 from app.killboard.analyzer import (
     GroupKillActivity,
     KillActivity,
@@ -40,11 +46,19 @@ class ThreatEnricher:
         self,
         resolver: Any | None = None,
         killboard: Any | None = None,
+        esi_session: Any | None = None,
         kill_window: str = "recent",
+        standing_ttl_seconds: float = 300.0,
+        now: Callable[[], float] | None = None,
     ) -> None:
         self.resolver = resolver
         self.killboard = killboard
+        self.esi_session = esi_session
         self.kill_window = kill_window
+        self.standing_ttl_seconds = max(0.0, float(standing_ttl_seconds))
+        self._now = now or time
+        self._contact_standings: list[ContactStanding] | None = None
+        self._contact_standings_until = 0.0
 
     def enrich(self, observation: Observation) -> ThreatEnrichment:
         """Return best-effort enrichment without raising network errors."""
@@ -52,8 +66,14 @@ class ThreatEnricher:
         activities: list[KillActivity] = []
         corporation_ids: set[int] = set()
         alliance_ids: set[int] = set()
+        contacts = self.contact_standings()
         for character_id in _unique_positive_ints(observation.character_ids):
-            profile = self.character_profile(character_id)
+            profile = self._public_character_profile(character_id)
+            if contacts:
+                base_profile = profile or {"character_id": character_id}
+                annotated = apply_contact_standing(base_profile, contacts)
+                if profile is not None or "contact_standing" in annotated:
+                    profile = annotated
             if profile is not None:
                 profiles.append(profile)
                 _add_profile_entity_ids(profile, corporation_ids, alliance_ids)
@@ -70,6 +90,40 @@ class ThreatEnricher:
 
     def character_profile(self, character_id: int) -> dict[str, Any] | None:
         """Return a cached public ESI character profile when available."""
+        profile = self._public_character_profile(character_id)
+        if profile is None:
+            return None
+        contacts = self.contact_standings()
+        if contacts:
+            return apply_contact_standing(profile, contacts)
+        return profile
+
+    def contact_standings(self) -> list[ContactStanding]:
+        """Return cached authenticated contact standings when configured."""
+        if self.esi_session is None or not hasattr(self.esi_session, "snapshot"):
+            return []
+
+        now = float(self._now())
+        if (
+            self._contact_standings is not None
+            and now < self._contact_standings_until
+        ):
+            return list(self._contact_standings)
+
+        try:
+            snapshot = self.esi_session.snapshot(
+                include_location=False,
+                include_contacts=True,
+            )
+        except Exception:
+            return []
+
+        contacts = _normalize_contact_standings(getattr(snapshot, "contacts", []))
+        self._contact_standings = contacts
+        self._contact_standings_until = now + self.standing_ttl_seconds
+        return list(contacts)
+
+    def _public_character_profile(self, character_id: int) -> dict[str, Any] | None:
         if self.resolver is None or not hasattr(self.resolver, "character_profile"):
             return None
         try:
@@ -212,3 +266,17 @@ def _optional_positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+def _normalize_contact_standings(value: Any) -> list[ContactStanding]:
+    if not isinstance(value, list):
+        return []
+    contacts: list[ContactStanding] = []
+    dict_rows: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, ContactStanding):
+            contacts.append(item)
+        elif isinstance(item, dict):
+            dict_rows.append(item)
+    contacts.extend(contact_standings_from_payload(dict_rows))
+    return contacts
