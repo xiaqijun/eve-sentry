@@ -15,6 +15,48 @@ from app.intel_client import AlertPoller, IntelApiClient, IntelApiError
 logger = logging.getLogger(__name__)
 
 
+class AlertStreamFallback:
+    """Decide when the alert client should retry SSE after a fallback poll."""
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        retry_interval: float = 30.0,
+        clock=time.monotonic,
+    ) -> None:
+        self.enabled = enabled
+        self.retry_interval = max(0.0, float(retry_interval))
+        self._clock = clock
+        self._stream_available = enabled
+        self._poll_once_before_retry = False
+        self._retry_at = 0.0
+
+    def should_stream(self) -> bool:
+        """Return whether the next client iteration should use the event stream."""
+        if not self.enabled:
+            return False
+        if self._stream_available:
+            return True
+        if self._poll_once_before_retry:
+            return False
+        return self._clock() >= self._retry_at
+
+    def mark_stream_success(self) -> None:
+        """Reset fallback state after a successful event stream request."""
+        self._stream_available = True
+        self._poll_once_before_retry = False
+
+    def mark_stream_failure(self) -> None:
+        """Temporarily fall back to polling before the next SSE retry."""
+        self._stream_available = False
+        self._poll_once_before_retry = True
+        self._retry_at = self._clock() + self.retry_interval
+
+    def mark_poll_attempt(self) -> None:
+        """Allow a stream retry once the fallback cooldown has elapsed."""
+        self._poll_once_before_retry = False
+
+
 class AlertClientState:
     """Persist recently emitted alert ids so restarts can resume safely."""
 
@@ -365,7 +407,7 @@ def attach_alert_details(
 
 
 def run_alert_client(args: argparse.Namespace) -> int:
-    """Run the polling alert loop."""
+    """Run the alert loop, preferring SSE with polling fallback."""
     api = IntelApiClient(args.server, timeout=args.timeout)
     state_store = None
     seen_ids: list[str] = []
@@ -403,18 +445,24 @@ def run_alert_client(args: argparse.Namespace) -> int:
         print("Running one alert check.", file=status_stream)
     else:
         print("Press Ctrl+C to stop.", file=status_stream)
-    use_events = not args.poll
+    stream_fallback = AlertStreamFallback(
+        enabled=not args.poll,
+        retry_interval=args.stream_retry_interval,
+    )
     try:
         while True:
+            use_events = stream_fallback.should_stream()
             try:
                 if use_events:
                     alerts = poller.stream_new(timeout=args.interval)
+                    stream_fallback.mark_stream_success()
                 else:
                     alerts = poller.poll_new()
+                    stream_fallback.mark_poll_attempt()
             except IntelApiError as exc:
                 if use_events:
                     logger.warning("Event stream failed, falling back to polling: %s", exc)
-                    use_events = False
+                    stream_fallback.mark_stream_failure()
                     continue
                 logger.warning("Polling failed: %s", exc)
                 if once:
@@ -470,6 +518,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--poll",
         action="store_true",
         help="use /api/alerts polling instead of the event stream",
+    )
+    parser.add_argument(
+        "--stream-retry-interval",
+        type=float,
+        default=30.0,
+        help="seconds to wait before retrying the event stream after fallback",
     )
     parser.add_argument(
         "--once",
