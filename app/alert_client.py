@@ -8,27 +8,37 @@ import sys
 import time
 from typing import Any
 
-from app.intel_client import IntelApiClient, IntelApiError, ReportPoller
+from app.intel_client import AlertPoller, IntelApiClient, IntelApiError
 
 logger = logging.getLogger(__name__)
 
 
 def format_report(report: dict[str, Any]) -> str:
-    """Return a compact one-line summary for a report."""
-    system = str(report.get("system") or "未知星系")
+    """Return a compact one-line summary for a report-like payload."""
+    system = str(report.get("system_name") or report.get("system") or "Unknown")
     names = report.get("names") or []
     if not isinstance(names, list):
         names = []
-    joined_names = ", ".join(str(name) for name in names) or "未知目标"
-    seen_at = str(report.get("seen_at") or "")
+    joined_names = ", ".join(str(name) for name in names) or "Unknown target"
+    seen_at = str(report.get("seen_at") or report.get("created_at") or "")
     return f"{seen_at} {system}: {joined_names}".strip()
 
 
+def format_alert(alert: dict[str, Any]) -> str:
+    """Return a compact one-line summary for a threat event."""
+    base = format_report(alert)
+    level = str(alert.get("level") or "low").upper()
+    score = alert.get("score")
+    if score is None:
+        return f"{level} {base}".strip()
+    return f"{level} {base} (score {score})".strip()
+
+
 def build_popup_names(reports: list[dict[str, Any]]) -> list[str]:
-    """Build popup list entries from one or more reports."""
+    """Build popup list entries from reports or threat events."""
     entries: list[str] = []
     for report in reports:
-        system = str(report.get("system") or "未知星系")
+        system = str(report.get("system_name") or report.get("system") or "Unknown")
         names = report.get("names") or []
         if not isinstance(names, list):
             continue
@@ -56,30 +66,30 @@ def show_popup(entries: list[str]) -> None:
 def run_alert_client(args: argparse.Namespace) -> int:
     """Run the polling alert loop."""
     api = IntelApiClient(args.server, timeout=args.timeout)
-    poller = ReportPoller(api, limit=args.limit)
+    poller = AlertPoller(api, limit=args.limit)
 
     if args.ignore_existing:
         try:
             poller.seed_existing()
         except IntelApiError as exc:
-            logger.warning("Initial report sync failed: %s", exc)
+            logger.warning("Initial alert sync failed: %s", exc)
 
     print(f"Alert client listening on {args.server}")
     print("Press Ctrl+C to stop.")
     try:
         while True:
             try:
-                reports = poller.poll_new()
+                alerts = poller.poll_new()
             except IntelApiError as exc:
                 logger.warning("Polling failed: %s", exc)
                 time.sleep(args.interval)
                 continue
 
-            if reports:
-                for report in reports:
-                    print(f"[ALERT] {format_report(report)}", flush=True)
+            if alerts:
+                for alert in alerts:
+                    print(f"[ALERT] {format_alert(alert)}", flush=True)
                 if args.popup:
-                    show_popup(build_popup_names(reports))
+                    show_popup(build_popup_names(alerts))
 
             time.sleep(args.interval)
     except KeyboardInterrupt:
@@ -96,12 +106,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--include-existing",
         action="store_false",
         dest="ignore_existing",
-        help="alert for reports that already exist when the client starts",
+        help="alert for events that already exist when the client starts",
     )
     parser.add_argument(
         "--popup",
         action="store_true",
-        help="show a local popup and play the alert sound for new reports",
+        help="show a local popup and play the alert sound for new events",
     )
     return parser.parse_args(argv)
 

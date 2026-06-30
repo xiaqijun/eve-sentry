@@ -52,6 +52,8 @@ def test_create_query_and_delete_report(tmp_path):
         )
         assert status == 201
         report_id = created["report"]["id"]
+        assert created["observation"]["id"] == report_id
+        assert created["alert"]["source_observation_id"] == report_id
 
         status, reports = request_json(
             f"{server.url}/api/reports?{urlencode({'system': 'tama', 'limit': '5'})}"
@@ -70,6 +72,40 @@ def test_create_query_and_delete_report(tmp_path):
         status, snapshot = request_json(f"{server.url}/api/intel")
         assert status == 200
         assert snapshot["summary"]["report_count"] == 0
+    finally:
+        server.stop()
+
+
+def test_create_observation_and_query_alerts(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+                "raw_text": "Tama Alice",
+                "seen_at": "2026-06-29T12:00:00+00:00",
+            },
+        )
+        assert status == 201
+        observation_id = created["observation"]["id"]
+        assert created["alert"]["id"] == f"evt_{observation_id}"
+
+        status, observations = request_json(
+            f"{server.url}/api/observations?{urlencode({'source': 'intel_channel'})}"
+        )
+        assert status == 200
+        assert observations["count"] == 1
+        assert observations["observations"][0]["raw_text"] == "Tama Alice"
+
+        status, alerts = request_json(f"{server.url}/api/alerts")
+        assert status == 200
+        assert alerts["count"] == 1
+        assert alerts["alerts"][0]["score"] == 30
     finally:
         server.stop()
 

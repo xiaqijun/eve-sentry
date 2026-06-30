@@ -108,16 +108,59 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             )
             self._send_json({"reports": reports, "count": len(reports)})
             return
+        if path == "/api/observations":
+            query = parse_qs(parsed.query)
+            try:
+                limit = self._parse_optional_int(query.get("limit", [""])[0])
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            observations = self._store().list_observations(
+                source=query.get("source", [""])[0],
+                system=query.get("system", [""])[0],
+                name=query.get("name", [""])[0],
+                limit=limit,
+            )
+            self._send_json(
+                {"observations": observations, "count": len(observations)}
+            )
+            return
+        if path == "/api/alerts":
+            query = parse_qs(parsed.query)
+            try:
+                limit = self._parse_optional_int(query.get("limit", [""])[0])
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            alerts = self._store().list_alerts(
+                since=query.get("since", [""])[0],
+                limit=limit,
+            )
+            self._send_json({"alerts": alerts, "count": len(alerts)})
+            return
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
-        if path != "/api/intel":
+        if path not in {"/api/intel", "/api/observations"}:
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
 
         try:
             payload = self._read_json()
+            if path == "/api/observations":
+                observation = self._store().add_observation(payload)
+                alert = self._store().list_alerts(limit=1)[0]
+                self._send_json(
+                    {
+                        "ok": True,
+                        "observation": observation.to_dict(),
+                        "alert": alert,
+                    },
+                    HTTPStatus.CREATED,
+                )
+                return
+
             report = self._store().add_report(
                 system=str(payload.get("system", "")),
                 names=payload.get("names", []),
@@ -130,7 +173,15 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
 
-        self._send_json({"ok": True, "report": report.to_dict()}, HTTPStatus.CREATED)
+        self._send_json(
+            {
+                "ok": True,
+                "report": report.to_dict(),
+                "observation": report.to_observation().to_dict(),
+                "alert": self._store().list_alerts(limit=1)[0],
+            },
+            HTTPStatus.CREATED,
+        )
 
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlparse(self.path).path

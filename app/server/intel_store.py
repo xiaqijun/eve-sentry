@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from app.core.models import Observation, ThreatEvent
+
 
 def utc_now_iso() -> str:
     """Return an ISO-8601 UTC timestamp with second precision."""
@@ -24,7 +26,7 @@ class StarSystem:
     name: str
     x: float
     y: float
-    region: str = "未知区域"
+    region: str = "Unknown region"
     security: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -39,26 +41,58 @@ class StarSystem:
 
 @dataclass
 class IntelReport:
-    """One hostile sighting report."""
+    """One hostile sighting report.
+
+    This remains the persistence format for compatibility. New phase-1
+    observation and alert APIs derive their canonical models from it.
+    """
 
     system: str
     names: list[str]
     source: str = "ocr"
+    source_instance: str = ""
+    system_id: int | None = None
+    character_ids: list[int] = field(default_factory=list)
     confidence: float | None = None
     note: str = ""
+    raw_text: str = ""
     seen_at: str = field(default_factory=utc_now_iso)
+    received_at: str = field(default_factory=utc_now_iso)
     report_id: str = field(default_factory=lambda: uuid4().hex)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.report_id,
             "system": self.system,
+            "system_name": self.system,
+            "system_id": self.system_id,
             "names": list(self.names),
+            "character_ids": list(self.character_ids),
             "source": self.source,
+            "source_instance": self.source_instance,
             "confidence": self.confidence,
             "note": self.note,
+            "raw_text": self.raw_text,
             "seen_at": self.seen_at,
+            "received_at": self.received_at,
+            "observation_id": self.report_id,
         }
+
+    def to_observation(self) -> Observation:
+        """Return this report as the canonical phase-1 observation model."""
+        return Observation(
+            observation_id=self.report_id,
+            source=self.source,
+            source_instance=self.source_instance or self.source,
+            system_name=self.system,
+            system_id=self.system_id,
+            names=list(self.names),
+            character_ids=list(self.character_ids),
+            confidence=self.confidence,
+            raw_text=self.raw_text or self.note,
+            seen_at=self.seen_at,
+            received_at=self.received_at,
+        )
 
 
 DEFAULT_SYSTEMS: dict[str, StarSystem] = {
@@ -116,7 +150,7 @@ class IntelStore:
         note: str = "",
         seen_at: str | None = None,
     ) -> IntelReport:
-        """Add a hostile sighting report and persist it."""
+        """Add a legacy hostile sighting report and persist it."""
         normalized_system = self._normalize_system(system)
         clean_names = self._normalize_names(names)
         if not clean_names:
@@ -128,6 +162,7 @@ class IntelStore:
             source=source.strip() or "ocr",
             confidence=confidence,
             note=note.strip(),
+            raw_text=note.strip(),
             seen_at=seen_at or utc_now_iso(),
         )
         with self._lock:
@@ -136,6 +171,36 @@ class IntelStore:
             self._save_reports()
         return report
 
+    def add_observation(self, observation: Observation | dict[str, Any]) -> Observation:
+        """Add a canonical observation and persist it."""
+        if isinstance(observation, dict):
+            observation = Observation.from_payload(observation)
+
+        observation.system_name = self._normalize_system(observation.system_name)
+        observation.names = self._normalize_names(observation.names)
+        observation.character_ids = self._normalize_ints(observation.character_ids)
+        observation.validate()
+
+        report = IntelReport(
+            report_id=observation.observation_id,
+            system=observation.system_name,
+            names=observation.names,
+            source=observation.source.strip() or "api",
+            source_instance=observation.source_instance.strip(),
+            system_id=observation.system_id,
+            character_ids=observation.character_ids,
+            confidence=observation.confidence,
+            note=observation.raw_text.strip(),
+            raw_text=observation.raw_text.strip(),
+            seen_at=observation.seen_at or utc_now_iso(),
+            received_at=observation.received_at or utc_now_iso(),
+        )
+        with self._lock:
+            self._ensure_system(report.system)
+            self._reports.append(report)
+            self._save_reports()
+        return report.to_observation()
+
     def list_reports(
         self,
         system: str | None = None,
@@ -143,26 +208,54 @@ class IntelStore:
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """Return recent reports, optionally filtered by system or character."""
-        system_query = system.strip().casefold() if system else ""
-        name_query = name.strip().casefold() if name else ""
+        reports = [report.to_dict() for report in self._reports_snapshot()]
+        return self._filter_report_like(reports, system=system, name=name, limit=limit)
 
-        with self._lock:
-            reports = [report.to_dict() for report in self._reports]
+    def list_observations(
+        self,
+        source: str | None = None,
+        system: str | None = None,
+        name: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return recent observations, optionally filtered by source/system/name."""
+        source_query = source.strip().casefold() if source else ""
+        observations = [
+            report.to_observation().to_dict() for report in self._reports_snapshot()
+        ]
 
         filtered = []
-        for report in reports:
-            if system_query and report["system"].casefold() != system_query:
+        for observation in observations:
+            if source_query and observation["source"].casefold() != source_query:
                 continue
-            if name_query and not any(
-                item.casefold() == name_query for item in report["names"]
-            ):
-                continue
-            filtered.append(report)
+            filtered.append(observation)
+        return self._filter_report_like(
+            filtered,
+            system=system,
+            name=name,
+            limit=limit,
+            system_key="system_name",
+        )
 
-        filtered.sort(key=lambda report: report["seen_at"], reverse=True)
+    def list_alerts(
+        self,
+        since: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return generated phase-1 threat events from stored observations."""
+        since_query = since.strip() if since else ""
+        alerts = [
+            ThreatEvent.from_observation(report.to_observation()).to_dict()
+            for report in self._reports_snapshot()
+        ]
+
+        if since_query:
+            alerts = [alert for alert in alerts if alert["created_at"] > since_query]
+
+        alerts.sort(key=lambda item: item["created_at"], reverse=True)
         if limit is not None:
-            filtered = filtered[:max(0, limit)]
-        return filtered
+            alerts = alerts[:max(0, limit)]
+        return alerts
 
     def delete_report(self, report_id: str) -> bool:
         """Delete a report by id. Returns True when a report was removed."""
@@ -181,9 +274,14 @@ class IntelStore:
             return True
 
     def snapshot(self) -> dict[str, Any]:
-        """Return systems, links, reports, character intel, and summary."""
+        """Return systems, links, reports, observations, alerts, and summary."""
         with self._lock:
             reports = [r.to_dict() for r in self._reports]
+            observations = [r.to_observation().to_dict() for r in self._reports]
+            alerts = [
+                ThreatEvent.from_observation(r.to_observation()).to_dict()
+                for r in self._reports
+            ]
             system_intel = self._aggregate_by_system(reports)
             character_intel = self._aggregate_by_character(reports)
 
@@ -208,6 +306,16 @@ class IntelStore:
                     key=lambda report: report["seen_at"],
                     reverse=True,
                 ),
+                "observations": sorted(
+                    observations,
+                    key=lambda observation: observation["seen_at"],
+                    reverse=True,
+                ),
+                "alerts": sorted(
+                    alerts,
+                    key=lambda alert: alert["created_at"],
+                    reverse=True,
+                ),
                 "characters": sorted(
                     character_intel.values(),
                     key=lambda item: item["latest_seen"],
@@ -219,9 +327,41 @@ class IntelStore:
                         1 for data in system_intel.values() if data["hostile_count"]
                     ),
                     "report_count": len(reports),
+                    "observation_count": len(observations),
+                    "alert_count": len(alerts),
                     "hostile_count": len(character_intel),
                 },
             }
+
+    def _reports_snapshot(self) -> list[IntelReport]:
+        with self._lock:
+            return list(self._reports)
+
+    def _filter_report_like(
+        self,
+        items: list[dict[str, Any]],
+        system: str | None = None,
+        name: str | None = None,
+        limit: int | None = None,
+        system_key: str = "system",
+    ) -> list[dict[str, Any]]:
+        system_query = system.strip().casefold() if system else ""
+        name_query = name.strip().casefold() if name else ""
+
+        filtered = []
+        for item in items:
+            if system_query and item[system_key].casefold() != system_query:
+                continue
+            if name_query and not any(
+                value.casefold() == name_query for value in item["names"]
+            ):
+                continue
+            filtered.append(item)
+
+        filtered.sort(key=lambda item: item["seen_at"], reverse=True)
+        if limit is not None:
+            filtered = filtered[:max(0, limit)]
+        return filtered
 
     def _load_reports(self) -> list[IntelReport]:
         try:
@@ -239,7 +379,9 @@ class IntelStore:
                 continue
             names = self._normalize_names(item.get("names", []))
             system = self._normalize_system(str(item.get("system", "")))
-            if not names or not system:
+            raw_text = str(item.get("raw_text") or item.get("note") or "")
+            character_ids = self._normalize_ints(item.get("character_ids"))
+            if not system or (not names and not raw_text and not character_ids):
                 continue
             reports.append(
                 IntelReport(
@@ -247,9 +389,16 @@ class IntelStore:
                     system=system,
                     names=names,
                     source=str(item.get("source") or "ocr"),
+                    source_instance=str(item.get("source_instance") or ""),
+                    system_id=self._optional_int(item.get("system_id")),
+                    character_ids=character_ids,
                     confidence=item.get("confidence"),
                     note=str(item.get("note") or ""),
+                    raw_text=raw_text,
                     seen_at=str(item.get("seen_at") or utc_now_iso()),
+                    received_at=str(
+                        item.get("received_at") or item.get("seen_at") or utc_now_iso()
+                    ),
                 )
             )
             self._ensure_system(system)
@@ -274,7 +423,7 @@ class IntelStore:
         digest = hashlib.sha256(system.encode("utf-8")).digest()
         x = 90 + int.from_bytes(digest[:2], "big") / 65535 * 820
         y = 90 + int.from_bytes(digest[2:4], "big") / 65535 * 520
-        return StarSystem(system, round(x, 1), round(y, 1), "未标注星域", None)
+        return StarSystem(system, round(x, 1), round(y, 1), "Unmapped", None)
 
     def _aggregate_by_system(
         self,
@@ -332,7 +481,7 @@ class IntelStore:
         }
 
     def _normalize_system(self, system: str) -> str:
-        return system.strip() or "未知星系"
+        return system.strip() or "Unknown"
 
     def _normalize_names(self, names: list[str] | Any) -> list[str]:
         if isinstance(names, str):
@@ -347,3 +496,31 @@ class IntelStore:
                 seen.add(text)
                 result.append(text)
         return result
+
+    def _normalize_ints(self, values: Any) -> list[int]:
+        if values is None:
+            return []
+        if isinstance(values, int):
+            values = [values]
+        if not isinstance(values, list):
+            return []
+        seen: set[int] = set()
+        result: list[int] = []
+        for value in values:
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                continue
+            if number > 0 and number not in seen:
+                seen.add(number)
+                result.append(number)
+        return result
+
+    def _optional_int(self, value: Any) -> int | None:
+        if value in {None, ""}:
+            return None
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
