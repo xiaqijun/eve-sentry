@@ -75,7 +75,7 @@ INDEX_HTML = """<!doctype html>
       border-left: 1px solid #252d36;
       background: var(--panel);
       display: grid;
-      grid-template-rows: auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto minmax(0, 1fr);
     }
     .toolbar {
       padding: 16px;
@@ -87,17 +87,27 @@ INDEX_HTML = """<!doctype html>
       color: var(--muted);
       font-size: 12px;
     }
-    input {
+    input,
+    textarea {
       width: 100%;
-      height: 34px;
       color: var(--text);
       background: #0f1318;
       border: 1px solid #303946;
       border-radius: 4px;
-      padding: 0 10px;
       outline: none;
     }
-    input:focus { border-color: var(--accent); }
+    input {
+      height: 34px;
+      padding: 0 10px;
+    }
+    textarea {
+      min-height: 58px;
+      resize: vertical;
+      padding: 8px 10px;
+      font: inherit;
+    }
+    input:focus,
+    textarea:focus { border-color: var(--accent); }
     .selected {
       padding: 14px 16px;
       border-bottom: 1px solid #252d36;
@@ -107,6 +117,66 @@ INDEX_HTML = """<!doctype html>
       margin: 0 0 8px;
       font-size: 17px;
       font-weight: 650;
+    }
+    .config-panel {
+      padding: 12px 16px;
+      border-bottom: 1px solid #252d36;
+      background: #12171d;
+      display: grid;
+      gap: 10px;
+    }
+    .config-panel h2 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 650;
+    }
+    .config-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .field {
+      display: grid;
+      gap: 5px;
+    }
+    .field label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .field-wide {
+      grid-column: 1 / -1;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    button {
+      height: 32px;
+      color: var(--text);
+      background: #202832;
+      border: 1px solid #3a4655;
+      border-radius: 4px;
+      padding: 0 10px;
+      cursor: pointer;
+    }
+    button.primary {
+      color: #041512;
+      background: var(--accent);
+      border-color: var(--accent);
+      font-weight: 650;
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.58;
+    }
+    .config-status {
+      min-width: 0;
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .meta {
       color: var(--muted);
@@ -185,6 +255,40 @@ INDEX_HTML = """<!doctype html>
         <input id="filter" autocomplete="off" placeholder="输入 Jita、Tama 或角色名">
       </section>
       <section class="selected" id="selected"></section>
+      <section class="config-panel" aria-label="Scoring Config">
+        <h2>Scoring Config</h2>
+        <div class="config-grid">
+          <div class="field field-wide">
+            <label for="cfg-whitelist">Whitelist pilots</label>
+            <textarea id="cfg-whitelist" autocomplete="off" placeholder="One pilot per line"></textarea>
+          </div>
+          <div class="field field-wide">
+            <label for="cfg-blacklist">Blacklist pilots</label>
+            <textarea id="cfg-blacklist" autocomplete="off" placeholder="One pilot per line"></textarea>
+          </div>
+          <div class="field">
+            <label for="cfg-corps">Hostile corps</label>
+            <input id="cfg-corps" inputmode="numeric" autocomplete="off" placeholder="98000001, 98000002">
+          </div>
+          <div class="field">
+            <label for="cfg-alliances">Hostile alliances</label>
+            <input id="cfg-alliances" inputmode="numeric" autocomplete="off" placeholder="99000001, 99000002">
+          </div>
+          <div class="field">
+            <label for="cfg-standing">Standing threshold</label>
+            <input id="cfg-standing" type="number" step="0.1" placeholder="-5">
+          </div>
+          <div class="field">
+            <label for="cfg-cooldown">Cooldown seconds</label>
+            <input id="cfg-cooldown" type="number" min="0" step="1" placeholder="60">
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" id="cfg-save" type="button">Save</button>
+          <button id="cfg-reload" type="button">Reload</button>
+          <span class="config-status" id="cfg-status">Not loaded</span>
+        </div>
+      </section>
       <section class="intel-list" id="intel"></section>
     </aside>
   </main>
@@ -194,6 +298,17 @@ INDEX_HTML = """<!doctype html>
     const intelEl = document.getElementById("intel");
     const selectedEl = document.getElementById("selected");
     const filterEl = document.getElementById("filter");
+    const configStatusEl = document.getElementById("cfg-status");
+    const configFields = {
+      whitelist: document.getElementById("cfg-whitelist"),
+      blacklist: document.getElementById("cfg-blacklist"),
+      hostile_corporation_ids: document.getElementById("cfg-corps"),
+      hostile_alliance_ids: document.getElementById("cfg-alliances"),
+      hostile_standing_threshold: document.getElementById("cfg-standing"),
+      cooldown_seconds: document.getElementById("cfg-cooldown")
+    };
+    const saveConfigButton = document.getElementById("cfg-save");
+    const reloadConfigButton = document.getElementById("cfg-reload");
     let snapshot = { systems: [], links: [], reports: [], characters: [], summary: {} };
     let selectedSystem = null;
 
@@ -338,6 +453,87 @@ INDEX_HTML = """<!doctype html>
         .replaceAll("'", "&#039;");
     }
 
+    function setConfigStatus(text, isError = false) {
+      configStatusEl.textContent = text;
+      configStatusEl.style.color = isError ? "var(--danger)" : "var(--muted)";
+    }
+
+    function listToTextarea(values) {
+      return Array.isArray(values) ? values.join("\\n") : "";
+    }
+
+    function textareaToList(value) {
+      return value
+        .split(/\\n|,/)
+        .map(item => item.trim())
+        .filter(Boolean);
+    }
+
+    function idListFromInput(value) {
+      return value
+        .split(/\\n|,/)
+        .map(item => Number.parseInt(item.trim(), 10))
+        .filter(item => Number.isInteger(item) && item > 0);
+    }
+
+    function renderConfig(config) {
+      configFields.whitelist.value = listToTextarea(config.whitelist);
+      configFields.blacklist.value = listToTextarea(config.blacklist);
+      configFields.hostile_corporation_ids.value = (config.hostile_corporation_ids || []).join(", ");
+      configFields.hostile_alliance_ids.value = (config.hostile_alliance_ids || []).join(", ");
+      configFields.hostile_standing_threshold.value = config.hostile_standing_threshold ?? "";
+      configFields.cooldown_seconds.value = config.cooldown_seconds ?? 60;
+    }
+
+    function readConfigForm() {
+      const standingText = configFields.hostile_standing_threshold.value.trim();
+      return {
+        whitelist: textareaToList(configFields.whitelist.value),
+        blacklist: textareaToList(configFields.blacklist.value),
+        hostile_corporation_ids: idListFromInput(configFields.hostile_corporation_ids.value),
+        hostile_alliance_ids: idListFromInput(configFields.hostile_alliance_ids.value),
+        hostile_standing_threshold: standingText ? Number.parseFloat(standingText) : null,
+        cooldown_seconds: Number.parseFloat(configFields.cooldown_seconds.value || "0")
+      };
+    }
+
+    async function loadConfig() {
+      setConfigStatus("Loading...");
+      const response = await fetch("/api/config", { cache: "no-store" });
+      if (!response.ok) {
+        setConfigStatus("Config unavailable", true);
+        return;
+      }
+      const payload = await response.json();
+      renderConfig(payload.config || {});
+      setConfigStatus("Loaded");
+    }
+
+    async function saveConfig() {
+      saveConfigButton.disabled = true;
+      reloadConfigButton.disabled = true;
+      setConfigStatus("Saving...");
+      try {
+        const response = await fetch("/api/config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(readConfigForm())
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Save failed");
+        }
+        renderConfig(payload.config || {});
+        setConfigStatus("Saved");
+        await refresh();
+      } catch (error) {
+        setConfigStatus(error.message || "Save failed", true);
+      } finally {
+        saveConfigButton.disabled = false;
+        reloadConfigButton.disabled = false;
+      }
+    }
+
     canvas.addEventListener("click", event => {
       const rect = canvas.getBoundingClientRect();
       const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -358,6 +554,8 @@ INDEX_HTML = """<!doctype html>
     });
 
     filterEl.addEventListener("input", renderReports);
+    saveConfigButton.addEventListener("click", () => saveConfig().catch(console.error));
+    reloadConfigButton.addEventListener("click", () => loadConfig().catch(console.error));
     window.addEventListener("resize", resize);
 
     async function refresh() {
@@ -368,6 +566,7 @@ INDEX_HTML = """<!doctype html>
 
     resize();
     refresh().catch(console.error);
+    loadConfig().catch(console.error);
     setInterval(() => refresh().catch(console.error), 2000);
   </script>
 </body>

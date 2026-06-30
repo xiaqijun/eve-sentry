@@ -43,6 +43,21 @@ def test_health_and_cors_preflight(tmp_path):
         server.stop()
 
 
+def test_index_page_serves_config_panel(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        request = Request(f"{server.url}/")
+        with urlopen(request, timeout=3) as response:
+            body = response.read().decode("utf-8")
+            assert response.status == 200
+            assert response.headers["Content-Type"].startswith("text/html")
+            assert "Scoring Config" in body
+            assert "/api/config" in body
+    finally:
+        server.stop()
+
+
 def test_create_query_and_delete_report(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
