@@ -160,6 +160,21 @@ def test_intel_api_client_filters_alerts(tmp_path):
         server.stop()
 
 
+def test_intel_api_client_ignores_sse_keepalive_comments():
+    api = IntelApiClient("http://example.invalid")
+    body = (
+        ": keepalive\n\n"
+        "id: evt-1\n"
+        "event: alert\n"
+        'data: {"id": "evt-1", "names": ["Alice"]}\n\n'
+        ": keepalive\n\n"
+    )
+
+    assert api._parse_alert_events(body) == [
+        {"id": "evt-1", "names": ["Alice"]},
+    ]
+
+
 def test_intel_api_client_posts_raw_channel_lines(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
