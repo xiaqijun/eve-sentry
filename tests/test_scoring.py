@@ -1,6 +1,6 @@
 from app.core.models import Observation
 from app.intel.scoring import ScoringEngine, Watchlist
-from app.killboard.analyzer import KillActivity
+from app.killboard.analyzer import GroupKillActivity, KillActivity
 
 
 def observation(source="local_ocr", names=None):
@@ -110,6 +110,32 @@ def test_recent_kill_activity_adds_bonus_evidence():
     assert event.score == 50
     assert event.level == "medium"
     assert evidence_types(event) == ["intel_channel_report", "recent_kill_activity"]
+
+
+def test_group_kill_activity_adds_conservative_bonus_evidence():
+    activity = GroupKillActivity(
+        entity_type="corporation",
+        entity_id=456,
+        window="7d",
+        kills=12,
+        losses=2,
+    )
+
+    event = ScoringEngine(cooldown_seconds=0).score(
+        observation(source="intel_channel"),
+        group_activity=activity,
+    )
+
+    assert event is not None
+    assert event.score == 45
+    assert event.level == "medium"
+    assert evidence_types(event) == [
+        "intel_channel_report",
+        "corporation_kill_activity",
+    ]
+    assert event.evidence[1].summary == (
+        "Corporation 456 has 12 recent kills from zKillboard and 2 losses"
+    )
 
 
 def test_multiple_enrichment_items_add_profile_and_kill_evidence():

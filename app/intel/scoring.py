@@ -8,7 +8,12 @@ from typing import Any, Callable
 
 from app.core.models import Evidence, Observation, ThreatEvent, threat_level
 from app.intel.evidence import make_evidence
-from app.killboard.analyzer import KillActivity, activity_score_bonus
+from app.killboard.analyzer import (
+    GroupKillActivity,
+    KillActivity,
+    activity_score_bonus,
+    group_activity_score_bonus,
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +48,8 @@ class ScoringEngine:
         character_profile: dict[str, Any] | None = None,
         kill_activities: list[KillActivity] | None = None,
         character_profiles: list[dict[str, Any]] | None = None,
+        group_activity: GroupKillActivity | None = None,
+        group_activities: list[GroupKillActivity] | None = None,
     ) -> ThreatEvent | None:
         """Return a threat event, or None when suppressed by rules/cooldown."""
         names = self._event_names(observation)
@@ -60,6 +67,8 @@ class ScoringEngine:
             evidence.extend(self._profile_evidence(profile))
         for activity in self._activity_inputs(kill_activity, kill_activities):
             evidence.extend(self._kill_activity_evidence(activity))
+        for activity in self._group_activity_inputs(group_activity, group_activities):
+            evidence.extend(self._group_activity_evidence(activity))
 
         score = sum(item.weight for item in evidence)
         if score <= 0:
@@ -216,6 +225,28 @@ class ScoringEngine:
             )
         ]
 
+    def _group_activity_evidence(
+        self,
+        activity: GroupKillActivity,
+    ) -> list[Evidence]:
+        bonus = group_activity_score_bonus(activity)
+        if bonus <= 0:
+            return []
+        label = activity.entity_type.replace("_", " ").title()
+        summary = (
+            f"{label} {activity.entity_id} has {activity.kills} recent "
+            "kills from zKillboard"
+        )
+        if activity.losses:
+            summary = f"{summary} and {activity.losses} losses"
+        return [
+            make_evidence(
+                f"{activity.entity_type}_kill_activity",
+                bonus,
+                summary,
+            )
+        ]
+
     def _profile_inputs(
         self,
         character_profile: dict[str, Any] | None,
@@ -236,6 +267,17 @@ class ScoringEngine:
         if kill_activity is not None:
             activities.append(kill_activity)
         activities.extend(item for item in kill_activities or [] if item is not None)
+        return activities
+
+    def _group_activity_inputs(
+        self,
+        group_activity: GroupKillActivity | None,
+        group_activities: list[GroupKillActivity] | None,
+    ) -> list[GroupKillActivity]:
+        activities = []
+        if group_activity is not None:
+            activities.append(group_activity)
+        activities.extend(item for item in group_activities or [] if item is not None)
         return activities
 
     def _event_names(self, observation: Observation) -> list[str]:

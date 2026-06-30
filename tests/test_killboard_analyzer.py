@@ -3,6 +3,7 @@ from app.killboard.analyzer import (
     analyze_character_activity,
     analyze_group_activity,
     analyze_system_activity,
+    group_activity_score_bonus,
 )
 
 
@@ -157,3 +158,32 @@ def test_analyze_group_activity_counts_kills_losses_and_participants():
     assert activity.ship_type_ids == [111, 222, 333, 444]
     assert activity.latest_kill_at == "2026-06-30T11:00:00Z"
     assert activity.to_dict()["corporation_id"] == 456
+
+
+def test_group_activity_score_bonus_is_conservative():
+    quiet = analyze_group_activity(456, [], "corporation")
+    active = analyze_group_activity(
+        456,
+        [
+            {
+                "victim": {"corporation_id": 777},
+                "attackers": [{"corporation_id": 456}],
+            }
+        ],
+        "corporation",
+    )
+    busy = analyze_group_activity(
+        456,
+        [
+            {
+                "victim": {"corporation_id": 1000 + index},
+                "attackers": [{"corporation_id": 456}],
+            }
+            for index in range(10)
+        ],
+        "corporation",
+    )
+
+    assert group_activity_score_bonus(quiet) == 0
+    assert group_activity_score_bonus(active) == 5
+    assert group_activity_score_bonus(busy) == 15

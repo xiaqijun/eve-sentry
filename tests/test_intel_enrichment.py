@@ -9,7 +9,11 @@ class FakeResolver:
     def character_profile(self, character_id):
         self.calls.append(character_id)
         if character_id == 123:
-            return {"character_id": 123, "corporation_id": 42}
+            return {
+                "character_id": 123,
+                "corporation_id": 456,
+                "alliance_id": 789,
+            }
         raise RuntimeError("offline")
 
     def system_profile(self, system_id):
@@ -94,11 +98,17 @@ def test_threat_enricher_collects_profiles_and_kill_activity():
     enrichment = enricher.enrich(observation)
 
     assert enrichment.has_data()
-    assert enrichment.character_profiles == [{"character_id": 123, "corporation_id": 42}]
+    assert enrichment.character_profiles == [
+        {"character_id": 123, "corporation_id": 456, "alliance_id": 789}
+    ]
     assert len(enrichment.kill_activities) == 1
     assert enrichment.kill_activities[0].character_id == 123
     assert enrichment.kill_activities[0].kills == 1
     assert enrichment.kill_activities[0].window == "7d"
+    assert [item.entity_type for item in enrichment.group_activities] == [
+        "corporation",
+        "alliance",
+    ]
     assert resolver.calls == [123, 456]
     assert killboard.calls == [123, 456]
 

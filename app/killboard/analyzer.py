@@ -248,6 +248,15 @@ def activity_score_bonus(activity: KillActivity) -> int:
     return 0
 
 
+def group_activity_score_bonus(activity: GroupKillActivity) -> int:
+    """Return the conservative score bonus from group kill activity."""
+    if activity.kills >= 10:
+        return 15
+    if activity.kills >= 1:
+        return 5
+    return 0
+
+
 def _is_loss(character_id: int, killmail: dict[str, Any]) -> bool:
     victim = killmail.get("victim")
     if not isinstance(victim, dict):

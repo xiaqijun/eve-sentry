@@ -631,6 +631,9 @@ class IntelStore:
         kill_activities = getattr(enrichment, "kill_activities", None)
         if kill_activities:
             kwargs["kill_activities"] = kill_activities
+        group_activities = getattr(enrichment, "group_activities", None)
+        if group_activities:
+            kwargs["group_activities"] = group_activities
         return kwargs
 
     def _resolve_entity_by_name(self, name: str, category: str) -> Any | None:

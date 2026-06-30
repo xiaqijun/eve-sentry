@@ -22,10 +22,15 @@ class ThreatEnrichment:
 
     character_profiles: list[dict[str, Any]] = field(default_factory=list)
     kill_activities: list[KillActivity] = field(default_factory=list)
+    group_activities: list[GroupKillActivity] = field(default_factory=list)
 
     def has_data(self) -> bool:
         """Return whether any enrichment source produced usable data."""
-        return bool(self.character_profiles or self.kill_activities)
+        return bool(
+            self.character_profiles
+            or self.kill_activities
+            or self.group_activities
+        )
 
 
 class ThreatEnricher:
@@ -45,10 +50,13 @@ class ThreatEnricher:
         """Return best-effort enrichment without raising network errors."""
         profiles: list[dict[str, Any]] = []
         activities: list[KillActivity] = []
+        corporation_ids: set[int] = set()
+        alliance_ids: set[int] = set()
         for character_id in _unique_positive_ints(observation.character_ids):
             profile = self.character_profile(character_id)
             if profile is not None:
                 profiles.append(profile)
+                _add_profile_entity_ids(profile, corporation_ids, alliance_ids)
 
             activity = self.kill_activity(character_id)
             if activity is not None:
@@ -57,6 +65,7 @@ class ThreatEnricher:
         return ThreatEnrichment(
             character_profiles=profiles,
             kill_activities=activities,
+            group_activities=self._group_activities(corporation_ids, alliance_ids),
         )
 
     def character_profile(self, character_id: int) -> dict[str, Any] | None:
@@ -151,6 +160,22 @@ class ThreatEnricher:
         except Exception:
             return None
 
+    def _group_activities(
+        self,
+        corporation_ids: set[int],
+        alliance_ids: set[int],
+    ) -> list[GroupKillActivity]:
+        activities = []
+        for corporation_id in sorted(corporation_ids):
+            activity = self.corporation_kill_activity(corporation_id)
+            if activity is not None:
+                activities.append(activity)
+        for alliance_id in sorted(alliance_ids):
+            activity = self.alliance_kill_activity(alliance_id)
+            if activity is not None:
+                activities.append(activity)
+        return activities
+
 
 def _unique_positive_ints(values: list[int]) -> list[int]:
     seen: set[int] = set()
@@ -164,3 +189,26 @@ def _unique_positive_ints(values: list[int]) -> list[int]:
             seen.add(number)
             result.append(number)
     return result
+
+
+def _add_profile_entity_ids(
+    profile: dict[str, Any],
+    corporation_ids: set[int],
+    alliance_ids: set[int],
+) -> None:
+    corporation_id = _optional_positive_int(profile.get("corporation_id"))
+    if corporation_id is not None:
+        corporation_ids.add(corporation_id)
+    alliance_id = _optional_positive_int(profile.get("alliance_id"))
+    if alliance_id is not None:
+        alliance_ids.add(alliance_id)
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    if value in {None, ""}:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None

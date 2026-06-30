@@ -1,7 +1,7 @@
 from app.core.models import Evidence, ThreatEvent
 from app.intel.enrichment import ThreatEnrichment
 from app.intel.scoring import ScoringEngine, Watchlist
-from app.killboard.analyzer import KillActivity
+from app.killboard.analyzer import GroupKillActivity, KillActivity
 from app.server.intel_store import IntelStore, StarSystem
 
 
@@ -280,6 +280,45 @@ def test_list_alerts_scores_with_optional_enricher(tmp_path):
         "intel_channel_report",
         "hostile_corporation",
         "recent_kill_activity",
+    ]
+
+
+def test_list_alerts_scores_group_kill_activity_from_enricher(tmp_path):
+    class FakeEnricher:
+        def enrich(self, observation):
+            return ThreatEnrichment(
+                group_activities=[
+                    GroupKillActivity(
+                        entity_type="alliance",
+                        entity_id=789,
+                        window="7d",
+                        kills=10,
+                    )
+                ],
+            )
+
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+        enricher=FakeEnricher(),
+    )
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "system_name": "Tama",
+            "names": ["Alice"],
+            "character_ids": [123],
+        }
+    )
+
+    alert = store.list_alerts()[0]
+
+    assert alert["score"] == 45
+    assert [item["type"] for item in alert["evidence"]] == [
+        "intel_channel_report",
+        "alliance_kill_activity",
     ]
 
 
