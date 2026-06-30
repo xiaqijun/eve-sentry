@@ -1,4 +1,13 @@
-from app.alert_client import build_popup_names, format_alert, format_report
+import io
+import json
+
+from app.alert_client import (
+    build_popup_names,
+    emit_alerts,
+    format_alert,
+    format_report,
+    parse_args,
+)
 from app.intel_client import AlertPoller, IntelApiClient, ReportPoller
 from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore
@@ -147,3 +156,33 @@ def test_alert_client_formats_reports_for_console_and_popup():
         == "MEDIUM 2026-06-29T12:00:00+00:00 Tama: Alice "
         "(score 40) - Local OCR saw Alice; Blacklisted pilot"
     )
+
+
+def test_alert_client_parse_args_supports_one_shot_json_mode():
+    args = parse_args(["--once", "--json", "--poll", "--include-existing"])
+
+    assert args.once is True
+    assert args.json is True
+    assert args.poll is True
+    assert args.ignore_existing is False
+
+
+def test_alert_client_emit_alerts_supports_text_and_json_lines():
+    alert = {
+        "id": "evt-1",
+        "system_name": "Tama",
+        "names": ["Alice"],
+        "created_at": "2026-06-29T12:00:00+00:00",
+        "level": "high",
+        "score": 70,
+    }
+    text_stream = io.StringIO()
+    json_stream = io.StringIO()
+
+    emit_alerts([alert], stream=text_stream)
+    emit_alerts([alert], json_lines=True, stream=json_stream)
+
+    assert text_stream.getvalue().strip() == (
+        "[ALERT] HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 70)"
+    )
+    assert json.loads(json_stream.getvalue()) == alert

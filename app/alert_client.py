@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
@@ -86,6 +87,27 @@ def show_popup(entries: list[str]) -> None:
     app.processEvents()
 
 
+def emit_alerts(
+    alerts: list[dict[str, Any]],
+    popup: bool = False,
+    json_lines: bool = False,
+    stream: Any | None = None,
+) -> None:
+    """Write alerts to a stream and optionally show the popup dialog."""
+    stream = stream or sys.stdout
+    for alert in alerts:
+        if json_lines:
+            print(
+                json.dumps(alert, ensure_ascii=False, sort_keys=True),
+                file=stream,
+                flush=True,
+            )
+        else:
+            print(f"[ALERT] {format_alert(alert)}", file=stream, flush=True)
+    if popup:
+        show_popup(build_popup_names(alerts))
+
+
 def run_alert_client(args: argparse.Namespace) -> int:
     """Run the polling alert loop."""
     api = IntelApiClient(args.server, timeout=args.timeout)
@@ -97,8 +119,15 @@ def run_alert_client(args: argparse.Namespace) -> int:
         except IntelApiError as exc:
             logger.warning("Initial alert sync failed: %s", exc)
 
-    print(f"Alert client listening on {args.server}")
-    print("Press Ctrl+C to stop.")
+    once = getattr(args, "once", False)
+    json_lines = getattr(args, "json", False)
+    popup = getattr(args, "popup", False)
+    status_stream = sys.stderr if json_lines else sys.stdout
+    print(f"Alert client listening on {args.server}", file=status_stream)
+    if once:
+        print("Running one alert check.", file=status_stream)
+    else:
+        print("Press Ctrl+C to stop.", file=status_stream)
     use_events = not args.poll
     try:
         while True:
@@ -113,14 +142,20 @@ def run_alert_client(args: argparse.Namespace) -> int:
                     use_events = False
                     continue
                 logger.warning("Polling failed: %s", exc)
+                if once:
+                    return 1
                 time.sleep(args.interval)
                 continue
 
             if alerts:
-                for alert in alerts:
-                    print(f"[ALERT] {format_alert(alert)}", flush=True)
-                if args.popup:
-                    show_popup(build_popup_names(alerts))
+                emit_alerts(
+                    alerts,
+                    popup=popup,
+                    json_lines=json_lines,
+                )
+
+            if once:
+                return 0
 
             if not use_events:
                 time.sleep(args.interval)
@@ -149,6 +184,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--poll",
         action="store_true",
         help="use /api/alerts polling instead of the event stream",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="run one alert check and exit",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="print new alerts as JSON Lines",
     )
     return parser.parse_args(argv)
 
