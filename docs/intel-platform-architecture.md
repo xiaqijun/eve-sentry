@@ -87,6 +87,9 @@ uv run python -m app.detector_client
 # 只解析并打印，不连接服务端，适合先用样例 chatlog 验证规则
 uv run python -m app.channel_client --log-dir .\samples\Chatlogs --once --include-existing --dry-run --json
 
+# 启动临时本地服务端，验证样例 chatlog 能生成 observation 和 alert
+uv run python scripts/channel_smoke.py --json
+
 # 长驻采集并上报到本地服务端
 uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Alliance Intel"
 ```

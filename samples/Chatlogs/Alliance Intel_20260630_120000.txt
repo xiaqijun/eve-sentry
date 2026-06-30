@@ -1,0 +1,4 @@
+Listener: Alliance Intel
+[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds
+[ 2026.06.30 12:02:44 ] Scout B > Some Pilot in Oijanen
+[ 2026.06.30 12:03:10 ] Scout C > ABC-123 +2 reds 3j towards DEF-456
