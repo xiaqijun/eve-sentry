@@ -273,6 +273,37 @@ INDEX_HTML = """<!doctype html>
       line-height: 1.35;
       word-break: break-word;
     }
+    .detail-action {
+      margin-top: 8px;
+      height: 28px;
+      font-size: 12px;
+    }
+    .alert-detail {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid #2c3540;
+      display: grid;
+      gap: 8px;
+    }
+    .detail-section {
+      display: grid;
+      gap: 5px;
+    }
+    .detail-title {
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .detail-row {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    .detail-row strong {
+      color: var(--text);
+      font-weight: 650;
+    }
     .empty {
       color: var(--muted);
       padding: 18px 8px;
@@ -407,6 +438,7 @@ INDEX_HTML = """<!doctype html>
     let snapshot = { systems: [], links: [], reports: [], characters: [], summary: {} };
     let selectedSystem = null;
     let listMode = "reports";
+    const alertDetails = new Map();
 
     function resize() {
       const rect = canvas.getBoundingClientRect();
@@ -564,6 +596,8 @@ INDEX_HTML = """<!doctype html>
         const level = String(alert.level || "low").toLowerCase();
         const system = alert.system_name || alert.system || "Unknown";
         const names = Array.isArray(alert.names) ? alert.names.join(", ") : "Unknown target";
+        const alertId = alert.id || alert.source_observation_id || `${system}:${names}`;
+        const detailsOpen = alertDetails.has(alertId);
         return `
           <article class="report ${escapeHtml(level)}">
             <div class="report-title">
@@ -583,9 +617,204 @@ INDEX_HTML = """<!doctype html>
                 </div>
               `).join("")}
             </div>
+            <button class="detail-action" type="button" data-alert-details="${escapeHtml(alertId)}">
+              ${detailsOpen ? "Hide details" : "Details"}
+            </button>
+            ${renderAlertDetails(alertId)}
           </article>
         `;
       }).join("");
+    }
+
+    function renderAlertDetails(alertId) {
+      const detail = alertDetails.get(alertId);
+      if (!detail) return "";
+      if (detail.status === "loading") {
+        return `<div class="alert-detail"><div class="detail-row">Loading details...</div></div>`;
+      }
+      if (detail.status === "error") {
+        return `<div class="alert-detail"><div class="detail-row">${escapeHtml(detail.error || "Details unavailable")}</div></div>`;
+      }
+
+      const characters = Array.isArray(detail.characters) ? detail.characters : [];
+      const characterRows = characters.length
+        ? characters.map(renderCharacterDetail).join("")
+        : `<div class="detail-row">No character identifiers available</div>`;
+      return `
+        <div class="alert-detail">
+          <div class="detail-section">
+            <div class="detail-title">Characters</div>
+            ${characterRows}
+          </div>
+          <div class="detail-section">
+            <div class="detail-title">System</div>
+            ${renderSystemDetail(detail)}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderCharacterDetail(item) {
+      const profile = item.profile || {};
+      const activity = item.activity || {};
+      const label = profile.name || item.label || profile.character_id || activity.character_id || "Unknown";
+      const profileParts = [
+        profile.character_id ? `ID ${profile.character_id}` : "",
+        profile.corporation_id ? `Corp ${profile.corporation_id}` : "",
+        profile.alliance_id ? `Alliance ${profile.alliance_id}` : "",
+        profile.security_status === undefined ? "" : `Security ${Number(profile.security_status).toFixed(1)}`
+      ].filter(Boolean);
+      const activityParts = [
+        activity.kills === undefined ? "" : `Kills ${Number(activity.kills)}`,
+        activity.losses === undefined ? "" : `Losses ${Number(activity.losses)}`,
+        activity.latest_kill_at ? `Latest ${formatTime(activity.latest_kill_at)}` : ""
+      ].filter(Boolean);
+      const profileText = profileParts.length ? profileParts.join(" | ") : (item.profileError || "Profile unavailable");
+      const activityText = activityParts.length ? activityParts.join(" | ") : (item.activityError || "Kill activity unavailable");
+      return `
+        <div class="detail-row">
+          <strong>${escapeHtml(label)}</strong><br>
+          ${escapeHtml(profileText)}<br>
+          ${escapeHtml(activityText)}
+        </div>
+      `;
+    }
+
+    function renderSystemDetail(detail) {
+      const profile = detail.system || {};
+      const activity = detail.systemActivity || {};
+      const label = profile.name || detail.systemName || profile.system_id || activity.system_id || "Unknown";
+      const profileParts = [
+        profile.system_id ? `ID ${profile.system_id}` : "",
+        profile.security_status === undefined ? "" : `Security ${Number(profile.security_status).toFixed(1)}`,
+        profile.constellation_id ? `Constellation ${profile.constellation_id}` : ""
+      ].filter(Boolean);
+      const activityParts = [
+        activity.kills === undefined ? "" : `Kills ${Number(activity.kills)}`,
+        Array.isArray(activity.character_ids) && activity.character_ids.length ? `Pilots ${activity.character_ids.slice(0, 5).join(", ")}` : "",
+        activity.latest_kill_at ? `Latest ${formatTime(activity.latest_kill_at)}` : ""
+      ].filter(Boolean);
+      const profileText = profileParts.length ? profileParts.join(" | ") : (detail.systemError || "System profile unavailable");
+      const activityText = activityParts.length ? activityParts.join(" | ") : (detail.systemActivityError || "System activity unavailable");
+      return `
+        <div class="detail-row">
+          <strong>${escapeHtml(label)}</strong><br>
+          ${escapeHtml(profileText)}<br>
+          ${escapeHtml(activityText)}
+        </div>
+      `;
+    }
+
+    async function toggleAlertDetails(alertId) {
+      if (alertDetails.has(alertId)) {
+        alertDetails.delete(alertId);
+        renderIntelList();
+        return;
+      }
+      alertDetails.set(alertId, { status: "loading" });
+      renderIntelList();
+      try {
+        const alert = findAlert(alertId);
+        if (!alert) {
+          throw new Error("Alert not found");
+        }
+        alertDetails.set(alertId, await loadAlertDetails(alert));
+      } catch (error) {
+        alertDetails.set(alertId, {
+          status: "error",
+          error: error.message || "Details unavailable"
+        });
+      }
+      renderIntelList();
+    }
+
+    function findAlert(alertId) {
+      return (snapshot.alerts || []).find(alert => {
+        const system = alert.system_name || alert.system || "Unknown";
+        const names = Array.isArray(alert.names) ? alert.names.join(", ") : "Unknown target";
+        const candidate = alert.id || alert.source_observation_id || `${system}:${names}`;
+        return candidate === alertId;
+      });
+    }
+
+    async function loadAlertDetails(alert) {
+      const characterIds = uniquePositiveInts(alert.character_ids);
+      const names = Array.isArray(alert.names) ? alert.names.filter(Boolean) : [];
+      const characters = characterIds.length
+        ? await Promise.all(characterIds.slice(0, 5).map(id => loadCharacterDetail({ id })))
+        : await Promise.all(names.slice(0, 5).map(name => loadCharacterDetail({ name })));
+      const systemName = alert.system_name || alert.system || "";
+      const systemLookup = systemName
+        ? await fetchOptional(`/api/systems/by-name/${encodeURIComponent(systemName)}`, "system")
+        : { error: "System name unavailable" };
+      const system = systemLookup.data || null;
+      const systemId = positiveInt(alert.system_id) || positiveInt(system && system.system_id);
+      const systemActivityLookup = systemId
+        ? await fetchOptional(`/api/kill-activity/system/${systemId}`, "activity")
+        : { error: "System id unavailable" };
+      return {
+        status: "loaded",
+        characters,
+        systemName,
+        system,
+        systemError: systemLookup.error,
+        systemActivity: systemActivityLookup.data || null,
+        systemActivityError: systemActivityLookup.error
+      };
+    }
+
+    async function loadCharacterDetail(query) {
+      const label = query.name || String(query.id);
+      const profileLookup = query.id
+        ? await fetchOptional(`/api/characters/${query.id}`, "character")
+        : await fetchOptional(`/api/characters/by-name/${encodeURIComponent(query.name)}`, "character");
+      const profile = profileLookup.data || null;
+      const characterId = positiveInt(query.id) || positiveInt(profile && profile.character_id);
+      const activityLookup = characterId
+        ? await fetchOptional(`/api/kill-activity/character/${characterId}`, "activity")
+        : { error: "Character id unavailable" };
+      return {
+        label,
+        profile,
+        profileError: profileLookup.error,
+        activity: activityLookup.data || null,
+        activityError: activityLookup.error
+      };
+    }
+
+    async function fetchOptional(path, key) {
+      const response = await fetch(path, { cache: "no-store" });
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch (_error) {
+        payload = {};
+      }
+      if (response.status === 404) {
+        return { data: null, error: payload.error || "Unavailable" };
+      }
+      if (!response.ok) {
+        throw new Error(payload.error || "Lookup failed");
+      }
+      return { data: payload[key] || null, error: "" };
+    }
+
+    function uniquePositiveInts(values) {
+      const seen = new Set();
+      const result = [];
+      for (const value of Array.isArray(values) ? values : []) {
+        const number = positiveInt(value);
+        if (number && !seen.has(number)) {
+          seen.add(number);
+          result.push(number);
+        }
+      }
+      return result;
+    }
+
+    function positiveInt(value) {
+      const number = Number.parseInt(value, 10);
+      return Number.isInteger(number) && number > 0 ? number : 0;
     }
 
     function formatTime(value) {
@@ -770,6 +999,11 @@ INDEX_HTML = """<!doctype html>
     });
 
     filterEl.addEventListener("input", renderIntelList);
+    intelEl.addEventListener("click", event => {
+      const button = event.target.closest("[data-alert-details]");
+      if (!button) return;
+      toggleAlertDetails(button.dataset.alertDetails).catch(console.error);
+    });
     reportTabButton.addEventListener("click", () => {
       listMode = "reports";
       renderIntelList();

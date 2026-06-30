@@ -60,6 +60,9 @@ def test_index_page_serves_config_panel(tmp_path):
             assert "function renderAlerts()" in body
             assert "/api/config" in body
             assert "/api/observations" in body
+            assert "data-alert-details" in body
+            assert "/api/kill-activity/character" in body
+            assert "/api/characters/by-name" in body
     finally:
         server.stop()
 

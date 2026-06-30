@@ -31,3 +31,16 @@ def test_star_map_page_includes_alert_evidence_view():
     assert "Score ${Number(alert.score || 0)}" in INDEX_HTML
     assert "evidence-item" in INDEX_HTML
     assert 'alert.names.join(", ")' in INDEX_HTML
+
+
+def test_star_map_page_includes_alert_detail_lookup_view():
+    assert "data-alert-details" in INDEX_HTML
+    assert "function toggleAlertDetails(alertId)" in INDEX_HTML
+    assert "function loadAlertDetails(alert)" in INDEX_HTML
+    assert "function fetchOptional(path, key)" in INDEX_HTML
+    assert 'fetchOptional(`/api/characters/${query.id}`' in INDEX_HTML
+    assert 'fetchOptional(`/api/characters/by-name/${encodeURIComponent(query.name)}`' in INDEX_HTML
+    assert 'fetchOptional(`/api/kill-activity/character/${characterId}`' in INDEX_HTML
+    assert 'fetchOptional(`/api/systems/by-name/${encodeURIComponent(systemName)}`' in INDEX_HTML
+    assert 'fetchOptional(`/api/kill-activity/system/${systemId}`' in INDEX_HTML
+    assert "alert-detail" in INDEX_HTML
