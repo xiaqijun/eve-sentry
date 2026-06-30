@@ -75,11 +75,13 @@ def test_intel_api_client_posts_observations(tmp_path):
             names=["Alice"],
             source="intel_channel",
             raw_text="Tama Alice",
+            metadata={"hostile_count": 1, "sender": "Scout A"},
             seen_at="2026-06-29T12:00:00+00:00",
         )
 
         observation_id = created["observation"]["id"]
         assert created["alert"]["id"] == f"evt_{observation_id}"
+        assert created["observation"]["metadata"]["sender"] == "Scout A"
         assert api.list_alerts()[0]["score"] == 30
         assert api.stream_alerts(timeout=0)[0]["id"] == f"evt_{observation_id}"
 

@@ -52,6 +52,7 @@ class IntelApiClient:
         character_ids: list[int] | None = None,
         confidence: float | None = None,
         raw_text: str = "",
+        metadata: dict[str, Any] | None = None,
         seen_at: str | None = None,
     ) -> dict[str, Any]:
         """Publish a canonical multi-source observation."""
@@ -67,6 +68,8 @@ class IntelApiClient:
             payload["system_id"] = system_id
         if confidence is not None:
             payload["confidence"] = confidence
+        if metadata is not None:
+            payload["metadata"] = metadata
         if seen_at is not None:
             payload["seen_at"] = seen_at
         return self._request("POST", "/api/observations", payload=payload)
