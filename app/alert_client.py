@@ -36,8 +36,10 @@ def format_alert(alert: dict[str, Any]) -> str:
         text = f"{level} {base} (score {score})".strip()
 
     evidence = _format_evidence_summary(alert)
-    if evidence:
-        return f"{text} - {evidence}"
+    detail_context = _format_detail_context_summary(alert)
+    suffixes = [item for item in (evidence, detail_context) if item]
+    if suffixes:
+        return f"{text} - {' | '.join(suffixes)}"
     return text
 
 
@@ -56,6 +58,145 @@ def _format_evidence_summary(alert: dict[str, Any]) -> str:
         if len(summaries) >= 2:
             break
     return "; ".join(summaries)
+
+
+def _format_detail_context_summary(alert: dict[str, Any]) -> str:
+    detail = alert.get("detail")
+    if not isinstance(detail, dict):
+        return ""
+    server_summary = _format_explanation_context(detail.get("explanation"))
+    if server_summary:
+        return server_summary
+
+    context = detail.get("context")
+    if not isinstance(context, dict):
+        return ""
+
+    parts: list[str] = []
+    parts.extend(_format_channel_context(context.get("channel_mentions")))
+    parts.extend(_format_profile_context(context.get("character_profiles")))
+    parts.extend(_format_kill_context(context.get("kill_activities")))
+    parts.extend(_format_group_context(context.get("group_activities")))
+    if not parts:
+        return ""
+    return f"Context: {'; '.join(parts[:4])}"
+
+
+def _format_explanation_context(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    context = value.get("context")
+    if not isinstance(context, list):
+        return ""
+    summaries = [str(item).strip() for item in context if str(item).strip()]
+    if not summaries:
+        return ""
+    return f"Context: {'; '.join(summaries[:4])}"
+
+
+def _format_channel_context(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    parts = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        observation = item.get("observation")
+        if not isinstance(observation, dict):
+            continue
+        relation = _relation_label(str(item.get("relation") or ""))
+        system = str(
+            observation.get("system_name") or observation.get("system") or "Unknown"
+        )
+        parts.append(f"channel {relation} {system}")
+    return parts
+
+
+def _format_profile_context(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    parts = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("name") or item.get("character_id") or "").strip()
+        if not label:
+            continue
+        affiliations = []
+        corporation_id = item.get("corporation_id")
+        alliance_id = item.get("alliance_id")
+        if corporation_id not in {None, ""}:
+            affiliations.append(f"corp {corporation_id}")
+        if alliance_id not in {None, ""}:
+            affiliations.append(f"alliance {alliance_id}")
+        suffix = f" ({', '.join(affiliations)})" if affiliations else ""
+        parts.append(f"profile {label}{suffix}")
+    return parts
+
+
+def _format_kill_context(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    parts = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        character_id = item.get("character_id")
+        if character_id in {None, ""}:
+            continue
+        counts = _activity_counts(item)
+        parts.append(f"character {character_id} {counts}")
+    return parts
+
+
+def _format_group_context(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    parts = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        entity_type = str(item.get("entity_type") or "group")
+        entity_id = item.get("entity_id") or item.get(f"{entity_type}_id")
+        if entity_id in {None, ""}:
+            continue
+        counts = _activity_counts(item)
+        parts.append(f"{entity_type} {entity_id} {counts}")
+    return parts
+
+
+def _activity_counts(item: dict[str, Any]) -> str:
+    parts = []
+    if _has_count(item.get("kills")):
+        parts.append(_plural_count(item["kills"], "kill"))
+    if _has_count(item.get("losses")):
+        parts.append(_plural_count(item["losses"], "loss"))
+    return ", ".join(parts) or "activity"
+
+
+def _has_count(value: Any) -> bool:
+    if value in {None, ""}:
+        return False
+    try:
+        return int(value) != 0
+    except (TypeError, ValueError):
+        return True
+
+
+def _plural_count(value: Any, label: str) -> str:
+    if str(value) == "1":
+        return f"{value} {label}"
+    plural = "losses" if label == "loss" else f"{label}s"
+    return f"{value} {plural}"
+
+
+def _relation_label(value: str) -> str:
+    relation = value.strip().casefold()
+    if relation == "same_system":
+        return "same-system"
+    if relation == "adjacent_system":
+        return "adjacent-system"
+    return relation.replace("_", "-") or "related"
 
 
 def build_popup_names(reports: list[dict[str, Any]]) -> list[str]:
@@ -129,6 +270,27 @@ def ack_emitted_alerts(
     return acknowledged
 
 
+def attach_alert_details(
+    api: IntelApiClient,
+    alerts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach alert detail payloads without interrupting alert delivery."""
+    detailed = []
+    for alert in alerts:
+        item = dict(alert)
+        alert_id = str(item.get("id") or "").strip()
+        if not alert_id:
+            detailed.append(item)
+            continue
+        try:
+            item["detail"] = api.alert_detail(alert_id)
+        except IntelApiError as exc:
+            item["detail_error"] = str(exc)
+            logger.warning("Failed to fetch alert detail %s: %s", alert_id, exc)
+        detailed.append(item)
+    return detailed
+
+
 def run_alert_client(args: argparse.Namespace) -> int:
     """Run the polling alert loop."""
     api = IntelApiClient(args.server, timeout=args.timeout)
@@ -146,6 +308,7 @@ def run_alert_client(args: argparse.Namespace) -> int:
     ack = getattr(args, "ack", False)
     ack_by = getattr(args, "ack_by", "alert-client")
     ack_note = getattr(args, "ack_note", "")
+    details = getattr(args, "details", False)
     status_stream = sys.stderr if json_lines else sys.stdout
     print(f"Alert client listening on {args.server}", file=status_stream)
     if once:
@@ -172,6 +335,8 @@ def run_alert_client(args: argparse.Namespace) -> int:
                 continue
 
             if alerts:
+                if details:
+                    alerts = attach_alert_details(api, alerts)
                 emit_alerts(
                     alerts,
                     popup=popup,
@@ -240,6 +405,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--ack-note",
         default="",
         help="optional acknowledgement note recorded when --ack is enabled",
+    )
+    parser.add_argument(
+        "--details",
+        action="store_true",
+        help="fetch alert detail context before printing each alert",
     )
     return parser.parse_args(argv)
 
