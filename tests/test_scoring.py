@@ -70,6 +70,18 @@ def test_hostile_corporation_profile_adds_evidence():
     assert evidence_types(event) == ["intel_channel_report", "hostile_corporation"]
 
 
+def test_hostile_standing_profile_adds_evidence():
+    event = ScoringEngine(cooldown_seconds=0).score(
+        observation(source="intel_channel"),
+        character_profile={"standing": -10.0},
+    )
+
+    assert event is not None
+    assert event.score == 100
+    assert event.level == "critical"
+    assert evidence_types(event) == ["intel_channel_report", "hostile_standing"]
+
+
 def test_recent_kill_activity_adds_bonus_evidence():
     activity = KillActivity(character_id=123, window="7d", kills=5)
     event = ScoringEngine(cooldown_seconds=0).score(

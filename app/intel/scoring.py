@@ -19,6 +19,7 @@ class Watchlist:
     blacklist: set[str] = field(default_factory=set)
     hostile_corporation_ids: set[int] = field(default_factory=set)
     hostile_alliance_ids: set[int] = field(default_factory=set)
+    hostile_standing_threshold: float | None = -5.0
 
 
 class ScoringEngine:
@@ -148,6 +149,9 @@ class ScoringEngine:
         evidence = []
         corporation_id = _optional_int(character_profile.get("corporation_id"))
         alliance_id = _optional_int(character_profile.get("alliance_id"))
+        standing = _optional_float(character_profile.get("standing"))
+        if standing is None:
+            standing = _optional_float(character_profile.get("contact_standing"))
         if corporation_id in self.watchlist.hostile_corporation_ids:
             evidence.append(
                 make_evidence(
@@ -162,6 +166,18 @@ class ScoringEngine:
                     "hostile_alliance",
                     60,
                     f"Hostile alliance id {alliance_id}",
+                )
+            )
+        if (
+            standing is not None
+            and self.watchlist.hostile_standing_threshold is not None
+            and standing <= self.watchlist.hostile_standing_threshold
+        ):
+            evidence.append(
+                make_evidence(
+                    "hostile_standing",
+                    70,
+                    f"Hostile standing {standing:g}",
                 )
             )
         return evidence
@@ -215,3 +231,12 @@ def _optional_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+def _optional_float(value: Any) -> float | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
