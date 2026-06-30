@@ -52,11 +52,39 @@ class EsiClient:
         """Fetch public solar-system information."""
         return self._request("GET", f"/universe/systems/{int(system_id)}/")
 
+    def get_character_location(
+        self,
+        character_id: int,
+        access_token: str,
+    ) -> dict[str, Any]:
+        """Fetch an authenticated character's current location."""
+        return self._request(
+            "GET",
+            f"/characters/{int(character_id)}/location/",
+            access_token=access_token,
+        )
+
+    def get_character_contacts(
+        self,
+        character_id: int,
+        access_token: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch authenticated character contacts and standings."""
+        payload = self._request(
+            "GET",
+            f"/characters/{int(character_id)}/contacts/",
+            access_token=access_token,
+        )
+        if not isinstance(payload, list):
+            raise EsiApiError("ESI returned invalid contacts payload")
+        return payload
+
     def _request(
         self,
         method: str,
         path: str,
         payload: Any | None = None,
+        access_token: str | None = None,
     ) -> Any:
         url = f"{self.base_url}{path}"
         data = None
@@ -64,6 +92,8 @@ class EsiClient:
             "Accept": "application/json",
             "User-Agent": self.user_agent,
         }
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -97,4 +127,3 @@ class EsiClient:
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             pass
         return f"ESI HTTP {exc.code}"
-
