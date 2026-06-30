@@ -13,6 +13,7 @@ from app.intel.config import IntelConfigStore
 from app.intel.scoring import ScoringEngine
 from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore
+from app.server.sqlite_store import SQLiteIntelStore
 
 
 def request_json(url, method="GET", payload=None):
@@ -1117,6 +1118,77 @@ def test_events_stream_since_parameter_remains_exclusive(tmp_path):
         assert second_created["alert"]["id"] in body
     finally:
         server.stop()
+
+
+def test_sqlite_server_restart_preserves_ack_and_event_resume(tmp_path):
+    db_path = tmp_path / "intel.sqlite3"
+    first_server = IntelHTTPServer(
+        SQLiteIntelStore(db_path, systems={}, links=[]),
+        port=0,
+    )
+    first_server.start()
+    try:
+        _, first_created = request_json(
+            f"{first_server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+                "seen_at": "2026-06-29T12:00:00+00:00",
+                "received_at": "2026-06-29T12:30:00+00:00",
+            },
+        )
+        first_alert_id = first_created["alert"]["id"]
+
+        status, acked = request_json(
+            f"{first_server.url}/api/alerts/{first_alert_id}/ack",
+            method="POST",
+            payload={"acknowledged_by": "alert-client", "note": "sent"},
+        )
+
+        assert status == 200
+        assert acked["alert"]["acknowledged"] is True
+    finally:
+        first_server.stop()
+
+    second_server = IntelHTTPServer(
+        SQLiteIntelStore(db_path, systems={}, links=[]),
+        port=0,
+    )
+    second_server.start()
+    try:
+        status, acknowledged = request_json(
+            f"{second_server.url}/api/alerts?{urlencode({'acknowledged': 'true'})}"
+        )
+        assert status == 200
+        assert [alert["id"] for alert in acknowledged["alerts"]] == [first_alert_id]
+        assert acknowledged["alerts"][0]["acknowledged_by"] == "alert-client"
+
+        _, second_created = request_json(
+            f"{second_server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Bob"],
+                "source": "intel_channel",
+                "seen_at": "2026-06-29T12:01:00+00:00",
+                "received_at": first_created["alert"]["created_at"],
+            },
+        )
+        second_alert_id = second_created["alert"]["id"]
+
+        status, _, body = request_text(
+            f"{second_server.url}/api/events?"
+            f"{urlencode({'timeout': '0', 'limit': '5'})}",
+            headers={"Last-Event-ID": first_alert_id},
+        )
+
+        assert status == 200
+        assert first_alert_id not in body
+        assert second_alert_id in body
+    finally:
+        second_server.stop()
 
 
 def test_events_stream_applies_alert_filters(tmp_path):

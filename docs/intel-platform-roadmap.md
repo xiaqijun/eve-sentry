@@ -212,6 +212,8 @@
 - `/api/events` 已补多客户端并发订阅测试，验证多个连接可同时收到同一条 alert。
 - 独立预警客户端已补真实服务端续接测试，验证断开后可用 `Last-Event-ID`
   接收同时间游标后的下一条 alert。
+- SQLite-backed 服务端已补重启验收测试，覆盖历史 alert、ack 状态和
+  `Last-Event-ID` 续接游标在重启后的恢复。
 
 验收:
 
