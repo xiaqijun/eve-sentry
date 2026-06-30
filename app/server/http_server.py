@@ -301,8 +301,13 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             try:
                 parsed_limit = self._parse_optional_int(query.get("limit", [""])[0])
-                parsed_timeout = self._parse_optional_float(
-                    query.get("timeout", [""])[0]
+                parsed_timeout = self._parse_optional_float_param(
+                    query.get("timeout", [""])[0],
+                    "timeout",
+                )
+                parsed_heartbeat = self._parse_optional_float_param(
+                    query.get("heartbeat", [""])[0],
+                    "heartbeat",
                 )
                 filters = self._parse_alert_filters(query)
             except ValueError as exc:
@@ -317,6 +322,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 include_since=include_since,
                 limit=50 if parsed_limit is None else parsed_limit,
                 timeout_seconds=30.0 if parsed_timeout is None else parsed_timeout,
+                heartbeat_seconds=15.0 if parsed_heartbeat is None else parsed_heartbeat,
                 **filters,
             )
             return
@@ -598,13 +604,13 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("limit must be non-negative")
         return value
 
-    def _parse_optional_float(self, raw: str) -> float | None:
+    def _parse_optional_float_param(self, raw: str, label: str) -> float | None:
         raw = raw.strip()
         if not raw:
             return None
         value = float(raw)
         if value < 0:
-            raise ValueError("timeout must be non-negative")
+            raise ValueError(f"{label} must be non-negative")
         return value
 
     def _parse_alert_filters(
@@ -705,6 +711,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         include_since: bool = False,
         limit: int = 50,
         timeout_seconds: float = 30.0,
+        heartbeat_seconds: float = 15.0,
         acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str | None = None,
@@ -719,8 +726,13 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         resume_after_id = resume_after_id.strip()
         sent_ids: set[str] = set()
         deadline = time.monotonic() + max(0.0, timeout_seconds)
+        heartbeat_interval = max(0.0, heartbeat_seconds)
+        next_heartbeat_at = (
+            time.monotonic() + heartbeat_interval if heartbeat_interval else 0.0
+        )
         while True:
             try:
+                wrote_event = False
                 current_include_since = bool(last_seen) and (
                     include_since or bool(sent_ids)
                 )
@@ -751,17 +763,32 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                             resume_after_id = ""
                         continue
                     self._write_sse("alert", alert_id, alert)
+                    wrote_event = True
                     sent_ids.add(alert_id)
                     created_at = str(alert.get("created_at") or "")
                     if created_at > last_seen:
                         last_seen = created_at
+                now = time.monotonic()
+                if heartbeat_interval and wrote_event:
+                    next_heartbeat_at = now + heartbeat_interval
+                if (
+                    heartbeat_interval
+                    and not wrote_event
+                    and now >= next_heartbeat_at
+                ):
+                    self._write_sse_comment("keepalive")
+                    next_heartbeat_at = now + heartbeat_interval
             except (BrokenPipeError, ConnectionResetError):
                 return
 
-            remaining = deadline - time.monotonic()
+            now = time.monotonic()
+            remaining = deadline - now
             if remaining <= 0:
                 break
-            time.sleep(min(1.0, remaining))
+            sleep_for = min(1.0, remaining)
+            if heartbeat_interval:
+                sleep_for = min(sleep_for, max(0.0, next_heartbeat_at - now))
+            time.sleep(sleep_for)
 
     def _write_sse(
         self,
@@ -771,6 +798,11 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
     ) -> None:
         data = json.dumps(payload, ensure_ascii=False)
         body = f"id: {event_id}\nevent: {event_name}\ndata: {data}\n\n"
+        self.wfile.write(body.encode("utf-8"))
+        self.wfile.flush()
+
+    def _write_sse_comment(self, comment: str) -> None:
+        body = f": {comment}\n\n"
         self.wfile.write(body.encode("utf-8"))
         self.wfile.flush()
 

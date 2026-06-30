@@ -523,6 +523,7 @@ POST /api/channel-lines
 GET  /api/alerts?since=&limit=&acknowledged=&min_score=&min_level=
 GET  /api/alerts/{id}
 POST /api/alerts/{id}/ack
+GET  /api/events?since=&limit=&timeout=&heartbeat=&acknowledged=&min_score=&min_level=
 
 GET  /api/characters/{character_id}
 GET  /api/characters/by-name/{name}
@@ -571,6 +572,8 @@ GET  /api/map/snapshot
   `min_score` 和 `min_level` 等过滤参数。
 - 客户端可用 `since=<created_at>` 续接；浏览器 `EventSource` 重连时发送的
   `Last-Event-ID` 会被服务端解析回对应 alert 的 `created_at` 游标。
+- 事件流空闲时默认每 15 秒发送 SSE 注释帧 `: keepalive`；可通过
+  `heartbeat=<seconds>` 调整，设为 `0` 可关闭。
 - Web 面板通过 `EventSource` 订阅 `/api/events`，收到 alert 后先本地合并展示，
   再排队刷新完整快照；浏览器或网络不支持 SSE 时回退到短轮询。
 - 独立预警客户端默认订阅同一事件流；事件流失败时先用轮询兜底，再按冷却时间

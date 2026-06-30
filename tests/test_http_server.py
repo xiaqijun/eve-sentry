@@ -967,6 +967,23 @@ def test_events_stream_returns_alert_sse(tmp_path):
         server.stop()
 
 
+def test_events_stream_sends_keepalive_comments_when_idle(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        status, headers, body = request_text(
+            f"{server.url}/api/events?"
+            f"{urlencode({'timeout': '0.05', 'heartbeat': '0.01'})}"
+        )
+
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/event-stream")
+        assert ": keepalive" in body
+        assert "event: alert" not in body
+    finally:
+        server.stop()
+
+
 def test_events_stream_resumes_from_last_event_id(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
