@@ -54,6 +54,7 @@ class IntelApiClient:
         raw_text: str = "",
         metadata: dict[str, Any] | None = None,
         seen_at: str | None = None,
+        received_at: str | None = None,
     ) -> dict[str, Any]:
         """Publish a canonical multi-source observation."""
         payload: dict[str, Any] = {
@@ -72,6 +73,8 @@ class IntelApiClient:
             payload["metadata"] = metadata
         if seen_at is not None:
             payload["seen_at"] = seen_at
+        if received_at is not None:
+            payload["received_at"] = received_at
         return self._request("POST", "/api/observations", payload=payload)
 
     def post_channel_line(self, line: str, channel: str = "") -> dict[str, Any]:

@@ -382,6 +382,44 @@ def test_alert_poller_seed_and_polling_advance_stream_cursor():
     assert api.stream_last_event_ids == ["new-3"]
 
 
+def test_alert_poller_resumes_real_event_stream_with_last_event_id(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        api = IntelApiClient(server.url)
+        poller = AlertPoller(api)
+
+        first = api.post_observation(
+            system_name="Tama",
+            names=["Alice"],
+            source="intel_channel",
+            seen_at="2026-06-29T12:00:00+00:00",
+            metadata={"batch": "resume"},
+        )
+        first_alert_id = first["alert"]["id"]
+        first_created_at = first["alert"]["created_at"]
+
+        assert [alert["id"] for alert in poller.stream_new(timeout=0)] == [
+            first_alert_id
+        ]
+
+        second = api.post_observation(
+            system_name="Tama",
+            names=["Bob"],
+            source="intel_channel",
+            seen_at="2026-06-29T12:01:00+00:00",
+            received_at=first_created_at,
+            metadata={"batch": "resume"},
+        )
+        second_alert_id = second["alert"]["id"]
+
+        assert [alert["id"] for alert in poller.stream_new(timeout=0)] == [
+            second_alert_id
+        ]
+    finally:
+        server.stop()
+
+
 def test_alert_client_state_persists_recent_seen_ids(tmp_path):
     state_path = tmp_path / "alert_state.json"
     state = AlertClientState(state_path, max_seen_ids=2)
