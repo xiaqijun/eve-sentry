@@ -306,6 +306,14 @@ ESI 是身份和宇宙数据的权威补全源。
 - 读取当前角色位置，减少手工填写当前星系。
 - 读取联系人或 standings，用于关系判断。
 
+当前本地会话层:
+
+- `app.esi.sso` 负责 PKCE 登录、callback、token 保存和 refresh。
+- `app.esi.session` 负责从 `esi_tokens.json` 读取 token，过期时刷新，并使用
+  authenticated ESI 获取当前位置和 contacts/standings。
+- contacts 可转换成 `contact_standing` 注入角色 profile，供现有评分规则生成
+  `hostile_standing` evidence。
+
 设计要求:
 
 - ESI 客户端必须尊重缓存头和错误限制。
