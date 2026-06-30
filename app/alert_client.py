@@ -99,11 +99,19 @@ def run_alert_client(args: argparse.Namespace) -> int:
 
     print(f"Alert client listening on {args.server}")
     print("Press Ctrl+C to stop.")
+    use_events = not args.poll
     try:
         while True:
             try:
-                alerts = poller.poll_new()
+                if use_events:
+                    alerts = poller.stream_new(timeout=args.interval)
+                else:
+                    alerts = poller.poll_new()
             except IntelApiError as exc:
+                if use_events:
+                    logger.warning("Event stream failed, falling back to polling: %s", exc)
+                    use_events = False
+                    continue
                 logger.warning("Polling failed: %s", exc)
                 time.sleep(args.interval)
                 continue
@@ -114,7 +122,8 @@ def run_alert_client(args: argparse.Namespace) -> int:
                 if args.popup:
                     show_popup(build_popup_names(alerts))
 
-            time.sleep(args.interval)
+            if not use_events:
+                time.sleep(args.interval)
     except KeyboardInterrupt:
         return 0
 
@@ -135,6 +144,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--popup",
         action="store_true",
         help="show a local popup and play the alert sound for new events",
+    )
+    parser.add_argument(
+        "--poll",
+        action="store_true",
+        help="use /api/alerts polling instead of the event stream",
     )
     return parser.parse_args(argv)
 

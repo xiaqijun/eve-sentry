@@ -125,6 +125,34 @@ class IntelApiClient:
             raise IntelApiError("server returned an invalid alerts payload")
         return alerts
 
+    def stream_alerts(
+        self,
+        since: str = "",
+        limit: int = 50,
+        timeout: float = 30.0,
+    ) -> list[dict[str, Any]]:
+        """Fetch alert events from the server-sent event stream."""
+        params = {"limit": str(limit), "timeout": str(timeout)}
+        if since:
+            params["since"] = since
+        url = f"{self.base_url}/api/events?{urlencode(params)}"
+        request = Request(
+            url,
+            headers={"Accept": "text/event-stream"},
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout + max(0.0, timeout)) as response:
+                body = response.read().decode("utf-8")
+        except HTTPError as exc:
+            message = self._read_error_message(exc)
+            raise IntelApiError(message) from exc
+        except URLError as exc:
+            raise IntelApiError(str(exc.reason)) from exc
+        except OSError as exc:
+            raise IntelApiError(str(exc)) from exc
+        return self._parse_alert_events(body)
+
     def _request(
         self,
         method: str,
@@ -173,6 +201,27 @@ class IntelApiClient:
             pass
         return f"HTTP {exc.code}"
 
+    def _parse_alert_events(self, body: str) -> list[dict[str, Any]]:
+        alerts: list[dict[str, Any]] = []
+        for block in body.split("\n\n"):
+            event_name = ""
+            data_lines = []
+            for line in block.splitlines():
+                if line.startswith("event:"):
+                    event_name = line[len("event:"):].strip()
+                if line.startswith("data:"):
+                    data_lines.append(line[len("data:"):].lstrip())
+            if event_name not in {"", "alert"} or not data_lines:
+                continue
+            try:
+                payload = json.loads("\n".join(data_lines))
+            except json.JSONDecodeError as exc:
+                raise IntelApiError("server returned invalid SSE JSON") from exc
+            if not isinstance(payload, dict):
+                raise IntelApiError("server returned non-object SSE event data")
+            alerts.append(payload)
+        return alerts
+
 
 class ReportPoller:
     """Track seen report ids and return only newly observed reports."""
@@ -220,8 +269,21 @@ class AlertPoller:
     def poll_new(self) -> list[dict[str, Any]]:
         """Return alerts that were not returned by previous polls."""
         alerts = self.api.list_alerts(limit=self.limit)
+        return self._filter_new(alerts, newest_first=True)
+
+    def stream_new(self, timeout: float = 30.0) -> list[dict[str, Any]]:
+        """Return new alerts from the server-sent event stream."""
+        alerts = self.api.stream_alerts(limit=self.limit, timeout=timeout)
+        return self._filter_new(alerts, newest_first=False)
+
+    def _filter_new(
+        self,
+        alerts: list[dict[str, Any]],
+        newest_first: bool,
+    ) -> list[dict[str, Any]]:
         new_alerts: list[dict[str, Any]] = []
-        for alert in reversed(alerts):
+        ordered_alerts = reversed(alerts) if newest_first else alerts
+        for alert in ordered_alerts:
             alert_id = str(alert.get("id") or "")
             if not alert_id or alert_id in self._seen_ids:
                 continue
