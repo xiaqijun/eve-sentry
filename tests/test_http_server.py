@@ -84,8 +84,17 @@ def test_esi_session_routes_expose_status_and_snapshot(tmp_path):
                 "character_id": 123,
                 "character_owner_hash": "owner-hash",
                 "scopes": ["esi-location.read_location.v1"],
-                "location": {},
+                "location": {"solar_system_id": 30002813},
                 "contacts": [{"contact_id": 456, "standing": -10}],
+            }
+
+    class FakeResolver:
+        def system_profile(self, system_id):
+            assert system_id == 30002813
+            return {
+                "system_id": 30002813,
+                "name": "Tama",
+                "security_status": 0.3,
             }
 
     class FakeSession:
@@ -103,7 +112,7 @@ def test_esi_session_routes_expose_status_and_snapshot(tmp_path):
 
     session = FakeSession()
     server = IntelHTTPServer(
-        IntelStore(tmp_path / "intel.json"),
+        IntelStore(tmp_path / "intel.json", resolver=FakeResolver()),
         port=0,
         esi_session=session,
     )
@@ -125,6 +134,19 @@ def test_esi_session_routes_expose_status_and_snapshot(tmp_path):
         assert snapshot["authenticated"] is True
         assert snapshot["snapshot"]["contacts"][0]["standing"] == -10
         assert session.snapshot_calls == [(False, True)]
+
+        status, location_snapshot = request_json(
+            f"{server.url}/api/esi/session?location=true&contacts=false"
+        )
+        assert status == 200
+        assert location_snapshot["snapshot"]["location"]["solar_system_id"] == (
+            30002813
+        )
+        assert location_snapshot["snapshot"]["location"]["solar_system_name"] == "Tama"
+        assert location_snapshot["snapshot"]["location"]["solar_system"]["name"] == (
+            "Tama"
+        )
+        assert session.snapshot_calls == [(False, True), (True, False)]
     finally:
         server.stop()
 
@@ -357,6 +379,11 @@ def test_public_lookup_routes_return_profiles_and_activity(tmp_path):
         assert status == 200
         assert system["system"]["system_id"] == 30002813
         assert system["system"]["security_status"] == 0.3
+
+        status, system = request_json(f"{server.url}/api/systems/30002813")
+        assert status == 200
+        assert system["system"]["name"] == "Tama"
+        assert system["system"]["system_id"] == 30002813
 
         status, character_activity = request_json(
             f"{server.url}/api/kill-activity/character/123"

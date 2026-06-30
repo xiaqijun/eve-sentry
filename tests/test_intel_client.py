@@ -1,5 +1,6 @@
 import io
 import json
+from types import SimpleNamespace
 
 from app.alert_client import (
     AlertClientState,
@@ -170,6 +171,67 @@ def test_intel_api_client_posts_raw_channel_lines(tmp_path):
         assert api.list_observations(source="intel_channel")[0]["id"] == (
             created["observation"]["id"]
         )
+    finally:
+        server.stop()
+
+
+def test_intel_api_client_fetches_esi_session_and_current_system(tmp_path):
+    class FakeResolver:
+        def system_profile(self, system_id):
+            assert system_id == 30002813
+            return {
+                "system_id": 30002813,
+                "name": "Tama",
+                "security_status": 0.3,
+            }
+
+    class FakeTokens:
+        character_id = 123
+        character_owner_hash = "owner-hash"
+        scopes = ["esi-location.read_location.v1"]
+        expires_at = 2000
+
+        def is_expired(self):
+            return False
+
+    class FakeSession:
+        def load_tokens(self, refresh_if_needed=True):
+            return FakeTokens()
+
+        def snapshot(self, include_location=True, include_contacts=True):
+            return SimpleNamespace(
+                to_dict=lambda: {
+                    "character_id": 123,
+                    "character_owner_hash": "owner-hash",
+                    "scopes": ["esi-location.read_location.v1"],
+                    "location": {"solar_system_id": 30002813},
+                    "contacts": [],
+                }
+            )
+
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json", resolver=FakeResolver()),
+        port=0,
+        esi_session=FakeSession(),
+    )
+    server.start()
+    try:
+        api = IntelApiClient(server.url)
+
+        status = api.esi_status()
+        assert status["authenticated"] is True
+        assert "access_token" not in status
+
+        snapshot = api.esi_session(include_location=True, include_contacts=False)
+        assert snapshot["location"]["solar_system_name"] == "Tama"
+
+        system = api.system_profile(30002813)
+        assert system["name"] == "Tama"
+
+        current = api.current_esi_system()
+        assert current is not None
+        assert current["system_id"] == 30002813
+        assert current["system_name"] == "Tama"
     finally:
         server.stop()
 

@@ -163,6 +163,22 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 "system not found or ESI not enabled",
             )
             return
+        if path.startswith("/api/systems/"):
+            try:
+                system_id = self._parse_path_int(
+                    path,
+                    "/api/systems/",
+                    "system_id",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_optional_json(
+                "system",
+                self._store().system_profile(system_id),
+                "system not found or ESI not enabled",
+            )
+            return
         if path.startswith("/api/kill-activity/character/"):
             try:
                 character_id = self._parse_path_int(
@@ -488,13 +504,32 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.BAD_GATEWAY,
             )
             return
+        data = snapshot.to_dict()
+        self._annotate_esi_location(data.get("location"))
         self._send_json(
             {
                 "enabled": True,
                 "authenticated": True,
-                "snapshot": snapshot.to_dict(),
+                "snapshot": data,
             }
         )
+
+    def _annotate_esi_location(self, location: Any) -> None:
+        if not isinstance(location, dict):
+            return
+        system_id = self._optional_positive_int(location.get("solar_system_id"))
+        if system_id is None:
+            return
+        try:
+            profile = self._store().system_profile(system_id)
+        except Exception:
+            profile = None
+        if not isinstance(profile, dict):
+            return
+        location.setdefault("solar_system", profile)
+        name = str(profile.get("name") or "").strip()
+        if name:
+            location.setdefault("solar_system_name", name)
 
     def _alert_for_observation(self, observation_id: str) -> dict[str, Any] | None:
         for alert in self._store().list_alerts():
@@ -630,6 +665,15 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         if value <= 0:
             raise ValueError(f"{label} must be a positive integer")
         return value
+
+    def _optional_positive_int(self, value: Any) -> int | None:
+        if value in {None, ""}:
+            return None
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
 
     def _stream_events(
         self,

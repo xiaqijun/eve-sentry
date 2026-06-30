@@ -66,6 +66,15 @@ uv run python -m app.detector_client
 `EVE_SENTRY_SHOW_POPUPS=1` 时才保留旧的本地弹窗行为；正式联调建议由
 独立预警客户端消费服务端 alert。
 
+当前星系来源:
+
+- 设置 `EVE_SENTRY_SYSTEM=Tama` 时，检测客户端使用该手工星系名上报。
+- 未设置 `EVE_SENTRY_SYSTEM` 时，检测客户端会默认尝试从服务端
+  `/api/esi/session?location=true&contacts=false` 同步当前 ESI 位置，并在
+  observation 中带上 `system_name` 和 `system_id`。
+- 可用 `EVE_SENTRY_USE_ESI_LOCATION=0` 关闭自动同步；可用
+  `EVE_SENTRY_ESI_LOCATION_TTL=30` 调整当前位置刷新间隔。
+
 ### 3.2 频道采集器
 
 职责:
@@ -344,7 +353,9 @@ python -m app.server --enable-esi --esi-cache esi_cache.json --esi-client-id YOU
 资料会尽力补齐 `corporation_name` 和 `alliance_name`，相关查询结果写入本地
 ESI 缓存；ESI 查询失败时保留原 observation，不阻塞上报链路。若配置了
 authenticated ESI 会话，服务端会把 contacts/standings 缓存注入角色 profile，
-使 `hostile_standing` evidence 自动参与 alert 评分。
+使 `hostile_standing` evidence 自动参与 alert 评分。`/api/esi/session` 返回
+当前位置时，服务端会尽力用 ESI resolver 补充 `solar_system_name` 和星系
+profile，供检测客户端自动填充当前星系。
 
 官方参考:
 
@@ -495,6 +506,7 @@ GET  /api/characters/by-name/{name}
 GET  /api/esi/status
 GET  /api/esi/session?location=&contacts=
 
+GET  /api/systems/{system_id}
 GET  /api/systems/by-name/{name}
 
 GET  /api/kill-activity/character/{character_id}
@@ -522,6 +534,7 @@ GET  /api/map/snapshot
 - `GET /api/esi/session`: 需要配置 authenticated ESI，会刷新过期 token，并按
   `location=true|false` 和 `contacts=true|false` 返回当前位置与 contacts/standings
   快照；未登录返回 401，未启用返回 404。
+- `GET /api/systems/{system_id}`: 需要启用 ESI，按 `solar_system_id` 返回星系公开资料。
 - `GET /api/systems/by-name/{name}`: 需要启用 ESI，返回星系公开资料。
 - `GET /api/kill-activity/character/{character_id}`: 需要启用 killboard，返回角色近期击毁画像。
 - `GET /api/kill-activity/system/{system_id}`: 需要启用 killboard，返回星系近期击毁热度。

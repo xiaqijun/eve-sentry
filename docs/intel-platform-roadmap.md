@@ -173,7 +173,9 @@
   snapshot。
 - 服务端已提供 `/api/esi/status` 和 `/api/esi/session`，并能把 contacts/standings
   注入角色 profile 参与 `hostile_standing` 评分。
-- 待继续: 把当前位置同步接入检测/预警工作流，完善登录引导和 token 安全存储。
+- 检测端已能从服务端 ESI session 同步当前位置，并以 `system_name`/`system_id`
+  上报 observation。
+- 待继续: 完善登录引导和 token 安全存储。
 
 ## 阶段 7: SQLite 和事件推送
 
