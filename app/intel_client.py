@@ -81,6 +81,71 @@ class IntelApiClient:
             payload["channel"] = channel
         return self._request("POST", "/api/channel-lines", payload=payload)
 
+    def esi_status(self) -> dict[str, Any]:
+        """Return authenticated ESI session status without token secrets."""
+        return self._request("GET", "/api/esi/status")
+
+    def esi_session(
+        self,
+        include_location: bool = True,
+        include_contacts: bool = True,
+    ) -> dict[str, Any]:
+        """Return the authenticated ESI session snapshot."""
+        payload = self._request(
+            "GET",
+            "/api/esi/session",
+            params={
+                "location": _bool_param(include_location),
+                "contacts": _bool_param(include_contacts),
+            },
+        )
+        snapshot = payload.get("snapshot")
+        if not isinstance(snapshot, dict):
+            raise IntelApiError("server returned an invalid ESI session payload")
+        return snapshot
+
+    def system_profile(self, system_id: int) -> dict[str, Any]:
+        """Fetch one solar-system profile by ESI id."""
+        system_id = int(system_id)
+        if system_id <= 0:
+            raise IntelApiError("system_id must be a positive integer")
+        payload = self._request("GET", f"/api/systems/{system_id}")
+        system = payload.get("system")
+        if not isinstance(system, dict):
+            raise IntelApiError("server returned an invalid system payload")
+        return system
+
+    def current_esi_system(self) -> dict[str, Any] | None:
+        """Return the current ESI solar system when the server session exposes it."""
+        snapshot = self.esi_session(include_location=True, include_contacts=False)
+        location = snapshot.get("location")
+        if not isinstance(location, dict):
+            return None
+
+        system_id = _optional_positive_int(location.get("solar_system_id"))
+        if system_id is None:
+            return None
+
+        embedded = location.get("solar_system")
+        system = dict(embedded) if isinstance(embedded, dict) else {}
+        name = str(
+            location.get("solar_system_name")
+            or system.get("name")
+            or ""
+        ).strip()
+        if not name:
+            try:
+                system = self.system_profile(system_id)
+                name = str(system.get("name") or "").strip()
+            except IntelApiError:
+                system = {}
+
+        system["system_id"] = system_id
+        if name:
+            system["name"] = name
+            system["system_name"] = name
+        return system
+
     def list_reports(
         self,
         system: str = "",
@@ -289,6 +354,20 @@ class IntelApiClient:
                 raise IntelApiError("server returned non-object SSE event data")
             alerts.append(payload)
         return alerts
+
+
+def _bool_param(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    if value in {None, ""}:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 class ReportPoller:

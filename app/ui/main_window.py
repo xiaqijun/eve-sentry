@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 from datetime import datetime
 
 from PyQt6.QtGui import QAction
@@ -52,7 +53,21 @@ class MainWindow(QMainWindow):
             "EVE_SENTRY_INTEL_URL",
             "http://127.0.0.1:8765",
         ).strip()
-        self._intel_system = os.environ.get("EVE_SENTRY_SYSTEM", "未知星系").strip()
+        configured_system = os.environ.get("EVE_SENTRY_SYSTEM", "").strip()
+        self._intel_system = configured_system or "Unknown"
+        self._intel_system_id: int | None = None
+        self._intel_system_source = "env" if configured_system else "default"
+        self._use_esi_location = _env_flag(
+            "EVE_SENTRY_USE_ESI_LOCATION",
+            default=not bool(configured_system),
+        )
+        self._esi_location_ttl = _env_float(
+            "EVE_SENTRY_ESI_LOCATION_TTL",
+            default=30.0,
+            minimum=1.0,
+        )
+        self._esi_location_next_check = 0.0
+        self._last_esi_location_error = ""
         self._intel_client = self._create_intel_client()
 
         self._popup_alerts_enabled = (
@@ -264,6 +279,8 @@ class MainWindow(QMainWindow):
             self._monitor_btn.setChecked(False)
             return
 
+        self._refresh_intel_location(force=True)
+
         if self._worker is not None:
             if self._worker.isRunning():
                 self._log_message("Stopping previous monitor thread...")
@@ -372,23 +389,78 @@ class MainWindow(QMainWindow):
         if self._intel_client is None or not threats:
             return
 
+        self._refresh_intel_location()
         source = "eve-sentry-detector"
         window_title = self._window_combo.currentText()
-        note = f"window={window_title}" if window_title else ""
+        metadata = {"system_source": self._intel_system_source}
+        if window_title:
+            metadata["window_title"] = window_title
         try:
-            report = self._intel_client.post_report(
-                system=self._intel_system or "未知星系",
+            created = self._intel_client.post_observation(
+                system_name=self._intel_system or "Unknown",
+                system_id=self._intel_system_id,
                 names=threats,
                 source=source,
-                note=note,
+                raw_text=", ".join(threats),
+                metadata=metadata,
             )
         except IntelApiError as exc:
             self._log_message(f"情报上报失败: {exc}")
             return
 
-        report_id = report.get("report", {}).get("id", "")
-        suffix = f" ({report_id[:8]})" if report_id else ""
+        observation_id = created.get("observation", {}).get("id", "")
+        suffix = f" ({observation_id[:8]})" if observation_id else ""
         self._log_message(f"已上报情报: {len(threats)} 个目标{suffix}")
+
+    def _refresh_intel_location(self, force: bool = False) -> bool:
+        if (
+            not self._use_esi_location
+            or self._intel_client is None
+        ):
+            return False
+
+        now = time.monotonic()
+        if not force and now < self._esi_location_next_check:
+            return bool(self._intel_system_id)
+        self._esi_location_next_check = now + self._esi_location_ttl
+
+        try:
+            system = self._intel_client.current_esi_system()
+        except IntelApiError as exc:
+            message = str(exc)
+            if message != self._last_esi_location_error:
+                self._last_esi_location_error = message
+                self._log_message(f"ESI current-system sync unavailable: {message}")
+            return False
+
+        if not system:
+            message = "location did not include a solar system"
+            if message != self._last_esi_location_error:
+                self._last_esi_location_error = message
+                self._log_message(f"ESI current-system sync unavailable: {message}")
+            return False
+
+        system_id = _positive_int(system.get("system_id"))
+        system_name = str(
+            system.get("system_name") or system.get("name") or ""
+        ).strip()
+        if system_id is None and not system_name:
+            return False
+
+        previous = (self._intel_system_id, self._intel_system)
+        self._intel_system_id = system_id
+        if system_name:
+            self._intel_system = system_name
+        self._intel_system_source = "esi"
+        self._last_esi_location_error = ""
+
+        current = (self._intel_system_id, self._intel_system)
+        if current != previous:
+            label = self._intel_system
+            if self._intel_system_id is not None:
+                label = f"{label} ({self._intel_system_id})"
+            self._log_message(f"Current system from ESI: {label}")
+        return True
 
     def _on_alert_closed(self) -> None:
         """Called when the alert dialog is dismissed."""
@@ -440,3 +512,28 @@ class MainWindow(QMainWindow):
         self._stop_monitor()
         self._tray.hide()
         QApplication.quit()
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    try:
+        value = float(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
+def _positive_int(value) -> int | None:
+    if value in {None, ""}:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
