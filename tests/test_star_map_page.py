@@ -13,6 +13,17 @@ def test_star_map_page_includes_runtime_config_panel():
     assert 'method: "PUT"' in INDEX_HTML
 
 
+def test_star_map_page_includes_manual_intel_form():
+    assert "Manual Intel" in INDEX_HTML
+    assert 'id="obs-system"' in INDEX_HTML
+    assert 'id="obs-names"' in INDEX_HTML
+    assert 'id="obs-source"' in INDEX_HTML
+    assert 'id="obs-raw"' in INDEX_HTML
+    assert 'id="obs-submit"' in INDEX_HTML
+    assert 'fetch("/api/observations"' in INDEX_HTML
+    assert "function submitObservation()" in INDEX_HTML
+
+
 def test_star_map_page_includes_alert_evidence_view():
     assert 'id="tab-alerts"' in INDEX_HTML
     assert "function renderAlerts()" in INDEX_HTML

@@ -53,9 +53,11 @@ def test_index_page_serves_config_panel(tmp_path):
             assert response.status == 200
             assert response.headers["Content-Type"].startswith("text/html")
             assert "Scoring Config" in body
+            assert "Manual Intel" in body
             assert 'id="tab-alerts"' in body
             assert "function renderAlerts()" in body
             assert "/api/config" in body
+            assert "/api/observations" in body
     finally:
         server.stop()
 

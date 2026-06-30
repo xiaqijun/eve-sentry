@@ -75,7 +75,7 @@ INDEX_HTML = """<!doctype html>
       border-left: 1px solid #252d36;
       background: var(--panel);
       display: grid;
-      grid-template-rows: auto auto auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
     }
     .toolbar {
       padding: 16px;
@@ -118,6 +118,7 @@ INDEX_HTML = """<!doctype html>
       font-size: 17px;
       font-weight: 650;
     }
+    .ingest-panel,
     .config-panel {
       padding: 12px 16px;
       border-bottom: 1px solid #252d36;
@@ -125,6 +126,10 @@ INDEX_HTML = """<!doctype html>
       display: grid;
       gap: 10px;
     }
+    .ingest-panel {
+      background: #10151b;
+    }
+    .ingest-panel h2,
     .config-panel h2 {
       margin: 0;
       font-size: 15px;
@@ -170,6 +175,7 @@ INDEX_HTML = """<!doctype html>
       cursor: not-allowed;
       opacity: 0.58;
     }
+    .form-status,
     .config-status {
       min-width: 0;
       color: var(--muted);
@@ -303,6 +309,32 @@ INDEX_HTML = """<!doctype html>
         <input id="filter" autocomplete="off" placeholder="输入 Jita、Tama 或角色名">
       </section>
       <section class="selected" id="selected"></section>
+      <section class="ingest-panel" aria-label="Manual Intel">
+        <h2>Manual Intel</h2>
+        <div class="config-grid">
+          <div class="field">
+            <label for="obs-system">System</label>
+            <input id="obs-system" autocomplete="off" placeholder="Tama">
+          </div>
+          <div class="field">
+            <label for="obs-source">Source</label>
+            <input id="obs-source" autocomplete="off" value="manual" placeholder="manual">
+          </div>
+          <div class="field field-wide">
+            <label for="obs-names">Pilots</label>
+            <textarea id="obs-names" autocomplete="off" placeholder="One pilot per line"></textarea>
+          </div>
+          <div class="field field-wide">
+            <label for="obs-raw">Raw note</label>
+            <textarea id="obs-raw" autocomplete="off" placeholder="Raw intel text"></textarea>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" id="obs-submit" type="button">Submit</button>
+          <button id="obs-clear" type="button">Clear</button>
+          <span class="form-status" id="obs-status">Ready</span>
+        </div>
+      </section>
       <section class="config-panel" aria-label="Scoring Config">
         <h2>Scoring Config</h2>
         <div class="config-grid">
@@ -352,6 +384,15 @@ INDEX_HTML = """<!doctype html>
     const filterEl = document.getElementById("filter");
     const reportTabButton = document.getElementById("tab-reports");
     const alertTabButton = document.getElementById("tab-alerts");
+    const obsStatusEl = document.getElementById("obs-status");
+    const obsFields = {
+      system_name: document.getElementById("obs-system"),
+      names: document.getElementById("obs-names"),
+      source: document.getElementById("obs-source"),
+      raw_text: document.getElementById("obs-raw")
+    };
+    const submitIntelButton = document.getElementById("obs-submit");
+    const clearIntelButton = document.getElementById("obs-clear");
     const configStatusEl = document.getElementById("cfg-status");
     const configFields = {
       whitelist: document.getElementById("cfg-whitelist"),
@@ -579,6 +620,71 @@ INDEX_HTML = """<!doctype html>
         .filter(Boolean);
     }
 
+    function setObservationStatus(text, isError = false) {
+      obsStatusEl.textContent = text;
+      obsStatusEl.style.color = isError ? "var(--danger)" : "var(--muted)";
+    }
+
+    function readObservationForm() {
+      return {
+        system_name: obsFields.system_name.value.trim(),
+        names: textareaToList(obsFields.names.value),
+        source: obsFields.source.value.trim() || "manual",
+        raw_text: obsFields.raw_text.value.trim()
+      };
+    }
+
+    function clearObservationForm({ keepSystem = false } = {}) {
+      if (!keepSystem) {
+        obsFields.system_name.value = "";
+      }
+      obsFields.names.value = "";
+      obsFields.raw_text.value = "";
+      obsFields.source.value = obsFields.source.value.trim() || "manual";
+      setObservationStatus("Ready");
+    }
+
+    async function submitObservation() {
+      const payload = readObservationForm();
+      if (!payload.system_name) {
+        setObservationStatus("System required", true);
+        obsFields.system_name.focus();
+        return;
+      }
+      if (!payload.names.length && !payload.raw_text) {
+        setObservationStatus("Pilot or raw note required", true);
+        obsFields.names.focus();
+        return;
+      }
+
+      submitIntelButton.disabled = true;
+      clearIntelButton.disabled = true;
+      setObservationStatus("Submitting...");
+      try {
+        const response = await fetch("/api/observations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error || "Submit failed");
+        }
+        const alert = result.alert || null;
+        clearObservationForm({ keepSystem: true });
+        setObservationStatus(alert ? `Alert ${alert.level || "created"}` : "Observation saved");
+        if (alert) {
+          listMode = "alerts";
+        }
+        await refresh();
+      } catch (error) {
+        setObservationStatus(error.message || "Submit failed", true);
+      } finally {
+        submitIntelButton.disabled = false;
+        clearIntelButton.disabled = false;
+      }
+    }
+
     function idListFromInput(value) {
       return value
         .split(/\\n|,/)
@@ -674,6 +780,8 @@ INDEX_HTML = """<!doctype html>
     });
     saveConfigButton.addEventListener("click", () => saveConfig().catch(console.error));
     reloadConfigButton.addEventListener("click", () => loadConfig().catch(console.error));
+    submitIntelButton.addEventListener("click", () => submitObservation().catch(console.error));
+    clearIntelButton.addEventListener("click", () => clearObservationForm());
     window.addEventListener("resize", resize);
 
     async function refresh() {
