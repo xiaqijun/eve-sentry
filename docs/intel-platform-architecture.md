@@ -81,6 +81,16 @@ uv run python -m app.detector_client
 %USERPROFILE%\Documents\EVE\logs\Chatlogs
 ```
 
+当前入口建议:
+
+```powershell
+# 只解析并打印，不连接服务端，适合先用样例 chatlog 验证规则
+uv run python -m app.channel_client --log-dir .\samples\Chatlogs --once --include-existing --dry-run --json
+
+# 长驻采集并上报到本地服务端
+uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Alliance Intel"
+```
+
 实现注意:
 
 - EVE 日志文件可能是 UTF-16 或 UTF-8，需要自动探测。
