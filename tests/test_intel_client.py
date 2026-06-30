@@ -18,6 +18,7 @@ from app.server.intel_store import IntelStore
 class FakeApi:
     def __init__(self, batches):
         self.batches = list(batches)
+        self.alert_filters = []
 
     def list_reports(self, limit=50):
         _ = limit
@@ -25,11 +26,26 @@ class FakeApi:
             return []
         return self.batches.pop(0)
 
-    def list_alerts(self, limit=50):
+    def list_alerts(
+        self,
+        limit=50,
+        acknowledged=None,
+        min_score=None,
+        min_level="",
+    ):
+        self.alert_filters.append((acknowledged, min_score, min_level))
         return self.list_reports(limit=limit)
 
-    def stream_alerts(self, limit=50, timeout=30.0):
+    def stream_alerts(
+        self,
+        limit=50,
+        timeout=30.0,
+        acknowledged=None,
+        min_score=None,
+        min_level="",
+    ):
         _ = timeout
+        self.alert_filters.append((acknowledged, min_score, min_level))
         return self.list_reports(limit=limit)
 
     def ack_alert(self, alert_id, acknowledged_by="", note=""):
@@ -93,6 +109,43 @@ def test_intel_api_client_posts_observations(tmp_path):
         )
         assert acked["acknowledged"] is True
         assert acked["acknowledged_by"] == "client"
+    finally:
+        server.stop()
+
+
+def test_intel_api_client_filters_alerts(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        api = IntelApiClient(server.url)
+
+        low = api.post_observation(
+            system_name="Tama",
+            names=["Scout"],
+            source="intel_channel",
+            seen_at="2026-06-29T12:00:00+00:00",
+        )
+        medium = api.post_observation(
+            system_name="Tama",
+            names=["Alice"],
+            source="local_ocr",
+            seen_at="2026-06-29T12:01:00+00:00",
+        )
+        api.ack_alert(medium["alert"]["id"], acknowledged_by="client")
+
+        assert [item["id"] for item in api.list_alerts(acknowledged=False)] == [
+            low["alert"]["id"]
+        ]
+        assert [item["id"] for item in api.list_alerts(acknowledged=True)] == [
+            medium["alert"]["id"]
+        ]
+        assert [item["id"] for item in api.list_alerts(min_score=40)] == [
+            medium["alert"]["id"]
+        ]
+        assert [item["id"] for item in api.stream_alerts(
+            timeout=0,
+            min_level="medium",
+        )] == [medium["alert"]["id"]]
     finally:
         server.stop()
 
@@ -182,6 +235,28 @@ def test_alert_poller_reads_event_stream_in_stream_order():
     assert [alert["id"] for alert in poller.stream_new(timeout=0)] == [
         "new-1",
         "new-2",
+    ]
+
+
+def test_alert_poller_passes_server_side_filters_to_polling_and_streaming():
+    api = FakeApi(
+        [
+            [{"id": "poll", "created_at": "1", "names": ["Alice"]}],
+            [{"id": "stream", "created_at": "2", "names": ["Bob"]}],
+        ]
+    )
+    poller = AlertPoller(
+        api,
+        acknowledged=False,
+        min_score=70,
+        min_level="high",
+    )
+
+    assert [alert["id"] for alert in poller.poll_new()] == ["poll"]
+    assert [alert["id"] for alert in poller.stream_new(timeout=0)] == ["stream"]
+    assert api.alert_filters == [
+        (False, 70, "high"),
+        (False, 70, "high"),
     ]
 
 
@@ -291,6 +366,11 @@ def test_alert_client_parse_args_supports_one_shot_json_mode():
             "--ack-note",
             "handled",
             "--details",
+            "--unacknowledged-only",
+            "--min-score",
+            "70",
+            "--min-level",
+            "high",
         ]
     )
 
@@ -302,6 +382,9 @@ def test_alert_client_parse_args_supports_one_shot_json_mode():
     assert args.ack_by == "cli"
     assert args.ack_note == "handled"
     assert args.details is True
+    assert args.unacknowledged_only is True
+    assert args.min_score == 70
+    assert args.min_level == "high"
 
 
 def test_alert_client_emit_alerts_supports_text_and_json_lines():
