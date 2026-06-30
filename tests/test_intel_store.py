@@ -97,6 +97,39 @@ def test_add_observation_persists_and_lists_alerts(tmp_path):
     assert alerts[0]["acknowledged"] is False
 
 
+def test_add_observation_deduplicates_same_source_time_and_raw_text(tmp_path):
+    path = tmp_path / "intel_reports.json"
+    store = IntelStore(path, systems={}, links=[])
+    payload = {
+        "source": "intel_channel",
+        "source_instance": "Alliance Intel",
+        "system_name": "Tama",
+        "names": [],
+        "raw_text": "Scout A: Tama +3 reds",
+        "metadata": {"hostile_count": 3, "sender": "Scout A"},
+        "seen_at": "2026-06-29T12:00:00+00:00",
+    }
+
+    first = store.add_observation(payload)
+    second = store.add_observation({**payload, "id": "different-id"})
+    distinct = store.add_observation(
+        {
+            **payload,
+            "id": "another-id",
+            "raw_text": "Scout A: Tama +4 reds",
+            "metadata": {"hostile_count": 4, "sender": "Scout A"},
+        }
+    )
+
+    assert second.observation_id == first.observation_id
+    assert distinct.observation_id == "another-id"
+    assert len(store.list_observations()) == 2
+    assert len(store.list_alerts()) == 2
+
+    reloaded = IntelStore(path, systems={}, links=[])
+    assert len(reloaded.list_observations()) == 2
+
+
 def test_ack_alert_marks_alert_and_persists(tmp_path):
     path = tmp_path / "intel_reports.json"
     store = IntelStore(path, systems={}, links=[])

@@ -387,7 +387,8 @@ python -m app.server --enable-killboard --zkill-cache zkill_cache.json
 - 先做规则解析，后续再考虑更复杂的 NLP。
 - 星系识别优先使用 ESI/SDE 星系词典。
 - 人名识别不要过度猜测，宁可保留原文，交给人工或后续 ESI resolver。
-- 相同频道、相同时间、相同原文需要去重。
+- 服务端按 `source`、频道/`source_instance`、`seen_at` 和 `raw_text`
+  对相同频道行做幂等去重，避免采集器重启或重复上报生成重复 alert。
 
 ## 8. 威胁评分
 

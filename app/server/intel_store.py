@@ -319,6 +319,9 @@ class IntelStore:
             received_at=observation.received_at or utc_now_iso(),
         )
         with self._lock:
+            duplicate = self._find_duplicate_observation(report)
+            if duplicate is not None:
+                return duplicate.to_observation()
             self._ensure_system(report.system)
             self._reports.append(report)
             self._save_reports()
@@ -527,6 +530,30 @@ class IntelStore:
     def _reports_snapshot(self) -> list[IntelReport]:
         with self._lock:
             return list(self._reports)
+
+    def _find_duplicate_observation(
+        self,
+        report: IntelReport,
+    ) -> IntelReport | None:
+        key = self._observation_dedupe_key(report)
+        for existing in reversed(self._reports):
+            if existing.report_id == report.report_id:
+                return existing
+            if key and self._observation_dedupe_key(existing) == key:
+                return existing
+        return None
+
+    def _observation_dedupe_key(
+        self,
+        report: IntelReport,
+    ) -> tuple[str, str, str, str] | None:
+        raw_text = report.raw_text.strip()
+        seen_at = report.seen_at.strip()
+        if not raw_text or not seen_at:
+            return None
+        source = (report.source.strip() or "api").casefold()
+        source_instance = (report.source_instance.strip() or source).casefold()
+        return (source, source_instance, seen_at, raw_text)
 
     def _alert_from_report(self, report: IntelReport) -> ThreatEvent | None:
         with self._lock:

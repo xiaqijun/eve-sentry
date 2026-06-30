@@ -27,6 +27,27 @@ def test_sqlite_store_persists_observations(tmp_path):
     assert alerts[0]["character_ids"] == [123]
 
 
+def test_sqlite_store_deduplicates_observations(tmp_path):
+    db_path = tmp_path / "intel.sqlite3"
+    store = SQLiteIntelStore(db_path, systems={}, links=[])
+    payload = {
+        "source": "intel_channel",
+        "source_instance": "Alliance Intel",
+        "system_name": "Tama",
+        "raw_text": "Scout A: Tama +3 reds",
+        "seen_at": "2026-06-29T12:00:00+00:00",
+    }
+
+    first = store.add_observation(payload)
+    second = store.add_observation({**payload, "id": "different-id"})
+
+    assert second.observation_id == first.observation_id
+    assert len(store.list_observations()) == 1
+
+    reloaded = SQLiteIntelStore(db_path, systems={}, links=[])
+    assert len(reloaded.list_observations()) == 1
+
+
 def test_sqlite_store_persists_alert_acknowledgement(tmp_path):
     db_path = tmp_path / "intel.sqlite3"
     store = SQLiteIntelStore(db_path, systems={}, links=[])

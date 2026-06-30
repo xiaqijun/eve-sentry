@@ -300,6 +300,46 @@ def test_create_observation_and_query_alerts(tmp_path):
         server.stop()
 
 
+def test_create_observation_is_idempotent_for_same_channel_line(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        payload = {
+            "system_name": "Tama",
+            "names": [],
+            "source": "intel_channel",
+            "source_instance": "Alliance Intel",
+            "raw_text": "Scout A: Tama +3 reds",
+            "metadata": {"hostile_count": 3, "sender": "Scout A"},
+            "seen_at": "2026-06-29T12:00:00+00:00",
+        }
+        status, first = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload=payload,
+        )
+        status2, second = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={**payload, "id": "duplicate-id"},
+        )
+
+        assert status == 201
+        assert status2 == 201
+        assert second["observation"]["id"] == first["observation"]["id"]
+        assert second["alert"]["id"] == first["alert"]["id"]
+
+        status, observations = request_json(f"{server.url}/api/observations")
+        assert status == 200
+        assert observations["count"] == 1
+
+        status, alerts = request_json(f"{server.url}/api/alerts")
+        assert status == 200
+        assert alerts["count"] == 1
+    finally:
+        server.stop()
+
+
 def test_ack_alert_route_marks_alert(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
