@@ -24,6 +24,19 @@ def test_star_map_page_includes_manual_intel_form():
     assert "function submitObservation()" in INDEX_HTML
 
 
+def test_star_map_page_includes_esi_status_panel():
+    assert "ESI Session" in INDEX_HTML
+    assert 'id="esi-status"' in INDEX_HTML
+    assert 'id="esi-refresh"' in INDEX_HTML
+    assert 'id="esi-use-system"' in INDEX_HTML
+    assert 'fetch("/api/esi/status"' in INDEX_HTML
+    assert 'fetch("/api/esi/session?location=true&contacts=false"' in INDEX_HTML
+    assert "function loadEsiStatus()" in INDEX_HTML
+    assert "function useEsiSystem()" in INDEX_HTML
+    assert "manualSystemId" in INDEX_HTML
+    assert "payload.system_id = manualSystemId" in INDEX_HTML
+
+
 def test_star_map_page_includes_alert_evidence_view():
     assert 'id="tab-alerts"' in INDEX_HTML
     assert "function renderAlerts()" in INDEX_HTML

@@ -75,7 +75,7 @@ INDEX_HTML = """<!doctype html>
       border-left: 1px solid #252d36;
       background: var(--panel);
       display: grid;
-      grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr);
     }
     .toolbar {
       padding: 16px;
@@ -119,6 +119,7 @@ INDEX_HTML = """<!doctype html>
       font-weight: 650;
     }
     .ingest-panel,
+    .esi-panel,
     .config-panel {
       padding: 12px 16px;
       border-bottom: 1px solid #252d36;
@@ -129,11 +130,34 @@ INDEX_HTML = """<!doctype html>
     .ingest-panel {
       background: #10151b;
     }
+    .esi-panel {
+      background: #111820;
+    }
     .ingest-panel h2,
+    .esi-panel h2,
     .config-panel h2 {
       margin: 0;
       font-size: 15px;
       font-weight: 650;
+    }
+    .status-grid {
+      display: grid;
+      gap: 5px;
+    }
+    .status-row {
+      min-width: 0;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .status-row strong {
+      color: var(--text);
+      font-weight: 650;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .config-grid {
       display: grid;
@@ -176,6 +200,7 @@ INDEX_HTML = """<!doctype html>
       opacity: 0.58;
     }
     .form-status,
+    .esi-status,
     .config-status {
       min-width: 0;
       color: var(--muted);
@@ -340,6 +365,15 @@ INDEX_HTML = """<!doctype html>
         <input id="filter" autocomplete="off" placeholder="输入 Jita、Tama 或角色名">
       </section>
       <section class="selected" id="selected"></section>
+      <section class="esi-panel" aria-label="ESI Session">
+        <h2>ESI Session</h2>
+        <div class="status-grid" id="esi-status"></div>
+        <div class="actions">
+          <button id="esi-refresh" type="button">Refresh</button>
+          <button id="esi-use-system" type="button" disabled>Use system</button>
+          <span class="esi-status" id="esi-message">Not loaded</span>
+        </div>
+      </section>
       <section class="ingest-panel" aria-label="Manual Intel">
         <h2>Manual Intel</h2>
         <div class="config-grid">
@@ -412,6 +446,10 @@ INDEX_HTML = """<!doctype html>
     const ctx = canvas.getContext("2d");
     const intelEl = document.getElementById("intel");
     const selectedEl = document.getElementById("selected");
+    const esiStatusEl = document.getElementById("esi-status");
+    const esiMessageEl = document.getElementById("esi-message");
+    const esiRefreshButton = document.getElementById("esi-refresh");
+    const esiUseSystemButton = document.getElementById("esi-use-system");
     const filterEl = document.getElementById("filter");
     const reportTabButton = document.getElementById("tab-reports");
     const alertTabButton = document.getElementById("tab-alerts");
@@ -436,8 +474,10 @@ INDEX_HTML = """<!doctype html>
     const saveConfigButton = document.getElementById("cfg-save");
     const reloadConfigButton = document.getElementById("cfg-reload");
     let snapshot = { systems: [], links: [], reports: [], characters: [], summary: {} };
+    let esiSession = { loading: true, enabled: false, authenticated: false, error: "", location: null, scopes: [] };
     let selectedSystem = null;
     let listMode = "reports";
+    let manualSystemId = 0;
     const alertDetails = new Map();
 
     function resize() {
@@ -854,18 +894,123 @@ INDEX_HTML = """<!doctype html>
       obsStatusEl.style.color = isError ? "var(--danger)" : "var(--muted)";
     }
 
+    function setEsiMessage(text, isError = false) {
+      esiMessageEl.textContent = text;
+      esiMessageEl.style.color = isError ? "var(--danger)" : "var(--muted)";
+    }
+
+    function esiCurrentSystem() {
+      const location = esiSession && esiSession.location && typeof esiSession.location === "object"
+        ? esiSession.location
+        : {};
+      const embedded = location.solar_system && typeof location.solar_system === "object"
+        ? location.solar_system
+        : {};
+      const systemId = positiveInt(location.solar_system_id || embedded.system_id);
+      const name = String(location.solar_system_name || embedded.name || "").trim();
+      return { systemId, name };
+    }
+
+    function renderEsiStatus() {
+      const current = esiCurrentSystem();
+      esiUseSystemButton.disabled = !current.name;
+      if (esiSession.loading) {
+        esiStatusEl.innerHTML = `<div class="status-row"><span>Status</span><strong>Loading</strong></div>`;
+        setEsiMessage("Loading...");
+        return;
+      }
+
+      const statusText = esiSession.enabled
+        ? (esiSession.authenticated ? "Authenticated" : "Enabled")
+        : "Disabled";
+      const rows = [
+        ["Status", statusText],
+        ["Character", esiSession.character_id || "Unknown"],
+        ["Current system", current.name ? `${current.name}${current.systemId ? ` (${current.systemId})` : ""}` : "Unavailable"],
+        ["Scopes", Array.isArray(esiSession.scopes) ? esiSession.scopes.length : 0]
+      ];
+      esiStatusEl.innerHTML = rows.map(([label, value]) => `
+        <div class="status-row">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join("");
+      setEsiMessage(esiSession.error || "Ready", Boolean(esiSession.error));
+    }
+
+    async function loadEsiStatus() {
+      esiRefreshButton.disabled = true;
+      esiSession = { ...esiSession, loading: true, error: "" };
+      renderEsiStatus();
+      try {
+        const statusResponse = await fetch("/api/esi/status", { cache: "no-store" });
+        const statusPayload = await statusResponse.json();
+        if (!statusResponse.ok) {
+          throw new Error(statusPayload.error || "ESI status unavailable");
+        }
+        esiSession = {
+          loading: false,
+          enabled: Boolean(statusPayload.enabled),
+          authenticated: Boolean(statusPayload.authenticated),
+          character_id: statusPayload.character_id || "",
+          scopes: Array.isArray(statusPayload.scopes) ? statusPayload.scopes : [],
+          error: statusPayload.error || "",
+          location: null
+        };
+
+        if (esiSession.enabled && esiSession.authenticated) {
+          const sessionResponse = await fetch("/api/esi/session?location=true&contacts=false", { cache: "no-store" });
+          const sessionPayload = await sessionResponse.json();
+          if (!sessionResponse.ok) {
+            throw new Error(sessionPayload.error || "ESI session unavailable");
+          }
+          const session = sessionPayload.snapshot || {};
+          esiSession.character_id = session.character_id || esiSession.character_id;
+          esiSession.scopes = Array.isArray(session.scopes) ? session.scopes : esiSession.scopes;
+          esiSession.location = session.location || null;
+        }
+      } catch (error) {
+        esiSession = {
+          ...esiSession,
+          loading: false,
+          error: error.message || "ESI unavailable"
+        };
+      } finally {
+        esiRefreshButton.disabled = false;
+        renderEsiStatus();
+      }
+    }
+
+    function useEsiSystem() {
+      const current = esiCurrentSystem();
+      if (!current.name) {
+        setEsiMessage("Current system unavailable", true);
+        return;
+      }
+      obsFields.system_name.value = current.name;
+      manualSystemId = current.systemId;
+      setObservationStatus(`System ${current.name}`);
+    }
+
     function readObservationForm() {
-      return {
-        system_name: obsFields.system_name.value.trim(),
+      const systemName = obsFields.system_name.value.trim();
+      const current = esiCurrentSystem();
+      const payload = {
+        system_name: systemName,
         names: textareaToList(obsFields.names.value),
         source: obsFields.source.value.trim() || "manual",
         raw_text: obsFields.raw_text.value.trim()
       };
+      if (manualSystemId && systemName === current.name) {
+        payload.system_id = manualSystemId;
+      }
+      return payload;
     }
 
     function clearObservationForm({ keepSystem = false } = {}) {
       if (!keepSystem) {
         obsFields.system_name.value = "";
+        manualSystemId = 0;
       }
       obsFields.names.value = "";
       obsFields.raw_text.value = "";
@@ -1014,6 +1159,9 @@ INDEX_HTML = """<!doctype html>
     });
     saveConfigButton.addEventListener("click", () => saveConfig().catch(console.error));
     reloadConfigButton.addEventListener("click", () => loadConfig().catch(console.error));
+    esiRefreshButton.addEventListener("click", () => loadEsiStatus().catch(console.error));
+    esiUseSystemButton.addEventListener("click", () => useEsiSystem());
+    obsFields.system_name.addEventListener("input", () => { manualSystemId = 0; });
     submitIntelButton.addEventListener("click", () => submitObservation().catch(console.error));
     clearIntelButton.addEventListener("click", () => clearObservationForm());
     window.addEventListener("resize", resize);
@@ -1027,7 +1175,9 @@ INDEX_HTML = """<!doctype html>
     resize();
     refresh().catch(console.error);
     loadConfig().catch(console.error);
+    loadEsiStatus().catch(console.error);
     setInterval(() => refresh().catch(console.error), 2000);
+    setInterval(() => loadEsiStatus().catch(console.error), 30000);
   </script>
 </body>
 </html>

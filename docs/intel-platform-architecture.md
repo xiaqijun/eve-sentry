@@ -130,6 +130,9 @@ uv run python -m app.server --host 127.0.0.1 --port 8765
 服务端默认使用 SQLite，数据文件为 `intel.sqlite3`；如需沿用旧 JSON
 联调数据，可显式指定 `--storage json --data intel_reports.json`。
 
+当前 Web 面板提供星图、手工情报录入、评分配置、alert 证据详情，以及
+ESI session 状态/当前位置展示；当前位置可一键填入手工情报表单。
+
 ### 3.4 预警客户端
 
 职责:
