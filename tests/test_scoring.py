@@ -1,5 +1,5 @@
 from app.core.models import Observation
-from app.intel.scoring import ScoringEngine, Watchlist
+from app.intel.scoring import ChannelMention, ScoringEngine, Watchlist
 from app.killboard.analyzer import GroupKillActivity, KillActivity
 
 
@@ -135,6 +135,48 @@ def test_group_kill_activity_adds_conservative_bonus_evidence():
     ]
     assert event.evidence[1].summary == (
         "Corporation 456 has 12 recent kills from zKillboard and 2 losses"
+    )
+
+
+def test_recent_channel_mentions_add_context_evidence():
+    same_system = Observation(
+        source="intel_channel",
+        system_name="Tama",
+        raw_text="Scout A: Tama +3 reds",
+        seen_at="2026-06-29T11:58:00+00:00",
+    )
+    adjacent_system = Observation(
+        source="intel_channel",
+        system_name="Oijanen",
+        raw_text="Scout B: Oijanen Some Pilot",
+        seen_at="2026-06-29T11:40:00+00:00",
+    )
+
+    event = ScoringEngine(cooldown_seconds=0).score(
+        observation(source="local_ocr"),
+        channel_mentions=[
+            ChannelMention(same_system, relation="same_system", age_seconds=120),
+            ChannelMention(
+                adjacent_system,
+                relation="adjacent_system",
+                age_seconds=1200,
+            ),
+        ],
+    )
+
+    assert event is not None
+    assert event.score == 85
+    assert event.level == "high"
+    assert evidence_types(event) == [
+        "local_ocr_seen",
+        "intel_channel_same_system_recent",
+        "intel_channel_adjacent_system_recent",
+    ]
+    assert event.evidence[1].summary == (
+        "Recent intel channel mention 2 minutes ago in Tama"
+    )
+    assert event.evidence[2].summary == (
+        "Recent intel channel mention 20 minutes ago in adjacent system Oijanen"
     )
 
 

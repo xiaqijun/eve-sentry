@@ -12,6 +12,11 @@ from typing import Any
 from uuid import uuid4
 
 from app.core.models import Observation, ThreatEvent
+from app.intel.scoring import ChannelMention
+
+
+CHANNEL_SAME_SYSTEM_WINDOW_SECONDS = 10 * 60
+CHANNEL_ADJACENT_SYSTEM_WINDOW_SECONDS = 30 * 60
 
 
 def utc_now_iso() -> str:
@@ -617,14 +622,18 @@ class IntelStore:
         return data
 
     def _scoring_kwargs(self, observation: Observation) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        channel_mentions = self._channel_mentions_for_observation(observation)
+        if channel_mentions:
+            kwargs["channel_mentions"] = channel_mentions
+
         if self._enricher is None:
-            return {}
+            return kwargs
         try:
             enrichment = self._enricher.enrich(observation)
         except Exception:
-            return {}
+            return kwargs
 
-        kwargs: dict[str, Any] = {}
         character_profiles = getattr(enrichment, "character_profiles", None)
         if character_profiles:
             kwargs["character_profiles"] = character_profiles
@@ -635,6 +644,77 @@ class IntelStore:
         if group_activities:
             kwargs["group_activities"] = group_activities
         return kwargs
+
+    def _channel_mentions_for_observation(
+        self,
+        observation: Observation,
+    ) -> list[ChannelMention]:
+        if observation.source.strip().casefold() == "intel_channel":
+            return []
+
+        observed_at = self._parse_timestamp(observation.seen_at)
+        if observed_at is None:
+            observed_at = self._parse_timestamp(observation.received_at)
+        if observed_at is None:
+            return []
+
+        system = observation.system_name.strip()
+        adjacent_systems = self._adjacent_systems(system)
+        mentions = []
+        for report in self._reports_snapshot():
+            if report.report_id == observation.observation_id:
+                continue
+            if report.source.strip().casefold() != "intel_channel":
+                continue
+            relation = ""
+            window_seconds = 0
+            if report.system.casefold() == system.casefold():
+                relation = "same_system"
+                window_seconds = CHANNEL_SAME_SYSTEM_WINDOW_SECONDS
+            elif report.system.casefold() in adjacent_systems:
+                relation = "adjacent_system"
+                window_seconds = CHANNEL_ADJACENT_SYSTEM_WINDOW_SECONDS
+            else:
+                continue
+
+            mentioned_at = self._parse_timestamp(report.seen_at)
+            if mentioned_at is None:
+                continue
+            age_seconds = (observed_at - mentioned_at).total_seconds()
+            if age_seconds < 0 or age_seconds > window_seconds:
+                continue
+            mentions.append(
+                ChannelMention(
+                    observation=report.to_observation(),
+                    relation=relation,
+                    age_seconds=age_seconds,
+                )
+            )
+        return mentions
+
+    def _adjacent_systems(self, system: str) -> set[str]:
+        query = system.casefold()
+        adjacent: set[str] = set()
+        for source, target in self._links:
+            if source.casefold() == query:
+                adjacent.add(target.casefold())
+            if target.casefold() == query:
+                adjacent.add(source.casefold())
+        return adjacent
+
+    def _parse_timestamp(self, value: str) -> datetime | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = f"{raw[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
 
     def _resolve_entity_by_name(self, name: str, category: str) -> Any | None:
         if self._resolver is None:

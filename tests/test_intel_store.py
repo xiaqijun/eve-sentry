@@ -322,6 +322,66 @@ def test_list_alerts_scores_group_kill_activity_from_enricher(tmp_path):
     ]
 
 
+def test_list_alerts_uses_recent_channel_context(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[("Tama", "Oijanen")],
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "Alliance Intel",
+            "system_name": "Tama",
+            "raw_text": "Scout A: Tama +3 reds",
+            "seen_at": "2026-06-29T11:58:00+00:00",
+        }
+    )
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "Alliance Intel",
+            "system_name": "Oijanen",
+            "raw_text": "Scout B: Oijanen Some Pilot",
+            "seen_at": "2026-06-29T11:40:00+00:00",
+        }
+    )
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "Alliance Intel",
+            "system_name": "Hek",
+            "raw_text": "Scout C: Hek +1",
+            "seen_at": "2026-06-29T10:00:00+00:00",
+        }
+    )
+    observation = store.add_observation(
+        {
+            "source": "local_ocr",
+            "system_name": "Tama",
+            "names": ["Alice"],
+            "seen_at": "2026-06-29T12:00:00+00:00",
+            "received_at": "2026-06-29T12:00:01+00:00",
+        }
+    )
+
+    alerts = store.list_alerts()
+    alert = next(
+        item
+        for item in alerts
+        if item["source_observation_id"] == observation.observation_id
+    )
+
+    assert alert["score"] == 85
+    assert alert["level"] == "high"
+    assert [item["type"] for item in alert["evidence"]] == [
+        "local_ocr_seen",
+        "intel_channel_same_system_recent",
+        "intel_channel_adjacent_system_recent",
+    ]
+
+
 def test_enricher_failure_falls_back_to_base_scoring(tmp_path):
     class FailingEnricher:
         def enrich(self, observation):

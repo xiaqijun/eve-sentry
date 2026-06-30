@@ -419,6 +419,9 @@ HTTP API 也支持按角色、星系、军团、联盟查询近期击毁画像�
 - `critical`: 100 以上。
 
 告警必须包含 evidence，不允许只返回一个分数。
+服务端会按 `seen_at` 把近期 `intel_channel` observation 作为上下文 evidence：
+同星系生成 `intel_channel_same_system_recent`，相邻星系生成
+`intel_channel_adjacent_system_recent`；预警频道 observation 本身不再引用自身作为上下文。
 
 ## 9. API 草案
 

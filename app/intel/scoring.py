@@ -27,6 +27,15 @@ class Watchlist:
     hostile_standing_threshold: float | None = -5.0
 
 
+@dataclass(frozen=True)
+class ChannelMention:
+    """Recent intel-channel context near the scored observation."""
+
+    observation: Observation
+    relation: str
+    age_seconds: float | None = None
+
+
 class ScoringEngine:
     """Generate threat events from observations and optional enrichment."""
 
@@ -50,6 +59,7 @@ class ScoringEngine:
         character_profiles: list[dict[str, Any]] | None = None,
         group_activity: GroupKillActivity | None = None,
         group_activities: list[GroupKillActivity] | None = None,
+        channel_mentions: list[ChannelMention] | None = None,
     ) -> ThreatEvent | None:
         """Return a threat event, or None when suppressed by rules/cooldown."""
         names = self._event_names(observation)
@@ -69,6 +79,7 @@ class ScoringEngine:
             evidence.extend(self._kill_activity_evidence(activity))
         for activity in self._group_activity_inputs(group_activity, group_activities):
             evidence.extend(self._group_activity_evidence(activity))
+        evidence.extend(self._channel_mention_evidence(channel_mentions))
 
         score = sum(item.weight for item in evidence)
         if score <= 0:
@@ -247,6 +258,60 @@ class ScoringEngine:
             )
         ]
 
+    def _channel_mention_evidence(
+        self,
+        mentions: list[ChannelMention] | None,
+    ) -> list[Evidence]:
+        if not mentions:
+            return []
+
+        latest_by_relation: dict[str, ChannelMention] = {}
+        for mention in mentions:
+            relation = mention.relation.strip().casefold()
+            if relation not in {"same_system", "adjacent_system"}:
+                continue
+            existing = latest_by_relation.get(relation)
+            if existing is None or _time_key(mention) > _time_key(existing):
+                latest_by_relation[relation] = mention
+
+        evidence = []
+        same_system = latest_by_relation.get("same_system")
+        if same_system is not None:
+            evidence.append(
+                make_evidence(
+                    "intel_channel_same_system_recent",
+                    30,
+                    self._channel_mention_summary(same_system, adjacent=False),
+                )
+            )
+        adjacent = latest_by_relation.get("adjacent_system")
+        if adjacent is not None:
+            evidence.append(
+                make_evidence(
+                    "intel_channel_adjacent_system_recent",
+                    15,
+                    self._channel_mention_summary(adjacent, adjacent=True),
+                )
+            )
+        return evidence
+
+    def _channel_mention_summary(
+        self,
+        mention: ChannelMention,
+        adjacent: bool,
+    ) -> str:
+        observation = mention.observation
+        location = (
+            f"adjacent system {observation.system_name}"
+            if adjacent
+            else observation.system_name
+        )
+        age = _age_label(mention.age_seconds)
+        prefix = "Recent intel channel mention"
+        if age:
+            prefix = f"{prefix} {age}"
+        return f"{prefix} in {location}"
+
     def _profile_inputs(
         self,
         character_profile: dict[str, Any] | None,
@@ -330,3 +395,18 @@ def _optional_float(value: Any) -> float | None:
 
 def _clean_meta_string(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _time_key(mention: ChannelMention) -> str:
+    return mention.observation.seen_at or mention.observation.received_at
+
+
+def _age_label(age_seconds: float | None) -> str:
+    if age_seconds is None or age_seconds < 0:
+        return ""
+    minutes = int(age_seconds // 60)
+    if minutes <= 0:
+        return "just now"
+    if minutes == 1:
+        return "1 minute ago"
+    return f"{minutes} minutes ago"
