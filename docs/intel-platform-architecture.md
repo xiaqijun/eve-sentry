@@ -288,7 +288,10 @@ ESI 是身份和宇宙数据的权威补全源。
 python -m app.server --enable-esi --esi-cache esi_cache.json
 ```
 
-启用后，服务端会在保存 observation 时尽力补全 `system_id` 和 `character_ids`，并在生成 alert 时把角色公开资料作为评分证据。ESI 查询失败时保留原 observation，不阻塞上报链路。
+启用后，服务端会在保存 observation 时尽力补全 `system_id` 和
+`character_ids`，并在生成 alert 时把角色公开资料作为评分证据。角色公开
+资料会尽力补齐 `corporation_name` 和 `alliance_name`，相关查询结果写入本地
+ESI 缓存；ESI 查询失败时保留原 observation，不阻塞上报链路。
 
 官方参考:
 

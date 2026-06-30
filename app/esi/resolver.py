@@ -76,15 +76,57 @@ class EsiResolver:
         key = f"character:{int(character_id)}"
         cached = self.cache.get(key)
         if isinstance(cached, dict):
-            return cached
+            profile = dict(cached)
+            if self._complete_character_affiliations(profile):
+                self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
+                self.cache.save()
+            return profile
 
         character = self.client.get_character(int(character_id))
         profile = {
             "character_id": int(character_id),
             "name": str(character.get("name", "")),
-            "corporation_id": character.get("corporation_id"),
-            "alliance_id": character.get("alliance_id"),
+            "corporation_id": _optional_int(character.get("corporation_id")),
+            "alliance_id": _optional_int(character.get("alliance_id")),
             "security_status": character.get("security_status"),
+        }
+        self._complete_character_affiliations(profile)
+        self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
+        self.cache.save()
+        return profile
+
+    def corporation_profile(self, corporation_id: int) -> dict[str, Any]:
+        """Return cached public corporation profile data."""
+        corporation_id = int(corporation_id)
+        key = f"corporation:{corporation_id}"
+        cached = self.cache.get(key)
+        if isinstance(cached, dict):
+            return cached
+
+        corporation = self.client.get_corporation(corporation_id)
+        profile = {
+            "corporation_id": corporation_id,
+            "name": str(corporation.get("name", "")),
+            "ticker": corporation.get("ticker"),
+            "alliance_id": _optional_int(corporation.get("alliance_id")),
+        }
+        self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
+        self.cache.save()
+        return profile
+
+    def alliance_profile(self, alliance_id: int) -> dict[str, Any]:
+        """Return cached public alliance profile data."""
+        alliance_id = int(alliance_id)
+        key = f"alliance:{alliance_id}"
+        cached = self.cache.get(key)
+        if isinstance(cached, dict):
+            return cached
+
+        alliance = self.client.get_alliance(alliance_id)
+        profile = {
+            "alliance_id": alliance_id,
+            "name": str(alliance.get("name", "")),
+            "ticker": alliance.get("ticker"),
         }
         self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
         self.cache.save()
@@ -131,6 +173,32 @@ class EsiResolver:
         observation.character_ids = character_ids
         return observation
 
+    def _complete_character_affiliations(self, profile: dict[str, Any]) -> bool:
+        """Best-effort corporation/alliance name enrichment."""
+        changed = False
+        corporation_id = _optional_int(profile.get("corporation_id"))
+        if corporation_id is not None and not profile.get("corporation_name"):
+            try:
+                corporation = self.corporation_profile(corporation_id)
+            except EsiApiError:
+                corporation = {}
+            corporation_name = str(corporation.get("name") or "").strip()
+            if corporation_name:
+                profile["corporation_name"] = corporation_name
+                changed = True
+
+        alliance_id = _optional_int(profile.get("alliance_id"))
+        if alliance_id is not None and not profile.get("alliance_name"):
+            try:
+                alliance = self.alliance_profile(alliance_id)
+            except EsiApiError:
+                alliance = {}
+            alliance_name = str(alliance.get("name") or "").strip()
+            if alliance_name:
+                profile["alliance_name"] = alliance_name
+                changed = True
+        return changed
+
     def _resolve_missing(self, names: list[str]) -> list[ResolvedName]:
         payload = self.client.resolve_ids(names)
         if not isinstance(payload, dict):
@@ -164,3 +232,12 @@ class EsiResolver:
     def _name_key(self, name: str) -> str:
         return f"name:{name.strip().casefold()}"
 
+
+def _optional_int(value: Any) -> int | None:
+    if value in {None, ""}:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
