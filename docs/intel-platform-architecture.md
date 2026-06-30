@@ -154,6 +154,10 @@ ESI session 状态/当前位置展示；当前位置可一键填入手工情报�
 uv run python -m app.alert_client --server http://127.0.0.1:8765
 ```
 
+默认模式会订阅 `/api/events` SSE 事件流；如果事件流不可用，客户端会先
+回退到 `/api/alerts` 轮询，并在 `--stream-retry-interval` 冷却后自动重试订阅。
+需要强制只用轮询时可加 `--poll`。
+
 常用模式:
 
 ```powershell
@@ -168,6 +172,9 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --once --includ
 
 # 使用独立状态文件续接已处理 alert；需要重放时可加 --no-state 或删除状态文件
 uv run python -m app.alert_client --server http://127.0.0.1:8765 --details --state alert_client_state.json
+
+# 网络不稳定时加快事件流恢复尝试
+uv run python -m app.alert_client --server http://127.0.0.1:8765 --stream-retry-interval 10
 ```
 
 ## 4. 核心数据模型
@@ -564,7 +571,8 @@ GET  /api/map/snapshot
   `min_score` 和 `min_level` 等过滤参数。
 - Web 面板通过 `EventSource` 订阅 `/api/events`，收到 alert 后先本地合并展示，
   再排队刷新完整快照；浏览器或网络不支持 SSE 时回退到短轮询。
-- 独立预警客户端仍可按原轮询 API 工作，后续可切换为订阅同一事件流。
+- 独立预警客户端默认订阅同一事件流；事件流失败时先用轮询兜底，再按冷却时间
+  自动恢复订阅。
 
 ## 10. 存储规划
 

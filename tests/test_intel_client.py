@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from app.alert_client import (
     AlertClientState,
+    AlertStreamFallback,
     ack_emitted_alerts,
     attach_alert_details,
     build_popup_names,
@@ -367,6 +368,35 @@ def test_alert_poller_passes_server_side_filters_to_polling_and_streaming():
     ]
 
 
+def test_alert_stream_fallback_retries_stream_after_poll_and_cooldown():
+    now = 100.0
+    fallback = AlertStreamFallback(
+        enabled=True,
+        retry_interval=5.0,
+        clock=lambda: now,
+    )
+
+    assert fallback.should_stream() is True
+
+    fallback.mark_stream_failure()
+
+    assert fallback.should_stream() is False
+
+    fallback.mark_poll_attempt()
+
+    assert fallback.should_stream() is False
+
+    now = 105.0
+
+    assert fallback.should_stream() is True
+
+    fallback.mark_stream_success()
+
+    now = 106.0
+
+    assert fallback.should_stream() is True
+
+
 def test_alert_client_formats_reports_for_console_and_popup():
     report = {
         "system": "Tama",
@@ -478,6 +508,8 @@ def test_alert_client_parse_args_supports_one_shot_json_mode():
             "70",
             "--min-level",
             "high",
+            "--stream-retry-interval",
+            "15",
             "--state",
             "alerts.json",
             "--no-state",
@@ -495,8 +527,75 @@ def test_alert_client_parse_args_supports_one_shot_json_mode():
     assert args.unacknowledged_only is True
     assert args.min_score == 70
     assert args.min_level == "high"
+    assert args.stream_retry_interval == 15
     assert args.state == "alerts.json"
     assert args.no_state is True
+
+
+def test_alert_client_once_falls_back_to_polling_when_stream_fails(
+    monkeypatch,
+    capsys,
+):
+    class StreamingFailsApi:
+        instances = []
+
+        def __init__(self, base_url, timeout=3.0):
+            self.base_url = base_url
+            self.timeout = timeout
+            self.poll_calls = 0
+            self.stream_calls = 0
+            self.instances.append(self)
+
+        def list_alerts(
+            self,
+            limit=50,
+            acknowledged=None,
+            min_score=None,
+            min_level="",
+        ):
+            self.poll_calls += 1
+            return [
+                {
+                    "id": "evt-poll",
+                    "system_name": "Tama",
+                    "names": ["Fallback"],
+                    "created_at": "2026-06-29T12:00:00+00:00",
+                    "level": "high",
+                    "score": 70,
+                }
+            ]
+
+        def stream_alerts(
+            self,
+            limit=50,
+            timeout=30.0,
+            acknowledged=None,
+            min_score=None,
+            min_level="",
+        ):
+            self.stream_calls += 1
+            raise IntelApiError("stream offline")
+
+    monkeypatch.setattr("app.alert_client.IntelApiClient", StreamingFailsApi)
+
+    args = parse_args(
+        [
+            "--server",
+            "http://example.invalid",
+            "--once",
+            "--include-existing",
+            "--no-state",
+        ]
+    )
+
+    assert run_alert_client(args) == 0
+
+    output = capsys.readouterr()
+    api = StreamingFailsApi.instances[0]
+
+    assert api.stream_calls == 1
+    assert api.poll_calls == 1
+    assert "Fallback" in output.out
 
 
 def test_alert_client_resume_state_preserves_offline_alerts(tmp_path, capsys):
