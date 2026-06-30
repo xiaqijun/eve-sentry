@@ -2,6 +2,7 @@ import io
 import json
 
 from app.alert_client import (
+    AlertClientState,
     ack_emitted_alerts,
     attach_alert_details,
     build_popup_names,
@@ -9,6 +10,7 @@ from app.alert_client import (
     format_alert,
     format_report,
     parse_args,
+    run_alert_client,
 )
 from app.intel_client import AlertPoller, IntelApiClient, IntelApiError, ReportPoller
 from app.server.http_server import IntelHTTPServer
@@ -224,6 +226,17 @@ def test_alert_poller_ignores_seeded_alerts_and_returns_newest_batch_in_order():
     assert [alert["id"] for alert in poller.poll_new()] == ["new-1", "new-2"]
 
 
+def test_alert_poller_accepts_initial_seen_ids():
+    latest_first = [
+        {"id": "new", "created_at": "2", "names": ["Bob"]},
+        {"id": "old", "created_at": "1", "names": ["Old"]},
+    ]
+    api = FakeApi([latest_first])
+    poller = AlertPoller(api, seen_ids=["old"])
+
+    assert [alert["id"] for alert in poller.poll_new()] == ["new"]
+
+
 def test_alert_poller_reads_event_stream_in_stream_order():
     stream_order = [
         {"id": "new-1", "created_at": "2", "names": ["Bob"]},
@@ -236,6 +249,38 @@ def test_alert_poller_reads_event_stream_in_stream_order():
         "new-1",
         "new-2",
     ]
+
+
+def test_alert_client_state_persists_recent_seen_ids(tmp_path):
+    state_path = tmp_path / "alert_state.json"
+    state = AlertClientState(state_path, max_seen_ids=2)
+
+    assert state.load_seen_ids() == []
+    assert state.loaded is False
+
+    state.record_alerts(
+        [
+            {"id": "evt-1"},
+            {"id": "evt-2"},
+            {"id": "evt-2"},
+            {"id": "evt-3"},
+            {"names": ["missing"]},
+        ]
+    )
+
+    reloaded = AlertClientState(state_path, max_seen_ids=2)
+    assert reloaded.load_seen_ids() == ["evt-2", "evt-3"]
+    assert reloaded.loaded is True
+
+
+def test_alert_client_state_corruption_falls_back_to_empty(tmp_path):
+    state_path = tmp_path / "alert_state.json"
+    state_path.write_text("{bad json", encoding="utf-8")
+
+    state = AlertClientState(state_path)
+
+    assert state.load_seen_ids() == []
+    assert state.loaded is True
 
 
 def test_alert_poller_passes_server_side_filters_to_polling_and_streaming():
@@ -371,6 +416,9 @@ def test_alert_client_parse_args_supports_one_shot_json_mode():
             "70",
             "--min-level",
             "high",
+            "--state",
+            "alerts.json",
+            "--no-state",
         ]
     )
 
@@ -385,6 +433,67 @@ def test_alert_client_parse_args_supports_one_shot_json_mode():
     assert args.unacknowledged_only is True
     assert args.min_score == 70
     assert args.min_level == "high"
+    assert args.state == "alerts.json"
+    assert args.no_state is True
+
+
+def test_alert_client_resume_state_preserves_offline_alerts(tmp_path, capsys):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        api = IntelApiClient(server.url)
+        old = api.post_observation(
+            system_name="Tama",
+            names=["Old"],
+            source="intel_channel",
+            seen_at="2026-06-29T12:00:00+00:00",
+        )
+        state_path = tmp_path / "alert_state.json"
+
+        first_args = parse_args(
+            [
+                "--server",
+                server.url,
+                "--once",
+                "--poll",
+                "--state",
+                str(state_path),
+            ]
+        )
+        assert run_alert_client(first_args) == 0
+        first_output = capsys.readouterr()
+        assert "[ALERT]" not in first_output.out
+        assert AlertClientState(state_path).load_seen_ids() == [old["alert"]["id"]]
+
+        new = api.post_observation(
+            system_name="Tama",
+            names=["New"],
+            source="intel_channel",
+            seen_at="2026-06-29T12:01:00+00:00",
+        )
+
+        second_args = parse_args(
+            [
+                "--server",
+                server.url,
+                "--once",
+                "--poll",
+                "--state",
+                str(state_path),
+            ]
+        )
+        assert run_alert_client(second_args) == 0
+        second_output = capsys.readouterr()
+
+        assert old["alert"]["id"] not in second_output.out
+        assert new["alert"]["id"] not in second_output.out
+        assert "New" in second_output.out
+        assert AlertClientState(state_path).load_seen_ids() == [
+            old["alert"]["id"],
+            new["alert"]["id"],
+        ]
+    finally:
+        server.stop()
 
 
 def test_alert_client_emit_alerts_supports_text_and_json_lines():

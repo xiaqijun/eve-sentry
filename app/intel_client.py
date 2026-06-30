@@ -329,16 +329,22 @@ class AlertPoller:
         acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str = "",
+        seen_ids: list[str] | None = None,
     ) -> None:
         self.api = api
         self.limit = limit
         self.acknowledged = acknowledged
         self.min_score = min_score
         self.min_level = min_level
-        self._seen_ids: set[str] = set()
+        self._seen_ids: set[str] = {
+            str(alert_id).strip()
+            for alert_id in seen_ids or []
+            if str(alert_id).strip()
+        }
 
-    def seed_existing(self) -> None:
+    def seed_existing(self) -> list[dict[str, Any]]:
         """Mark currently known alerts as already seen."""
+        seeded = []
         for alert in self.api.list_alerts(
             limit=self.limit,
             acknowledged=self.acknowledged,
@@ -348,6 +354,8 @@ class AlertPoller:
             alert_id = str(alert.get("id") or "")
             if alert_id:
                 self._seen_ids.add(alert_id)
+                seeded.append(alert)
+        return seeded
 
     def poll_new(self) -> list[dict[str, Any]]:
         """Return alerts that were not returned by previous polls."""
