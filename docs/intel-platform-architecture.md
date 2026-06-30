@@ -62,6 +62,10 @@ flowchart LR
 uv run python -m app.detector_client
 ```
 
+检测客户端默认只上报到服务端，不弹出本地预警窗口。只有显式设置
+`EVE_SENTRY_SHOW_POPUPS=1` 时才保留旧的本地弹窗行为；正式联调建议由
+独立预警客户端消费服务端 alert。
+
 ### 3.2 频道采集器
 
 职责:
@@ -120,6 +124,16 @@ uv run python -m app.server --host 127.0.0.1 --port 8765
 
 ```powershell
 uv run python -m app.alert_client --server http://127.0.0.1:8765
+```
+
+常用模式:
+
+```powershell
+# 长驻订阅，并弹出本地预警窗口
+uv run python -m app.alert_client --server http://127.0.0.1:8765 --popup
+
+# 一次性检查当前服务端 alert，适合联调或脚本验证
+uv run python -m app.alert_client --server http://127.0.0.1:8765 --once --include-existing --json --poll
 ```
 
 ## 4. 核心数据模型
