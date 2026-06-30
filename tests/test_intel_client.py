@@ -2,6 +2,7 @@ import io
 import json
 
 from app.alert_client import (
+    ack_emitted_alerts,
     build_popup_names,
     emit_alerts,
     format_alert,
@@ -29,6 +30,10 @@ class FakeApi:
     def stream_alerts(self, limit=50, timeout=30.0):
         _ = timeout
         return self.list_reports(limit=limit)
+
+    def ack_alert(self, alert_id, acknowledged_by="", note=""):
+        _ = alert_id, acknowledged_by, note
+        return {}
 
 
 def test_intel_api_client_posts_and_lists_reports(tmp_path):
@@ -77,6 +82,14 @@ def test_intel_api_client_posts_observations(tmp_path):
         assert created["alert"]["id"] == f"evt_{observation_id}"
         assert api.list_alerts()[0]["score"] == 30
         assert api.stream_alerts(timeout=0)[0]["id"] == f"evt_{observation_id}"
+
+        acked = api.ack_alert(
+            f"evt_{observation_id}",
+            acknowledged_by="client",
+            note="handled",
+        )
+        assert acked["acknowledged"] is True
+        assert acked["acknowledged_by"] == "client"
     finally:
         server.stop()
 
@@ -159,12 +172,27 @@ def test_alert_client_formats_reports_for_console_and_popup():
 
 
 def test_alert_client_parse_args_supports_one_shot_json_mode():
-    args = parse_args(["--once", "--json", "--poll", "--include-existing"])
+    args = parse_args(
+        [
+            "--once",
+            "--json",
+            "--poll",
+            "--include-existing",
+            "--ack",
+            "--ack-by",
+            "cli",
+            "--ack-note",
+            "handled",
+        ]
+    )
 
     assert args.once is True
     assert args.json is True
     assert args.poll is True
     assert args.ignore_existing is False
+    assert args.ack is True
+    assert args.ack_by == "cli"
+    assert args.ack_note == "handled"
 
 
 def test_alert_client_emit_alerts_supports_text_and_json_lines():
@@ -186,3 +214,25 @@ def test_alert_client_emit_alerts_supports_text_and_json_lines():
         "[ALERT] HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 70)"
     )
     assert json.loads(json_stream.getvalue()) == alert
+
+
+def test_alert_client_acknowledges_emitted_alerts():
+    class AckApi:
+        def __init__(self):
+            self.acks = []
+
+        def ack_alert(self, alert_id, acknowledged_by="", note=""):
+            self.acks.append((alert_id, acknowledged_by, note))
+            return {"id": alert_id, "acknowledged": True}
+
+    api = AckApi()
+
+    count = ack_emitted_alerts(
+        api,
+        [{"id": "evt-1"}, {"id": ""}, {"names": ["missing"]}],
+        acknowledged_by="cli",
+        note="handled",
+    )
+
+    assert count == 1
+    assert api.acks == [("evt-1", "cli", "handled")]

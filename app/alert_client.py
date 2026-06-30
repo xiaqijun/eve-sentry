@@ -108,6 +108,27 @@ def emit_alerts(
         show_popup(build_popup_names(alerts))
 
 
+def ack_emitted_alerts(
+    api: IntelApiClient,
+    alerts: list[dict[str, Any]],
+    acknowledged_by: str = "alert-client",
+    note: str = "",
+) -> int:
+    """Acknowledge alerts that were successfully emitted locally."""
+    acknowledged = 0
+    for alert in alerts:
+        alert_id = str(alert.get("id") or "").strip()
+        if not alert_id:
+            continue
+        try:
+            api.ack_alert(alert_id, acknowledged_by=acknowledged_by, note=note)
+        except IntelApiError as exc:
+            logger.warning("Failed to acknowledge alert %s: %s", alert_id, exc)
+            continue
+        acknowledged += 1
+    return acknowledged
+
+
 def run_alert_client(args: argparse.Namespace) -> int:
     """Run the polling alert loop."""
     api = IntelApiClient(args.server, timeout=args.timeout)
@@ -122,6 +143,9 @@ def run_alert_client(args: argparse.Namespace) -> int:
     once = getattr(args, "once", False)
     json_lines = getattr(args, "json", False)
     popup = getattr(args, "popup", False)
+    ack = getattr(args, "ack", False)
+    ack_by = getattr(args, "ack_by", "alert-client")
+    ack_note = getattr(args, "ack_note", "")
     status_stream = sys.stderr if json_lines else sys.stdout
     print(f"Alert client listening on {args.server}", file=status_stream)
     if once:
@@ -153,6 +177,13 @@ def run_alert_client(args: argparse.Namespace) -> int:
                     popup=popup,
                     json_lines=json_lines,
                 )
+                if ack:
+                    ack_emitted_alerts(
+                        api,
+                        alerts,
+                        acknowledged_by=ack_by,
+                        note=ack_note,
+                    )
 
             if once:
                 return 0
@@ -194,6 +225,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--json",
         action="store_true",
         help="print new alerts as JSON Lines",
+    )
+    parser.add_argument(
+        "--ack",
+        action="store_true",
+        help="acknowledge each alert after it is emitted locally",
+    )
+    parser.add_argument(
+        "--ack-by",
+        default="alert-client",
+        help="client name recorded when --ack is enabled",
+    )
+    parser.add_argument(
+        "--ack-note",
+        default="",
+        help="optional acknowledgement note recorded when --ack is enabled",
     )
     return parser.parse_args(argv)
 

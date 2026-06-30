@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
@@ -124,6 +124,32 @@ class IntelApiClient:
         if not isinstance(alerts, list):
             raise IntelApiError("server returned an invalid alerts payload")
         return alerts
+
+    def ack_alert(
+        self,
+        alert_id: str,
+        acknowledged_by: str = "",
+        note: str = "",
+    ) -> dict[str, Any]:
+        """Mark one alert as acknowledged on the intel server."""
+        alert_id = str(alert_id or "").strip()
+        if not alert_id:
+            raise IntelApiError("alert_id is required")
+
+        payload: dict[str, Any] = {}
+        if acknowledged_by:
+            payload["acknowledged_by"] = acknowledged_by
+        if note:
+            payload["note"] = note
+        response = self._request(
+            "POST",
+            f"/api/alerts/{quote(alert_id, safe='')}/ack",
+            payload=payload,
+        )
+        alert = response.get("alert")
+        if not isinstance(alert, dict):
+            raise IntelApiError("server returned an invalid alert payload")
+        return alert
 
     def stream_alerts(
         self,
