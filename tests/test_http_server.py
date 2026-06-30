@@ -3,6 +3,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from app.intel.config import IntelConfigStore
 from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore
 
@@ -142,6 +143,83 @@ def test_events_stream_returns_alert_sse(tmp_path):
         data_line = next(line for line in body.splitlines() if line.startswith("data:"))
         payload = json.loads(data_line[len("data:"):].strip())
         assert payload["id"] == created["alert"]["id"]
+    finally:
+        server.stop()
+
+
+def test_config_api_updates_scoring_rules_and_clears_cached_alerts(tmp_path):
+    config_store = IntelConfigStore(tmp_path / "intel_config.json")
+    store = IntelStore(
+        tmp_path / "intel.json",
+        scorer=config_store.build_scorer(),
+    )
+    server = IntelHTTPServer(store, port=0, config_store=config_store)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+            },
+        )
+        assert status == 201
+        assert created["alert"]["score"] == 30
+
+        status, updated = request_json(
+            f"{server.url}/api/config",
+            method="PUT",
+            payload={"whitelist": ["Alice"]},
+        )
+        assert status == 200
+        assert updated["config"]["whitelist"] == ["Alice"]
+
+        status, alerts = request_json(f"{server.url}/api/alerts")
+        assert status == 200
+        assert alerts == {"alerts": [], "count": 0}
+
+        status, suppressed = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+            },
+        )
+        assert status == 201
+        assert suppressed["alert"] is None
+
+        status, config = request_json(f"{server.url}/api/config")
+        assert status == 200
+        assert config["config"]["whitelist"] == ["Alice"]
+    finally:
+        server.stop()
+
+
+def test_config_api_rejects_invalid_payload(tmp_path):
+    config_store = IntelConfigStore(tmp_path / "intel_config.json")
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json", scorer=config_store.build_scorer()),
+        port=0,
+        config_store=config_store,
+    )
+    server.start()
+    try:
+        try:
+            request_json(
+                f"{server.url}/api/config",
+                method="PUT",
+                payload={"cooldown_seconds": -1},
+            )
+        except HTTPError as exc:
+            assert exc.code == 400
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert "cooldown_seconds" in payload["error"]
+        else:
+            raise AssertionError("expected HTTP 400")
     finally:
         server.stop()
 

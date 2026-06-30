@@ -25,10 +25,12 @@ class IntelHTTPServer:
         store: IntelStore,
         host: str = "127.0.0.1",
         port: int = 8765,
+        config_store: Any | None = None,
     ) -> None:
         self.store = store
         self.host = host
         self.port = port
+        self.config_store = config_store
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -44,6 +46,7 @@ class IntelHTTPServer:
         handler = self._make_handler()
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self._httpd.store = self.store  # type: ignore[attr-defined]
+        self._httpd.config_store = self.config_store  # type: ignore[attr-defined]
         self.host, self.port = self._httpd.server_address[:2]
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
@@ -84,6 +87,13 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/health":
             self._send_json({"ok": True})
+            return
+        if path == "/api/config":
+            config_store = self._config_store()
+            if config_store is None:
+                self._send_json({"error": "config not enabled"}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"config": config_store.to_dict()})
             return
         if path in {"/api/intel", "/api/systems"}:
             snapshot = self._store().snapshot()
@@ -167,12 +177,13 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             payload = self._read_json()
             if path == "/api/observations":
                 observation = self._store().add_observation(payload)
-                alert = self._store().list_alerts(limit=1)[0]
                 self._send_json(
                     {
                         "ok": True,
                         "observation": observation.to_dict(),
-                        "alert": alert,
+                        "alert": self._alert_for_observation(
+                            observation.observation_id
+                        ),
                     },
                     HTTPStatus.CREATED,
                 )
@@ -195,10 +206,31 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "report": report.to_dict(),
                 "observation": report.to_observation().to_dict(),
-                "alert": self._store().list_alerts(limit=1)[0],
+                "alert": self._alert_for_observation(report.report_id),
             },
             HTTPStatus.CREATED,
         )
+
+    def do_PUT(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        if path != "/api/config":
+            self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            return
+
+        config_store = self._config_store()
+        if config_store is None:
+            self._send_json({"error": "config not enabled"}, HTTPStatus.NOT_FOUND)
+            return
+
+        try:
+            payload = self._read_json()
+            config = config_store.update(payload)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        self._store().set_scorer(config.build_scorer())
+        self._send_json({"ok": True, "config": config.to_dict()})
 
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
@@ -216,7 +248,10 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
         self._send_common_headers(content_type=None, content_length=0)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Methods",
+            "GET, POST, PUT, DELETE, OPTIONS",
+        )
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
@@ -225,6 +260,15 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
 
     def _store(self) -> IntelStore:
         return self.server.store  # type: ignore[attr-defined,no-any-return]
+
+    def _config_store(self) -> Any | None:
+        return self.server.config_store  # type: ignore[attr-defined,no-any-return]
+
+    def _alert_for_observation(self, observation_id: str) -> dict[str, Any] | None:
+        for alert in self._store().list_alerts():
+            if alert.get("source_observation_id") == observation_id:
+                return alert
+        return None
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))

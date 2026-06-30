@@ -32,6 +32,7 @@ Desktop.ini
 # App user data (whitelist is per-user, not tracked)
 whitelist.json
 region_prefs.json
+intel_config.json
 intel_reports.json
 intel.sqlite3
 channel_offsets.json

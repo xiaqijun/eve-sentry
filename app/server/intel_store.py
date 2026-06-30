@@ -146,6 +146,12 @@ class IntelStore:
         self._alert_cache: dict[str, ThreatEvent | None] = {}
         self._reports: list[IntelReport] = self._load_reports()
 
+    def set_scorer(self, scorer: Any | None) -> None:
+        """Replace the alert scorer and force cached alerts to be regenerated."""
+        with self._lock:
+            self._scorer = scorer
+            self._alert_cache.clear()
+
     def add_report(
         self,
         system: str,

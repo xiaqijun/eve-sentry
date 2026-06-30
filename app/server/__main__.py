@@ -15,6 +15,7 @@ def main() -> None:
     parser.add_argument("--data", default="intel_reports.json")
     parser.add_argument("--storage", choices=["json", "sqlite"], default="json")
     parser.add_argument("--db", default="intel.sqlite3")
+    parser.add_argument("--config", default="intel_config.json")
     parser.add_argument("--enable-esi", action="store_true")
     parser.add_argument("--esi-cache", default="esi_cache.json")
     args = parser.parse_args()
@@ -31,6 +32,11 @@ def main() -> None:
 
         resolver = EsiResolver(cache=EsiCache(args.esi_cache))
 
+    from app.intel.config import IntelConfigStore
+
+    config_store = IntelConfigStore(args.config)
+    scorer = config_store.build_scorer()
+
     if args.storage == "sqlite":
         from app.server.sqlite_store import SQLiteIntelStore
 
@@ -38,10 +44,16 @@ def main() -> None:
             args.db,
             import_json_path=args.data,
             resolver=resolver,
+            scorer=scorer,
         )
     else:
-        store = IntelStore(args.data, resolver=resolver)
-    server = IntelHTTPServer(store, host=args.host, port=args.port)
+        store = IntelStore(args.data, resolver=resolver, scorer=scorer)
+    server = IntelHTTPServer(
+        store,
+        host=args.host,
+        port=args.port,
+        config_store=config_store,
+    )
     server.start()
     print(f"Intel map: {server.url}")
     try:
