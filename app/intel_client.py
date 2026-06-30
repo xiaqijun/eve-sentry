@@ -42,6 +42,35 @@ class IntelApiClient:
             payload["seen_at"] = seen_at
         return self._request("POST", "/api/intel", payload=payload)
 
+    def post_observation(
+        self,
+        system_name: str,
+        names: list[str] | None = None,
+        source: str = "api",
+        source_instance: str = "",
+        system_id: int | None = None,
+        character_ids: list[int] | None = None,
+        confidence: float | None = None,
+        raw_text: str = "",
+        seen_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Publish a canonical multi-source observation."""
+        payload: dict[str, Any] = {
+            "system_name": system_name,
+            "names": names or [],
+            "source": source,
+            "source_instance": source_instance,
+            "character_ids": character_ids or [],
+            "raw_text": raw_text,
+        }
+        if system_id is not None:
+            payload["system_id"] = system_id
+        if confidence is not None:
+            payload["confidence"] = confidence
+        if seen_at is not None:
+            payload["seen_at"] = seen_at
+        return self._request("POST", "/api/observations", payload=payload)
+
     def list_reports(
         self,
         system: str = "",
@@ -59,6 +88,42 @@ class IntelApiClient:
         if not isinstance(reports, list):
             raise IntelApiError("server returned an invalid reports payload")
         return reports
+
+    def list_observations(
+        self,
+        source: str = "",
+        system: str = "",
+        name: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Fetch recent observations from the intel server."""
+        params = {"limit": str(limit)}
+        if source:
+            params["source"] = source
+        if system:
+            params["system"] = system
+        if name:
+            params["name"] = name
+        payload = self._request("GET", "/api/observations", params=params)
+        observations = payload.get("observations", [])
+        if not isinstance(observations, list):
+            raise IntelApiError("server returned an invalid observations payload")
+        return observations
+
+    def list_alerts(
+        self,
+        since: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Fetch recent threat events from the intel server."""
+        params = {"limit": str(limit)}
+        if since:
+            params["since"] = since
+        payload = self._request("GET", "/api/alerts", params=params)
+        alerts = payload.get("alerts", [])
+        if not isinstance(alerts, list):
+            raise IntelApiError("server returned an invalid alerts payload")
+        return alerts
 
     def _request(
         self,
@@ -135,3 +200,31 @@ class ReportPoller:
             self._seen_ids.add(report_id)
             new_reports.append(report)
         return new_reports
+
+
+class AlertPoller:
+    """Track seen alert ids and return only newly generated threat events."""
+
+    def __init__(self, api: IntelApiClient, limit: int = 50) -> None:
+        self.api = api
+        self.limit = limit
+        self._seen_ids: set[str] = set()
+
+    def seed_existing(self) -> None:
+        """Mark currently known alerts as already seen."""
+        for alert in self.api.list_alerts(limit=self.limit):
+            alert_id = str(alert.get("id") or "")
+            if alert_id:
+                self._seen_ids.add(alert_id)
+
+    def poll_new(self) -> list[dict[str, Any]]:
+        """Return alerts that were not returned by previous polls."""
+        alerts = self.api.list_alerts(limit=self.limit)
+        new_alerts: list[dict[str, Any]] = []
+        for alert in reversed(alerts):
+            alert_id = str(alert.get("id") or "")
+            if not alert_id or alert_id in self._seen_ids:
+                continue
+            self._seen_ids.add(alert_id)
+            new_alerts.append(alert)
+        return new_alerts
