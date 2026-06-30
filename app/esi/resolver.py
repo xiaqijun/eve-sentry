@@ -1,0 +1,166 @@
+"""Resolve and enrich intel observations with public ESI data."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from app.core.models import Observation
+from app.esi.cache import EsiCache
+from app.esi.client import EsiApiError, EsiClient
+
+
+@dataclass(frozen=True)
+class ResolvedName:
+    """A name resolved by ESI."""
+
+    name: str
+    category: str
+    entity_id: int
+
+
+class EsiResolver:
+    """Public ESI resolver with local caching."""
+
+    def __init__(
+        self,
+        client: EsiClient | Any | None = None,
+        cache: EsiCache | None = None,
+        ttl_seconds: int = 86400,
+    ) -> None:
+        self.client = client or EsiClient()
+        self.cache = cache or EsiCache()
+        self.ttl_seconds = ttl_seconds
+
+    def resolve_names(self, names: list[str]) -> list[ResolvedName]:
+        """Resolve names to ids, preserving the input order where possible."""
+        clean_names = [name.strip() for name in names if name and name.strip()]
+        cached: dict[str, ResolvedName] = {}
+        missing: list[str] = []
+        for name in clean_names:
+            key = self._name_key(name)
+            value = self.cache.get(key)
+            if isinstance(value, dict):
+                cached[name.casefold()] = ResolvedName(
+                    name=str(value["name"]),
+                    category=str(value["category"]),
+                    entity_id=int(value["id"]),
+                )
+            else:
+                missing.append(name)
+
+        if missing:
+            resolved = self._resolve_missing(missing)
+            for item in resolved:
+                cached[item.name.casefold()] = item
+                self.cache.set(
+                    self._name_key(item.name),
+                    {
+                        "name": item.name,
+                        "category": item.category,
+                        "id": item.entity_id,
+                    },
+                    ttl_seconds=self.ttl_seconds,
+                )
+            self.cache.save()
+
+        result: list[ResolvedName] = []
+        for name in clean_names:
+            item = cached.get(name.casefold())
+            if item is not None:
+                result.append(item)
+        return result
+
+    def character_profile(self, character_id: int) -> dict[str, Any]:
+        """Return cached public character profile data."""
+        key = f"character:{int(character_id)}"
+        cached = self.cache.get(key)
+        if isinstance(cached, dict):
+            return cached
+
+        character = self.client.get_character(int(character_id))
+        profile = {
+            "character_id": int(character_id),
+            "name": str(character.get("name", "")),
+            "corporation_id": character.get("corporation_id"),
+            "alliance_id": character.get("alliance_id"),
+            "security_status": character.get("security_status"),
+        }
+        self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
+        self.cache.save()
+        return profile
+
+    def system_profile(self, system_id: int) -> dict[str, Any]:
+        """Return cached public solar-system data."""
+        key = f"system:{int(system_id)}"
+        cached = self.cache.get(key)
+        if isinstance(cached, dict):
+            return cached
+
+        system = self.client.get_system(int(system_id))
+        profile = {
+            "system_id": int(system_id),
+            "name": str(system.get("name", "")),
+            "constellation_id": system.get("constellation_id"),
+            "security_status": system.get("security_status"),
+        }
+        self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
+        self.cache.save()
+        return profile
+
+    def enrich_observation(self, observation: Observation) -> Observation:
+        """Fill system_id and character_ids on an observation when possible."""
+        names_to_resolve = list(observation.names)
+        if observation.system_id is None and observation.system_name:
+            names_to_resolve.append(observation.system_name)
+
+        try:
+            resolved = self.resolve_names(names_to_resolve)
+        except EsiApiError:
+            return observation
+
+        character_ids = list(observation.character_ids)
+        for item in resolved:
+            if item.category == "character" and item.entity_id not in character_ids:
+                character_ids.append(item.entity_id)
+            if (
+                item.category == "solar_system"
+                and item.name.casefold() == observation.system_name.casefold()
+            ):
+                observation.system_id = item.entity_id
+        observation.character_ids = character_ids
+        return observation
+
+    def _resolve_missing(self, names: list[str]) -> list[ResolvedName]:
+        payload = self.client.resolve_ids(names)
+        if not isinstance(payload, dict):
+            return []
+
+        result: list[ResolvedName] = []
+        for category, singular in (
+            ("characters", "character"),
+            ("corporations", "corporation"),
+            ("alliances", "alliance"),
+            ("systems", "solar_system"),
+            ("regions", "region"),
+        ):
+            for item in payload.get(category, []) or []:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    entity_id = int(item["id"])
+                    name = str(item["name"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                result.append(
+                    ResolvedName(
+                        name=name,
+                        category=singular,
+                        entity_id=entity_id,
+                    )
+                )
+        return result
+
+    def _name_key(self, name: str) -> str:
+        return f"name:{name.strip().casefold()}"
+

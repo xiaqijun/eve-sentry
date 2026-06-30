@@ -134,10 +134,12 @@ class IntelStore:
         filepath: str | Path = "intel_reports.json",
         systems: dict[str, StarSystem] | None = None,
         links: list[tuple[str, str]] | None = None,
+        resolver: Any | None = None,
     ) -> None:
         self._filepath = Path(filepath)
         self._systems = dict(DEFAULT_SYSTEMS if systems is None else systems)
         self._links = list(DEFAULT_LINKS if links is None else links)
+        self._resolver = resolver
         self._lock = threading.RLock()
         self._reports: list[IntelReport] = self._load_reports()
 
@@ -179,6 +181,7 @@ class IntelStore:
         observation.system_name = self._normalize_system(observation.system_name)
         observation.names = self._normalize_names(observation.names)
         observation.character_ids = self._normalize_ints(observation.character_ids)
+        observation = self._enrich_observation(observation)
         observation.validate()
 
         report = IntelReport(
@@ -200,6 +203,16 @@ class IntelStore:
             self._reports.append(report)
             self._save_reports()
         return report.to_observation()
+
+    def _enrich_observation(self, observation: Observation) -> Observation:
+        """Optionally enrich an observation without blocking ingestion on failure."""
+        if self._resolver is None:
+            return observation
+        try:
+            enriched = self._resolver.enrich_observation(observation)
+        except Exception:
+            return observation
+        return enriched if isinstance(enriched, Observation) else observation
 
     def list_reports(
         self,

@@ -85,3 +85,30 @@ def test_add_observation_persists_and_lists_alerts(tmp_path):
     assert alerts[0]["id"] == f"evt_{observation.observation_id}"
     assert alerts[0]["score"] == 30
     assert alerts[0]["evidence"][0]["type"] == "intel_channel_observed"
+
+
+def test_add_observation_uses_optional_resolver(tmp_path):
+    class FakeResolver:
+        def enrich_observation(self, observation):
+            observation.system_id = 30002813
+            observation.character_ids = [123]
+            return observation
+
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        resolver=FakeResolver(),
+    )
+
+    observation = store.add_observation(
+        {
+            "source": "intel_channel",
+            "system_name": "Tama",
+            "names": ["Alice"],
+        }
+    )
+
+    assert observation.system_id == 30002813
+    assert observation.character_ids == [123]
+    assert store.list_observations()[0]["character_ids"] == [123]

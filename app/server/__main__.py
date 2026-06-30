@@ -13,6 +13,8 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
     parser.add_argument("--data", default="intel_reports.json")
+    parser.add_argument("--enable-esi", action="store_true")
+    parser.add_argument("--esi-cache", default="esi_cache.json")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -20,7 +22,14 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    store = IntelStore(args.data)
+    resolver = None
+    if args.enable_esi:
+        from app.esi.cache import EsiCache
+        from app.esi.resolver import EsiResolver
+
+        resolver = EsiResolver(cache=EsiCache(args.esi_cache))
+
+    store = IntelStore(args.data, resolver=resolver)
     server = IntelHTTPServer(store, host=args.host, port=args.port)
     server.start()
     print(f"Intel map: {server.url}")

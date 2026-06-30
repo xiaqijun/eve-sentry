@@ -34,6 +34,7 @@ whitelist.json
 region_prefs.json
 intel_reports.json
 channel_offsets.json
+esi_cache.json
 
 # Local run/debug artifacts
 /_client_*.log
