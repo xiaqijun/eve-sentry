@@ -527,6 +527,11 @@ GET  /api/map/snapshot
 - `--storage json --data intel_reports.json` 可继续用于旧联调数据。
 - SQLite 启动时可把 `intel_reports.json` 导入数据库，导入标记保存在
   `store_meta` 中，避免重复导入。
+- 也可以显式执行一次性导入:
+
+```powershell
+uv run python scripts/import_intel_json.py --source intel_reports.json --db intel.sqlite3 --json
+```
 
 ## 11. 模块规划
 

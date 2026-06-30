@@ -23,6 +23,12 @@ Legacy JSON storage remains available for compatibility:
 uv run python -m app.server --storage json --data intel_reports.json --config intel_config.json
 ```
 
+To migrate old JSON data into SQLite explicitly:
+
+```powershell
+uv run python scripts/import_intel_json.py --source intel_reports.json --db intel.sqlite3 --json
+```
+
 ## GET /api/config
 
 Returns the active scoring config.
