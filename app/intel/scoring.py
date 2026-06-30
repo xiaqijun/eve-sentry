@@ -100,7 +100,7 @@ class ScoringEngine:
                 make_evidence(
                     "intel_channel_report",
                     30,
-                    f"Intel channel reported {label} in {observation.system_name}",
+                    self._intel_channel_summary(observation, label),
                 )
             ]
         if source == "manual":
@@ -141,6 +141,25 @@ class ScoringEngine:
                 )
             )
         return evidence
+
+    def _intel_channel_summary(self, observation: Observation, label: str) -> str:
+        hostile_count = _optional_int(observation.metadata.get("hostile_count"))
+        jump_count = _optional_int(observation.metadata.get("jump_count"))
+        direction = _clean_meta_string(observation.metadata.get("direction"))
+        if hostile_count is not None and not observation.names:
+            target = f"{hostile_count} hostile"
+            if hostile_count != 1:
+                target += "s"
+        else:
+            target = label
+
+        summary = f"Intel channel reported {target} in {observation.system_name}"
+        if direction:
+            summary = f"{summary} toward {direction}"
+        if jump_count is not None:
+            suffix = "jump" if jump_count == 1 else "jumps"
+            summary = f"{summary} ({jump_count} {suffix})"
+        return summary
 
     def _profile_evidence(
         self,
@@ -265,3 +284,7 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _clean_meta_string(value: Any) -> str:
+    return str(value or "").strip()

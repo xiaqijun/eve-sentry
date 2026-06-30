@@ -33,5 +33,6 @@ def test_process_once_posts_parsed_observations_and_respects_offsets(tmp_path):
     assert process_once(watcher, api) == 0
     assert [item["system_name"] for item in api.observations] == ["Tama", "Oijanen"]
     assert api.observations[0]["source"] == "intel_channel"
+    assert api.observations[0]["metadata"]["hostile_count"] == 3
+    assert api.observations[0]["metadata"]["sender"] == "Scout A"
     assert api.observations[1]["names"] == ["Some Pilot"]
-

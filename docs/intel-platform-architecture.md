@@ -156,6 +156,13 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --once --includ
   "character_ids": [123456789],
   "confidence": 0.82,
   "raw_text": "",
+  "metadata": {
+    "hostile_count": 3,
+    "sender": "Scout A",
+    "channel": "Alliance Intel",
+    "jump_count": 2,
+    "direction": "Oijanen"
+  },
   "seen_at": "2026-06-30T12:00:00Z",
   "received_at": "2026-06-30T12:00:02Z"
 }
@@ -348,6 +355,13 @@ python -m app.server --enable-killboard --zkill-cache zkill_cache.json
   "hostile_count": 3,
   "raw_text": "Tama +3 reds",
   "confidence": 0.7,
+  "metadata": {
+    "hostile_count": 3,
+    "sender": "Scout A",
+    "channel": "Alliance Intel",
+    "jump_count": null,
+    "direction": ""
+  },
   "seen_at": "2026-06-30T12:01:12Z"
 }
 ```

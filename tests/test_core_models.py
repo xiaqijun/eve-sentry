@@ -21,6 +21,26 @@ def test_observation_from_payload_accepts_legacy_and_canonical_fields():
     assert observation.system_id == 30002813
     assert observation.character_ids == [123, 456]
     assert observation.raw_text == "window=EVE"
+    assert observation.metadata == {}
+
+
+def test_observation_from_payload_keeps_metadata_and_legacy_channel_fields():
+    observation = Observation.from_payload(
+        {
+            "system_name": "Tama",
+            "raw_text": "Tama +3 reds",
+            "metadata": {"direction": "Oijanen"},
+            "hostile_count": 3,
+            "sender": "Scout A",
+        }
+    )
+
+    assert observation.metadata == {
+        "direction": "Oijanen",
+        "hostile_count": 3,
+        "sender": "Scout A",
+    }
+    assert observation.to_dict()["metadata"]["hostile_count"] == 3
 
 
 def test_threat_event_from_observation_includes_score_level_and_evidence():
@@ -48,4 +68,3 @@ def test_threat_level_boundaries():
     assert threat_level(40) == "medium"
     assert threat_level(70) == "high"
     assert threat_level(100) == "critical"
-

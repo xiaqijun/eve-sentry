@@ -65,6 +65,7 @@ def payload_to_client_args(payload: dict) -> dict:
         "source_instance": payload.get("source_instance", ""),
         "confidence": payload.get("confidence"),
         "raw_text": payload.get("raw_text", ""),
+        "metadata": payload.get("metadata"),
         "seen_at": payload.get("seen_at"),
     }
 
@@ -103,4 +104,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

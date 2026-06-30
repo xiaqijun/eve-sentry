@@ -74,6 +74,7 @@ class SQLiteIntelStore(IntelStore):
                     confidence REAL,
                     note TEXT NOT NULL,
                     raw_text TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
                     seen_at TEXT NOT NULL,
                     received_at TEXT NOT NULL,
                     acknowledged_at TEXT NOT NULL DEFAULT '',
@@ -81,6 +82,12 @@ class SQLiteIntelStore(IntelStore):
                     acknowledgement_note TEXT NOT NULL DEFAULT ''
                 )
                 """
+            )
+            self._ensure_column(
+                connection,
+                "intel_reports",
+                "metadata_json",
+                "TEXT NOT NULL DEFAULT '{}'",
             )
             self._ensure_column(
                 connection,
@@ -127,8 +134,8 @@ class SQLiteIntelStore(IntelStore):
                 """
                 SELECT report_id, system, names_json, source, source_instance,
                        system_id, character_ids_json, confidence, note, raw_text,
-                       seen_at, received_at, acknowledged_at, acknowledged_by,
-                       acknowledgement_note
+                       metadata_json, seen_at, received_at, acknowledged_at,
+                       acknowledged_by, acknowledgement_note
                 FROM intel_reports
                 ORDER BY seen_at ASC, received_at ASC
                 """
@@ -150,10 +157,10 @@ class SQLiteIntelStore(IntelStore):
                 INSERT INTO intel_reports (
                     report_id, system, names_json, source, source_instance,
                     system_id, character_ids_json, confidence, note, raw_text,
-                    seen_at, received_at, acknowledged_at, acknowledged_by,
-                    acknowledgement_note
+                    metadata_json, seen_at, received_at, acknowledged_at,
+                    acknowledged_by, acknowledgement_note
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [self._row_from_report(report) for report in reports],
             )
@@ -200,6 +207,7 @@ class SQLiteIntelStore(IntelStore):
             character_ids = self._normalize_ints(
                 json.loads(str(row["character_ids_json"]))
             )
+            metadata = self._normalize_metadata(json.loads(str(row["metadata_json"])))
         except json.JSONDecodeError:
             return None
         system = self._normalize_system(str(row["system"]))
@@ -218,6 +226,7 @@ class SQLiteIntelStore(IntelStore):
             confidence=row["confidence"],
             note=str(row["note"] or ""),
             raw_text=str(row["raw_text"] or ""),
+            metadata=metadata,
             seen_at=str(row["seen_at"] or utc_now_iso()),
             received_at=str(row["received_at"] or row["seen_at"] or utc_now_iso()),
             acknowledged_at=str(row["acknowledged_at"] or ""),
@@ -237,6 +246,7 @@ class SQLiteIntelStore(IntelStore):
             report.confidence,
             report.note,
             report.raw_text,
+            json.dumps(report.metadata, ensure_ascii=False),
             report.seen_at,
             report.received_at,
             report.acknowledged_at,

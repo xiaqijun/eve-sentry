@@ -69,6 +69,7 @@ class Observation:
     character_ids: list[int] = field(default_factory=list)
     confidence: float | None = None
     raw_text: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
     seen_at: str = field(default_factory=utc_now_iso)
     received_at: str = field(default_factory=utc_now_iso)
     observation_id: str = field(default_factory=lambda: uuid4().hex)
@@ -91,6 +92,18 @@ class Observation:
         elif system_id is not None:
             system_id = int(system_id)
 
+        metadata = clean_metadata(payload.get("metadata"))
+        for key in (
+            "hostile_count",
+            "sender",
+            "channel",
+            "jump_count",
+            "direction",
+        ):
+            value = payload.get(key)
+            if value is not None and value != "" and key not in metadata:
+                metadata[key] = value
+
         return cls(
             observation_id=clean_string(payload.get("id"))
             or clean_string(payload.get("observation_id"))
@@ -103,6 +116,7 @@ class Observation:
             character_ids=clean_int_list(payload.get("character_ids")),
             confidence=confidence,
             raw_text=clean_string(payload.get("raw_text") or payload.get("note")),
+            metadata=metadata,
             seen_at=clean_string(payload.get("seen_at")) or utc_now_iso(),
             received_at=clean_string(payload.get("received_at")) or utc_now_iso(),
         )
@@ -128,6 +142,7 @@ class Observation:
             "character_ids": list(self.character_ids),
             "confidence": self.confidence,
             "raw_text": self.raw_text,
+            "metadata": dict(self.metadata),
             "seen_at": self.seen_at,
             "received_at": self.received_at,
         }
@@ -230,6 +245,19 @@ def source_label(source: str) -> str:
     return labels.get(source, source or "Intel source")
 
 
+def clean_metadata(value: Any) -> dict[str, Any]:
+    """Return a shallow JSON-object-like metadata mapping."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        clean_key = clean_string(key)
+        if not clean_key:
+            continue
+        result[clean_key] = item
+    return result
+
+
 def score_observation(observation: Observation) -> int:
     """Initial deterministic score for phase-1 alert generation."""
     source = observation.source
@@ -253,4 +281,3 @@ def threat_level(score: int) -> str:
     if score >= 40:
         return "medium"
     return "low"
-

@@ -56,6 +56,7 @@ class IntelReport:
     confidence: float | None = None
     note: str = ""
     raw_text: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
     seen_at: str = field(default_factory=utc_now_iso)
     received_at: str = field(default_factory=utc_now_iso)
     report_id: str = field(default_factory=lambda: uuid4().hex)
@@ -76,6 +77,7 @@ class IntelReport:
             "confidence": self.confidence,
             "note": self.note,
             "raw_text": self.raw_text,
+            "metadata": dict(self.metadata),
             "seen_at": self.seen_at,
             "received_at": self.received_at,
             "observation_id": self.report_id,
@@ -97,6 +99,7 @@ class IntelReport:
             character_ids=list(self.character_ids),
             confidence=self.confidence,
             raw_text=self.raw_text or self.note,
+            metadata=dict(self.metadata),
             seen_at=self.seen_at,
             received_at=self.received_at,
         )
@@ -311,6 +314,7 @@ class IntelStore:
             confidence=observation.confidence,
             note=observation.raw_text.strip(),
             raw_text=observation.raw_text.strip(),
+            metadata=dict(observation.metadata),
             seen_at=observation.seen_at or utc_now_iso(),
             received_at=observation.received_at or utc_now_iso(),
         )
@@ -669,6 +673,11 @@ class IntelStore:
             system = self._normalize_system(str(item.get("system", "")))
             raw_text = str(item.get("raw_text") or item.get("note") or "")
             character_ids = self._normalize_ints(item.get("character_ids"))
+            metadata = self._normalize_metadata(item.get("metadata"))
+            for key in ("hostile_count", "sender", "channel", "jump_count", "direction"):
+                value = item.get(key)
+                if value is not None and value != "" and key not in metadata:
+                    metadata[key] = value
             if not system or (not names and not raw_text and not character_ids):
                 continue
             reports.append(
@@ -683,6 +692,7 @@ class IntelStore:
                     confidence=item.get("confidence"),
                     note=str(item.get("note") or ""),
                     raw_text=raw_text,
+                    metadata=metadata,
                     seen_at=str(item.get("seen_at") or utc_now_iso()),
                     received_at=str(
                         item.get("received_at") or item.get("seen_at") or utc_now_iso()
@@ -805,6 +815,16 @@ class IntelStore:
             if number > 0 and number not in seen:
                 seen.add(number)
                 result.append(number)
+        return result
+
+    def _normalize_metadata(self, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            text = str(key).strip()
+            if text:
+                result[text] = item
         return result
 
     def _optional_int(self, value: Any) -> int | None:

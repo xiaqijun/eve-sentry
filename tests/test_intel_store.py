@@ -73,6 +73,7 @@ def test_add_observation_persists_and_lists_alerts(tmp_path):
             "system_name": " Tama ",
             "names": [" Alice ", "Alice"],
             "raw_text": "Tama Alice",
+            "metadata": {"hostile_count": 1, "sender": "Scout A"},
             "seen_at": "2026-06-29T12:00:00+00:00",
             "received_at": "2026-06-29T12:00:01+00:00",
         }
@@ -86,6 +87,10 @@ def test_add_observation_persists_and_lists_alerts(tmp_path):
     alerts = reloaded.list_alerts()
 
     assert observations[0]["raw_text"] == "Tama Alice"
+    assert observations[0]["metadata"] == {
+        "hostile_count": 1,
+        "sender": "Scout A",
+    }
     assert alerts[0]["id"] == f"evt_{observation.observation_id}"
     assert alerts[0]["score"] == 30
     assert alerts[0]["evidence"][0]["type"] == "intel_channel_observed"

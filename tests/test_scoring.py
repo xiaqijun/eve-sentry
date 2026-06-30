@@ -70,6 +70,23 @@ def test_hostile_corporation_profile_adds_evidence():
     assert evidence_types(event) == ["intel_channel_report", "hostile_corporation"]
 
 
+def test_intel_channel_metadata_enriches_evidence_summary():
+    item = observation(source="intel_channel")
+    item.names = []
+    item.metadata = {
+        "hostile_count": 3,
+        "jump_count": 2,
+        "direction": "Oijanen",
+    }
+
+    event = ScoringEngine(cooldown_seconds=0).score(item)
+
+    assert event is not None
+    assert event.evidence[0].summary == (
+        "Intel channel reported 3 hostiles in Tama toward Oijanen (2 jumps)"
+    )
+
+
 def test_hostile_standing_profile_adds_evidence():
     event = ScoringEngine(cooldown_seconds=0).score(
         observation(source="intel_channel"),

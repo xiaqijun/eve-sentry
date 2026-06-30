@@ -12,6 +12,7 @@ def test_sqlite_store_persists_observations(tmp_path):
             "system_name": "Tama",
             "names": ["Alice"],
             "character_ids": [123],
+            "metadata": {"hostile_count": 1, "sender": "Scout A"},
             "seen_at": "2026-06-29T12:00:00+00:00",
             "received_at": "2026-06-29T12:00:01+00:00",
         }
@@ -21,6 +22,7 @@ def test_sqlite_store_persists_observations(tmp_path):
     alerts = reloaded.list_alerts()
 
     assert reloaded.list_observations()[0]["id"] == observation.observation_id
+    assert reloaded.list_observations()[0]["metadata"]["sender"] == "Scout A"
     assert alerts[0]["source_observation_id"] == observation.observation_id
     assert alerts[0]["character_ids"] == [123]
 

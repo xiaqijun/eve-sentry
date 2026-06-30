@@ -276,6 +276,7 @@ def test_create_observation_and_query_alerts(tmp_path):
                 "names": ["Alice"],
                 "source": "intel_channel",
                 "raw_text": "Tama Alice",
+                "metadata": {"hostile_count": 1, "sender": "Scout A"},
                 "seen_at": "2026-06-29T12:00:00+00:00",
             },
         )
@@ -289,6 +290,7 @@ def test_create_observation_and_query_alerts(tmp_path):
         assert status == 200
         assert observations["count"] == 1
         assert observations["observations"][0]["raw_text"] == "Tama Alice"
+        assert observations["observations"][0]["metadata"]["sender"] == "Scout A"
 
         status, alerts = request_json(f"{server.url}/api/alerts")
         assert status == 200
