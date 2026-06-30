@@ -392,6 +392,14 @@ GET  /api/kill-activity/system/{system_id}
 GET  /api/map/snapshot
 ```
 
+当前服务端已实现:
+
+- `GET /api/characters/{character_id}`: 需要启用 ESI，返回角色公开资料。
+- `GET /api/characters/by-name/{name}`: 需要启用 ESI，先解析名字再返回角色公开资料。
+- `GET /api/systems/by-name/{name}`: 需要启用 ESI，返回星系公开资料。
+- `GET /api/kill-activity/character/{character_id}`: 需要启用 killboard，返回角色近期击毁画像。
+- `GET /api/kill-activity/system/{system_id}`: 需要启用 killboard，返回星系近期击毁热度。
+
 实时推送分两步:
 
 1. MVP 继续使用轮询。

@@ -1,8 +1,10 @@
 import json
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from app.intel.enrichment import ThreatEnricher
 from app.intel.config import IntelConfigStore
 from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore
@@ -98,6 +100,163 @@ def test_create_query_and_delete_report(tmp_path):
         status, snapshot = request_json(f"{server.url}/api/intel")
         assert status == 200
         assert snapshot["summary"]["report_count"] == 0
+    finally:
+        server.stop()
+
+
+def test_public_lookup_routes_return_profiles_and_activity(tmp_path):
+    class FakeResolver:
+        def resolve_names(self, names):
+            if names == ["Alice"]:
+                return [
+                    SimpleNamespace(
+                        category="character",
+                        entity_id=123,
+                        name="Alice",
+                    )
+                ]
+            if names == ["Tama"]:
+                return [
+                    SimpleNamespace(
+                        category="solar_system",
+                        entity_id=30002813,
+                        name="Tama",
+                    )
+                ]
+            return []
+
+        def character_profile(self, character_id):
+            assert character_id == 123
+            return {
+                "character_id": 123,
+                "name": "Alice",
+                "corporation_id": 456,
+                "alliance_id": 789,
+            }
+
+        def system_profile(self, system_id):
+            assert system_id == 30002813
+            return {
+                "system_id": 30002813,
+                "name": "Tama",
+                "security_status": 0.3,
+            }
+
+    class FakeKillboard:
+        def character_recent(self, character_id):
+            assert character_id == 123
+            return [
+                {
+                    "killmail_id": 1,
+                    "killmail_time": "2026-06-30T10:00:00Z",
+                    "solar_system_id": 30002813,
+                    "victim": {"character_id": 999, "ship_type_id": 111},
+                    "attackers": [{"character_id": 123}],
+                },
+                {
+                    "killmail_id": 2,
+                    "killmail_time": "2026-06-30T11:00:00Z",
+                    "solar_system_id": 30002813,
+                    "victim": {"character_id": 123, "ship_type_id": 222},
+                    "attackers": [{"character_id": 456}],
+                },
+            ]
+
+        def system_recent(self, system_id):
+            assert system_id == 30002813
+            return [
+                {
+                    "killmail_id": 3,
+                    "killmail_time": "2026-06-30T12:00:00Z",
+                    "solar_system_id": 30002813,
+                    "victim": {"character_id": 777, "ship_type_id": 333},
+                    "attackers": [{"character_id": 123}],
+                },
+                {
+                    "killmail_id": 4,
+                    "killmail_time": "2026-06-30T13:00:00Z",
+                    "solar_system_id": 30002814,
+                    "victim": {"character_id": 888, "ship_type_id": 444},
+                    "attackers": [{"character_id": 456}],
+                },
+            ]
+
+    resolver = FakeResolver()
+    store = IntelStore(
+        tmp_path / "intel.json",
+        resolver=resolver,
+        enricher=ThreatEnricher(
+            resolver=resolver,
+            killboard=FakeKillboard(),
+            kill_window="7d",
+        ),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, by_name = request_json(f"{server.url}/api/characters/by-name/Alice")
+        assert status == 200
+        assert by_name["character"]["character_id"] == 123
+        assert by_name["character"]["corporation_id"] == 456
+
+        status, by_id = request_json(f"{server.url}/api/characters/123")
+        assert status == 200
+        assert by_id["character"]["alliance_id"] == 789
+
+        status, system = request_json(f"{server.url}/api/systems/by-name/Tama")
+        assert status == 200
+        assert system["system"]["system_id"] == 30002813
+        assert system["system"]["security_status"] == 0.3
+
+        status, character_activity = request_json(
+            f"{server.url}/api/kill-activity/character/123"
+        )
+        assert status == 200
+        assert character_activity["activity"]["character_id"] == 123
+        assert character_activity["activity"]["kills"] == 1
+        assert character_activity["activity"]["losses"] == 1
+
+        status, system_activity = request_json(
+            f"{server.url}/api/kill-activity/system/30002813"
+        )
+        assert status == 200
+        assert system_activity["activity"]["system_id"] == 30002813
+        assert system_activity["activity"]["kills"] == 1
+        assert system_activity["activity"]["character_ids"] == [123, 777]
+    finally:
+        server.stop()
+
+
+def test_public_lookup_routes_report_disabled_sources(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        try:
+            request_json(f"{server.url}/api/characters/123")
+        except HTTPError as exc:
+            assert exc.code == 404
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert "ESI" in payload["error"]
+        else:
+            raise AssertionError("expected HTTP 404")
+
+        try:
+            request_json(f"{server.url}/api/kill-activity/character/123")
+        except HTTPError as exc:
+            assert exc.code == 404
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert "killboard" in payload["error"]
+        else:
+            raise AssertionError("expected HTTP 404")
+
+        try:
+            request_json(f"{server.url}/api/kill-activity/character/not-a-number")
+        except HTTPError as exc:
+            assert exc.code == 400
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert "character_id" in payload["error"]
+        else:
+            raise AssertionError("expected HTTP 400")
     finally:
         server.stop()
 

@@ -160,6 +160,98 @@ class IntelStore:
             self._enricher = enricher
             self._alert_cache.clear()
 
+    def character_by_name(self, name: str) -> dict[str, Any] | None:
+        """Resolve a character name and return its public profile when available."""
+        resolved = self._resolve_entity_by_name(name, "character")
+        if resolved is None:
+            return None
+        character_id = self._optional_int(getattr(resolved, "entity_id", None))
+        if character_id is None:
+            return None
+        profile = self.character_profile(character_id) or {}
+        return self._profile_result(
+            profile,
+            id_key="character_id",
+            id_value=character_id,
+            name=str(getattr(resolved, "name", name)).strip(),
+        )
+
+    def character_profile(self, character_id: int) -> dict[str, Any] | None:
+        """Return a public character profile via optional ESI integration."""
+        character_id = self._optional_int(character_id)
+        if character_id is None:
+            return None
+
+        profile = self._call_enricher_profile("character_profile", character_id)
+        if profile is None and self._resolver is not None:
+            try:
+                resolved = self._resolver.character_profile(character_id)
+            except Exception:
+                resolved = None
+            profile = resolved if isinstance(resolved, dict) else None
+        if profile is None:
+            return None
+        return self._profile_result(
+            profile,
+            id_key="character_id",
+            id_value=character_id,
+        )
+
+    def system_by_name(self, name: str) -> dict[str, Any] | None:
+        """Resolve a solar-system name and return its public profile."""
+        resolved = self._resolve_entity_by_name(name, "solar_system")
+        if resolved is None:
+            return None
+        system_id = self._optional_int(getattr(resolved, "entity_id", None))
+        if system_id is None:
+            return None
+        profile = self.system_profile(system_id) or {}
+        return self._profile_result(
+            profile,
+            id_key="system_id",
+            id_value=system_id,
+            name=str(getattr(resolved, "name", name)).strip(),
+        )
+
+    def system_profile(self, system_id: int) -> dict[str, Any] | None:
+        """Return a public solar-system profile via optional ESI integration."""
+        system_id = self._optional_int(system_id)
+        if system_id is None:
+            return None
+
+        profile = self._call_enricher_profile("system_profile", system_id)
+        if profile is None and self._resolver is not None:
+            try:
+                resolved = self._resolver.system_profile(system_id)
+            except Exception:
+                resolved = None
+            profile = resolved if isinstance(resolved, dict) else None
+        if profile is None:
+            return None
+        return self._profile_result(profile, id_key="system_id", id_value=system_id)
+
+    def character_kill_activity(self, character_id: int) -> dict[str, Any] | None:
+        """Return recent killboard activity for one character when enabled."""
+        character_id = self._optional_int(character_id)
+        if character_id is None or self._enricher is None:
+            return None
+        try:
+            activity = self._enricher.kill_activity(character_id)
+        except Exception:
+            return None
+        return self._activity_result(activity)
+
+    def system_kill_activity(self, system_id: int) -> dict[str, Any] | None:
+        """Return recent killboard activity for one solar system when enabled."""
+        system_id = self._optional_int(system_id)
+        if system_id is None or self._enricher is None:
+            return None
+        try:
+            activity = self._enricher.system_kill_activity(system_id)
+        except Exception:
+            return None
+        return self._activity_result(activity)
+
     def add_report(
         self,
         system: str,
@@ -406,6 +498,58 @@ class IntelStore:
         if kill_activities:
             kwargs["kill_activities"] = kill_activities
         return kwargs
+
+    def _resolve_entity_by_name(self, name: str, category: str) -> Any | None:
+        if self._resolver is None:
+            return None
+        query = str(name or "").strip()
+        if not query:
+            return None
+        target_category = category.casefold()
+        try:
+            resolved = self._resolver.resolve_names([query])
+        except Exception:
+            return None
+        for item in resolved:
+            if str(getattr(item, "category", "")).casefold() == target_category:
+                return item
+        return None
+
+    def _call_enricher_profile(
+        self,
+        method_name: str,
+        entity_id: int,
+    ) -> dict[str, Any] | None:
+        if self._enricher is None or not hasattr(self._enricher, method_name):
+            return None
+        try:
+            profile = getattr(self._enricher, method_name)(entity_id)
+        except Exception:
+            return None
+        return profile if isinstance(profile, dict) else None
+
+    def _profile_result(
+        self,
+        profile: dict[str, Any],
+        id_key: str,
+        id_value: int,
+        name: str = "",
+    ) -> dict[str, Any]:
+        result = dict(profile)
+        result[id_key] = int(id_value)
+        if name and not result.get("name"):
+            result["name"] = name
+        return result
+
+    def _activity_result(self, activity: Any | None) -> dict[str, Any] | None:
+        if activity is None:
+            return None
+        if isinstance(activity, dict):
+            return dict(activity)
+        if hasattr(activity, "to_dict"):
+            result = activity.to_dict()
+            return result if isinstance(result, dict) else None
+        return None
 
     def _filter_report_like(
         self,

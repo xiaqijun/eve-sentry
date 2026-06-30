@@ -1,4 +1,8 @@
-from app.killboard.analyzer import analyze_character_activity, activity_score_bonus
+from app.killboard.analyzer import (
+    activity_score_bonus,
+    analyze_character_activity,
+    analyze_system_activity,
+)
 
 
 def test_analyze_character_activity_counts_kills_losses_and_systems():
@@ -63,3 +67,40 @@ def test_activity_score_bonus():
     assert activity_score_bonus(one) == 10
     assert activity_score_bonus(busy) == 20
 
+
+def test_analyze_system_activity_counts_matching_killmails():
+    rows = [
+        {
+            "killmail_id": 1,
+            "killmail_time": "2026-06-30T10:00:00Z",
+            "solar_system_id": 30002813,
+            "victim": {"character_id": 999, "ship_type_id": 111},
+            "attackers": [
+                {"character_id": 123, "ship_type_id": 222},
+                {"character_id": 456},
+            ],
+        },
+        {
+            "killmail_id": 2,
+            "killmail_time": "2026-06-30T11:00:00Z",
+            "solar_system_id": 30002814,
+            "victim": {"character_id": 888, "ship_type_id": 333},
+            "attackers": [{"character_id": 777}],
+        },
+        {
+            "killmail_id": 3,
+            "killmail_time": "2026-06-30T12:00:00Z",
+            "solar_system_id": 30002813,
+            "victim": {"character_id": 555, "ship_type_id": 444},
+            "attackers": [{"character_id": 123}],
+        },
+    ]
+
+    activity = analyze_system_activity(30002813, rows, window="24h")
+
+    assert activity.system_id == 30002813
+    assert activity.window == "24h"
+    assert activity.kills == 2
+    assert activity.character_ids == [123, 456, 555, 999]
+    assert activity.ship_type_ids == [111, 222, 444]
+    assert activity.latest_kill_at == "2026-06-30T12:00:00Z"

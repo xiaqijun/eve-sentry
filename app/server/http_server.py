@@ -105,6 +105,70 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 }
             self._send_json(snapshot)
             return
+        if path.startswith("/api/characters/by-name/"):
+            name = unquote(path[len("/api/characters/by-name/"):]).strip()
+            self._send_optional_json(
+                "character",
+                self._store().character_by_name(name),
+                "character not found or ESI not enabled",
+            )
+            return
+        if path.startswith("/api/characters/"):
+            try:
+                character_id = self._parse_path_int(
+                    path,
+                    "/api/characters/",
+                    "character_id",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_optional_json(
+                "character",
+                self._store().character_profile(character_id),
+                "character not found or ESI not enabled",
+            )
+            return
+        if path.startswith("/api/systems/by-name/"):
+            name = unquote(path[len("/api/systems/by-name/"):]).strip()
+            self._send_optional_json(
+                "system",
+                self._store().system_by_name(name),
+                "system not found or ESI not enabled",
+            )
+            return
+        if path.startswith("/api/kill-activity/character/"):
+            try:
+                character_id = self._parse_path_int(
+                    path,
+                    "/api/kill-activity/character/",
+                    "character_id",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_optional_json(
+                "activity",
+                self._store().character_kill_activity(character_id),
+                "character kill activity not found or killboard not enabled",
+            )
+            return
+        if path.startswith("/api/kill-activity/system/"):
+            try:
+                system_id = self._parse_path_int(
+                    path,
+                    "/api/kill-activity/system/",
+                    "system_id",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_optional_json(
+                "activity",
+                self._store().system_kill_activity(system_id),
+                "system kill activity not found or killboard not enabled",
+            )
+            return
         if path == "/api/reports":
             query = parse_qs(parsed.query)
             try:
@@ -296,6 +360,16 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("timeout must be non-negative")
         return value
 
+    def _parse_path_int(self, path: str, prefix: str, label: str) -> int:
+        raw = unquote(path[len(prefix):]).strip()
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise ValueError(f"{label} must be a positive integer") from exc
+        if value <= 0:
+            raise ValueError(f"{label} must be a positive integer")
+        return value
+
     def _stream_events(
         self,
         since: str = "",
@@ -352,6 +426,17 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         self._send_common_headers("application/json; charset=utf-8", len(body))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_optional_json(
+        self,
+        key: str,
+        payload: dict[str, Any] | None,
+        missing_message: str,
+    ) -> None:
+        if payload is None:
+            self._send_json({"error": missing_message}, HTTPStatus.NOT_FOUND)
+            return
+        self._send_json({key: payload})
 
     def _send_text(
         self,

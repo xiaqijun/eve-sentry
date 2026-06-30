@@ -6,7 +6,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.core.models import Observation
-from app.killboard.analyzer import KillActivity, analyze_character_activity
+from app.killboard.analyzer import (
+    KillActivity,
+    SystemKillActivity,
+    analyze_character_activity,
+    analyze_system_activity,
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +67,16 @@ class ThreatEnricher:
             return None
         return profile if isinstance(profile, dict) else None
 
+    def system_profile(self, system_id: int) -> dict[str, Any] | None:
+        """Return a cached public ESI solar-system profile when available."""
+        if self.resolver is None or not hasattr(self.resolver, "system_profile"):
+            return None
+        try:
+            profile = self.resolver.system_profile(int(system_id))
+        except Exception:
+            return None
+        return profile if isinstance(profile, dict) else None
+
     def kill_activity(self, character_id: int) -> KillActivity | None:
         """Return recent zKillboard activity for one character when available."""
         if self.killboard is None or not hasattr(self.killboard, "character_recent"):
@@ -72,6 +87,22 @@ class ThreatEnricher:
                 return None
             return analyze_character_activity(
                 int(character_id),
+                rows,
+                window=self.kill_window,
+            )
+        except Exception:
+            return None
+
+    def system_kill_activity(self, system_id: int) -> SystemKillActivity | None:
+        """Return recent zKillboard activity for one solar system when available."""
+        if self.killboard is None or not hasattr(self.killboard, "system_recent"):
+            return None
+        try:
+            rows = self.killboard.system_recent(int(system_id))
+            if not isinstance(rows, list):
+                return None
+            return analyze_system_activity(
+                int(system_id),
                 rows,
                 window=self.kill_window,
             )

@@ -12,6 +12,11 @@ class FakeResolver:
             return {"character_id": 123, "corporation_id": 42}
         raise RuntimeError("offline")
 
+    def system_profile(self, system_id):
+        if system_id == 30002813:
+            return {"system_id": 30002813, "name": "Tama"}
+        raise RuntimeError("offline")
+
 
 class FakeKillboard:
     def __init__(self):
@@ -20,6 +25,19 @@ class FakeKillboard:
     def character_recent(self, character_id):
         self.calls.append(character_id)
         if character_id == 123:
+            return [
+                {
+                    "killmail_id": 1,
+                    "killmail_time": "2026-06-30T12:00:00Z",
+                    "solar_system_id": 30002813,
+                    "victim": {"character_id": 999, "ship_type_id": 111},
+                    "attackers": [{"character_id": 123}],
+                }
+            ]
+        raise RuntimeError("offline")
+
+    def system_recent(self, system_id):
+        if system_id == 30002813:
             return [
                 {
                     "killmail_id": 1,
@@ -69,3 +87,20 @@ def test_threat_enricher_returns_empty_data_without_sources():
     )
 
     assert not enricher.enrich(observation).has_data()
+
+
+def test_threat_enricher_exposes_system_profile_and_activity():
+    enricher = ThreatEnricher(
+        resolver=FakeResolver(),
+        killboard=FakeKillboard(),
+        kill_window="7d",
+    )
+
+    profile = enricher.system_profile(30002813)
+    activity = enricher.system_kill_activity(30002813)
+
+    assert profile == {"system_id": 30002813, "name": "Tama"}
+    assert activity is not None
+    assert activity.system_id == 30002813
+    assert activity.kills == 1
+    assert activity.window == "7d"
