@@ -808,6 +808,45 @@ def test_create_channel_line_ignores_non_chat_headers(tmp_path):
         server.stop()
 
 
+def test_create_channel_line_keeps_low_confidence_raw_observation_without_alert(
+    tmp_path,
+):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/channel-lines",
+            method="POST",
+            payload={
+                "channel": "Alliance Intel",
+                "line": "[ 2026.06.30 12:01:12 ] Scout A > no useful structure here",
+            },
+        )
+
+        assert status == 201
+        assert created["ignored"] is False
+        assert created["parsed"]["system_name"] == "Unknown"
+        assert created["parsed"]["confidence"] == 0.2
+        assert created["alert"] is None
+
+        status, observations = request_json(f"{server.url}/api/observations")
+        assert status == 200
+        assert observations["count"] == 1
+        assert observations["observations"][0]["raw_text"] == (
+            "Scout A: no useful structure here"
+        )
+
+        status, alerts = request_json(f"{server.url}/api/alerts")
+        assert status == 200
+        assert alerts["count"] == 0
+    finally:
+        server.stop()
+
+
 def test_ack_alert_route_marks_alert(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()

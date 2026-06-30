@@ -144,6 +144,12 @@
 - 同一角色在冷却窗口内不重复轰炸预警端。
 - 预警端显示 evidence 摘要。
 
+当前进展:
+
+- 服务端评分已按 observation `confidence` 对 OCR / `intel_channel` 做降噪：
+  低置信度输入会降权，无法解析出目标或星系的频道原文会保留为
+  observation，但不直接生成 alert。
+
 ## 阶段 6: ESI SSO
 
 目标:

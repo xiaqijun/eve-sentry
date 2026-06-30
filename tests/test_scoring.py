@@ -3,13 +3,21 @@ from app.intel.scoring import ChannelMention, ScoringEngine, Watchlist
 from app.killboard.analyzer import GroupKillActivity, KillActivity
 
 
-def observation(source="local_ocr", names=None):
+def observation(
+    source="local_ocr",
+    names=None,
+    character_ids=None,
+    system_name="Tama",
+    raw_text="Tama Alice",
+    confidence=None,
+):
     return Observation(
         source=source,
-        system_name="Tama",
+        system_name=system_name,
         names=list(names or ["Alice"]),
-        character_ids=[123],
-        raw_text="Tama Alice",
+        character_ids=[123] if character_ids is None else list(character_ids),
+        raw_text=raw_text,
+        confidence=confidence,
         seen_at="2026-06-29T12:00:00+00:00",
         received_at="2026-06-29T12:00:01+00:00",
         observation_id=f"obs-{source}",
@@ -30,6 +38,38 @@ def test_local_ocr_scores_medium_with_evidence():
     assert evidence_types(event) == ["local_ocr_seen"]
 
 
+def test_medium_confidence_local_ocr_is_downweighted():
+    event = ScoringEngine(cooldown_seconds=0).score(observation(confidence=0.5))
+
+    assert event is not None
+    assert event.score == 30
+    assert event.level == "low"
+    assert event.evidence[0].weight == 30
+
+
+def test_very_low_confidence_local_ocr_without_identity_support_is_suppressed():
+    event = ScoringEngine(cooldown_seconds=0).score(
+        observation(character_ids=[], confidence=0.2)
+    )
+
+    assert event is None
+
+
+def test_low_confidence_intel_channel_without_target_is_suppressed():
+    event = ScoringEngine(cooldown_seconds=0).score(
+        observation(
+            source="intel_channel",
+            names=[],
+            character_ids=[],
+            system_name="Unknown",
+            raw_text="Scout A: no useful structure here",
+            confidence=0.2,
+        )
+    )
+
+    assert event is None
+
+
 def test_blacklist_match_raises_event_to_critical():
     engine = ScoringEngine(
         watchlist=Watchlist(blacklist={"alice"}),
@@ -42,6 +82,20 @@ def test_blacklist_match_raises_event_to_critical():
     assert event.score == 120
     assert event.level == "critical"
     assert evidence_types(event) == ["local_ocr_seen", "blacklist_match"]
+
+
+def test_blacklist_match_can_still_alert_when_local_ocr_source_is_suppressed():
+    engine = ScoringEngine(
+        watchlist=Watchlist(blacklist={"alice"}),
+        cooldown_seconds=0,
+    )
+
+    event = engine.score(observation(character_ids=[], confidence=0.2))
+
+    assert event is not None
+    assert event.score == 80
+    assert event.level == "high"
+    assert evidence_types(event) == ["blacklist_match"]
 
 
 def test_whitelist_suppresses_all_whitelisted_names():

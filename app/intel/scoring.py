@@ -107,11 +107,14 @@ class ScoringEngine:
         label = ", ".join(names)
         raw_source = observation.source.strip()
         source = raw_source.casefold()
+        weight = self._source_weight(observation, source)
+        if weight <= 0:
+            return []
         if source in {"local_ocr", "ocr", "eve-sentry-detector"}:
             return [
                 make_evidence(
                     "local_ocr_seen",
-                    40,
+                    weight,
                     f"Local OCR saw {label} in {observation.system_name}",
                 )
             ]
@@ -119,7 +122,7 @@ class ScoringEngine:
             return [
                 make_evidence(
                     "intel_channel_report",
-                    30,
+                    weight,
                     self._intel_channel_summary(observation, label),
                 )
             ]
@@ -127,7 +130,7 @@ class ScoringEngine:
             return [
                 make_evidence(
                     "manual_intel",
-                    50,
+                    weight,
                     f"Manual intel reported {label} in {observation.system_name}",
                 )
             ]
@@ -135,17 +138,69 @@ class ScoringEngine:
             return [
                 make_evidence(
                     "killboard_observed",
-                    20,
+                    weight,
                     f"Killboard activity references {label}",
                 )
             ]
         return [
             make_evidence(
                 "generic_observation",
-                25,
+                weight,
                 f"{raw_source or 'Intel source'} reported {label}",
             )
         ]
+
+    def _source_weight(self, observation: Observation, source: str) -> int:
+        if self._is_unknown_system(observation):
+            return 0
+        if source in {"local_ocr", "ocr", "eve-sentry-detector"}:
+            if not self._has_character_target(observation):
+                return 0
+            return self._confidence_adjusted_weight(40, observation)
+        if source == "intel_channel":
+            if not self._has_intel_target(observation):
+                return 0
+            return self._confidence_adjusted_weight(30, observation)
+        if source == "manual":
+            return 50
+        if source == "killboard":
+            return 20
+        return self._confidence_adjusted_weight(25, observation)
+
+    def _confidence_adjusted_weight(
+        self,
+        base_weight: int,
+        observation: Observation,
+    ) -> int:
+        confidence = _normalized_confidence(observation.confidence)
+        if confidence is None or confidence >= 0.75:
+            return base_weight
+        if confidence >= 0.5:
+            return _scale_weight(base_weight, 0.75)
+        if confidence >= 0.25:
+            return _scale_weight(base_weight, 0.5)
+        if self._has_identity_support(observation):
+            return _scale_weight(base_weight, 0.5)
+        return 0
+
+    def _has_character_target(self, observation: Observation) -> bool:
+        return bool(observation.names or observation.character_ids)
+
+    def _has_intel_target(self, observation: Observation) -> bool:
+        return bool(
+            observation.names
+            or observation.character_ids
+            or _optional_int(observation.metadata.get("hostile_count")) is not None
+        )
+
+    def _has_identity_support(self, observation: Observation) -> bool:
+        return bool(
+            observation.character_ids
+            or _optional_int(observation.metadata.get("hostile_count")) is not None
+        )
+
+    def _is_unknown_system(self, observation: Observation) -> bool:
+        return observation.system_name.strip().casefold() == "unknown"
 
     def _watchlist_evidence(self, names: list[str]) -> list[Evidence]:
         evidence = []
@@ -395,6 +450,20 @@ def _optional_float(value: Any) -> float | None:
 
 def _clean_meta_string(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _normalized_confidence(value: Any) -> float | None:
+    if value in {None, ""}:
+        return None
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, confidence))
+
+
+def _scale_weight(value: int, factor: float) -> int:
+    return max(0, int(float(value) * float(factor) + 0.5))
 
 
 def _time_key(mention: ChannelMention) -> str:
