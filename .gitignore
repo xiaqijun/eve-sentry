@@ -36,6 +36,7 @@ intel_config.json
 intel_reports.json
 intel.sqlite3
 channel_offsets.json
+alert_client_state.json
 esi_cache.json
 esi_tokens.json
 zkill_cache.json

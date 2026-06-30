@@ -7,11 +7,84 @@ import json
 import logging
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from app.intel_client import AlertPoller, IntelApiClient, IntelApiError
 
 logger = logging.getLogger(__name__)
+
+
+class AlertClientState:
+    """Persist recently emitted alert ids so restarts can resume safely."""
+
+    def __init__(
+        self,
+        path: str | Path = "alert_client_state.json",
+        max_seen_ids: int = 1000,
+    ) -> None:
+        self.path = Path(path)
+        self.max_seen_ids = max(1, int(max_seen_ids))
+        self.loaded = False
+        self._seen_ids: list[str] = []
+
+    def load_seen_ids(self) -> list[str]:
+        """Load the remembered alert ids from disk."""
+        self.loaded = self.path.exists()
+        if not self.loaded:
+            self._seen_ids = []
+            return []
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Failed to read alert client state from %s", self.path)
+            self._seen_ids = []
+            return []
+        if not isinstance(data, dict):
+            self._seen_ids = []
+            return []
+        self._seen_ids = self._clean_ids(data.get("seen_alert_ids"))
+        return list(self._seen_ids)
+
+    def save_seen_ids(self, seen_ids: list[str]) -> None:
+        """Persist a normalized set of recently seen alert ids."""
+        self._seen_ids = self._clean_ids(seen_ids)
+        payload = {"version": 1, "seen_alert_ids": self._seen_ids}
+        try:
+            if self.path.parent and not self.path.parent.exists():
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            self.loaded = True
+        except OSError:
+            logger.warning("Failed to write alert client state to %s", self.path)
+
+    def record_alerts(self, alerts: list[dict[str, Any]]) -> None:
+        """Append emitted alert ids to the state file."""
+        ids = list(self._seen_ids)
+        for alert in alerts:
+            alert_id = str(alert.get("id") or "").strip()
+            if not alert_id:
+                continue
+            if alert_id in ids:
+                ids.remove(alert_id)
+            ids.append(alert_id)
+        self.save_seen_ids(ids)
+
+    def _clean_ids(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        ids = []
+        seen = set()
+        for item in value[-self.max_seen_ids:]:
+            alert_id = str(item or "").strip()
+            if not alert_id or alert_id in seen:
+                continue
+            seen.add(alert_id)
+            ids.append(alert_id)
+        return ids
 
 
 def format_report(report: dict[str, Any]) -> str:
@@ -294,17 +367,26 @@ def attach_alert_details(
 def run_alert_client(args: argparse.Namespace) -> int:
     """Run the polling alert loop."""
     api = IntelApiClient(args.server, timeout=args.timeout)
+    state_store = None
+    seen_ids: list[str] = []
+    if not args.no_state:
+        state_store = AlertClientState(args.state)
+        seen_ids = state_store.load_seen_ids()
+
     poller = AlertPoller(
         api,
         limit=args.limit,
         acknowledged=False if args.unacknowledged_only else None,
         min_score=args.min_score,
         min_level=args.min_level,
+        seen_ids=seen_ids,
     )
 
-    if args.ignore_existing:
+    if args.ignore_existing and (state_store is None or not state_store.loaded):
         try:
-            poller.seed_existing()
+            seeded_alerts = poller.seed_existing()
+            if state_store is not None:
+                state_store.record_alerts(seeded_alerts)
         except IntelApiError as exc:
             logger.warning("Initial alert sync failed: %s", exc)
 
@@ -348,6 +430,8 @@ def run_alert_client(args: argparse.Namespace) -> int:
                     popup=popup,
                     json_lines=json_lines,
                 )
+                if state_store is not None:
+                    state_store.record_alerts(alerts)
                 if ack:
                     ack_emitted_alerts(
                         api,
@@ -432,6 +516,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["low", "medium", "high", "critical"],
         default="",
         help="only consume alerts at this severity or higher",
+    )
+    parser.add_argument(
+        "--state",
+        default="alert_client_state.json",
+        help="path to the local alert client resume state file",
+    )
+    parser.add_argument(
+        "--no-state",
+        action="store_true",
+        help="disable the local resume state file",
     )
     return parser.parse_args(argv)
 

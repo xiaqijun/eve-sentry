@@ -150,6 +150,9 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --ack --ack-by 
 
 # 一次性检查当前服务端 alert，适合联调或脚本验证
 uv run python -m app.alert_client --server http://127.0.0.1:8765 --once --include-existing --json --poll --details --unacknowledged-only --min-level high
+
+# 使用独立状态文件续接已处理 alert；需要重放时可加 --no-state 或删除状态文件
+uv run python -m app.alert_client --server http://127.0.0.1:8765 --details --state alert_client_state.json
 ```
 
 ## 4. 核心数据模型
