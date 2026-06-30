@@ -1,6 +1,7 @@
 from app.killboard.analyzer import (
     activity_score_bonus,
     analyze_character_activity,
+    analyze_group_activity,
     analyze_system_activity,
 )
 
@@ -104,3 +105,55 @@ def test_analyze_system_activity_counts_matching_killmails():
     assert activity.character_ids == [123, 456, 555, 999]
     assert activity.ship_type_ids == [111, 222, 444]
     assert activity.latest_kill_at == "2026-06-30T12:00:00Z"
+
+
+def test_analyze_group_activity_counts_kills_losses_and_participants():
+    rows = [
+        {
+            "killmail_id": 1,
+            "killmail_time": "2026-06-30T10:00:00Z",
+            "solar_system_id": 30002813,
+            "victim": {
+                "character_id": 999,
+                "corporation_id": 777,
+                "ship_type_id": 111,
+            },
+            "attackers": [
+                {"character_id": 123, "corporation_id": 456, "ship_type_id": 222},
+                {"character_id": 124, "corporation_id": 456},
+            ],
+        },
+        {
+            "killmail_id": 2,
+            "killmail_time": "2026-06-30T11:00:00Z",
+            "solar_system_id": 30002814,
+            "victim": {
+                "character_id": 125,
+                "corporation_id": 456,
+                "ship_type_id": 333,
+            },
+            "attackers": [
+                {"character_id": 888, "corporation_id": 777, "ship_type_id": 444}
+            ],
+        },
+        {
+            "killmail_id": 3,
+            "killmail_time": "2026-06-30T12:00:00Z",
+            "solar_system_id": 30002815,
+            "victim": {"character_id": 555, "corporation_id": 999},
+            "attackers": [{"character_id": 556, "corporation_id": 999}],
+        },
+    ]
+
+    activity = analyze_group_activity(456, rows, "corporation", window="7d")
+
+    assert activity.entity_type == "corporation"
+    assert activity.entity_id == 456
+    assert activity.window == "7d"
+    assert activity.kills == 1
+    assert activity.losses == 1
+    assert activity.systems == [30002813, 30002814]
+    assert activity.character_ids == [123, 124, 125, 888, 999]
+    assert activity.ship_type_ids == [111, 222, 333, 444]
+    assert activity.latest_kill_at == "2026-06-30T11:00:00Z"
+    assert activity.to_dict()["corporation_id"] == 456

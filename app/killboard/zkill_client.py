@@ -50,14 +50,23 @@ class ZKillboardClient:
 
     def _get_list(self, path: str) -> list[dict[str, Any]]:
         cache_key = f"zkill:{path}"
+        stale: list[dict[str, Any]] | None = None
         if self.cache is not None:
             cached = self.cache.get(cache_key)
             if isinstance(cached, list):
                 return cached
+            stale_cached = self.cache.get_stale(cache_key)
+            if isinstance(stale_cached, list):
+                stale = stale_cached
 
-        payload = self._request(path)
-        if not isinstance(payload, list):
-            raise ZKillboardApiError("zKillboard returned a non-list payload")
+        try:
+            payload = self._request(path)
+            if not isinstance(payload, list):
+                raise ZKillboardApiError("zKillboard returned a non-list payload")
+        except ZKillboardApiError:
+            if stale is not None:
+                return stale
+            raise
         if self.cache is not None:
             self.cache.set(cache_key, payload, ttl_seconds=self.ttl_seconds)
             self.cache.save()
@@ -91,4 +100,3 @@ class ZKillboardClient:
             return json.loads(body.decode("utf-8"))
         except json.JSONDecodeError as exc:
             raise ZKillboardApiError("zKillboard returned invalid JSON") from exc
-

@@ -329,7 +329,8 @@ ESI 缓存；ESI 查询失败时保留原 observation，不阻塞上报链路。
 python -m app.server --enable-killboard --zkill-cache zkill_cache.json
 ```
 
-启用后，服务端会按 observation 内的 `character_ids` 查询近期 zKillboard 活动，生成 `recent_kill_activity` evidence，并把它纳入 `ThreatEvent` 分数。查询失败或无角色 ID 时退回基础评分。
+启用后，服务端会按 observation 内的 `character_ids` 查询近期 zKillboard 活动，生成 `recent_kill_activity` evidence，并把它纳入 `ThreatEvent` 分数。查询失败时优先使用本地过期缓存继续生成画像；无缓存或无角色 ID 时退回基础评分。
+HTTP API 也支持按角色、星系、军团、联盟查询近期击毁画像。
 
 官方或一手参考:
 
@@ -437,6 +438,8 @@ GET  /api/systems/by-name/{name}
 
 GET  /api/kill-activity/character/{character_id}
 GET  /api/kill-activity/system/{system_id}
+GET  /api/kill-activity/corporation/{corporation_id}
+GET  /api/kill-activity/alliance/{alliance_id}
 
 GET  /api/map/snapshot
 ```
@@ -451,6 +454,8 @@ GET  /api/map/snapshot
 - `GET /api/systems/by-name/{name}`: 需要启用 ESI，返回星系公开资料。
 - `GET /api/kill-activity/character/{character_id}`: 需要启用 killboard，返回角色近期击毁画像。
 - `GET /api/kill-activity/system/{system_id}`: 需要启用 killboard，返回星系近期击毁热度。
+- `GET /api/kill-activity/corporation/{corporation_id}`: 需要启用 killboard，返回军团近期击毁/损失画像。
+- `GET /api/kill-activity/alliance/{alliance_id}`: 需要启用 killboard，返回联盟近期击毁/损失画像。
 
 实时推送分两步:
 

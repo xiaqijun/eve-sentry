@@ -20,5 +20,7 @@ def test_esi_cache_ignores_expired_values(tmp_path):
         encoding="utf-8",
     )
 
-    assert EsiCache(path).get("name:alice") is None
+    cache = EsiCache(path)
 
+    assert cache.get("name:alice") is None
+    assert cache.get_stale("name:alice") == {"id": 1}

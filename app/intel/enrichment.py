@@ -7,9 +7,11 @@ from typing import Any
 
 from app.core.models import Observation
 from app.killboard.analyzer import (
+    GroupKillActivity,
     KillActivity,
     SystemKillActivity,
     analyze_character_activity,
+    analyze_group_activity,
     analyze_system_activity,
 )
 
@@ -104,6 +106,46 @@ class ThreatEnricher:
             return analyze_system_activity(
                 int(system_id),
                 rows,
+                window=self.kill_window,
+            )
+        except Exception:
+            return None
+
+    def corporation_kill_activity(
+        self,
+        corporation_id: int,
+    ) -> GroupKillActivity | None:
+        """Return recent zKillboard activity for one corporation when available."""
+        return self._group_kill_activity(
+            corporation_id,
+            entity_type="corporation",
+            method_name="corporation_recent",
+        )
+
+    def alliance_kill_activity(self, alliance_id: int) -> GroupKillActivity | None:
+        """Return recent zKillboard activity for one alliance when available."""
+        return self._group_kill_activity(
+            alliance_id,
+            entity_type="alliance",
+            method_name="alliance_recent",
+        )
+
+    def _group_kill_activity(
+        self,
+        entity_id: int,
+        entity_type: str,
+        method_name: str,
+    ) -> GroupKillActivity | None:
+        if self.killboard is None or not hasattr(self.killboard, method_name):
+            return None
+        try:
+            rows = getattr(self.killboard, method_name)(int(entity_id))
+            if not isinstance(rows, list):
+                return None
+            return analyze_group_activity(
+                int(entity_id),
+                rows,
+                entity_type=entity_type,
                 window=self.kill_window,
             )
         except Exception:

@@ -1,6 +1,7 @@
 import gzip
 import json
 from unittest.mock import patch
+from urllib.error import URLError
 
 from app.esi.cache import EsiCache
 from app.killboard.zkill_client import ZKillboardClient
@@ -55,3 +56,29 @@ def test_zkill_client_uses_cache(tmp_path):
 
     assert calls == 1
 
+
+def test_zkill_client_returns_stale_cache_when_request_fails(tmp_path):
+    path = tmp_path / "zkill_cache.json"
+    cache_key = "zkill:/characterID/123/"
+    path.write_text(
+        json.dumps(
+            {
+                cache_key: {
+                    "value": [{"killmail_id": 99}],
+                    "expires_at": 0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_urlopen(request, timeout):
+        _ = request, timeout
+        raise URLError("offline")
+
+    cache = EsiCache(path)
+    with patch("app.killboard.zkill_client.urlopen", fake_urlopen):
+        client = ZKillboardClient(cache=cache)
+        rows = client.character_recent(123)
+
+    assert rows == [{"killmail_id": 99}]

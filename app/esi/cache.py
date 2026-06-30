@@ -22,7 +22,13 @@ class EsiCache:
             return None
         expires_at = float(item.get("expires_at", 0))
         if expires_at <= time():
-            self._items.pop(key, None)
+            return None
+        return item.get("value")
+
+    def get_stale(self, key: str) -> Any | None:
+        """Return a cached value even when its expiry has passed."""
+        item = self._items.get(key)
+        if not item:
             return None
         return item.get("value")
 
@@ -53,4 +59,3 @@ class EsiCache:
             if isinstance(value, dict):
                 result[str(key)] = value
         return result
-

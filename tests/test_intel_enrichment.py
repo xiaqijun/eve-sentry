@@ -49,6 +49,32 @@ class FakeKillboard:
             ]
         raise RuntimeError("offline")
 
+    def corporation_recent(self, corporation_id):
+        if corporation_id == 456:
+            return [
+                {
+                    "killmail_id": 2,
+                    "killmail_time": "2026-06-30T13:00:00Z",
+                    "solar_system_id": 30002814,
+                    "victim": {"character_id": 999, "corporation_id": 777},
+                    "attackers": [{"character_id": 123, "corporation_id": 456}],
+                }
+            ]
+        raise RuntimeError("offline")
+
+    def alliance_recent(self, alliance_id):
+        if alliance_id == 789:
+            return [
+                {
+                    "killmail_id": 3,
+                    "killmail_time": "2026-06-30T14:00:00Z",
+                    "solar_system_id": 30002815,
+                    "victim": {"character_id": 456, "alliance_id": 789},
+                    "attackers": [{"character_id": 123, "alliance_id": 111}],
+                }
+            ]
+        raise RuntimeError("offline")
+
 
 def test_threat_enricher_collects_profiles_and_kill_activity():
     resolver = FakeResolver()
@@ -104,3 +130,22 @@ def test_threat_enricher_exposes_system_profile_and_activity():
     assert activity.system_id == 30002813
     assert activity.kills == 1
     assert activity.window == "7d"
+
+
+def test_threat_enricher_exposes_corporation_and_alliance_activity():
+    enricher = ThreatEnricher(killboard=FakeKillboard(), kill_window="7d")
+
+    corporation = enricher.corporation_kill_activity(456)
+    alliance = enricher.alliance_kill_activity(789)
+
+    assert corporation is not None
+    assert corporation.entity_type == "corporation"
+    assert corporation.entity_id == 456
+    assert corporation.kills == 1
+    assert corporation.losses == 0
+    assert corporation.window == "7d"
+    assert alliance is not None
+    assert alliance.entity_type == "alliance"
+    assert alliance.entity_id == 789
+    assert alliance.kills == 0
+    assert alliance.losses == 1

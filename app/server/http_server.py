@@ -170,6 +170,38 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 "system kill activity not found or killboard not enabled",
             )
             return
+        if path.startswith("/api/kill-activity/corporation/"):
+            try:
+                corporation_id = self._parse_path_int(
+                    path,
+                    "/api/kill-activity/corporation/",
+                    "corporation_id",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_optional_json(
+                "activity",
+                self._store().corporation_kill_activity(corporation_id),
+                "corporation kill activity not found or killboard not enabled",
+            )
+            return
+        if path.startswith("/api/kill-activity/alliance/"):
+            try:
+                alliance_id = self._parse_path_int(
+                    path,
+                    "/api/kill-activity/alliance/",
+                    "alliance_id",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_optional_json(
+                "activity",
+                self._store().alliance_kill_activity(alliance_id),
+                "alliance kill activity not found or killboard not enabled",
+            )
+            return
         if path == "/api/reports":
             query = parse_qs(parsed.query)
             try:
