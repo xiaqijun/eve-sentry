@@ -1,3 +1,4 @@
+from app.core.models import Evidence, ThreatEvent
 from app.server.intel_store import IntelStore, StarSystem
 
 
@@ -112,3 +113,49 @@ def test_add_observation_uses_optional_resolver(tmp_path):
     assert observation.system_id == 30002813
     assert observation.character_ids == [123]
     assert store.list_observations()[0]["character_ids"] == [123]
+
+
+def test_list_alerts_uses_optional_scorer_and_caches_result(tmp_path):
+    class FakeScorer:
+        def __init__(self):
+            self.calls = 0
+
+        def score(self, observation):
+            self.calls += 1
+            if self.calls > 1:
+                return None
+            return ThreatEvent(
+                event_id=f"custom_{observation.observation_id}",
+                system_name=observation.system_name,
+                names=observation.names,
+                score=99,
+                level="high",
+                evidence=[Evidence("custom", 99, "custom score")],
+                source_observation_id=observation.observation_id,
+                created_at=observation.received_at,
+            )
+
+    scorer = FakeScorer()
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        scorer=scorer,
+    )
+    observation = store.add_observation(
+        {
+            "source": "intel_channel",
+            "system_name": "Tama",
+            "names": ["Alice"],
+            "received_at": "2026-06-29T12:00:01+00:00",
+        }
+    )
+
+    first_alerts = store.list_alerts()
+    second_alerts = store.list_alerts()
+
+    assert first_alerts == second_alerts
+    assert first_alerts[0]["id"] == f"custom_{observation.observation_id}"
+    assert first_alerts[0]["score"] == 99
+    assert first_alerts[0]["evidence"][0]["type"] == "custom"
+    assert scorer.calls == 1

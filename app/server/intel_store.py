@@ -135,12 +135,15 @@ class IntelStore:
         systems: dict[str, StarSystem] | None = None,
         links: list[tuple[str, str]] | None = None,
         resolver: Any | None = None,
+        scorer: Any | None = None,
     ) -> None:
         self._filepath = Path(filepath)
         self._systems = dict(DEFAULT_SYSTEMS if systems is None else systems)
         self._links = list(DEFAULT_LINKS if links is None else links)
         self._resolver = resolver
+        self._scorer = scorer
         self._lock = threading.RLock()
+        self._alert_cache: dict[str, ThreatEvent | None] = {}
         self._reports: list[IntelReport] = self._load_reports()
 
     def add_report(
@@ -257,10 +260,11 @@ class IntelStore:
     ) -> list[dict[str, Any]]:
         """Return generated phase-1 threat events from stored observations."""
         since_query = since.strip() if since else ""
-        alerts = [
-            ThreatEvent.from_observation(report.to_observation()).to_dict()
-            for report in self._reports_snapshot()
-        ]
+        alerts = []
+        for report in self._reports_snapshot():
+            alert = self._alert_from_report(report)
+            if alert is not None:
+                alerts.append(alert.to_dict())
 
         if since_query:
             alerts = [alert for alert in alerts if alert["created_at"] > since_query]
@@ -283,6 +287,7 @@ class IntelStore:
             ]
             if len(self._reports) == original_count:
                 return False
+            self._alert_cache.pop(report_id, None)
             self._save_reports()
             return True
 
@@ -291,10 +296,11 @@ class IntelStore:
         with self._lock:
             reports = [r.to_dict() for r in self._reports]
             observations = [r.to_observation().to_dict() for r in self._reports]
-            alerts = [
-                ThreatEvent.from_observation(r.to_observation()).to_dict()
-                for r in self._reports
-            ]
+            alerts = []
+            for report in self._reports:
+                alert = self._alert_from_report(report)
+                if alert is not None:
+                    alerts.append(alert.to_dict())
             system_intel = self._aggregate_by_system(reports)
             character_intel = self._aggregate_by_character(reports)
 
@@ -349,6 +355,25 @@ class IntelStore:
     def _reports_snapshot(self) -> list[IntelReport]:
         with self._lock:
             return list(self._reports)
+
+    def _alert_from_report(self, report: IntelReport) -> ThreatEvent | None:
+        with self._lock:
+            if report.report_id in self._alert_cache:
+                return self._alert_cache[report.report_id]
+
+        observation = report.to_observation()
+        if self._scorer is None:
+            alert = ThreatEvent.from_observation(observation)
+            with self._lock:
+                self._alert_cache[report.report_id] = alert
+            return alert
+        try:
+            alert = self._scorer.score(observation)
+        except Exception:
+            alert = ThreatEvent.from_observation(observation)
+        with self._lock:
+            self._alert_cache[report.report_id] = alert
+        return alert
 
     def _filter_report_like(
         self,
