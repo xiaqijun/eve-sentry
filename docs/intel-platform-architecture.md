@@ -323,6 +323,9 @@ ESI 是身份和宇宙数据的权威补全源。
 - `app.esi.sso` 负责 PKCE 登录、callback、token 保存和 refresh。
 - `app.esi.session` 负责从 `esi_tokens.json` 读取 token，过期时刷新，并使用
   authenticated ESI 获取当前位置和 contacts/standings。
+- token storage 支持 `auto`、`secure` 和 `plain`；`auto` 在 Windows 上使用当前
+  用户 DPAPI 保护 token 文件，其他平台回退到普通 JSON，`secure` 在无可用保护器
+  时会直接失败。
 - contacts 可转换成 `contact_standing` 注入角色 profile，供现有评分规则生成
   `hostile_standing` evidence。
 
@@ -343,23 +346,24 @@ python -m app.server --enable-esi --esi-cache esi_cache.json
 token:
 
 ```bash
-python -m app.server --esi-login-only --esi-client-id YOUR_EVE_APP_CLIENT_ID --esi-token-file esi_tokens.json
+python -m app.server --esi-login-only --esi-client-id YOUR_EVE_APP_CLIENT_ID --esi-token-file esi_tokens.json --esi-token-storage auto
 ```
 
 然后启动服务端并传入相同 token 文件:
 
 ```bash
-python -m app.server --enable-esi --esi-cache esi_cache.json --esi-client-id YOUR_EVE_APP_CLIENT_ID --esi-token-file esi_tokens.json
+python -m app.server --enable-esi --esi-cache esi_cache.json --esi-client-id YOUR_EVE_APP_CLIENT_ID --esi-token-file esi_tokens.json --esi-token-storage auto
 ```
 
 也可以在启动服务端前自动触发登录:
 
 ```bash
-python -m app.server --enable-esi --esi-login --esi-client-id YOUR_EVE_APP_CLIENT_ID --esi-token-file esi_tokens.json
+python -m app.server --enable-esi --esi-login --esi-client-id YOUR_EVE_APP_CLIENT_ID --esi-token-file esi_tokens.json --esi-token-storage auto
 ```
 
 无浏览器环境可加 `--esi-no-browser`，终端会打印授权 URL；需要额外 scope 时可多次
-传入 `--esi-scope`。
+传入 `--esi-scope`。如需兼容旧明文 token 文件或便于临时调试，可显式设置
+`--esi-token-storage plain`。
 
 启用后，服务端会在保存 observation 时尽力补全 `system_id` 和
 `character_ids`，并在生成 alert 时把角色公开资料作为评分证据。角色公开

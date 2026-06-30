@@ -178,7 +178,9 @@
 - 服务端入口已支持 `--esi-login-only` 和 `--esi-login`，用于完成本地 SSO 登录
   引导并保存 token。
 - Web 面板已显示 ESI session 状态和当前星系，并可把当前位置填入手工情报。
-- 待继续: 完善 token 安全存储。
+- token storage 已支持 `auto`、`secure` 和 `plain`；Windows 默认可用 DPAPI 保护
+  本地 token 文件。
+- 待继续: 更细的凭据迁移、轮换和跨平台安全存储策略。
 
 ## 阶段 7: SQLite 和事件推送
 

@@ -12,9 +12,25 @@ from app.esi.sso import (
     EveSsoClient,
     LocalCallbackServer,
     SsoMetadata,
+    TokenProtector,
     TokenSet,
+    WindowsDpapiTokenProtector,
+    build_token_store,
     build_pkce_challenge,
 )
+
+
+class FakeProtector(TokenProtector):
+    name = "fake-protector"
+
+    def protect(self, data: bytes) -> bytes:
+        return b"protected:" + data[::-1]
+
+    def unprotect(self, data: bytes) -> bytes:
+        prefix = b"protected:"
+        if not data.startswith(prefix):
+            raise ValueError("bad payload")
+        return data[len(prefix):][::-1]
 
 
 class FakeResponse:
@@ -151,6 +167,46 @@ def test_token_store_persists_token_set(tmp_path):
     assert loaded.character_id == 123
     assert loaded.refresh_token == "refresh-token"
     assert loaded.expires_at == 2200.0
+
+
+def test_token_store_can_protect_saved_payload(tmp_path):
+    tokens = TokenSet.from_payload(
+        {
+            "access_token": jwt({"sub": "CHARACTER:EVE:123"}),
+            "expires_in": 1200,
+            "refresh_token": "refresh-token",
+        },
+        now=lambda: 1000.0,
+    )
+    store = EsiTokenStore(tmp_path / "tokens.json", protector=FakeProtector())
+
+    store.save(tokens)
+
+    raw = json.loads((tmp_path / "tokens.json").read_text(encoding="utf-8"))
+    assert raw["protected"] is True
+    assert raw["provider"] == "fake-protector"
+    assert "refresh-token" not in json.dumps(raw)
+
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.character_id == 123
+    assert loaded.refresh_token == "refresh-token"
+
+
+def test_build_token_store_modes(monkeypatch, tmp_path):
+    plain = build_token_store(tmp_path / "plain.json", storage="plain")
+    assert plain.is_secure is False
+
+    monkeypatch.setattr(
+        WindowsDpapiTokenProtector,
+        "is_available",
+        classmethod(lambda cls: False),
+    )
+    auto = build_token_store(tmp_path / "auto.json", storage="auto")
+    assert auto.is_secure is False
+
+    with pytest.raises(EsiSsoError):
+        build_token_store(tmp_path / "secure.json", storage="secure")
 
 
 def test_local_callback_server_captures_callback_url():

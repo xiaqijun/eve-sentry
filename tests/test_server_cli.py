@@ -13,6 +13,7 @@ def test_server_cli_defaults_to_sqlite_storage():
     assert args.esi_client_id == ""
     assert args.esi_redirect_uri == "http://127.0.0.1:8766/callback"
     assert args.esi_token_file == "esi_tokens.json"
+    assert args.esi_token_storage == "auto"
     assert args.esi_login is False
     assert args.esi_login_only is False
     assert args.esi_login_timeout == 300.0
@@ -37,6 +38,8 @@ def test_server_cli_accepts_authenticated_esi_options():
             "client-id",
             "--esi-token-file",
             "tokens.json",
+            "--esi-token-storage",
+            "plain",
             "--esi-redirect-uri",
             "http://127.0.0.1:9000/callback",
             "--esi-login",
@@ -51,6 +54,7 @@ def test_server_cli_accepts_authenticated_esi_options():
     assert args.enable_esi is True
     assert args.esi_client_id == "client-id"
     assert args.esi_token_file == "tokens.json"
+    assert args.esi_token_storage == "plain"
     assert args.esi_redirect_uri == "http://127.0.0.1:9000/callback"
     assert args.esi_login is True
     assert args.esi_login_timeout == 10

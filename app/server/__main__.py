@@ -27,6 +27,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--esi-token-file", default="esi_tokens.json")
     parser.add_argument(
+        "--esi-token-storage",
+        choices=["auto", "secure", "plain"],
+        default="auto",
+        help="ESI token storage protection mode",
+    )
+    parser.add_argument(
         "--esi-login",
         action="store_true",
         help="complete local EVE SSO authorization before starting the server",
@@ -151,18 +157,24 @@ def _build_esi_sso_client(args: argparse.Namespace) -> Any:
 
 def _build_esi_session(args: argparse.Namespace) -> Any:
     from app.esi.session import EsiAuthenticatedSession
-    from app.esi.sso import EsiTokenStore
+    from app.esi.sso import build_token_store
 
     return EsiAuthenticatedSession(
         sso_client=_build_esi_sso_client(args),
-        token_store=EsiTokenStore(args.esi_token_file),
+        token_store=build_token_store(
+            args.esi_token_file,
+            storage=args.esi_token_storage,
+        ),
     )
 
 
 def _run_esi_login(args: argparse.Namespace) -> Any:
-    from app.esi.sso import EsiTokenStore, run_local_sso_login
+    from app.esi.sso import build_token_store, run_local_sso_login
 
-    token_store = EsiTokenStore(args.esi_token_file)
+    token_store = build_token_store(
+        args.esi_token_file,
+        storage=args.esi_token_storage,
+    )
     tokens = run_local_sso_login(
         _build_esi_sso_client(args),
         token_store,
@@ -171,7 +183,11 @@ def _run_esi_login(args: argparse.Namespace) -> Any:
         announce_url=lambda url: print(f"Open this URL to authorize:\n{url}"),
     )
     character = tokens.character_id or "unknown"
-    print(f"Saved ESI token for character {character} to {token_store.path}")
+    storage = "secure" if token_store.is_secure else "plain"
+    print(
+        f"Saved ESI token for character {character} to {token_store.path} "
+        f"({storage} storage)"
+    )
     return tokens
 
 
