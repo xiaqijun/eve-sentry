@@ -3,13 +3,14 @@ import json
 
 from app.alert_client import (
     ack_emitted_alerts,
+    attach_alert_details,
     build_popup_names,
     emit_alerts,
     format_alert,
     format_report,
     parse_args,
 )
-from app.intel_client import AlertPoller, IntelApiClient, ReportPoller
+from app.intel_client import AlertPoller, IntelApiClient, IntelApiError, ReportPoller
 from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore
 
@@ -216,6 +217,66 @@ def test_alert_client_formats_reports_for_console_and_popup():
         "(score 40) - Local OCR saw Alice; Blacklisted pilot"
     )
 
+    detailed_alert = {
+        "system_name": "Tama",
+        "names": ["Alice"],
+        "created_at": "2026-06-29T12:00:00+00:00",
+        "level": "high",
+        "score": 85,
+        "evidence": [
+            {"type": "local_ocr_seen", "summary": "Local OCR saw Alice"},
+        ],
+        "detail": {
+            "context": {
+                "channel_mentions": [
+                    {
+                        "relation": "same_system",
+                        "observation": {"system_name": "Tama"},
+                    }
+                ],
+                "character_profiles": [
+                    {
+                        "character_id": 123,
+                        "name": "Alice",
+                        "corporation_id": 456,
+                    }
+                ],
+                "kill_activities": [
+                    {"character_id": 123, "kills": 2, "losses": 1}
+                ],
+                "group_activities": [
+                    {
+                        "entity_type": "corporation",
+                        "entity_id": 456,
+                        "kills": 5,
+                    }
+                ],
+            }
+        },
+    }
+    assert (
+        format_alert(detailed_alert)
+        == "HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 85) "
+        "- Local OCR saw Alice | Context: channel same-system Tama; "
+        "profile Alice (corp 456); character 123 2 kills, 1 loss; "
+        "corporation 456 5 kills"
+    )
+
+    detailed_alert["detail"]["explanation"] = {
+        "context": [
+            "Recent channel same-system mention in Tama 2m ago",
+            "ESI profile Alice: corp 456",
+            "Character 123 has 2 kills, 1 loss in 7d",
+        ]
+    }
+    assert (
+        format_alert(detailed_alert)
+        == "HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 85) "
+        "- Local OCR saw Alice | Context: Recent channel same-system mention "
+        "in Tama 2m ago; ESI profile Alice: corp 456; Character 123 has "
+        "2 kills, 1 loss in 7d"
+    )
+
 
 def test_alert_client_parse_args_supports_one_shot_json_mode():
     args = parse_args(
@@ -229,6 +290,7 @@ def test_alert_client_parse_args_supports_one_shot_json_mode():
             "cli",
             "--ack-note",
             "handled",
+            "--details",
         ]
     )
 
@@ -239,6 +301,7 @@ def test_alert_client_parse_args_supports_one_shot_json_mode():
     assert args.ack is True
     assert args.ack_by == "cli"
     assert args.ack_note == "handled"
+    assert args.details is True
 
 
 def test_alert_client_emit_alerts_supports_text_and_json_lines():
@@ -260,6 +323,34 @@ def test_alert_client_emit_alerts_supports_text_and_json_lines():
         "[ALERT] HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 70)"
     )
     assert json.loads(json_stream.getvalue()) == alert
+
+
+def test_alert_client_attaches_alert_details_without_blocking_delivery():
+    class DetailApi:
+        def __init__(self):
+            self.calls = []
+
+        def alert_detail(self, alert_id):
+            self.calls.append(alert_id)
+            if alert_id == "bad":
+                raise IntelApiError("detail offline")
+            return {
+                "alert": {"id": alert_id},
+                "observation": {"id": "obs-1"},
+                "context": {"channel_mentions": []},
+            }
+
+    api = DetailApi()
+
+    alerts = attach_alert_details(
+        api,
+        [{"id": "evt-1", "names": ["Alice"]}, {"id": "bad"}, {"names": ["No id"]}],
+    )
+
+    assert api.calls == ["evt-1", "bad"]
+    assert alerts[0]["detail"]["alert"]["id"] == "evt-1"
+    assert alerts[1]["detail_error"] == "detail offline"
+    assert "detail" not in alerts[2]
 
 
 def test_alert_client_acknowledges_emitted_alerts():

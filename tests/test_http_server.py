@@ -432,6 +432,20 @@ def test_alert_detail_route_returns_explanation_context(tmp_path):
             item["entity_type"]
             for item in detail["context"]["group_activities"]
         } == {"corporation", "alliance"}
+        assert detail["explanation"]["summary"].startswith(
+            "HIGH alert for Alice in Tama"
+        )
+        assert "scoring" in detail["explanation"]["sources"]
+        assert "enrichment" in detail["explanation"]["sources"]
+        assert "Local OCR saw Alice in Tama" in detail["explanation"]["reasons"]
+        assert (
+            "Recent channel same-system mention in Tama 2m ago"
+            in detail["explanation"]["context"]
+        )
+        assert "ESI profile Alice: corp 456, alliance 789" in (
+            detail["explanation"]["context"]
+        )
+        assert "Character 123 has 1 kill in 7d" in detail["explanation"]["context"]
 
         try:
             request_json(f"{server.url}/api/alerts/missing")

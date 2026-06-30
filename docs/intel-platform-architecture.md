@@ -149,7 +149,7 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --popup
 uv run python -m app.alert_client --server http://127.0.0.1:8765 --ack --ack-by alert-client
 
 # 一次性检查当前服务端 alert，适合联调或脚本验证
-uv run python -m app.alert_client --server http://127.0.0.1:8765 --once --include-existing --json --poll
+uv run python -m app.alert_client --server http://127.0.0.1:8765 --once --include-existing --json --poll --details
 ```
 
 ## 4. 核心数据模型
@@ -256,6 +256,31 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --once --includ
   "created_at": "2026-06-30T12:00:04Z"
 }
 ```
+
+### 4.5 AlertDetail
+
+`GET /api/alerts/{id}` 返回单条预警的完整解释包，供独立预警客户端和 Web 面板展示。
+
+```json
+{
+  "alert": {"id": "evt_...", "level": "high", "score": 85},
+  "observation": {"id": "obs_...", "source": "local_ocr"},
+  "context": {
+    "channel_mentions": [],
+    "character_profiles": [],
+    "kill_activities": [],
+    "group_activities": []
+  },
+  "explanation": {
+    "summary": "HIGH alert for Some Pilot in Tama (score 85)",
+    "reasons": ["Local OCR saw Some Pilot in Tama"],
+    "context": ["Recent channel same-system mention in Tama 2m ago"],
+    "sources": ["local_ocr", "scoring", "enrichment"]
+  }
+}
+```
+
+`context` 保留结构化原始情报，`explanation` 是服务端生成的可显示摘要。预警客户端优先展示 `explanation.context`，没有该字段时回退到本地格式化 `context`。
 
 ## 5. ESI 集成
 

@@ -442,10 +442,16 @@ class IntelStore:
             if not self._alert_matches(alert_id, report, alert_data):
                 continue
             observation = report.to_observation()
+            context = self._alert_context(observation)
             return {
                 "alert": alert_data,
                 "observation": observation.to_dict(),
-                "context": self._alert_context(observation),
+                "context": context,
+                "explanation": self._alert_explanation(
+                    alert_data,
+                    observation,
+                    context,
+                ),
             }
         return None
 
@@ -686,6 +692,199 @@ class IntelStore:
                 if item is not None
             ],
         }
+
+    def _alert_explanation(
+        self,
+        alert: dict[str, Any],
+        observation: Observation,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        reasons = self._alert_reason_summaries(alert)
+        context_summaries = self._alert_context_summaries(context)
+        names = alert.get("names") if isinstance(alert.get("names"), list) else []
+        target = ", ".join(str(name) for name in names if str(name).strip())
+        if not target and observation.character_ids:
+            target = ", ".join(str(item) for item in observation.character_ids)
+        if not target:
+            target = observation.raw_text or "Unknown target"
+
+        level = str(alert.get("level") or "low").upper()
+        score = alert.get("score")
+        score_suffix = f" (score {score})" if score not in {None, ""} else ""
+        summary = (
+            f"{level} alert for {target} in {observation.system_name}{score_suffix}"
+        )
+        return {
+            "summary": summary,
+            "reasons": reasons,
+            "context": context_summaries,
+            "sources": self._alert_explanation_sources(
+                observation,
+                reasons,
+                context_summaries,
+            ),
+        }
+
+    def _alert_reason_summaries(self, alert: dict[str, Any]) -> list[str]:
+        evidence = alert.get("evidence")
+        if not isinstance(evidence, list):
+            return []
+        reasons = []
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            summary = str(item.get("summary") or item.get("type") or "").strip()
+            if summary:
+                reasons.append(summary)
+        return reasons
+
+    def _alert_context_summaries(self, context: dict[str, Any]) -> list[str]:
+        summaries: list[str] = []
+        summaries.extend(
+            self._channel_context_summaries(context.get("channel_mentions"))
+        )
+        summaries.extend(
+            self._profile_context_summaries(context.get("character_profiles"))
+        )
+        summaries.extend(self._kill_context_summaries(context.get("kill_activities")))
+        summaries.extend(self._group_context_summaries(context.get("group_activities")))
+        return summaries
+
+    def _channel_context_summaries(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        summaries = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            observation = item.get("observation")
+            if not isinstance(observation, dict):
+                continue
+            relation = self._relation_label(str(item.get("relation") or ""))
+            system = str(
+                observation.get("system_name") or observation.get("system") or "Unknown"
+            )
+            age = self._age_label(item.get("age_seconds"))
+            age_suffix = f" {age}" if age else ""
+            summaries.append(f"Recent channel {relation} mention in {system}{age_suffix}")
+        return summaries
+
+    def _profile_context_summaries(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        summaries = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("name") or item.get("character_id") or "").strip()
+            if not label:
+                continue
+            affiliations = []
+            corporation_id = item.get("corporation_id")
+            alliance_id = item.get("alliance_id")
+            if corporation_id not in {None, ""}:
+                affiliations.append(f"corp {corporation_id}")
+            if alliance_id not in {None, ""}:
+                affiliations.append(f"alliance {alliance_id}")
+            suffix = f": {', '.join(affiliations)}" if affiliations else ""
+            summaries.append(f"ESI profile {label}{suffix}")
+        return summaries
+
+    def _kill_context_summaries(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        summaries = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            character_id = item.get("character_id")
+            if character_id in {None, ""}:
+                continue
+            summaries.append(
+                "Character "
+                f"{character_id} has {self._activity_counts(item)}"
+                f" in {item.get('window') or 'recent'}"
+            )
+        return summaries
+
+    def _group_context_summaries(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        summaries = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            entity_type = str(item.get("entity_type") or "group")
+            entity_id = item.get("entity_id") or item.get(f"{entity_type}_id")
+            if entity_id in {None, ""}:
+                continue
+            label = entity_type.replace("_", " ")
+            summaries.append(
+                f"{label.title()} {entity_id} has {self._activity_counts(item)}"
+                f" in {item.get('window') or 'recent'}"
+            )
+        return summaries
+
+    def _activity_counts(self, item: dict[str, Any]) -> str:
+        parts = []
+        if self._has_count(item.get("kills")):
+            parts.append(self._plural_count(item["kills"], "kill"))
+        if self._has_count(item.get("losses")):
+            parts.append(self._plural_count(item["losses"], "loss"))
+        return ", ".join(parts) or "activity"
+
+    def _has_count(self, value: Any) -> bool:
+        if value in {None, ""}:
+            return False
+        try:
+            return int(value) != 0
+        except (TypeError, ValueError):
+            return True
+
+    def _alert_explanation_sources(
+        self,
+        observation: Observation,
+        reasons: list[str],
+        context_summaries: list[str],
+    ) -> list[str]:
+        sources = [observation.source]
+        if reasons:
+            sources.append("scoring")
+        if context_summaries:
+            sources.append("enrichment")
+        return list(dict.fromkeys(source for source in sources if source))
+
+    def _plural_count(self, value: Any, label: str) -> str:
+        if str(value) == "1":
+            return f"{value} {label}"
+        plural = "losses" if label == "loss" else f"{label}s"
+        return f"{value} {plural}"
+
+    def _relation_label(self, value: str) -> str:
+        relation = value.strip().casefold()
+        if relation == "same_system":
+            return "same-system"
+        if relation == "adjacent_system":
+            return "adjacent-system"
+        return relation.replace("_", "-") or "related"
+
+    def _age_label(self, value: Any) -> str:
+        if value in {None, ""}:
+            return ""
+        try:
+            seconds = max(0, int(float(value)))
+        except (TypeError, ValueError):
+            return ""
+        if seconds < 60:
+            return f"{seconds}s ago"
+        minutes = seconds // 60
+        if minutes < 60:
+            return f"{minutes}m ago"
+        hours = minutes // 60
+        if hours < 24:
+            return f"{hours}h ago"
+        days = hours // 24
+        return f"{days}d ago"
 
     def _best_effort_enrichment(self, observation: Observation) -> Any:
         if self._enricher is None:
