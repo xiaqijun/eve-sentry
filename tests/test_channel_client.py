@@ -14,6 +14,21 @@ class FakeApi:
         return {"ok": True}
 
 
+class FakeRawApi:
+    def __init__(self):
+        self.lines = []
+
+    def post_channel_line(self, line, channel=""):
+        self.lines.append((line, channel))
+        if line.startswith("Listener:"):
+            return {"ok": True, "ignored": True}
+        return {
+            "ok": True,
+            "ignored": False,
+            "observation": {"id": str(len(self.lines))},
+        }
+
+
 def test_process_once_posts_parsed_observations_and_respects_offsets(tmp_path):
     log_dir = tmp_path / "Chatlogs"
     log_dir.mkdir()
@@ -43,6 +58,35 @@ def test_process_once_posts_parsed_observations_and_respects_offsets(tmp_path):
     assert api.observations[0]["metadata"]["hostile_count"] == 3
     assert api.observations[0]["metadata"]["sender"] == "Scout A"
     assert api.observations[1]["names"] == ["Some Pilot"]
+
+
+def test_process_once_can_delegate_raw_lines_to_server_parser(tmp_path):
+    log_dir = tmp_path / "Chatlogs"
+    log_dir.mkdir()
+    path = log_dir / "Alliance Intel_20260630_120000.txt"
+    path.write_text(
+        "\n".join(
+            [
+                "Listener: ignored header",
+                "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds",
+                "[ 2026.06.30 12:02:00 ] Scout B > Oijanen Some Pilot",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    watcher = ChatLogWatcher(
+        log_dir,
+        channels=["Alliance"],
+        state_path=tmp_path / "s.json",
+    )
+    api = FakeRawApi()
+
+    assert process_once(watcher, api, server_parse=True) == 2
+    assert process_once(watcher, api, server_parse=True) == 0
+    assert [item[1] for item in api.lines] == ["Alliance Intel"] * 3
+    assert api.lines[0][0] == "Listener: ignored header"
+    assert api.lines[1][0].endswith("Tama +3 reds")
 
 
 def test_process_once_dry_run_prints_json_without_api(tmp_path):
@@ -100,9 +144,12 @@ def test_format_observation_includes_metadata_summary():
 
 
 def test_parse_args_supports_dry_run_json_mode():
-    args = parse_args(["--once", "--dry-run", "--json", "--include-existing"])
+    args = parse_args(
+        ["--once", "--dry-run", "--json", "--include-existing", "--server-parse"]
+    )
 
     assert args.once is True
     assert args.dry_run is True
     assert args.json is True
     assert args.ignore_existing is False
+    assert args.server_parse is True

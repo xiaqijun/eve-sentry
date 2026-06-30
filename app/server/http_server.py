@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from app.channels.parser import parse_chat_line
 from app.server.intel_store import IntelStore
 from app.server.star_map_page import INDEX_HTML
 
@@ -261,6 +262,18 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "alert": alert})
             return
 
+        if path == "/api/channel-lines":
+            try:
+                result = self._add_channel_line(self._read_json())
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json(
+                result,
+                HTTPStatus.OK if result.get("ignored") else HTTPStatus.CREATED,
+            )
+            return
+
         if path not in {"/api/intel", "/api/observations"}:
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
@@ -361,6 +374,35 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             if alert.get("source_observation_id") == observation_id:
                 return alert
         return None
+
+    def _add_channel_line(self, payload: dict[str, Any]) -> dict[str, Any]:
+        line = str(payload.get("line") or payload.get("raw_line") or "").strip()
+        if not line:
+            raise ValueError("line is required")
+
+        channel = str(
+            payload.get("channel") or payload.get("source_instance") or ""
+        ).strip()
+        parsed = parse_chat_line(line, channel=channel)
+        if parsed is None:
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "not a chat message",
+            }
+
+        observation_payload = parsed.to_observation_payload()
+        metadata = dict(observation_payload.get("metadata") or {})
+        metadata["raw_line"] = line
+        observation_payload["metadata"] = metadata
+        observation = self._store().add_observation(observation_payload)
+        return {
+            "ok": True,
+            "ignored": False,
+            "parsed": observation_payload,
+            "observation": observation.to_dict(),
+            "alert": self._alert_for_observation(observation.observation_id),
+        }
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))

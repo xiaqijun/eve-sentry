@@ -340,6 +340,68 @@ def test_create_observation_is_idempotent_for_same_channel_line(tmp_path):
         server.stop()
 
 
+def test_create_channel_line_parses_and_deduplicates(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        payload = {
+            "channel": "Alliance Intel",
+            "line": "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds",
+        }
+        status, first = request_json(
+            f"{server.url}/api/channel-lines",
+            method="POST",
+            payload=payload,
+        )
+        status2, second = request_json(
+            f"{server.url}/api/channel-lines",
+            method="POST",
+            payload=payload,
+        )
+
+        assert status == 201
+        assert status2 == 201
+        assert first["ignored"] is False
+        assert first["parsed"]["system_name"] == "Tama"
+        assert first["parsed"]["metadata"]["hostile_count"] == 3
+        assert first["parsed"]["metadata"]["raw_line"] == payload["line"]
+        assert first["observation"]["source_instance"] == "Alliance Intel"
+        assert first["observation"]["metadata"]["sender"] == "Scout A"
+        assert first["alert"]["source_observation_id"] == first["observation"]["id"]
+        assert second["observation"]["id"] == first["observation"]["id"]
+        assert second["alert"]["id"] == first["alert"]["id"]
+
+        status, observations = request_json(f"{server.url}/api/observations")
+        assert status == 200
+        assert observations["count"] == 1
+    finally:
+        server.stop()
+
+
+def test_create_channel_line_ignores_non_chat_headers(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        status, ignored = request_json(
+            f"{server.url}/api/channel-lines",
+            method="POST",
+            payload={"channel": "Alliance Intel", "line": "Listener: Alliance Intel"},
+        )
+
+        assert status == 200
+        assert ignored == {
+            "ok": True,
+            "ignored": True,
+            "reason": "not a chat message",
+        }
+
+        status, observations = request_json(f"{server.url}/api/observations")
+        assert status == 200
+        assert observations["count"] == 0
+    finally:
+        server.stop()
+
+
 def test_ack_alert_route_marks_alert(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()

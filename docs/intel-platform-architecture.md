@@ -91,7 +91,7 @@ uv run python -m app.channel_client --log-dir .\samples\Chatlogs --once --includ
 uv run python scripts/channel_smoke.py --json
 
 # 长驻采集并上报到本地服务端
-uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Alliance Intel"
+uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Alliance Intel" --server-parse
 ```
 
 实现注意:
@@ -425,6 +425,7 @@ python -m app.server --enable-killboard --zkill-cache zkill_cache.json
 ```text
 POST /api/observations
 GET  /api/observations?source=&system=&name=&limit=
+POST /api/channel-lines
 
 GET  /api/alerts?since=&limit=
 POST /api/alerts/{id}/ack

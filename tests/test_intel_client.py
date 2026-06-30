@@ -96,6 +96,28 @@ def test_intel_api_client_posts_observations(tmp_path):
         server.stop()
 
 
+def test_intel_api_client_posts_raw_channel_lines(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        api = IntelApiClient(server.url)
+
+        created = api.post_channel_line(
+            "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds",
+            channel="Alliance Intel",
+        )
+
+        assert created["observation"]["system_name"] == "Tama"
+        assert created["observation"]["source"] == "intel_channel"
+        assert created["observation"]["metadata"]["hostile_count"] == 3
+        assert created["alert"]["score"] == 30
+        assert api.list_observations(source="intel_channel")[0]["id"] == (
+            created["observation"]["id"]
+        )
+    finally:
+        server.stop()
+
+
 def test_report_poller_ignores_seeded_reports_and_returns_newest_batch_in_order():
     existing = [{"id": "old", "seen_at": "1", "names": ["Old"]}]
     latest_first = [
