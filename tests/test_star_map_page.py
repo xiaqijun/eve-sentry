@@ -11,3 +11,12 @@ def test_star_map_page_includes_runtime_config_panel():
     assert 'id="cfg-cooldown"' in INDEX_HTML
     assert 'fetch("/api/config"' in INDEX_HTML
     assert 'method: "PUT"' in INDEX_HTML
+
+
+def test_star_map_page_includes_alert_evidence_view():
+    assert 'id="tab-alerts"' in INDEX_HTML
+    assert "function renderAlerts()" in INDEX_HTML
+    assert "snapshot.alerts" in INDEX_HTML
+    assert "Score ${Number(alert.score || 0)}" in INDEX_HTML
+    assert "evidence-item" in INDEX_HTML
+    assert 'alert.names.join(", ")' in INDEX_HTML

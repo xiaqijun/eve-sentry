@@ -75,7 +75,7 @@ INDEX_HTML = """<!doctype html>
       border-left: 1px solid #252d36;
       background: var(--panel);
       display: grid;
-      grid-template-rows: auto auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto auto minmax(0, 1fr);
     }
     .toolbar {
       padding: 16px;
@@ -178,6 +178,25 @@ INDEX_HTML = """<!doctype html>
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .list-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 10px 16px;
+      border-bottom: 1px solid #252d36;
+      background: #11161c;
+    }
+    .tab {
+      height: 30px;
+      color: var(--muted);
+      background: #151b22;
+      border: 1px solid #303946;
+    }
+    .tab.active {
+      color: var(--text);
+      border-color: var(--accent);
+      background: #19302f;
+    }
     .meta {
       color: var(--muted);
       font-size: 12px;
@@ -198,6 +217,9 @@ INDEX_HTML = """<!doctype html>
       background: #101419;
     }
     .report.hot { border-color: rgba(255, 77, 94, 0.55); }
+    .report.critical { border-color: rgba(255, 77, 94, 0.72); }
+    .report.high { border-color: rgba(255, 209, 102, 0.68); }
+    .report.medium { border-color: rgba(57, 214, 195, 0.54); }
     .report-title {
       display: flex;
       justify-content: space-between;
@@ -218,6 +240,32 @@ INDEX_HTML = """<!doctype html>
       margin-top: 6px;
       color: var(--muted);
       font-size: 12px;
+    }
+    .scoreline {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    .level {
+      color: var(--text);
+      border: 1px solid #44505e;
+      border-radius: 4px;
+      padding: 1px 6px;
+      text-transform: uppercase;
+    }
+    .evidence {
+      display: grid;
+      gap: 4px;
+      margin-top: 8px;
+    }
+    .evidence-item {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      word-break: break-word;
     }
     .empty {
       color: var(--muted);
@@ -289,6 +337,10 @@ INDEX_HTML = """<!doctype html>
           <span class="config-status" id="cfg-status">Not loaded</span>
         </div>
       </section>
+      <section class="list-tabs" aria-label="Intel list mode">
+        <button class="tab active" id="tab-reports" type="button">Reports</button>
+        <button class="tab" id="tab-alerts" type="button">Alerts</button>
+      </section>
       <section class="intel-list" id="intel"></section>
     </aside>
   </main>
@@ -298,6 +350,8 @@ INDEX_HTML = """<!doctype html>
     const intelEl = document.getElementById("intel");
     const selectedEl = document.getElementById("selected");
     const filterEl = document.getElementById("filter");
+    const reportTabButton = document.getElementById("tab-reports");
+    const alertTabButton = document.getElementById("tab-alerts");
     const configStatusEl = document.getElementById("cfg-status");
     const configFields = {
       whitelist: document.getElementById("cfg-whitelist"),
@@ -311,6 +365,7 @@ INDEX_HTML = """<!doctype html>
     const reloadConfigButton = document.getElementById("cfg-reload");
     let snapshot = { systems: [], links: [], reports: [], characters: [], summary: {} };
     let selectedSystem = null;
+    let listMode = "reports";
 
     function resize() {
       const rect = canvas.getBoundingClientRect();
@@ -387,7 +442,7 @@ INDEX_HTML = """<!doctype html>
         selectedSystem = hot ? hot.name : snapshot.systems[0].name;
       }
       renderSelected();
-      renderReports();
+      renderIntelList();
       draw();
     }
 
@@ -410,6 +465,16 @@ INDEX_HTML = """<!doctype html>
         </div>
         <div class="note names">${escapeHtml(names)}</div>
       `;
+    }
+
+    function renderIntelList() {
+      reportTabButton.classList.toggle("active", listMode === "reports");
+      alertTabButton.classList.toggle("active", listMode === "alerts");
+      if (listMode === "alerts") {
+        renderAlerts();
+        return;
+      }
+      renderReports();
     }
 
     function renderReports() {
@@ -435,6 +500,51 @@ INDEX_HTML = """<!doctype html>
           <div class="note">来源: ${escapeHtml(report.source || "ocr")}${report.note ? " | " + escapeHtml(report.note) : ""}</div>
         </article>
       `).join("");
+    }
+
+    function renderAlerts() {
+      const query = filterEl.value.trim().toLowerCase();
+      const alerts = (snapshot.alerts || []).filter(alert => {
+        if (!query) return true;
+        const system = String(alert.system_name || alert.system || "").toLowerCase();
+        const names = Array.isArray(alert.names) ? alert.names : [];
+        const evidence = Array.isArray(alert.evidence) ? alert.evidence : [];
+        return system.includes(query)
+          || names.some(name => String(name).toLowerCase().includes(query))
+          || evidence.some(item => String(item.summary || item.type || "").toLowerCase().includes(query));
+      }).slice(0, 80);
+
+      if (!alerts.length) {
+        intelEl.innerHTML = `<div class="empty">No matching alerts</div>`;
+        return;
+      }
+      intelEl.innerHTML = alerts.map(alert => {
+        const evidence = Array.isArray(alert.evidence) ? alert.evidence.slice(0, 4) : [];
+        const level = String(alert.level || "low").toLowerCase();
+        const system = alert.system_name || alert.system || "Unknown";
+        const names = Array.isArray(alert.names) ? alert.names.join(", ") : "Unknown target";
+        return `
+          <article class="report ${escapeHtml(level)}">
+            <div class="report-title">
+              <span>${escapeHtml(system)}</span>
+              <span class="time">${formatTime(alert.created_at || alert.seen_at)}</span>
+            </div>
+            <div class="scoreline">
+              <span class="level">${escapeHtml(level)}</span>
+              <span>Score ${Number(alert.score || 0)}</span>
+            </div>
+            <div class="names">${escapeHtml(names)}</div>
+            <div class="evidence">
+              ${evidence.map(item => `
+                <div class="evidence-item">
+                  ${escapeHtml(item.summary || item.type || "Evidence")}
+                  ${item.weight === undefined ? "" : ` (${Number(item.weight)})`}
+                </div>
+              `).join("")}
+            </div>
+          </article>
+        `;
+      }).join("");
     }
 
     function formatTime(value) {
@@ -553,7 +663,15 @@ INDEX_HTML = """<!doctype html>
       }
     });
 
-    filterEl.addEventListener("input", renderReports);
+    filterEl.addEventListener("input", renderIntelList);
+    reportTabButton.addEventListener("click", () => {
+      listMode = "reports";
+      renderIntelList();
+    });
+    alertTabButton.addEventListener("click", () => {
+      listMode = "alerts";
+      renderIntelList();
+    });
     saveConfigButton.addEventListener("click", () => saveConfig().catch(console.error));
     reloadConfigButton.addEventListener("click", () => loadConfig().catch(console.error));
     window.addEventListener("resize", resize);
