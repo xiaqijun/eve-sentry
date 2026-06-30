@@ -35,6 +35,11 @@ def run_channel_client(args: argparse.Namespace) -> int:
             "Dry-run mode: parsed observations will not be posted",
             file=status_stream,
         )
+    elif args.server_parse:
+        print(
+            f"Posting raw channel lines to {args.server} for server-side parsing",
+            file=status_stream,
+        )
     else:
         print(f"Posting observations to {args.server}", file=status_stream)
     try:
@@ -44,6 +49,7 @@ def run_channel_client(args: argparse.Namespace) -> int:
                 api,
                 dry_run=args.dry_run,
                 json_lines=args.json,
+                server_parse=args.server_parse,
             )
             if args.once:
                 action = "Parsed" if args.dry_run else "Posted"
@@ -60,6 +66,7 @@ def process_once(
     dry_run: bool = False,
     json_lines: bool = False,
     stream: Any | None = None,
+    server_parse: bool = False,
 ) -> int:
     """Read available lines once and post parsed observations."""
     if api is None and not dry_run:
@@ -68,6 +75,17 @@ def process_once(
     stream = stream or sys.stdout
     processed = 0
     for line in watcher.poll_lines():
+        if server_parse and not dry_run:
+            try:
+                assert api is not None
+                result = api.post_channel_line(line.text, channel=line.channel)
+            except IntelApiError as exc:
+                logger.warning("Failed to post channel line: %s", exc)
+                continue
+            if not result.get("ignored"):
+                processed += 1
+            continue
+
         parsed = parse_chat_line(line.text, channel=line.channel)
         if parsed is None:
             continue
@@ -174,6 +192,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_false",
         dest="ignore_existing",
         help="post existing chatlog lines when the client starts",
+    )
+    parser.add_argument(
+        "--server-parse",
+        action="store_true",
+        help="send raw chatlog lines to the server for parsing",
     )
     return parser.parse_args(argv)
 

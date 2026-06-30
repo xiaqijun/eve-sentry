@@ -74,6 +74,13 @@ class IntelApiClient:
             payload["seen_at"] = seen_at
         return self._request("POST", "/api/observations", payload=payload)
 
+    def post_channel_line(self, line: str, channel: str = "") -> dict[str, Any]:
+        """Publish one raw intel channel log line for server-side parsing."""
+        payload = {"line": line}
+        if channel:
+            payload["channel"] = channel
+        return self._request("POST", "/api/channel-lines", payload=payload)
+
     def list_reports(
         self,
         system: str = "",
