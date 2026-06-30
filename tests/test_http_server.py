@@ -647,6 +647,88 @@ def test_ack_alert_route_marks_alert(tmp_path):
         server.stop()
 
 
+def test_alert_route_filters_by_acknowledgement_score_and_level(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        _, low_created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Scout"],
+                "source": "intel_channel",
+                "seen_at": "2026-06-29T12:00:00+00:00",
+            },
+        )
+        _, medium_created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "local_ocr",
+                "seen_at": "2026-06-29T12:01:00+00:00",
+            },
+        )
+
+        status, default_alerts = request_json(f"{server.url}/api/alerts")
+        assert status == 200
+        assert default_alerts["count"] == 2
+
+        request_json(
+            f"{server.url}/api/alerts/{medium_created['alert']['id']}/ack",
+            method="POST",
+            payload={"acknowledged_by": "tester"},
+        )
+
+        status, unacknowledged = request_json(
+            f"{server.url}/api/alerts?{urlencode({'acknowledged': 'false'})}"
+        )
+        assert status == 200
+        assert [alert["id"] for alert in unacknowledged["alerts"]] == [
+            low_created["alert"]["id"]
+        ]
+
+        status, acknowledged = request_json(
+            f"{server.url}/api/alerts?{urlencode({'acknowledged': 'true'})}"
+        )
+        assert status == 200
+        assert [alert["id"] for alert in acknowledged["alerts"]] == [
+            medium_created["alert"]["id"]
+        ]
+
+        status, min_score = request_json(
+            f"{server.url}/api/alerts?{urlencode({'min_score': '40'})}"
+        )
+        assert status == 200
+        assert [alert["id"] for alert in min_score["alerts"]] == [
+            medium_created["alert"]["id"]
+        ]
+
+        status, min_level = request_json(
+            f"{server.url}/api/alerts?{urlencode({'min_level': 'medium'})}"
+        )
+        assert status == 200
+        assert [alert["id"] for alert in min_level["alerts"]] == [
+            medium_created["alert"]["id"]
+        ]
+
+        for query in (
+            {"acknowledged": "maybe"},
+            {"min_score": "-1"},
+            {"min_level": "urgent"},
+        ):
+            try:
+                request_json(f"{server.url}/api/alerts?{urlencode(query)}")
+            except HTTPError as exc:
+                assert exc.code == 400
+            else:
+                raise AssertionError("expected HTTP 400")
+    finally:
+        server.stop()
+
+
 def test_events_stream_returns_alert_sse(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
@@ -673,6 +755,43 @@ def test_events_stream_returns_alert_sse(tmp_path):
         data_line = next(line for line in body.splitlines() if line.startswith("data:"))
         payload = json.loads(data_line[len("data:"):].strip())
         assert payload["id"] == created["alert"]["id"]
+    finally:
+        server.stop()
+
+
+def test_events_stream_applies_alert_filters(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        _, low_created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Scout"],
+                "source": "intel_channel",
+                "seen_at": "2026-06-29T12:00:00+00:00",
+            },
+        )
+        _, medium_created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "local_ocr",
+                "seen_at": "2026-06-29T12:01:00+00:00",
+            },
+        )
+
+        status, _, body = request_text(
+            f"{server.url}/api/events?"
+            f"{urlencode({'timeout': '0', 'min_level': 'medium'})}"
+        )
+
+        assert status == 200
+        assert medium_created["alert"]["id"] in body
+        assert low_created["alert"]["id"] not in body
     finally:
         server.stop()
 

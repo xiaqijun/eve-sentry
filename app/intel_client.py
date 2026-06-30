@@ -124,11 +124,20 @@ class IntelApiClient:
         self,
         since: str = "",
         limit: int = 50,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str = "",
     ) -> list[dict[str, Any]]:
         """Fetch recent threat events from the intel server."""
         params = {"limit": str(limit)}
         if since:
             params["since"] = since
+        if acknowledged is not None:
+            params["acknowledged"] = "true" if acknowledged else "false"
+        if min_score is not None:
+            params["min_score"] = str(min_score)
+        if min_level:
+            params["min_level"] = min_level
         payload = self._request("GET", "/api/alerts", params=params)
         alerts = payload.get("alerts", [])
         if not isinstance(alerts, list):
@@ -180,11 +189,20 @@ class IntelApiClient:
         since: str = "",
         limit: int = 50,
         timeout: float = 30.0,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str = "",
     ) -> list[dict[str, Any]]:
         """Fetch alert events from the server-sent event stream."""
         params = {"limit": str(limit), "timeout": str(timeout)}
         if since:
             params["since"] = since
+        if acknowledged is not None:
+            params["acknowledged"] = "true" if acknowledged else "false"
+        if min_score is not None:
+            params["min_score"] = str(min_score)
+        if min_level:
+            params["min_level"] = min_level
         url = f"{self.base_url}/api/events?{urlencode(params)}"
         request = Request(
             url,
@@ -304,26 +322,52 @@ class ReportPoller:
 class AlertPoller:
     """Track seen alert ids and return only newly generated threat events."""
 
-    def __init__(self, api: IntelApiClient, limit: int = 50) -> None:
+    def __init__(
+        self,
+        api: IntelApiClient,
+        limit: int = 50,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str = "",
+    ) -> None:
         self.api = api
         self.limit = limit
+        self.acknowledged = acknowledged
+        self.min_score = min_score
+        self.min_level = min_level
         self._seen_ids: set[str] = set()
 
     def seed_existing(self) -> None:
         """Mark currently known alerts as already seen."""
-        for alert in self.api.list_alerts(limit=self.limit):
+        for alert in self.api.list_alerts(
+            limit=self.limit,
+            acknowledged=self.acknowledged,
+            min_score=self.min_score,
+            min_level=self.min_level,
+        ):
             alert_id = str(alert.get("id") or "")
             if alert_id:
                 self._seen_ids.add(alert_id)
 
     def poll_new(self) -> list[dict[str, Any]]:
         """Return alerts that were not returned by previous polls."""
-        alerts = self.api.list_alerts(limit=self.limit)
+        alerts = self.api.list_alerts(
+            limit=self.limit,
+            acknowledged=self.acknowledged,
+            min_score=self.min_score,
+            min_level=self.min_level,
+        )
         return self._filter_new(alerts, newest_first=True)
 
     def stream_new(self, timeout: float = 30.0) -> list[dict[str, Any]]:
         """Return new alerts from the server-sent event stream."""
-        alerts = self.api.stream_alerts(limit=self.limit, timeout=timeout)
+        alerts = self.api.stream_alerts(
+            limit=self.limit,
+            timeout=timeout,
+            acknowledged=self.acknowledged,
+            min_score=self.min_score,
+            min_level=self.min_level,
+        )
         return self._filter_new(alerts, newest_first=False)
 
     def _filter_new(

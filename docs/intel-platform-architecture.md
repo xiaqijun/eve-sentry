@@ -149,7 +149,7 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --popup
 uv run python -m app.alert_client --server http://127.0.0.1:8765 --ack --ack-by alert-client
 
 # 一次性检查当前服务端 alert，适合联调或脚本验证
-uv run python -m app.alert_client --server http://127.0.0.1:8765 --once --include-existing --json --poll --details
+uv run python -m app.alert_client --server http://127.0.0.1:8765 --once --include-existing --json --poll --details --unacknowledged-only --min-level high
 ```
 
 ## 4. 核心数据模型
@@ -457,7 +457,7 @@ POST /api/observations
 GET  /api/observations?source=&system=&name=&limit=
 POST /api/channel-lines
 
-GET  /api/alerts?since=&limit=
+GET  /api/alerts?since=&limit=&acknowledged=&min_score=&min_level=
 GET  /api/alerts/{id}
 POST /api/alerts/{id}/ack
 
@@ -479,6 +479,9 @@ GET  /api/map/snapshot
 - `POST /api/alerts/{id}/ack`: 标记单个 alert 已确认，并在 JSON 和 SQLite
   存储中保留 `acknowledged`、`acknowledged_at`、`acknowledged_by` 和
   `acknowledgement_note`。
+- `GET /api/alerts`: 支持 `acknowledged=true|false`、`min_score` 和
+  `min_level=low|medium|high|critical` 过滤；事件流 `/api/events` 使用同一套
+  alert 过滤参数。
 - `GET /api/alerts/{id}`: 返回单个 alert 的解释详情，包括源 observation、
   频道上下文、角色公开资料和击毁画像上下文。
 - `GET /api/characters/{character_id}`: 需要启用 ESI，返回角色公开资料。

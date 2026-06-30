@@ -237,12 +237,14 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             try:
                 limit = self._parse_optional_int(query.get("limit", [""])[0])
+                filters = self._parse_alert_filters(query)
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
             alerts = self._store().list_alerts(
                 since=query.get("since", [""])[0],
                 limit=limit,
+                **filters,
             )
             self._send_json({"alerts": alerts, "count": len(alerts)})
             return
@@ -261,6 +263,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 parsed_timeout = self._parse_optional_float(
                     query.get("timeout", [""])[0]
                 )
+                filters = self._parse_alert_filters(query)
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
@@ -268,6 +271,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 since=query.get("since", [""])[0],
                 limit=50 if parsed_limit is None else parsed_limit,
                 timeout_seconds=30.0 if parsed_timeout is None else parsed_timeout,
+                **filters,
             )
             return
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
@@ -480,6 +484,51 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("timeout must be non-negative")
         return value
 
+    def _parse_alert_filters(
+        self,
+        query: dict[str, list[str]],
+    ) -> dict[str, Any]:
+        min_level = str(query.get("min_level", [""])[0] or "").strip()
+        if min_level and min_level.casefold() not in {
+            "low",
+            "medium",
+            "high",
+            "critical",
+        }:
+            raise ValueError(
+                "min_level must be one of low, medium, high, or critical"
+            )
+        return {
+            "acknowledged": self._parse_optional_bool(
+                query.get("acknowledged", [""])[0],
+                "acknowledged",
+            ),
+            "min_score": self._parse_optional_int_param(
+                query.get("min_score", [""])[0],
+                "min_score",
+            ),
+            "min_level": min_level,
+        }
+
+    def _parse_optional_int_param(self, raw: str, label: str) -> int | None:
+        raw = raw.strip()
+        if not raw:
+            return None
+        value = int(raw)
+        if value < 0:
+            raise ValueError(f"{label} must be non-negative")
+        return value
+
+    def _parse_optional_bool(self, raw: str, label: str) -> bool | None:
+        value = raw.strip().casefold()
+        if not value:
+            return None
+        if value in {"1", "true", "yes", "y", "on"}:
+            return True
+        if value in {"0", "false", "no", "n", "off"}:
+            return False
+        raise ValueError(f"{label} must be true or false")
+
     def _parse_path_int(self, path: str, prefix: str, label: str) -> int:
         raw = unquote(path[len(prefix):]).strip()
         try:
@@ -495,6 +544,9 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         since: str = "",
         limit: int = 50,
         timeout_seconds: float = 30.0,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str | None = None,
     ) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -507,7 +559,13 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         deadline = time.monotonic() + max(0.0, timeout_seconds)
         while True:
             try:
-                alerts = self._store().list_alerts(since=last_seen, limit=limit)
+                alerts = self._store().list_alerts(
+                    since=last_seen,
+                    limit=limit,
+                    acknowledged=acknowledged,
+                    min_score=min_score,
+                    min_level=min_level,
+                )
                 for alert in reversed(alerts):
                     alert_id = str(alert.get("id") or "")
                     if not alert_id or alert_id in sent_ids:

@@ -17,6 +17,12 @@ from app.intel.scoring import ChannelMention
 
 CHANNEL_SAME_SYSTEM_WINDOW_SECONDS = 10 * 60
 CHANNEL_ADJACENT_SYSTEM_WINDOW_SECONDS = 30 * 60
+ALERT_LEVEL_RANKS = {
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+    "critical": 4,
+}
 
 
 def utc_now_iso() -> str:
@@ -411,14 +417,26 @@ class IntelStore:
         self,
         since: str | None = None,
         limit: int | None = None,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return generated phase-1 threat events from stored observations."""
         since_query = since.strip() if since else ""
+        min_score_value = self._optional_score(min_score)
+        min_level_rank = self._alert_level_rank(min_level)
         alerts = []
         for report in self._reports_snapshot():
             alert = self._alert_from_report(report)
             if alert is not None:
-                alerts.append(self._alert_to_dict(report, alert))
+                alert_data = self._alert_to_dict(report, alert)
+                if self._alert_passes_filters(
+                    alert_data,
+                    acknowledged=acknowledged,
+                    min_score=min_score_value,
+                    min_level_rank=min_level_rank,
+                ):
+                    alerts.append(alert_data)
 
         if since_query:
             alerts = [alert for alert in alerts if alert["created_at"] > since_query]
@@ -660,6 +678,43 @@ class IntelStore:
             str(alert.get("id") or ""),
             str(alert.get("source_observation_id") or ""),
         }
+
+    def _alert_passes_filters(
+        self,
+        alert: dict[str, Any],
+        acknowledged: bool | None,
+        min_score: int | None,
+        min_level_rank: int | None,
+    ) -> bool:
+        if acknowledged is not None and bool(alert.get("acknowledged")) != acknowledged:
+            return False
+        if min_score is not None:
+            score = self._optional_score(alert.get("score"))
+            if score is None or score < min_score:
+                return False
+        if min_level_rank is not None:
+            level_rank = self._alert_level_rank(str(alert.get("level") or ""))
+            if level_rank is None or level_rank < min_level_rank:
+                return False
+        return True
+
+    def _alert_level_rank(self, value: str | None) -> int | None:
+        level = str(value or "").strip().casefold()
+        if not level:
+            return None
+        if level not in ALERT_LEVEL_RANKS:
+            raise ValueError(
+                "min_level must be one of low, medium, high, or critical"
+            )
+        return ALERT_LEVEL_RANKS[level]
+
+    def _optional_score(self, value: Any) -> int | None:
+        if value in {None, ""}:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _alert_context(self, observation: Observation) -> dict[str, Any]:
         enrichment = self._best_effort_enrichment(observation)

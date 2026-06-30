@@ -294,7 +294,13 @@ def attach_alert_details(
 def run_alert_client(args: argparse.Namespace) -> int:
     """Run the polling alert loop."""
     api = IntelApiClient(args.server, timeout=args.timeout)
-    poller = AlertPoller(api, limit=args.limit)
+    poller = AlertPoller(
+        api,
+        limit=args.limit,
+        acknowledged=False if args.unacknowledged_only else None,
+        min_score=args.min_score,
+        min_level=args.min_level,
+    )
 
     if args.ignore_existing:
         try:
@@ -411,7 +417,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="fetch alert detail context before printing each alert",
     )
+    parser.add_argument(
+        "--unacknowledged-only",
+        action="store_true",
+        help="only consume alerts that have not been acknowledged on the server",
+    )
+    parser.add_argument(
+        "--min-score",
+        type=_non_negative_int,
+        help="only consume alerts with score greater than or equal to this value",
+    )
+    parser.add_argument(
+        "--min-level",
+        choices=["low", "medium", "high", "critical"],
+        default="",
+        help="only consume alerts at this severity or higher",
+    )
     return parser.parse_args(argv)
+
+
+def _non_negative_int(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("value must be non-negative")
+    return number
 
 
 def main(argv: list[str] | None = None) -> int:
