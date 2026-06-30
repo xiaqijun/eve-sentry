@@ -30,8 +30,31 @@ def format_alert(alert: dict[str, Any]) -> str:
     level = str(alert.get("level") or "low").upper()
     score = alert.get("score")
     if score is None:
-        return f"{level} {base}".strip()
-    return f"{level} {base} (score {score})".strip()
+        text = f"{level} {base}".strip()
+    else:
+        text = f"{level} {base} (score {score})".strip()
+
+    evidence = _format_evidence_summary(alert)
+    if evidence:
+        return f"{text} - {evidence}"
+    return text
+
+
+def _format_evidence_summary(alert: dict[str, Any]) -> str:
+    evidence = alert.get("evidence")
+    if not isinstance(evidence, list):
+        return ""
+
+    summaries: list[str] = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        summary = str(item.get("summary") or item.get("type") or "").strip()
+        if summary:
+            summaries.append(summary)
+        if len(summaries) >= 2:
+            break
+    return "; ".join(summaries)
 
 
 def build_popup_names(reports: list[dict[str, Any]]) -> list[str]:

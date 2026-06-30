@@ -118,3 +118,13 @@ def test_alert_client_formats_reports_for_console_and_popup():
         format_alert(alert)
         == "MEDIUM 2026-06-29T12:00:00+00:00 Tama: Alice (score 40)"
     )
+
+    alert["evidence"] = [
+        {"type": "local_ocr_seen", "weight": 40, "summary": "Local OCR saw Alice"},
+        {"type": "blacklist_match", "weight": 80, "summary": "Blacklisted pilot"},
+    ]
+    assert (
+        format_alert(alert)
+        == "MEDIUM 2026-06-29T12:00:00+00:00 Tama: Alice "
+        "(score 40) - Local OCR saw Alice; Blacklisted pilot"
+    )
