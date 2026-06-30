@@ -135,6 +135,20 @@ class IntelApiClient:
             raise IntelApiError("server returned an invalid alerts payload")
         return alerts
 
+    def alert_detail(self, alert_id: str) -> dict[str, Any]:
+        """Fetch one alert with source observation and explanation context."""
+        alert_id = str(alert_id or "").strip()
+        if not alert_id:
+            raise IntelApiError("alert_id is required")
+        payload = self._request(
+            "GET",
+            f"/api/alerts/{quote(alert_id, safe='')}",
+        )
+        detail = payload.get("detail")
+        if not isinstance(detail, dict):
+            raise IntelApiError("server returned an invalid alert detail payload")
+        return detail
+
     def ack_alert(
         self,
         alert_id: str,

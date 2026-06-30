@@ -118,6 +118,28 @@ def test_intel_api_client_posts_raw_channel_lines(tmp_path):
         server.stop()
 
 
+def test_intel_api_client_fetches_alert_details(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        api = IntelApiClient(server.url)
+
+        created = api.post_observation(
+            system_name="Tama",
+            names=["Alice"],
+            source="intel_channel",
+            raw_text="Tama Alice",
+            seen_at="2026-06-29T12:00:00+00:00",
+        )
+        detail = api.alert_detail(created["alert"]["id"])
+
+        assert detail["alert"]["id"] == created["alert"]["id"]
+        assert detail["observation"]["id"] == created["observation"]["id"]
+        assert detail["context"]["channel_mentions"] == []
+    finally:
+        server.stop()
+
+
 def test_report_poller_ignores_seeded_reports_and_returns_newest_batch_in_order():
     existing = [{"id": "old", "seen_at": "1", "names": ["Old"]}]
     latest_first = [
