@@ -8,19 +8,24 @@ from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore
 
 
-def main() -> None:
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Return the standalone intel server argument parser."""
     parser = argparse.ArgumentParser(description="Run the EVE Sentry intel server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
     parser.add_argument("--data", default="intel_reports.json")
-    parser.add_argument("--storage", choices=["json", "sqlite"], default="json")
+    parser.add_argument("--storage", choices=["json", "sqlite"], default="sqlite")
     parser.add_argument("--db", default="intel.sqlite3")
     parser.add_argument("--config", default="intel_config.json")
     parser.add_argument("--enable-esi", action="store_true")
     parser.add_argument("--esi-cache", default="esi_cache.json")
     parser.add_argument("--enable-killboard", action="store_true")
     parser.add_argument("--zkill-cache", default="zkill_cache.json")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
 
     logging.basicConfig(
         level=logging.INFO,

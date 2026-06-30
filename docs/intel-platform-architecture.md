@@ -118,6 +118,9 @@ uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Al
 uv run python -m app.server --host 127.0.0.1 --port 8765
 ```
 
+服务端默认使用 SQLite，数据文件为 `intel.sqlite3`；如需沿用旧 JSON
+联调数据，可显式指定 `--storage json --data intel_reports.json`。
+
 ### 3.4 预警客户端
 
 职责:
@@ -502,7 +505,7 @@ GET  /api/map/snapshot
 
 ## 10. 存储规划
 
-当前 JSON 文件适合联调，但多源情报需要迁移到 SQLite。
+服务端默认使用 SQLite 存储，旧 JSON 文件仍保留为兼容导入来源。
 
 建议表:
 
@@ -520,9 +523,10 @@ GET  /api/map/snapshot
 
 迁移策略:
 
-- 保留 JSON 读写兼容一小段时间。
 - 新服务端默认写 SQLite。
-- 提供一次性导入脚本把 `intel_reports.json` 导入 SQLite。
+- `--storage json --data intel_reports.json` 可继续用于旧联调数据。
+- SQLite 启动时可把 `intel_reports.json` 导入数据库，导入标记保存在
+  `store_meta` 中，避免重复导入。
 
 ## 11. 模块规划
 

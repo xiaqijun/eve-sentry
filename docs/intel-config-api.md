@@ -11,10 +11,16 @@ The default server entrypoint enables this store automatically.
 uv run python -m app.server --host 127.0.0.1 --port 8765 --config intel_config.json
 ```
 
-SQLite mode can use the same config file:
+The default server storage is SQLite. Use `--db` to choose the database path:
 
 ```powershell
-uv run python -m app.server --storage sqlite --db intel.sqlite3 --config intel_config.json
+uv run python -m app.server --db intel.sqlite3 --config intel_config.json
+```
+
+Legacy JSON storage remains available for compatibility:
+
+```powershell
+uv run python -m app.server --storage json --data intel_reports.json --config intel_config.json
 ```
 
 ## GET /api/config
