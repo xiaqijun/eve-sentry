@@ -214,6 +214,8 @@ class ScoringEngine:
             return 0
         resolution = _esi_resolution(observation.metadata.get("esi_resolution"))
         if resolution is None or not _resolution_attempted(resolution):
+            if _resolution_status(resolution) in {"ambiguous", "no_match"}:
+                return 0
             return weight
         if not _resolution_system_name_matched(resolution):
             return 0
@@ -482,6 +484,12 @@ def _esi_resolution(value: Any) -> dict[str, Any] | None:
 
 def _resolution_attempted(value: dict[str, Any]) -> bool:
     return bool(value.get("attempted"))
+
+
+def _resolution_status(value: dict[str, Any] | None) -> str:
+    if not isinstance(value, dict):
+        return ""
+    return str(value.get("system_repair_status") or "").strip().casefold()
 
 
 def _resolution_system_name_matched(value: dict[str, Any]) -> bool:

@@ -87,6 +87,28 @@ def test_esi_resolution_suppresses_unresolved_named_target():
     assert event is None
 
 
+def test_esi_resolution_suppresses_ambiguous_repair_status_without_attempt_flag():
+    item = observation(
+        source="intel_channel",
+        names=["Tama Oijanen"],
+        character_ids=[],
+        system_name="Alice",
+        raw_text="Scout A: Alice reds Tama Oijanen",
+    )
+    item.metadata = {
+        "hostile_count": 1,
+        "esi_resolution": {
+            "candidate_system_names": ["Alice", "Tama", "Oijanen"],
+            "resolved_system_candidates": ["Tama", "Oijanen"],
+            "system_repair_status": "ambiguous",
+        },
+    }
+
+    event = ScoringEngine(cooldown_seconds=0).score(item)
+
+    assert event is None
+
+
 def test_esi_resolution_suppresses_unresolved_system_match():
     item = observation(
         source="intel_channel",

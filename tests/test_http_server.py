@@ -6,6 +6,8 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from app.esi.cache import EsiCache
+from app.esi.resolver import EsiResolver
 from app.esi.session import ContactStanding
 from app.esi.sso import EsiSsoError
 from app.intel.enrichment import ThreatEnricher
@@ -892,11 +894,27 @@ def test_create_channel_line_repairs_unique_esi_system_match(tmp_path):
         assert created["observation"]["system_id"] == 30002813
         assert created["observation"]["names"] == ["Alice"]
         assert created["observation"]["character_ids"] == [123]
+        assert created["observation"]["metadata"]["esi_resolution"] == {
+            "candidate_system_names": ["Alice", "Tama"],
+            "resolved_system_candidates": ["Tama"],
+            "system_repair_status": "repaired",
+            "system_repaired_from": "Alice",
+            "system_repaired_to": "Tama",
+        }
         assert created["alert"]["score"] == 30
 
         status, observations = request_json(f"{server.url}/api/observations")
         assert status == 200
         assert observations["observations"][0]["system_name"] == "Tama"
+
+        status, detail_payload = request_json(
+            f"{server.url}/api/alerts/{created['alert']['id']}"
+        )
+        assert status == 200
+        assert (
+            "ESI repaired channel system Alice -> Tama from candidates Alice, Tama"
+            in detail_payload["detail"]["explanation"]["context"]
+        )
     finally:
         server.stop()
 
@@ -940,6 +958,72 @@ def test_create_channel_line_suppresses_invalid_system_after_esi_resolution(tmp_
             "character_name_count": 0,
             "resolved_character_count": 0,
             "system_name_matched": False,
+        }
+
+        status, alerts = request_json(f"{server.url}/api/alerts")
+        assert status == 200
+        assert alerts["count"] == 0
+    finally:
+        server.stop()
+
+
+def test_create_channel_line_keeps_ambiguous_system_candidates_in_metadata(tmp_path):
+    class AmbiguousRepairClient:
+        def resolve_ids(self, names):
+            if names == ["Alice", "Tama", "Oijanen"]:
+                return {
+                    "characters": [{"id": 123, "name": "Alice"}],
+                    "systems": [
+                        {"id": 30002813, "name": "Tama"},
+                        {"id": 30002814, "name": "Oijanen"},
+                    ],
+                }
+            if names == ["Alice"]:
+                return {
+                    "characters": [{"id": 123, "name": "Alice"}],
+                }
+            if names == ["Tama Oijanen"]:
+                return {
+                    "characters": [{"id": 123, "name": "Alice"}],
+                }
+            raise AssertionError(names)
+
+    store = IntelStore(
+        tmp_path / "intel.json",
+        resolver=EsiResolver(
+            client=AmbiguousRepairClient(),
+            cache=EsiCache(tmp_path / "esi.json"),
+        ),
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/channel-lines",
+            method="POST",
+            payload={
+                "channel": "Alliance Intel",
+                "line": (
+                    "[ 2026.06.30 12:01:12 ] Scout A > "
+                    "Alice reds Tama Oijanen"
+                ),
+            },
+        )
+
+        assert status == 201
+        assert created["ignored"] is False
+        assert created["observation"]["system_name"] == "Alice"
+        assert created["alert"] is None
+        assert created["observation"]["metadata"]["esi_resolution"] == {
+            "attempted": True,
+            "candidate_system_names": ["Alice", "Tama", "Oijanen"],
+            "character_name_count": 1,
+            "resolved_character_count": 0,
+            "resolved_system_candidates": ["Tama", "Oijanen"],
+            "system_name_matched": False,
+            "system_repair_status": "ambiguous",
+            "unresolved_character_names": ["Tama Oijanen"],
         }
 
         status, alerts = request_json(f"{server.url}/api/alerts")

@@ -412,10 +412,18 @@ class IntelStore:
             item for item in resolved
             if str(getattr(item, "category", "")).casefold() == "solar_system"
         ]
+        repair_status = self._channel_repair_status(observation, system_matches)
+        self._record_channel_resolution(
+            observation,
+            candidates,
+            system_matches,
+            repair_status,
+        )
         resolved_system = self._pick_repair_system(observation, candidates, system_matches)
         if resolved_system is None:
             return observation
 
+        previous_system_name = observation.system_name.strip()
         repaired_name = str(getattr(resolved_system, "name", "")).strip()
         repaired_id = self._optional_int(getattr(resolved_system, "entity_id", None))
         if not repaired_name or repaired_id is None:
@@ -423,6 +431,14 @@ class IntelStore:
 
         observation.system_name = repaired_name
         observation.system_id = repaired_id
+        self._record_channel_resolution(
+            observation,
+            candidates,
+            system_matches,
+            "repaired",
+            repaired_from=previous_system_name,
+            repaired_to=repaired_name,
+        )
         self._reparse_channel_observation(observation, message)
         return observation
 
@@ -469,6 +485,71 @@ class IntelStore:
         if len(unique_by_id) != 1:
             return None
         return next(iter(unique_by_id.values()))
+
+    def _channel_repair_status(
+        self,
+        observation: Observation,
+        resolved: list[Any],
+    ) -> str:
+        query = observation.system_name.strip().casefold()
+        matched_current = False
+        unique_ids: set[int] = set()
+        for item in resolved:
+            name = str(getattr(item, "name", "")).strip()
+            if name and name.casefold() == query:
+                matched_current = True
+            entity_id = self._optional_int(getattr(item, "entity_id", None))
+            if entity_id is not None:
+                unique_ids.add(entity_id)
+        if matched_current:
+            return "validated"
+        if len(unique_ids) == 1:
+            return "repaired"
+        if unique_ids:
+            return "ambiguous"
+        return "no_match"
+
+    def _record_channel_resolution(
+        self,
+        observation: Observation,
+        candidates: list[str],
+        resolved: list[Any],
+        status: str,
+        repaired_from: str = "",
+        repaired_to: str = "",
+    ) -> None:
+        metadata = dict(observation.metadata)
+        resolution = self._resolution_metadata_dict(metadata.get("esi_resolution"))
+        resolution["candidate_system_names"] = list(candidates)
+        resolved_names = self._resolved_system_names(resolved)
+        if resolved_names:
+            resolution["resolved_system_candidates"] = resolved_names
+        else:
+            resolution.pop("resolved_system_candidates", None)
+        resolution["system_repair_status"] = status
+        if repaired_from and repaired_to:
+            resolution["system_repaired_from"] = repaired_from
+            resolution["system_repaired_to"] = repaired_to
+        else:
+            resolution.pop("system_repaired_from", None)
+            resolution.pop("system_repaired_to", None)
+        metadata["esi_resolution"] = resolution
+        observation.metadata = metadata
+
+    def _resolution_metadata_dict(self, value: Any) -> dict[str, Any]:
+        return dict(value) if isinstance(value, dict) else {}
+
+    def _resolved_system_names(self, resolved: list[Any]) -> list[str]:
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in resolved:
+            name = str(getattr(item, "name", "")).strip()
+            key = name.casefold()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            names.append(name)
+        return names
 
     def _reparse_channel_observation(
         self,
@@ -909,7 +990,8 @@ class IntelStore:
         context: dict[str, Any],
     ) -> dict[str, Any]:
         reasons = self._alert_reason_summaries(alert)
-        context_summaries = self._alert_context_summaries(context)
+        context_summaries = self._observation_resolution_summaries(observation)
+        context_summaries.extend(self._alert_context_summaries(context))
         names = alert.get("names") if isinstance(alert.get("names"), list) else []
         target = ", ".join(str(name) for name in names if str(name).strip())
         if not target and observation.character_ids:
@@ -933,6 +1015,36 @@ class IntelStore:
                 context_summaries,
             ),
         }
+
+    def _observation_resolution_summaries(
+        self,
+        observation: Observation,
+    ) -> list[str]:
+        resolution = observation.metadata.get("esi_resolution")
+        if not isinstance(resolution, dict):
+            return []
+        status = str(resolution.get("system_repair_status") or "").strip().casefold()
+        if status != "repaired":
+            return []
+        repaired_from = str(resolution.get("system_repaired_from") or "").strip()
+        repaired_to = str(
+            resolution.get("system_repaired_to") or observation.system_name or ""
+        ).strip()
+        if not repaired_from or not repaired_to:
+            return []
+        candidates = resolution.get("candidate_system_names")
+        if isinstance(candidates, list):
+            candidate_text = ", ".join(
+                str(item).strip() for item in candidates if str(item).strip()
+            )
+        else:
+            candidate_text = ""
+        if candidate_text:
+            return [
+                f"ESI repaired channel system {repaired_from} -> {repaired_to} "
+                f"from candidates {candidate_text}"
+            ]
+        return [f"ESI repaired channel system {repaired_from} -> {repaired_to}"]
 
     def _alert_reason_summaries(self, alert: dict[str, Any]) -> list[str]:
         evidence = alert.get("evidence")

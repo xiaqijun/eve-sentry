@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
 from app.core.models import Evidence, ThreatEvent
+from app.esi.cache import EsiCache
+from app.esi.resolver import EsiResolver
 from app.intel.enrichment import ThreatEnrichment
 from app.intel.scoring import ScoringEngine, Watchlist
 from app.killboard.analyzer import GroupKillActivity, KillActivity
@@ -233,7 +235,67 @@ def test_add_observation_repairs_invalid_channel_system_with_resolver(tmp_path):
     assert observation.system_id == 30002813
     assert observation.names == ["Alice"]
     assert observation.character_ids == [123]
+    assert observation.metadata["esi_resolution"] == {
+        "candidate_system_names": ["Alice", "Tama"],
+        "resolved_system_candidates": ["Tama"],
+        "system_repair_status": "repaired",
+        "system_repaired_from": "Alice",
+        "system_repaired_to": "Tama",
+    }
     assert store.list_observations()[0]["system_name"] == "Tama"
+
+
+def test_add_observation_keeps_ambiguous_system_candidates_in_metadata(tmp_path):
+    class AmbiguousRepairClient:
+        def resolve_ids(self, names):
+            if names == ["Alice", "Tama", "Oijanen"]:
+                return {
+                    "characters": [{"id": 123, "name": "Alice"}],
+                    "systems": [
+                        {"id": 30002813, "name": "Tama"},
+                        {"id": 30002814, "name": "Oijanen"},
+                    ],
+                }
+            if names == ["Alice"]:
+                return {
+                    "characters": [{"id": 123, "name": "Alice"}],
+                }
+            raise AssertionError(names)
+
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        resolver=EsiResolver(
+            client=AmbiguousRepairClient(),
+            cache=EsiCache(tmp_path / "esi.json"),
+        ),
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+
+    observation = store.add_observation(
+        {
+            "source": "intel_channel",
+            "system_name": "Alice",
+            "raw_text": "Scout A: Alice reds Tama Oijanen",
+            "metadata": {"sender": "Scout A", "hostile_count": 1},
+        }
+    )
+    resolution = observation.metadata["esi_resolution"]
+
+    assert observation.system_name == "Alice"
+    assert observation.system_id is None
+    assert observation.character_ids == [123]
+    assert resolution == {
+        "attempted": True,
+        "candidate_system_names": ["Alice", "Tama", "Oijanen"],
+        "character_name_count": 0,
+        "resolved_character_count": 0,
+        "resolved_system_candidates": ["Tama", "Oijanen"],
+        "system_name_matched": False,
+        "system_repair_status": "ambiguous",
+    }
+    assert store.list_alerts() == []
 
 
 def test_list_alerts_uses_optional_scorer_and_caches_result(tmp_path):

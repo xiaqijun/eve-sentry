@@ -192,6 +192,7 @@ class EsiResolver:
         system_name_matched: bool,
     ) -> dict[str, Any]:
         metadata = dict(observation.metadata)
+        resolution = _resolution_metadata_dict(metadata.get("esi_resolution"))
         resolved_names: list[str] = []
         unresolved_names: list[str] = []
         for name in observation.names:
@@ -200,18 +201,16 @@ class EsiResolver:
             else:
                 unresolved_names.append(name)
 
-        resolution: dict[str, Any] = {
-            "attempted": True,
-            "character_name_count": len(observation.names),
-            "resolved_character_count": len(resolved_names),
-            "system_name_matched": bool(system_name_matched),
-        }
-        if resolved_names:
-            resolution["resolved_character_names"] = resolved_names
-        if unresolved_names:
-            resolution["unresolved_character_names"] = unresolved_names
+        resolution["attempted"] = True
+        resolution["character_name_count"] = len(observation.names)
+        resolution["resolved_character_count"] = len(resolved_names)
+        resolution["system_name_matched"] = bool(system_name_matched)
+        _set_optional_list(resolution, "resolved_character_names", resolved_names)
+        _set_optional_list(resolution, "unresolved_character_names", unresolved_names)
         if observation.system_id is not None:
             resolution["resolved_system_id"] = observation.system_id
+        else:
+            resolution.pop("resolved_system_id", None)
 
         metadata["esi_resolution"] = resolution
         return metadata
@@ -284,3 +283,18 @@ def _optional_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+def _resolution_metadata_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _set_optional_list(
+    mapping: dict[str, Any],
+    key: str,
+    values: list[str],
+) -> None:
+    if values:
+        mapping[key] = list(values)
+        return
+    mapping.pop(key, None)

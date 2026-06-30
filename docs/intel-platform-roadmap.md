@@ -155,6 +155,9 @@
 - 对 `intel_channel` observation，服务端会在唯一 ESI 星系候选命中时修正
   `system_name` 并重算 names / hostile_count，让像 `Alice reds Tama` 这类
   行还能恢复成可用情报。
+- 如果频道行里出现多个 ESI 星系候选，服务端不会盲目修正，而是把候选列表和
+  `ambiguous` 状态保存在 `esi_resolution` 元数据里，供 `/api/observations`
+  和告警解释链路回看。
 
 ## 阶段 6: ESI SSO
 

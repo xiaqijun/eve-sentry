@@ -14,11 +14,16 @@ class FakeEsiClient:
 
     def resolve_ids(self, names):
         self.resolve_calls += 1
-        assert names == ["Alice", "Tama"]
-        return {
-            "characters": [{"id": 123, "name": "Alice"}],
-            "systems": [{"id": 30002813, "name": "Tama"}],
-        }
+        if names == ["Alice", "Tama"]:
+            return {
+                "characters": [{"id": 123, "name": "Alice"}],
+                "systems": [{"id": 30002813, "name": "Tama"}],
+            }
+        if names == ["Alice"]:
+            return {
+                "characters": [{"id": 123, "name": "Alice"}],
+            }
+        raise AssertionError(names)
 
     def get_character(self, character_id):
         self.character_calls += 1
@@ -181,6 +186,46 @@ def test_enrich_observation_records_resolution_metadata(tmp_path):
         "system_name_matched": True,
         "unresolved_character_names": ["Ghost Pilot"],
         "resolved_system_id": 30002813,
+    }
+
+
+def test_enrich_observation_preserves_existing_resolution_metadata(tmp_path):
+    resolver = EsiResolver(
+        client=FakeEsiClient(),
+        cache=EsiCache(tmp_path / "esi.json"),
+    )
+    observation = Observation(
+        source="intel_channel",
+        system_name="Tama",
+        system_id=30002813,
+        names=["Alice"],
+        metadata={
+            "esi_resolution": {
+                "candidate_system_names": ["Alice", "Tama"],
+                "resolved_system_candidates": ["Tama"],
+                "system_repair_status": "repaired",
+                "system_repaired_from": "Alice",
+                "system_repaired_to": "Tama",
+            }
+        },
+    )
+
+    enriched = resolver.enrich_observation(observation)
+    resolution = enriched.metadata["esi_resolution"]
+
+    assert enriched.character_ids == [123]
+    assert resolution == {
+        "attempted": True,
+        "candidate_system_names": ["Alice", "Tama"],
+        "resolved_character_count": 1,
+        "resolved_character_names": ["Alice"],
+        "resolved_system_candidates": ["Tama"],
+        "resolved_system_id": 30002813,
+        "system_name_matched": True,
+        "system_repair_status": "repaired",
+        "system_repaired_from": "Alice",
+        "system_repaired_to": "Tama",
+        "character_name_count": 1,
     }
 
 
