@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -138,6 +139,22 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             )
             self._send_json({"alerts": alerts, "count": len(alerts)})
             return
+        if path == "/api/events":
+            query = parse_qs(parsed.query)
+            try:
+                parsed_limit = self._parse_optional_int(query.get("limit", [""])[0])
+                parsed_timeout = self._parse_optional_float(
+                    query.get("timeout", [""])[0]
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._stream_events(
+                since=query.get("since", [""])[0],
+                limit=50 if parsed_limit is None else parsed_limit,
+                timeout_seconds=30.0 if parsed_timeout is None else parsed_timeout,
+            )
+            return
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -225,6 +242,61 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         if value < 0:
             raise ValueError("limit must be non-negative")
         return value
+
+    def _parse_optional_float(self, raw: str) -> float | None:
+        raw = raw.strip()
+        if not raw:
+            return None
+        value = float(raw)
+        if value < 0:
+            raise ValueError("timeout must be non-negative")
+        return value
+
+    def _stream_events(
+        self,
+        since: str = "",
+        limit: int = 50,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        last_seen = since.strip()
+        sent_ids: set[str] = set()
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        while True:
+            try:
+                alerts = self._store().list_alerts(since=last_seen, limit=limit)
+                for alert in reversed(alerts):
+                    alert_id = str(alert.get("id") or "")
+                    if not alert_id or alert_id in sent_ids:
+                        continue
+                    self._write_sse("alert", alert_id, alert)
+                    sent_ids.add(alert_id)
+                    created_at = str(alert.get("created_at") or "")
+                    if created_at > last_seen:
+                        last_seen = created_at
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(1.0, remaining))
+
+    def _write_sse(
+        self,
+        event_name: str,
+        event_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        data = json.dumps(payload, ensure_ascii=False)
+        body = f"id: {event_id}\nevent: {event_name}\ndata: {data}\n\n"
+        self.wfile.write(body.encode("utf-8"))
+        self.wfile.flush()
 
     def _send_json(
         self,

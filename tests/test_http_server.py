@@ -19,6 +19,12 @@ def request_json(url, method="GET", payload=None):
         return response.status, json.loads(body) if body else {}
 
 
+def request_text(url):
+    request = Request(url, headers={"Accept": "text/event-stream"})
+    with urlopen(request, timeout=3) as response:
+        return response.status, response.headers, response.read().decode("utf-8")
+
+
 def test_health_and_cors_preflight(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
@@ -106,6 +112,36 @@ def test_create_observation_and_query_alerts(tmp_path):
         assert status == 200
         assert alerts["count"] == 1
         assert alerts["alerts"][0]["score"] == 30
+    finally:
+        server.stop()
+
+
+def test_events_stream_returns_alert_sse(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+                "seen_at": "2026-06-29T12:00:00+00:00",
+            },
+        )
+        assert status == 201
+
+        status, headers, body = request_text(
+            f"{server.url}/api/events?{urlencode({'timeout': '0', 'limit': '5'})}"
+        )
+
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/event-stream")
+        assert "event: alert" in body
+        data_line = next(line for line in body.splitlines() if line.startswith("data:"))
+        payload = json.loads(data_line[len("data:"):].strip())
+        assert payload["id"] == created["alert"]["id"]
     finally:
         server.stop()
 

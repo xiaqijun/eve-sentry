@@ -17,6 +17,10 @@ class FakeApi:
     def list_alerts(self, limit=50):
         return self.list_reports(limit=limit)
 
+    def stream_alerts(self, limit=50, timeout=30.0):
+        _ = timeout
+        return self.list_reports(limit=limit)
+
 
 def test_intel_api_client_posts_and_lists_reports(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
@@ -63,6 +67,7 @@ def test_intel_api_client_posts_observations(tmp_path):
         observation_id = created["observation"]["id"]
         assert created["alert"]["id"] == f"evt_{observation_id}"
         assert api.list_alerts()[0]["score"] == 30
+        assert api.stream_alerts(timeout=0)[0]["id"] == f"evt_{observation_id}"
     finally:
         server.stop()
 
@@ -95,6 +100,20 @@ def test_alert_poller_ignores_seeded_alerts_and_returns_newest_batch_in_order():
     poller.seed_existing()
 
     assert [alert["id"] for alert in poller.poll_new()] == ["new-1", "new-2"]
+
+
+def test_alert_poller_reads_event_stream_in_stream_order():
+    stream_order = [
+        {"id": "new-1", "created_at": "2", "names": ["Bob"]},
+        {"id": "new-2", "created_at": "3", "names": ["Carol"]},
+    ]
+    api = FakeApi([stream_order])
+    poller = AlertPoller(api)
+
+    assert [alert["id"] for alert in poller.stream_new(timeout=0)] == [
+        "new-1",
+        "new-2",
+    ]
 
 
 def test_alert_client_formats_reports_for_console_and_popup():

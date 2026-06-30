@@ -13,6 +13,8 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
     parser.add_argument("--data", default="intel_reports.json")
+    parser.add_argument("--storage", choices=["json", "sqlite"], default="json")
+    parser.add_argument("--db", default="intel.sqlite3")
     parser.add_argument("--enable-esi", action="store_true")
     parser.add_argument("--esi-cache", default="esi_cache.json")
     args = parser.parse_args()
@@ -29,7 +31,16 @@ def main() -> None:
 
         resolver = EsiResolver(cache=EsiCache(args.esi_cache))
 
-    store = IntelStore(args.data, resolver=resolver)
+    if args.storage == "sqlite":
+        from app.server.sqlite_store import SQLiteIntelStore
+
+        store = SQLiteIntelStore(
+            args.db,
+            import_json_path=args.data,
+            resolver=resolver,
+        )
+    else:
+        store = IntelStore(args.data, resolver=resolver)
     server = IntelHTTPServer(store, host=args.host, port=args.port)
     server.start()
     print(f"Intel map: {server.url}")
