@@ -95,6 +95,33 @@ def test_recent_kill_activity_adds_bonus_evidence():
     assert evidence_types(event) == ["intel_channel_report", "recent_kill_activity"]
 
 
+def test_multiple_enrichment_items_add_profile_and_kill_evidence():
+    engine = ScoringEngine(
+        watchlist=Watchlist(hostile_alliance_ids={99}),
+        cooldown_seconds=0,
+    )
+
+    event = engine.score(
+        observation(source="intel_channel"),
+        character_profiles=[
+            {"corporation_id": 42},
+            {"alliance_id": 99},
+        ],
+        kill_activities=[
+            KillActivity(character_id=123, window="7d", kills=5),
+        ],
+    )
+
+    assert event is not None
+    assert event.score == 110
+    assert event.level == "critical"
+    assert evidence_types(event) == [
+        "intel_channel_report",
+        "hostile_alliance",
+        "recent_kill_activity",
+    ]
+
+
 def test_cooldown_suppresses_repeat_alerts_for_same_system_and_names():
     clock = [1000.0]
     engine = ScoringEngine(cooldown_seconds=60, now=lambda: clock[0])

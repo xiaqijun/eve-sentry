@@ -41,6 +41,8 @@ class ScoringEngine:
         observation: Observation,
         kill_activity: KillActivity | None = None,
         character_profile: dict[str, Any] | None = None,
+        kill_activities: list[KillActivity] | None = None,
+        character_profiles: list[dict[str, Any]] | None = None,
     ) -> ThreatEvent | None:
         """Return a threat event, or None when suppressed by rules/cooldown."""
         names = self._event_names(observation)
@@ -54,9 +56,10 @@ class ScoringEngine:
         evidence: list[Evidence] = []
         evidence.extend(self._source_evidence(observation, names))
         evidence.extend(self._watchlist_evidence(names))
-        evidence.extend(self._profile_evidence(character_profile))
-        if kill_activity is not None:
-            evidence.extend(self._kill_activity_evidence(kill_activity))
+        for profile in self._profile_inputs(character_profile, character_profiles):
+            evidence.extend(self._profile_evidence(profile))
+        for activity in self._activity_inputs(kill_activity, kill_activities):
+            evidence.extend(self._kill_activity_evidence(activity))
 
         score = sum(item.weight for item in evidence)
         if score <= 0:
@@ -193,6 +196,28 @@ class ScoringEngine:
                 f"{activity.kills} recent kills from zKillboard",
             )
         ]
+
+    def _profile_inputs(
+        self,
+        character_profile: dict[str, Any] | None,
+        character_profiles: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        profiles = []
+        if character_profile:
+            profiles.append(character_profile)
+        profiles.extend(item for item in character_profiles or [] if item)
+        return profiles
+
+    def _activity_inputs(
+        self,
+        kill_activity: KillActivity | None,
+        kill_activities: list[KillActivity] | None,
+    ) -> list[KillActivity]:
+        activities = []
+        if kill_activity is not None:
+            activities.append(kill_activity)
+        activities.extend(item for item in kill_activities or [] if item is not None)
+        return activities
 
     def _event_names(self, observation: Observation) -> list[str]:
         if observation.names:

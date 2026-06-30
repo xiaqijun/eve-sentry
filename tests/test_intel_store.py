@@ -1,4 +1,7 @@
 from app.core.models import Evidence, ThreatEvent
+from app.intel.enrichment import ThreatEnrichment
+from app.intel.scoring import ScoringEngine, Watchlist
+from app.killboard.analyzer import KillActivity
 from app.server.intel_store import IntelStore, StarSystem
 
 
@@ -159,3 +162,79 @@ def test_list_alerts_uses_optional_scorer_and_caches_result(tmp_path):
     assert first_alerts[0]["score"] == 99
     assert first_alerts[0]["evidence"][0]["type"] == "custom"
     assert scorer.calls == 1
+
+
+def test_list_alerts_scores_with_optional_enricher(tmp_path):
+    class FakeEnricher:
+        def enrich(self, observation):
+            return ThreatEnrichment(
+                character_profiles=[
+                    {"character_id": observation.character_ids[0], "corporation_id": 42}
+                ],
+                kill_activities=[
+                    KillActivity(
+                        character_id=observation.character_ids[0],
+                        window="7d",
+                        kills=5,
+                    )
+                ],
+            )
+
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(
+            watchlist=Watchlist(hostile_corporation_ids={42}),
+            cooldown_seconds=0,
+        ),
+        enricher=FakeEnricher(),
+    )
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "system_name": "Tama",
+            "names": ["Alice"],
+            "character_ids": [123],
+            "received_at": "2026-06-29T12:00:01+00:00",
+        }
+    )
+
+    alert = store.list_alerts()[0]
+
+    assert alert["score"] == 110
+    assert alert["level"] == "critical"
+    assert [item["type"] for item in alert["evidence"]] == [
+        "intel_channel_report",
+        "hostile_corporation",
+        "recent_kill_activity",
+    ]
+
+
+def test_enricher_failure_falls_back_to_base_scoring(tmp_path):
+    class FailingEnricher:
+        def enrich(self, observation):
+            raise RuntimeError("offline")
+
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+        enricher=FailingEnricher(),
+    )
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "system_name": "Tama",
+            "names": ["Alice"],
+            "character_ids": [123],
+        }
+    )
+
+    alert = store.list_alerts()[0]
+
+    assert alert["score"] == 30
+    assert [item["type"] for item in alert["evidence"]] == [
+        "intel_channel_report"
+    ]

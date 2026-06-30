@@ -21,6 +21,7 @@ class SQLiteIntelStore(IntelStore):
         links: list[tuple[str, str]] | None = None,
         resolver: Any | None = None,
         scorer: Any | None = None,
+        enricher: Any | None = None,
     ) -> None:
         self._db_path = Path(db_path)
         self._import_json_path = Path(import_json_path) if import_json_path else None
@@ -30,6 +31,7 @@ class SQLiteIntelStore(IntelStore):
             links=links,
             resolver=resolver,
             scorer=scorer,
+            enricher=enricher,
         )
 
     def _load_reports(self) -> list[IntelReport]:

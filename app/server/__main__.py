@@ -18,6 +18,8 @@ def main() -> None:
     parser.add_argument("--config", default="intel_config.json")
     parser.add_argument("--enable-esi", action="store_true")
     parser.add_argument("--esi-cache", default="esi_cache.json")
+    parser.add_argument("--enable-killboard", action="store_true")
+    parser.add_argument("--zkill-cache", default="zkill_cache.json")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -26,11 +28,25 @@ def main() -> None:
     )
 
     resolver = None
-    if args.enable_esi:
+    killboard = None
+    if args.enable_esi or args.enable_killboard:
         from app.esi.cache import EsiCache
+
+    if args.enable_esi:
         from app.esi.resolver import EsiResolver
 
         resolver = EsiResolver(cache=EsiCache(args.esi_cache))
+
+    if args.enable_killboard:
+        from app.killboard.zkill_client import ZKillboardClient
+
+        killboard = ZKillboardClient(cache=EsiCache(args.zkill_cache))
+
+    enricher = None
+    if resolver is not None or killboard is not None:
+        from app.intel.enrichment import ThreatEnricher
+
+        enricher = ThreatEnricher(resolver=resolver, killboard=killboard)
 
     from app.intel.config import IntelConfigStore
 
@@ -45,9 +61,15 @@ def main() -> None:
             import_json_path=args.data,
             resolver=resolver,
             scorer=scorer,
+            enricher=enricher,
         )
     else:
-        store = IntelStore(args.data, resolver=resolver, scorer=scorer)
+        store = IntelStore(
+            args.data,
+            resolver=resolver,
+            scorer=scorer,
+            enricher=enricher,
+        )
     server = IntelHTTPServer(
         store,
         host=args.host,

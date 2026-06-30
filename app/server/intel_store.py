@@ -136,12 +136,14 @@ class IntelStore:
         links: list[tuple[str, str]] | None = None,
         resolver: Any | None = None,
         scorer: Any | None = None,
+        enricher: Any | None = None,
     ) -> None:
         self._filepath = Path(filepath)
         self._systems = dict(DEFAULT_SYSTEMS if systems is None else systems)
         self._links = list(DEFAULT_LINKS if links is None else links)
         self._resolver = resolver
         self._scorer = scorer
+        self._enricher = enricher
         self._lock = threading.RLock()
         self._alert_cache: dict[str, ThreatEvent | None] = {}
         self._reports: list[IntelReport] = self._load_reports()
@@ -150,6 +152,12 @@ class IntelStore:
         """Replace the alert scorer and force cached alerts to be regenerated."""
         with self._lock:
             self._scorer = scorer
+            self._alert_cache.clear()
+
+    def set_enricher(self, enricher: Any | None) -> None:
+        """Replace optional alert enrichment and regenerate cached alerts."""
+        with self._lock:
+            self._enricher = enricher
             self._alert_cache.clear()
 
     def add_report(
@@ -374,12 +382,30 @@ class IntelStore:
                 self._alert_cache[report.report_id] = alert
             return alert
         try:
-            alert = self._scorer.score(observation)
+            kwargs = self._scoring_kwargs(observation)
+            alert = self._scorer.score(observation, **kwargs)
         except Exception:
             alert = ThreatEvent.from_observation(observation)
         with self._lock:
             self._alert_cache[report.report_id] = alert
         return alert
+
+    def _scoring_kwargs(self, observation: Observation) -> dict[str, Any]:
+        if self._enricher is None:
+            return {}
+        try:
+            enrichment = self._enricher.enrich(observation)
+        except Exception:
+            return {}
+
+        kwargs: dict[str, Any] = {}
+        character_profiles = getattr(enrichment, "character_profiles", None)
+        if character_profiles:
+            kwargs["character_profiles"] = character_profiles
+        kill_activities = getattr(enrichment, "kill_activities", None)
+        if kill_activities:
+            kwargs["kill_activities"] = kill_activities
+        return kwargs
 
     def _filter_report_like(
         self,

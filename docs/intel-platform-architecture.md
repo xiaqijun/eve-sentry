@@ -245,6 +245,14 @@ ESI 是身份和宇宙数据的权威补全源。
 - 服务端保存用户身份时不能只依赖 `character_id`，还要记录 `CharacterOwnerHash`，避免角色转让后身份串号。
 - 只申请需要的 scopes，后续按功能逐步增加。
 
+当前服务端公开数据补全通过启动参数启用:
+
+```bash
+python -m app.server --enable-esi --esi-cache esi_cache.json
+```
+
+启用后，服务端会在保存 observation 时尽力补全 `system_id` 和 `character_ids`，并在生成 alert 时把角色公开资料作为评分证据。ESI 查询失败时保留原 observation，不阻塞上报链路。
+
 官方参考:
 
 - ESI overview: https://developers.eveonline.com/docs/services/esi/overview/
@@ -274,6 +282,14 @@ ESI 是身份和宇宙数据的权威补全源。
 - 星系热度至少缓存 5 分钟。
 - 请求必须设置明确 `User-Agent`。
 - 对 420/429/5xx 做退避，不在扫描循环里阻塞。
+
+当前服务端击毁画像通过启动参数启用:
+
+```bash
+python -m app.server --enable-killboard --zkill-cache zkill_cache.json
+```
+
+启用后，服务端会按 observation 内的 `character_ids` 查询近期 zKillboard 活动，生成 `recent_kill_activity` evidence，并把它纳入 `ThreatEvent` 分数。查询失败或无角色 ID 时退回基础评分。
 
 官方或一手参考:
 
@@ -443,4 +459,3 @@ app/
 ```
 
 现有文件可以逐步迁移，不需要一次性大重构。
-
