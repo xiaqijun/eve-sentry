@@ -27,7 +27,7 @@ Do not commit local runtime data such as `whitelist.json`, virtual environments,
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **eve-sentry** (2394 symbols, 5026 relationships, 170 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **eve-sentry** (2472 symbols, 5198 relationships, 178 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
