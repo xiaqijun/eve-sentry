@@ -2,6 +2,8 @@ import pytest
 
 from app.server import __main__ as server_main
 from app.server.__main__ import build_arg_parser
+from app.server.intel_store import IntelStore
+from app.server.sqlite_store import SQLiteIntelStore
 
 
 def test_server_cli_defaults_to_sqlite_storage():
@@ -28,6 +30,42 @@ def test_server_cli_can_select_legacy_json_storage():
 
     assert args.storage == "json"
     assert args.data == "legacy.json"
+
+
+def test_server_cli_default_store_uses_sqlite_and_imports_legacy_json(tmp_path):
+    json_path = tmp_path / "intel_reports.json"
+    db_path = tmp_path / "intel.sqlite3"
+    legacy = IntelStore(json_path, systems={}, links=[])
+    legacy.add_report(
+        "Tama",
+        ["Alice"],
+        source="ocr",
+        seen_at="2026-06-29T12:00:00+00:00",
+    )
+    args = build_arg_parser().parse_args(
+        ["--db", str(db_path), "--data", str(json_path)]
+    )
+
+    store = server_main._build_store(args)
+
+    assert isinstance(store, SQLiteIntelStore)
+    assert db_path.exists()
+    assert [report["names"] for report in store.list_reports()] == [["Alice"]]
+
+
+def test_server_cli_build_store_can_use_legacy_json_storage(tmp_path):
+    json_path = tmp_path / "intel_reports.json"
+    args = build_arg_parser().parse_args(
+        ["--storage", "json", "--data", str(json_path)]
+    )
+
+    store = server_main._build_store(args)
+    report = store.add_report("Tama", ["Bob"], seen_at="2026-06-29T12:00:00+00:00")
+
+    assert isinstance(store, IntelStore)
+    assert not isinstance(store, SQLiteIntelStore)
+    assert json_path.exists()
+    assert [item["id"] for item in store.list_reports()] == [report.report_id]
 
 
 def test_server_cli_accepts_authenticated_esi_options():

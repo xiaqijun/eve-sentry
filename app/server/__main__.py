@@ -99,23 +99,12 @@ def main(argv: list[str] | None = None) -> int:
     config_store = IntelConfigStore(args.config)
     scorer = config_store.build_scorer()
 
-    if args.storage == "sqlite":
-        from app.server.sqlite_store import SQLiteIntelStore
-
-        store = SQLiteIntelStore(
-            args.db,
-            import_json_path=args.data,
-            resolver=resolver,
-            scorer=scorer,
-            enricher=enricher,
-        )
-    else:
-        store = IntelStore(
-            args.data,
-            resolver=resolver,
-            scorer=scorer,
-            enricher=enricher,
-        )
+    store = _build_store(
+        args,
+        resolver=resolver,
+        scorer=scorer,
+        enricher=enricher,
+    )
     server = IntelHTTPServer(
         store,
         host=args.host,
@@ -131,6 +120,30 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         server.stop()
     return 0
+
+
+def _build_store(
+    args: argparse.Namespace,
+    resolver: Any | None = None,
+    scorer: Any | None = None,
+    enricher: Any | None = None,
+) -> IntelStore:
+    if args.storage == "sqlite":
+        from app.server.sqlite_store import SQLiteIntelStore
+
+        return SQLiteIntelStore(
+            args.db,
+            import_json_path=args.data,
+            resolver=resolver,
+            scorer=scorer,
+            enricher=enricher,
+        )
+    return IntelStore(
+        args.data,
+        resolver=resolver,
+        scorer=scorer,
+        enricher=enricher,
+    )
 
 
 def _validate_args(
