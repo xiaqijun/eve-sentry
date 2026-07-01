@@ -1014,16 +1014,17 @@ def test_create_channel_line_keeps_ambiguous_system_candidates_in_metadata(tmp_p
         assert status == 201
         assert created["ignored"] is False
         assert created["observation"]["system_name"] == "Alice"
+        assert created["observation"]["names"] == []
         assert created["alert"] is None
         assert created["observation"]["metadata"]["esi_resolution"] == {
             "attempted": True,
             "candidate_system_names": ["Alice", "Tama", "Oijanen"],
-            "character_name_count": 1,
+            "character_name_count": 0,
             "resolved_character_count": 0,
             "resolved_system_candidates": ["Tama", "Oijanen"],
             "system_name_matched": False,
             "system_repair_status": "ambiguous",
-            "unresolved_character_names": ["Tama Oijanen"],
+            "suppressed_name_candidates": ["Tama Oijanen"],
         }
 
         status, alerts = request_json(f"{server.url}/api/alerts")

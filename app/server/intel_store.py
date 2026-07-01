@@ -412,12 +412,14 @@ class IntelStore:
             item for item in resolved
             if str(getattr(item, "category", "")).casefold() == "solar_system"
         ]
+        suppressed_names = self._prune_system_chain_names(observation, system_matches)
         repair_status = self._channel_repair_status(observation, system_matches)
         self._record_channel_resolution(
             observation,
             candidates,
             system_matches,
             repair_status,
+            suppressed_names=suppressed_names,
         )
         resolved_system = self._pick_repair_system(observation, candidates, system_matches)
         if resolved_system is None:
@@ -438,6 +440,7 @@ class IntelStore:
             "repaired",
             repaired_from=previous_system_name,
             repaired_to=repaired_name,
+            suppressed_names=suppressed_names,
         )
         self._reparse_channel_observation(observation, message)
         return observation
@@ -509,6 +512,48 @@ class IntelStore:
             return "ambiguous"
         return "no_match"
 
+    def _prune_system_chain_names(
+        self,
+        observation: Observation,
+        resolved: list[Any],
+    ) -> list[str]:
+        if not observation.names:
+            return []
+        system_tokens = self._resolved_system_token_set(resolved)
+        if len(system_tokens) < 2:
+            return []
+
+        kept_names: list[str] = []
+        suppressed_names: list[str] = []
+        for name in observation.names:
+            if self._is_system_chain_name(name, system_tokens):
+                suppressed_names.append(name)
+                continue
+            kept_names.append(name)
+        if suppressed_names:
+            observation.names = kept_names
+        return suppressed_names
+
+    def _resolved_system_token_set(self, resolved: list[Any]) -> set[str]:
+        tokens: set[str] = set()
+        for item in resolved:
+            name = str(getattr(item, "name", "")).strip()
+            if not name:
+                continue
+            for part in name.split():
+                token = part.strip().casefold()
+                if token:
+                    tokens.add(token)
+        return tokens
+
+    def _is_system_chain_name(
+        self,
+        name: str,
+        system_tokens: set[str],
+    ) -> bool:
+        parts = [part.strip().casefold() for part in name.split() if part.strip()]
+        return len(parts) >= 2 and all(part in system_tokens for part in parts)
+
     def _record_channel_resolution(
         self,
         observation: Observation,
@@ -517,6 +562,7 @@ class IntelStore:
         status: str,
         repaired_from: str = "",
         repaired_to: str = "",
+        suppressed_names: list[str] | None = None,
     ) -> None:
         metadata = dict(observation.metadata)
         resolution = self._resolution_metadata_dict(metadata.get("esi_resolution"))
@@ -533,6 +579,10 @@ class IntelStore:
         else:
             resolution.pop("system_repaired_from", None)
             resolution.pop("system_repaired_to", None)
+        if suppressed_names:
+            resolution["suppressed_name_candidates"] = list(suppressed_names)
+        else:
+            resolution.pop("suppressed_name_candidates", None)
         metadata["esi_resolution"] = resolution
         observation.metadata = metadata
 
@@ -1023,15 +1073,26 @@ class IntelStore:
         resolution = observation.metadata.get("esi_resolution")
         if not isinstance(resolution, dict):
             return []
+        summaries: list[str] = []
+        suppressed = resolution.get("suppressed_name_candidates")
+        if isinstance(suppressed, list):
+            suppressed_text = ", ".join(
+                str(item).strip() for item in suppressed if str(item).strip()
+            )
+            if suppressed_text:
+                summaries.append(
+                    f"ESI suppressed channel name candidates that matched system chains: "
+                    f"{suppressed_text}"
+                )
         status = str(resolution.get("system_repair_status") or "").strip().casefold()
         if status != "repaired":
-            return []
+            return summaries
         repaired_from = str(resolution.get("system_repaired_from") or "").strip()
         repaired_to = str(
             resolution.get("system_repaired_to") or observation.system_name or ""
         ).strip()
         if not repaired_from or not repaired_to:
-            return []
+            return summaries
         candidates = resolution.get("candidate_system_names")
         if isinstance(candidates, list):
             candidate_text = ", ".join(
@@ -1040,11 +1101,13 @@ class IntelStore:
         else:
             candidate_text = ""
         if candidate_text:
-            return [
+            summaries.append(
                 f"ESI repaired channel system {repaired_from} -> {repaired_to} "
                 f"from candidates {candidate_text}"
-            ]
-        return [f"ESI repaired channel system {repaired_from} -> {repaired_to}"]
+            )
+            return summaries
+        summaries.append(f"ESI repaired channel system {repaired_from} -> {repaired_to}")
+        return summaries
 
     def _alert_reason_summaries(self, alert: dict[str, Any]) -> list[str]:
         evidence = alert.get("evidence")
