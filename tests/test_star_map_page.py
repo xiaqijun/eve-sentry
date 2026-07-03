@@ -37,6 +37,18 @@ def test_star_map_page_includes_esi_status_panel():
     assert "payload.system_id = manualSystemId" in INDEX_HTML
 
 
+def test_star_map_page_includes_client_status_panel():
+    assert "Client Status" in INDEX_HTML
+    assert 'id="heartbeat-status"' in INDEX_HTML
+    assert 'id="heartbeat-refresh"' in INDEX_HTML
+    assert 'fetch("/api/heartbeats"' in INDEX_HTML
+    assert "function loadHeartbeats()" in INDEX_HTML
+    assert "function renderHeartbeats()" in INDEX_HTML
+    assert "function formatHeartbeatSummary(summary, fallbackItems = [])" in INDEX_HTML
+    assert "payload.summary" in INDEX_HTML
+    assert "item.status || \"unknown\"" in INDEX_HTML
+
+
 def test_star_map_page_includes_alert_evidence_view():
     assert 'id="tab-alerts"' in INDEX_HTML
     assert 'id="events-pill"' in INDEX_HTML
@@ -60,10 +72,49 @@ def test_star_map_page_includes_alert_detail_lookup_view():
     assert "data-alert-details" in INDEX_HTML
     assert "function toggleAlertDetails(alertId)" in INDEX_HTML
     assert "function loadAlertDetails(alert)" in INDEX_HTML
+    assert "function loadEntityIntel(detail)" in INDEX_HTML
     assert "function fetchOptional(path, key)" in INDEX_HTML
-    assert 'fetchOptional(`/api/characters/${query.id}`' in INDEX_HTML
-    assert 'fetchOptional(`/api/characters/by-name/${encodeURIComponent(query.name)}`' in INDEX_HTML
-    assert 'fetchOptional(`/api/kill-activity/character/${characterId}`' in INDEX_HTML
-    assert 'fetchOptional(`/api/systems/by-name/${encodeURIComponent(systemName)}`' in INDEX_HTML
-    assert 'fetchOptional(`/api/kill-activity/system/${systemId}`' in INDEX_HTML
+    assert 'fetchOptional(`/api/alerts/${encodeURIComponent(alertId)}`' in INDEX_HTML
+    assert "/api/intel/character/" in INDEX_HTML
+    assert "/api/intel/system/" in INDEX_HTML
+    assert "/api/intel/corporation/" in INDEX_HTML
+    assert "/api/intel/alliance/" in INDEX_HTML
+    assert "Degraded Sources" in INDEX_HTML
+    assert "Related Intel" in INDEX_HTML
+    assert "/api/characters/" not in INDEX_HTML
+    assert "/api/kill-activity/character/" not in INDEX_HTML
     assert "alert-detail" in INDEX_HTML
+
+
+def test_star_map_page_scales_map_from_snapshot_bounds():
+    assert 'id="map-header"' in INDEX_HTML
+    assert 'id="map-fit"' in INDEX_HTML
+    assert 'id="map-zoom"' in INDEX_HTML
+    assert "function mapBounds()" in INDEX_HTML
+    assert "const bounds = mapBounds();" in INDEX_HTML
+    assert "const headerBottom = headerRect ? Math.max(0, headerRect.bottom - mapRect.top) : 0;" in INDEX_HTML
+    assert "const topPadding = Math.max(40, Math.ceil(headerBottom + 24));" in INDEX_HTML
+    assert "const innerWidth = Math.max(1, rect.width - bounds.padLeft - bounds.padRight);" in INDEX_HTML
+    assert "const xRatio = bounds.spanX <= 0 ? 0.5" in INDEX_HTML
+    assert "const yRatio = bounds.spanY <= 0 ? 0.5" in INDEX_HTML
+    assert "system.x / 1000 * rect.width" not in INDEX_HTML
+    assert "system.y / 700 * rect.height" not in INDEX_HTML
+
+
+def test_star_map_page_supports_pan_zoom_and_fit():
+    assert "const viewport = { zoom: 1, panX: 0, panY: 0 };" in INDEX_HTML
+    assert "function fitMap()" in INDEX_HTML
+    assert "function hitTestSystem(point)" in INDEX_HTML
+    assert "function selectSystemAtPoint(point)" in INDEX_HTML
+    assert "function clampZoom(value)" in INDEX_HTML
+    assert "function updateZoomLabel()" in INDEX_HTML
+    assert "canvas.addEventListener(\"wheel\"" in INDEX_HTML
+    assert "canvas.addEventListener(\"pointerdown\"" in INDEX_HTML
+    assert "canvas.addEventListener(\"pointermove\"" in INDEX_HTML
+    assert "canvas.addEventListener(\"pointerup\"" in INDEX_HTML
+    assert "fitMapButton.addEventListener(\"click\"" in INDEX_HTML
+    assert "viewport.panX = pointX - (pointX - viewport.panX) * ratio;" in INDEX_HTML
+    assert "suppressClick = pointerDrag.moved;" in INDEX_HTML
+    assert "if (!pointerDrag.moved) {" in INDEX_HTML
+    assert "selectSystemAtPoint(point);" in INDEX_HTML
+    assert "const labelWidth = ctx.measureText(system.name).width;" in INDEX_HTML

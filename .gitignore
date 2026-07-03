@@ -14,6 +14,8 @@ __pycache__/
 dist/
 build/
 *.egg
+node_modules/
+coverage/
 
 # uv
 .uv/
@@ -52,3 +54,6 @@ zkill_cache.json
 
 # Superpowers session artifacts
 .superpowers/
+
+# Local runtime data downloads and extracted assets
+.runtime/

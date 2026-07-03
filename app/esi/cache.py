@@ -32,11 +32,29 @@ class EsiCache:
             return None
         return item.get("value")
 
+    def metadata(self, key: str) -> dict[str, Any]:
+        """Return cache metadata for an entry without exposing the value."""
+        item = self._items.get(key)
+        if not item:
+            return {"cache_status": "miss"}
+        expires_at = float(item.get("expires_at", 0))
+        status = "cached" if expires_at > time() else "stale"
+        metadata = {
+            "cache_status": status,
+            "expires_at": expires_at,
+        }
+        fetched_at = item.get("fetched_at")
+        if fetched_at not in {None, ""}:
+            metadata["fetched_at"] = fetched_at
+        return metadata
+
     def set(self, key: str, value: Any, ttl_seconds: int = 86400) -> None:
         """Store a value with an expiry."""
+        now = time()
         self._items[key] = {
             "value": value,
-            "expires_at": time() + max(1, int(ttl_seconds)),
+            "fetched_at": now,
+            "expires_at": now + max(1, int(ttl_seconds)),
         }
 
     def save(self) -> None:

@@ -1,8 +1,24 @@
 # EVE Sentry 情报平台架构
 
-> 日期: 2026-06-30  
-> 状态: 规划基线  
+> 日期: 2026-07-01
+> 状态: 当前实现基线
 > 目标: 将 EVE Sentry 从单机 OCR 预警器升级为多源威胁情报平台。
+
+## 当前实现状态
+
+这份文档描述目标架构和当前实现的交集。详细待做清单见
+`docs/intel-platform-roadmap.md`。
+
+| 模块 | 当前状态 | 主要待做 |
+| --- | --- | --- |
+| 检测客户端 | 已能后台截图、OCR 本地列表、可选监控指定预警频道日志、上报 observation 和 detector heartbeat，默认不弹本地预警 | 补区域选择排障细节 |
+| 预警客户端 | 已独立消费 `/api/events` / `/api/alerts`，支持详情、ack、弹窗可选 | 补在线状态和运行诊断 |
+| 服务端模型/API | 已有 `Observation`、`ThreatEvent`、alert detail、实体情报查询、ack、配置 API、health、heartbeats、SQLite | 补更细客户端诊断 |
+| 预警频道解析 | 已有 chatlog watcher、parser、`POST /api/channel-lines`、解析诊断和 ESI 辅助修正 | 扩更多真实频道格式 |
+| ESI | 已有公开解析、缓存状态、SSO、session、当前位置、contacts/standings | 补 token 迁移策略和更细失败类型 |
+| 击毁画像 | 已有 zKillboard 查询、角色/星系/军团/联盟活动画像、缓存状态和 scoring evidence | 补退避说明、聚合视图和 killmail 详情接入 |
+| 多源评分 | 已有置信度降噪、频道上下文、击毁、黑白名单、standing、冷却、规则版本和 evidence rule id | 补更完整 UI 说明 |
+| 推送/存储 | 默认 SQLite，SSE 支持过滤、续接、keepalive、并发和轮询 fallback；runtime data、heartbeat 状态页和 SQLite heartbeat 持久化已接通 | 补更细状态字段 |
 
 ## 1. 架构目标
 
@@ -49,6 +65,8 @@ flowchart LR
 - 截取本地频道成员列表。
 - OCR 识别角色名。
 - 上报 `Observation`。
+- 如果选择了预警频道，自动监控 EVE Chatlogs 中匹配频道的新日志并上报。
+- 如果没有选择频道，不提交任何频道日志情报。
 
 不负责:
 
@@ -62,9 +80,13 @@ flowchart LR
 uv run python -m app.detector_client
 ```
 
-检测客户端默认只上报到服务端，不弹出本地预警窗口。只有显式设置
-`EVE_SENTRY_SHOW_POPUPS=1` 时才保留旧的本地弹窗行为；正式联调建议由
-独立预警客户端消费服务端 alert。
+检测客户端只上报到服务端，不弹出本地预警窗口，也不播放本地告警声音。
+`EVE_SENTRY_SHOW_POPUPS` 不再影响检测客户端；正式联调由独立预警客户端消费服务端 alert。
+
+检测客户端启动后会定期向 `/api/heartbeats` 上报 `detector_client` 状态，
+并在开始/停止监控时立即刷新一次状态。心跳 `details` 当前包含是否正在监控、
+当前星系、星系来源、是否启用本地弹窗和当前窗口标题；可用
+`EVE_SENTRY_HEARTBEAT_INTERVAL=15` 调整上报间隔。
 
 当前星系来源:
 
@@ -75,11 +97,11 @@ uv run python -m app.detector_client
 - 可用 `EVE_SENTRY_USE_ESI_LOCATION=0` 关闭自动同步；可用
   `EVE_SENTRY_ESI_LOCATION_TTL=30` 调整当前位置刷新间隔。
 
-### 3.2 频道采集器
+### 3.2 频道日志监控
 
 职责:
 
-- 监听 EVE chatlogs 目录。
+- 监控客户端内置监听 EVE chatlogs 目录。
 - 解析联盟预警频道、军团频道、自定义情报频道。
 - 从文本中提取星系、角色名、跳数、方向、原始消息。
 - 上报 `Observation`，并保留原始文本作为证据。
@@ -90,7 +112,7 @@ uv run python -m app.detector_client
 %USERPROFILE%\Documents\EVE\logs\Chatlogs
 ```
 
-当前入口建议:
+独立 `app.channel_client` 仍保留为调试/批处理入口:
 
 ```powershell
 # 只解析并打印，不连接服务端，适合先用样例 chatlog 验证规则
@@ -130,8 +152,10 @@ uv run python -m app.server --host 127.0.0.1 --port 8765
 服务端默认使用 SQLite，数据文件为 `intel.sqlite3`；如需沿用旧 JSON
 联调数据，可显式指定 `--storage json --data intel_reports.json`。
 
-当前 Web 面板提供星图、手工情报录入、评分配置、alert 证据详情，以及
-ESI session 状态/当前位置展示；当前位置可一键填入手工情报表单。
+当前 Web 面板提供星图、手工情报录入、评分配置、服务端 alert detail 展示、
+实体情报摘要、客户端 heartbeat 状态，以及 ESI session 状态/当前位置展示；
+`Client Status` 区块会显示检测端、预警端和频道采集器最近一次 heartbeat，
+当前位置可一键填入手工情报表单。
 
 ### 3.4 预警客户端
 
@@ -214,7 +238,25 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --stream-retry-
 - `killboard`: 击毁记录导入或周期查询。
 - `esi`: ESI 补全产生的派生证据。
 
-### 4.2 CharacterProfile
+### 4.2 Active Intel State
+
+`Observation` 保留为历史审计日志：它记录情报曾经被看到过、来自哪里、原文和
+解析结果是什么，不会因为目标离开本地或频道被 clear 而删除。实时面板使用
+`active_intel`，这是从历史 observation 派生出的当前态，可以刷新、过期或被清除。
+
+OCR 上传走 `/api/v1/ocr/snapshot`，客户端只提交当前扫描检测到的 `names` 列表
+和最小上下文，例如 `client_id`、`source_instance`、`system_name`、`system_id`
+与 `seen_at`。服务端按客户端、窗口、星系和角色名 diff 这份快照：仍可见的行刷新
+`last_seen_at` 并递增 `seen_count`，新出现的角色创建 active 行和对应历史 observation，
+缺失超过 grace period 的角色标记为 inactive 并写入 `left_at`。默认实时列表只返回
+active 行，历史 observations 继续可查。
+
+预警频道同样保留 observation 作为审计记录，但 active state 由频道语义维护。普通
+频道报告按 metadata 计算 TTL，并写入带 `expires_at` 的 `active_intel` 行；包含
+clear 信号的同频道、同星系消息会将匹配实时态标记为 inactive 并写入 `cleared_at`，
+不会删除原始 observation。
+
+### 4.3 CharacterProfile
 
 角色身份画像。
 
@@ -231,7 +273,7 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --stream-retry-
 }
 ```
 
-### 4.3 KillActivity
+### 4.4 KillActivity
 
 击毁行为画像。
 
@@ -248,7 +290,7 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --stream-retry-
 }
 ```
 
-### 4.4 ThreatEvent
+### 4.5 ThreatEvent
 
 最终预警事件。
 
@@ -282,7 +324,7 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --stream-retry-
 }
 ```
 
-### 4.5 AlertDetail
+### 4.6 AlertDetail
 
 `GET /api/alerts/{id}` 返回单条预警的完整解释包，供独立预警客户端和 Web 面板展示。
 
@@ -305,7 +347,10 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --stream-retry-
 }
 ```
 
-`context` 保留结构化原始情报，`explanation` 是服务端生成的可显示摘要。预警客户端优先展示 `explanation.context`，没有该字段时回退到本地格式化 `context`。
+`context` 保留结构化原始情报，`explanation` 是服务端生成的可显示摘要。
+预警客户端和 Web 面板都优先展示服务端 `explanation`；Web 面板还会根据
+`entities` 中的角色、星系、军团、联盟 ID 调用 `/api/intel/...` 获取关联
+observation、alert 和 activity 摘要。
 
 ## 5. ESI 集成
 
@@ -381,6 +426,10 @@ authenticated ESI 会话，服务端会把 contacts/standings 缓存注入角色
 当前位置时，服务端会尽力用 ESI resolver 补充 `solar_system_name` 和星系
 profile，供检测客户端自动填充当前星系。
 
+ESI profile 会携带缓存状态，当前字段包括 `cache_status`、`fetched_at` 和
+`expires_at`。alert detail 的解释链会展示 profile cache 状态，便于区分新查询、
+缓存命中和降级数据。
+
 官方参考:
 
 - ESI overview: https://developers.eveonline.com/docs/services/esi/overview/
@@ -419,6 +468,11 @@ python -m app.server --enable-killboard --zkill-cache zkill_cache.json
 
 启用后，服务端会按 observation 内的 `character_ids` 查询近期 zKillboard 活动，生成 `recent_kill_activity` evidence，并把它纳入 `ThreatEvent` 分数。查询失败时优先使用本地过期缓存继续生成画像；无缓存或无角色 ID 时退回基础评分。
 HTTP API 也支持按角色、星系、军团、联盟查询近期击毁画像。
+
+击毁画像会携带查询缓存和请求状态，当前字段包括 `cache_status`、`fetched_at`、
+`expires_at`、`request_status`、`error` 和 `retry_after`。alert detail 的 kill
+context 会展示 cache/request 状态，用于区分 zKillboard 新查询、缓存命中、过期
+缓存 fallback、网络失败、限速和退避期。
 
 官方或一手参考:
 
@@ -471,6 +525,15 @@ HTTP API 也支持按角色、星系、军团、联盟查询近期击毁画像�
 }
 ```
 
+服务端和频道采集器会在 observation metadata 中保留 `parse_diagnostics`，用于解释
+频道行为什么被解析成当前结果。第一版字段包括:
+
+- `parse_pattern`: 命中的解析模式，例如 `leading_system`、`located_system` 或
+  `raw_unparsed`。
+- `system_candidates`: 频道文本中出现的星系样式候选 token。
+- `name_candidates`: 频道文本中保留下来的角色名候选。
+- `ignored_tokens`: 因数量、敌对关键词、跳数、方向词等规则被消费掉的 token。
+
 实现策略:
 
 - 先做规则解析，后续再考虑更复杂的 NLP。
@@ -482,6 +545,11 @@ HTTP API 也支持按角色、星系、军团、联盟查询近期击毁画像�
 ## 8. 威胁评分
 
 评分引擎输出 `ThreatEvent`。
+
+当前评分规则版本为 `scoring.v1`。服务端生成的 alert 会携带
+`scoring_version`，每条 evidence 会携带稳定 `type`，新评分器生成的 evidence
+还会带 `rule_id`。配置 API 会返回 `schema_version`、`scoring_version`、
+内置默认值来源和 evidence type 说明，便于后续回放或区分历史 alert。
 
 建议初始规则:
 
@@ -519,11 +587,20 @@ HTTP API 也支持按角色、星系、军团、联盟查询近期击毁画像�
 POST /api/observations
 GET  /api/observations?source=&system=&name=&limit=
 POST /api/channel-lines
+POST /api/v1/ocr/snapshot
+GET  /api/v1/active-intel?source=&system=&limit=
+GET  /api/health
+GET  /api/heartbeats
 
 GET  /api/alerts?since=&limit=&acknowledged=&min_score=&min_level=
 GET  /api/alerts/{id}
 POST /api/alerts/{id}/ack
 GET  /api/events?since=&limit=&timeout=&heartbeat=&acknowledged=&min_score=&min_level=
+
+GET  /api/intel/character/{character_id}?since=&limit=&acknowledged=&min_score=&min_level=
+GET  /api/intel/system/{system_id}?since=&limit=&acknowledged=&min_score=&min_level=
+GET  /api/intel/corporation/{corporation_id}?since=&limit=&acknowledged=&min_score=&min_level=
+GET  /api/intel/alliance/{alliance_id}?since=&limit=&acknowledged=&min_score=&min_level=
 
 GET  /api/characters/{character_id}
 GET  /api/characters/by-name/{name}
@@ -544,6 +621,20 @@ GET  /api/map/snapshot
 
 当前服务端已实现:
 
+- `GET /api/health`: 返回 `health.v1`，汇总 storage、config、ESI、killboard、
+  clients 和 SSE/alert 查询状态；该接口用于本地联调和运行排查，不返回 token。
+- `GET /api/heartbeats`: 返回最近客户端 heartbeat 列表，以及汇总诊断摘要，
+  包括 `client_type`、`label`、`status`、`seen_at`、`age_seconds`、`online`，
+  以及 `summary.by_type`、`summary.by_status`、`summary.stale_count` 等字段。
+  客户端 `details` 当前会优先携带 `mode`、`last_action` 和 `last_error`，用于区分
+  运行模式、最近一次成功动作和最近一次失败摘要；并补充 `client_version`、
+  `host` 和 `last_success_at`，用于区分客户端构建、运行宿主和最近一次成功时间。
+- `POST /api/heartbeats`: 由检测客户端、预警客户端、频道采集器等运行时定期
+  上报在线状态。
+- `POST /api/v1/ocr/snapshot`: 检测客户端上传当前 OCR 扫描得到的 `names` 列表，
+  服务端负责创建、刷新或过期 `active_intel`，同时保留历史 observations。
+- `GET /api/v1/active-intel`: 返回默认 active 的实时情报列表，可按 source、system
+  和 limit 过滤；历史审计仍通过 observations 查询。
 - `POST /api/alerts/{id}/ack`: 标记单个 alert 已确认，并在 JSON 和 SQLite
   存储中保留 `acknowledged`、`acknowledged_at`、`acknowledged_by` 和
   `acknowledgement_note`。
@@ -552,6 +643,14 @@ GET  /api/map/snapshot
   alert 过滤参数。
 - `GET /api/alerts/{id}`: 返回单个 alert 的解释详情，包括源 observation、
   频道上下文、角色公开资料和击毁画像上下文。
+- `GET /api/intel/character/{character_id}`: 返回角色相关 observation、alert、
+  profile、kill activity、计数和查询过滤条件。
+- `GET /api/intel/system/{system_id}`: 返回星系相关 observation、alert、system
+  kill activity、计数和查询过滤条件。
+- `GET /api/intel/corporation/{corporation_id}`: 返回军团相关 observation、alert、
+  kill activity、计数和查询过滤条件。
+- `GET /api/intel/alliance/{alliance_id}`: 返回联盟相关 observation、alert、
+  kill activity、计数和查询过滤条件。
 - `GET /api/characters/{character_id}`: 需要启用 ESI，返回角色公开资料。
 - `GET /api/characters/by-name/{name}`: 需要启用 ESI，先解析名字再返回角色公开资料。
 - `GET /api/esi/status`: 返回 authenticated ESI 会话是否启用、是否已有本地 token、

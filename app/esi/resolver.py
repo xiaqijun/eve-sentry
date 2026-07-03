@@ -80,6 +80,10 @@ class EsiResolver:
             if self._complete_character_affiliations(profile):
                 self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
                 self.cache.save()
+                profile.update(self.cache.metadata(key))
+                profile["cache_status"] = "refreshed"
+                return profile
+            profile.update(self.cache.metadata(key))
             return profile
 
         character = self.client.get_character(int(character_id))
@@ -93,6 +97,8 @@ class EsiResolver:
         self._complete_character_affiliations(profile)
         self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
         self.cache.save()
+        profile.update(self.cache.metadata(key))
+        profile["cache_status"] = "refreshed"
         return profile
 
     def corporation_profile(self, corporation_id: int) -> dict[str, Any]:
@@ -101,7 +107,9 @@ class EsiResolver:
         key = f"corporation:{corporation_id}"
         cached = self.cache.get(key)
         if isinstance(cached, dict):
-            return cached
+            profile = dict(cached)
+            profile.update(self.cache.metadata(key))
+            return profile
 
         corporation = self.client.get_corporation(corporation_id)
         profile = {
@@ -112,6 +120,8 @@ class EsiResolver:
         }
         self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
         self.cache.save()
+        profile.update(self.cache.metadata(key))
+        profile["cache_status"] = "refreshed"
         return profile
 
     def alliance_profile(self, alliance_id: int) -> dict[str, Any]:
@@ -120,7 +130,9 @@ class EsiResolver:
         key = f"alliance:{alliance_id}"
         cached = self.cache.get(key)
         if isinstance(cached, dict):
-            return cached
+            profile = dict(cached)
+            profile.update(self.cache.metadata(key))
+            return profile
 
         alliance = self.client.get_alliance(alliance_id)
         profile = {
@@ -130,6 +142,8 @@ class EsiResolver:
         }
         self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
         self.cache.save()
+        profile.update(self.cache.metadata(key))
+        profile["cache_status"] = "refreshed"
         return profile
 
     def system_profile(self, system_id: int) -> dict[str, Any]:
@@ -137,7 +151,9 @@ class EsiResolver:
         key = f"system:{int(system_id)}"
         cached = self.cache.get(key)
         if isinstance(cached, dict):
-            return cached
+            profile = dict(cached)
+            profile.update(self.cache.metadata(key))
+            return profile
 
         system = self.client.get_system(int(system_id))
         profile = {
@@ -148,6 +164,8 @@ class EsiResolver:
         }
         self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
         self.cache.save()
+        profile.update(self.cache.metadata(key))
+        profile["cache_status"] = "refreshed"
         return profile
 
     def enrich_observation(self, observation: Observation) -> Observation:

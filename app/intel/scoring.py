@@ -16,6 +16,9 @@ from app.killboard.analyzer import (
 )
 
 
+SCORING_VERSION = "scoring.v1"
+
+
 @dataclass(frozen=True)
 class Watchlist:
     """User-controlled scoring lists."""
@@ -38,6 +41,8 @@ class ChannelMention:
 
 class ScoringEngine:
     """Generate threat events from observations and optional enrichment."""
+
+    scoring_version = SCORING_VERSION
 
     def __init__(
         self,
@@ -97,6 +102,7 @@ class ScoringEngine:
             evidence=evidence,
             source_observation_id=observation.observation_id,
             created_at=observation.received_at,
+            scoring_version=self.scoring_version,
         )
 
     def _source_evidence(

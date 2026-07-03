@@ -16,6 +16,8 @@ class IntelApiError(RuntimeError):
 class IntelApiClient:
     """Small JSON client for the EVE Sentry intel HTTP API."""
 
+    API_V1_PREFIX = "/api/v1"
+
     def __init__(self, base_url: str = "http://127.0.0.1:8765", timeout: float = 3.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
@@ -40,7 +42,7 @@ class IntelApiClient:
             payload["confidence"] = confidence
         if seen_at is not None:
             payload["seen_at"] = seen_at
-        return self._request("POST", "/api/intel", payload=payload)
+        return self._request("POST", self._v1_path("/reports"), payload=payload)
 
     def post_observation(
         self,
@@ -75,18 +77,94 @@ class IntelApiClient:
             payload["seen_at"] = seen_at
         if received_at is not None:
             payload["received_at"] = received_at
-        return self._request("POST", "/api/observations", payload=payload)
+        return self._request("POST", self._v1_path("/observations"), payload=payload)
 
     def post_channel_line(self, line: str, channel: str = "") -> dict[str, Any]:
         """Publish one raw intel channel log line for server-side parsing."""
         payload = {"line": line}
         if channel:
             payload["channel"] = channel
-        return self._request("POST", "/api/channel-lines", payload=payload)
+        return self._request("POST", self._v1_path("/channel-lines"), payload=payload)
+
+    def post_ocr_snapshot(
+        self,
+        client_id: str,
+        source_instance: str,
+        system_name: str,
+        names: list[str],
+        seen_at: str = "",
+        system_id: int | None = None,
+        confidence: float | None = None,
+    ) -> dict[str, Any]:
+        """Publish the current OCR-detected pilot-name snapshot."""
+        payload: dict[str, Any] = {
+            "client_id": client_id,
+            "source_instance": source_instance,
+            "system_name": system_name,
+            "names": names,
+        }
+        if seen_at:
+            payload["seen_at"] = seen_at
+        if system_id is not None:
+            payload["system_id"] = system_id
+        if confidence is not None:
+            payload["confidence"] = confidence
+        return self._request("POST", self._v1_path("/ocr/snapshot"), payload=payload)
+
+    def get_active_intel(self, **params: Any) -> dict[str, Any]:
+        """Fetch realtime active intel rows from the server."""
+        return self._request("GET", self._v1_path("/active-intel"), params=params)
+
+    def post_heartbeat(
+        self,
+        client_id: str,
+        client_type: str,
+        label: str = "",
+        status: str = "running",
+        heartbeat_interval_seconds: float = 0.0,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Publish one runtime heartbeat for client status visibility."""
+        payload: dict[str, Any] = {
+            "client_id": str(client_id or "").strip(),
+            "client_type": str(client_type or "").strip(),
+            "status": str(status or "").strip() or "running",
+            "heartbeat_interval_seconds": float(heartbeat_interval_seconds),
+        }
+        if label:
+            payload["label"] = label
+        if details is not None:
+            payload["details"] = details
+        response = self._request(
+            "POST",
+            self._v1_path("/clients/heartbeats"),
+            payload=payload,
+        )
+        heartbeat = response.get("heartbeat")
+        if not isinstance(heartbeat, dict):
+            raise IntelApiError("server returned an invalid heartbeat payload")
+        return heartbeat
+
+    def list_heartbeats(self) -> list[dict[str, Any]]:
+        """Fetch recent runtime heartbeats from the intel server."""
+        payload = self._request("GET", self._v1_path("/clients"))
+        clients = payload.get("clients", payload)
+        heartbeats = clients.get("heartbeats", []) if isinstance(clients, dict) else []
+        if not isinstance(heartbeats, list):
+            raise IntelApiError("server returned an invalid heartbeats payload")
+        return heartbeats
+
+    def client_status(self) -> dict[str, Any]:
+        """Fetch recent runtime heartbeats plus aggregate summary."""
+        payload = self._request("GET", self._v1_path("/clients"))
+        clients = payload.get("clients")
+        if not isinstance(clients, dict):
+            raise IntelApiError("server returned an invalid clients payload")
+        return clients
 
     def esi_status(self) -> dict[str, Any]:
         """Return authenticated ESI session status without token secrets."""
-        return self._request("GET", "/api/esi/status")
+        return self._request("GET", self._v1_path("/esi/status"))
 
     def esi_session(
         self,
@@ -96,7 +174,7 @@ class IntelApiClient:
         """Return the authenticated ESI session snapshot."""
         payload = self._request(
             "GET",
-            "/api/esi/session",
+            self._v1_path("/esi/session"),
             params={
                 "location": _bool_param(include_location),
                 "contacts": _bool_param(include_contacts),
@@ -112,10 +190,37 @@ class IntelApiClient:
         system_id = int(system_id)
         if system_id <= 0:
             raise IntelApiError("system_id must be a positive integer")
-        payload = self._request("GET", f"/api/systems/{system_id}")
+        payload = self._request("GET", self._v1_path(f"/systems/{system_id}"))
         system = payload.get("system")
         if not isinstance(system, dict):
             raise IntelApiError("server returned an invalid system payload")
+        return system
+
+    def bootstrap(self) -> dict[str, Any]:
+        """Fetch the aggregated workbench bootstrap payload."""
+        payload = self._request("GET", self._v1_path("/bootstrap"))
+        bootstrap = payload.get("bootstrap")
+        if not isinstance(bootstrap, dict):
+            raise IntelApiError("server returned an invalid bootstrap payload")
+        return bootstrap
+
+    def map_snapshot(self) -> dict[str, Any]:
+        """Fetch the current star-map snapshot for the workbench."""
+        payload = self._request("GET", self._v1_path("/map"))
+        snapshot = payload.get("map")
+        if not isinstance(snapshot, dict):
+            raise IntelApiError("server returned an invalid map payload")
+        return snapshot
+
+    def map_system(self, system_id: int) -> dict[str, Any]:
+        """Fetch one system with both profile and related intel context."""
+        system_id = int(system_id)
+        if system_id <= 0:
+            raise IntelApiError("system_id must be a positive integer")
+        payload = self._request("GET", self._v1_path(f"/map/systems/{system_id}"))
+        system = payload.get("system")
+        if not isinstance(system, dict):
+            raise IntelApiError("server returned an invalid map system payload")
         return system
 
     def current_esi_system(self) -> dict[str, Any] | None:
@@ -161,7 +266,7 @@ class IntelApiClient:
             params["system"] = system
         if name:
             params["name"] = name
-        payload = self._request("GET", "/api/reports", params=params)
+        payload = self._request("GET", self._v1_path("/reports"), params=params)
         reports = payload.get("reports", [])
         if not isinstance(reports, list):
             raise IntelApiError("server returned an invalid reports payload")
@@ -182,7 +287,7 @@ class IntelApiClient:
             params["system"] = system
         if name:
             params["name"] = name
-        payload = self._request("GET", "/api/observations", params=params)
+        payload = self._request("GET", self._v1_path("/observations"), params=params)
         observations = payload.get("observations", [])
         if not isinstance(observations, list):
             raise IntelApiError("server returned an invalid observations payload")
@@ -206,7 +311,7 @@ class IntelApiClient:
             params["min_score"] = str(min_score)
         if min_level:
             params["min_level"] = min_level
-        payload = self._request("GET", "/api/alerts", params=params)
+        payload = self._request("GET", self._v1_path("/alerts"), params=params)
         alerts = payload.get("alerts", [])
         if not isinstance(alerts, list):
             raise IntelApiError("server returned an invalid alerts payload")
@@ -219,7 +324,7 @@ class IntelApiClient:
             raise IntelApiError("alert_id is required")
         payload = self._request(
             "GET",
-            f"/api/alerts/{quote(alert_id, safe='')}",
+            self._v1_path(f"/alerts/{quote(alert_id, safe='')}"),
         )
         detail = payload.get("detail")
         if not isinstance(detail, dict):
@@ -244,7 +349,7 @@ class IntelApiClient:
             payload["note"] = note
         response = self._request(
             "POST",
-            f"/api/alerts/{quote(alert_id, safe='')}/ack",
+            self._v1_path(f"/alerts/{quote(alert_id, safe='')}/ack"),
             payload=payload,
         )
         alert = response.get("alert")
@@ -272,7 +377,7 @@ class IntelApiClient:
             params["min_score"] = str(min_score)
         if min_level:
             params["min_level"] = min_level
-        url = f"{self.base_url}/api/events?{urlencode(params)}"
+        url = f"{self.base_url}{self._v1_path('/events')}?{urlencode(params)}"
         headers = {"Accept": "text/event-stream"}
         if last_event_id:
             headers["Last-Event-ID"] = last_event_id
@@ -331,6 +436,9 @@ class IntelApiClient:
         if not isinstance(data_obj, dict):
             raise IntelApiError("server returned a non-object JSON payload")
         return data_obj
+
+    def _v1_path(self, suffix: str) -> str:
+        return f"{self.API_V1_PREFIX}{suffix}"
 
     def _read_error_message(self, exc: HTTPError) -> str:
         try:

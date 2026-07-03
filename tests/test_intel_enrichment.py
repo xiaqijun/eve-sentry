@@ -82,6 +82,16 @@ class FakeKillboard:
             ]
         raise RuntimeError("offline")
 
+    def activity_status(self, scope, entity_id):
+        return {
+            "cache_status": "cached",
+            "fetched_at": 10.0,
+            "expires_at": 70.0,
+            "request_status": "backoff",
+            "error": "zKillboard HTTP 429",
+            "retry_after": 130.0,
+        }
+
 
 def test_threat_enricher_collects_profiles_and_kill_activity():
     resolver = FakeResolver()
@@ -108,10 +118,16 @@ def test_threat_enricher_collects_profiles_and_kill_activity():
     assert enrichment.kill_activities[0].character_id == 123
     assert enrichment.kill_activities[0].kills == 1
     assert enrichment.kill_activities[0].window == "7d"
+    assert enrichment.kill_activities[0].cache_status == "cached"
+    assert enrichment.kill_activities[0].fetched_at == 10.0
+    assert enrichment.kill_activities[0].request_status == "backoff"
+    assert enrichment.kill_activities[0].error == "zKillboard HTTP 429"
+    assert enrichment.kill_activities[0].retry_after == 130.0
     assert [item.entity_type for item in enrichment.group_activities] == [
         "corporation",
         "alliance",
     ]
+    assert enrichment.group_activities[0].cache_status == "cached"
     assert resolver.calls == [123, 456]
     assert killboard.calls == [123, 456]
 

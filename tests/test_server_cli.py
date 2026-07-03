@@ -12,6 +12,12 @@ def test_server_cli_defaults_to_sqlite_storage():
     assert args.storage == "sqlite"
     assert args.db == "intel.sqlite3"
     assert args.data == "intel_reports.json"
+    assert args.map_config == "intel_map.json"
+    assert args.map_source is None
+    assert args.map_region is None
+    assert args.map_system is None
+    assert args.map_sde_path is None
+    assert args.map_refresh_on_start is False
     assert args.esi_client_id == ""
     assert args.esi_redirect_uri == "http://127.0.0.1:8766/callback"
     assert args.esi_token_file == "esi_tokens.json"
@@ -30,6 +36,31 @@ def test_server_cli_can_select_legacy_json_storage():
 
     assert args.storage == "json"
     assert args.data == "legacy.json"
+
+
+def test_server_cli_accepts_map_sde_options():
+    args = build_arg_parser().parse_args(
+        [
+            "--map-source",
+            "sde",
+            "--map-config",
+            "intel_map.json",
+            "--map-region",
+            "10000002",
+            "--map-system",
+            "30002813",
+            "--map-sde-path",
+            "sde",
+            "--map-refresh-on-start",
+        ]
+    )
+
+    assert args.map_source == "sde"
+    assert args.map_config == "intel_map.json"
+    assert args.map_region == [10000002]
+    assert args.map_system == [30002813]
+    assert args.map_sde_path == "sde"
+    assert args.map_refresh_on_start is True
 
 
 def test_server_cli_default_store_uses_sqlite_and_imports_legacy_json(tmp_path):
@@ -141,7 +172,15 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
     class DummyServer:
         url = "http://127.0.0.1:8765"
 
-        def __init__(self, store, host, port, config_store, esi_session):
+        def __init__(
+            self,
+            store,
+            host,
+            port,
+            config_store,
+            esi_session,
+            map_config_store,
+        ):
             calls["server"].append(
                 {
                     "store": store,
@@ -149,6 +188,7 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
                     "port": port,
                     "config_store": config_store,
                     "esi_session": esi_session,
+                    "map_config_store": map_config_store,
                 }
             )
 
@@ -165,12 +205,21 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
         def build_scorer(self):
             return "dummy-scorer"
 
-    def fake_build_store(args, resolver=None, scorer=None, enricher=None):
+    def fake_build_store(
+        args,
+        systems=None,
+        links=None,
+        resolver=None,
+        scorer=None,
+        enricher=None,
+    ):
         calls["build_store"].append(
             {
                 "storage": args.storage,
                 "db": args.db,
                 "data": args.data,
+                "systems": systems,
+                "links": links,
                 "resolver": resolver,
                 "scorer": scorer,
                 "enricher": enricher,
@@ -192,18 +241,18 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
     code = server_main.main([])
 
     assert code == 0
-    assert calls["build_store"] == [
-        {
-            "storage": "sqlite",
-            "db": "intel.sqlite3",
-            "data": "intel_reports.json",
-            "resolver": None,
-            "scorer": "dummy-scorer",
-            "enricher": None,
-        }
-    ]
+    assert len(calls["build_store"]) == 1
+    assert calls["build_store"][0]["storage"] == "sqlite"
+    assert calls["build_store"][0]["db"] == "intel.sqlite3"
+    assert calls["build_store"][0]["data"] == "intel_reports.json"
+    assert calls["build_store"][0]["resolver"] is None
+    assert calls["build_store"][0]["scorer"] == "dummy-scorer"
+    assert calls["build_store"][0]["enricher"] is None
+    assert calls["build_store"][0]["systems"]
+    assert calls["build_store"][0]["links"]
     assert len(calls["server"]) == 1
     assert isinstance(calls["server"][0]["store"], DummyStore)
     assert calls["server"][0]["host"] == "127.0.0.1"
     assert calls["server"][0]["port"] == 8765
     assert calls["server"][0]["esi_session"] is None
+    assert calls["server"][0]["map_config_store"] is not None

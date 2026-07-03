@@ -1,0 +1,884 @@
+{
+  "source": "sde",
+  "layout_mode": "sde",
+  "region_ids": [
+    10000045
+  ],
+  "system_ids": [],
+  "sde_path": "E:\\github\\eve-sentry\\.runtime\\sde\\3417089",
+  "systems": [
+    {
+      "system_id": 30003615,
+      "name": "0-UVHJ",
+      "x": 806.3,
+      "y": 875.2,
+      "region": "Tenal",
+      "security": -0.081724
+    },
+    {
+      "system_id": 30003647,
+      "name": "0M-103",
+      "x": 1027.4,
+      "y": 427.9,
+      "region": "Tenal",
+      "security": -0.316788
+    },
+    {
+      "system_id": 30003624,
+      "name": "1BWK-S",
+      "x": 1027.4,
+      "y": 850.3,
+      "region": "Tenal",
+      "security": -0.221831
+    },
+    {
+      "system_id": 30003617,
+      "name": "1QH-0K",
+      "x": 332.6,
+      "y": 775.8,
+      "region": "Tenal",
+      "security": -0.069823
+    },
+    {
+      "system_id": 30003668,
+      "name": "2-3Q2G",
+      "x": 80.0,
+      "y": 80.0,
+      "region": "Tenal",
+      "security": -1.0
+    },
+    {
+      "system_id": 30003675,
+      "name": "3-QYVE",
+      "x": 553.7,
+      "y": 80.0,
+      "region": "Tenal",
+      "security": -1.0
+    },
+    {
+      "system_id": 30003632,
+      "name": "30-D5G",
+      "x": 522.1,
+      "y": 651.5,
+      "region": "Tenal",
+      "security": -0.950341
+    },
+    {
+      "system_id": 30003642,
+      "name": "33CE-7",
+      "x": 616.8,
+      "y": 378.2,
+      "region": "Tenal",
+      "security": -0.375243
+    },
+    {
+      "system_id": 30003609,
+      "name": "3DR-CR",
+      "x": 332.6,
+      "y": 900.0,
+      "region": "Tenal",
+      "security": -0.115325
+    },
+    {
+      "system_id": 30003630,
+      "name": "5-O8B1",
+      "x": 711.6,
+      "y": 651.5,
+      "region": "Tenal",
+      "security": -0.296583
+    },
+    {
+      "system_id": 30003640,
+      "name": "6-AOLS",
+      "x": 711.6,
+      "y": 378.2,
+      "region": "Tenal",
+      "security": -0.490423
+    },
+    {
+      "system_id": 30003648,
+      "name": "6OYQ-Z",
+      "x": 901.1,
+      "y": 427.9,
+      "region": "Tenal",
+      "security": -0.211445
+    },
+    {
+      "system_id": 30003671,
+      "name": "7D-PAT",
+      "x": 616.8,
+      "y": 229.1,
+      "region": "Tenal",
+      "security": -0.652078
+    },
+    {
+      "system_id": 30003650,
+      "name": "A-1IJ9",
+      "x": 1185.3,
+      "y": 403.0,
+      "region": "Tenal",
+      "security": -0.221173
+    },
+    {
+      "system_id": 30003655,
+      "name": "A1RR-M",
+      "x": 1122.1,
+      "y": 179.4,
+      "region": "Tenal",
+      "security": -0.85032
+    },
+    {
+      "system_id": 30003656,
+      "name": "AR-5SY",
+      "x": 1248.4,
+      "y": 204.2,
+      "region": "Tenal",
+      "security": -0.939946
+    },
+    {
+      "system_id": 30003670,
+      "name": "C-XNUA",
+      "x": 680.0,
+      "y": 278.8,
+      "region": "Tenal",
+      "security": -0.6955
+    },
+    {
+      "system_id": 30003644,
+      "name": "DCJ-ZT",
+      "x": 964.2,
+      "y": 626.7,
+      "region": "Tenal",
+      "security": -0.143836
+    },
+    {
+      "system_id": 30003662,
+      "name": "EN-GTB",
+      "x": 395.8,
+      "y": 328.5,
+      "region": "Tenal",
+      "security": -0.318907
+    },
+    {
+      "system_id": 30003612,
+      "name": "EOY-BG",
+      "x": 585.3,
+      "y": 875.2,
+      "region": "Tenal",
+      "security": -0.066558
+    },
+    {
+      "system_id": 30003636,
+      "name": "G06-8Y",
+      "x": 711.6,
+      "y": 502.4,
+      "region": "Tenal",
+      "security": -0.305331
+    },
+    {
+      "system_id": 30003653,
+      "name": "GW7P-8",
+      "x": 1280.0,
+      "y": 303.6,
+      "region": "Tenal",
+      "security": -0.68228
+    },
+    {
+      "system_id": 30003608,
+      "name": "H1-ESN",
+      "x": 237.9,
+      "y": 900.0,
+      "region": "Tenal",
+      "security": -0.123268
+    },
+    {
+      "system_id": 30003633,
+      "name": "HB-FSO",
+      "x": 458.9,
+      "y": 726.1,
+      "region": "Tenal",
+      "security": -0.637305
+    },
+    {
+      "system_id": 30003649,
+      "name": "HE5T-A",
+      "x": 1027.4,
+      "y": 353.3,
+      "region": "Tenal",
+      "security": -0.327892
+    },
+    {
+      "system_id": 30003621,
+      "name": "I1-BE8",
+      "x": 269.5,
+      "y": 552.1,
+      "region": "Tenal",
+      "security": -0.206305
+    },
+    {
+      "system_id": 30003614,
+      "name": "IG-ZAM",
+      "x": 680.0,
+      "y": 875.2,
+      "region": "Tenal",
+      "security": -0.067758
+    },
+    {
+      "system_id": 30003641,
+      "name": "IKTD-P",
+      "x": 806.3,
+      "y": 527.3,
+      "region": "Tenal",
+      "security": -0.499702
+    },
+    {
+      "system_id": 30003634,
+      "name": "J1-KJP",
+      "x": 553.7,
+      "y": 800.6,
+      "region": "Tenal",
+      "security": -0.648996
+    },
+    {
+      "system_id": 30003661,
+      "name": "JI-1UQ",
+      "x": 174.7,
+      "y": 403.0,
+      "region": "Tenal",
+      "security": -0.379228
+    },
+    {
+      "system_id": 30003664,
+      "name": "JSI-LL",
+      "x": 237.9,
+      "y": 229.1,
+      "region": "Tenal",
+      "security": -0.500003
+    },
+    {
+      "system_id": 30003625,
+      "name": "KMV-CQ",
+      "x": 901.1,
+      "y": 800.6,
+      "region": "Tenal",
+      "security": -0.078045
+    },
+    {
+      "system_id": 30003635,
+      "name": "KW-1MV",
+      "x": 806.3,
+      "y": 651.5,
+      "region": "Tenal",
+      "security": -0.300719
+    },
+    {
+      "system_id": 30003643,
+      "name": "L-P3XM",
+      "x": 806.3,
+      "y": 353.3,
+      "region": "Tenal",
+      "security": -0.439652
+    },
+    {
+      "system_id": 30003665,
+      "name": "M-UC0S",
+      "x": 237.9,
+      "y": 129.7,
+      "region": "Tenal",
+      "security": -0.636432
+    },
+    {
+      "system_id": 30003659,
+      "name": "MZPH-W",
+      "x": 301.1,
+      "y": 353.3,
+      "region": "Tenal",
+      "security": -0.384011
+    },
+    {
+      "system_id": 30003616,
+      "name": "NCG-PW",
+      "x": 743.2,
+      "y": 825.5,
+      "region": "Tenal",
+      "security": -0.107753
+    },
+    {
+      "system_id": 30003627,
+      "name": "NV-3KA",
+      "x": 1027.4,
+      "y": 775.8,
+      "region": "Tenal",
+      "security": -0.115646
+    },
+    {
+      "system_id": 30003645,
+      "name": "O36A-P",
+      "x": 964.2,
+      "y": 552.1,
+      "region": "Tenal",
+      "security": -0.084704
+    },
+    {
+      "system_id": 30003657,
+      "name": "OE-4HB",
+      "x": 1280.0,
+      "y": 129.7,
+      "region": "Tenal",
+      "security": -1.0
+    },
+    {
+      "system_id": 30003674,
+      "name": "P-UCRP",
+      "x": 522.1,
+      "y": 154.5,
+      "region": "Tenal",
+      "security": -0.851365
+    },
+    {
+      "system_id": 30003613,
+      "name": "PNS7-J",
+      "x": 395.8,
+      "y": 825.5,
+      "region": "Tenal",
+      "security": -0.05072
+    },
+    {
+      "system_id": 30003669,
+      "name": "Q1U-IU",
+      "x": 143.2,
+      "y": 229.1,
+      "region": "Tenal",
+      "security": -0.467095
+    },
+    {
+      "system_id": 30003631,
+      "name": "R-YWID",
+      "x": 553.7,
+      "y": 726.1,
+      "region": "Tenal",
+      "security": -0.741915
+    },
+    {
+      "system_id": 30003626,
+      "name": "RKE-CP",
+      "x": 1153.7,
+      "y": 750.9,
+      "region": "Tenal",
+      "security": -0.206668
+    },
+    {
+      "system_id": 30003610,
+      "name": "RLTG-3",
+      "x": 427.4,
+      "y": 900.0,
+      "region": "Tenal",
+      "security": -0.063997
+    },
+    {
+      "system_id": 30003628,
+      "name": "S-1LIO",
+      "x": 1280.0,
+      "y": 750.9,
+      "region": "Tenal",
+      "security": -0.100363
+    },
+    {
+      "system_id": 30003611,
+      "name": "S-EVIQ",
+      "x": 490.5,
+      "y": 850.3,
+      "region": "Tenal",
+      "security": -0.05143
+    },
+    {
+      "system_id": 30003629,
+      "name": "S-KSWL",
+      "x": 711.6,
+      "y": 726.1,
+      "region": "Tenal",
+      "security": -0.426575
+    },
+    {
+      "system_id": 30003654,
+      "name": "SF-XJS",
+      "x": 1122.1,
+      "y": 278.8,
+      "region": "Tenal",
+      "security": -0.308379
+    },
+    {
+      "system_id": 30003667,
+      "name": "SY0W-2",
+      "x": 301.1,
+      "y": 179.4,
+      "region": "Tenal",
+      "security": -0.581345
+    },
+    {
+      "system_id": 30003639,
+      "name": "SZ6-TA",
+      "x": 616.8,
+      "y": 552.1,
+      "region": "Tenal",
+      "security": -0.234378
+    },
+    {
+      "system_id": 30003673,
+      "name": "T-K10W",
+      "x": 458.9,
+      "y": 278.8,
+      "region": "Tenal",
+      "security": -0.732418
+    },
+    {
+      "system_id": 30003637,
+      "name": "U-O2DA",
+      "x": 616.8,
+      "y": 452.7,
+      "region": "Tenal",
+      "security": -0.198229
+    },
+    {
+      "system_id": 30003623,
+      "name": "U1TX-A",
+      "x": 901.1,
+      "y": 875.2,
+      "region": "Tenal",
+      "security": -0.109406
+    },
+    {
+      "system_id": 30003663,
+      "name": "U5-XW7",
+      "x": 301.1,
+      "y": 278.8,
+      "region": "Tenal",
+      "security": -0.443865
+    },
+    {
+      "system_id": 30003672,
+      "name": "V-LDEJ",
+      "x": 522.1,
+      "y": 229.1,
+      "region": "Tenal",
+      "security": -0.702513
+    },
+    {
+      "system_id": 30003666,
+      "name": "V7-MID",
+      "x": 174.7,
+      "y": 80.0,
+      "region": "Tenal",
+      "security": -0.910565
+    },
+    {
+      "system_id": 30003660,
+      "name": "W0X-MG",
+      "x": 206.3,
+      "y": 328.5,
+      "region": "Tenal",
+      "security": -0.271312
+    },
+    {
+      "system_id": 30003622,
+      "name": "W8O-19",
+      "x": 269.5,
+      "y": 825.5,
+      "region": "Tenal",
+      "security": -0.105253
+    },
+    {
+      "system_id": 30003638,
+      "name": "WV-0R2",
+      "x": 806.3,
+      "y": 452.7,
+      "region": "Tenal",
+      "security": -0.815289
+    },
+    {
+      "system_id": 30003651,
+      "name": "Y-YHZQ",
+      "x": 1185.3,
+      "y": 328.5,
+      "region": "Tenal",
+      "security": -0.407926
+    },
+    {
+      "system_id": 30003646,
+      "name": "Z-LO6I",
+      "x": 964.2,
+      "y": 477.6,
+      "region": "Tenal",
+      "security": -0.218387
+    },
+    {
+      "system_id": 30003652,
+      "name": "Z-SR1I",
+      "x": 1280.0,
+      "y": 378.2,
+      "region": "Tenal",
+      "security": -0.621795
+    },
+    {
+      "system_id": 30003618,
+      "name": "ZH3-BS",
+      "x": 269.5,
+      "y": 701.2,
+      "region": "Tenal",
+      "security": -0.089831
+    },
+    {
+      "system_id": 30003619,
+      "name": "ZJ-QOO",
+      "x": 269.5,
+      "y": 626.7,
+      "region": "Tenal",
+      "security": -0.212343
+    },
+    {
+      "system_id": 30003658,
+      "name": "ZK-YQ3",
+      "x": 301.1,
+      "y": 427.9,
+      "region": "Tenal",
+      "security": -0.385512
+    },
+    {
+      "system_id": 30003620,
+      "name": "ZXA-V6",
+      "x": 174.7,
+      "y": 676.4,
+      "region": "Tenal",
+      "security": -0.300295
+    }
+  ],
+  "links": [
+    {
+      "from": "H1-ESN",
+      "to": "3DR-CR"
+    },
+    {
+      "from": "3DR-CR",
+      "to": "RLTG-3"
+    },
+    {
+      "from": "RLTG-3",
+      "to": "S-EVIQ"
+    },
+    {
+      "from": "S-EVIQ",
+      "to": "EOY-BG"
+    },
+    {
+      "from": "S-EVIQ",
+      "to": "PNS7-J"
+    },
+    {
+      "from": "EOY-BG",
+      "to": "IG-ZAM"
+    },
+    {
+      "from": "PNS7-J",
+      "to": "1QH-0K"
+    },
+    {
+      "from": "IG-ZAM",
+      "to": "0-UVHJ"
+    },
+    {
+      "from": "IG-ZAM",
+      "to": "NCG-PW"
+    },
+    {
+      "from": "0-UVHJ",
+      "to": "NCG-PW"
+    },
+    {
+      "from": "0-UVHJ",
+      "to": "U1TX-A"
+    },
+    {
+      "from": "NCG-PW",
+      "to": "S-KSWL"
+    },
+    {
+      "from": "1QH-0K",
+      "to": "ZH3-BS"
+    },
+    {
+      "from": "1QH-0K",
+      "to": "W8O-19"
+    },
+    {
+      "from": "U1TX-A",
+      "to": "1BWK-S"
+    },
+    {
+      "from": "U1TX-A",
+      "to": "KMV-CQ"
+    },
+    {
+      "from": "ZH3-BS",
+      "to": "ZJ-QOO"
+    },
+    {
+      "from": "1BWK-S",
+      "to": "RKE-CP"
+    },
+    {
+      "from": "1BWK-S",
+      "to": "NV-3KA"
+    },
+    {
+      "from": "KMV-CQ",
+      "to": "NV-3KA"
+    },
+    {
+      "from": "KMV-CQ",
+      "to": "DCJ-ZT"
+    },
+    {
+      "from": "RKE-CP",
+      "to": "NV-3KA"
+    },
+    {
+      "from": "RKE-CP",
+      "to": "S-1LIO"
+    },
+    {
+      "from": "RKE-CP",
+      "to": "A-1IJ9"
+    },
+    {
+      "from": "ZJ-QOO",
+      "to": "ZXA-V6"
+    },
+    {
+      "from": "ZJ-QOO",
+      "to": "I1-BE8"
+    },
+    {
+      "from": "S-KSWL",
+      "to": "5-O8B1"
+    },
+    {
+      "from": "S-KSWL",
+      "to": "R-YWID"
+    },
+    {
+      "from": "S-KSWL",
+      "to": "J1-KJP"
+    },
+    {
+      "from": "5-O8B1",
+      "to": "KW-1MV"
+    },
+    {
+      "from": "5-O8B1",
+      "to": "G06-8Y"
+    },
+    {
+      "from": "R-YWID",
+      "to": "30-D5G"
+    },
+    {
+      "from": "R-YWID",
+      "to": "HB-FSO"
+    },
+    {
+      "from": "R-YWID",
+      "to": "J1-KJP"
+    },
+    {
+      "from": "I1-BE8",
+      "to": "ZK-YQ3"
+    },
+    {
+      "from": "HB-FSO",
+      "to": "J1-KJP"
+    },
+    {
+      "from": "G06-8Y",
+      "to": "U-O2DA"
+    },
+    {
+      "from": "G06-8Y",
+      "to": "WV-0R2"
+    },
+    {
+      "from": "G06-8Y",
+      "to": "SZ6-TA"
+    },
+    {
+      "from": "G06-8Y",
+      "to": "6-AOLS"
+    },
+    {
+      "from": "G06-8Y",
+      "to": "IKTD-P"
+    },
+    {
+      "from": "U-O2DA",
+      "to": "SZ6-TA"
+    },
+    {
+      "from": "DCJ-ZT",
+      "to": "O36A-P"
+    },
+    {
+      "from": "A-1IJ9",
+      "to": "Y-YHZQ"
+    },
+    {
+      "from": "ZK-YQ3",
+      "to": "MZPH-W"
+    },
+    {
+      "from": "ZK-YQ3",
+      "to": "EN-GTB"
+    },
+    {
+      "from": "Y-YHZQ",
+      "to": "Z-SR1I"
+    },
+    {
+      "from": "Y-YHZQ",
+      "to": "GW7P-8"
+    },
+    {
+      "from": "Y-YHZQ",
+      "to": "SF-XJS"
+    },
+    {
+      "from": "Z-SR1I",
+      "to": "GW7P-8"
+    },
+    {
+      "from": "GW7P-8",
+      "to": "A1RR-M"
+    },
+    {
+      "from": "GW7P-8",
+      "to": "AR-5SY"
+    },
+    {
+      "from": "GW7P-8",
+      "to": "OE-4HB"
+    },
+    {
+      "from": "MZPH-W",
+      "to": "W0X-MG"
+    },
+    {
+      "from": "MZPH-W",
+      "to": "JI-1UQ"
+    },
+    {
+      "from": "MZPH-W",
+      "to": "U5-XW7"
+    },
+    {
+      "from": "W0X-MG",
+      "to": "JI-1UQ"
+    },
+    {
+      "from": "6-AOLS",
+      "to": "33CE-7"
+    },
+    {
+      "from": "6-AOLS",
+      "to": "L-P3XM"
+    },
+    {
+      "from": "6-AOLS",
+      "to": "C-XNUA"
+    },
+    {
+      "from": "O36A-P",
+      "to": "Z-LO6I"
+    },
+    {
+      "from": "U5-XW7",
+      "to": "JSI-LL"
+    },
+    {
+      "from": "SF-XJS",
+      "to": "A1RR-M"
+    },
+    {
+      "from": "A1RR-M",
+      "to": "AR-5SY"
+    },
+    {
+      "from": "A1RR-M",
+      "to": "OE-4HB"
+    },
+    {
+      "from": "JSI-LL",
+      "to": "M-UC0S"
+    },
+    {
+      "from": "JSI-LL",
+      "to": "SY0W-2"
+    },
+    {
+      "from": "JSI-LL",
+      "to": "Q1U-IU"
+    },
+    {
+      "from": "M-UC0S",
+      "to": "V7-MID"
+    },
+    {
+      "from": "M-UC0S",
+      "to": "SY0W-2"
+    },
+    {
+      "from": "C-XNUA",
+      "to": "7D-PAT"
+    },
+    {
+      "from": "Z-LO6I",
+      "to": "0M-103"
+    },
+    {
+      "from": "Z-LO6I",
+      "to": "6OYQ-Z"
+    },
+    {
+      "from": "V7-MID",
+      "to": "2-3Q2G"
+    },
+    {
+      "from": "AR-5SY",
+      "to": "OE-4HB"
+    },
+    {
+      "from": "0M-103",
+      "to": "HE5T-A"
+    },
+    {
+      "from": "7D-PAT",
+      "to": "V-LDEJ"
+    },
+    {
+      "from": "V-LDEJ",
+      "to": "T-K10W"
+    },
+    {
+      "from": "V-LDEJ",
+      "to": "P-UCRP"
+    },
+    {
+      "from": "P-UCRP",
+      "to": "3-QYVE"
+    },
+    {
+      "from": "EN-GTB",
+      "to": "T-K10W"
+    }
+  ],
+  "last_refreshed_at": "2026-07-01T15:58:25+00:00",
+  "last_refresh_error": "",
+  "schema_version": "intel_map_config.v1"
+}

@@ -19,6 +19,12 @@ def test_scoring_config_normalizes_payload_and_builds_scorer():
     assert config.hostile_corporation_ids == [42]
     assert config.hostile_alliance_ids == [77]
     assert config.hostile_standing_threshold is None
+    assert config.to_dict()["schema_version"] == "scoring_config.v1"
+    assert config.to_dict()["scoring_version"] == "scoring.v1"
+    assert any(
+        item["type"] == "blacklist_match"
+        for item in config.to_dict()["evidence_rules"]
+    )
     assert scorer.cooldown_seconds == 0
     assert scorer.watchlist.whitelist == {"Alice"}
 

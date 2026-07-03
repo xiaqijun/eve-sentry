@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from http import HTTPStatus
@@ -13,10 +14,11 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from app.channels.parser import parse_chat_line
 from app.esi.sso import EsiSsoError
-from app.server.intel_store import IntelStore
+from app.server.intel_store import IntelStore, utc_now_iso
 from app.server.star_map_page import INDEX_HTML
 
 logger = logging.getLogger(__name__)
+API_V1_PREFIX = "/api/v1"
 
 
 class IntelHTTPServer:
@@ -29,12 +31,14 @@ class IntelHTTPServer:
         port: int = 8765,
         config_store: Any | None = None,
         esi_session: Any | None = None,
+        map_config_store: Any | None = None,
     ) -> None:
         self.store = store
         self.host = host
         self.port = port
         self.config_store = config_store
         self.esi_session = esi_session
+        self.map_config_store = map_config_store
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -52,6 +56,7 @@ class IntelHTTPServer:
         self._httpd.store = self.store  # type: ignore[attr-defined]
         self._httpd.config_store = self.config_store  # type: ignore[attr-defined]
         self._httpd.esi_session = self.esi_session  # type: ignore[attr-defined]
+        self._httpd.map_config_store = self.map_config_store  # type: ignore[attr-defined]
         self.host, self.port = self._httpd.server_address[:2]
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
@@ -87,11 +92,17 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+        if path.startswith(API_V1_PREFIX):
+            self._handle_v1_get(parsed)
+            return
         if path in {"/", "/index.html"}:
             self._send_text(INDEX_HTML, "text/html; charset=utf-8")
             return
         if path == "/api/health":
-            self._send_json({"ok": True})
+            self._send_json({"health": self._health_payload()})
+            return
+        if path == "/api/heartbeats":
+            self._send_json(self._store().heartbeat_snapshot())
             return
         if path == "/api/config":
             config_store = self._config_store()
@@ -99,6 +110,13 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "config not enabled"}, HTTPStatus.NOT_FOUND)
                 return
             self._send_json({"config": config_store.to_dict()})
+            return
+        if path == "/api/map/config":
+            map_config_store = self._map_config_store()
+            if map_config_store is None:
+                self._send_json({"error": "map config not enabled"}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"map": map_config_store.to_dict()})
             return
         if path == "/api/esi/status":
             self._send_json(self._esi_status_payload())
@@ -243,6 +261,42 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 "alliance kill activity not found or killboard not enabled",
             )
             return
+        if path.startswith("/api/intel/character/"):
+            self._send_entity_intel(
+                path,
+                parsed.query,
+                "/api/intel/character/",
+                "character_id",
+                self._store().character_intel,
+            )
+            return
+        if path.startswith("/api/intel/system/"):
+            self._send_entity_intel(
+                path,
+                parsed.query,
+                "/api/intel/system/",
+                "system_id",
+                self._store().system_intel,
+            )
+            return
+        if path.startswith("/api/intel/corporation/"):
+            self._send_entity_intel(
+                path,
+                parsed.query,
+                "/api/intel/corporation/",
+                "corporation_id",
+                self._store().corporation_intel,
+            )
+            return
+        if path.startswith("/api/intel/alliance/"):
+            self._send_entity_intel(
+                path,
+                parsed.query,
+                "/api/intel/alliance/",
+                "alliance_id",
+                self._store().alliance_intel,
+            )
+            return
         if path == "/api/reports":
             query = parse_qs(parsed.query)
             try:
@@ -330,6 +384,9 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path.startswith(API_V1_PREFIX):
+            self._handle_v1_post(path)
+            return
         ack_prefix = "/api/alerts/"
         if path.startswith(ack_prefix) and path.endswith("/ack"):
             alert_id = unquote(path[len(ack_prefix):-len("/ack")]).strip()
@@ -367,6 +424,49 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             self._send_json(
                 result,
                 HTTPStatus.OK if result.get("ignored") else HTTPStatus.CREATED,
+            )
+            return
+        if path == "/api/heartbeats":
+            try:
+                heartbeat = self._store().record_heartbeat(self._read_json())
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({"ok": True, "heartbeat": heartbeat}, HTTPStatus.CREATED)
+            return
+        if path == "/api/map/refresh":
+            map_config_store = self._map_config_store()
+            if map_config_store is None:
+                self._send_json({"error": "map config not enabled"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                payload = self._read_optional_json()
+                if payload:
+                    map_config_store.update(payload)
+                config = map_config_store.refresh_from_source(
+                    resolver=getattr(self._store(), "_resolver", None)
+                )
+                systems, links = map_config_store.build_map(
+                    resolver=getattr(self._store(), "_resolver", None),
+                    refresh_if_needed=False,
+                )
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+                return
+
+            self._store().set_map_data(systems, links)
+            self._send_json(
+                {
+                    "ok": True,
+                    "map": config,
+                    "counts": {
+                        "systems": len(systems),
+                        "links": len(links),
+                    },
+                }
             )
             return
 
@@ -414,6 +514,39 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path.startswith(API_V1_PREFIX):
+            self._handle_v1_put(path)
+            return
+        if path == "/api/map/config":
+            map_config_store = self._map_config_store()
+            if map_config_store is None:
+                self._send_json({"error": "map config not enabled"}, HTTPStatus.NOT_FOUND)
+                return
+
+            try:
+                payload = self._read_json()
+                config = map_config_store.update(payload)
+                systems, links = map_config_store.build_map(
+                    resolver=getattr(self._store(), "_resolver", None),
+                    refresh_if_needed=config.get("source") in {"sde", "esi"},
+                )
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+
+            self._store().set_map_data(systems, links)
+            self._send_json(
+                {
+                    "ok": True,
+                    "map": map_config_store.to_dict(),
+                    "counts": {
+                        "systems": len(systems),
+                        "links": len(links),
+                    },
+                }
+            )
+            return
+
         if path != "/api/config":
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
@@ -435,6 +568,13 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path.startswith(f"{API_V1_PREFIX}/reports/"):
+            report_id = unquote(path[len(f"{API_V1_PREFIX}/reports/"):]).strip()
+            if not self._store().delete_report(report_id):
+                self._send_json({"error": "report not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"ok": True, "id": report_id})
+            return
         prefix = "/api/intel/"
         if not path.startswith(prefix):
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
@@ -459,6 +599,360 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         logger.debug("intel-server: " + format, *args)
 
+    def _handle_v1_get(self, parsed) -> None:
+        path = parsed.path
+        if path == f"{API_V1_PREFIX}/bootstrap":
+            self._send_json({"bootstrap": self._bootstrap_payload()})
+            return
+        if path == f"{API_V1_PREFIX}/map":
+            self._send_json({"map": self._map_snapshot_payload()})
+            return
+        if path == f"{API_V1_PREFIX}/clients":
+            self._send_json({"clients": self._store().heartbeat_snapshot()})
+            return
+        if path == f"{API_V1_PREFIX}/active-intel":
+            self._send_active_intel(parsed.query)
+            return
+        if path == f"{API_V1_PREFIX}/config":
+            config_store = self._config_store()
+            if config_store is None:
+                self._send_json({"error": "config not enabled"}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"config": config_store.to_dict()})
+            return
+        if path == f"{API_V1_PREFIX}/esi/status":
+            self._send_json(self._esi_status_payload())
+            return
+        if path == f"{API_V1_PREFIX}/esi/session":
+            query = parse_qs(parsed.query)
+            try:
+                include_location = self._parse_optional_bool_default(
+                    query.get("location", [""])[0],
+                    default=True,
+                    label="location",
+                )
+                include_contacts = self._parse_optional_bool_default(
+                    query.get("contacts", [""])[0],
+                    default=True,
+                    label="contacts",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_esi_snapshot(include_location, include_contacts)
+            return
+        if path == f"{API_V1_PREFIX}/systems":
+            self._send_json({"map": self._map_snapshot_payload()})
+            return
+        if path.startswith(f"{API_V1_PREFIX}/systems/"):
+            try:
+                system_id = self._parse_path_int(
+                    path,
+                    f"{API_V1_PREFIX}/systems/",
+                    "system_id",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_optional_json(
+                "system",
+                self._store().system_profile(system_id),
+                "system not found or ESI not enabled",
+            )
+            return
+        if path.startswith(f"{API_V1_PREFIX}/map/systems/"):
+            try:
+                system_id = self._parse_path_int(
+                    path,
+                    f"{API_V1_PREFIX}/map/systems/",
+                    "system_id",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            payload = self._map_system_payload(system_id)
+            if payload is None:
+                self._send_json({"error": "system not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"system": payload})
+            return
+        if path == f"{API_V1_PREFIX}/reports":
+            self._send_report_list(parsed.query)
+            return
+        if path == f"{API_V1_PREFIX}/observations":
+            self._send_observation_list(parsed.query)
+            return
+        if path == f"{API_V1_PREFIX}/alerts":
+            self._send_alert_list(parsed.query)
+            return
+        if path.startswith(f"{API_V1_PREFIX}/alerts/"):
+            alert_id = unquote(path[len(f"{API_V1_PREFIX}/alerts/"):]).strip()
+            detail = self._store().alert_detail(alert_id)
+            if detail is None:
+                self._send_json({"error": "alert not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"detail": detail})
+            return
+        if path == f"{API_V1_PREFIX}/events":
+            query = parse_qs(parsed.query)
+            try:
+                parsed_limit = self._parse_optional_int(query.get("limit", [""])[0])
+                parsed_timeout = self._parse_optional_float_param(
+                    query.get("timeout", [""])[0],
+                    "timeout",
+                )
+                parsed_heartbeat = self._parse_optional_float_param(
+                    query.get("heartbeat", [""])[0],
+                    "heartbeat",
+                )
+                filters = self._parse_alert_filters(query)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            since, resume_after_id, include_since = self._event_stream_cursor(
+                query.get("since", [""])[0]
+            )
+            self._stream_events(
+                since=since,
+                resume_after_id=resume_after_id,
+                include_since=include_since,
+                limit=50 if parsed_limit is None else parsed_limit,
+                timeout_seconds=30.0 if parsed_timeout is None else parsed_timeout,
+                heartbeat_seconds=15.0 if parsed_heartbeat is None else parsed_heartbeat,
+                **filters,
+            )
+            return
+        self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    def _handle_v1_post(self, path: str) -> None:
+        ack_prefix = f"{API_V1_PREFIX}/alerts/"
+        if path.startswith(ack_prefix) and path.endswith("/ack"):
+            alert_id = unquote(path[len(ack_prefix):-len("/ack")]).strip()
+            if not alert_id:
+                self._send_json(
+                    {"error": "alert id is required"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                payload = self._read_optional_json()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            alert = self._store().ack_alert(
+                alert_id,
+                acknowledged_by=str(
+                    payload.get("acknowledged_by") or payload.get("by") or ""
+                ),
+                note=str(payload.get("note") or ""),
+            )
+            if alert is None:
+                self._send_json({"error": "alert not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"ok": True, "alert": alert})
+            return
+        if path == f"{API_V1_PREFIX}/channel-lines":
+            try:
+                result = self._add_channel_line(self._read_json())
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json(
+                result,
+                HTTPStatus.OK if result.get("ignored") else HTTPStatus.CREATED,
+            )
+            return
+        if path == f"{API_V1_PREFIX}/ocr/snapshot":
+            try:
+                result = self._store().record_ocr_snapshot(self._read_json())
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            status = HTTPStatus.CREATED if result.get("created") else HTTPStatus.OK
+            self._send_json(result, status)
+            return
+        if path == f"{API_V1_PREFIX}/clients/heartbeats":
+            try:
+                heartbeat = self._store().record_heartbeat(self._read_json())
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({"ok": True, "heartbeat": heartbeat}, HTTPStatus.CREATED)
+            return
+        if path in {f"{API_V1_PREFIX}/reports", f"{API_V1_PREFIX}/observations"}:
+            self._handle_v1_ingest(path)
+            return
+        self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    def _handle_v1_put(self, path: str) -> None:
+        if path != f"{API_V1_PREFIX}/config":
+            self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            return
+        config_store = self._config_store()
+        if config_store is None:
+            self._send_json({"error": "config not enabled"}, HTTPStatus.NOT_FOUND)
+            return
+        try:
+            payload = self._read_json()
+            config = config_store.update(payload)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self._store().set_scorer(config.build_scorer())
+        self._send_json({"ok": True, "config": config.to_dict()})
+
+    def _handle_v1_ingest(self, path: str) -> None:
+        try:
+            payload = self._read_json()
+            if path.endswith("/observations"):
+                observation = self._store().add_observation(payload)
+                self._send_json(
+                    {
+                        "ok": True,
+                        "observation": observation.to_dict(),
+                        "alert": self._alert_for_observation(
+                            observation.observation_id
+                        ),
+                    },
+                    HTTPStatus.CREATED,
+                )
+                return
+            report = self._store().add_report(
+                system=str(payload.get("system", "")),
+                names=payload.get("names", []),
+                source=str(payload.get("source", "api")),
+                confidence=payload.get("confidence"),
+                note=str(payload.get("note", "")),
+                seen_at=payload.get("seen_at"),
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json(
+            {
+                "ok": True,
+                "report": report.to_dict(),
+                "observation": report.to_observation().to_dict(),
+                "alert": self._alert_for_observation(report.report_id),
+            },
+            HTTPStatus.CREATED,
+        )
+
+    def _bootstrap_payload(self) -> dict[str, Any]:
+        snapshot = self._store().snapshot()
+        return {
+            "schema_version": "intel_bootstrap.v1",
+            "generated_at": snapshot.get("generated_at", ""),
+            "map": self._map_snapshot_from_snapshot(snapshot),
+            "reports": snapshot.get("reports", []),
+            "observations": snapshot.get("observations", []),
+            "alerts": snapshot.get("alerts", []),
+            "active_intel": self._store().list_active_intel(),
+            "clients": self._store().heartbeat_snapshot(),
+            "config": self._config_store().to_dict() if self._config_store() else None,
+            "esi": self._esi_status_payload(),
+        }
+
+    def _map_snapshot_payload(self) -> dict[str, Any]:
+        return self._map_snapshot_from_snapshot(self._store().snapshot())
+
+    def _map_snapshot_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        summary = snapshot.get("summary")
+        return {
+            "schema_version": "map_snapshot.v1",
+            "generated_at": snapshot.get("generated_at", ""),
+            "systems": snapshot.get("systems", []),
+            "links": snapshot.get("links", []),
+            "summary": summary if isinstance(summary, dict) else {},
+        }
+
+    def _map_system_payload(self, system_id: int) -> dict[str, Any] | None:
+        profile = self._store().system_profile(system_id)
+        intel = self._store().system_intel(system_id)
+        if not isinstance(profile, dict) or not isinstance(intel, dict):
+            return None
+        map_node = None
+        profile_name = str(profile.get("name") or "").strip()
+        for system in self._store().snapshot().get("systems", []):
+            if not isinstance(system, dict):
+                continue
+            if self._optional_positive_int(system.get("system_id")) == system_id:
+                map_node = system
+                break
+            if profile_name and str(system.get("name") or "").strip() == profile_name:
+                map_node = system
+                break
+        return {
+            "profile": profile,
+            "map_node": map_node,
+            "intel": intel,
+        }
+
+    def _send_report_list(self, raw_query: str) -> None:
+        query = parse_qs(raw_query)
+        try:
+            limit = self._parse_optional_int(query.get("limit", [""])[0])
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        reports = self._store().list_reports(
+            system=query.get("system", [""])[0],
+            name=query.get("name", [""])[0],
+            limit=limit,
+        )
+        self._send_json({"reports": reports, "count": len(reports)})
+
+    def _send_observation_list(self, raw_query: str) -> None:
+        query = parse_qs(raw_query)
+        try:
+            limit = self._parse_optional_int(query.get("limit", [""])[0])
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        observations = self._store().list_observations(
+            source=query.get("source", [""])[0],
+            system=query.get("system", [""])[0],
+            name=query.get("name", [""])[0],
+            limit=limit,
+        )
+        self._send_json({"observations": observations, "count": len(observations)})
+
+    def _send_active_intel(self, raw_query: str = "") -> None:
+        query = parse_qs(raw_query)
+        try:
+            limit = self._parse_optional_int(query.get("limit", [""])[0])
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        active = self._store().list_active_intel(
+            source=query.get("source", [""])[0],
+            system=query.get("system", [""])[0],
+            active=True,
+            limit=limit,
+        )
+        self._send_json(
+            {
+                "active_intel": active,
+                "count": len(active),
+                "generated_at": utc_now_iso(),
+            }
+        )
+
+    def _send_alert_list(self, raw_query: str) -> None:
+        query = parse_qs(raw_query)
+        try:
+            limit = self._parse_optional_int(query.get("limit", [""])[0])
+            filters = self._parse_alert_filters(query)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        alerts = self._store().list_alerts(
+            since=query.get("since", [""])[0],
+            limit=limit,
+            **filters,
+        )
+        self._send_json({"alerts": alerts, "count": len(alerts)})
+
     def _store(self) -> IntelStore:
         return self.server.store  # type: ignore[attr-defined,no-any-return]
 
@@ -468,28 +962,173 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
     def _esi_session(self) -> Any | None:
         return self.server.esi_session  # type: ignore[attr-defined,no-any-return]
 
+    def _esi_public_resolver(self) -> Any | None:
+        resolver = getattr(self._store(), "_resolver", None)
+        if resolver is None:
+            return None
+        if any(
+            hasattr(resolver, name)
+            for name in ("resolve_names", "character_profile", "system_profile")
+        ):
+            return resolver
+        return None
+
+    def _map_config_store(self) -> Any | None:
+        return self.server.map_config_store  # type: ignore[attr-defined,no-any-return]
+
     def _esi_status_payload(self) -> dict[str, Any]:
         session = self._esi_session()
+        public_enabled = self._esi_public_resolver() is not None
         if session is None:
+            if public_enabled:
+                return {
+                    "enabled": True,
+                    "public": True,
+                    "authenticated": False,
+                    "session": False,
+                }
             return {"enabled": False, "authenticated": False}
         if not hasattr(session, "load_tokens"):
             return {
                 "enabled": True,
+                "public": public_enabled,
                 "authenticated": False,
+                "session": True,
                 "error": "ESI session cannot load tokens",
             }
         try:
             tokens = session.load_tokens(refresh_if_needed=False)
         except EsiSsoError as exc:
-            return {"enabled": True, "authenticated": False, "error": str(exc)}
+            return {
+                "enabled": True,
+                "public": public_enabled,
+                "authenticated": False,
+                "session": True,
+                "error": str(exc),
+            }
         return {
             "enabled": True,
+            "public": public_enabled,
             "authenticated": True,
+            "session": True,
             "character_id": tokens.character_id,
             "character_owner_hash": tokens.character_owner_hash,
             "scopes": list(tokens.scopes),
             "expires_at": tokens.expires_at,
             "expired": bool(tokens.is_expired()),
+        }
+
+    def _health_payload(self) -> dict[str, Any]:
+        store = self._store()
+        return {
+            "ok": True,
+            "schema_version": "health.v1",
+            "generated_at": utc_now_iso(),
+            "storage": self._storage_health(store),
+            "config": self._config_health(),
+            "map": self._map_health(store),
+            "esi": self._esi_status_payload(),
+            "killboard": self._killboard_health(store),
+            "clients": store.heartbeat_summary(),
+            "events": self._event_health(store),
+        }
+
+    def _storage_health(self, store: IntelStore) -> dict[str, Any]:
+        path = getattr(store, "_db_path", None) or getattr(store, "_filepath", None)
+        return {
+            "type": type(store).__name__,
+            "path": str(path) if path is not None else "",
+            "writable": self._storage_path_writable(path),
+        }
+
+    def _storage_path_writable(self, path: Any) -> bool:
+        if path is None:
+            return True
+        try:
+            target = os.fspath(path)
+            directory = os.path.dirname(target) or "."
+            if os.path.exists(target):
+                return os.access(target, os.W_OK)
+            return os.path.isdir(directory) and os.access(directory, os.W_OK)
+        except (TypeError, ValueError, OSError):
+            return False
+
+    def _config_health(self) -> dict[str, Any]:
+        config_store = self._config_store()
+        if config_store is None:
+            return {"enabled": False}
+        config = config_store.to_dict()
+        return {
+            "enabled": True,
+            "path": str(getattr(config_store, "path", "")),
+            "schema_version": config.get("schema_version", ""),
+            "scoring_version": config.get("scoring_version", ""),
+            "evidence_rule_count": len(config.get("evidence_rules") or []),
+            "cooldown_seconds": config.get("cooldown_seconds"),
+        }
+
+    def _killboard_health(self, store: IntelStore) -> dict[str, Any]:
+        enricher = getattr(store, "_enricher", None)
+        killboard = getattr(enricher, "killboard", None)
+        if killboard is None:
+            return {"enabled": False}
+        cache = getattr(killboard, "cache", None)
+        return {
+            "enabled": True,
+            "client": type(killboard).__name__,
+            "cache": type(cache).__name__ if cache is not None else "",
+        }
+
+    def _map_health(self, store: IntelStore) -> dict[str, Any]:
+        map_config_store = self._map_config_store()
+        active_system_count = len(getattr(store, "_systems", {}))
+        active_link_count = len(getattr(store, "_links", []))
+        if map_config_store is None:
+            return {
+                "enabled": False,
+                "system_count": active_system_count,
+                "link_count": active_link_count,
+            }
+        config = map_config_store.to_dict()
+        return {
+            "enabled": True,
+            "path": str(getattr(map_config_store, "path", "")),
+            "schema_version": config.get("schema_version", ""),
+            "source": config.get("source", ""),
+            "layout_mode": config.get("layout_mode", ""),
+            "sde_path": config.get("sde_path", ""),
+            "system_count": active_system_count,
+            "link_count": active_link_count,
+            "last_refreshed_at": config.get("last_refreshed_at", ""),
+            "last_refresh_error": config.get("last_refresh_error", ""),
+        }
+
+    def _event_health(self, store: IntelStore) -> dict[str, Any]:
+        try:
+            reports = store._reports_snapshot()
+        except Exception as exc:
+            return {
+                "alert_query_ok": False,
+                "error": str(exc),
+                "sse": {"enabled": True},
+            }
+        latest = max(
+            reports,
+            key=lambda report: str(report.received_at or report.seen_at or ""),
+            default=None,
+        )
+        return {
+            "alert_query_ok": True,
+            "latest_alert_id": f"evt_{latest.report_id}" if latest is not None else "",
+            "latest_alert_created_at": (
+                str(latest.received_at or latest.seen_at or "")
+                if latest is not None
+                else ""
+            ),
+            "sse": {
+                "enabled": True,
+                "path": "/api/events",
+            },
         }
 
     def _send_esi_snapshot(
@@ -647,6 +1286,34 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         if value < 0:
             raise ValueError(f"{label} must be non-negative")
         return value
+
+    def _send_entity_intel(
+        self,
+        path: str,
+        raw_query: str,
+        prefix: str,
+        label: str,
+        fetcher: Any,
+    ) -> None:
+        query = parse_qs(raw_query)
+        try:
+            entity_id = self._parse_path_int(path, prefix, label)
+            limit = self._parse_optional_int(query.get("limit", [""])[0])
+            filters = self._parse_alert_filters(query)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        payload = fetcher(
+            entity_id,
+            since=query.get("since", [""])[0],
+            limit=limit,
+            **filters,
+        )
+        if payload is None:
+            self._send_json({"error": f"{label} not found"}, HTTPStatus.NOT_FOUND)
+            return
+        self._send_json({"intel": payload})
 
     def _parse_optional_bool(self, raw: str, label: str) -> bool | None:
         value = raw.strip().casefold()

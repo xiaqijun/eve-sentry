@@ -43,6 +43,11 @@ INDEX_HTML = """<!doctype html>
       display: block;
       width: 100%;
       height: 100%;
+      cursor: grab;
+      touch-action: none;
+    }
+    canvas.dragging {
+      cursor: grabbing;
     }
     header {
       position: absolute;
@@ -70,12 +75,26 @@ INDEX_HTML = """<!doctype html>
       background: rgba(18, 22, 27, 0.72);
       border-radius: 4px;
     }
+    .map-controls {
+      position: absolute;
+      inset: 18px 20px auto auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      z-index: 2;
+    }
+    .map-zoom {
+      min-width: 62px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+    }
     aside {
       min-width: 0;
       border-left: 1px solid #252d36;
       background: var(--panel);
       display: grid;
-      grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto auto auto auto auto minmax(0, 1fr);
     }
     .toolbar {
       padding: 16px;
@@ -118,6 +137,7 @@ INDEX_HTML = """<!doctype html>
       font-size: 17px;
       font-weight: 650;
     }
+    .client-panel,
     .ingest-panel,
     .esi-panel,
     .config-panel {
@@ -133,6 +153,7 @@ INDEX_HTML = """<!doctype html>
     .esi-panel {
       background: #111820;
     }
+    .client-panel h2,
     .ingest-panel h2,
     .esi-panel h2,
     .config-panel h2 {
@@ -350,7 +371,7 @@ INDEX_HTML = """<!doctype html>
   <main class="shell">
     <section class="map-area">
       <canvas id="map"></canvas>
-      <header>
+      <header id="map-header">
         <h1>EVE Sentry Intel Map</h1>
         <div class="summary">
           <span class="pill" id="systems-pill">星系 0</span>
@@ -359,6 +380,10 @@ INDEX_HTML = """<!doctype html>
           <span class="pill" id="events-pill">推送 待连接</span>
         </div>
       </header>
+      <div class="map-controls">
+        <span class="pill map-zoom" id="map-zoom">100%</span>
+        <button id="map-fit" type="button">Fit</button>
+      </div>
     </section>
     <aside>
       <section class="toolbar">
@@ -373,6 +398,14 @@ INDEX_HTML = """<!doctype html>
           <button id="esi-refresh" type="button">Refresh</button>
           <button id="esi-use-system" type="button" disabled>Use system</button>
           <span class="esi-status" id="esi-message">Not loaded</span>
+        </div>
+      </section>
+      <section class="client-panel" aria-label="Client Status">
+        <h2>Client Status</h2>
+        <div class="status-grid" id="heartbeat-status"></div>
+        <div class="actions">
+          <button id="heartbeat-refresh" type="button">Refresh</button>
+          <span class="esi-status" id="heartbeat-message">Not loaded</span>
         </div>
       </section>
       <section class="ingest-panel" aria-label="Manual Intel">
@@ -444,14 +477,20 @@ INDEX_HTML = """<!doctype html>
   </main>
   <script>
     const canvas = document.getElementById("map");
+    const headerEl = document.getElementById("map-header");
     const ctx = canvas.getContext("2d");
+    const fitMapButton = document.getElementById("map-fit");
+    const zoomLabelEl = document.getElementById("map-zoom");
     const intelEl = document.getElementById("intel");
     const selectedEl = document.getElementById("selected");
     const eventsPillEl = document.getElementById("events-pill");
     const esiStatusEl = document.getElementById("esi-status");
+    const heartbeatStatusEl = document.getElementById("heartbeat-status");
     const esiMessageEl = document.getElementById("esi-message");
+    const heartbeatMessageEl = document.getElementById("heartbeat-message");
     const esiRefreshButton = document.getElementById("esi-refresh");
     const esiUseSystemButton = document.getElementById("esi-use-system");
+    const heartbeatRefreshButton = document.getElementById("heartbeat-refresh");
     const filterEl = document.getElementById("filter");
     const reportTabButton = document.getElementById("tab-reports");
     const alertTabButton = document.getElementById("tab-alerts");
@@ -477,12 +516,18 @@ INDEX_HTML = """<!doctype html>
     const reloadConfigButton = document.getElementById("cfg-reload");
     let snapshot = { systems: [], links: [], reports: [], characters: [], summary: {} };
     let esiSession = { loading: true, enabled: false, authenticated: false, error: "", location: null, scopes: [] };
+    let clientHeartbeats = [];
+    let heartbeatSummary = { count: 0, online_count: 0, stale_count: 0, by_type: {}, by_status: {} };
     let selectedSystem = null;
     let listMode = "reports";
     let manualSystemId = 0;
     let eventStream = null;
     let refreshQueued = false;
     const alertDetails = new Map();
+    const viewport = { zoom: 1, panX: 0, panY: 0 };
+    let pointerDrag = null;
+    let suppressClick = false;
+    let viewportInitialized = false;
 
     function resize() {
       const rect = canvas.getBoundingClientRect();
@@ -490,15 +535,86 @@ INDEX_HTML = """<!doctype html>
       canvas.width = Math.max(1, Math.floor(rect.width * ratio));
       canvas.height = Math.max(1, Math.floor(rect.height * ratio));
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      updateZoomLabel();
       draw();
     }
 
     function scale(system) {
-      const rect = canvas.getBoundingClientRect();
+      const base = basePoint(system);
       return {
-        x: system.x / 1000 * rect.width,
-        y: system.y / 700 * rect.height
+        x: base.x * viewport.zoom + viewport.panX,
+        y: base.y * viewport.zoom + viewport.panY
       };
+    }
+
+    function basePoint(system) {
+      const rect = canvas.getBoundingClientRect();
+      const bounds = mapBounds();
+      const innerWidth = Math.max(1, rect.width - bounds.padLeft - bounds.padRight);
+      const innerHeight = Math.max(1, rect.height - bounds.padTop - bounds.padBottom);
+      const xRatio = bounds.spanX <= 0 ? 0.5 : (system.x - bounds.minX) / bounds.spanX;
+      const yRatio = bounds.spanY <= 0 ? 0.5 : (system.y - bounds.minY) / bounds.spanY;
+      return {
+        x: bounds.padLeft + xRatio * innerWidth,
+        y: bounds.padTop + yRatio * innerHeight
+      };
+    }
+
+    function mapBounds() {
+      const systems = Array.isArray(snapshot.systems) ? snapshot.systems : [];
+      const mapRect = canvas.getBoundingClientRect();
+      const headerRect = headerEl ? headerEl.getBoundingClientRect() : null;
+      const headerBottom = headerRect ? Math.max(0, headerRect.bottom - mapRect.top) : 0;
+      const topPadding = Math.max(40, Math.ceil(headerBottom + 24));
+      if (!systems.length) {
+        return {
+          minX: 0,
+          maxX: 1,
+          minY: 0,
+          maxY: 1,
+          spanX: 1,
+          spanY: 1,
+          padLeft: 48,
+          padRight: 140,
+          padTop: topPadding,
+          padBottom: 48
+        };
+      }
+      const xs = systems.map(system => Number(system.x || 0));
+      const ys = systems.map(system => Number(system.y || 0));
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      return {
+        minX,
+        maxX,
+        minY,
+        maxY,
+        spanX: maxX - minX,
+        spanY: maxY - minY,
+        padLeft: 48,
+        padRight: 140,
+        padTop: topPadding,
+        padBottom: 48
+      };
+    }
+
+    function fitMap() {
+      viewport.zoom = 1;
+      viewport.panX = 0;
+      viewport.panY = 0;
+      viewportInitialized = true;
+      updateZoomLabel();
+      draw();
+    }
+
+    function clampZoom(value) {
+      return Math.max(0.45, Math.min(3.5, value));
+    }
+
+    function updateZoomLabel() {
+      zoomLabelEl.textContent = `${Math.round(viewport.zoom * 100)}%`;
     }
 
     function draw() {
@@ -548,6 +664,50 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
+    function hitTestSystem(point) {
+      let nearest = null;
+      let nearestDistance = Infinity;
+      for (const system of snapshot.systems) {
+        const p = scale(system);
+        const hot = system.hostile_count > 0;
+        const radius = hot ? 7 + Math.min(system.hostile_count, 8) : 4;
+        const hitRadius = Math.max(16, radius + 12);
+        const distance = Math.hypot(point.x - p.x, point.y - p.y);
+        if (distance <= hitRadius && distance < nearestDistance) {
+          nearest = system;
+          nearestDistance = distance;
+          continue;
+        }
+
+        ctx.font = hot ? "650 12px Segoe UI" : "12px Segoe UI";
+        const labelWidth = ctx.measureText(system.name).width;
+        const labelLeft = p.x + 8;
+        const labelTop = p.y - 12;
+        const labelRight = labelLeft + labelWidth + 6;
+        const labelBottom = p.y + 8;
+        const insideLabel = (
+          point.x >= labelLeft &&
+          point.x <= labelRight &&
+          point.y >= labelTop &&
+          point.y <= labelBottom
+        );
+        if (insideLabel) {
+          return system;
+        }
+      }
+      return nearest;
+    }
+
+    function selectSystemAtPoint(point) {
+      const system = hitTestSystem(point);
+      if (!system) {
+        return false;
+      }
+      selectedSystem = system.name;
+      render();
+      return true;
+    }
+
     function render() {
       const summary = snapshot.summary || {};
       document.getElementById("systems-pill").textContent = `星系 ${summary.system_count || 0}`;
@@ -560,7 +720,82 @@ INDEX_HTML = """<!doctype html>
       }
       renderSelected();
       renderIntelList();
+      renderHeartbeats();
+      if (!viewportInitialized) {
+        fitMap();
+        return;
+      }
+      updateZoomLabel();
       draw();
+    }
+
+    function renderHeartbeats() {
+      if (!Array.isArray(clientHeartbeats) || !clientHeartbeats.length) {
+        heartbeatStatusEl.innerHTML = `<div class="status-row"><span>No active clients</span><strong>Waiting</strong></div>`;
+        return;
+      }
+      const detailPriority = [
+        "mode",
+        "last_action",
+        "last_error",
+        "last_success_at",
+        "client_version",
+        "host",
+        "system",
+        "transport",
+        "server_parse",
+        "popup",
+        "details",
+        "window"
+      ];
+      const formatDetailValue = (value) => {
+        if (typeof value === "boolean") return value ? "yes" : "no";
+        if (value === null || value === undefined) return "";
+        return String(value);
+      };
+      heartbeatStatusEl.innerHTML = clientHeartbeats.slice(0, 6).map(item => {
+        const label = item.label || item.client_type || item.client_id || "client";
+        const age = item.age_seconds === undefined ? "?" : `${Math.round(Number(item.age_seconds || 0))}s`;
+        const activity = String(item.status || "unknown");
+        const state = item.online ? "online" : "stale";
+        const mode = item.details && typeof item.details === "object"
+          ? Object.entries(item.details)
+              .filter((entry) => entry[1] !== undefined && entry[1] !== "")
+              .sort((left, right) => {
+                const leftIndex = detailPriority.indexOf(left[0]);
+                const rightIndex = detailPriority.indexOf(right[0]);
+                const leftRank = leftIndex >= 0 ? leftIndex : detailPriority.length;
+                const rightRank = rightIndex >= 0 ? rightIndex : detailPriority.length;
+                if (leftRank !== rightRank) return leftRank - rightRank;
+                return left[0].localeCompare(right[0]);
+              })
+              .slice(0, 4)
+              .map((entry) => `${entry[0]} ${formatDetailValue(entry[1])}`)
+              .join(" | ")
+          : "";
+        return `
+          <div class="status-row">
+            <span>${escapeHtml(label)}${mode ? ` · ${escapeHtml(mode)}` : ""}</span>
+            <strong>${escapeHtml(activity)} · ${escapeHtml(state)} · ${escapeHtml(age)}</strong>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function formatHeartbeatSummary(summary, fallbackItems = []) {
+      const count = Number(summary && summary.count) || fallbackItems.length || 0;
+      const onlineCount = Number(summary && summary.online_count) || 0;
+      const staleCount = Number(summary && summary.stale_count) || Math.max(0, count - onlineCount);
+      const typeSummary = summary && summary.by_type && typeof summary.by_type === "object"
+        ? Object.entries(summary.by_type)
+            .slice(0, 2)
+            .map(([key, value]) => `${key} ${value}`)
+            .join(" | ")
+        : "";
+      const parts = [`${onlineCount}/${count} online`];
+      if (staleCount) parts.push(`${staleCount} stale`);
+      if (typeSummary) parts.push(typeSummary);
+      return parts.join(" · ");
     }
 
     function renderSelected() {
@@ -680,73 +915,98 @@ INDEX_HTML = """<!doctype html>
         return `<div class="alert-detail"><div class="detail-row">${escapeHtml(detail.error || "Details unavailable")}</div></div>`;
       }
 
-      const characters = Array.isArray(detail.characters) ? detail.characters : [];
-      const characterRows = characters.length
-        ? characters.map(renderCharacterDetail).join("")
-        : `<div class="detail-row">No character identifiers available</div>`;
+      const alertDetail = detail.detail || {};
+      const explanation = alertDetail.explanation || {};
+      const reasons = Array.isArray(explanation.reasons) ? explanation.reasons : [];
+      const context = Array.isArray(explanation.context) ? explanation.context : [];
+      const degraded = Array.isArray(explanation.degraded_sources) ? explanation.degraded_sources : [];
       return `
         <div class="alert-detail">
           <div class="detail-section">
-            <div class="detail-title">Characters</div>
-            ${characterRows}
+            <div class="detail-title">Explanation</div>
+            <div class="detail-row">${escapeHtml(explanation.summary || "No server explanation available")}</div>
+            ${renderDetailList(reasons, "No scoring reasons")}
           </div>
           <div class="detail-section">
-            <div class="detail-title">System</div>
-            ${renderSystemDetail(detail)}
+            <div class="detail-title">Context</div>
+            ${renderDetailList(context, "No enrichment context")}
+          </div>
+          ${degraded.length ? `
+            <div class="detail-section">
+              <div class="detail-title">Degraded Sources</div>
+              ${degraded.map(item => `
+                <div class="detail-row">
+                  <strong>${escapeHtml(item.source || "source")}</strong>
+                  ${escapeHtml(item.reason || "unavailable")}
+                </div>
+              `).join("")}
+            </div>
+          ` : ""}
+          <div class="detail-section">
+            <div class="detail-title">Entities</div>
+            ${renderEntityRows(alertDetail.entities || {})}
+          </div>
+          <div class="detail-section">
+            <div class="detail-title">Related Intel</div>
+            ${renderEntityIntelRows(detail.entityIntel || [])}
           </div>
         </div>
       `;
     }
 
-    function renderCharacterDetail(item) {
-      const profile = item.profile || {};
-      const activity = item.activity || {};
-      const label = profile.name || item.label || profile.character_id || activity.character_id || "Unknown";
-      const profileParts = [
-        profile.character_id ? `ID ${profile.character_id}` : "",
-        profile.corporation_id ? `Corp ${profile.corporation_id}` : "",
-        profile.alliance_id ? `Alliance ${profile.alliance_id}` : "",
-        profile.security_status === undefined ? "" : `Security ${Number(profile.security_status).toFixed(1)}`
-      ].filter(Boolean);
-      const activityParts = [
-        activity.kills === undefined ? "" : `Kills ${Number(activity.kills)}`,
-        activity.losses === undefined ? "" : `Losses ${Number(activity.losses)}`,
-        activity.latest_kill_at ? `Latest ${formatTime(activity.latest_kill_at)}` : ""
-      ].filter(Boolean);
-      const profileText = profileParts.length ? profileParts.join(" | ") : (item.profileError || "Profile unavailable");
-      const activityText = activityParts.length ? activityParts.join(" | ") : (item.activityError || "Kill activity unavailable");
-      return `
-        <div class="detail-row">
-          <strong>${escapeHtml(label)}</strong><br>
-          ${escapeHtml(profileText)}<br>
-          ${escapeHtml(activityText)}
-        </div>
-      `;
+    function renderDetailList(values, emptyText) {
+      if (!values.length) {
+        return `<div class="detail-row">${escapeHtml(emptyText)}</div>`;
+      }
+      return values.map(value => `<div class="detail-row">${escapeHtml(value)}</div>`).join("");
     }
 
-    function renderSystemDetail(detail) {
-      const profile = detail.system || {};
-      const activity = detail.systemActivity || {};
-      const label = profile.name || detail.systemName || profile.system_id || activity.system_id || "Unknown";
-      const profileParts = [
-        profile.system_id ? `ID ${profile.system_id}` : "",
-        profile.security_status === undefined ? "" : `Security ${Number(profile.security_status).toFixed(1)}`,
-        profile.constellation_id ? `Constellation ${profile.constellation_id}` : ""
-      ].filter(Boolean);
-      const activityParts = [
-        activity.kills === undefined ? "" : `Kills ${Number(activity.kills)}`,
-        Array.isArray(activity.character_ids) && activity.character_ids.length ? `Pilots ${activity.character_ids.slice(0, 5).join(", ")}` : "",
-        activity.latest_kill_at ? `Latest ${formatTime(activity.latest_kill_at)}` : ""
-      ].filter(Boolean);
-      const profileText = profileParts.length ? profileParts.join(" | ") : (detail.systemError || "System profile unavailable");
-      const activityText = activityParts.length ? activityParts.join(" | ") : (detail.systemActivityError || "System activity unavailable");
-      return `
-        <div class="detail-row">
-          <strong>${escapeHtml(label)}</strong><br>
-          ${escapeHtml(profileText)}<br>
-          ${escapeHtml(activityText)}
-        </div>
-      `;
+    function renderEntityRows(entities) {
+      const rows = [];
+      for (const item of Array.isArray(entities.characters) ? entities.characters : []) {
+        const label = item.name || item.character_id || "character";
+        const parts = [
+          item.character_id ? `ID ${item.character_id}` : "",
+          item.corporation_id ? `Corp ${item.corporation_id}` : "",
+          item.alliance_id ? `Alliance ${item.alliance_id}` : ""
+        ].filter(Boolean);
+        rows.push(`<div class="detail-row"><strong>${escapeHtml(label)}</strong> ${escapeHtml(parts.join(" | "))}</div>`);
+      }
+      for (const item of Array.isArray(entities.systems) ? entities.systems : []) {
+        const label = item.name || item.system_id || "system";
+        rows.push(`<div class="detail-row"><strong>${escapeHtml(label)}</strong> ${item.system_id ? `ID ${escapeHtml(item.system_id)}` : ""}</div>`);
+      }
+      for (const item of Array.isArray(entities.corporations) ? entities.corporations : []) {
+        const label = item.name || item.corporation_id || "corporation";
+        rows.push(`<div class="detail-row"><strong>${escapeHtml(label)}</strong> ${item.corporation_id ? `ID ${escapeHtml(item.corporation_id)}` : ""}</div>`);
+      }
+      for (const item of Array.isArray(entities.alliances) ? entities.alliances : []) {
+        const label = item.name || item.alliance_id || "alliance";
+        rows.push(`<div class="detail-row"><strong>${escapeHtml(label)}</strong> ${item.alliance_id ? `ID ${escapeHtml(item.alliance_id)}` : ""}</div>`);
+      }
+      return rows.length ? rows.join("") : `<div class="detail-row">No stable entities available</div>`;
+    }
+
+    function renderEntityIntelRows(items) {
+      if (!items.length) {
+        return `<div class="detail-row">No related intel query available</div>`;
+      }
+      return items.map(item => {
+        if (item.error) {
+          return `<div class="detail-row"><strong>${escapeHtml(item.label)}</strong> ${escapeHtml(item.error)}</div>`;
+        }
+        const intel = item.intel || {};
+        const counts = intel.counts || {};
+        const activity = intel.activity || {};
+        const parts = [
+          counts.observations === undefined ? "" : `${Number(counts.observations)} observations`,
+          counts.alerts === undefined ? "" : `${Number(counts.alerts)} alerts`,
+          activity.kills === undefined ? "" : `${Number(activity.kills)} kills`,
+          activity.losses === undefined ? "" : `${Number(activity.losses)} losses`,
+          activity.cache_status ? `cache ${activity.cache_status}` : ""
+        ].filter(Boolean);
+        return `<div class="detail-row"><strong>${escapeHtml(item.label)}</strong> ${escapeHtml(parts.join(" | ") || "No recent related intel")}</div>`;
+      }).join("");
     }
 
     async function toggleAlertDetails(alertId) {
@@ -782,48 +1042,63 @@ INDEX_HTML = """<!doctype html>
     }
 
     async function loadAlertDetails(alert) {
-      const characterIds = uniquePositiveInts(alert.character_ids);
-      const names = Array.isArray(alert.names) ? alert.names.filter(Boolean) : [];
-      const characters = characterIds.length
-        ? await Promise.all(characterIds.slice(0, 5).map(id => loadCharacterDetail({ id })))
-        : await Promise.all(names.slice(0, 5).map(name => loadCharacterDetail({ name })));
-      const systemName = alert.system_name || alert.system || "";
-      const systemLookup = systemName
-        ? await fetchOptional(`/api/systems/by-name/${encodeURIComponent(systemName)}`, "system")
-        : { error: "System name unavailable" };
-      const system = systemLookup.data || null;
-      const systemId = positiveInt(alert.system_id) || positiveInt(system && system.system_id);
-      const systemActivityLookup = systemId
-        ? await fetchOptional(`/api/kill-activity/system/${systemId}`, "activity")
-        : { error: "System id unavailable" };
+      const alertId = alert.id || alert.source_observation_id;
+      if (!alertId) {
+        throw new Error("Alert id unavailable");
+      }
+      const detailLookup = await fetchOptional(`/api/alerts/${encodeURIComponent(alertId)}`, "detail");
+      const detail = detailLookup.data || {};
+      const entityIntel = await loadEntityIntel(detail);
       return {
         status: "loaded",
-        characters,
-        systemName,
-        system,
-        systemError: systemLookup.error,
-        systemActivity: systemActivityLookup.data || null,
-        systemActivityError: systemActivityLookup.error
+        detail,
+        entityIntel
       };
     }
 
-    async function loadCharacterDetail(query) {
-      const label = query.name || String(query.id);
-      const profileLookup = query.id
-        ? await fetchOptional(`/api/characters/${query.id}`, "character")
-        : await fetchOptional(`/api/characters/by-name/${encodeURIComponent(query.name)}`, "character");
-      const profile = profileLookup.data || null;
-      const characterId = positiveInt(query.id) || positiveInt(profile && profile.character_id);
-      const activityLookup = characterId
-        ? await fetchOptional(`/api/kill-activity/character/${characterId}`, "activity")
-        : { error: "Character id unavailable" };
-      return {
-        label,
-        profile,
-        profileError: profileLookup.error,
-        activity: activityLookup.data || null,
-        activityError: activityLookup.error
-      };
+    async function loadEntityIntel(detail) {
+      const entities = detail.entities || {};
+      const queries = [];
+      for (const item of Array.isArray(entities.characters) ? entities.characters : []) {
+        if (item.character_id) {
+          queries.push({
+            label: item.name || `Character ${item.character_id}`,
+            path: `/api/intel/character/${encodeURIComponent(item.character_id)}?limit=5`
+          });
+        }
+      }
+      for (const item of Array.isArray(entities.systems) ? entities.systems : []) {
+        if (item.system_id) {
+          queries.push({
+            label: item.name || `System ${item.system_id}`,
+            path: `/api/intel/system/${encodeURIComponent(item.system_id)}?limit=5`
+          });
+        }
+      }
+      for (const item of Array.isArray(entities.corporations) ? entities.corporations : []) {
+        if (item.corporation_id) {
+          queries.push({
+            label: item.name || `Corporation ${item.corporation_id}`,
+            path: `/api/intel/corporation/${encodeURIComponent(item.corporation_id)}?limit=5`
+          });
+        }
+      }
+      for (const item of Array.isArray(entities.alliances) ? entities.alliances : []) {
+        if (item.alliance_id) {
+          queries.push({
+            label: item.name || `Alliance ${item.alliance_id}`,
+            path: `/api/intel/alliance/${encodeURIComponent(item.alliance_id)}?limit=5`
+          });
+        }
+      }
+      return Promise.all(queries.slice(0, 6).map(async query => {
+        try {
+          const lookup = await fetchOptional(query.path, "intel");
+          return { label: query.label, intel: lookup.data || null, error: lookup.error || "" };
+        } catch (error) {
+          return { label: query.label, intel: null, error: error.message || "Related intel unavailable" };
+        }
+      }));
     }
 
     async function fetchOptional(path, key) {
@@ -841,19 +1116,6 @@ INDEX_HTML = """<!doctype html>
         throw new Error(payload.error || "Lookup failed");
       }
       return { data: payload[key] || null, error: "" };
-    }
-
-    function uniquePositiveInts(values) {
-      const seen = new Set();
-      const result = [];
-      for (const value of Array.isArray(values) ? values : []) {
-        const number = positiveInt(value);
-        if (number && !seen.has(number)) {
-          seen.add(number);
-          result.push(number);
-        }
-      }
-      return result;
     }
 
     function positiveInt(value) {
@@ -987,6 +1249,38 @@ INDEX_HTML = """<!doctype html>
       } finally {
         esiRefreshButton.disabled = false;
         renderEsiStatus();
+      }
+    }
+
+    async function loadHeartbeats() {
+      heartbeatRefreshButton.disabled = true;
+      heartbeatMessageEl.textContent = "Loading...";
+      heartbeatMessageEl.style.color = "var(--muted)";
+      try {
+        const response = await fetch("/api/heartbeats", { cache: "no-store" });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "Heartbeat status unavailable");
+        }
+        clientHeartbeats = Array.isArray(payload.heartbeats) ? payload.heartbeats : [];
+        heartbeatSummary = payload.summary && typeof payload.summary === "object"
+          ? payload.summary
+          : {
+              count: clientHeartbeats.length,
+              online_count: clientHeartbeats.filter(item => item.online).length,
+              stale_count: clientHeartbeats.filter(item => !item.online).length,
+              by_type: {},
+              by_status: {}
+            };
+        heartbeatMessageEl.textContent = formatHeartbeatSummary(heartbeatSummary, clientHeartbeats);
+      } catch (error) {
+        clientHeartbeats = [];
+        heartbeatSummary = { count: 0, online_count: 0, stale_count: 0, by_type: {}, by_status: {} };
+        heartbeatMessageEl.textContent = error.message || "Heartbeat status unavailable";
+        heartbeatMessageEl.style.color = "var(--danger)";
+      } finally {
+        heartbeatRefreshButton.disabled = false;
+        renderHeartbeats();
       }
     }
 
@@ -1207,23 +1501,91 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
-    canvas.addEventListener("click", event => {
+    fitMapButton.addEventListener("click", () => {
+      fitMap();
+    });
+
+    canvas.addEventListener("wheel", event => {
+      event.preventDefault();
       const rect = canvas.getBoundingClientRect();
-      const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-      let nearest = null;
-      let nearestDistance = Infinity;
-      for (const system of snapshot.systems) {
-        const p = scale(system);
-        const distance = Math.hypot(point.x - p.x, point.y - p.y);
-        if (distance < nearestDistance) {
-          nearest = system;
-          nearestDistance = distance;
+      const pointX = event.clientX - rect.left;
+      const pointY = event.clientY - rect.top;
+      const oldZoom = viewport.zoom;
+      const nextZoom = clampZoom(oldZoom * (event.deltaY < 0 ? 1.12 : 0.89));
+      if (Math.abs(nextZoom - oldZoom) < 0.0001) {
+        return;
+      }
+      const ratio = nextZoom / oldZoom;
+      viewport.zoom = nextZoom;
+      viewport.panX = pointX - (pointX - viewport.panX) * ratio;
+      viewport.panY = pointY - (pointY - viewport.panY) * ratio;
+      updateZoomLabel();
+      draw();
+    }, { passive: false });
+
+    canvas.addEventListener("pointerdown", event => {
+      if (event.button !== 0) {
+        return;
+      }
+      pointerDrag = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        panX: viewport.panX,
+        panY: viewport.panY,
+        moved: false
+      };
+      canvas.classList.add("dragging");
+      canvas.setPointerCapture(event.pointerId);
+    });
+
+    canvas.addEventListener("pointermove", event => {
+      if (!pointerDrag || pointerDrag.id !== event.pointerId) {
+        return;
+      }
+      const dx = event.clientX - pointerDrag.x;
+      const dy = event.clientY - pointerDrag.y;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        pointerDrag.moved = true;
+      }
+      viewport.panX = pointerDrag.panX + dx;
+      viewport.panY = pointerDrag.panY + dy;
+      draw();
+    });
+
+    canvas.addEventListener("pointerup", event => {
+      if (pointerDrag && pointerDrag.id === event.pointerId) {
+        const rect = canvas.getBoundingClientRect();
+        const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+        suppressClick = pointerDrag.moved;
+        if (!pointerDrag.moved) {
+          suppressClick = true;
+          selectSystemAtPoint(point);
         }
       }
-      if (nearest && nearestDistance < 28) {
-        selectedSystem = nearest.name;
-        render();
+      pointerDrag = null;
+      canvas.classList.remove("dragging");
+      if (canvas.hasPointerCapture(event.pointerId)) {
+        canvas.releasePointerCapture(event.pointerId);
       }
+    });
+
+    canvas.addEventListener("pointercancel", event => {
+      pointerDrag = null;
+      canvas.classList.remove("dragging");
+      if (canvas.hasPointerCapture(event.pointerId)) {
+        canvas.releasePointerCapture(event.pointerId);
+      }
+    });
+
+    canvas.addEventListener("click", event => {
+      if (suppressClick) {
+        suppressClick = false;
+        return;
+      }
+      const rect = canvas.getBoundingClientRect();
+      const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      selectSystemAtPoint(point);
     });
 
     filterEl.addEventListener("input", renderIntelList);
@@ -1243,6 +1605,7 @@ INDEX_HTML = """<!doctype html>
     saveConfigButton.addEventListener("click", () => saveConfig().catch(console.error));
     reloadConfigButton.addEventListener("click", () => loadConfig().catch(console.error));
     esiRefreshButton.addEventListener("click", () => loadEsiStatus().catch(console.error));
+    heartbeatRefreshButton.addEventListener("click", () => loadHeartbeats().catch(console.error));
     esiUseSystemButton.addEventListener("click", () => useEsiSystem());
     obsFields.system_name.addEventListener("input", () => { manualSystemId = 0; });
     submitIntelButton.addEventListener("click", () => submitObservation().catch(console.error));
@@ -1261,6 +1624,7 @@ INDEX_HTML = """<!doctype html>
       const streaming = connectEventStream();
       loadConfig().catch(console.error);
       loadEsiStatus().catch(console.error);
+      loadHeartbeats().catch(console.error);
       const refreshIntervalMs = streaming ? 15000 : 2000;
       setInterval(() => refresh().catch(console.error), refreshIntervalMs);
     }
@@ -1271,6 +1635,7 @@ INDEX_HTML = """<!doctype html>
       setInterval(() => refresh().catch(console.error), 2000);
     });
     setInterval(() => loadEsiStatus().catch(console.error), 30000);
+    setInterval(() => loadHeartbeats().catch(console.error), 15000);
   </script>
 </body>
 </html>

@@ -6,10 +6,29 @@ from typing import Optional
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from app.engine.capturer import Capturer
-from app.engine.detector import Detector
+from app.engine.detector import Detector, ocr_candidate_names
 from app.engine.ocr import OCREngine
 
 logger = logging.getLogger(__name__)
+
+
+def build_scan_status(
+    ocr_results: list[tuple[str, float]],
+    threats: list[str],
+) -> str:
+    """Build the monitor status text using cleaned member names, not OCR noise."""
+    member_names = ocr_candidate_names(ocr_results)
+    return (
+        "识别: "
+        f"{len(member_names)} 个成员 / "
+        f"{len(member_names)} 个唯一 / "
+        f"{len(threats)} 个新告警"
+    )
+
+
+def build_ocr_snapshot_names(ocr_results: list[tuple[str, float]]) -> list[str]:
+    """Return the cleaned pilot names to publish for the OCR snapshot."""
+    return ocr_candidate_names(ocr_results)
 
 
 class MonitorWorker(QThread):
@@ -18,6 +37,7 @@ class MonitorWorker(QThread):
     threat_detected = pyqtSignal(list)   # list[str] -- new threat names
     status_update = pyqtSignal(str)       # human-readable status message
     scan_complete = pyqtSignal(int)       # total scan count
+    ocr_snapshot = pyqtSignal(list)       # list[str] -- current OCR names
 
     def __init__(
         self,
@@ -102,21 +122,11 @@ class MonitorWorker(QThread):
                         ocr_ready = True
 
                     # 3. Detect
+                    self.ocr_snapshot.emit(build_ocr_snapshot_names(ocr_results))
                     threats = self._detector.check(ocr_results)
-                    unique_names = {
-                        text.strip()
-                        for text, _confidence in ocr_results
-                        if text.strip()
-                    }
-
                     scan_count += 1
                     self.scan_complete.emit(scan_count)
-                    self.status_update.emit(
-                        "识别: "
-                        f"{len(ocr_results)} 行 / "
-                        f"{len(unique_names)} 个唯一 / "
-                        f"{len(threats)} 个新告警"
-                    )
+                    self.status_update.emit(build_scan_status(ocr_results, threats))
 
                     if threats:
                         names = ", ".join(threats)

@@ -1,0 +1,22 @@
+[Unit]
+Description=EVE Sentry Intel Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=eve-sentry
+Group=eve-sentry
+WorkingDirectory=/opt/eve-sentry
+EnvironmentFile=/etc/eve-sentry/eve-sentry.env
+ExecStart=/opt/eve-sentry/.venv-server/bin/python /opt/eve-sentry/scripts/run_server.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/eve-sentry
+
+[Install]
+WantedBy=multi-user.target

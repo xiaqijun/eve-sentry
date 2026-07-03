@@ -42,6 +42,9 @@ def test_analyze_character_activity_counts_kills_losses_and_systems():
     assert activity.ship_type_ids == [111, 222]
     assert activity.latest_kill_at == "2026-06-30T12:00:00Z"
 
+    data = activity.to_dict()
+    assert "cache_status" not in data
+
 
 def test_activity_score_bonus():
     one = analyze_character_activity(
@@ -158,6 +161,23 @@ def test_analyze_group_activity_counts_kills_losses_and_participants():
     assert activity.ship_type_ids == [111, 222, 333, 444]
     assert activity.latest_kill_at == "2026-06-30T11:00:00Z"
     assert activity.to_dict()["corporation_id"] == 456
+
+    annotated = type(activity)(
+        **{
+            **activity.__dict__,
+            "cache_status": "cached",
+            "fetched_at": 10.0,
+            "expires_at": 70.0,
+            "request_status": "rate_limited",
+            "error": "zKillboard HTTP 429",
+            "retry_after": 130.0,
+        }
+    )
+    assert annotated.to_dict()["cache_status"] == "cached"
+    assert annotated.to_dict()["fetched_at"] == 10.0
+    assert annotated.to_dict()["request_status"] == "rate_limited"
+    assert annotated.to_dict()["error"] == "zKillboard HTTP 429"
+    assert annotated.to_dict()["retry_after"] == 130.0
 
 
 def test_group_activity_score_bonus_is_conservative():

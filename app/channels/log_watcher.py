@@ -10,7 +10,7 @@ from typing import Iterable
 
 
 DEFAULT_CHATLOG_DIR = Path.home() / "Documents" / "EVE" / "logs" / "Chatlogs"
-CHANNEL_SUFFIX_RE = re.compile(r"([_-])?\d{8}([_-])?\d{6,}$")
+CHANNEL_SUFFIX_RE = re.compile(r"(?:[_-]\d{8})?(?:[_-]\d{6})(?:[_-]\d+)?$")
 
 
 @dataclass(frozen=True)
@@ -143,4 +143,3 @@ def channel_name_from_path(path: Path) -> str:
     stem = path.stem.strip()
     cleaned = CHANNEL_SUFFIX_RE.sub("", stem).strip(" _-")
     return cleaned or stem
-

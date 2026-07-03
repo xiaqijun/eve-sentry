@@ -5,6 +5,7 @@ import os
 import time
 from datetime import datetime
 
+from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
@@ -21,14 +22,20 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from app.channel_client import process_once
+from app.channels.log_watcher import ChatLogWatcher
 from app.engine.capturer import Capturer
+from app.core.heartbeat import (
+    build_detector_heartbeat_details,
+    heartbeat_now_iso,
+    resolve_runtime_identity,
+)
 from app.engine.detector import Detector
 from app.engine.ocr import OCREngine
 from app.engine.worker import MonitorWorker
 from app.intel_client import IntelApiClient, IntelApiError
 from app.models.region_prefs import RegionPreferences
 from app.models.whitelist import Whitelist
-from app.ui.alert_dialog import AlertDialog
 from app.ui.region_selector import RegionSelector
 from app.ui.settings import SettingsPanel
 
@@ -68,12 +75,35 @@ class MainWindow(QMainWindow):
         )
         self._esi_location_next_check = 0.0
         self._last_esi_location_error = ""
-        self._intel_client = self._create_intel_client()
-
-        self._popup_alerts_enabled = (
-            os.environ.get("EVE_SENTRY_SHOW_POPUPS", "").strip().lower()
-            in {"1", "true", "yes", "on"}
+        self._heartbeat_interval = _env_float(
+            "EVE_SENTRY_HEARTBEAT_INTERVAL",
+            default=15.0,
+            minimum=5.0,
         )
+        self._heartbeat_client_id = f"detector-client:{os.getpid()}"
+        self._heartbeat_runtime = resolve_runtime_identity()
+        self._heartbeat_last_action = "startup"
+        self._heartbeat_last_error = ""
+        self._heartbeat_last_success_at = ""
+        self._last_heartbeat_error = ""
+        self._intel_client = self._create_intel_client()
+        self._heartbeat_timer = QTimer(self)
+        self._heartbeat_timer.setInterval(int(self._heartbeat_interval * 1000))
+        self._heartbeat_timer.timeout.connect(self._publish_heartbeat)
+        self._channel_timer = QTimer(self)
+        self._channel_timer.setInterval(5000)
+        self._channel_timer.timeout.connect(self._poll_channel_monitor)
+        self._channel_watcher: ChatLogWatcher | None = None
+        self._channel_names: list[str] = []
+        self._channel_state_path = os.environ.get(
+            "EVE_SENTRY_CHANNEL_STATE",
+            "channel_offsets.json",
+        )
+        self._channel_last_action = ""
+        self._channel_last_error = ""
+        self._channel_last_success_at = ""
+
+        self._popup_alerts_enabled = False
         self._alert_visible = False
         self._alert_queue: list[list[str]] = []
         self._manual_region: dict | None = None
@@ -144,6 +174,9 @@ class MainWindow(QMainWindow):
 
         self._setup_tray()
         self._detect_window()
+        if self._intel_client is not None:
+            self._heartbeat_timer.start()
+            self._publish_heartbeat()
 
     def _detect_window(self) -> None:
         """Find all EVE windows and populate the window selector."""
@@ -181,6 +214,7 @@ class MainWindow(QMainWindow):
         """Update the detected region when the user picks an EVE window."""
         if index < 0:
             return
+        self._manual_region = None
 
         info = self._current_window_info()
         title = self._window_combo.currentText()
@@ -233,7 +267,9 @@ class MainWindow(QMainWindow):
         )
 
         self.hide()
-        self._selector = RegionSelector(info["x"], info["y"], info["w"], info["h"])
+        self._selector = RegionSelector(
+            info["x"], info["y"], info["w"], info["h"], title=info["title"]
+        )
         self._selector.region_selected.connect(self._on_region_selected)
         self._selector.selector_closed.connect(self._on_selector_closed)
         self._selector.show()
@@ -302,9 +338,11 @@ class MainWindow(QMainWindow):
         self._worker.set_region(region["x"], region["y"], region["w"], region["h"])
         self._worker.set_interval(self._settings.get_interval())
         self._worker.threat_detected.connect(self._on_threat_detected)
+        self._worker.ocr_snapshot.connect(self._publish_ocr_snapshot)
         self._worker.status_update.connect(self._log_message)
         self._worker.scan_complete.connect(self._update_scan_count)
         self._worker.start()
+        self._start_channel_monitor()
 
         self._monitor_btn.setText("Stop Monitor")
         self._monitor_btn.setStyleSheet(
@@ -315,11 +353,19 @@ class MainWindow(QMainWindow):
         self._status_label.setText("Running")
         self._status_label.setStyleSheet("color: #228b22; font-weight: bold;")
         self._log_message("Monitor started")
+        self._heartbeat_last_action = "monitor_started"
+        self._heartbeat_last_error = ""
+        self._heartbeat_last_success_at = heartbeat_now_iso()
+        self._publish_heartbeat()
 
     def _disconnect_worker_signals(self) -> None:
         """Safely disconnect all signals from the current worker."""
         try:
             self._worker.threat_detected.disconnect()
+        except TypeError:
+            pass
+        try:
+            self._worker.ocr_snapshot.disconnect()
         except TypeError:
             pass
         try:
@@ -341,6 +387,7 @@ class MainWindow(QMainWindow):
                 self._ocr = OCREngine(lang="en", confidence_threshold=0.7)
                 self._detector = Detector(self._whitelist, cooldown_seconds=60.0)
             self._worker = None
+        self._stop_channel_monitor()
 
         self._monitor_btn.setText("Start Monitor")
         self._monitor_btn.setStyleSheet(
@@ -351,25 +398,79 @@ class MainWindow(QMainWindow):
         self._status_label.setText("Stopped")
         self._status_label.setStyleSheet("color: #888;")
         self._log_message("Monitor stopped")
+        self._heartbeat_last_action = "monitor_stopped"
+        self._heartbeat_last_success_at = heartbeat_now_iso()
+        self._publish_heartbeat()
 
     def _on_threat(self, threats: list[str]) -> None:
         """Show non-blocking alert dialog when threats are detected."""
-        if not self._popup_alerts_enabled:
-            return
-
-        if self._alert_visible:
-            self._alert_queue.append(threats)
-            return
-
-        self._alert_visible = True
-        dialog = AlertDialog(threats, self)
-        dialog.finished.connect(self._on_alert_closed)
-        dialog.show()
+        _ = threats
 
     def _on_threat_detected(self, threats: list[str]) -> None:
-        """Publish detected threats, then optionally show local UI alerts."""
+        """Publish detected threats to the intel server."""
         self._publish_intel(threats)
-        self._on_threat(threats)
+
+    def _start_channel_monitor(self) -> bool:
+        """Start selected-channel log monitoring when configured."""
+        self._stop_channel_monitor()
+        self._channel_names = self._settings.get_channel_names()
+        self._channel_last_action = ""
+        self._channel_last_error = ""
+        self._channel_last_success_at = ""
+        if not self._channel_names:
+            self._log_message("Channel log monitor disabled: no channel selected")
+            return False
+        if self._intel_client is None:
+            self._log_message("Channel log monitor disabled: server is not configured")
+            return False
+
+        self._channel_watcher = ChatLogWatcher(
+            log_dir=self._settings.get_channel_log_dir(),
+            channels=self._channel_names,
+            state_path=self._channel_state_path,
+        )
+        self._channel_watcher.seed_to_end()
+        self._channel_timer.setInterval(5000)
+        self._channel_timer.start()
+        joined = ", ".join(self._channel_names)
+        self._log_message(f"Channel log monitor started: {joined}")
+        return True
+
+    def _stop_channel_monitor(self) -> None:
+        self._channel_timer.stop()
+        self._channel_watcher = None
+
+    def _poll_channel_monitor(self) -> None:
+        if self._channel_watcher is None or self._intel_client is None:
+            return
+        diagnostics = {
+            "last_action": "",
+            "last_error": self._channel_last_error,
+            "last_success_at": self._channel_last_success_at,
+        }
+        try:
+            processed = process_once(
+                self._channel_watcher,
+                self._intel_client,
+                diagnostics=diagnostics,
+            )
+        except Exception as exc:
+            self._channel_last_action = "observation_error"
+            self._channel_last_error = str(exc)
+            self._log_message(f"Channel log upload failed: {exc}")
+            self._publish_heartbeat()
+            return
+
+        self._channel_last_action = str(
+            diagnostics.get("last_action") or self._channel_last_action
+        )
+        self._channel_last_error = str(diagnostics.get("last_error") or "")
+        self._channel_last_success_at = str(
+            diagnostics.get("last_success_at") or self._channel_last_success_at
+        )
+        if processed:
+            self._log_message(f"Channel observations uploaded: {processed}")
+            self._publish_heartbeat()
 
     def _create_intel_client(self) -> IntelApiClient | None:
         enabled = (
@@ -405,12 +506,76 @@ class MainWindow(QMainWindow):
                 metadata=metadata,
             )
         except IntelApiError as exc:
+            self._heartbeat_last_action = "observation_error"
+            self._heartbeat_last_error = str(exc)
             self._log_message(f"情报上报失败: {exc}")
             return
 
         observation_id = created.get("observation", {}).get("id", "")
         suffix = f" ({observation_id[:8]})" if observation_id else ""
+        self._heartbeat_last_action = f"observation:{len(threats)}"
+        self._heartbeat_last_error = ""
+        self._heartbeat_last_success_at = heartbeat_now_iso()
         self._log_message(f"已上报情报: {len(threats)} 个目标{suffix}")
+
+    def _publish_ocr_snapshot(self, names: list[str]) -> None:
+        if self._intel_client is None:
+            return
+
+        self._refresh_intel_location()
+        try:
+            self._intel_client.post_ocr_snapshot(
+                client_id=self._heartbeat_client_id,
+                source_instance=self._window_combo.currentText(),
+                system_name=self._intel_system or "Unknown",
+                system_id=self._intel_system_id,
+                names=names,
+            )
+        except IntelApiError as exc:
+            self._heartbeat_last_action = "ocr_snapshot_error"
+            self._heartbeat_last_error = str(exc)
+            self._log_message(f"OCR snapshot upload failed: {exc}")
+
+    def _publish_heartbeat(self) -> None:
+        if self._intel_client is None:
+            return
+        monitoring = bool(self._worker is not None and self._worker.isRunning())
+        try:
+            details = build_detector_heartbeat_details(
+                monitoring=monitoring,
+                system_name=self._intel_system,
+                system_source=self._intel_system_source,
+                popup_alerts=self._popup_alerts_enabled,
+                window_title=self._window_combo.currentText(),
+                last_action=self._heartbeat_last_action,
+                last_error=self._heartbeat_last_error,
+                client_version=self._heartbeat_runtime["client_version"],
+                host=self._heartbeat_runtime["host"],
+                last_success_at=self._heartbeat_last_success_at,
+            )
+            details["channel_monitoring"] = self._channel_watcher is not None
+            if self._channel_names:
+                details["channels"] = list(self._channel_names)
+            if self._channel_last_action:
+                details["channel_last_action"] = self._channel_last_action
+            if self._channel_last_error:
+                details["channel_last_error"] = self._channel_last_error
+            if self._channel_last_success_at:
+                details["channel_last_success_at"] = self._channel_last_success_at
+            self._intel_client.post_heartbeat(
+                client_id=self._heartbeat_client_id,
+                client_type="detector_client",
+                label="Detector Client",
+                status="running" if monitoring else "idle",
+                heartbeat_interval_seconds=self._heartbeat_interval,
+                details=details,
+            )
+            self._last_heartbeat_error = ""
+        except IntelApiError as exc:
+            message = str(exc)
+            if message != self._last_heartbeat_error:
+                self._last_heartbeat_error = message
+                self._log_message(f"Heartbeat update failed: {message}")
 
     def _refresh_intel_location(self, force: bool = False) -> bool:
         if (
@@ -430,6 +595,8 @@ class MainWindow(QMainWindow):
             message = str(exc)
             if message != self._last_esi_location_error:
                 self._last_esi_location_error = message
+                self._heartbeat_last_action = "esi_error"
+                self._heartbeat_last_error = message
                 self._log_message(f"ESI current-system sync unavailable: {message}")
             return False
 
@@ -437,6 +604,8 @@ class MainWindow(QMainWindow):
             message = "location did not include a solar system"
             if message != self._last_esi_location_error:
                 self._last_esi_location_error = message
+                self._heartbeat_last_action = "esi_error"
+                self._heartbeat_last_error = message
                 self._log_message(f"ESI current-system sync unavailable: {message}")
             return False
 
@@ -453,12 +622,15 @@ class MainWindow(QMainWindow):
             self._intel_system = system_name
         self._intel_system_source = "esi"
         self._last_esi_location_error = ""
+        self._heartbeat_last_error = ""
 
         current = (self._intel_system_id, self._intel_system)
         if current != previous:
             label = self._intel_system
             if self._intel_system_id is not None:
                 label = f"{label} ({self._intel_system_id})"
+            self._heartbeat_last_action = "esi_sync"
+            self._heartbeat_last_success_at = heartbeat_now_iso()
             self._log_message(f"Current system from ESI: {label}")
         return True
 
@@ -467,7 +639,7 @@ class MainWindow(QMainWindow):
         self._alert_visible = False
         if self._alert_queue:
             next_threats = self._alert_queue.pop(0)
-            self._on_threat(next_threats)
+            self._publish_intel(next_threats)
 
     def _log_message(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")

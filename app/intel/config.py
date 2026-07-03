@@ -7,7 +7,34 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.intel.scoring import ScoringEngine, Watchlist
+from app.intel.scoring import SCORING_VERSION, ScoringEngine, Watchlist
+
+
+CONFIG_SCHEMA_VERSION = "scoring_config.v1"
+EVIDENCE_RULES: tuple[dict[str, Any], ...] = (
+    {"type": "local_ocr_seen", "default_weight": 40, "source": "builtin"},
+    {"type": "intel_channel_report", "default_weight": 30, "source": "builtin"},
+    {"type": "manual_intel", "default_weight": 50, "source": "builtin"},
+    {"type": "killboard_observed", "default_weight": 20, "source": "builtin"},
+    {"type": "generic_observation", "default_weight": 25, "source": "builtin"},
+    {"type": "blacklist_match", "default_weight": 80, "source": "builtin"},
+    {"type": "hostile_corporation", "default_weight": 60, "source": "builtin"},
+    {"type": "hostile_alliance", "default_weight": 60, "source": "builtin"},
+    {"type": "hostile_standing", "default_weight": 70, "source": "builtin"},
+    {"type": "recent_kill_activity", "default_weight": None, "source": "builtin"},
+    {"type": "corporation_kill_activity", "default_weight": None, "source": "builtin"},
+    {"type": "alliance_kill_activity", "default_weight": None, "source": "builtin"},
+    {
+        "type": "intel_channel_same_system_recent",
+        "default_weight": 30,
+        "source": "builtin",
+    },
+    {
+        "type": "intel_channel_adjacent_system_recent",
+        "default_weight": 15,
+        "source": "builtin",
+    },
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +69,14 @@ class ScoringConfig:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": CONFIG_SCHEMA_VERSION,
+            "scoring_version": SCORING_VERSION,
+            "defaults": {
+                "source": "builtin",
+                "hostile_standing_threshold": -5.0,
+                "cooldown_seconds": 60.0,
+            },
+            "evidence_rules": [dict(item) for item in EVIDENCE_RULES],
             "whitelist": list(self.whitelist),
             "blacklist": list(self.blacklist),
             "hostile_corporation_ids": list(self.hostile_corporation_ids),

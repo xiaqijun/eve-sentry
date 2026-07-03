@@ -1,6 +1,6 @@
 import time
 from app.models.whitelist import Whitelist
-from app.engine.detector import Detector
+from app.engine.detector import Detector, ocr_candidate_names
 
 
 class TestDetector:
@@ -34,6 +34,52 @@ class TestDetector:
         d = self.make_detector(["alice"])
         results = [("  Alice  ", 0.95)]
         assert d.check(results) == []
+
+    def test_strips_member_list_icon_prefixes_before_matching(self):
+        d = self.make_detector(["Hajimi6"])
+        results = [
+            ("+ ImortalKing", 0.95),
+            ("* Pekka Tour", 0.95),
+            ("  * Shina Hosra Pedel", 0.95),
+            ("Hajimi6", 0.95),
+        ]
+        assert d.check(results) == [
+            "ImortalKing",
+            "Pekka Tour",
+            "Shina Hosra Pedel",
+        ]
+
+    def test_splits_and_cleans_comma_separated_member_names(self):
+        d = self.make_detector(["Hajimi6"])
+        results = [
+            ("Shina Hosra Pedel, * Torsten Kahoudi, + Oleg 79, Hajimi6", 0.95),
+        ]
+        assert d.check(results) == [
+            "Shina Hosra Pedel",
+            "Torsten Kahoudi",
+            "Oleg 79",
+        ]
+
+    def test_ignores_standalone_member_list_icons(self):
+        d = self.make_detector([])
+        results = [
+            ("+", 0.95),
+            ("*", 0.95),
+            ("[]", 0.95),
+            ("Varg Vikernes", 0.95),
+        ]
+        assert d.check(results) == ["Varg Vikernes"]
+
+    def test_candidate_names_ignore_icon_noise_when_counting_members(self):
+        results = [
+            ("+", 0.95),
+            ("*", 0.95),
+            ("+ Alice", 0.95),
+            ("Bob", 0.95),
+            ("Alice", 0.95),
+        ]
+
+        assert ocr_candidate_names(results) == ["Alice", "Bob"]
 
     def test_cooldown_suppresses_repeat(self):
         d = self.make_detector([], cooldown=60)

@@ -1,7 +1,12 @@
 import io
 import json
 
-from app.channel_client import format_observation, parse_args, process_once
+from app.channel_client import (
+    format_observation,
+    parse_args,
+    process_once,
+    run_channel_client,
+)
 from app.channels.log_watcher import ChatLogWatcher
 
 
@@ -125,6 +130,15 @@ def test_process_once_requires_api_without_dry_run(tmp_path):
         raise AssertionError("expected ValueError")
 
 
+def test_process_once_idle_clears_previous_diagnostics_error(tmp_path):
+    watcher = ChatLogWatcher(tmp_path, state_path=tmp_path / "s.json")
+    diagnostics = {"last_error": "HTTP 502"}
+
+    assert process_once(watcher, FakeApi(), diagnostics=diagnostics) == 0
+    assert diagnostics["last_action"] == "observation_idle"
+    assert diagnostics["last_error"] == ""
+
+
 def test_format_observation_includes_metadata_summary():
     text = format_observation(
         {
@@ -153,3 +167,57 @@ def test_parse_args_supports_dry_run_json_mode():
     assert args.json is True
     assert args.ignore_existing is False
     assert args.server_parse is True
+
+
+def test_run_channel_client_once_posts_heartbeat(monkeypatch, tmp_path):
+    class HeartbeatApi:
+        instances = []
+
+        def __init__(self, base_url, timeout=3.0):
+            self.base_url = base_url
+            self.timeout = timeout
+            self.heartbeats = []
+            self.observations = []
+            self.instances.append(self)
+
+        def post_heartbeat(self, **payload):
+            self.heartbeats.append(payload)
+            return {"client_id": payload["client_id"], "online": True}
+
+        def post_observation(self, **payload):
+            self.observations.append(payload)
+            return {"ok": True}
+
+    monkeypatch.setattr("app.channel_client.IntelApiClient", HeartbeatApi)
+    monkeypatch.setenv("EVE_SENTRY_CLIENT_VERSION", "test-version")
+    monkeypatch.setenv("EVE_SENTRY_CLIENT_HOST", "test-host")
+    log_dir = tmp_path / "Chatlogs"
+    log_dir.mkdir()
+    (log_dir / "Alliance Intel_20260630_120000.txt").write_text(
+        "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds\n",
+        encoding="utf-8",
+    )
+    args = parse_args(
+        [
+            "--server",
+            "http://example.invalid",
+            "--log-dir",
+            str(log_dir),
+            "--state",
+            str(tmp_path / "channel_offsets.json"),
+            "--once",
+            "--include-existing",
+        ]
+    )
+
+    assert run_channel_client(args) == 0
+    api = HeartbeatApi.instances[0]
+    assert len(api.heartbeats) == 1
+    assert api.heartbeats[0]["client_type"] == "channel_client"
+    assert api.heartbeats[0]["details"]["mode"] == "observation"
+    assert api.heartbeats[0]["details"]["last_action"] == "observation:1"
+    assert api.heartbeats[0]["details"]["client_version"] == "test-version"
+    assert api.heartbeats[0]["details"]["host"] == "test-host"
+    assert api.heartbeats[0]["details"]["last_success_at"]
+    assert api.heartbeats[0]["details"]["server_parse"] is False
+    assert api.observations[0]["system_name"] == "Tama"

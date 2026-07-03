@@ -1,7 +1,7 @@
 import gzip
 import json
 from unittest.mock import patch
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from app.esi.cache import EsiCache
 from app.killboard.zkill_client import ZKillboardClient
@@ -52,7 +52,9 @@ def test_zkill_client_uses_cache(tmp_path):
     with patch("app.killboard.zkill_client.urlopen", fake_urlopen):
         client = ZKillboardClient(cache=cache)
         assert client.character_recent(123) == [{"killmail_id": 1}]
+        assert client.activity_status("character", 123)["cache_status"] == "refreshed"
         assert client.character_recent(123) == [{"killmail_id": 1}]
+        assert client.activity_status("character", 123)["cache_status"] == "cached"
 
     assert calls == 1
 
@@ -82,3 +84,54 @@ def test_zkill_client_returns_stale_cache_when_request_fails(tmp_path):
         rows = client.character_recent(123)
 
     assert rows == [{"killmail_id": 99}]
+    status = client.activity_status("character", 123)
+    assert status["cache_status"] == "stale"
+    assert status["request_status"] == "network_error"
+    assert status["error"] == "offline"
+    assert status["retry_after"] > 0
+
+
+def test_zkill_client_records_rate_limit_and_backs_off_with_stale_cache(tmp_path):
+    path = tmp_path / "zkill_cache.json"
+    cache_key = "zkill:/characterID/123/"
+    path.write_text(
+        json.dumps(
+            {
+                cache_key: {
+                    "value": [{"killmail_id": 99}],
+                    "expires_at": 0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = 0
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        _ = request, timeout
+        calls += 1
+        raise HTTPError(
+            url="https://zkillboard.com/api/characterID/123/",
+            code=429,
+            msg="rate limited",
+            hdrs={"Retry-After": "120"},
+            fp=None,
+        )
+
+    cache = EsiCache(path)
+    with patch("app.killboard.zkill_client.urlopen", fake_urlopen):
+        client = ZKillboardClient(cache=cache, backoff_seconds=60)
+        assert client.character_recent(123) == [{"killmail_id": 99}]
+        first_status = client.activity_status("character", 123)
+        assert first_status["cache_status"] == "stale"
+        assert first_status["request_status"] == "rate_limited"
+        assert first_status["http_status"] == 429
+        assert first_status["retry_after"] > 0
+
+        assert client.character_recent(123) == [{"killmail_id": 99}]
+        second_status = client.activity_status("character", 123)
+        assert second_status["request_status"] == "backoff"
+        assert second_status["retry_after"] == first_status["retry_after"]
+
+    assert calls == 1

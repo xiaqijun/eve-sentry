@@ -6,7 +6,7 @@ import hashlib
 import json
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -18,6 +18,13 @@ from app.channels.parser import (
     extract_names,
     extract_system_candidates,
     remove_system,
+)
+from app.core.active_intel import (
+    ActiveIntelItem,
+    ActiveIntelSnapshotResult,
+    DEFAULT_OCR_GRACE_SECONDS,
+    channel_ttl_seconds,
+    contains_clear_signal,
 )
 from app.core.models import Observation, ThreatEvent
 from app.intel.scoring import ChannelMention
@@ -47,10 +54,12 @@ class StarSystem:
     y: float
     region: str = "Unknown region"
     security: float | None = None
+    system_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "system_id": self.system_id,
             "x": self.x,
             "y": self.y,
             "region": self.region,
@@ -175,6 +184,8 @@ class IntelStore:
         self._enricher = enricher
         self._lock = threading.RLock()
         self._alert_cache: dict[str, ThreatEvent | None] = {}
+        self._heartbeats: dict[str, dict[str, Any]] = {}
+        self._active_intel: dict[str, ActiveIntelItem] = {}
         self._reports: list[IntelReport] = self._load_reports()
 
     def set_scorer(self, scorer: Any | None) -> None:
@@ -188,6 +199,18 @@ class IntelStore:
         with self._lock:
             self._enricher = enricher
             self._alert_cache.clear()
+
+    def set_map_data(
+        self,
+        systems: dict[str, StarSystem],
+        links: list[tuple[str, str]],
+    ) -> None:
+        """Replace the configured map topology without touching stored reports."""
+        with self._lock:
+            self._systems = dict(systems)
+            self._links = list(links)
+            for report in self._reports:
+                self._ensure_system(report.system)
 
     def character_by_name(self, name: str) -> dict[str, Any] | None:
         """Resolve a character name and return its public profile when available."""
@@ -369,9 +392,11 @@ class IntelStore:
         with self._lock:
             duplicate = self._find_duplicate_observation(report)
             if duplicate is not None:
+                self._apply_channel_active_state(duplicate)
                 return duplicate.to_observation()
             self._ensure_system(report.system)
             self._reports.append(report)
+            self._apply_channel_active_state(report)
             self._save_reports()
         return report.to_observation()
 
@@ -673,6 +698,150 @@ class IntelStore:
             system_key="system_name",
         )
 
+    def record_ocr_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Record one detector OCR snapshot and update active intel state."""
+        client_id = str(payload.get("client_id") or "").strip()
+        if not client_id:
+            raise ValueError("client_id is required")
+
+        source = "eve-sentry-detector"
+        source_instance = (
+            str(payload.get("source_instance") or client_id).strip() or client_id
+        )
+        system_name = self._normalize_system(
+            str(payload.get("system_name") or payload.get("system") or "")
+        )
+        system_id = self._optional_int(payload.get("system_id"))
+        names = self._normalize_ocr_names(payload.get("names"))
+        seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
+        raw_text = ", ".join(names)
+        result = ActiveIntelSnapshotResult()
+
+        with self._lock:
+            seen_name_keys = {name.casefold() for name in names}
+            for name in names:
+                active_id = self._active_ocr_id(
+                    client_id,
+                    system_name,
+                    name,
+                )
+                item = self._active_intel.get(active_id)
+                if item is None or not item.active:
+                    observation = self.add_observation(
+                        {
+                            "source": source,
+                            "source_instance": source_instance,
+                            "system_name": system_name,
+                            "system_id": system_id,
+                            "names": [name],
+                            "raw_text": name,
+                            "metadata": {"client_id": client_id},
+                            "seen_at": seen_at,
+                        }
+                    )
+                    self._active_intel[active_id] = ActiveIntelItem(
+                        active_id=active_id,
+                        source=source,
+                        source_instance=source_instance,
+                        system_name=system_name,
+                        system_id=system_id,
+                        target_type="character",
+                        name=name,
+                        raw_text=raw_text,
+                        metadata={"client_id": client_id},
+                        first_seen_at=seen_at,
+                        last_seen_at=seen_at,
+                        active=True,
+                        seen_count=1,
+                        source_observation_ids=[observation.observation_id],
+                    )
+                    result.created += 1
+                    continue
+
+                elapsed = self._seconds_between_iso(item.last_seen_at, seen_at)
+                if elapsed is None or elapsed >= 0:
+                    item.last_seen_at = seen_at
+                    item.source_instance = source_instance
+                    item.raw_text = raw_text
+                item.active = True
+                item.left_at = ""
+                item.seen_count += 1
+                result.refreshed += 1
+
+            for item in self._active_intel.values():
+                if not item.active:
+                    continue
+                if item.source != source:
+                    continue
+                if item.metadata.get("client_id") != client_id:
+                    continue
+                if item.system_name.casefold() != system_name.casefold():
+                    continue
+                if item.name.casefold() in seen_name_keys:
+                    continue
+
+                elapsed = self._seconds_between_iso(item.last_seen_at, seen_at)
+                if elapsed is None or elapsed <= DEFAULT_OCR_GRACE_SECONDS:
+                    result.missing += 1
+                    continue
+
+                item.active = False
+                item.left_at = seen_at
+                result.expired += 1
+
+            result.active = self.list_active_intel(source=source)
+
+        return result.to_dict()
+
+    def list_active_intel(
+        self,
+        source: str = "",
+        system: str = "",
+        active: bool = True,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return active intel items ordered by most recent sighting first."""
+        self.expire_active_intel()
+        source_query = source.strip().casefold()
+        system_query = system.strip().casefold()
+        with self._lock:
+            items = [item.to_dict() for item in self._active_intel.values()]
+
+        filtered = []
+        for item in items:
+            if bool(item["active"]) is not active:
+                continue
+            if source_query and item["source"].casefold() != source_query:
+                continue
+            if system_query and item["system_name"].casefold() != system_query:
+                continue
+            filtered.append(item)
+
+        filtered.sort(key=lambda item: item["last_seen_at"], reverse=True)
+        if limit is not None:
+            filtered = filtered[:max(0, limit)]
+        return filtered
+
+    def expire_active_intel(self, now: str | None = None) -> int:
+        """Mark active TTL-based intel inactive once its expiry passes."""
+        left_at = str(now or utc_now_iso()).strip()
+        now_at = self._parse_timestamp(left_at)
+        if now_at is None:
+            return 0
+
+        expired = 0
+        with self._lock:
+            for item in self._active_intel.values():
+                if not item.active or not item.expires_at:
+                    continue
+                expires_at = self._parse_timestamp(item.expires_at)
+                if expires_at is None or now_at <= expires_at:
+                    continue
+                item.active = False
+                item.left_at = left_at
+                expired += 1
+        return expired
+
     def list_alerts(
         self,
         since: str | None = None,
@@ -716,6 +885,172 @@ class IntelStore:
             alerts = alerts[:max(0, limit)]
         return alerts
 
+    def character_intel(
+        self,
+        character_id: int,
+        since: str | None = None,
+        limit: int | None = None,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return observations, alerts, and enrichment for one character."""
+        character_id = self._optional_int(character_id)
+        if character_id is None:
+            return None
+        observations = [
+            observation
+            for observation in self.list_observations(limit=None)
+            if character_id in self._normalize_ints(observation.get("character_ids"))
+        ]
+        alerts = [
+            alert
+            for alert in self.list_alerts(
+                since=since,
+                limit=None,
+                acknowledged=acknowledged,
+                min_score=min_score,
+                min_level=min_level,
+            )
+            if character_id in self._normalize_ints(alert.get("character_ids"))
+        ]
+        observations = self._limit_recent_items(observations, "seen_at", limit)
+        alerts = self._limit_recent_items(alerts, "created_at", limit)
+        profile = self.character_profile(character_id)
+        return self._intel_payload(
+            entity_type="character",
+            entity_id=character_id,
+            observations=observations,
+            alerts=alerts,
+            profile=profile,
+            activity=self.character_kill_activity(character_id),
+            since=since,
+            limit=limit,
+            acknowledged=acknowledged,
+            min_score=min_score,
+            min_level=min_level,
+        )
+
+    def system_intel(
+        self,
+        system_id: int,
+        since: str | None = None,
+        limit: int | None = None,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return observations, alerts, and enrichment for one solar system."""
+        system_id = self._optional_int(system_id)
+        if system_id is None:
+            return None
+        observations = [
+            observation
+            for observation in self.list_observations(limit=None)
+            if self._optional_int(observation.get("system_id")) == system_id
+        ]
+        alerts = [
+            alert
+            for alert in self.list_alerts(
+                since=since,
+                limit=None,
+                acknowledged=acknowledged,
+                min_score=min_score,
+                min_level=min_level,
+            )
+            if self._optional_int(alert.get("system_id")) == system_id
+        ]
+        observations = self._limit_recent_items(observations, "seen_at", limit)
+        alerts = self._limit_recent_items(alerts, "created_at", limit)
+        profile = self.system_profile(system_id)
+        return self._intel_payload(
+            entity_type="system",
+            entity_id=system_id,
+            observations=observations,
+            alerts=alerts,
+            profile=profile,
+            activity=self.system_kill_activity(system_id),
+            since=since,
+            limit=limit,
+            acknowledged=acknowledged,
+            min_score=min_score,
+            min_level=min_level,
+        )
+
+    def corporation_intel(
+        self,
+        corporation_id: int,
+        since: str | None = None,
+        limit: int | None = None,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return observations, alerts, and enrichment for one corporation."""
+        corporation_id = self._optional_int(corporation_id)
+        if corporation_id is None:
+            return None
+        observations, alerts = self._intel_by_affiliation(
+            "corporation_id",
+            corporation_id,
+            since=since,
+            acknowledged=acknowledged,
+            min_score=min_score,
+            min_level=min_level,
+        )
+        observations = self._limit_recent_items(observations, "seen_at", limit)
+        alerts = self._limit_recent_items(alerts, "created_at", limit)
+        return self._intel_payload(
+            entity_type="corporation",
+            entity_id=corporation_id,
+            observations=observations,
+            alerts=alerts,
+            profile={"corporation_id": corporation_id},
+            activity=self.corporation_kill_activity(corporation_id),
+            since=since,
+            limit=limit,
+            acknowledged=acknowledged,
+            min_score=min_score,
+            min_level=min_level,
+        )
+
+    def alliance_intel(
+        self,
+        alliance_id: int,
+        since: str | None = None,
+        limit: int | None = None,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return observations, alerts, and enrichment for one alliance."""
+        alliance_id = self._optional_int(alliance_id)
+        if alliance_id is None:
+            return None
+        observations, alerts = self._intel_by_affiliation(
+            "alliance_id",
+            alliance_id,
+            since=since,
+            acknowledged=acknowledged,
+            min_score=min_score,
+            min_level=min_level,
+        )
+        observations = self._limit_recent_items(observations, "seen_at", limit)
+        alerts = self._limit_recent_items(alerts, "created_at", limit)
+        return self._intel_payload(
+            entity_type="alliance",
+            entity_id=alliance_id,
+            observations=observations,
+            alerts=alerts,
+            profile={"alliance_id": alliance_id},
+            activity=self.alliance_kill_activity(alliance_id),
+            since=since,
+            limit=limit,
+            acknowledged=acknowledged,
+            min_score=min_score,
+            min_level=min_level,
+        )
+
     def alert_detail(self, alert_id: str) -> dict[str, Any] | None:
         """Return one alert with its source observation and explanation context."""
         alert_id = str(alert_id or "").strip()
@@ -731,15 +1066,20 @@ class IntelStore:
                 continue
             observation = report.to_observation()
             context = self._alert_context(observation)
+            degraded_sources = self._alert_degraded_sources(observation, context)
+            explanation = self._alert_explanation(
+                alert_data,
+                observation,
+                context,
+                degraded_sources=degraded_sources,
+            )
             return {
+                "schema_version": "alert_detail.v1",
                 "alert": alert_data,
                 "observation": observation.to_dict(),
+                "entities": self._alert_entities(observation, context),
                 "context": context,
-                "explanation": self._alert_explanation(
-                    alert_data,
-                    observation,
-                    context,
-                ),
+                "explanation": explanation,
             }
         return None
 
@@ -830,66 +1170,198 @@ class IntelStore:
             self._save_reports()
             return True
 
+    def record_heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Record one client heartbeat in memory for runtime diagnostics."""
+        client_id = str(payload.get("client_id") or "").strip()
+        if not client_id:
+            raise ValueError("client_id is required")
+
+        client_type = str(payload.get("client_type") or "client").strip() or "client"
+        label = str(payload.get("label") or client_id).strip() or client_id
+        status = str(payload.get("status") or "running").strip() or "running"
+        seen_at = str(payload.get("seen_at") or utc_now_iso()).strip() or utc_now_iso()
+        interval_seconds = self._clean_non_negative_float(
+            payload.get("heartbeat_interval_seconds", 0),
+            "heartbeat_interval_seconds",
+        )
+        details = payload.get("details")
+        if details is not None and not isinstance(details, dict):
+            raise ValueError("details must be a JSON object")
+
+        heartbeat = {
+            "client_id": client_id,
+            "client_type": client_type,
+            "label": label,
+            "status": status,
+            "seen_at": seen_at,
+            "heartbeat_interval_seconds": interval_seconds,
+            "details": dict(details or {}),
+        }
+        with self._lock:
+            self._heartbeats[client_id] = heartbeat
+        return self._heartbeat_view(heartbeat)
+
+    def list_heartbeats(self) -> list[dict[str, Any]]:
+        """Return recent client heartbeat states ordered by newest first."""
+        with self._lock:
+            items = [self._heartbeat_view(item) for item in self._heartbeats.values()]
+        return sorted(items, key=lambda item: str(item.get("seen_at") or ""), reverse=True)
+
+    def heartbeat_snapshot(self) -> dict[str, Any]:
+        """Return heartbeat list plus aggregate summary for runtime diagnostics."""
+        items = self.list_heartbeats()
+        return {
+            "heartbeats": items,
+            "count": len(items),
+            "summary": self._heartbeat_summary_from_items(items),
+        }
+
+    def heartbeat_summary(self) -> dict[str, Any]:
+        """Return aggregate client heartbeat status for health and dashboards."""
+        return self._heartbeat_summary_from_items(self.list_heartbeats())
+
+    def _heartbeat_summary_from_items(
+        self,
+        items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        online_count = 0
+        stale_count = 0
+        by_type: dict[str, int] = {}
+        by_status: dict[str, int] = {}
+        for item in items:
+            client_type = str(item.get("client_type") or "client").strip() or "client"
+            status = str(item.get("status") or "unknown").strip() or "unknown"
+            by_type[client_type] = by_type.get(client_type, 0) + 1
+            by_status[status] = by_status.get(status, 0) + 1
+            if item.get("online"):
+                online_count += 1
+            else:
+                stale_count += 1
+        return {
+            "count": len(items),
+            "online_count": online_count,
+            "stale_count": stale_count,
+            "by_type": by_type,
+            "by_status": by_status,
+            "latest_seen_at": str(items[0].get("seen_at") or "") if items else "",
+            "items": items,
+        }
+
     def snapshot(self) -> dict[str, Any]:
         """Return systems, links, reports, observations, alerts, and summary."""
         with self._lock:
-            reports = [r.to_dict() for r in self._reports]
-            observations = [r.to_observation().to_dict() for r in self._reports]
-            alerts = []
-            for report in self._reports:
-                alert = self._alert_from_report(report)
-                if alert is not None:
-                    alerts.append(self._alert_to_dict(report, alert))
-            system_intel = self._aggregate_by_system(reports)
-            character_intel = self._aggregate_by_character(reports)
+            report_items = list(self._reports)
+            system_items = dict(self._systems)
+            link_items = list(self._links)
+            heartbeat_count = len(self._heartbeats)
 
-            systems = []
-            for name, system in sorted(self._systems.items()):
-                data = system.to_dict()
-                data.update(system_intel.get(name, self._empty_system_intel()))
-                if isinstance(data["hostiles"], set):
-                    data["hostiles"] = sorted(data["hostiles"])
-                systems.append(data)
+        reports = [report.to_dict() for report in report_items]
+        observations = [report.to_observation().to_dict() for report in report_items]
+        alerts = []
+        for report in report_items:
+            alert = self._alert_from_report(report)
+            if alert is not None:
+                alerts.append(self._alert_to_dict(report, alert))
+        system_intel = self._aggregate_by_system(reports)
+        character_intel = self._aggregate_by_character(reports)
 
-            return {
-                "generated_at": utc_now_iso(),
-                "systems": systems,
-                "links": [
-                    {"from": source, "to": target}
-                    for source, target in self._links
-                    if source in self._systems and target in self._systems
-                ],
-                "reports": sorted(
-                    reports,
-                    key=lambda report: report["seen_at"],
-                    reverse=True,
+        systems = []
+        for name, system in sorted(system_items.items()):
+            data = system.to_dict()
+            data.update(system_intel.get(name, self._empty_system_intel()))
+            if isinstance(data["hostiles"], set):
+                data["hostiles"] = sorted(data["hostiles"])
+            systems.append(data)
+
+        return {
+            "generated_at": utc_now_iso(),
+            "systems": systems,
+            "links": [
+                {"from": source, "to": target}
+                for source, target in link_items
+                if source in system_items and target in system_items
+            ],
+            "reports": sorted(
+                reports,
+                key=lambda report: report["seen_at"],
+                reverse=True,
+            ),
+            "observations": sorted(
+                observations,
+                key=lambda observation: observation["seen_at"],
+                reverse=True,
+            ),
+            "alerts": sorted(
+                alerts,
+                key=lambda alert: alert["created_at"],
+                reverse=True,
+            ),
+            "characters": sorted(
+                character_intel.values(),
+                key=lambda item: item["latest_seen"],
+                reverse=True,
+            ),
+            "summary": {
+                "system_count": len(system_items),
+                "active_system_count": sum(
+                    1 for data in system_intel.values() if data["hostile_count"]
                 ),
-                "observations": sorted(
-                    observations,
-                    key=lambda observation: observation["seen_at"],
-                    reverse=True,
-                ),
-                "alerts": sorted(
-                    alerts,
-                    key=lambda alert: alert["created_at"],
-                    reverse=True,
-                ),
-                "characters": sorted(
-                    character_intel.values(),
-                    key=lambda item: item["latest_seen"],
-                    reverse=True,
-                ),
-                "summary": {
-                    "system_count": len(self._systems),
-                    "active_system_count": sum(
-                        1 for data in system_intel.values() if data["hostile_count"]
-                    ),
-                    "report_count": len(reports),
-                    "observation_count": len(observations),
-                    "alert_count": len(alerts),
-                    "hostile_count": len(character_intel),
-                },
-            }
+                "report_count": len(reports),
+                "observation_count": len(observations),
+                "alert_count": len(alerts),
+                "hostile_count": len(character_intel),
+                "heartbeat_count": heartbeat_count,
+            },
+        }
+
+    def _heartbeat_view(self, heartbeat: dict[str, Any]) -> dict[str, Any]:
+        item = {
+            "client_id": str(heartbeat.get("client_id") or "").strip(),
+            "client_type": str(heartbeat.get("client_type") or "client").strip(),
+            "label": str(heartbeat.get("label") or "").strip(),
+            "status": str(heartbeat.get("status") or "running").strip(),
+            "seen_at": str(heartbeat.get("seen_at") or "").strip(),
+            "heartbeat_interval_seconds": self._clean_non_negative_float(
+                heartbeat.get("heartbeat_interval_seconds", 0),
+                "heartbeat_interval_seconds",
+            ),
+            "details": dict(heartbeat.get("details") or {}),
+        }
+        age_seconds = self._heartbeat_age_seconds(item["seen_at"])
+        if age_seconds is not None:
+            item["age_seconds"] = age_seconds
+        stale_after = max(15.0, item["heartbeat_interval_seconds"] * 3.0 or 15.0)
+        item["stale_after_seconds"] = stale_after
+        item["online"] = age_seconds is not None and age_seconds <= stale_after
+        return item
+
+    def _heartbeat_age_seconds(self, seen_at: str) -> float | None:
+        seen = self._parse_iso_datetime(seen_at)
+        if seen is None:
+            return None
+        delta = datetime.now(timezone.utc) - seen
+        return max(0.0, delta.total_seconds())
+
+    def _parse_iso_datetime(self, value: str) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _clean_non_negative_float(self, value: Any, label: str) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label} must be a non-negative number") from exc
+        if number < 0:
+            raise ValueError(f"{label} must be a non-negative number")
+        return number
 
     def _reports_snapshot(self) -> list[IntelReport]:
         with self._lock:
@@ -1001,6 +1473,120 @@ class IntelStore:
         except (TypeError, ValueError):
             return None
 
+    def _intel_by_affiliation(
+        self,
+        id_key: str,
+        entity_id: int,
+        since: str | None = None,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        observations = []
+        alerts = []
+        since_query = since.strip() if since else ""
+        min_score_value = self._optional_score(min_score)
+        min_level_rank = self._alert_level_rank(min_level)
+
+        for report in self._reports_snapshot():
+            observation = report.to_observation()
+            context = self._alert_context(observation)
+            if not self._context_matches_affiliation(context, id_key, entity_id):
+                continue
+
+            observations.append(observation.to_dict())
+            alert = self._alert_from_report(report)
+            if alert is None:
+                continue
+            alert_data = self._alert_to_dict(report, alert)
+            if since_query and alert_data["created_at"] <= since_query:
+                continue
+            if not self._alert_passes_filters(
+                alert_data,
+                acknowledged=acknowledged,
+                min_score=min_score_value,
+                min_level_rank=min_level_rank,
+            ):
+                continue
+            alerts.append(alert_data)
+        return observations, alerts
+
+    def _context_matches_affiliation(
+        self,
+        context: dict[str, Any],
+        id_key: str,
+        entity_id: int,
+    ) -> bool:
+        profiles = context.get("character_profiles")
+        if isinstance(profiles, list):
+            for profile in profiles:
+                if not isinstance(profile, dict):
+                    continue
+                if self._optional_int(profile.get(id_key)) == entity_id:
+                    return True
+
+        entity_type = id_key.removesuffix("_id")
+        activities = context.get("group_activities")
+        if isinstance(activities, list):
+            for activity in activities:
+                if not isinstance(activity, dict):
+                    continue
+                if str(activity.get("entity_type") or "") != entity_type:
+                    continue
+                activity_id = activity.get("entity_id") or activity.get(id_key)
+                if self._optional_int(activity_id) == entity_id:
+                    return True
+        return False
+
+    def _intel_payload(
+        self,
+        entity_type: str,
+        entity_id: int,
+        observations: list[dict[str, Any]],
+        alerts: list[dict[str, Any]],
+        profile: dict[str, Any] | None,
+        activity: dict[str, Any] | None,
+        since: str | None,
+        limit: int | None,
+        acknowledged: bool | None,
+        min_score: int | None,
+        min_level: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": "intel_entity.v1",
+            "entity": {
+                "type": entity_type,
+                "id": entity_id,
+                "profile": profile or {},
+            },
+            "observations": observations,
+            "alerts": alerts,
+            "activity": activity or {},
+            "counts": {
+                "observations": len(observations),
+                "alerts": len(alerts),
+                "has_activity": bool(activity),
+            },
+            "filters": {
+                "since": since or "",
+                "limit": limit,
+                "acknowledged": acknowledged,
+                "min_score": min_score,
+                "min_level": min_level or "",
+            },
+        }
+
+    def _limit_recent_items(
+        self,
+        items: list[dict[str, Any]],
+        key: str,
+        limit: int | None,
+    ) -> list[dict[str, Any]]:
+        items = sorted(items, key=lambda item: str(item.get(key) or ""), reverse=True)
+        if limit is None:
+            return items
+        return items[:max(0, limit)]
+
     def _alert_context(self, observation: Observation) -> dict[str, Any]:
         enrichment = self._best_effort_enrichment(observation)
         character_profiles = list(
@@ -1031,6 +1617,7 @@ class IntelStore:
                 )
                 if item is not None
             ],
+            "resolution": self._alert_resolution_context(observation),
         }
 
     def _alert_explanation(
@@ -1038,6 +1625,7 @@ class IntelStore:
         alert: dict[str, Any],
         observation: Observation,
         context: dict[str, Any],
+        degraded_sources: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         reasons = self._alert_reason_summaries(alert)
         context_summaries = self._observation_resolution_summaries(observation)
@@ -1059,12 +1647,154 @@ class IntelStore:
             "summary": summary,
             "reasons": reasons,
             "context": context_summaries,
+            "degraded_sources": list(degraded_sources or []),
+            "scoring_version": str(alert.get("scoring_version") or ""),
             "sources": self._alert_explanation_sources(
                 observation,
                 reasons,
                 context_summaries,
             ),
         }
+
+    def _alert_entities(
+        self,
+        observation: Observation,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        character_ids = self._normalize_ints(observation.character_ids)
+        characters = self._entity_profiles(
+            context.get("character_profiles"),
+            id_key="character_id",
+            fallback_ids=character_ids,
+        )
+
+        corporations = self._affiliation_entities(
+            characters,
+            id_key="corporation_id",
+            name_key="corporation_name",
+        )
+        alliances = self._affiliation_entities(
+            characters,
+            id_key="alliance_id",
+            name_key="alliance_name",
+        )
+        self._merge_group_activity_entities(
+            corporations,
+            alliances,
+            context.get("group_activities"),
+        )
+
+        system = {
+            "system_id": observation.system_id,
+            "name": observation.system_name,
+        }
+        return {
+            "characters": characters,
+            "systems": [system] if observation.system_name or observation.system_id else [],
+            "corporations": list(corporations.values()),
+            "alliances": list(alliances.values()),
+        }
+
+    def _entity_profiles(
+        self,
+        value: Any,
+        id_key: str,
+        fallback_ids: list[int],
+    ) -> list[dict[str, Any]]:
+        items = value if isinstance(value, list) else []
+        entities: dict[int, dict[str, Any]] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            entity_id = self._optional_int(item.get(id_key))
+            if entity_id is None:
+                continue
+            entity = dict(item)
+            entity[id_key] = entity_id
+            entities[entity_id] = entity
+        for entity_id in fallback_ids:
+            entities.setdefault(entity_id, {id_key: entity_id})
+        return list(entities.values())
+
+    def _affiliation_entities(
+        self,
+        characters: list[dict[str, Any]],
+        id_key: str,
+        name_key: str,
+    ) -> dict[int, dict[str, Any]]:
+        entities: dict[int, dict[str, Any]] = {}
+        for character in characters:
+            entity_id = self._optional_int(character.get(id_key))
+            if entity_id is None:
+                continue
+            entity = entities.setdefault(entity_id, {id_key: entity_id})
+            name = str(character.get(name_key) or "").strip()
+            if name and not entity.get("name"):
+                entity["name"] = name
+        return entities
+
+    def _merge_group_activity_entities(
+        self,
+        corporations: dict[int, dict[str, Any]],
+        alliances: dict[int, dict[str, Any]],
+        value: Any,
+    ) -> None:
+        if not isinstance(value, list):
+            return
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            entity_type = str(item.get("entity_type") or "").strip().casefold()
+            entity_id = self._optional_int(
+                item.get("entity_id") or item.get(f"{entity_type}_id")
+            )
+            if entity_id is None:
+                continue
+            if entity_type == "corporation":
+                corporations.setdefault(entity_id, {"corporation_id": entity_id})
+            elif entity_type == "alliance":
+                alliances.setdefault(entity_id, {"alliance_id": entity_id})
+
+    def _alert_resolution_context(self, observation: Observation) -> dict[str, Any]:
+        resolution = observation.metadata.get("esi_resolution")
+        if not isinstance(resolution, dict):
+            return {}
+        result = dict(resolution)
+        suppressed = resolution.get("suppressed_name_candidates")
+        if isinstance(suppressed, list):
+            result["suppressed_name_candidates"] = [
+                str(item).strip() for item in suppressed if str(item).strip()
+            ]
+        return result
+
+    def _alert_degraded_sources(
+        self,
+        observation: Observation,
+        context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        degraded: list[dict[str, Any]] = []
+        if observation.character_ids and not context.get("character_profiles"):
+            degraded.append(
+                {
+                    "source": "esi",
+                    "reason": "character profiles unavailable",
+                }
+            )
+        if observation.character_ids and not context.get("kill_activities"):
+            degraded.append(
+                {
+                    "source": "killboard",
+                    "reason": "character kill activity unavailable",
+                }
+            )
+        if not observation.character_ids and observation.names and self._resolver is None:
+            degraded.append(
+                {
+                    "source": "esi",
+                    "reason": "character ids unavailable and ESI resolver disabled",
+                }
+            )
+        return degraded
 
     def _observation_resolution_summaries(
         self,
@@ -1175,6 +1905,9 @@ class IntelStore:
             )
             if standing:
                 affiliations.append(f"standing {standing}")
+            cache_status = str(item.get("cache_status") or "").strip()
+            if cache_status:
+                affiliations.append(f"cache {cache_status}")
             suffix = f": {', '.join(affiliations)}" if affiliations else ""
             summaries.append(f"ESI profile {label}{suffix}")
         return summaries
@@ -1197,10 +1930,12 @@ class IntelStore:
             character_id = item.get("character_id")
             if character_id in {None, ""}:
                 continue
+            cache = self._cache_status_label(item)
+            cache_suffix = f" ({cache})" if cache else ""
             summaries.append(
                 "Character "
                 f"{character_id} has {self._activity_counts(item)}"
-                f" in {item.get('window') or 'recent'}"
+                f" in {item.get('window') or 'recent'}{cache_suffix}"
             )
         return summaries
 
@@ -1216,11 +1951,23 @@ class IntelStore:
             if entity_id in {None, ""}:
                 continue
             label = entity_type.replace("_", " ")
+            cache = self._cache_status_label(item)
+            cache_suffix = f" ({cache})" if cache else ""
             summaries.append(
                 f"{label.title()} {entity_id} has {self._activity_counts(item)}"
-                f" in {item.get('window') or 'recent'}"
+                f" in {item.get('window') or 'recent'}{cache_suffix}"
             )
         return summaries
+
+    def _cache_status_label(self, item: dict[str, Any]) -> str:
+        labels = []
+        status = str(item.get("cache_status") or "").strip()
+        if status:
+            labels.append(f"cache {status}")
+        request_status = str(item.get("request_status") or "").strip()
+        if request_status:
+            labels.append(f"request {request_status}")
+        return ", ".join(labels)
 
     def _activity_counts(self, item: dict[str, Any]) -> str:
         parts = []
@@ -1406,6 +2153,168 @@ class IntelStore:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
+
+    def _add_seconds_iso(self, timestamp: str, seconds: int) -> str:
+        base = self._parse_timestamp(timestamp)
+        if base is None:
+            base = datetime.now(timezone.utc).replace(microsecond=0)
+        return (base + timedelta(seconds=seconds)).isoformat()
+
+    def _active_ocr_id(
+        self,
+        client_id: str,
+        system: str,
+        name: str,
+    ) -> str:
+        key = "\x1f".join(
+            [
+                client_id.strip().casefold(),
+                system.strip().casefold(),
+                name.strip().casefold(),
+            ]
+        )
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return f"ocr:{digest}"
+
+    def _active_channel_id(
+        self,
+        source_instance: str,
+        system: str,
+        raw_text: str,
+    ) -> str:
+        key = "\x1f".join(
+            [
+                source_instance.strip().casefold(),
+                system.strip().casefold(),
+                raw_text.strip().casefold(),
+            ]
+        )
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return f"channel:{digest}"
+
+    def _apply_channel_active_state(self, report: IntelReport) -> None:
+        if report.source.strip().casefold() != "intel_channel":
+            return
+
+        seen_at = report.seen_at or report.received_at or utc_now_iso()
+        if contains_clear_signal(report.raw_text):
+            self._clear_channel_active_state(report, seen_at)
+            return
+
+        source_instance = report.source_instance.strip() or report.source
+        active_id = self._active_channel_id(
+            source_instance,
+            report.system,
+            report.raw_text,
+        )
+        expires_at = self._add_seconds_iso(
+            seen_at,
+            channel_ttl_seconds(report.metadata),
+        )
+        item = self._active_intel.get(active_id)
+        if (
+            item is not None
+            and not item.active
+            and item.cleared_at
+            and not self._channel_seen_after(seen_at, item.cleared_at)
+        ):
+            if report.report_id not in item.source_observation_ids:
+                item.source_observation_ids.append(report.report_id)
+            return
+        if item is None:
+            self._active_intel[active_id] = ActiveIntelItem(
+                active_id=active_id,
+                source="intel_channel",
+                source_instance=source_instance,
+                system_name=report.system,
+                system_id=report.system_id,
+                target_type="system",
+                raw_text=report.raw_text,
+                metadata=dict(report.metadata),
+                first_seen_at=seen_at,
+                last_seen_at=seen_at,
+                expires_at=expires_at,
+                active=True,
+                seen_count=1,
+                confidence=report.confidence,
+                source_observation_ids=[report.report_id],
+            )
+            return
+
+        item.source_instance = source_instance
+        item.system_name = report.system
+        item.system_id = report.system_id
+        item.raw_text = report.raw_text
+        item.metadata = dict(report.metadata)
+        item.last_seen_at = seen_at
+        item.expires_at = expires_at
+        item.active = True
+        item.cleared_at = ""
+        item.seen_count += 1
+        item.confidence = report.confidence
+        if report.report_id not in item.source_observation_ids:
+            item.source_observation_ids.append(report.report_id)
+
+    def _clear_channel_active_state(
+        self,
+        report: IntelReport,
+        cleared_at: str,
+    ) -> None:
+        source_instance = report.source_instance.strip() or report.source
+        system_key = report.system.casefold()
+        for item in self._active_intel.values():
+            if not item.active:
+                continue
+            if item.source.casefold() != "intel_channel":
+                continue
+            if item.source_instance.casefold() != source_instance.casefold():
+                continue
+            if item.system_name.casefold() != system_key:
+                continue
+            if not self._channel_seen_after_or_equal(cleared_at, item.last_seen_at):
+                continue
+            item.active = False
+            item.cleared_at = cleared_at
+
+    def _channel_seen_after(self, left: str, right: str) -> bool:
+        left_at = self._parse_timestamp(left)
+        right_at = self._parse_timestamp(right)
+        if left_at is None or right_at is None:
+            return False
+        return left_at > right_at
+
+    def _channel_seen_after_or_equal(self, left: str, right: str) -> bool:
+        left_at = self._parse_timestamp(left)
+        right_at = self._parse_timestamp(right)
+        if left_at is None or right_at is None:
+            return False
+        return left_at >= right_at
+
+    def _clean_snapshot_seen_at(self, value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return utc_now_iso()
+        if self._parse_timestamp(raw) is None:
+            raise ValueError("seen_at must be a valid ISO-8601 timestamp")
+        return raw
+
+    def _normalize_ocr_names(self, names: list[str] | Any) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for name in self._normalize_names(names):
+            key = name.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(name)
+        return result
+
+    def _seconds_between_iso(self, left: str, right: str) -> float | None:
+        left_at = self._parse_timestamp(left)
+        right_at = self._parse_timestamp(right)
+        if left_at is None or right_at is None:
+            return None
+        return (right_at - left_at).total_seconds()
 
     def _resolve_entity_by_name(self, name: str, category: str) -> Any | None:
         if self._resolver is None:

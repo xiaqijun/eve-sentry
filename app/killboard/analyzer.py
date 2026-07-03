@@ -18,9 +18,15 @@ class KillActivity:
     ship_type_ids: list[int] = field(default_factory=list)
     latest_kill_at: str = ""
     source: str = "zkillboard"
+    cache_status: str = ""
+    fetched_at: float | None = None
+    expires_at: float | None = None
+    request_status: str = ""
+    error: str = ""
+    retry_after: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "character_id": self.character_id,
             "window": self.window,
             "kills": self.kills,
@@ -30,6 +36,16 @@ class KillActivity:
             "latest_kill_at": self.latest_kill_at,
             "source": self.source,
         }
+        _add_status_fields(
+            data,
+            self.cache_status,
+            self.fetched_at,
+            self.expires_at,
+            self.request_status,
+            self.error,
+            self.retry_after,
+        )
+        return data
 
 
 @dataclass(frozen=True)
@@ -43,9 +59,15 @@ class SystemKillActivity:
     ship_type_ids: list[int] = field(default_factory=list)
     latest_kill_at: str = ""
     source: str = "zkillboard"
+    cache_status: str = ""
+    fetched_at: float | None = None
+    expires_at: float | None = None
+    request_status: str = ""
+    error: str = ""
+    retry_after: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "system_id": self.system_id,
             "window": self.window,
             "kills": self.kills,
@@ -54,6 +76,16 @@ class SystemKillActivity:
             "latest_kill_at": self.latest_kill_at,
             "source": self.source,
         }
+        _add_status_fields(
+            data,
+            self.cache_status,
+            self.fetched_at,
+            self.expires_at,
+            self.request_status,
+            self.error,
+            self.retry_after,
+        )
+        return data
 
 
 @dataclass(frozen=True)
@@ -70,10 +102,16 @@ class GroupKillActivity:
     ship_type_ids: list[int] = field(default_factory=list)
     latest_kill_at: str = ""
     source: str = "zkillboard"
+    cache_status: str = ""
+    fetched_at: float | None = None
+    expires_at: float | None = None
+    request_status: str = ""
+    error: str = ""
+    retry_after: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         id_key = f"{self.entity_type}_id"
-        return {
+        data = {
             "entity_type": self.entity_type,
             "entity_id": self.entity_id,
             id_key: self.entity_id,
@@ -86,6 +124,16 @@ class GroupKillActivity:
             "latest_kill_at": self.latest_kill_at,
             "source": self.source,
         }
+        _add_status_fields(
+            data,
+            self.cache_status,
+            self.fetched_at,
+            self.expires_at,
+            self.request_status,
+            self.error,
+            self.retry_after,
+        )
+        return data
 
 
 def analyze_character_activity(
@@ -329,3 +377,26 @@ def _optional_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+def _add_status_fields(
+    data: dict[str, Any],
+    cache_status: str,
+    fetched_at: float | None,
+    expires_at: float | None,
+    request_status: str,
+    error: str,
+    retry_after: float | None,
+) -> None:
+    if cache_status:
+        data["cache_status"] = cache_status
+    if fetched_at is not None:
+        data["fetched_at"] = fetched_at
+    if expires_at is not None:
+        data["expires_at"] = expires_at
+    if request_status:
+        data["request_status"] = request_status
+    if error:
+        data["error"] = error
+    if retry_after is not None:
+        data["retry_after"] = retry_after

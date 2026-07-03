@@ -7,6 +7,7 @@ from typing import Any
 
 from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore
+from app.server.map_config import MapConfigStore
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -18,6 +19,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--storage", choices=["json", "sqlite"], default="sqlite")
     parser.add_argument("--db", default="intel.sqlite3")
     parser.add_argument("--config", default="intel_config.json")
+    parser.add_argument("--map-config", default="intel_map.json")
+    parser.add_argument(
+        "--map-source",
+        choices=["builtin", "manual", "esi", "sde"],
+        default=None,
+    )
+    parser.add_argument("--map-region", action="append", type=int, default=None)
+    parser.add_argument("--map-system", action="append", type=int, default=None)
+    parser.add_argument("--map-sde-path", default=None)
+    parser.add_argument("--map-refresh-on-start", action="store_true")
     parser.add_argument("--enable-esi", action="store_true")
     parser.add_argument("--esi-cache", default="esi_cache.json")
     parser.add_argument("--esi-client-id", default="")
@@ -97,10 +108,28 @@ def main(argv: list[str] | None = None) -> int:
     from app.intel.config import IntelConfigStore
 
     config_store = IntelConfigStore(args.config)
+    map_config_store = MapConfigStore(args.map_config)
+    map_overrides: dict[str, Any] = {}
+    if args.map_source is not None:
+        map_overrides["source"] = args.map_source
+    if args.map_region is not None:
+        map_overrides["region_ids"] = args.map_region
+    if args.map_system is not None:
+        map_overrides["system_ids"] = args.map_system
+    if args.map_sde_path is not None:
+        map_overrides["sde_path"] = args.map_sde_path
+    if map_overrides:
+        map_config_store.update(map_overrides)
     scorer = config_store.build_scorer()
+    systems, links = map_config_store.build_map(
+        resolver=resolver,
+        refresh_if_needed=args.map_refresh_on_start,
+    )
 
     store = _build_store(
         args,
+        systems=systems,
+        links=links,
         resolver=resolver,
         scorer=scorer,
         enricher=enricher,
@@ -111,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         config_store=config_store,
         esi_session=esi_session,
+        map_config_store=map_config_store,
     )
     server.start()
     print(f"Intel map: {server.url}")
@@ -124,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
 
 def _build_store(
     args: argparse.Namespace,
+    systems: dict[str, Any] | None = None,
+    links: list[tuple[str, str]] | None = None,
     resolver: Any | None = None,
     scorer: Any | None = None,
     enricher: Any | None = None,
@@ -134,12 +166,16 @@ def _build_store(
         return SQLiteIntelStore(
             args.db,
             import_json_path=args.data,
+            systems=systems,
+            links=links,
             resolver=resolver,
             scorer=scorer,
             enricher=enricher,
         )
     return IntelStore(
         args.data,
+        systems=systems,
+        links=links,
         resolver=resolver,
         scorer=scorer,
         enricher=enricher,

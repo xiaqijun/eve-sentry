@@ -44,11 +44,42 @@ DIRECTION_RE = re.compile(
     re.IGNORECASE,
 )
 NOISE_WORD_RE = re.compile(
-    r"\b(in|at|near|on|gate|d-?scan|scan|from|to|towards?|toward)\b"
+    r"\b(in|at|near|on|gate|d-?scan|scan|from|to|towards?|toward|clr|clear)\b"
     r"|\u65b9\u5411",
     re.IGNORECASE,
 )
 SPLIT_RE = re.compile(r"[,;|/]+|\s{2,}")
+SHIP_TERMS = [
+    ("hurricane fleet issue", "Hurricane Fleet Issue"),
+    ("stabber fleet issue", "Stabber Fleet Issue"),
+    ("retribution", "Retribution"),
+    ("crucifier", "Crucifier"),
+    ("confessor", "Confessor"),
+    ("flycatcher", "Flycatcher"),
+    ("hyperion", "Hyperion"),
+    ("cyclones", "Cyclone"),
+    ("cyclone", "Cyclone"),
+    ("buzzard", "Buzzard"),
+    ("vedmak", "Vedmak"),
+    ("stabber", "Stabber"),
+    ("orthrus", "Orthrus"),
+    ("astarte", "Astarte"),
+    ("rapier", "Rapier"),
+    ("kronos", "Kronos"),
+    ("oracle", "Oracle"),
+    ("osprey", "Osprey"),
+    ("dictor", "Dictor"),
+    ("hecate", "Hecate"),
+    ("sabre", "Sabre"),
+    ("sabers", "Sabre"),
+    ("saber", "Sabre"),
+    ("hound", "Hound"),
+    ("helios", "Helios"),
+    ("heron", "Heron"),
+    ("tornado", "Tornado"),
+    ("crow", "Crow"),
+    ("omen", "Omen"),
+]
 SYSTEM_STOP_WORDS = {
     "red",
     "reds",
@@ -66,7 +97,20 @@ SYSTEM_STOP_WORDS = {
     "from",
     "toward",
     "towards",
+    "kill",
+    "catch",
+    "bubble",
+    "ship",
+    "clr",
+    "clear",
 }
+
+
+@dataclass(frozen=True)
+class TargetDetails:
+    names: list[str]
+    ship_types: list[str]
+    intel_tags: list[str]
 
 
 @dataclass(frozen=True)
@@ -83,6 +127,12 @@ class ParsedIntelLine:
     confidence: float
     jump_count: int | None = None
     direction: str = ""
+    parse_pattern: str = ""
+    system_candidates: list[str] | None = None
+    name_candidates: list[str] | None = None
+    ignored_tokens: list[str] | None = None
+    ship_types: list[str] | None = None
+    intel_tags: list[str] | None = None
 
     def to_observation_payload(self) -> dict[str, Any]:
         """Return the API payload for POST /api/observations."""
@@ -101,6 +151,13 @@ class ParsedIntelLine:
             metadata["jump_count"] = self.jump_count
         if self.direction:
             metadata["direction"] = self.direction
+        if self.ship_types:
+            metadata["ship_types"] = list(self.ship_types)
+        if self.intel_tags:
+            metadata["intel_tags"] = list(self.intel_tags)
+        diagnostics = self._parse_diagnostics()
+        if diagnostics:
+            metadata["parse_diagnostics"] = diagnostics
 
         payload: dict[str, Any] = {
             "source": "intel_channel",
@@ -116,6 +173,18 @@ class ParsedIntelLine:
             payload["hostile_count"] = self.hostile_count
         return payload
 
+    def _parse_diagnostics(self) -> dict[str, Any]:
+        diagnostics: dict[str, Any] = {}
+        if self.parse_pattern:
+            diagnostics["parse_pattern"] = self.parse_pattern
+        if self.system_candidates:
+            diagnostics["system_candidates"] = list(self.system_candidates)
+        if self.name_candidates:
+            diagnostics["name_candidates"] = list(self.name_candidates)
+        if self.ignored_tokens:
+            diagnostics["ignored_tokens"] = list(self.ignored_tokens)
+        return diagnostics
+
 
 def parse_chat_line(line: str, channel: str = "") -> ParsedIntelLine | None:
     """Parse one EVE chatlog line.
@@ -123,25 +192,54 @@ def parse_chat_line(line: str, channel: str = "") -> ParsedIntelLine | None:
     Non-chat header lines return None. Chat messages that cannot be parsed still
     return a low-confidence raw observation so the service keeps the evidence.
     """
-    match = CHAT_LINE_RE.match(line.strip())
+    normalized_line = line.strip().lstrip("\ufeff")
+    match = CHAT_LINE_RE.match(normalized_line)
     if not match:
         return None
 
     message = match.group("message").strip()
     sender = match.group("sender").strip()
+    if sender.casefold().startswith("eve"):
+        return None
     seen_at = parse_eve_timestamp(match.group("timestamp"))
+    system_candidates = extract_system_candidates(message)
     if not message:
-        return _raw_line(channel, sender, message, seen_at, confidence=0.1)
-
+        return _raw_line(
+            channel,
+            sender,
+            message,
+            seen_at,
+            confidence=0.1,
+            parse_pattern="empty_message",
+            system_candidates=system_candidates,
+        )
     system = extract_system(message)
     if not system:
-        return _raw_line(channel, sender, message, seen_at, confidence=0.2)
+        return _raw_line(
+            channel,
+            sender,
+            message,
+            seen_at,
+            confidence=0.2,
+            parse_pattern="raw_unparsed",
+            system_candidates=system_candidates,
+            name_candidates=extract_names(message),
+        )
 
     rest = remove_system(message, system)
     hostile_count = extract_hostile_count(rest)
     jump_count = extract_jump_count(rest)
     direction = extract_direction(rest)
-    names = extract_names(rest)
+    details = (
+        TargetDetails(names=[], ship_types=[], intel_tags=[])
+        if _is_clear_status(rest) and hostile_count is None
+        else extract_target_details(rest)
+    )
+    if hostile_count is None and not details.names and details.ship_types:
+        hostile_count = len(details.ship_types)
+    names = details.names
+    parse_pattern = _system_parse_pattern(message, system)
+    ignored_tokens = extract_ignored_tokens(rest, direction=direction)
     confidence = 0.75
     if names:
         confidence = 0.8
@@ -159,6 +257,12 @@ def parse_chat_line(line: str, channel: str = "") -> ParsedIntelLine | None:
         confidence=confidence,
         jump_count=jump_count,
         direction=direction,
+        parse_pattern=parse_pattern,
+        system_candidates=system_candidates,
+        name_candidates=names,
+        ignored_tokens=ignored_tokens,
+        ship_types=details.ship_types,
+        intel_tags=details.intel_tags,
     )
 
 
@@ -168,6 +272,9 @@ def _raw_line(
     message: str,
     seen_at: str,
     confidence: float,
+    parse_pattern: str = "raw_unparsed",
+    system_candidates: list[str] | None = None,
+    name_candidates: list[str] | None = None,
 ) -> ParsedIntelLine:
     return ParsedIntelLine(
         channel=channel,
@@ -178,6 +285,9 @@ def _raw_line(
         names=[],
         hostile_count=None,
         confidence=confidence,
+        parse_pattern=parse_pattern,
+        system_candidates=system_candidates or [],
+        name_candidates=name_candidates or [],
     )
 
 
@@ -189,17 +299,29 @@ def parse_eve_timestamp(value: str) -> str:
 
 def extract_system(message: str) -> str:
     """Return the best system token from a message."""
+    stripped = message.strip()
+    leading = LEADING_SYSTEM_RE.match(stripped)
+    if leading:
+        leading_system = leading.group("system")
+        if leading_system.casefold() == "catch":
+            return ""
+        if _looks_like_nullsec_system(leading_system):
+            return leading_system
+
     located = LOCATED_SYSTEM_RE.search(message)
     if located:
         system = located.group("system") or located.group("system_cn") or ""
         if _is_system_candidate(system):
             return system
 
-    match = LEADING_SYSTEM_RE.match(message.strip())
-    if not match:
+    later_nullsec = _first_nullsec_system(stripped[leading.end():] if leading else "")
+    if later_nullsec:
+        return later_nullsec
+
+    if not leading:
         return ""
-    system = match.group("system")
-    return system if _is_system_candidate(system) else ""
+    system = leading.group("system")
+    return system if _is_plausible_leading_system(system) else ""
 
 
 def extract_system_candidates(message: str) -> list[str]:
@@ -288,11 +410,48 @@ def extract_direction(message: str) -> str:
     return match.group("target") or match.group("target_cn") or ""
 
 
+def _is_clear_status(message: str) -> bool:
+    return bool(re.search(r"\b(?:clr|clear)\b", message, re.IGNORECASE))
+
+
+def extract_ignored_tokens(message: str, direction: str = "") -> list[str]:
+    """Return parser-consumed tokens that were not treated as names."""
+    ignored: list[str] = []
+
+    def add(value: str) -> None:
+        token = value.strip(" :-,;")
+        if not token:
+            return
+        key = token.casefold()
+        if key not in {item.casefold() for item in ignored}:
+            ignored.append(token)
+
+    for match in COUNT_RE.finditer(message):
+        add(match.group(0))
+    for match in CHINESE_COUNT_RE.finditer(message):
+        add(match.group(0))
+    for match in HOSTILE_WORD_RE.finditer(message):
+        add(match.group(0))
+    for match in JUMP_RE.finditer(message):
+        add(match.group(0))
+    if direction:
+        add(direction)
+
+    for match in NOISE_WORD_RE.finditer(message):
+        add(match.group(0))
+    return ignored
+
+
 def extract_names(message: str) -> list[str]:
     """Extract conservative pilot-name candidates after the system token."""
+    return extract_target_details(message).names
+
+
+def extract_target_details(message: str) -> TargetDetails:
+    """Extract pilot names while preserving ship and status context."""
     text = message.strip(" :-,;")
     if not text:
-        return []
+        return TargetDetails(names=[], ship_types=[], intel_tags=[])
 
     text = DIRECTION_RE.sub(" ", text)
     text = JUMP_RE.sub(" ", text)
@@ -302,18 +461,87 @@ def extract_names(message: str) -> list[str]:
     text = NOISE_WORD_RE.sub(" ", text)
     text = text.strip(" :-,;")
     if not text:
-        return []
+        return TargetDetails(names=[], ship_types=[], intel_tags=[])
 
     names = []
+    ship_types: list[str] = []
+    intel_tags: list[str] = []
     for chunk in SPLIT_RE.split(text):
-        name = " ".join(part for part in chunk.split() if part)
+        name, ships, tags = _parse_target_chunk(chunk)
+        ship_types.extend(ships)
+        _extend_unique(intel_tags, tags)
         if _is_name_candidate(name):
             names.append(name)
-    return names
+    return TargetDetails(names=names, ship_types=ship_types, intel_tags=intel_tags)
+
+
+def _parse_target_chunk(value: str) -> tuple[str, list[str], list[str]]:
+    text = " ".join(part for part in value.split() if part).strip(" *:-,;")
+    if not text:
+        return "", [], []
+
+    tags: list[str] = []
+    if re.search(r"\bnv\b", text, re.IGNORECASE):
+        tags.append("nv")
+        text = re.sub(r"\bnv\b", " ", text, flags=re.IGNORECASE)
+    if re.search(r"\bess'?s?\b|main\s+bank|million\s+isk", text, re.IGNORECASE):
+        tags.append("ess")
+        if re.search(r"main\s+bank|million\s+isk|linked", text, re.IGNORECASE):
+            return "", [], tags
+        text = re.sub(r"\bess'?s?\b", " ", text, flags=re.IGNORECASE)
+
+    text = re.sub(r"https?://\S+|www\.\S+", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b\d+\s*(?:min|mins|minutes?|sec|secs|seconds?)\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b\d+\s*x\b|\bx\s*\d+\b", " ", text, flags=re.IGNORECASE)
+
+    ships: list[str] = []
+    for term, canonical in SHIP_TERMS:
+        pattern = re.compile(rf"(?<![A-Za-z0-9-]){re.escape(term)}s?(?![A-Za-z0-9-])", re.IGNORECASE)
+        while True:
+            match = pattern.search(text)
+            if match is None:
+                break
+            ships.append(canonical)
+            text = f"{text[:match.start()]} {text[match.end():]}"
+
+    text = re.sub(r"\b(?:linked|stealing|least|with|them|out|just|minused|probe|disrupt)\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b\d+(?:kk|m|b)?\b", " ", text, flags=re.IGNORECASE)
+    name = " ".join(part for part in text.split() if part).strip(" *:-,;")
+    if _looks_like_nullsec_system(name):
+        name = ""
+    return name, ships, tags
+
+
+def _extend_unique(target: list[str], values: list[str]) -> None:
+    seen = {item.casefold() for item in target}
+    for value in values:
+        key = value.casefold()
+        if key not in seen:
+            target.append(value)
+            seen.add(key)
 
 
 def _is_system_candidate(value: str) -> bool:
     return value.casefold() not in SYSTEM_STOP_WORDS and not value.isdigit()
+
+
+def _is_plausible_leading_system(value: str) -> bool:
+    return _is_system_candidate(value) and (
+        _looks_like_nullsec_system(value) or not value.islower()
+    )
+
+
+def _looks_like_nullsec_system(value: str) -> bool:
+    token = value.strip(" *:-,;")
+    return _is_system_candidate(token) and "-" in token.strip("-")
+
+
+def _first_nullsec_system(value: str) -> str:
+    for match in SYSTEM_TOKEN_RE.finditer(value):
+        token = match.group("system").strip(" *:-,;")
+        if _looks_like_nullsec_system(token):
+            return token
+    return ""
 
 
 def _is_name_candidate(value: str) -> bool:
@@ -323,3 +551,15 @@ def _is_name_candidate(value: str) -> bool:
     if folded in SYSTEM_STOP_WORDS:
         return False
     return not value.isdigit()
+
+
+def _system_parse_pattern(message: str, system: str) -> str:
+    located = LOCATED_SYSTEM_RE.search(message)
+    if located:
+        located_system = located.group("system") or located.group("system_cn") or ""
+        if located_system == system:
+            return "located_system"
+    leading = LEADING_SYSTEM_RE.match(message.strip())
+    if leading and leading.group("system") == system:
+        return "leading_system"
+    return "system_candidate"

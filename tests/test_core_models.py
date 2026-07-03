@@ -60,7 +60,9 @@ def test_threat_event_from_observation_includes_score_level_and_evidence():
     assert event["level"] == "medium"
     assert event["system_name"] == "Tama"
     assert event["names"] == ["Alice"]
+    assert event["scoring_version"] == "score_observation.v1"
     assert event["evidence"][0]["type"] == "local_ocr_observed"
+    assert "rule_id" not in event["evidence"][0]
 
 
 def test_threat_level_boundaries():

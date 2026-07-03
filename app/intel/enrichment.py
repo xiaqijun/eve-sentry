@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from time import time
 from typing import Any, Callable
 
@@ -150,10 +150,14 @@ class ThreatEnricher:
             rows = self.killboard.character_recent(int(character_id))
             if not isinstance(rows, list):
                 return None
-            return analyze_character_activity(
+            activity = analyze_character_activity(
                 int(character_id),
                 rows,
                 window=self.kill_window,
+            )
+            return self._annotate_activity(
+                activity,
+                self._killboard_status("character", character_id),
             )
         except Exception:
             return None
@@ -166,10 +170,14 @@ class ThreatEnricher:
             rows = self.killboard.system_recent(int(system_id))
             if not isinstance(rows, list):
                 return None
-            return analyze_system_activity(
+            activity = analyze_system_activity(
                 int(system_id),
                 rows,
                 window=self.kill_window,
+            )
+            return self._annotate_activity(
+                activity,
+                self._killboard_status("system", system_id),
             )
         except Exception:
             return None
@@ -205,11 +213,15 @@ class ThreatEnricher:
             rows = getattr(self.killboard, method_name)(int(entity_id))
             if not isinstance(rows, list):
                 return None
-            return analyze_group_activity(
+            activity = analyze_group_activity(
                 int(entity_id),
                 rows,
                 entity_type=entity_type,
                 window=self.kill_window,
+            )
+            return self._annotate_activity(
+                activity,
+                self._killboard_status(entity_type, entity_id),
             )
         except Exception:
             return None
@@ -229,6 +241,37 @@ class ThreatEnricher:
             if activity is not None:
                 activities.append(activity)
         return activities
+
+    def _killboard_status(self, scope: str, entity_id: int) -> dict[str, Any]:
+        if self.killboard is None or not hasattr(self.killboard, "activity_status"):
+            return {}
+        try:
+            status = self.killboard.activity_status(scope, int(entity_id))
+        except Exception:
+            return {}
+        return status if isinstance(status, dict) else {}
+
+    def _annotate_activity(self, activity: Any, status: dict[str, Any]) -> Any:
+        if not status:
+            return activity
+        updates = {
+            key: status[key]
+            for key in (
+                "cache_status",
+                "fetched_at",
+                "expires_at",
+                "request_status",
+                "error",
+                "retry_after",
+            )
+            if key in status
+        }
+        if not updates:
+            return activity
+        try:
+            return replace(activity, **updates)
+        except TypeError:
+            return activity
 
 
 def _unique_positive_ints(values: list[int]) -> list[int]:

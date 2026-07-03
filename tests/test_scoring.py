@@ -1,5 +1,5 @@
 from app.core.models import Observation
-from app.intel.scoring import ChannelMention, ScoringEngine, Watchlist
+from app.intel.scoring import SCORING_VERSION, ChannelMention, ScoringEngine, Watchlist
 from app.killboard.analyzer import GroupKillActivity, KillActivity
 
 
@@ -35,7 +35,9 @@ def test_local_ocr_scores_medium_with_evidence():
     assert event.score == 40
     assert event.level == "medium"
     assert event.names == ["Alice"]
+    assert event.scoring_version == SCORING_VERSION
     assert evidence_types(event) == ["local_ocr_seen"]
+    assert event.evidence[0].rule_id == "local_ocr_seen"
 
 
 def test_medium_confidence_local_ocr_is_downweighted():
@@ -333,3 +335,26 @@ def test_cooldown_suppresses_repeat_alerts_for_same_system_and_names():
     clock[0] = 1061.0
 
     assert engine.score(observation()) is not None
+
+
+def test_scoring_replay_records_version_and_predictable_rule_ids():
+    base = observation(source="intel_channel")
+    default_event = ScoringEngine(cooldown_seconds=0).score(base)
+    blacklist_event = ScoringEngine(
+        watchlist=Watchlist(blacklist={"alice"}),
+        cooldown_seconds=0,
+    ).score(base)
+
+    assert default_event is not None
+    assert blacklist_event is not None
+    assert default_event.scoring_version == SCORING_VERSION
+    assert blacklist_event.scoring_version == SCORING_VERSION
+    assert default_event.score == 30
+    assert blacklist_event.score == 110
+    assert [item.rule_id for item in default_event.evidence] == [
+        "intel_channel_report"
+    ]
+    assert [item.rule_id for item in blacklist_event.evidence] == [
+        "intel_channel_report",
+        "blacklist_match",
+    ]

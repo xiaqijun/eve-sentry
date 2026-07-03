@@ -7,6 +7,12 @@ def test_channel_name_strips_timestamp_suffix(tmp_path):
     assert channel_name_from_path(path) == "Alliance Intel"
 
 
+def test_channel_name_strips_eve_character_id_suffix(tmp_path):
+    path = tmp_path / "wc.Venal+Br+Te_20260702_121156_2124219939.txt"
+
+    assert channel_name_from_path(path) == "wc.Venal+Br+Te"
+
+
 def test_detect_encoding_for_utf8_and_utf16():
     assert detect_encoding("hello".encode("utf-8")) == "utf-8-sig"
     assert detect_encoding("hello".encode("utf-16")) == "utf-16"
@@ -59,4 +65,3 @@ def test_watcher_reads_utf16_chatlog(tmp_path):
 
     assert len(lines) == 1
     assert lines[0].text.endswith("Tama 有红")
-

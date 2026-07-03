@@ -111,7 +111,11 @@ def test_profiles_are_cached(tmp_path):
     assert character["corporation_name"] == "Some Corp"
     assert character["alliance_id"] == 789
     assert character["alliance_name"] == "Some Alliance"
+    assert character["cache_status"] == "refreshed"
     assert cached_character["corporation_name"] == "Some Corp"
+    assert cached_character["cache_status"] == "cached"
+    assert cached_character["fetched_at"] > 0
+    assert cached_character["expires_at"] > cached_character["fetched_at"]
     assert client.character_calls == 1
     assert client.corporation_calls == 1
     assert client.alliance_calls == 1

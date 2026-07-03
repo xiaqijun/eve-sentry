@@ -5,15 +5,49 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from typing import Any
 
 from app.channels.log_watcher import DEFAULT_CHATLOG_DIR, ChatLogWatcher
 from app.channels.parser import parse_chat_line
+from app.core.heartbeat import (
+    build_channel_heartbeat_details,
+    heartbeat_now_iso,
+    resolve_runtime_identity,
+    summarize_heartbeat_error,
+)
 from app.intel_client import IntelApiClient, IntelApiError
 
 logger = logging.getLogger(__name__)
+
+
+def _send_heartbeat(
+    api: IntelApiClient,
+    client_id: str,
+    interval_seconds: float,
+    server_parse: bool,
+    last_action: str = "",
+    last_error: str = "",
+    client_version: str = "",
+    host: str = "",
+    last_success_at: str = "",
+) -> None:
+    api.post_heartbeat(
+        client_id=client_id,
+        client_type="channel_client",
+        label="Channel Client",
+        heartbeat_interval_seconds=interval_seconds,
+        details=build_channel_heartbeat_details(
+            server_parse=server_parse,
+            last_action=last_action,
+            last_error=last_error,
+            client_version=client_version,
+            host=host,
+            last_success_at=last_success_at,
+        ),
+    )
 
 
 def run_channel_client(args: argparse.Namespace) -> int:
@@ -42,16 +76,66 @@ def run_channel_client(args: argparse.Namespace) -> int:
         )
     else:
         print(f"Posting observations to {args.server}", file=status_stream)
+    heartbeat_client_id = f"channel-client:{os.getpid()}"
+    runtime_identity = resolve_runtime_identity()
+    heartbeat_interval = max(5.0, float(args.interval))
+    last_heartbeat_at = 0.0
+    heartbeat_action = "starting"
+    heartbeat_error = ""
+    heartbeat_last_success_at = ""
     try:
         while True:
+            now = time.monotonic()
+            if api is not None and not args.once and now >= last_heartbeat_at:
+                try:
+                    _send_heartbeat(
+                        api,
+                        heartbeat_client_id,
+                        heartbeat_interval,
+                        args.server_parse,
+                        last_action=heartbeat_action,
+                        last_error=heartbeat_error,
+                        client_version=runtime_identity["client_version"],
+                        host=runtime_identity["host"],
+                        last_success_at=heartbeat_last_success_at,
+                    )
+                except IntelApiError as exc:
+                    logger.warning("Heartbeat update failed: %s", exc)
+                last_heartbeat_at = now + heartbeat_interval
+            diagnostics = {
+                "last_action": "",
+                "last_error": heartbeat_error,
+                "last_success_at": heartbeat_last_success_at,
+            }
             processed = process_once(
                 watcher,
                 api,
                 dry_run=args.dry_run,
                 json_lines=args.json,
                 server_parse=args.server_parse,
+                diagnostics=diagnostics,
+            )
+            heartbeat_action = str(diagnostics.get("last_action") or heartbeat_action)
+            heartbeat_error = str(diagnostics.get("last_error") or "")
+            heartbeat_last_success_at = str(
+                diagnostics.get("last_success_at") or heartbeat_last_success_at
             )
             if args.once:
+                if api is not None:
+                    try:
+                        _send_heartbeat(
+                            api,
+                            heartbeat_client_id,
+                            heartbeat_interval,
+                            args.server_parse,
+                            last_action=heartbeat_action,
+                            last_error=heartbeat_error,
+                            client_version=runtime_identity["client_version"],
+                            host=runtime_identity["host"],
+                            last_success_at=heartbeat_last_success_at,
+                        )
+                    except IntelApiError as exc:
+                        logger.warning("Heartbeat update failed: %s", exc)
                 action = "Parsed" if args.dry_run else "Posted"
                 print(f"{action} {processed} observations", file=status_stream)
                 return 0
@@ -67,6 +151,7 @@ def process_once(
     json_lines: bool = False,
     stream: Any | None = None,
     server_parse: bool = False,
+    diagnostics: dict[str, str] | None = None,
 ) -> int:
     """Read available lines once and post parsed observations."""
     if api is None and not dry_run:
@@ -74,6 +159,7 @@ def process_once(
 
     stream = stream or sys.stdout
     processed = 0
+    mode = "server_parse" if server_parse else "observation"
     for line in watcher.poll_lines():
         if server_parse and not dry_run:
             try:
@@ -81,9 +167,18 @@ def process_once(
                 result = api.post_channel_line(line.text, channel=line.channel)
             except IntelApiError as exc:
                 logger.warning("Failed to post channel line: %s", exc)
+                if diagnostics is not None:
+                    diagnostics["last_action"] = "server_parse_error"
+                    diagnostics["last_error"] = summarize_heartbeat_error(str(exc))
                 continue
             if not result.get("ignored"):
                 processed += 1
+            if diagnostics is not None:
+                diagnostics["last_action"] = (
+                    f"server_parse:{processed}" if processed else "server_parse_idle"
+                )
+                diagnostics["last_error"] = ""
+                diagnostics["last_success_at"] = heartbeat_now_iso()
             continue
 
         parsed = parse_chat_line(line.text, channel=line.channel)
@@ -93,6 +188,10 @@ def process_once(
         if dry_run:
             emit_observation(payload, json_lines=json_lines, stream=stream)
             processed += 1
+            if diagnostics is not None:
+                diagnostics["last_action"] = f"dry_run:{processed}"
+                diagnostics["last_error"] = ""
+                diagnostics["last_success_at"] = heartbeat_now_iso()
             continue
 
         try:
@@ -100,8 +199,18 @@ def process_once(
             api.post_observation(**payload_to_client_args(payload))
         except IntelApiError as exc:
             logger.warning("Failed to post channel observation: %s", exc)
+            if diagnostics is not None:
+                diagnostics["last_action"] = "observation_error"
+                diagnostics["last_error"] = summarize_heartbeat_error(str(exc))
             continue
         processed += 1
+        if diagnostics is not None:
+            diagnostics["last_action"] = f"observation:{processed}"
+            diagnostics["last_error"] = ""
+            diagnostics["last_success_at"] = heartbeat_now_iso()
+    if diagnostics is not None and not diagnostics.get("last_action"):
+        diagnostics["last_action"] = f"{mode}_idle"
+        diagnostics["last_error"] = ""
     return processed
 
 

@@ -14,7 +14,8 @@ from app.intel.enrichment import ThreatEnricher
 from app.intel.config import IntelConfigStore
 from app.intel.scoring import ScoringEngine
 from app.server.http_server import IntelHTTPServer
-from app.server.intel_store import IntelStore
+from app.server.intel_store import IntelStore, StarSystem
+from app.server.map_config import MapConfigStore
 from app.server.sqlite_store import SQLiteIntelStore
 
 
@@ -38,19 +39,294 @@ def request_text(url, headers=None, timeout=3):
         return response.status, response.headers, response.read().decode("utf-8")
 
 
+def write_sde_fixture(root):
+    bsd_dir = root / "bsd"
+    bsd_dir.mkdir(parents=True)
+    (bsd_dir / "mapRegions.yaml").write_text(
+        """
+- regionID: 10000033
+  regionName: The Citadel
+""".strip(),
+        encoding="utf-8",
+    )
+    (bsd_dir / "mapConstellations.yaml").write_text(
+        """
+- constellationID: 20000345
+  regionID: 10000033
+""".strip(),
+        encoding="utf-8",
+    )
+    (bsd_dir / "mapSolarSystems.yaml").write_text(
+        """
+- solarSystemID: 30002813
+  solarSystemName: Tama
+  constellationID: 20000345
+  regionID: 10000033
+  security: 0.3
+  x: -10.0
+  z: 50.0
+- solarSystemID: 30002819
+  solarSystemName: Kedama
+  constellationID: 20000345
+  regionID: 10000033
+  security: 0.2
+  x: 90.0
+  z: -20.0
+""".strip(),
+        encoding="utf-8",
+    )
+    (bsd_dir / "mapSolarSystemJumps.yaml").write_text(
+        """
+- fromSolarSystemID: 30002813
+  toSolarSystemID: 30002819
+""".strip(),
+        encoding="utf-8",
+    )
+
+
 def test_health_and_cors_preflight(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
     try:
         status, payload = request_json(f"{server.url}/api/health")
         assert status == 200
-        assert payload == {"ok": True}
+        assert payload["health"]["ok"] is True
+        assert payload["health"]["schema_version"] == "health.v1"
+        assert payload["health"]["storage"]["type"] == "IntelStore"
+        assert payload["health"]["storage"]["path"].endswith("intel.json")
+        assert payload["health"]["storage"]["writable"] is True
+        assert payload["health"]["config"] == {"enabled": False}
+        assert payload["health"]["esi"] == {
+            "enabled": False,
+            "authenticated": False,
+        }
+        assert payload["health"]["killboard"] == {"enabled": False}
+        assert payload["health"]["events"]["alert_query_ok"] is True
+        assert payload["health"]["events"]["sse"]["path"] == "/api/events"
 
         request = Request(f"{server.url}/api/intel", method="OPTIONS")
         with urlopen(request, timeout=3) as response:
             assert response.status == 204
             assert response.headers["Access-Control-Allow-Origin"] == "*"
             assert "DELETE" in response.headers["Access-Control-Allow-Methods"]
+    finally:
+        server.stop()
+
+
+def test_health_does_not_generate_alerts(tmp_path):
+    class CountingStore(IntelStore):
+        def __init__(self, filepath):
+            super().__init__(filepath)
+            self.list_alerts_calls = 0
+
+        def list_alerts(self, *args, **kwargs):
+            self.list_alerts_calls += 1
+            return super().list_alerts(*args, **kwargs)
+
+    store = CountingStore(tmp_path / "intel.json")
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "system_name": "Tama",
+            "names": ["Alice"],
+            "seen_at": "2026-06-29T12:00:00+00:00",
+        }
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/health")
+
+        assert status == 200
+        assert payload["health"]["events"]["alert_query_ok"] is True
+        assert payload["health"]["events"]["latest_alert_id"]
+        assert store.list_alerts_calls == 0
+    finally:
+        server.stop()
+
+
+def test_health_reports_config_sqlite_and_killboard(tmp_path):
+    class FakeKillboard:
+        cache = SimpleNamespace()
+
+    config_store = IntelConfigStore(tmp_path / "intel_config.json")
+    store = SQLiteIntelStore(
+        tmp_path / "intel.sqlite3",
+        scorer=config_store.build_scorer(),
+        enricher=ThreatEnricher(killboard=FakeKillboard()),
+    )
+    store.add_observation(
+        {
+            "source": "manual",
+            "source_instance": "health-test",
+            "system_name": "Tama",
+            "names": ["Known Hostile"],
+            "raw_text": "Known Hostile in Tama",
+        }
+    )
+    server = IntelHTTPServer(store, port=0, config_store=config_store)
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/health")
+        assert status == 200
+        health = payload["health"]
+        assert health["storage"]["type"] == "SQLiteIntelStore"
+        assert health["storage"]["path"].endswith("intel.sqlite3")
+        assert health["storage"]["writable"] is True
+        assert health["config"]["enabled"] is True
+        assert health["config"]["schema_version"] == "scoring_config.v1"
+        assert health["config"]["scoring_version"] == "scoring.v1"
+        assert health["config"]["evidence_rule_count"] > 0
+        assert health["killboard"]["enabled"] is True
+        assert health["killboard"]["client"] == "FakeKillboard"
+        assert health["events"]["latest_alert_id"]
+    finally:
+        server.stop()
+
+
+def test_v1_bootstrap_and_map_routes_expose_workbench_payload(tmp_path):
+    config_store = IntelConfigStore(tmp_path / "intel_config.json")
+    server = IntelHTTPServer(
+        IntelStore(
+            tmp_path / "intel.json",
+            systems={
+                "Tama": StarSystem(name="Tama", system_id=30002813, x=10, y=20),
+                "Kedama": StarSystem(name="Kedama", system_id=30002819, x=30, y=40),
+            },
+            links=[("Tama", "Kedama")],
+            scorer=config_store.build_scorer(),
+        ),
+        port=0,
+        config_store=config_store,
+    )
+    server.start()
+    try:
+        request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+                "raw_text": "Tama Alice",
+                "seen_at": "2026-06-29T12:00:00+00:00",
+            },
+        )
+        request_json(
+            f"{server.url}/api/heartbeats",
+            method="POST",
+            payload={
+                "client_id": "alert-client:test",
+                "client_type": "alert_client",
+                "label": "Alert Client",
+                "heartbeat_interval_seconds": 5,
+                "details": {"transport": "poll"},
+            },
+        )
+
+        status, payload = request_json(f"{server.url}/api/v1/bootstrap")
+        assert status == 200
+        bootstrap = payload["bootstrap"]
+        assert bootstrap["schema_version"] == "intel_bootstrap.v1"
+        assert bootstrap["map"]["summary"]["system_count"] == 2
+        assert bootstrap["map"]["systems"][0]["name"] in {"Kedama", "Tama"}
+        assert bootstrap["reports"][0]["system_name"] == "Tama"
+        assert bootstrap["observations"][0]["system_name"] == "Tama"
+        assert bootstrap["alerts"][0]["system_name"] == "Tama"
+        assert bootstrap["clients"]["summary"]["count"] == 1
+        assert bootstrap["config"]["schema_version"] == "scoring_config.v1"
+        assert bootstrap["esi"] == {"enabled": False, "authenticated": False}
+
+        status, map_payload = request_json(f"{server.url}/api/v1/map")
+        assert status == 200
+        assert map_payload["map"]["summary"]["system_count"] == 2
+        assert map_payload["map"]["links"] == [{"from": "Tama", "to": "Kedama"}]
+    finally:
+        server.stop()
+
+
+def test_v1_ocr_snapshot_endpoint_updates_active_intel(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        status, result = request_json(
+            f"{server.url}/api/v1/ocr/snapshot",
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "source_instance": "EVE - Hajimi6",
+                "system_name": "S-KSWL",
+                "seen_at": "2026-07-03T10:00:00+00:00",
+                "names": ["Alice"],
+            },
+        )
+        status2, active = request_json(f"{server.url}/api/v1/active-intel")
+
+        assert status == 201
+        assert result["created"] == 1
+        assert status2 == 200
+        assert active["count"] == 1
+        assert active["active_intel"][0]["name"] == "Alice"
+    finally:
+        server.stop()
+
+
+def test_v1_bootstrap_includes_active_intel(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-03T10:00:00+00:00",
+            "names": ["Alice"],
+        }
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/v1/bootstrap")
+
+        assert status == 200
+        assert payload["bootstrap"]["active_intel"][0]["name"] == "Alice"
+    finally:
+        server.stop()
+
+
+def test_heartbeat_routes_and_health_summary(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/heartbeats",
+            method="POST",
+            payload={
+                "client_id": "alert-client:test",
+                "client_type": "alert_client",
+                "label": "Alert Client",
+                "heartbeat_interval_seconds": 5,
+                "details": {"transport": "poll"},
+            },
+        )
+        assert status == 201
+        assert created["heartbeat"]["client_id"] == "alert-client:test"
+        assert created["heartbeat"]["online"] is True
+        assert created["heartbeat"]["details"]["transport"] == "poll"
+
+        status, payload = request_json(f"{server.url}/api/heartbeats")
+        assert status == 200
+        assert payload["count"] == 1
+        assert payload["heartbeats"][0]["client_type"] == "alert_client"
+        assert payload["summary"]["count"] == 1
+        assert payload["summary"]["online_count"] == 1
+        assert payload["summary"]["stale_count"] == 0
+        assert payload["summary"]["by_type"] == {"alert_client": 1}
+        assert payload["summary"]["by_status"] == {"running": 1}
+
+        status, payload = request_json(f"{server.url}/api/health")
+        assert status == 200
+        assert payload["health"]["clients"]["count"] == 1
+        assert payload["health"]["clients"]["online_count"] == 1
     finally:
         server.stop()
 
@@ -71,6 +347,35 @@ def test_esi_status_reports_disabled_session(tmp_path):
             assert "ESI session" in error["error"]
         else:
             raise AssertionError("expected HTTP 404")
+    finally:
+        server.stop()
+
+
+def test_esi_status_reports_public_resolver_without_session(tmp_path):
+    class FakeResolver:
+        def resolve_names(self, names):
+            return []
+
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json", resolver=FakeResolver()),
+        port=0,
+    )
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/v1/esi/status")
+        assert status == 200
+        assert payload == {
+            "enabled": True,
+            "public": True,
+            "authenticated": False,
+            "session": False,
+        }
+
+        status, health = request_json(f"{server.url}/api/health")
+        assert status == 200
+        assert health["health"]["esi"]["enabled"] is True
+        assert health["health"]["esi"]["public"] is True
+        assert health["health"]["esi"]["authenticated"] is False
     finally:
         server.stop()
 
@@ -206,8 +511,9 @@ def test_index_page_serves_config_panel(tmp_path):
             assert "/api/config" in body
             assert "/api/observations" in body
             assert "data-alert-details" in body
-            assert "/api/kill-activity/character" in body
-            assert "/api/characters/by-name" in body
+            assert "/api/alerts/" in body
+            assert "/api/intel/character/" in body
+            assert "/api/intel/system/" in body
     finally:
         server.stop()
 
@@ -427,6 +733,44 @@ def test_public_lookup_routes_return_profiles_and_activity(tmp_path):
         server.stop()
 
 
+def test_v1_map_system_route_returns_profile_and_intel(tmp_path):
+    class FakeResolver:
+        def system_profile(self, system_id):
+            assert system_id == 30002813
+            return {
+                "system_id": 30002813,
+                "name": "Tama",
+                "security_status": 0.3,
+            }
+
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json", resolver=FakeResolver()),
+        port=0,
+    )
+    server.start()
+    try:
+        request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "system_id": 30002813,
+                "names": ["Alice"],
+                "source": "intel_channel",
+                "raw_text": "Tama Alice",
+                "seen_at": "2026-06-29T12:00:00+00:00",
+            },
+        )
+
+        status, payload = request_json(f"{server.url}/api/v1/map/systems/30002813")
+        assert status == 200
+        assert payload["system"]["profile"]["name"] == "Tama"
+        assert payload["system"]["intel"]["entity"]["type"] == "system"
+        assert payload["system"]["intel"]["alerts"][0]["system_id"] == 30002813
+    finally:
+        server.stop()
+
+
 def test_public_lookup_routes_report_disabled_sources(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
@@ -591,6 +935,16 @@ def test_alert_detail_route_returns_explanation_context(tmp_path):
                 }
             ]
 
+        def activity_status(self, scope, entity_id):
+            assert scope in {"character", "corporation", "alliance"}
+            assert entity_id in {123, 456, 789}
+            return {
+                "cache_status": "stale",
+                "request_status": "network_error",
+                "error": "offline",
+                "retry_after": 130.0,
+            }
+
     resolver = FakeResolver()
     store = IntelStore(
         tmp_path / "intel.json",
@@ -636,11 +990,26 @@ def test_alert_detail_route_returns_explanation_context(tmp_path):
 
         assert status == 200
         detail = payload["detail"]
+        assert detail["schema_version"] == "alert_detail.v1"
         assert detail["alert"]["id"] == created["alert"]["id"]
         assert detail["observation"]["id"] == created["observation"]["id"]
+        assert detail["entities"]["characters"][0]["character_id"] == 123
+        assert detail["entities"]["characters"][0]["name"] == "Alice"
+        assert detail["entities"]["systems"] == [
+            {"system_id": None, "name": "Tama"}
+        ]
+        assert detail["entities"]["corporations"] == [{"corporation_id": 456}]
+        assert detail["entities"]["alliances"] == [{"alliance_id": 789}]
+        assert detail["context"]["resolution"] == {}
         assert detail["context"]["channel_mentions"][0]["relation"] == "same_system"
         assert detail["context"]["character_profiles"][0]["character_id"] == 123
         assert detail["context"]["kill_activities"][0]["character_id"] == 123
+        assert detail["context"]["kill_activities"][0]["cache_status"] == "stale"
+        assert (
+            detail["context"]["kill_activities"][0]["request_status"]
+            == "network_error"
+        )
+        assert detail["context"]["kill_activities"][0]["error"] == "offline"
         assert {
             item["entity_type"]
             for item in detail["context"]["group_activities"]
@@ -658,7 +1027,11 @@ def test_alert_detail_route_returns_explanation_context(tmp_path):
         assert "ESI profile Alice: corp 456, alliance 789" in (
             detail["explanation"]["context"]
         )
-        assert "Character 123 has 1 kill in 7d" in detail["explanation"]["context"]
+        assert (
+            "Character 123 has 1 kill in 7d (cache stale, request network_error)"
+            in detail["explanation"]["context"]
+        )
+        assert detail["explanation"]["degraded_sources"] == []
 
         try:
             request_json(f"{server.url}/api/alerts/missing")
@@ -668,6 +1041,229 @@ def test_alert_detail_route_returns_explanation_context(tmp_path):
             assert "alert" in error["error"]
         else:
             raise AssertionError("expected HTTP 404")
+    finally:
+        server.stop()
+
+
+def test_alert_detail_route_reports_degraded_sources_without_enrichment(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "source": "local_ocr",
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "character_ids": [123],
+                "seen_at": "2026-06-30T12:00:00+00:00",
+            },
+        )
+        assert status == 201
+
+        status, payload = request_json(
+            f"{server.url}/api/alerts/{created['alert']['id']}"
+        )
+
+        assert status == 200
+        detail = payload["detail"]
+        assert detail["schema_version"] == "alert_detail.v1"
+        assert detail["entities"]["characters"] == [{"character_id": 123}]
+        assert detail["context"]["character_profiles"] == []
+        assert detail["context"]["kill_activities"] == []
+        assert detail["explanation"]["degraded_sources"] == [
+            {
+                "source": "esi",
+                "reason": "character profiles unavailable",
+            },
+            {
+                "source": "killboard",
+                "reason": "character kill activity unavailable",
+            },
+        ]
+    finally:
+        server.stop()
+
+
+def test_alert_detail_route_includes_esi_cache_status_in_explanation(tmp_path):
+    class FakeResolver:
+        def character_profile(self, character_id):
+            assert character_id == 123
+            return {
+                "character_id": 123,
+                "name": "Alice",
+                "corporation_id": 456,
+                "cache_status": "cached",
+            }
+
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+        enricher=ThreatEnricher(resolver=FakeResolver()),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "source": "local_ocr",
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "character_ids": [123],
+                "seen_at": "2026-06-30T12:00:00+00:00",
+            },
+        )
+        assert status == 201
+
+        status, payload = request_json(
+            f"{server.url}/api/alerts/{created['alert']['id']}"
+        )
+
+        assert status == 200
+        assert payload["detail"]["context"]["character_profiles"][0][
+            "cache_status"
+        ] == "cached"
+        assert "ESI profile Alice: corp 456, cache cached" in (
+            payload["detail"]["explanation"]["context"]
+        )
+    finally:
+        server.stop()
+
+
+def test_entity_intel_routes_return_related_alerts_and_enrichment(tmp_path):
+    class FakeResolver:
+        def character_profile(self, character_id):
+            assert character_id == 123
+            return {
+                "character_id": 123,
+                "name": "Alice",
+                "corporation_id": 456,
+                "alliance_id": 789,
+            }
+
+        def system_profile(self, system_id):
+            assert system_id == 30002813
+            return {"system_id": 30002813, "name": "Tama"}
+
+    class FakeKillboard:
+        def character_recent(self, character_id):
+            assert character_id == 123
+            return [
+                {
+                    "killmail_id": 1,
+                    "killmail_time": "2026-06-30T10:00:00Z",
+                    "solar_system_id": 30002813,
+                    "victim": {"character_id": 999},
+                    "attackers": [{"character_id": 123}],
+                }
+            ]
+
+        def system_recent(self, system_id):
+            assert system_id == 30002813
+            return [
+                {
+                    "killmail_id": 2,
+                    "killmail_time": "2026-06-30T11:00:00Z",
+                    "solar_system_id": 30002813,
+                    "victim": {"character_id": 999},
+                    "attackers": [{"character_id": 123}],
+                }
+            ]
+
+        def corporation_recent(self, corporation_id):
+            assert corporation_id == 456
+            return [
+                {
+                    "killmail_id": 3,
+                    "killmail_time": "2026-06-30T12:00:00Z",
+                    "solar_system_id": 30002813,
+                    "victim": {"corporation_id": 777},
+                    "attackers": [{"character_id": 123, "corporation_id": 456}],
+                }
+            ]
+
+        def alliance_recent(self, alliance_id):
+            assert alliance_id == 789
+            return [
+                {
+                    "killmail_id": 4,
+                    "killmail_time": "2026-06-30T12:30:00Z",
+                    "solar_system_id": 30002813,
+                    "victim": {"alliance_id": 777},
+                    "attackers": [{"character_id": 123, "alliance_id": 789}],
+                }
+            ]
+
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+        enricher=ThreatEnricher(
+            resolver=FakeResolver(),
+            killboard=FakeKillboard(),
+            kill_window="7d",
+        ),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "source": "local_ocr",
+                "system_name": "Tama",
+                "system_id": 30002813,
+                "names": ["Alice"],
+                "character_ids": [123],
+                "seen_at": "2026-06-30T12:00:00+00:00",
+            },
+        )
+        assert status == 201
+
+        for path, entity_type, entity_id in [
+            ("/api/intel/character/123", "character", 123),
+            ("/api/intel/system/30002813", "system", 30002813),
+            ("/api/intel/corporation/456", "corporation", 456),
+            ("/api/intel/alliance/789", "alliance", 789),
+        ]:
+            status, payload = request_json(f"{server.url}{path}")
+            assert status == 200
+            intel = payload["intel"]
+            assert intel["schema_version"] == "intel_entity.v1"
+            assert intel["entity"]["type"] == entity_type
+            assert intel["entity"]["id"] == entity_id
+            assert intel["observations"][0]["id"] == created["observation"]["id"]
+            assert intel["alerts"][0]["id"] == created["alert"]["id"]
+            assert intel["counts"]["observations"] == 1
+            assert intel["counts"]["alerts"] == 1
+            assert intel["counts"]["has_activity"] is True
+
+        status, payload = request_json(
+            f"{server.url}/api/intel/character/123?min_level=critical"
+        )
+        assert status == 200
+        assert payload["intel"]["counts"]["observations"] == 1
+        assert payload["intel"]["counts"]["alerts"] == 0
+
+        try:
+            request_json(f"{server.url}/api/intel/character/not-an-id")
+        except HTTPError as exc:
+            assert exc.code == 400
+        else:
+            raise AssertionError("expected HTTP 400")
     finally:
         server.stop()
 
@@ -773,8 +1369,18 @@ def test_create_channel_line_parses_and_deduplicates(tmp_path):
         assert first["parsed"]["system_name"] == "Tama"
         assert first["parsed"]["metadata"]["hostile_count"] == 3
         assert first["parsed"]["metadata"]["raw_line"] == payload["line"]
+        assert first["parsed"]["metadata"]["parse_diagnostics"] == {
+            "parse_pattern": "leading_system",
+            "system_candidates": ["Tama"],
+            "ignored_tokens": ["+3", "reds"],
+        }
         assert first["observation"]["source_instance"] == "Alliance Intel"
         assert first["observation"]["metadata"]["sender"] == "Scout A"
+        assert first["observation"]["metadata"]["parse_diagnostics"] == {
+            "parse_pattern": "leading_system",
+            "system_candidates": ["Tama"],
+            "ignored_tokens": ["+3", "reds"],
+        }
         assert first["alert"]["source_observation_id"] == first["observation"]["id"]
         assert second["observation"]["id"] == first["observation"]["id"]
         assert second["alert"]["id"] == first["alert"]["id"]
@@ -833,6 +1439,11 @@ def test_create_channel_line_keeps_low_confidence_raw_observation_without_alert(
         assert created["ignored"] is False
         assert created["parsed"]["system_name"] == "Unknown"
         assert created["parsed"]["confidence"] == 0.2
+        assert created["parsed"]["metadata"]["parse_diagnostics"] == {
+            "parse_pattern": "raw_unparsed",
+            "system_candidates": ["useful", "structure", "here"],
+            "name_candidates": ["no useful structure here"],
+        }
         assert created["alert"] is None
 
         status, observations = request_json(f"{server.url}/api/observations")
@@ -1474,6 +2085,7 @@ def test_config_api_updates_scoring_rules_and_clears_cached_alerts(tmp_path):
         )
         assert status == 201
         assert created["alert"]["score"] == 30
+        assert created["alert"]["scoring_version"] == "scoring.v1"
 
         status, updated = request_json(
             f"{server.url}/api/config",
@@ -1482,6 +2094,12 @@ def test_config_api_updates_scoring_rules_and_clears_cached_alerts(tmp_path):
         )
         assert status == 200
         assert updated["config"]["whitelist"] == ["Alice"]
+        assert updated["config"]["schema_version"] == "scoring_config.v1"
+        assert updated["config"]["scoring_version"] == "scoring.v1"
+        assert any(
+            item["type"] == "blacklist_match"
+            for item in updated["config"]["evidence_rules"]
+        )
 
         status, alerts = request_json(f"{server.url}/api/alerts")
         assert status == 200
@@ -1527,6 +2145,97 @@ def test_config_api_rejects_invalid_payload(tmp_path):
             assert "cooldown_seconds" in payload["error"]
         else:
             raise AssertionError("expected HTTP 400")
+    finally:
+        server.stop()
+
+
+def test_map_config_api_updates_active_topology(tmp_path):
+    map_config_store = MapConfigStore(tmp_path / "intel_map.json")
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json"),
+        port=0,
+        map_config_store=map_config_store,
+    )
+    server.start()
+    try:
+        status, updated = request_json(
+            f"{server.url}/api/map/config",
+            method="PUT",
+            payload={
+                "source": "manual",
+                "layout_mode": "manual",
+                "systems": [
+                    {
+                        "system_id": 30002813,
+                        "name": "Tama",
+                        "x": 100,
+                        "y": 120,
+                        "region": "The Citadel",
+                        "security": 0.3,
+                    },
+                    {
+                        "system_id": 30002819,
+                        "name": "Kedama",
+                        "x": 180,
+                        "y": 180,
+                        "region": "The Citadel",
+                        "security": 0.2,
+                    },
+                ],
+                "links": [{"from": "Tama", "to": "Kedama"}],
+            },
+        )
+        assert status == 200
+        assert updated["map"]["source"] == "manual"
+        assert updated["counts"] == {"systems": 2, "links": 1}
+
+        status, payload = request_json(f"{server.url}/api/systems")
+        assert status == 200
+        assert {item["name"] for item in payload["systems"]} == {"Tama", "Kedama"}
+        assert payload["links"] == [{"from": "Tama", "to": "Kedama"}]
+
+        status, health = request_json(f"{server.url}/api/health")
+        assert status == 200
+        assert health["health"]["map"]["enabled"] is True
+        assert health["health"]["map"]["source"] == "manual"
+        assert health["health"]["map"]["system_count"] == 2
+    finally:
+        server.stop()
+
+
+def test_map_refresh_api_imports_sde_topology(tmp_path):
+    sde_root = tmp_path / "sde"
+    write_sde_fixture(sde_root)
+    map_config_store = MapConfigStore(tmp_path / "intel_map.json")
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json"),
+        port=0,
+        map_config_store=map_config_store,
+    )
+    server.start()
+    try:
+        status, refreshed = request_json(
+            f"{server.url}/api/map/refresh",
+            method="POST",
+            payload={
+                "source": "sde",
+                "sde_path": str(sde_root),
+                "region_ids": [10000033],
+            },
+        )
+        assert status == 200
+        assert refreshed["map"]["source"] == "sde"
+        assert refreshed["counts"] == {"systems": 2, "links": 1}
+
+        status, systems = request_json(f"{server.url}/api/systems")
+        assert status == 200
+        assert {item["name"] for item in systems["systems"]} == {"Tama", "Kedama"}
+        assert systems["links"] == [{"from": "Tama", "to": "Kedama"}]
+
+        status, config = request_json(f"{server.url}/api/map/config")
+        assert status == 200
+        assert config["map"]["sde_path"] == str(sde_root)
+        assert config["map"]["last_refreshed_at"]
     finally:
         server.stop()
 

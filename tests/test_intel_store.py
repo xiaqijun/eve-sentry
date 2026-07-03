@@ -1,4 +1,8 @@
+import threading
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+
+import pytest
 
 from app.core.models import Evidence, ThreatEvent
 from app.esi.cache import EsiCache
@@ -7,6 +11,52 @@ from app.intel.enrichment import ThreatEnrichment
 from app.intel.scoring import ScoringEngine, Watchlist
 from app.killboard.analyzer import GroupKillActivity, KillActivity
 from app.server.intel_store import IntelStore, StarSystem
+
+
+def test_heartbeat_summary_tracks_types_statuses_and_stale_clients(tmp_path):
+    store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
+    now = datetime.now(timezone.utc)
+
+    store.record_heartbeat(
+        {
+            "client_id": "detector:test",
+            "client_type": "detector_client",
+            "label": "Detector Client",
+            "status": "running",
+            "heartbeat_interval_seconds": 5,
+            "seen_at": (now - timedelta(seconds=2)).isoformat(),
+            "details": {"system": "Tama"},
+        }
+    )
+    store.record_heartbeat(
+        {
+            "client_id": "alert:test",
+            "client_type": "alert_client",
+            "label": "Alert Client",
+            "status": "idle",
+            "heartbeat_interval_seconds": 5,
+            "seen_at": (now - timedelta(seconds=45)).isoformat(),
+            "details": {"transport": "poll"},
+        }
+    )
+
+    payload = store.heartbeat_snapshot()
+    summary = payload["summary"]
+
+    assert payload["count"] == 2
+    assert len(payload["heartbeats"]) == 2
+    assert summary["count"] == 2
+    assert summary["online_count"] == 1
+    assert summary["stale_count"] == 1
+    assert summary["by_type"] == {
+        "detector_client": 1,
+        "alert_client": 1,
+    }
+    assert summary["by_status"] == {
+        "running": 1,
+        "idle": 1,
+    }
+    assert summary["latest_seen_at"] == payload["heartbeats"][0]["seen_at"]
 
 
 def test_add_report_persists_and_snapshot_aggregates(tmp_path):
@@ -99,6 +149,352 @@ def test_add_observation_persists_and_lists_alerts(tmp_path):
     assert alerts[0]["score"] == 30
     assert alerts[0]["evidence"][0]["type"] == "intel_channel_observed"
     assert alerts[0]["acknowledged"] is False
+
+
+def test_record_ocr_snapshot_creates_and_refreshes_active_intel(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+
+    first = store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-03T10:00:00+00:00",
+            "names": ["Alice", "Bob"],
+        }
+    )
+    second = store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-03T10:00:02+00:00",
+            "names": ["Alice", "Bob"],
+        }
+    )
+
+    active = store.list_active_intel(source="eve-sentry-detector")
+
+    assert first["created"] == 2
+    assert second["refreshed"] == 2
+    assert len(active) == 2
+    assert {item["name"] for item in active} == {"Alice", "Bob"}
+    assert all(item["seen_count"] == 2 for item in active)
+    assert len(store.list_observations()) == 2
+
+
+def test_channel_observation_creates_ttl_active_intel(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+
+    observation = store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "wc.Venal",
+            "system_name": "S-KSWL",
+            "raw_text": "Scout: S-KSWL +3 reds",
+            "metadata": {"hostile_count": 3, "sender": "Scout"},
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+
+    active = store.list_active_intel(source="intel_channel")
+
+    assert len(active) == 1
+    assert active[0]["system_name"] == "S-KSWL"
+    assert active[0]["expires_at"] == "2099-07-03T10:03:00+00:00"
+    assert active[0]["source_observation_ids"] == [observation.observation_id]
+
+
+def test_channel_clear_deactivates_matching_system_state(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "wc.Venal",
+            "system_name": "S-KSWL",
+            "raw_text": "Scout: S-KSWL +3 reds",
+            "metadata": {"hostile_count": 3, "sender": "Scout"},
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "wc.Venal",
+            "system_name": "S-KSWL",
+            "raw_text": "Scout: S-KSWL clr",
+            "seen_at": "2026-07-03T10:01:00+00:00",
+        }
+    )
+
+    assert store.list_active_intel(source="intel_channel") == []
+    inactive = store.list_active_intel(source="intel_channel", active=False)
+    assert inactive[0]["cleared_at"] == "2026-07-03T10:01:00+00:00"
+
+
+def test_channel_clear_does_not_deactivate_unrelated_active_state(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "wc.Venal",
+            "system_name": "S-KSWL",
+            "raw_text": "Scout: S-KSWL +3 reds",
+            "metadata": {"hostile_count": 3, "sender": "Scout"},
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "wc.Branch",
+            "system_name": "S-KSWL",
+            "raw_text": "Scout: S-KSWL clr",
+            "seen_at": "2099-07-03T10:01:00+00:00",
+        }
+    )
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "wc.Venal",
+            "system_name": "N5Y-4N",
+            "raw_text": "Scout: N5Y-4N clr",
+            "seen_at": "2099-07-03T10:02:00+00:00",
+        }
+    )
+
+    active = store.list_active_intel(source="intel_channel")
+
+    assert len(active) == 1
+    assert active[0]["source_instance"] == "wc.Venal"
+    assert active[0]["system_name"] == "S-KSWL"
+
+
+def test_channel_active_intel_expires_without_deleting_observation(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "wc.Venal",
+            "system_name": "S-KSWL",
+            "raw_text": "Scout: S-KSWL +3 reds",
+            "metadata": {"hostile_count": 3, "sender": "Scout"},
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+
+    active = store.list_active_intel(source="intel_channel")
+    assert len(active) == 1
+    assert active[0]["expires_at"] == "2099-07-03T10:03:00+00:00"
+
+    store.expire_active_intel("2099-07-03T10:03:01+00:00")
+
+    assert store.list_active_intel(source="intel_channel") == []
+    inactive = store.list_active_intel(source="intel_channel", active=False)
+    assert inactive[0]["left_at"] == "2099-07-03T10:03:01+00:00"
+    assert len(store.list_observations(source="intel_channel")) == 1
+
+
+def test_stale_duplicate_channel_threat_after_clear_does_not_reactivate(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    threat = {
+        "source": "intel_channel",
+        "source_instance": "wc.Venal",
+        "system_name": "S-KSWL",
+        "raw_text": "Scout: S-KSWL +3 reds",
+        "metadata": {"hostile_count": 3, "sender": "Scout"},
+        "seen_at": "2026-07-03T10:00:00+00:00",
+    }
+    store.add_observation(threat)
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "wc.Venal",
+            "system_name": "S-KSWL",
+            "raw_text": "Scout: S-KSWL clr",
+            "seen_at": "2026-07-03T10:01:00+00:00",
+        }
+    )
+
+    store.add_observation({**threat, "id": "replayed-old-threat"})
+
+    assert store.list_active_intel(source="intel_channel") == []
+    assert len(store.list_observations(source="intel_channel")) == 2
+
+
+def test_stale_duplicate_channel_clear_does_not_clear_newer_threat(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    base_threat = {
+        "source": "intel_channel",
+        "source_instance": "wc.Venal",
+        "system_name": "S-KSWL",
+        "raw_text": "Scout: S-KSWL +3 reds",
+        "metadata": {"hostile_count": 3, "sender": "Scout"},
+    }
+    old_clear = {
+        "source": "intel_channel",
+        "source_instance": "wc.Venal",
+        "system_name": "S-KSWL",
+        "raw_text": "Scout: S-KSWL clr",
+        "seen_at": "2099-07-03T10:01:00+00:00",
+    }
+
+    store.add_observation({**base_threat, "seen_at": "2099-07-03T10:00:00+00:00"})
+    store.add_observation(old_clear)
+    store.add_observation({**base_threat, "seen_at": "2099-07-03T10:02:00+00:00"})
+
+    store.add_observation({**old_clear, "id": "replayed-old-clear"})
+
+    active = store.list_active_intel(source="intel_channel")
+    assert len(active) == 1
+    assert active[0]["last_seen_at"] == "2099-07-03T10:02:00+00:00"
+    assert active[0]["system_name"] == "S-KSWL"
+
+
+def test_record_ocr_snapshot_refreshes_when_source_instance_changes(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    payload = {
+        "client_id": "detector-client:test",
+        "system_name": "S-KSWL",
+        "names": ["Alice"],
+    }
+
+    store.record_ocr_snapshot(
+        {
+            **payload,
+            "source_instance": "EVE - Old",
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+    second = store.record_ocr_snapshot(
+        {
+            **payload,
+            "source_instance": "EVE - New",
+            "seen_at": "2026-07-03T10:00:02+00:00",
+        }
+    )
+
+    active = store.list_active_intel(source="eve-sentry-detector")
+
+    assert second["refreshed"] == 1
+    assert len(active) == 1
+    assert len(store.list_observations()) == 1
+    assert active[0]["source_instance"] == "EVE - New"
+
+
+def test_record_ocr_snapshot_does_not_rewind_last_seen_at(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    payload = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Hajimi6",
+        "system_name": "S-KSWL",
+        "names": ["Alice"],
+    }
+
+    store.record_ocr_snapshot({**payload, "seen_at": "2026-07-03T10:00:10+00:00"})
+    second = store.record_ocr_snapshot(
+        {**payload, "seen_at": "2026-07-03T10:00:02+00:00"}
+    )
+    still_active = store.record_ocr_snapshot(
+        {**payload, "seen_at": "2026-07-03T10:00:14+00:00", "names": []}
+    )
+
+    active = store.list_active_intel(source="eve-sentry-detector")
+
+    assert second["refreshed"] == 1
+    assert active[0]["last_seen_at"] == "2026-07-03T10:00:10+00:00"
+    assert still_active["expired"] == 0
+    assert still_active["missing"] == 1
+
+
+def test_record_ocr_snapshot_rejects_invalid_seen_at(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+
+    with pytest.raises(ValueError):
+        store.record_ocr_snapshot(
+            {
+                "client_id": "detector-client:test",
+                "system_name": "S-KSWL",
+                "seen_at": "not-a-timestamp",
+                "names": ["Alice"],
+            }
+        )
+
+
+def test_record_ocr_snapshot_deduplicates_names_case_insensitively(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+
+    result = store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-03T10:00:00+00:00",
+            "names": ["Alice", "alice"],
+        }
+    )
+    active = store.list_active_intel(source="eve-sentry-detector")
+
+    assert result["created"] == 1
+    assert len(active) == 1
+    assert len(store.list_observations()) == 1
+    assert active[0]["name"] == "Alice"
+
+
+def test_record_ocr_snapshot_case_change_does_not_mark_name_missing(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    payload = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Hajimi6",
+        "system_name": "S-KSWL",
+    }
+
+    store.record_ocr_snapshot(
+        {
+            **payload,
+            "seen_at": "2026-07-03T10:00:00+00:00",
+            "names": ["Alice"],
+        }
+    )
+    second = store.record_ocr_snapshot(
+        {
+            **payload,
+            "seen_at": "2026-07-03T10:00:02+00:00",
+            "names": ["alice"],
+        }
+    )
+
+    active = store.list_active_intel(source="eve-sentry-detector")
+
+    assert second["refreshed"] == 1
+    assert second["missing"] == 0
+    assert len(active) == 1
+
+
+def test_record_ocr_snapshot_expires_missing_names_after_grace_period(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    payload = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Hajimi6",
+        "system_name": "S-KSWL",
+        "names": ["Alice"],
+    }
+
+    store.record_ocr_snapshot({**payload, "seen_at": "2026-07-03T10:00:00+00:00"})
+    still_active = store.record_ocr_snapshot(
+        {**payload, "seen_at": "2026-07-03T10:00:04+00:00", "names": []}
+    )
+    expired = store.record_ocr_snapshot(
+        {**payload, "seen_at": "2026-07-03T10:00:08+00:00", "names": []}
+    )
+
+    assert still_active["missing"] == 1
+    assert still_active["expired"] == 0
+    assert expired["expired"] == 1
+    assert store.list_active_intel() == []
+    assert store.list_active_intel(active=False)[0]["left_at"] == (
+        "2026-07-03T10:00:08+00:00"
+    )
 
 
 def test_add_observation_deduplicates_same_source_time_and_raw_text(tmp_path):
@@ -343,6 +739,68 @@ def test_list_alerts_uses_optional_scorer_and_caches_result(tmp_path):
     assert first_alerts[0]["evidence"][0]["type"] == "custom"
     assert scorer.calls == 1
     assert store.ack_alert(first_alerts[0]["id"])["acknowledged"] is True
+
+
+def test_snapshot_does_not_hold_store_lock_while_scoring(tmp_path):
+    class BlockingScorer:
+        def __init__(self):
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def score(self, observation, **kwargs):
+            self.entered.set()
+            self.release.wait(timeout=2)
+            return ThreatEvent.from_observation(observation)
+
+    scorer = BlockingScorer()
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        scorer=scorer,
+    )
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "system_name": "Tama",
+            "names": ["Alice"],
+            "received_at": "2026-06-29T12:00:01+00:00",
+        }
+    )
+
+    snapshot_done = threading.Event()
+    snapshot_errors = []
+
+    def build_snapshot():
+        try:
+            store.snapshot()
+        except Exception as exc:  # pragma: no cover - surfaced by assertion
+            snapshot_errors.append(exc)
+        finally:
+            snapshot_done.set()
+
+    snapshot_thread = threading.Thread(target=build_snapshot, daemon=True)
+    snapshot_thread.start()
+
+    try:
+        assert scorer.entered.wait(timeout=1)
+
+        read_done = threading.Event()
+
+        def read_reports():
+            store._reports_snapshot()
+            read_done.set()
+
+        reader = threading.Thread(target=read_reports, daemon=True)
+        reader.start()
+
+        assert read_done.wait(timeout=0.2)
+    finally:
+        scorer.release.set()
+        snapshot_thread.join(timeout=3)
+
+    assert snapshot_done.is_set()
+    assert snapshot_errors == []
 
 
 def test_list_alerts_scores_with_optional_enricher(tmp_path):
