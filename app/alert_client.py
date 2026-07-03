@@ -5,14 +5,52 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+from app.core.heartbeat import (
+    build_alert_heartbeat_details,
+    heartbeat_now_iso,
+    resolve_runtime_identity,
+    summarize_heartbeat_error,
+)
 from app.intel_client import AlertPoller, IntelApiClient, IntelApiError
 
 logger = logging.getLogger(__name__)
+
+
+def _send_heartbeat(
+    api: IntelApiClient,
+    client_id: str,
+    interval_seconds: float,
+    transport: str,
+    popup: bool,
+    details_enabled: bool,
+    last_action: str = "",
+    last_error: str = "",
+    client_version: str = "",
+    host: str = "",
+    last_success_at: str = "",
+) -> None:
+    api.post_heartbeat(
+        client_id=client_id,
+        client_type="alert_client",
+        label="Alert Client",
+        heartbeat_interval_seconds=interval_seconds,
+        details=build_alert_heartbeat_details(
+            transport=transport,
+            popup=popup,
+            details_enabled=details_enabled,
+            last_action=last_action,
+            last_error=last_error,
+            client_version=client_version,
+            host=host,
+            last_success_at=last_success_at,
+        ),
+    )
 
 
 class AlertStreamFallback:
@@ -150,6 +188,10 @@ def format_alert(alert: dict[str, Any]) -> str:
     else:
         text = f"{level} {base} (score {score})".strip()
 
+    server_explanation = _format_server_explanation_summary(alert)
+    if server_explanation:
+        return f"{text} - {server_explanation}"
+
     evidence = _format_evidence_summary(alert)
     detail_context = _format_detail_context_summary(alert)
     suffixes = [item for item in (evidence, detail_context) if item]
@@ -179,9 +221,6 @@ def _format_detail_context_summary(alert: dict[str, Any]) -> str:
     detail = alert.get("detail")
     if not isinstance(detail, dict):
         return ""
-    server_summary = _format_explanation_context(detail.get("explanation"))
-    if server_summary:
-        return server_summary
 
     context = detail.get("context")
     if not isinstance(context, dict):
@@ -197,16 +236,55 @@ def _format_detail_context_summary(alert: dict[str, Any]) -> str:
     return f"Context: {'; '.join(parts[:4])}"
 
 
+def _format_server_explanation_summary(alert: dict[str, Any]) -> str:
+    detail = alert.get("detail")
+    if not isinstance(detail, dict):
+        return ""
+    return _format_explanation_context(detail.get("explanation"))
+
+
 def _format_explanation_context(value: Any) -> str:
     if not isinstance(value, dict):
         return ""
+    parts: list[str] = []
+    summary = str(value.get("summary") or "").strip()
+    if summary:
+        parts.append(f"Detail: {summary}")
+
+    reasons = value.get("reasons")
+    if isinstance(reasons, list):
+        summaries = [str(item).strip() for item in reasons if str(item).strip()]
+        if summaries:
+            parts.append(f"Reasons: {'; '.join(summaries[:2])}")
+
     context = value.get("context")
-    if not isinstance(context, list):
+    if isinstance(context, list):
+        summaries = [str(item).strip() for item in context if str(item).strip()]
+        if summaries:
+            parts.append(f"Context: {'; '.join(summaries[:3])}")
+
+    degraded = _format_degraded_sources(value.get("degraded_sources"))
+    if degraded:
+        parts.append(f"Degraded: {degraded}")
+    return " | ".join(parts)
+
+
+def _format_degraded_sources(value: Any) -> str:
+    if not isinstance(value, list):
         return ""
-    summaries = [str(item).strip() for item in context if str(item).strip()]
-    if not summaries:
-        return ""
-    return f"Context: {'; '.join(summaries[:4])}"
+    parts = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or "source").strip()
+        reason = str(item.get("reason") or "").strip()
+        if reason:
+            parts.append(f"{source} ({reason})")
+        elif source:
+            parts.append(source)
+        if len(parts) >= 3:
+            break
+    return "; ".join(parts)
 
 
 def _format_channel_context(value: Any) -> list[str]:
@@ -449,22 +527,75 @@ def run_alert_client(args: argparse.Namespace) -> int:
         enabled=not args.poll,
         retry_interval=args.stream_retry_interval,
     )
+    heartbeat_client_id = f"alert-client:{os.getpid()}"
+    runtime_identity = resolve_runtime_identity()
+    heartbeat_interval = max(5.0, float(args.interval))
+    last_heartbeat_at = 0.0
+    heartbeat_action = "starting"
+    heartbeat_error = ""
+    heartbeat_last_success_at = ""
     try:
         while True:
             use_events = stream_fallback.should_stream()
+            now = time.monotonic()
+            if not once and now >= last_heartbeat_at:
+                try:
+                    _send_heartbeat(
+                        api,
+                        heartbeat_client_id,
+                        heartbeat_interval,
+                        "events" if use_events else "poll",
+                        popup,
+                        details,
+                        last_action=heartbeat_action,
+                        last_error=heartbeat_error,
+                        client_version=runtime_identity["client_version"],
+                        host=runtime_identity["host"],
+                        last_success_at=heartbeat_last_success_at,
+                    )
+                except IntelApiError as exc:
+                    logger.warning("Heartbeat update failed: %s", exc)
+                last_heartbeat_at = now + heartbeat_interval
             try:
                 if use_events:
                     alerts = poller.stream_new(timeout=args.interval)
                     stream_fallback.mark_stream_success()
+                    heartbeat_action = (
+                        f"events:{len(alerts)}" if alerts else "events_waiting"
+                    )
                 else:
                     alerts = poller.poll_new()
                     stream_fallback.mark_poll_attempt()
+                    heartbeat_action = f"poll:{len(alerts)}" if alerts else "poll_idle"
+                heartbeat_error = ""
+                heartbeat_last_success_at = heartbeat_now_iso()
             except IntelApiError as exc:
                 if use_events:
                     logger.warning("Event stream failed, falling back to polling: %s", exc)
                     stream_fallback.mark_stream_failure()
+                    heartbeat_action = "events_error"
+                    heartbeat_error = summarize_heartbeat_error(str(exc))
                     continue
                 logger.warning("Polling failed: %s", exc)
+                heartbeat_action = "poll_error"
+                heartbeat_error = summarize_heartbeat_error(str(exc))
+                if once:
+                    try:
+                        _send_heartbeat(
+                            api,
+                            heartbeat_client_id,
+                            heartbeat_interval,
+                            "poll",
+                            popup,
+                            details,
+                            last_action=heartbeat_action,
+                            last_error=heartbeat_error,
+                            client_version=runtime_identity["client_version"],
+                            host=runtime_identity["host"],
+                            last_success_at=heartbeat_last_success_at,
+                        )
+                    except IntelApiError as heartbeat_exc:
+                        logger.warning("Heartbeat update failed: %s", heartbeat_exc)
                 if once:
                     return 1
                 time.sleep(args.interval)
@@ -487,8 +618,26 @@ def run_alert_client(args: argparse.Namespace) -> int:
                         acknowledged_by=ack_by,
                         note=ack_note,
                     )
+                    heartbeat_action = f"ack:{len(alerts)}"
+                    heartbeat_last_success_at = heartbeat_now_iso()
 
             if once:
+                try:
+                    _send_heartbeat(
+                        api,
+                        heartbeat_client_id,
+                        heartbeat_interval,
+                        "events" if use_events else "poll",
+                        popup,
+                        details,
+                        last_action=heartbeat_action,
+                        last_error=heartbeat_error,
+                        client_version=runtime_identity["client_version"],
+                        host=runtime_identity["host"],
+                        last_success_at=heartbeat_last_success_at,
+                    )
+                except IntelApiError as exc:
+                    logger.warning("Heartbeat update failed: %s", exc)
                 return 0
 
             if not use_events:

@@ -155,13 +155,17 @@ class Evidence:
     evidence_type: str
     weight: int
     summary: str
+    rule_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "type": self.evidence_type,
             "weight": self.weight,
             "summary": self.summary,
         }
+        if self.rule_id:
+            data["rule_id"] = self.rule_id
+        return data
 
 
 @dataclass
@@ -178,6 +182,7 @@ class ThreatEvent:
     character_ids: list[int] = field(default_factory=list)
     source_observation_id: str = ""
     created_at: str = field(default_factory=utc_now_iso)
+    scoring_version: str = ""
 
     @classmethod
     def from_observation(cls, observation: Observation) -> "ThreatEvent":
@@ -211,6 +216,7 @@ class ThreatEvent:
             evidence=evidence,
             source_observation_id=observation.observation_id,
             created_at=observation.received_at,
+            scoring_version="score_observation.v1",
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -228,6 +234,7 @@ class ThreatEvent:
             "source_observation_id": self.source_observation_id,
             "created_at": self.created_at,
             "seen_at": self.created_at,
+            "scoring_version": self.scoring_version,
         }
 
 

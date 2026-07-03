@@ -63,6 +63,127 @@ class FakeApi:
         return {}
 
 
+class RecordingClient(IntelApiClient):
+    def __init__(self):
+        super().__init__("http://example.invalid")
+        self.calls = []
+
+    def _request(self, method, path, payload=None, params=None):
+        self.calls.append(
+            {
+                "method": method,
+                "path": path,
+                "payload": payload,
+                "params": params,
+            }
+        )
+        if path.endswith("/clients/heartbeats"):
+            return {"heartbeat": {"client_id": "client-1", "online": True}}
+        if path.endswith("/heartbeats"):
+            return {"heartbeats": [], "summary": {"count": 0}, "count": 0}
+        if path.endswith("/esi/status"):
+            return {"enabled": False, "authenticated": False}
+        if path.endswith("/esi/session"):
+            return {"snapshot": {"location": None}}
+        if "/alerts/" in path and path.endswith("/ack"):
+            return {"alert": {"id": "evt-1"}}
+        if "/alerts/" in path:
+            return {"detail": {"alert": {"id": "evt-1"}}}
+        if path.endswith("/reports"):
+            return {"reports": []}
+        if path.endswith("/observations"):
+            return {"observations": []}
+        if path.endswith("/alerts"):
+            return {"alerts": []}
+        if path.endswith("/clients"):
+            return {"clients": {"heartbeats": [], "summary": {"count": 0}}}
+        if path.endswith("/config"):
+            return {"config": {"schema_version": "scoring_config.v1"}}
+        if path.endswith("/bootstrap"):
+            return {"bootstrap": {"schema_version": "intel_bootstrap.v1"}}
+        if path.endswith("/map"):
+            return {"map": {"systems": [], "links": [], "summary": {}}}
+        if "/map/systems/" in path:
+            return {
+                "system": {
+                    "profile": {"system_id": 30002813, "name": "Tama"},
+                    "intel": {"entity": {"entity_type": "system"}},
+                }
+            }
+        if path.endswith("/systems/30002813"):
+            return {"system": {"system_id": 30002813, "name": "Tama"}}
+        return {"ok": True, "report": {"id": "r-1"}, "observation": {"id": "o-1"}}
+
+
+def test_intel_api_client_targets_v1_routes_for_http_requests():
+    api = RecordingClient()
+
+    api.post_report(system="Tama", names=["Alice"])
+    api.post_observation(system_name="Tama", names=["Alice"])
+    api.post_channel_line("Tama Alice", channel="Alliance Intel")
+    api.post_heartbeat("client-1", "channel_client")
+    api.list_heartbeats()
+    api.esi_status()
+    api.esi_session(include_location=True, include_contacts=False)
+    api.system_profile(30002813)
+    api.list_reports()
+    api.list_observations()
+    api.list_alerts()
+    api.alert_detail("evt-1")
+    api.ack_alert("evt-1")
+    api.bootstrap()
+    api.map_snapshot()
+    api.map_system(30002813)
+
+    assert [call["path"] for call in api.calls] == [
+        "/api/v1/reports",
+        "/api/v1/observations",
+        "/api/v1/channel-lines",
+        "/api/v1/clients/heartbeats",
+        "/api/v1/clients",
+        "/api/v1/esi/status",
+        "/api/v1/esi/session",
+        "/api/v1/systems/30002813",
+        "/api/v1/reports",
+        "/api/v1/observations",
+        "/api/v1/alerts",
+        "/api/v1/alerts/evt-1",
+        "/api/v1/alerts/evt-1/ack",
+        "/api/v1/bootstrap",
+        "/api/v1/map",
+        "/api/v1/map/systems/30002813",
+    ]
+
+
+def test_intel_api_client_targets_v1_event_stream(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'id: evt-1\nevent: alert\ndata: {"id": "evt-1"}\n\n'
+
+    def fake_urlopen(request, timeout=0):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("app.intel_client.urlopen", fake_urlopen)
+    api = IntelApiClient("http://example.invalid", timeout=3.0)
+
+    alerts = api.stream_alerts(last_event_id="evt-0", timeout=0)
+
+    assert alerts == [{"id": "evt-1"}]
+    assert captured["url"] == "http://example.invalid/api/v1/events?limit=50&timeout=0"
+    assert captured["headers"]["Last-event-id"] == "evt-0"
+
+
 def test_intel_api_client_posts_and_lists_reports(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
@@ -119,6 +240,48 @@ def test_intel_api_client_posts_observations(tmp_path):
         )
         assert acked["acknowledged"] is True
         assert acked["acknowledged_by"] == "client"
+    finally:
+        server.stop()
+
+
+def test_intel_api_client_posts_ocr_snapshot(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        api = IntelApiClient(server.url, timeout=1)
+
+        result = api.post_ocr_snapshot(
+            client_id="detector-client:test",
+            source_instance="EVE - Hajimi6",
+            system_name="S-KSWL",
+            names=["Alice"],
+            seen_at="2026-07-03T10:00:00+00:00",
+        )
+
+        assert result["created"] == 1
+        assert api.get_active_intel()["count"] == 1
+    finally:
+        server.stop()
+
+
+def test_intel_api_client_posts_and_lists_heartbeats(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        api = IntelApiClient(server.url)
+
+        heartbeat = api.post_heartbeat(
+            client_id="channel-client:test",
+            client_type="channel_client",
+            label="Channel Client",
+            heartbeat_interval_seconds=5,
+            details={"server_parse": True},
+        )
+        heartbeats = api.list_heartbeats()
+
+        assert heartbeat["client_id"] == "channel-client:test"
+        assert heartbeat["details"]["server_parse"] is True
+        assert heartbeats[0]["client_type"] == "channel_client"
     finally:
         server.stop()
 
@@ -273,9 +436,14 @@ def test_intel_api_client_fetches_alert_details(tmp_path):
         )
         detail = api.alert_detail(created["alert"]["id"])
 
+        assert detail["schema_version"] == "alert_detail.v1"
         assert detail["alert"]["id"] == created["alert"]["id"]
         assert detail["observation"]["id"] == created["observation"]["id"]
+        assert detail["entities"]["systems"] == [
+            {"system_id": None, "name": "Tama"}
+        ]
         assert detail["context"]["channel_mentions"] == []
+        assert isinstance(detail["explanation"]["degraded_sources"], list)
     finally:
         server.stop()
 
@@ -581,18 +749,28 @@ def test_alert_client_formats_reports_for_console_and_popup():
     )
 
     detailed_alert["detail"]["explanation"] = {
+        "summary": "HIGH alert for Alice in Tama (score 85)",
+        "reasons": ["Local OCR saw Alice", "Recent hostile standing"],
         "context": [
             "Recent channel same-system mention in Tama 2m ago",
             "ESI profile Alice: corp 456",
             "Character 123 has 2 kills, 1 loss in 7d",
-        ]
+        ],
+        "degraded_sources": [
+            {
+                "source": "killboard",
+                "reason": "system activity unavailable",
+            }
+        ],
     }
     assert (
         format_alert(detailed_alert)
         == "HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 85) "
-        "- Local OCR saw Alice | Context: Recent channel same-system mention "
-        "in Tama 2m ago; ESI profile Alice: corp 456; Character 123 has "
-        "2 kills, 1 loss in 7d"
+        "- Detail: HIGH alert for Alice in Tama (score 85) | Reasons: Local "
+        "OCR saw Alice; Recent hostile standing | Context: Recent channel "
+        "same-system mention in Tama 2m ago; ESI profile Alice: corp 456; "
+        "Character 123 has 2 kills, 1 loss in 7d | Degraded: killboard "
+        "(system activity unavailable)"
     )
 
 
@@ -650,7 +828,12 @@ def test_alert_client_once_falls_back_to_polling_when_stream_fails(
             self.timeout = timeout
             self.poll_calls = 0
             self.stream_calls = 0
+            self.heartbeats = []
             self.instances.append(self)
+
+        def post_heartbeat(self, **payload):
+            self.heartbeats.append(payload)
+            return {"client_id": payload["client_id"], "online": True}
 
         def list_alerts(
             self,
@@ -686,6 +869,8 @@ def test_alert_client_once_falls_back_to_polling_when_stream_fails(
             raise IntelApiError("stream offline")
 
     monkeypatch.setattr("app.alert_client.IntelApiClient", StreamingFailsApi)
+    monkeypatch.setenv("EVE_SENTRY_CLIENT_VERSION", "test-version")
+    monkeypatch.setenv("EVE_SENTRY_CLIENT_HOST", "test-host")
 
     args = parse_args(
         [
@@ -702,6 +887,14 @@ def test_alert_client_once_falls_back_to_polling_when_stream_fails(
     output = capsys.readouterr()
     api = StreamingFailsApi.instances[0]
 
+    assert len(api.heartbeats) == 1
+    assert api.heartbeats[0]["client_type"] == "alert_client"
+    assert api.heartbeats[0]["details"]["mode"] == "poll"
+    assert api.heartbeats[0]["details"]["last_action"] == "poll:1"
+    assert api.heartbeats[0]["details"]["client_version"] == "test-version"
+    assert api.heartbeats[0]["details"]["host"] == "test-host"
+    assert api.heartbeats[0]["details"]["last_success_at"]
+    assert "last_error" not in api.heartbeats[0]["details"]
     assert api.stream_calls == 1
     assert api.poll_calls == 1
     assert "Fallback" in output.out

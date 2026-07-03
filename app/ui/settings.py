@@ -1,5 +1,7 @@
 """Settings panel: whitelist management, scan interval, window keyword."""
 
+import os
+
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -15,6 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from app.channels.log_watcher import DEFAULT_CHATLOG_DIR
 from app.models.whitelist import Whitelist
 
 
@@ -74,6 +77,22 @@ class SettingsPanel(QWidget):
         cfg_layout.addLayout(keyword_row)
 
         layout.addWidget(cfg_group)
+
+        channel_group = QGroupBox("Channel Log Monitor")
+        channel_layout = QVBoxLayout(channel_group)
+
+        channel_layout.addWidget(QLabel("Intel channel names"))
+        self._channel_edit = QLineEdit(os.environ.get("EVE_SENTRY_CHANNEL", ""))
+        self._channel_edit.setPlaceholderText("Example: wc.Venal+Br+Te")
+        channel_layout.addWidget(self._channel_edit)
+
+        channel_layout.addWidget(QLabel("Chatlogs directory"))
+        self._channel_log_dir_edit = QLineEdit(
+            os.environ.get("EVE_SENTRY_CHATLOG_DIR", str(DEFAULT_CHATLOG_DIR))
+        )
+        channel_layout.addWidget(self._channel_log_dir_edit)
+
+        layout.addWidget(channel_group)
         layout.addStretch()
 
     def _refresh_wl_list(self):
@@ -113,3 +132,19 @@ class SettingsPanel(QWidget):
 
     def get_keyword(self) -> str:
         return self._keyword_edit.text().strip()
+
+    def get_channel_names(self) -> list[str]:
+        """Return selected channel filters; empty means no channel submission."""
+        text = self._channel_edit.text().replace(";", ",")
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in text.split(","):
+            name = item.strip()
+            key = name.casefold()
+            if name and key not in seen:
+                seen.add(key)
+                names.append(name)
+        return names
+
+    def get_channel_log_dir(self) -> str:
+        return self._channel_log_dir_edit.text().strip() or str(DEFAULT_CHATLOG_DIR)
