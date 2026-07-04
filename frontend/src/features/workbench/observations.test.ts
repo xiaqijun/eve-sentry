@@ -81,7 +81,7 @@ describe("buildPilotObservations", () => {
       evidenceCount: 3,
       latestSeen: "2026-07-02T12:04:00Z",
     });
-    expect(observations[0].sources).toEqual(["频道", "OCR", "预警"]);
+    expect(observations[0].sources).toEqual(["预警频道", "本地OCR", "预警"]);
   });
 
   it("shows raw observations even when they have no report or alert", () => {
@@ -99,7 +99,73 @@ describe("buildPilotObservations", () => {
       level: "unknown",
       latestSeen: "2026-07-02T12:04:00Z",
     });
-    expect(observations[0].sources).toEqual(["OCR"]);
+    expect(observations[0].sources).toEqual(["本地OCR"]);
+  });
+
+  it("uses readable source labels for every realtime intel source family", () => {
+    const payload = {
+      ...bootstrap,
+      active_intel: [
+        { id: "active-1", source: "channel", name: "Channel Pilot", active: true },
+        { id: "active-2", source: "intel_channel", name: "Intel Pilot", active: true },
+        { id: "active-3", source: "intel_channel_report", name: "Report Pilot", active: true },
+        { id: "active-4", source: "local_ocr", name: "Local Pilot", active: true },
+        { id: "active-5", source: "local_ocr_seen", name: "Seen Pilot", active: true },
+        { id: "active-6", source: "ocr", name: "Ocr Pilot", active: true },
+        { id: "active-7", source: "eve-sentry-detector", name: "Detector Pilot", active: true },
+        { id: "active-8", source: "manual", name: "Manual Pilot", active: true },
+        { id: "active-9", source: "manual_intel", name: "Manual Intel Pilot", active: true },
+        { id: "active-10", source: "zkill", name: "Zkill Pilot", active: true },
+        { id: "active-11", source: "zkillboard", name: "Zkillboard Pilot", active: true },
+        { id: "active-12", source: "killboard", name: "Killboard Pilot", active: true },
+        { id: "active-13", source: "esi", name: "Esi Pilot", active: true },
+        { id: "active-14", source: "", name: "Unknown Pilot", active: true },
+        { id: "active-15", source: "unmapped_feed", name: "Mystery Pilot", active: true },
+      ],
+    } satisfies BootstrapPayload;
+
+    const sourcesByName = new Map(
+      buildPilotObservations(payload).map((item) => [item.pilotName, item.sources[0]]),
+    );
+
+    expect(sourcesByName).toMatchObject(
+      new Map([
+        ["Channel Pilot", "预警频道"],
+        ["Intel Pilot", "预警频道"],
+        ["Report Pilot", "预警频道"],
+        ["Local Pilot", "本地OCR"],
+        ["Seen Pilot", "本地OCR"],
+        ["Ocr Pilot", "本地OCR"],
+        ["Detector Pilot", "本地OCR"],
+        ["Manual Pilot", "手动上报"],
+        ["Manual Intel Pilot", "手动上报"],
+        ["Zkill Pilot", "zKill"],
+        ["Zkillboard Pilot", "zKill"],
+        ["Killboard Pilot", "zKill"],
+        ["Esi Pilot", "ESI"],
+        ["Unknown Pilot", "情报"],
+        ["Mystery Pilot", "情报"],
+      ]),
+    );
+    expect(sourcesByName.get("Mystery Pilot")).toBe(sourcesByName.get("Unknown Pilot"));
+  });
+
+  it("uses a readable fallback when active intel has no name or raw text", () => {
+    const payload = {
+      ...bootstrap,
+      active_intel: [
+        {
+          id: "active-unknown",
+          source: "channel",
+          name: "",
+          raw_text: "",
+          active: true,
+          seen_count: 1,
+        },
+      ],
+    } satisfies BootstrapPayload;
+
+    expect(buildPilotObservations(payload)[0].pilotName).toBe("未命名目标");
   });
 
   it("filters observations by selected system when provided", () => {

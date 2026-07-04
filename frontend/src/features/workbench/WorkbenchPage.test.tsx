@@ -138,8 +138,9 @@ describe("WorkbenchPage", () => {
     expect(container.querySelector('[data-testid="echarts-gauge"]')).toBeInTheDocument();
     expect(container.querySelector('[data-testid="observation-table"]')).toBeInTheDocument();
     expect(container).toHaveTextContent("Pilot One");
-    expect(container).toHaveTextContent("频道");
-    expect(container).toHaveTextContent("预警");
+    expect(container).toHaveTextContent("预警频道");
+    expect(container).toHaveTextContent("预警情报工作台");
+    expect(container).toHaveTextContent("敌对飞行员观察列表");
 
     expect(apiMocks.connectAlerts).toHaveBeenCalledTimes(1);
     await act(async () => {

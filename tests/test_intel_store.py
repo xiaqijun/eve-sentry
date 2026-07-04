@@ -85,9 +85,42 @@ def test_add_report_persists_and_snapshot_aggregates(tmp_path):
     assert snapshot["summary"]["alert_count"] == 1
     assert snapshot["summary"]["hostile_count"] == 2
     assert snapshot["systems"][0]["name"] == "Tama"
-    assert snapshot["systems"][0]["hostiles"] == ["Alice", "Bob"]
+    assert snapshot["systems"][0]["hostiles"] == []
+    assert snapshot["systems"][0]["hostile_count"] == 0
+    assert snapshot["systems"][0]["report_count"] == 0
     assert snapshot["observations"][0]["system_name"] == "Tama"
     assert snapshot["alerts"][0]["level"] == "low"
+
+
+def test_snapshot_map_uses_only_active_intel_for_system_hotness(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={"Tama": StarSystem("Tama", 10, 20, "The Citadel", 0.3)},
+        links=[],
+    )
+
+    store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "Alliance Intel",
+            "system_name": "Tama",
+            "names": ["Alice"],
+            "raw_text": "Tama Alice",
+            "metadata": {"hostile_count": 1, "sender": "Scout A"},
+            "seen_at": "2000-01-01T00:00:00+00:00",
+        }
+    )
+
+    snapshot = store.snapshot()
+
+    assert snapshot["summary"]["report_count"] == 1
+    assert snapshot["summary"]["hostile_count"] == 1
+    assert snapshot["summary"]["active_system_count"] == 0
+    assert snapshot["systems"][0]["name"] == "Tama"
+    assert snapshot["systems"][0]["hostiles"] == []
+    assert snapshot["systems"][0]["hostile_count"] == 0
+    assert snapshot["systems"][0]["latest_seen"] is None
+    assert snapshot["systems"][0]["report_count"] == 0
 
 
 def test_list_reports_filters_and_limits(tmp_path):

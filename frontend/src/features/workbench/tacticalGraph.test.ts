@@ -75,11 +75,66 @@ describe("buildTacticalGraph", () => {
       fx: 100,
       fy: 120,
       hostileCount: 2,
-      observationCount: 4,
+      observationCount: 3,
       hasAlerts: true,
       isSelected: true,
       threatLevel: "high",
       threatScore: 80,
+    });
+  });
+
+  it("does not light map nodes from historical alerts without realtime intel", () => {
+    const graph = buildTacticalGraph({
+      ...bootstrap,
+      map: {
+        ...bootstrap.map,
+        systems: [
+          {
+            name: "0-UVHJ",
+            system_id: 30003615,
+            x: 100,
+            y: 120,
+            hostile_count: 0,
+            report_count: 0,
+            security: -0.1,
+          },
+        ],
+      },
+    });
+
+    expect(graph.nodes[0]).toMatchObject({
+      hostileCount: 0,
+      observationCount: 0,
+      hasAlerts: false,
+      threatLevel: "unknown",
+      threatScore: null,
+    });
+  });
+
+  it("keeps realtime heat separate from active report count", () => {
+    const graph = buildTacticalGraph({
+      ...bootstrap,
+      map: {
+        ...bootstrap.map,
+        systems: [
+          {
+            name: "0-UVHJ",
+            system_id: 30003615,
+            x: 100,
+            y: 120,
+            hostile_count: 3,
+            report_count: 1,
+            security: -0.1,
+          },
+        ],
+      },
+    });
+
+    expect(graph.nodes[0]).toMatchObject({
+      hostileCount: 3,
+      reportCount: 1,
+      observationCount: 3,
+      hasAlerts: true,
     });
   });
 

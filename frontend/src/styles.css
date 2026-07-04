@@ -302,6 +302,17 @@ button {
   display: block;
 }
 
+.tactical-star-map-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  color: #8fb4c3;
+  font-size: 13px;
+}
+
 .map-canvas::after {
   content: "";
   position: absolute;

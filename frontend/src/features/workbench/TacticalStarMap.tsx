@@ -141,7 +141,11 @@ function drawNode(
     context.font = `700 ${Math.max(6, 8 / globalScale)}px "Segoe UI", sans-serif`;
     context.textAlign = "left";
     context.textBaseline = "middle";
-    context.fillText(`监${node.monitorCount}`, badgeX + badgeSize + 3, badgeY + badgeSize / 2);
+    const offlineCount = Math.max(0, node.monitorCount - node.monitorOnlineCount);
+    const monitorLabel = monitorOnline
+      ? `在线 ${node.monitorOnlineCount}`
+      : `离线 ${offlineCount || node.monitorCount}`;
+    context.fillText(monitorLabel, badgeX + badgeSize + 3, badgeY + badgeSize / 2);
   }
 
   context.shadowBlur = 0;
@@ -153,7 +157,7 @@ function drawNode(
   context.fillStyle = node.hasAlerts ? "#ff5048" : "#9fb7c4";
   context.font = `600 ${Math.max(6, 8 / globalScale)}px "Segoe UI", sans-serif`;
   context.fillText(
-    `敌 ${node.hostileCount} 观 ${node.observationCount} 杀 ${node.killCount ?? "-"}`,
+    `实时目标 ${node.hostileCount} 记录 ${node.reportCount} 击杀 ${node.killCount ?? "-"}`,
     x,
     y + radius + 3 + fontSize,
   );
@@ -219,6 +223,9 @@ export function TacticalStarMap({
 
   return (
     <div className="tactical-star-map" data-testid="tactical-star-map" ref={containerRef}>
+      {graphData.nodes.length === 0 ? (
+        <div className="tactical-star-map-empty">暂无实时敌对目标</div>
+      ) : null}
       <ForceGraph2D<TacticalGraphNode, TacticalGraphLink>
         ref={graphRef}
         graphData={graphData}

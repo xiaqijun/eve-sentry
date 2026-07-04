@@ -116,7 +116,31 @@ describe("TacticalStarMap", () => {
     container.remove();
   });
 
-  test("draws a monitor marker on systems with deployed clients", async () => {
+  test("shows a readable empty state when there are no live hostile targets", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <TacticalStarMap
+          graphData={{ links: [], nodes: [] }}
+          onSelectSystem={() => {}}
+        />,
+      );
+    });
+
+    const emptyState = container.querySelector(".tactical-star-map-empty");
+    expect(emptyState).toHaveTextContent("暂无实时敌对目标");
+    expect(container.querySelector('[data-testid="force-graph"]')).toBeInTheDocument();
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  test("draws readable status labels for systems with deployed clients", async () => {
     const monitoredGraphData: TacticalGraphData = {
       ...graphData,
       nodes: graphData.nodes.map((node) =>
@@ -161,7 +185,12 @@ describe("TacticalStarMap", () => {
     (drawNode as Function)(monitoredGraphData.nodes[0], context, 1);
 
     expect(fillText).toHaveBeenCalledWith(
-      "监1",
+      "在线 1",
+      expect.any(Number),
+      expect.any(Number),
+    );
+    expect(fillText).toHaveBeenCalledWith(
+      "实时目标 0 记录 0 击杀 -",
       expect.any(Number),
       expect.any(Number),
     );

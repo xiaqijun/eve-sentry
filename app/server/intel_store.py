@@ -1249,11 +1249,15 @@ class IntelStore:
 
     def snapshot(self) -> dict[str, Any]:
         """Return systems, links, reports, observations, alerts, and summary."""
+        self.expire_active_intel()
         with self._lock:
             report_items = list(self._reports)
             system_items = dict(self._systems)
             link_items = list(self._links)
             heartbeat_count = len(self._heartbeats)
+            active_items = [
+                item.to_dict() for item in self._active_intel.values() if item.active
+            ]
 
         reports = [report.to_dict() for report in report_items]
         observations = [report.to_observation().to_dict() for report in report_items]
@@ -1262,7 +1266,7 @@ class IntelStore:
             alert = self._alert_from_report(report)
             if alert is not None:
                 alerts.append(self._alert_to_dict(report, alert))
-        system_intel = self._aggregate_by_system(reports)
+        system_intel = self._aggregate_active_by_system(active_items)
         character_intel = self._aggregate_by_character(reports)
 
         systems = []
@@ -2481,6 +2485,39 @@ class IntelStore:
                 report["seen_at"],
             )
             entry["report_count"] += 1
+
+        for entry in intel.values():
+            entry["hostiles"] = sorted(entry["hostiles"])
+        return intel
+
+    def _aggregate_active_by_system(
+        self,
+        active_items: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        intel: dict[str, dict[str, Any]] = {}
+        for item in active_items:
+            system = str(item.get("system_name") or "").strip()
+            if not system:
+                continue
+            entry = intel.setdefault(system, self._empty_system_intel())
+            name = str(item.get("name") or "").strip()
+            raw_text = str(item.get("raw_text") or "").strip()
+            label = name or raw_text
+            if label:
+                entry["hostiles"].add(label)
+            entry["latest_seen"] = max(
+                entry["latest_seen"] or item["last_seen_at"],
+                item["last_seen_at"],
+            )
+            entry["report_count"] += max(1, int(item.get("seen_count") or 1))
+            metadata = (
+                item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            )
+            hostile_count = metadata.get("hostile_count")
+            if isinstance(hostile_count, int) and hostile_count > 0:
+                entry["hostile_count"] += hostile_count
+            elif label:
+                entry["hostile_count"] += 1
 
         for entry in intel.values():
             entry["hostiles"] = sorted(entry["hostiles"])

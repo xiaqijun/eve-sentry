@@ -46,21 +46,31 @@ const columnHelper = createColumnHelper<PilotObservation>();
 const columns = [
   columnHelper.accessor("pilotName", {
     cell: (info) => <strong className="pilot-name">{info.getValue()}</strong>,
-    header: "飞行员名称",
+    header: "飞行员",
   }),
   columnHelper.accessor((row) => row.systemName || "未知", {
     cell: (info) => info.getValue(),
     header: "星系",
     id: "systemName",
   }),
+  columnHelper.accessor((row) => row.sources.join(" / ") || "情报", {
+    cell: (info) => info.getValue(),
+    header: "来源",
+    id: "sources",
+  }),
   columnHelper.accessor("level", {
     cell: (info) => <em>{levelLabel(info.getValue())}</em>,
-    header: "等级",
+    header: "威胁",
   }),
   columnHelper.accessor((row) => formatClock(row.latestSeen), {
     cell: (info) => info.getValue(),
     header: "最近出现",
     id: "latestSeen",
+  }),
+  columnHelper.accessor((row) => row.repeatCount ?? row.evidenceCount, {
+    cell: (info) => info.getValue(),
+    header: "次数",
+    id: "count",
   }),
 ];
 
@@ -103,7 +113,7 @@ export function ObservationTable({ observations }: ObservationTableProps) {
         </tbody>
       </table>
       {observations.length === 0 ? (
-        <div className="empty-state">当前筛选下没有飞行员观察记录</div>
+        <div className="empty-state">暂无实时敌对目标</div>
       ) : null}
       <div className="source-strip">
         {observations.slice(0, 6).map((item) => (

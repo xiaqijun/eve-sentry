@@ -195,6 +195,9 @@ export function buildTacticalGraph(
       const x = Number(system.x || 0);
       const y = Number(system.y || 0);
       const reportCount = Number(system.report_count || 0);
+      const hostileCount = Number(system.hostile_count || 0);
+      const realtimeSignalCount = Math.max(reportCount, hostileCount);
+      const hasRealtimeIntel = realtimeSignalCount > 0;
       const monitorSummary = monitorsBySystem.get(system.name) || {
         count: 0,
         onlineCount: 0,
@@ -210,20 +213,20 @@ export function buildTacticalGraph(
         fy: y,
         security:
           typeof system.security === "number" ? system.security : null,
-        hostileCount: Number(system.hostile_count || 0),
+        hostileCount,
         reportCount,
-        observationCount: reportCount + alertSummary.count,
+        observationCount: realtimeSignalCount,
         killCount: firstNumber(system.recent_kill_count, system.kill_count),
         monitorCount: monitorSummary.count,
         monitorOnlineCount: monitorSummary.onlineCount,
         monitorLabels: monitorSummary.labels,
-        hasAlerts: alertSummary.count > 0,
+        hasAlerts: hasRealtimeIntel,
         isSelected:
           typeof selectedSystemId === "number" &&
           typeof system.system_id === "number" &&
           system.system_id === selectedSystemId,
-        threatLevel: alertSummary.level,
-        threatScore: alertSummary.score,
+        threatLevel: hasRealtimeIntel ? alertSummary.level : "unknown",
+        threatScore: hasRealtimeIntel ? alertSummary.score : null,
       };
     }),
     links: bootstrap.map.links.map((link) => ({

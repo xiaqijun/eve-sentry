@@ -21,27 +21,31 @@ function normalizeName(value: string): string {
 }
 
 function sourceLabel(source?: string): string {
-  switch ((source || "").toLocaleLowerCase()) {
+  const normalized = (source || "").trim().toLocaleLowerCase();
+  switch (normalized) {
     case "channel":
     case "intel_channel":
     case "intel_channel_report":
-      return "频道";
+      return "预警频道";
     case "local_ocr":
     case "local_ocr_seen":
     case "ocr":
     case "eve-sentry-detector":
-      return "OCR";
+      return "本地OCR";
     case "manual":
     case "manual_intel":
-      return "手动";
+      return "手动上报";
     case "zkill":
     case "zkillboard":
     case "killboard":
       return "zKill";
     case "esi":
       return "ESI";
+    case "":
+    case "unknown":
+      return "情报";
     default:
-      return source || "情报";
+      return "情报";
   }
 }
 
@@ -171,9 +175,10 @@ function addAlert(
 
 function activeIntelObservation(item: ActiveIntelItem): PilotObservation {
   const systemId = typeof item.system_id === "number" ? item.system_id : undefined;
+  const pilotName = item.name?.trim() || item.raw_text?.trim() || "未命名目标";
   return {
     id: item.id,
-    pilotName: item.name || item.raw_text || "Unknown",
+    pilotName,
     systemName: item.system_name,
     systemId,
     systemIds: typeof systemId === "number" ? [systemId] : [],
