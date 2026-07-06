@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from app.server.intel_store import IntelStore
+from app.server.http_server import IntelHTTPServer
 from app.server.sqlite_store import SQLiteIntelStore
 
 
@@ -95,6 +96,121 @@ def test_monitor_ui_smoke_constructs_main_window_offscreen_without_side_effects(
         "select_window_calls": 0,
         "tray_setup_patched": True,
     }
+
+
+def test_integration_status_check_help_runs_from_repo_root():
+    result = subprocess.run(
+        [sys.executable, "scripts/integration_status_check.py", "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "without creating reports" in result.stdout
+
+
+def test_integration_status_check_classifies_client_heartbeats():
+    module = _load_script_module(
+        "integration_status_check",
+        "scripts/integration_status_check.py",
+    )
+    clients = {
+        "heartbeats": [
+            {
+                "client_type": "detector_client",
+                "status": "running",
+                "stale": False,
+                "details": {
+                    "targets": [
+                        {"monitoring": True},
+                        {"monitoring": True},
+                    ]
+                },
+            },
+            {
+                "client_type": "alert_client",
+                "status": "running",
+                "stale": False,
+                "details": {},
+            },
+        ]
+    }
+
+    grouped = module.classify_clients(clients)
+
+    assert len(grouped["detector_client"]) == 1
+    assert len(grouped["alert_client"]) == 1
+    assert module.detector_target_count(grouped["detector_client"]) == 2
+    assert module.detector_is_monitoring(grouped["detector_client"]) is True
+    assert module.is_online(grouped["alert_client"][0]) is True
+
+
+def test_integration_status_check_reads_empty_server_without_writing_intel(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/integration_status_check.py",
+                "--server",
+                server.url,
+                "--json",
+                "--require-event-health",
+                "--check-esi",
+                "--check-map",
+                "--check-events-stream",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    finally:
+        server.stop()
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["read_only"] is True
+    assert payload["summary"]["client_count"] == 0
+    assert payload["summary"]["recent_alert_count"] == 0
+    assert payload["summary"]["active_intel_count"] == 0
+    assert payload["health"]["schema_version"] == "health.v1"
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["active_intel_endpoint"]["ok"] is True
+    assert checks["esi_status"]["ok"] is True
+    assert checks["map_snapshot"]["ok"] is True
+    assert checks["events_stream"]["ok"] is True
+
+
+def test_integration_status_check_expect_detector_fails_without_client(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/integration_status_check.py",
+                "--server",
+                server.url,
+                "--json",
+                "--expect-detector",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    finally:
+        server.stop()
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["detector_online"]["ok"] is False
 
 
 def test_import_intel_json_help_runs_from_repo_root():

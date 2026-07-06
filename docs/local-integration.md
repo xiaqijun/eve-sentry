@@ -46,6 +46,24 @@ curl http://127.0.0.1:8765/api/health
 curl http://127.0.0.1:8765/api/v1/clients
 ```
 
+也可以用只读联调检查脚本一次性读取服务端 health、clients、alerts、
+active intel、ESI 状态、星图快照和 SSE 连通性。这个脚本只发 GET 请求，
+不会创建 report、observation、alert、OCR snapshot、heartbeat，也不会 ack:
+
+```powershell
+python scripts/integration_status_check.py --server http://127.0.0.1:8765 --check-esi --check-map --check-events-stream
+```
+
+检测端和预警端都启动后，可加入期望条件作为验收门槛:
+
+```powershell
+python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-detector --expect-alert-client --expect-monitoring --min-targets 1 --require-event-health --check-events-stream
+```
+
+多开 EVE 联调时，把 `--min-targets` 调成实际窗口数，例如两个窗口用
+`--min-targets 2`。如果没有真实 active intel，不要加 `--require-active-intel`；
+真实频道或 OCR 上报产生实时情报后再使用该参数。
+
 检测客户端启动后会以 `detector_client` 身份出现在这里；未开始监控时通常为
 `idle`，点击 `Start Monitor` 后会切到 `running`。返回结果里的 `summary`
 会额外汇总 `online_count`、`stale_count`、`by_type` 和 `by_status`，便于快速判断
