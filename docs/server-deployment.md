@@ -156,7 +156,7 @@ sudo systemctl reload nginx
 `deploy/linux/eve-sentry.nginx.conf` 默认会把：
 
 - `root` 指向 `/var/www/eve-sentry/frontend`
-- `/api/events` 关闭 buffering，保证 SSE 实时推送
+- `/api/v1/events` 关闭 buffering，保证 SSE 实时推送；旧 `/api/events` 仅用于兼容旧客户端
 - 其他 `/api/` 请求反代到本地 intel server
 - 其余路径回退到 `index.html`，支持 React Router SPA 路由
 

@@ -64,8 +64,8 @@ default weights. Some dynamic rules, such as killboard activity, use
 ## PUT /api/config
 
 Updates one or more config fields. Updates are persisted and applied
-immediately; existing alert cache is cleared so future `/api/alerts` and
-`/api/events` responses use the new rules.
+immediately; existing alert cache is cleared so future `/api/v1/alerts` and
+`/api/v1/events` responses use the new rules.
 
 ```json
 {
@@ -90,14 +90,16 @@ server currently includes:
 - `POST /api/channel-lines` for server-side intel channel parsing.
 - `GET /api/health` for local integration health, including storage, config,
   ESI, killboard, and event-stream status.
-- `GET /api/alerts`, `GET /api/alerts/{id}`, and `POST /api/alerts/{id}/ack`.
-- `GET /api/events` for SSE alert streaming with the same alert filters.
+- `GET /api/v1/alerts`, `GET /api/v1/alerts/{id}`, and `POST /api/v1/alerts/{id}/ack`.
+- `GET /api/v1/events` for SSE alert streaming with the same alert filters.
 - `GET /api/intel/character/{character_id}`, `/api/intel/system/{system_id}`,
   `/api/intel/corporation/{corporation_id}`, and `/api/intel/alliance/{alliance_id}`
   for entity-centered observations, alerts, activity, counts, and filters.
 - `GET /api/v1/esi/status`, `GET /api/v1/esi/session`, and
   `GET/POST /api/v1/esi/login` for authenticated ESI state and browser-started SSO.
 - `GET /api/v1/kill-activity/...` for character, system, corporation, and alliance activity.
+
+Compatibility note: legacy `/api/alerts` and `/api/events` routes remain available for old clients during migration; new clients and docs should use `/api/v1/alerts` and `/api/v1/events`.
 
 ## Runtime Data
 

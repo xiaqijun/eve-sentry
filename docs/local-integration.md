@@ -38,7 +38,7 @@ curl http://127.0.0.1:8765/api/health
 - `killboard`: 是否启用、client 类型和缓存类型。
 - `clients`: heartbeat 客户端数量、在线数量和最近客户端状态，包含检测端、
   预警端和频道采集器。
-- `events`: alert 查询是否正常、最近 alert、SSE `/api/events` 状态。
+- `events`: alert 查询是否正常、最近 alert、SSE `/api/v1/events` 状态。
 
 查看客户端在线状态:
 
@@ -142,10 +142,12 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --ack --ack-by 
 - 客户端是否在线: `GET /api/heartbeats` 或 Web 面板 `Client Status`。
 - ESI 是否登录: `GET /api/v1/esi/status`。
 - ESI session 快照: `GET /api/v1/esi/session?location=true&contacts=true`。
-- 当前 alert: `GET /api/alerts?limit=20`。
-- 单条详情: `GET /api/alerts/{id}`。
-- 事件流: `GET /api/events?timeout=10&heartbeat=5`。
+- 当前 alert: `GET /api/v1/alerts?limit=20`。
+- 单条详情: `GET /api/v1/alerts/{id}`。
+- 事件流: `GET /api/v1/events?timeout=10&heartbeat=5`。
 - 配置: `GET /api/config`。
+
+兼容说明: 服务端仍保留旧 `/api/alerts`、`/api/events` 路由用于旧客户端过渡；新前端和预警客户端文档统一以 `/api/v1/alerts`、`/api/v1/events` 为准。
 
 如果截图区域不准，先重新选择检测客户端的成员列表区域；如果 Web 面板里看不到
 `detector_client`，优先检查检测端是否连到了正确的 `--server` 地址，以及

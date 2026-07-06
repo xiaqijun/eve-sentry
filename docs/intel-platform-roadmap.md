@@ -12,7 +12,7 @@
 - 客户端拆分: 检测客户端负责采集和上报，独立预警客户端负责消费服务端 alert。
 - 统一情报模型: `Observation` 和 `ThreatEvent` 已作为服务端统一输入/输出模型。
 - 服务端 API: 已支持 observation 上报、旧 `/api/intel` 兼容、alert 查询、alert detail、实体情报查询、ack、地图快照、配置更新和 health。
-- 事件推送: `/api/events` 已提供 SSE alert 事件流，支持过滤、游标续接、keepalive、并发订阅和轮询 fallback。
+- 事件推送: `/api/v1/events` 已提供 SSE alert 事件流，支持过滤、游标续接、keepalive、并发订阅和轮询 fallback。
 - 预警频道采集: 已有 chatlog watcher、频道解析器和 `app.channel_client`，支持 UTF-16/UTF-8、断点续读、服务端解析上报。
 - ESI 公开补全: 已有 client/cache/resolver，支持名字解析、角色/星系公开资料、缓存和失败降级。
 - ESI SSO: 已有 PKCE 登录、token 保存/刷新、`/api/v1/esi/status`、`/api/v1/esi/session`、当前位置和 contacts/standings 快照。
@@ -37,7 +37,7 @@ V1 已纳入范围:
 - 检测客户端、频道采集器、预警客户端、服务端拆分完成
 - 服务端统一接收 `Observation`，统一产出 `ThreatEvent`
 - 默认 SQLite 存储，保留 JSON 兼容导入路径
-- `GET /api/health`、`GET /api/heartbeats`、`GET /api/alerts/{id}` 和实体情报查询接口可用
+- `GET /api/health`、`GET /api/heartbeats`、`GET /api/v1/alerts/{id}` 和实体情报查询接口可用
 - Web 面板可查看星图、手工情报、告警、详情、ESI 状态和客户端状态
 - heartbeat 已支持汇总诊断、SQLite 持久化，以及 `mode`、`last_action`、`last_error`、
   `client_version`、`host`、`last_success_at`
@@ -89,7 +89,7 @@ V1 暂不包含:
 
 待做:
 
-- 增强 `GET /api/alerts/{id}` 的稳定输出契约，明确 `context` 和 `explanation` 字段版本。
+- 增强 `GET /api/v1/alerts/{id}` 的稳定输出契约，明确 `context` 和 `explanation` 字段版本。
 - 把 ESI 解析结果、频道上下文、击毁画像、standing、评分 evidence 统一成一个可前端直接展示的详情结构。
 - 增加按角色、星系、军团、联盟查询相关 observation / alert / kill activity 的组合接口。
 - 给预警客户端补更完整的 `--details` 展示格式，优先消费服务端解释，不在客户端重复推断。
@@ -195,7 +195,7 @@ V1 暂不包含:
 范围:
 
 - 服务端: `app/server/intel_store.py` 的 `alert_detail()` 和解释生成逻辑。
-- HTTP: `app/server/http_server.py` 的 `GET /api/alerts/{id}`。
+- HTTP: `app/server/http_server.py` 的 `GET /api/v1/alerts/{id}`。
 - 客户端: `app/intel_client.py` 的 `alert_detail()` 返回契约。
 - 测试: `tests/test_http_server.py`、`tests/test_intel_client.py`。
 
@@ -275,7 +275,7 @@ V1 暂不包含:
 优先级: P0
 
 状态: 已完成第一版。星图 Web 面板的 alert `Details` 按钮现在优先读取
-`GET /api/alerts/{id}` 的 `alert_detail.v1`，展示服务端生成的
+`GET /api/v1/alerts/{id}` 的 `alert_detail.v1`，展示服务端生成的
 `explanation.summary`、`reasons`、`context`、`degraded_sources` 和实体列表；
 同时按 detail 中的角色、星系、军团、联盟 ID 调用 `/api/intel/...` 展示关联
 observation / alert / activity 摘要，不再在浏览器端分别拼角色 profile、星系
@@ -524,9 +524,11 @@ storage/config/ESI/killboard/clients/events 状态；新增 `GET /api/heartbeats
 
 - 默认 SQLite store。
 - JSON 兼容和导入脚本。
-- `/api/events` SSE 事件流。
+- `/api/v1/events` SSE 事件流。
 - Web 面板和独立预警客户端都支持 SSE，并保留轮询 fallback。
 - 已覆盖并发订阅、重连续接、重启后恢复等测试。
+
+兼容说明: 旧 `/api/alerts`、`/api/events` 路由仍保留给旧客户端过渡；新前端和客户端默认使用 `/api/v1/alerts`、`/api/v1/events`。
 
 ## 当前建议开发顺序
 

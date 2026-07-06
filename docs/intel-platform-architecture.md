@@ -12,7 +12,7 @@
 | 模块 | 当前状态 | 主要待做 |
 | --- | --- | --- |
 | 检测客户端 | 已能后台截图、OCR 本地列表、可选监控指定预警频道日志、上报 observation 和 detector heartbeat，默认不弹本地预警 | 补区域选择排障细节 |
-| 预警客户端 | 已独立消费 `/api/events` / `/api/alerts`，支持详情、ack、弹窗可选 | 补在线状态和运行诊断 |
+| 预警客户端 | 已独立消费 `/api/v1/events` / `/api/v1/alerts`，支持增量 SSE、详情、ack、弹窗可选 | 补在线状态和运行诊断 |
 | 服务端模型/API | 已有 `Observation`、`ThreatEvent`、alert detail、实体情报查询、ack、配置 API、health、heartbeats、SQLite | 补更细客户端诊断 |
 | 预警频道解析 | 已有 chatlog watcher、parser、`POST /api/channel-lines`、解析诊断和 ESI 辅助修正 | 扩更多真实频道格式 |
 | ESI | 已有公开解析、缓存状态、SSO、session、当前位置、contacts/standings | 补 token 迁移策略和更细失败类型 |
@@ -178,8 +178,8 @@ uv run python -m app.server --host 127.0.0.1 --port 8765
 uv run python -m app.alert_client --server http://127.0.0.1:8765
 ```
 
-默认模式会订阅 `/api/events` SSE 事件流；如果事件流不可用，客户端会先
-回退到 `/api/alerts` 轮询，并在 `--stream-retry-interval` 冷却后自动重试订阅。
+默认模式会订阅 `/api/v1/events` SSE 事件流，并按事件增量输出；如果事件流不可用，客户端会先
+回退到 `/api/v1/alerts` 轮询，并在 `--stream-retry-interval` 冷却后自动重试订阅。
 需要强制只用轮询时可加 `--poll`。
 
 常用模式:
@@ -326,7 +326,7 @@ clear 信号的同频道、同星系消息会将匹配实时态标记为 inactiv
 
 ### 4.6 AlertDetail
 
-`GET /api/alerts/{id}` 返回单条预警的完整解释包，供独立预警客户端和 Web 面板展示。
+`GET /api/v1/alerts/{id}` 返回单条预警的完整解释包，供独立预警客户端和 Web 面板展示。
 
 ```json
 {
@@ -596,10 +596,10 @@ GET  /api/v1/active-intel?source=&system=&limit=
 GET  /api/health
 GET  /api/heartbeats
 
-GET  /api/alerts?since=&limit=&acknowledged=&min_score=&min_level=
-GET  /api/alerts/{id}
-POST /api/alerts/{id}/ack
-GET  /api/events?since=&limit=&timeout=&heartbeat=&acknowledged=&min_score=&min_level=
+GET  /api/v1/alerts?since=&limit=&acknowledged=&min_score=&min_level=
+GET  /api/v1/alerts/{id}
+POST /api/v1/alerts/{id}/ack
+GET  /api/v1/events?since=&limit=&timeout=&heartbeat=&acknowledged=&min_score=&min_level=
 
 GET  /api/intel/character/{character_id}?since=&limit=&acknowledged=&min_score=&min_level=
 GET  /api/intel/system/{system_id}?since=&limit=&acknowledged=&min_score=&min_level=
@@ -641,13 +641,13 @@ GET  /api/map/snapshot
   服务端负责创建、刷新或过期 `active_intel`，同时保留历史 observations。
 - `GET /api/v1/active-intel`: 返回默认 active 的实时情报列表，可按 source、system
   和 limit 过滤；历史审计仍通过 observations 查询。
-- `POST /api/alerts/{id}/ack`: 标记单个 alert 已确认，并在 JSON 和 SQLite
+- `POST /api/v1/alerts/{id}/ack`: 标记单个 alert 已确认，并在 JSON 和 SQLite
   存储中保留 `acknowledged`、`acknowledged_at`、`acknowledged_by` 和
   `acknowledgement_note`。
-- `GET /api/alerts`: 支持 `acknowledged=true|false`、`min_score` 和
-  `min_level=low|medium|high|critical` 过滤；事件流 `/api/events` 使用同一套
+- `GET /api/v1/alerts`: 支持 `acknowledged=true|false`、`min_score` 和
+  `min_level=low|medium|high|critical` 过滤；事件流 `/api/v1/events` 使用同一套
   alert 过滤参数。
-- `GET /api/alerts/{id}`: 返回单个 alert 的解释详情，包括源 observation、
+- `GET /api/v1/alerts/{id}`: 返回单个 alert 的解释详情，包括源 observation、
   频道上下文、角色公开资料和击毁画像上下文。
 - `GET /api/intel/character/{character_id}`: 返回角色相关 observation、alert、
   profile、kill activity、计数和查询过滤条件。
@@ -678,16 +678,17 @@ GET  /api/map/snapshot
 
 实时推送:
 
-- `/api/events` 提供 SSE alert 事件流，并复用 `/api/alerts` 的 `acknowledged`、
+- `/api/v1/events` 提供 SSE alert 事件流，并复用 `/api/v1/alerts` 的 `acknowledged`、
   `min_score` 和 `min_level` 等过滤参数。
 - 客户端可用 `since=<created_at>` 续接；浏览器 `EventSource` 重连时发送的
   `Last-Event-ID` 会被服务端解析回对应 alert 的 `created_at` 游标。
 - 事件流空闲时默认每 15 秒发送 SSE 注释帧 `: keepalive`；可通过
   `heartbeat=<seconds>` 调整，设为 `0` 可关闭。
-- Web 面板通过 `EventSource` 订阅 `/api/events`，收到 alert 后先本地合并展示，
+- Web 面板通过 `EventSource` 订阅 `/api/v1/events`，收到 alert 后先本地合并展示，
   再排队刷新完整快照；浏览器或网络不支持 SSE 时回退到短轮询。
 - 独立预警客户端默认订阅同一事件流；事件流失败时先用轮询兜底，再按冷却时间
   自动恢复订阅。
+- 兼容说明: 旧 `/api/alerts`、`/api/events` 路由仍由服务端保留，供旧客户端过渡使用；新客户端、React 工作台和后续文档默认使用 `/api/v1/alerts` 与 `/api/v1/events`。
 
 ## 10. 存储规划
 
