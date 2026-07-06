@@ -310,25 +310,6 @@ export function WorkbenchPage() {
           </div>
         </section>
 
-        <section className="lower-grid">
-          <article className="panel fleet-panel">
-            <div className="section-title">
-              <ShipWheel size={16} />
-              <span>情报动向</span>
-            </div>
-            <div className="intel-table compact">
-              {observations.slice(0, 5).map((item) => (
-                <div className="intel-row" key={item.id}>
-                  <span>{formatClock(item.latestSeen)}</span>
-                  <strong>{item.systemName || "未知星系"}</strong>
-                  <span>{item.pilotName}</span>
-                  <em>{levelLabel(item.level)}</em>
-                </div>
-              ))}
-              {observations.length === 0 ? <div className="table-empty">暂无观察记录</div> : null}
-            </div>
-          </article>
-        </section>
       </section>
 
       <aside className="right-rail" aria-label="情报详情">

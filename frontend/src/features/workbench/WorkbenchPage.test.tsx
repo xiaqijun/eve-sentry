@@ -135,6 +135,7 @@ describe("WorkbenchPage", () => {
     expect(container).not.toHaveTextContent("当前威胁评分");
     expect(container).not.toHaveTextContent("威胁评分");
     expect(container).not.toHaveTextContent("ISK 损失风险");
+    expect(container).not.toHaveTextContent("情报动向");
     expect(container.querySelector('[data-testid="observation-table"]')).toBeInTheDocument();
     expect(container).toHaveTextContent("Pilot One");
     expect(container).toHaveTextContent("预警频道");

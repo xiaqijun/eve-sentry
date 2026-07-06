@@ -58,7 +58,6 @@ button {
 
 .center-stack {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) 156px;
   gap: 10px;
   height: 100%;
 }
@@ -409,13 +408,6 @@ button {
   background: rgba(5, 19, 27, 0.88);
 }
 
-.lower-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
-  min-height: 0;
-}
-
 .right-rail {
   grid-template-rows: minmax(360px, 1.2fr) minmax(220px, 0.8fr);
 }
@@ -653,7 +645,6 @@ button {
 @media (max-width: 900px) {
   .workbench-shell,
   .center-stack,
-  .lower-grid,
   .right-rail,
   .bottom-bar {
     display: grid;
