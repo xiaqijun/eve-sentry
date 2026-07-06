@@ -210,6 +210,8 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --details --sta
 uv run python -m app.alert_client --server http://127.0.0.1:8765 --stream-retry-interval 10
 ```
 
+`--popup` 使用非阻塞本地窗口；弹窗未确认时，预警客户端仍会继续消费 SSE 或轮询告警。
+
 ## 4. 核心数据模型
 
 ### 4.1 Observation

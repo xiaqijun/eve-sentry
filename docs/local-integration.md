@@ -129,6 +129,8 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --popup --detai
 uv run python -m app.alert_client --server http://127.0.0.1:8765 --ack --ack-by alert-client
 ```
 
+`--popup` 会显示非阻塞本地预警窗口并播放提示音；窗口未关闭时，客户端仍会继续消费后续告警事件。
+
 ## Runtime Data
 
 以下文件属于本地运行状态，不应提交:

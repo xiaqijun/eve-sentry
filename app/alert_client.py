@@ -20,6 +20,7 @@ from app.core.heartbeat import (
 from app.intel_client import AlertPoller, IntelApiClient, IntelApiError
 
 logger = logging.getLogger(__name__)
+_ACTIVE_POPUPS: list[Any] = []
 
 
 def _send_heartbeat(
@@ -408,17 +409,31 @@ def build_popup_names(reports: list[dict[str, Any]]) -> list[str]:
 
 
 def show_popup(entries: list[str]) -> None:
-    """Show the existing alert dialog for new intel entries."""
+    """Show the existing alert dialog for new intel entries without blocking."""
     if not entries:
         return
-    from PyQt6.QtWidgets import QApplication
+    try:
+        from PyQt6.QtWidgets import QApplication
 
-    from app.ui.alert_dialog import AlertDialog
+        from app.ui.alert_dialog import AlertDialog
 
-    app = QApplication.instance() or QApplication([])
-    dialog = AlertDialog(entries)
-    dialog.exec()
-    app.processEvents()
+        app = QApplication.instance() or QApplication([])
+        dialog = AlertDialog(entries)
+        dialog.setModal(False)
+        _ACTIVE_POPUPS.append(dialog)
+        dialog.finished.connect(lambda _result, item=dialog: _forget_popup(item))
+        dialog.show()
+        app.processEvents()
+    except Exception as exc:
+        logger.warning("Failed to show alert popup: %s", exc)
+
+
+def _forget_popup(dialog: Any) -> None:
+    """Release a non-blocking popup after the user closes it."""
+    try:
+        _ACTIVE_POPUPS.remove(dialog)
+    except ValueError:
+        pass
 
 
 def emit_alerts(
@@ -439,7 +454,10 @@ def emit_alerts(
         else:
             print(f"[ALERT] {format_alert(alert)}", file=stream, flush=True)
     if popup:
-        show_popup(build_popup_names(alerts))
+        try:
+            show_popup(build_popup_names(alerts))
+        except Exception as exc:
+            logger.warning("Failed to show alert popup: %s", exc)
 
 
 def ack_emitted_alerts(
@@ -711,7 +729,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--popup",
         action="store_true",
-        help="show a local popup and play the alert sound for new events",
+        help="show a non-blocking local popup and play the alert sound for new events",
     )
     parser.add_argument(
         "--poll",
