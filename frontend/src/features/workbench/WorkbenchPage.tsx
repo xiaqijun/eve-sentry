@@ -164,19 +164,22 @@ export function WorkbenchPage() {
     if (!bootstrapQuery.isSuccess) {
       return undefined;
     }
-    const stream = connectAlerts((alert: AlertItem) => {
-      queryClient.setQueryData<BootstrapPayload>(["bootstrap"], (current) => {
-        if (!current) {
-          return current;
-        }
-        const nextAlerts = [alert, ...current.alerts.filter((item) => item.id !== alert.id)];
-        return { ...current, alerts: nextAlerts };
-      });
-    });
+    const stream = connectAlerts(
+      (alert: AlertItem) => {
+        queryClient.setQueryData<BootstrapPayload>(["bootstrap"], (current) => {
+          if (!current) {
+            return current;
+          }
+          const nextAlerts = [alert, ...current.alerts.filter((item) => item.id !== alert.id)];
+          return { ...current, alerts: nextAlerts };
+        });
+      },
+      bootstrap?.generated_at,
+    );
     return () => {
       stream.close();
     };
-  }, [bootstrapQuery.isSuccess, queryClient]);
+  }, [bootstrap?.generated_at, bootstrapQuery.isSuccess, queryClient]);
 
   const highRiskCount = observations.filter((item) =>
     item.level === "critical" || item.level === "high",

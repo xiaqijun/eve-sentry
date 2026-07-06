@@ -70,9 +70,17 @@ export async function submitObservation(
 
 export function connectAlerts(
   onAlert: (alert: AlertItem) => void,
+  since?: string,
   onError?: () => void,
 ): EventSource {
-  const stream = new EventSource(apiPath("/api/v1/events?limit=50&timeout=30"));
+  const query = new URLSearchParams({
+    limit: "50",
+    timeout: "30",
+  });
+  if (since) {
+    query.set("since", since);
+  }
+  const stream = new EventSource(apiPath(`/api/v1/events?${query.toString()}`));
   stream.addEventListener("alert", (event) => {
     onAlert(JSON.parse(event.data) as AlertItem);
   });

@@ -79,7 +79,7 @@ const apiMocks = vi.hoisted(() => {
   return {
     close,
     onAlert: undefined as ((alert: AlertItem) => void) | undefined,
-    connectAlerts: vi.fn((onAlert: (alert: AlertItem) => void) => {
+    connectAlerts: vi.fn((onAlert: (alert: AlertItem) => void, _since?: string) => {
       apiMocks.onAlert = onAlert;
       return { close };
     }),
@@ -159,6 +159,10 @@ describe("WorkbenchPage", () => {
     expect(container.querySelector('[aria-label="Fit 星图"]')).toBeInTheDocument();
 
     expect(apiMocks.connectAlerts).toHaveBeenCalledTimes(1);
+    expect(apiMocks.connectAlerts).toHaveBeenCalledWith(
+      expect.any(Function),
+      "2026-07-02T12:00:00Z",
+    );
     await act(async () => {
       apiMocks.onAlert?.({
         id: "alert-2",
