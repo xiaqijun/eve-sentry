@@ -93,21 +93,38 @@ function matchesObservationFilter(
   return haystack.includes(query);
 }
 
-function latestEventText(
+interface LatestEventSummary {
+  active: boolean;
+  occurredAt?: string;
+  text: string;
+}
+
+function latestEventSummary(
   alerts: AlertItem[],
   observations: PilotObservation[],
-): string {
+): LatestEventSummary {
   const alert = alerts[0];
   if (alert) {
-    return `在 ${alert.system_name || "未知星系"} 发现${
-      (alert.names || []).join(", ") || "威胁目标"
-    }`;
+    return {
+      active: true,
+      occurredAt: alert.created_at,
+      text: `在 ${alert.system_name || "未知星系"} 发现${
+        (alert.names || []).join(", ") || "威胁目标"
+      }`,
+    };
   }
   const observation = observations[0];
   if (observation) {
-    return `${observation.pilotName} 出现在 ${observation.systemName || "未知星系"}`;
+    return {
+      active: true,
+      occurredAt: observation.latestSeen,
+      text: `${observation.pilotName} 出现在 ${observation.systemName || "未知星系"}`,
+    };
   }
-  return "暂无最新威胁事件";
+  return {
+    active: false,
+    text: "暂无实时威胁事件",
+  };
 }
 
 export function WorkbenchPage() {
@@ -164,7 +181,7 @@ export function WorkbenchPage() {
   const highRiskCount = observations.filter((item) =>
     item.level === "critical" || item.level === "high",
   ).length;
-  const latestEvent = latestEventText(bootstrap?.alerts || [], observations);
+  const latestEvent = latestEventSummary(bootstrap?.alerts || [], observations);
   const activeSystemCount = bootstrap?.map.systems.filter((item) =>
     Number(item.hostile_count || 0) > 0 || Number(item.report_count || 0) > 0,
   ).length ?? 0;
@@ -311,11 +328,11 @@ export function WorkbenchPage() {
 
       <footer className="bottom-bar" aria-label="最新事件">
         <span>数据状态：<strong className="online-dot">在线</strong></span>
-        <div className="latest-event">
+        <div className={`latest-event ${latestEvent.active ? "" : "is-empty"}`}>
           <AlertTriangle size={17} />
           <strong>最新事件</strong>
-          <time>{formatClock(bootstrap?.generated_at)}</time>
-          <span>{latestEvent}</span>
+          <time>{latestEvent.occurredAt ? formatClock(latestEvent.occurredAt) : "--:--"}</time>
+          <span>{latestEvent.text}</span>
         </div>
         <span>成员：{summary?.onlineClients ?? 0}</span>
         <span>星系：{summary?.systems ?? 0}</span>

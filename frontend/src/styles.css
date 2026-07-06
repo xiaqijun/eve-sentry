@@ -585,6 +585,19 @@ button {
   white-space: nowrap;
 }
 
+.latest-event.is-empty {
+  border-color: rgba(48, 87, 105, 0.72);
+  color: #8fa4af;
+  background: linear-gradient(90deg, rgba(8, 25, 34, 0.76), rgba(7, 15, 20, 0.72));
+}
+
+.latest-event.is-empty span,
+.latest-event.is-empty time,
+.latest-event.is-empty strong,
+.latest-event.is-empty svg {
+  color: #8fa4af;
+}
+
 @media (max-width: 1040px) {
   body {
     overflow: auto;

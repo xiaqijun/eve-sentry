@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, forwardRef } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { WorkbenchPage } from "./WorkbenchPage";
 import type { AlertItem, BootstrapPayload } from "./types";
@@ -108,6 +108,12 @@ vi.mock("./api", () => ({
 }));
 
 describe("WorkbenchPage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMocks.onAlert = undefined;
+    apiMocks.fetchBootstrap.mockImplementation(async () => bootstrap);
+  });
+
   test("renders the component-backed tactical workbench without reconnecting alerts on updates", async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -173,6 +179,54 @@ describe("WorkbenchPage", () => {
       root.unmount();
     });
     expect(apiMocks.close).toHaveBeenCalledTimes(1);
+    container.remove();
+  });
+
+  test("does not show the bootstrap refresh time as a latest event time", async () => {
+    apiMocks.fetchBootstrap.mockResolvedValueOnce({
+      ...bootstrap,
+      active_intel: [],
+      alerts: [],
+      observations: [],
+      reports: [],
+      map: {
+        ...bootstrap.map,
+        summary: {
+          ...bootstrap.map.summary,
+          alert_count: 0,
+          hostile_count: 0,
+          report_count: 0,
+        },
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkbenchPage />
+        </QueryClientProvider>,
+      );
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    const latestEvent = container.querySelector(".latest-event");
+    expect(latestEvent).toHaveClass("is-empty");
+    expect(latestEvent).toHaveTextContent("--:--");
+    expect(latestEvent).toHaveTextContent("暂无实时威胁事件");
+    expect(latestEvent).not.toHaveTextContent("12:00");
+
+    await act(async () => {
+      root.unmount();
+    });
     container.remove();
   });
 });
