@@ -35,6 +35,68 @@ def test_channel_smoke_help_runs_from_repo_root():
     assert "channel-intel smoke test" in result.stdout
 
 
+def test_monitor_ui_smoke_help_runs_from_repo_root():
+    result = subprocess.run(
+        [sys.executable, "scripts/monitor_ui_smoke.py", "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "monitor client UI smoke check" in result.stdout
+
+
+def test_monitor_ui_smoke_constructs_main_window_offscreen_without_side_effects():
+    result = subprocess.run(
+        [sys.executable, "scripts/monitor_ui_smoke.py", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["qt_platform"] == "offscreen"
+    assert payload["window_title"] == "EVE Sentry"
+    assert payload["minimum_size"] == [860, 560]
+    assert payload["main_window_created"] is True
+    assert payload["intel_client_created"] is False
+    assert payload["heartbeat_timer_active"] is False
+    assert payload["channel_timer_active"] is False
+    assert payload["monitoring"] is False
+    assert payload["worker_count"] == 0
+    assert payload["window_combo_count"] == 0
+    assert payload["window_label"] == "Window: not found"
+    assert payload["monitor_button"] == "Start Monitor"
+    assert payload["status_card_keys"] == [
+        "server",
+        "esi",
+        "ocr",
+        "channel",
+        "window",
+        "region",
+    ]
+    assert payload["style_applied"] is True
+    assert payload["runtime_files_created"] == []
+    assert payload["side_effects"] == {
+        "activate_window_calls": 0,
+        "capturer_close_calls": 1,
+        "capturer_created": 1,
+        "get_window_info_calls": 0,
+        "intel_client_created": 0,
+        "list_eve_windows_calls": 1,
+        "network_requests": 0,
+        "ocr_created": 1,
+        "ocr_recognize_calls": 0,
+        "screenshot_calls": 0,
+        "select_window_calls": 0,
+        "tray_setup_patched": True,
+    }
+
+
 def test_import_intel_json_help_runs_from_repo_root():
     result = subprocess.run(
         [sys.executable, "scripts/import_intel_json.py", "--help"],

@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Activity,
   Database,
   Filter,
   LogIn,
+  Radar,
   Skull,
 } from "lucide-react";
 
@@ -297,26 +299,46 @@ export function WorkbenchPage() {
 
   return (
     <main className="workbench-shell">
-      <aside className="left-rail" aria-label="工作台态势侧栏">
+      <aside className="left-rail" aria-label="实时态势栏">
         <section className="brand-panel">
           <div>
             <p className="eyebrow">EVE 哨兵</p>
             <h1>预警情报工作台</h1>
           </div>
           <div className="rail-meta">
-            <span>实时态势侧栏</span>
+            <span>状态更新时间</span>
             <strong>{generatedAt}</strong>
           </div>
+          <span className="rail-status-chip">
+            <Activity size={13} />
+            在线监控
+          </span>
         </section>
 
         <section className="threat-status-panel">
-          <div className="status-row">
-            <span>安全等级状态</span>
-            <strong>{highRiskCount > 0 ? "警戒" : "平稳"}</strong>
+          <div className="section-title compact-title">
+            <Radar size={16} />
+            <span>实时态势</span>
           </div>
-          <div className="status-row">
-            <span>活跃星系</span>
-            <strong>{activeSystemCount}</strong>
+          <div className="metric-grid">
+            <div className="metric-card">
+              <span>状态</span>
+              <strong className={highRiskCount > 0 ? "danger-text" : ""}>
+                {highRiskCount > 0 ? "警戒" : "平稳"}
+              </strong>
+            </div>
+            <div className="metric-card">
+              <span>活跃星系</span>
+              <strong>{activeSystemCount}</strong>
+            </div>
+            <div className="metric-card">
+              <span>敌对</span>
+              <strong className="danger-text">{observations.length}</strong>
+            </div>
+            <div className="metric-card">
+              <span>告警</span>
+              <strong>{bootstrap?.alerts.length ?? 0}</strong>
+            </div>
           </div>
         </section>
 
@@ -324,7 +346,7 @@ export function WorkbenchPage() {
           <div className="section-title section-title-row">
             <div>
               <Database size={16} />
-              <span>区域概览</span>
+              <span>区域态势</span>
             </div>
             <strong className="rail-value">Tenal</strong>
           </div>

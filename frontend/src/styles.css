@@ -28,7 +28,7 @@ button {
 
 .workbench-shell {
   display: grid;
-  grid-template-columns: 238px minmax(600px, 1fr) 360px;
+  grid-template-columns: 226px minmax(640px, 1fr) 360px;
   grid-template-rows: minmax(0, 1fr) 76px;
   gap: 10px;
   width: 100vw;
@@ -60,6 +60,7 @@ button {
   grid-row: 1 / 3;
   overflow: auto;
   scrollbar-gutter: stable;
+  padding-right: 1px;
 }
 
 .left-rail > * {
@@ -95,15 +96,25 @@ button {
 
 .brand-panel {
   display: grid;
-  gap: 14px;
-  min-height: 132px;
-  padding: 18px 18px 16px;
+  position: relative;
+  gap: 12px;
+  min-height: 124px;
+  padding: 17px 16px 15px;
+  overflow: hidden;
+}
+
+.brand-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: linear-gradient(180deg, #36d8ff, rgba(54, 216, 255, 0));
 }
 
 .brand-panel .eyebrow {
   margin: 0 0 6px;
   color: #f2f8fb;
-  font-size: 26px;
+  font-size: 25px;
   font-weight: 800;
   line-height: 1;
 }
@@ -127,6 +138,7 @@ button {
 .rail-meta {
   display: grid;
   gap: 4px;
+  min-width: 0;
 }
 
 .rail-meta strong {
@@ -137,13 +149,27 @@ button {
   white-space: nowrap;
 }
 
+.rail-status-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 6px;
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid rgba(40, 216, 139, 0.46);
+  border-radius: 3px;
+  color: #75f3b2;
+  font-size: 12px;
+  font-weight: 800;
+  background: rgba(11, 55, 42, 0.45);
+}
+
 .threat-status-panel,
 .sector-panel,
 .panel {
   padding: 13px;
 }
 
-.status-row,
 .sector-stat {
   display: flex;
   align-items: center;
@@ -153,15 +179,53 @@ button {
   border-bottom: 1px solid rgba(50, 82, 96, 0.42);
 }
 
-.status-row:last-child,
 .sector-stat:last-child {
   border-bottom: 0;
 }
 
-.status-row strong,
 .sector-stat strong {
   color: #e7f2f7;
   font-size: 13px;
+}
+
+.compact-title {
+  margin-bottom: 11px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.metric-card {
+  display: grid;
+  gap: 5px;
+  min-height: 58px;
+  padding: 9px 10px;
+  border: 1px solid rgba(44, 82, 98, 0.7);
+  border-radius: 3px;
+  background:
+    linear-gradient(180deg, rgba(9, 30, 40, 0.86), rgba(5, 18, 25, 0.78));
+  box-shadow: inset 0 1px 0 rgba(125, 210, 255, 0.06);
+}
+
+.metric-card span {
+  overflow: hidden;
+  color: #8fa7b3;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-card strong {
+  overflow: hidden;
+  color: #eaf7fb;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .danger-text {

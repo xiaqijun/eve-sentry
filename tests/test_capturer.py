@@ -70,6 +70,35 @@ class TestFindEveWindow:
 
     @patch("app.engine.capturer.win32gui")
     @patch("app.engine.capturer.win32process")
+    def test_list_eve_windows_returns_all_matching_windows_sorted(
+        self, mock_win32process, mock_win32gui
+    ):
+        windows = [
+            (1, "EVE - Pilot Small", (0, 0, 640, 480)),
+            (2, "EVE - Pilot Large", (100, 100, 1380, 820)),
+            (3, "Notepad", (0, 0, 300, 300)),
+            (4, "EVE - Pilot Zero", (50, 50, 50, 50)),
+        ]
+        em, gwt, _gwr, gcr, cts = self.make_windows(windows)
+        mock_win32gui.EnumWindows = em
+        mock_win32gui.GetWindowText = gwt
+        mock_win32gui.GetClientRect = gcr
+        mock_win32gui.ClientToScreen = cts
+
+        c = Capturer()
+        result = c.list_eve_windows()
+
+        assert [item["title"] for item in result] == [
+            "EVE - Pilot Large",
+            "EVE - Pilot Small",
+        ]
+        assert [item["hwnd"] for item in result] == [2, 1]
+        assert result[0]["w"] == 1280
+        assert result[0]["h"] == 720
+        mock_win32process.GetWindowThreadProcessId.assert_not_called()
+
+    @patch("app.engine.capturer.win32gui")
+    @patch("app.engine.capturer.win32process")
     @patch("app.engine.capturer.psutil")
     def test_no_eve_window_returns_none(
         self, mock_psutil, mock_win32process, mock_win32gui

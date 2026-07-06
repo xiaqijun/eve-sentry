@@ -171,7 +171,10 @@ describe("WorkbenchPage", () => {
     expect(container).toHaveTextContent("Pilot One");
     expect(container).toHaveTextContent("预警频道");
     expect(container).toHaveTextContent("预警情报工作台");
-    expect(container).toHaveTextContent("实时态势侧栏");
+    expect(container).toHaveTextContent("状态更新时间");
+    expect(container).toHaveTextContent("在线监控");
+    expect(container).toHaveTextContent("实时态势");
+    expect(container).toHaveTextContent("区域态势");
     expect(container).toHaveTextContent("敌对飞行员观察列表");
     expect(container).toHaveTextContent("ESI 状态");
     expect(container).toHaveTextContent("未授权");
@@ -185,7 +188,7 @@ describe("WorkbenchPage", () => {
     expect(container.querySelector(".nav-panel")).not.toBeInTheDocument();
     expect(container.querySelector(".quick-icons")).not.toBeInTheDocument();
     expect(container.querySelector(".sector-preview")).not.toBeInTheDocument();
-    expect(container.querySelector('[aria-label="工作台态势侧栏"]')).toBeInTheDocument();
+    expect(container.querySelector('[aria-label="实时态势栏"]')).toBeInTheDocument();
     expect(container.querySelector('[aria-label="切换区域"]')).not.toBeInTheDocument();
     expect(container.querySelector('[aria-label="切换视图模式"]')).not.toBeInTheDocument();
     expect(container.querySelector('[aria-label="切换视图"]')).not.toBeInTheDocument();
