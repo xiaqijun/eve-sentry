@@ -134,6 +134,85 @@ def test_start_alert_client_powershell_script_maps_optional_flags():
     assert "--unacknowledged-only" in args
 
 
+def test_start_monitor_client_powershell_script_wraps_detector_client():
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("PowerShell is not available")
+
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "scripts/start_monitor_client.ps1",
+            "-PrintCommand",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["args"] == ["-m", "app.detector_client"]
+    assert payload["cwd"].endswith("eve-sentry")
+    assert payload["env"]["EVE_SENTRY_INTEL_URL"] == "http://127.0.0.1:8765"
+    assert "EVE Sentry" in payload["env"]["EVE_SENTRY_CHANNEL_STATE"]
+    assert payload["env"]["EVE_SENTRY_HEARTBEAT_INTERVAL"] == "15"
+
+
+def test_start_monitor_client_powershell_script_maps_runtime_options():
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("PowerShell is not available")
+
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "scripts/start_monitor_client.ps1",
+            "-PrintCommand",
+            "-Server",
+            "http://example.invalid",
+            "-Channel",
+            "wc.Venal+Br+Te",
+            "-ChatlogDir",
+            "C:\\EVE\\Chatlogs",
+            "-ChannelState",
+            "custom_offsets.json",
+            "-System",
+            "Tama",
+            "-OcrDevice",
+            "cpu",
+            "-HeartbeatInterval",
+            "20",
+            "-NoPublish",
+            "-NoEsiLocation",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    env = payload["env"]
+    assert env["EVE_SENTRY_INTEL_URL"] == "http://example.invalid"
+    assert env["EVE_SENTRY_CHANNEL"] == "wc.Venal+Br+Te"
+    assert env["EVE_SENTRY_CHATLOG_DIR"] == "C:\\EVE\\Chatlogs"
+    assert env["EVE_SENTRY_CHANNEL_STATE"] == "custom_offsets.json"
+    assert env["EVE_SENTRY_SYSTEM"] == "Tama"
+    assert env["EVE_SENTRY_OCR_DEVICE"] == "cpu"
+    assert env["EVE_SENTRY_HEARTBEAT_INTERVAL"] == "20"
+    assert env["EVE_SENTRY_PUBLISH_INTEL"] == "0"
+    assert env["EVE_SENTRY_USE_ESI_LOCATION"] == "0"
+
+
 def test_run_server_builds_argv_from_environment():
     module = _load_script_module("run_server", "scripts/run_server.py")
 

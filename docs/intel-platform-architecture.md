@@ -77,11 +77,13 @@ flowchart LR
 当前入口建议:
 
 ```powershell
-uv run python -m app.detector_client
+.\scripts\start_monitor_client.ps1 -Server http://127.0.0.1:8765
 ```
 
 检测客户端只上报到服务端，不弹出本地预警窗口，也不播放本地告警声音。
 `EVE_SENTRY_SHOW_POPUPS` 不再影响检测客户端；正式联调由独立预警客户端消费服务端 alert。
+PowerShell 启动脚本会把 `-Server` 映射为 `EVE_SENTRY_INTEL_URL`，并可用
+`-Channel`、`-ChatlogDir`、`-System`、`-NoPublish` 等参数配置本地运行。
 
 检测客户端启动后会定期向 `/api/v1/clients/heartbeats` 上报 `detector_client` 状态，
 并在开始/停止监控时立即刷新一次状态。心跳 `details` 当前包含是否正在监控、

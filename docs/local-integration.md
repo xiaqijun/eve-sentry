@@ -81,7 +81,13 @@ uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Al
 ### 4. 启动检测客户端
 
 ```powershell
-uv run python -m app.detector_client --server http://127.0.0.1:8765
+.\scripts\start_monitor_client.ps1 -Server http://127.0.0.1:8765
+```
+
+需要同时监控预警频道时:
+
+```powershell
+.\scripts\start_monitor_client.ps1 -Server http://127.0.0.1:8765 -Channel "wc.Venal+Br+Te"
 ```
 
 检测客户端负责截图、OCR 和 observation 上报；选择预警频道后，也会自动监控对应 Chatlogs 新日志并上报。未选择频道时不会提交频道日志情报。默认不弹本地预警窗口，正式联调由独立预警客户端消费服务端 alert。
@@ -97,6 +103,8 @@ active intel 过期掉。成员列表区域按窗口标题保存；未单独保�
 
 常用环境变量:
 
+- PowerShell 启动脚本会把 `-Server`、`-Channel`、`-ChatlogDir`、`-System`
+  等参数转换成对应环境变量，再启动 `app.detector_client`。
 - `EVE_SENTRY_SYSTEM=Tama`: 手工指定当前星系。
 - `EVE_SENTRY_USE_ESI_LOCATION=0`: 关闭从服务端 ESI session 同步当前位置。
 - `EVE_SENTRY_HEARTBEAT_INTERVAL=15`: 调整检测端 heartbeat 上报间隔，最小 5 秒。
