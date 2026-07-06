@@ -12,6 +12,7 @@ import secrets
 import sys
 import threading
 import webbrowser
+from ipaddress import ip_address
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -273,8 +274,9 @@ class LocalCallbackServer:
         parsed = urlparse(redirect_uri)
         if parsed.scheme != "http":
             raise ValueError("redirect_uri must use http for local callback")
+        host = parsed.hostname or "127.0.0.1"
         return cls(
-            host=parsed.hostname or "127.0.0.1",
+            host=_callback_bind_host(host),
             port=parsed.port or 80,
             path=parsed.path or "/callback",
         )
@@ -361,6 +363,22 @@ def build_token_store(
     if mode == "secure":
         raise EsiSsoError("secure ESI token storage is not available")
     return EsiTokenStore(path)
+
+
+def _callback_bind_host(host: str) -> str:
+    """Return a local bind address for a configured SSO redirect host."""
+    value = str(host or "").strip()
+    if not value:
+        return "127.0.0.1"
+    if value.casefold() == "localhost":
+        return "127.0.0.1"
+    try:
+        parsed = ip_address(value)
+    except ValueError:
+        return "0.0.0.0"
+    if parsed.is_loopback:
+        return value
+    return "0.0.0.0"
 
 
 def default_token_protector() -> TokenProtector | None:

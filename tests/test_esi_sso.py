@@ -221,3 +221,23 @@ def test_local_callback_server_captures_callback_url():
         assert server.wait_for_callback(timeout_seconds=1) == callback_url
     finally:
         server.stop()
+
+
+def test_local_callback_server_binds_public_redirect_to_all_interfaces():
+    server = LocalCallbackServer.from_redirect_uri(
+        "http://114.132.167.239:8766/callback"
+    )
+
+    assert server.host == "0.0.0.0"
+    assert server.port == 8766
+    assert server.path == "/callback"
+
+
+def test_local_callback_server_keeps_loopback_redirect_local():
+    server = LocalCallbackServer.from_redirect_uri(
+        "http://127.0.0.1:8766/callback"
+    )
+
+    assert server.host == "127.0.0.1"
+    assert server.port == 8766
+    assert server.path == "/callback"

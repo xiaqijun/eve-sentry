@@ -200,6 +200,12 @@ curl http://127.0.0.1:8765/api/v1/esi/status
 `authenticated` 为 `true` 后，`GET /api/v1/esi/session?location=true&contacts=true`
 会返回当前位置和 contacts/standings 快照。不要提交 `esi_tokens.json`。
 
+如果回调地址直接使用公网入口，例如
+`http://YOUR_SERVER:8766/callback`，EVE Developers 里的 Callback URL 和
+`EVE_SENTRY_SERVER_ESI_REDIRECT_URI` 必须完全一致。登录进程会在服务器本机监听
+`0.0.0.0:8766`，此时需要临时放通服务器安全组或防火墙的 `8766/tcp`，授权完成后
+可立即关闭该端口。
+
 ## 7. 客户端对接
 
 服务端可访问后，把本地客户端指向远端地址:
