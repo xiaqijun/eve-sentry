@@ -67,6 +67,67 @@ def test_sqlite_store_persists_active_intel(tmp_path):
     assert active[0]["active"] is True
 
 
+def test_sqlite_store_persists_detector_heartbeat_active_cleanup(tmp_path):
+    db_path = tmp_path / "intel.sqlite3"
+    store = SQLiteIntelStore(db_path, systems={}, links=[])
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-03T10:00:00+00:00",
+            "names": ["Alice"],
+        }
+    )
+
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "idle",
+            "seen_at": "2026-07-03T10:00:05+00:00",
+            "details": {"monitoring": False, "last_action": "monitor_stopped"},
+        }
+    )
+
+    reloaded = SQLiteIntelStore(db_path, systems={}, links=[])
+    inactive = reloaded.list_active_intel(source="eve-sentry-detector", active=False)
+
+    assert reloaded.list_active_intel(source="eve-sentry-detector") == []
+    assert inactive[0]["left_at"] == "2026-07-03T10:00:05+00:00"
+
+
+def test_sqlite_store_persists_stale_detector_active_cleanup_on_read(tmp_path):
+    db_path = tmp_path / "intel.sqlite3"
+    store = SQLiteIntelStore(db_path, systems={}, links=[])
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-01-01T00:00:00+00:00",
+            "names": ["Alice"],
+        }
+    )
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": "2026-01-01T00:00:01+00:00",
+            "heartbeat_interval_seconds": 5,
+            "details": {"monitoring": True},
+        }
+    )
+
+    assert store.list_active_intel(source="eve-sentry-detector") == []
+    reloaded = SQLiteIntelStore(db_path, systems={}, links=[])
+    inactive = reloaded.list_active_intel(source="eve-sentry-detector", active=False)
+
+    assert reloaded.list_active_intel(source="eve-sentry-detector") == []
+    assert inactive[0]["source_instance"] == "EVE - Hajimi6"
+
+
 def test_sqlite_store_persists_expired_active_intel(tmp_path):
     db_path = tmp_path / "intel.sqlite3"
     store = SQLiteIntelStore(db_path, systems={}, links=[])

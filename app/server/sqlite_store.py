@@ -595,6 +595,8 @@ class SQLiteIntelStore(IntelStore):
             "details": dict(heartbeat.get("details") or {}),
         }
         self._write_heartbeat(raw)
+        if raw["client_type"] == "detector_client":
+            self._replace_active_intel()
         return heartbeat
 
     def _read_heartbeats(self) -> dict[str, dict[str, Any]]:

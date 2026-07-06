@@ -615,6 +615,134 @@ def test_record_ocr_snapshot_isolates_missing_names_by_client_id(tmp_path):
     assert inactive[0]["source_instance"] == "EVE - Pilot A"
 
 
+def test_detector_idle_heartbeat_deactivates_ocr_active_intel(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Pilot",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+
+    heartbeat = store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "idle",
+            "seen_at": "2026-07-03T10:00:05+00:00",
+            "details": {"monitoring": False, "last_action": "monitor_stopped"},
+        }
+    )
+
+    assert heartbeat["status"] == "idle"
+    assert store.list_active_intel(source="eve-sentry-detector") == []
+    inactive = store.list_active_intel(source="eve-sentry-detector", active=False)
+    assert inactive[0]["left_at"] == "2026-07-03T10:00:05+00:00"
+
+
+def test_detector_heartbeat_deactivates_only_stopped_window_target(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    for client_id, title in [
+        ("detector-client:test:pilot-a", "EVE - Pilot A"),
+        ("detector-client:test:pilot-b", "EVE - Pilot B"),
+    ]:
+        store.record_ocr_snapshot(
+            {
+                "client_id": client_id,
+                "source_instance": title,
+                "system_name": "S-KSWL",
+                "names": ["Alice"],
+                "seen_at": "2099-07-03T10:00:00+00:00",
+            }
+        )
+
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": "2099-07-03T10:00:05+00:00",
+            "details": {
+                "monitoring": True,
+                "targets": [
+                    {
+                        "client_id": "detector-client:test:pilot-a",
+                        "monitoring": False,
+                    },
+                    {
+                        "client_id": "detector-client:test:pilot-b",
+                        "monitoring": True,
+                    },
+                ],
+            },
+        }
+    )
+
+    active = store.list_active_intel(source="eve-sentry-detector")
+    inactive = store.list_active_intel(source="eve-sentry-detector", active=False)
+    assert [item["source_instance"] for item in active] == ["EVE - Pilot B"]
+    assert [item["source_instance"] for item in inactive] == ["EVE - Pilot A"]
+
+
+def test_stale_detector_heartbeat_expires_ocr_active_intel_on_read(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Pilot",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+            "seen_at": "2026-01-01T00:00:00+00:00",
+        }
+    )
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": "2026-01-01T00:00:01+00:00",
+            "heartbeat_interval_seconds": 5,
+            "details": {"monitoring": True},
+        }
+    )
+
+    assert store.list_active_intel(source="eve-sentry-detector") == []
+    inactive = store.list_active_intel(source="eve-sentry-detector", active=False)
+    assert inactive[0]["source_instance"] == "EVE - Pilot"
+    assert inactive[0]["left_at"]
+
+
+def test_stale_detector_heartbeat_does_not_expire_newer_ocr_snapshot(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": "2026-01-01T00:00:01+00:00",
+            "heartbeat_interval_seconds": 5,
+            "details": {"monitoring": True},
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Pilot",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+            "seen_at": "2026-01-01T00:00:10+00:00",
+        }
+    )
+
+    active = store.list_active_intel(source="eve-sentry-detector")
+
+    assert len(active) == 1
+    assert active[0]["source_instance"] == "EVE - Pilot"
+
+
 def test_add_observation_deduplicates_same_source_time_and_raw_text(tmp_path):
     path = tmp_path / "intel_reports.json"
     store = IntelStore(path, systems={}, links=[])

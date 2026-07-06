@@ -162,11 +162,17 @@ def classify_clients(clients: dict[str, Any]) -> dict[str, list[dict[str, Any]]]
 
 
 def is_online(item: dict[str, Any]) -> bool:
-    if item.get("online") is True:
-        return True
+    if isinstance(item.get("online"), bool):
+        return bool(item.get("online"))
+    age_seconds = item.get("age_seconds")
+    stale_after = item.get("stale_after_seconds")
+    try:
+        if age_seconds is not None and stale_after is not None:
+            return float(age_seconds) <= float(stale_after)
+    except (TypeError, ValueError):
+        return False
     status = str(item.get("status") or "").strip().lower()
-    stale = bool(item.get("stale"))
-    return bool(status) and status != "offline" and not stale
+    return bool(status) and status not in {"offline", "stale"}
 
 
 def detector_target_count(detectors: list[dict[str, Any]]) -> int:

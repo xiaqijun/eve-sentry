@@ -147,6 +147,28 @@ def test_integration_status_check_classifies_client_heartbeats():
     assert module.is_online(grouped["alert_client"][0]) is True
 
 
+def test_integration_status_check_does_not_treat_stale_running_heartbeat_as_online():
+    module = _load_script_module(
+        "integration_status_check",
+        "scripts/integration_status_check.py",
+    )
+
+    assert module.is_online(
+        {
+            "status": "running",
+            "age_seconds": 120.0,
+            "stale_after_seconds": 45.0,
+        }
+    ) is False
+    assert module.is_online(
+        {
+            "status": "running",
+            "age_seconds": 10.0,
+            "stale_after_seconds": 45.0,
+        }
+    ) is True
+
+
 def test_integration_status_check_reads_empty_server_without_writing_intel(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     evidence_path = tmp_path / "evidence" / "integration-status.json"

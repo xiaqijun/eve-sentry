@@ -124,6 +124,9 @@ uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Al
 检测客户端启动后会自动向服务端上报 heartbeat，Web 面板 `Client Status`
 和 `GET /api/v1/clients` 都能看到它的在线状态。旧 `GET /api/heartbeats`
 仍保留给旧页面和旧客户端兼容。
+当检测端停止监控或 heartbeat 切到 `idle` 时，服务端会把该检测端对应的
+OCR realtime rows 标记为 inactive，避免旧名单继续点亮星图；历史
+observations 和 alerts 仍会保留。
 
 多开 EVE 时，检测客户端会为当前检测到的每个 EVE 窗口启动独立监控 worker。
 每个窗口使用独立 OCR `client_id`，避免一个窗口的空名单把另一个窗口仍存在的

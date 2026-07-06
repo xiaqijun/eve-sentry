@@ -840,6 +840,7 @@ class IntelStore:
                 item.active = False
                 item.left_at = left_at
                 expired += 1
+            expired += self._expire_stale_detector_ocr_active_intel(left_at)
         return expired
 
     def list_alerts(
@@ -1199,6 +1200,7 @@ class IntelStore:
         }
         with self._lock:
             self._heartbeats[client_id] = heartbeat
+            self._deactivate_ocr_for_detector_heartbeat(heartbeat)
         return self._heartbeat_view(heartbeat)
 
     def list_heartbeats(self) -> list[dict[str, Any]]:
@@ -1246,6 +1248,123 @@ class IntelStore:
             "latest_seen_at": str(items[0].get("seen_at") or "") if items else "",
             "items": items,
         }
+
+    def _deactivate_ocr_for_detector_heartbeat(
+        self,
+        heartbeat: dict[str, Any],
+    ) -> int:
+        """Deactivate OCR realtime rows when a detector reports it stopped."""
+        client_type = str(heartbeat.get("client_type") or "").strip()
+        if client_type != "detector_client":
+            return 0
+
+        details = heartbeat.get("details", {})
+        if not isinstance(details, dict):
+            details = {}
+        status = str(heartbeat.get("status") or "").strip().lower()
+        last_action = str(details.get("last_action") or "").strip().lower()
+        monitoring = details.get("monitoring")
+        should_clear_all = (
+            status not in {"running", "monitoring"}
+            or monitoring is False
+            or last_action == "monitor_stopped"
+        )
+        targets = details.get("targets", [])
+        target_client_ids: list[str] = []
+        inactive_target_ids: list[str] = []
+        if isinstance(targets, list):
+            for target in targets:
+                if not isinstance(target, dict):
+                    continue
+                target_client_id = str(target.get("client_id") or "").strip()
+                if not target_client_id:
+                    continue
+                target_client_ids.append(target_client_id)
+                if target.get("monitoring") is False:
+                    inactive_target_ids.append(target_client_id)
+
+        client_ids = set(inactive_target_ids)
+        if should_clear_all:
+            client_id = str(heartbeat.get("client_id") or "").strip()
+            if client_id:
+                client_ids.add(client_id)
+            client_ids.update(target_client_ids)
+        if not client_ids:
+            return 0
+
+        left_at = str(heartbeat.get("seen_at") or utc_now_iso()).strip() or utc_now_iso()
+        deactivated = 0
+        for item in self._active_intel.values():
+            if not item.active:
+                continue
+            if item.source != "eve-sentry-detector":
+                continue
+            if str(item.metadata.get("client_id") or "").strip() not in client_ids:
+                continue
+            if self._channel_seen_after(item.last_seen_at, left_at):
+                continue
+            item.active = False
+            item.left_at = left_at
+            deactivated += 1
+        return deactivated
+
+    def _expire_stale_detector_ocr_active_intel(self, left_at: str) -> int:
+        stale_client_ids: dict[str, str] = {}
+        for heartbeat in self._heartbeats.values():
+            if str(heartbeat.get("client_type") or "").strip() != "detector_client":
+                continue
+            view = self._heartbeat_view(heartbeat)
+            heartbeat_seen_at = str(view.get("seen_at") or left_at).strip() or left_at
+            details = view.get("details", {})
+            if not isinstance(details, dict):
+                details = {}
+            status = str(view.get("status") or "").strip().lower()
+            monitoring = details.get("monitoring")
+            last_action = str(details.get("last_action") or "").strip().lower()
+            heartbeat_stopped = (
+                not view.get("online")
+                or status not in {"running", "monitoring"}
+                or monitoring is False
+                or last_action == "monitor_stopped"
+            )
+            target_ids: list[str] = []
+            targets = details.get("targets", [])
+            if isinstance(targets, list):
+                for target in targets:
+                    if not isinstance(target, dict):
+                        continue
+                    target_client_id = str(target.get("client_id") or "").strip()
+                    if not target_client_id:
+                        continue
+                    target_ids.append(target_client_id)
+                    if target.get("monitoring") is False:
+                        stale_client_ids[target_client_id] = heartbeat_seen_at
+            if heartbeat_stopped:
+                client_id = str(view.get("client_id") or "").strip()
+                if client_id:
+                    stale_client_ids[client_id] = heartbeat_seen_at
+                for target_client_id in target_ids:
+                    stale_client_ids[target_client_id] = heartbeat_seen_at
+
+        if not stale_client_ids:
+            return 0
+
+        expired = 0
+        for item in self._active_intel.values():
+            if not item.active:
+                continue
+            if item.source != "eve-sentry-detector":
+                continue
+            client_id = str(item.metadata.get("client_id") or "").strip()
+            stale_seen_at = stale_client_ids.get(client_id)
+            if not stale_seen_at:
+                continue
+            if self._channel_seen_after(item.last_seen_at, stale_seen_at):
+                continue
+            item.active = False
+            item.left_at = stale_seen_at
+            expired += 1
+        return expired
 
     def snapshot(self) -> dict[str, Any]:
         """Return systems, links, reports, observations, alerts, and summary."""
