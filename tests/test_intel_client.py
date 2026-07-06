@@ -58,6 +58,10 @@ class FakeApi:
         self.alert_filters.append((acknowledged, min_score, min_level))
         return self.list_reports(limit=limit)
 
+    def iter_alert_events(self, **kwargs):
+        for alert in self.stream_alerts(**kwargs):
+            yield alert
+
     def ack_alert(self, alert_id, acknowledged_by="", note=""):
         _ = alert_id, acknowledged_by, note
         return {}
@@ -179,6 +183,17 @@ def test_intel_api_client_targets_v1_event_stream(monkeypatch):
     captured = {}
 
     class FakeResponse:
+        def __init__(self):
+            self.lines = iter(
+                [
+                    b"id: evt-1\n",
+                    b"event: alert\n",
+                    b'data: {"id": "evt-1"}\n',
+                    b"\n",
+                    b"",
+                ]
+            )
+
         def __enter__(self):
             return self
 
@@ -187,6 +202,9 @@ def test_intel_api_client_targets_v1_event_stream(monkeypatch):
 
         def read(self):
             return b'id: evt-1\nevent: alert\ndata: {"id": "evt-1"}\n\n'
+
+        def readline(self):
+            return next(self.lines)
 
     def fake_urlopen(request, timeout=0):
         captured["url"] = request.full_url
@@ -202,6 +220,42 @@ def test_intel_api_client_targets_v1_event_stream(monkeypatch):
     assert alerts == [{"id": "evt-1"}]
     assert captured["url"] == "http://example.invalid/api/v1/events?limit=50&timeout=0"
     assert captured["headers"]["Last-event-id"] == "evt-0"
+
+
+def test_intel_api_client_iterates_sse_alerts_incrementally(monkeypatch):
+    class FakeResponse:
+        def __init__(self):
+            self.lines = iter(
+                [
+                    b"id: evt-1\n",
+                    b"event: alert\n",
+                    b'data: {"id": "evt-1", "names": ["Alice"]}\n',
+                    b"\n",
+                    b"",
+                ]
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            raise AssertionError("incremental SSE must not call read()")
+
+        def readline(self):
+            return next(self.lines)
+
+    monkeypatch.setattr(
+        "app.intel_client.urlopen",
+        lambda request, timeout=0: FakeResponse(),
+    )
+    api = IntelApiClient("http://example.invalid", timeout=3.0)
+
+    first = next(api.iter_alert_events(timeout=0))
+
+    assert first == {"id": "evt-1", "names": ["Alice"]}
 
 
 def test_intel_api_client_posts_and_lists_reports(tmp_path):
@@ -953,6 +1007,60 @@ def test_alert_client_once_falls_back_to_polling_when_stream_fails(
     assert api.stream_calls == 1
     assert api.poll_calls == 1
     assert "Fallback" in output.out
+
+
+def test_alert_client_emits_streamed_alert_before_stream_closes(monkeypatch, capsys):
+    class IncrementalApi:
+        instances = []
+
+        def __init__(self, base_url, timeout=3.0):
+            self.base_url = base_url
+            self.timeout = timeout
+            self.heartbeats = []
+            self.instances.append(self)
+
+        def post_heartbeat(self, **payload):
+            self.heartbeats.append(payload)
+            return {"client_id": payload["client_id"], "online": True}
+
+        def list_alerts(
+            self,
+            limit=50,
+            acknowledged=None,
+            min_score=None,
+            min_level="",
+        ):
+            _ = limit, acknowledged, min_score, min_level
+            return []
+
+        def iter_alert_events(self, **kwargs):
+            _ = kwargs
+            yield {
+                "id": "evt-stream",
+                "system_name": "Tama",
+                "names": ["Streamed"],
+                "created_at": "2026-06-29T12:00:00+00:00",
+                "level": "high",
+                "score": 70,
+            }
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("app.alert_client.IntelApiClient", IncrementalApi)
+
+    args = parse_args(
+        [
+            "--server",
+            "http://example.invalid",
+            "--include-existing",
+            "--no-state",
+        ]
+    )
+
+    assert run_alert_client(args) == 0
+
+    output = capsys.readouterr()
+    assert "Streamed" in output.out
+    assert IncrementalApi.instances[0].heartbeats[0]["details"]["mode"] == "events"
 
 
 def test_alert_client_resume_state_preserves_offline_alerts(tmp_path, capsys):

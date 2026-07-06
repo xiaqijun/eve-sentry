@@ -484,6 +484,40 @@ def attach_alert_details(
     return detailed
 
 
+def handle_alert_batch(
+    api: IntelApiClient,
+    alerts: list[dict[str, Any]],
+    *,
+    popup: bool = False,
+    json_lines: bool = False,
+    details: bool = False,
+    state_store: AlertClientState | None = None,
+    ack: bool = False,
+    ack_by: str = "alert-client",
+    ack_note: str = "",
+) -> int:
+    """Emit, persist, and optionally acknowledge one batch of alerts."""
+    if not alerts:
+        return 0
+    if details:
+        alerts = attach_alert_details(api, alerts)
+    emit_alerts(
+        alerts,
+        popup=popup,
+        json_lines=json_lines,
+    )
+    if state_store is not None:
+        state_store.record_alerts(alerts)
+    if ack:
+        ack_emitted_alerts(
+            api,
+            alerts,
+            acknowledged_by=ack_by,
+            note=ack_note,
+        )
+    return len(alerts)
+
+
 def run_alert_client(args: argparse.Namespace) -> int:
     """Run the alert loop, preferring SSE with polling fallback."""
     api = IntelApiClient(args.server, timeout=args.timeout)
@@ -558,11 +592,31 @@ def run_alert_client(args: argparse.Namespace) -> int:
                 last_heartbeat_at = now + heartbeat_interval
             try:
                 if use_events:
-                    alerts = poller.stream_new(timeout=args.interval)
+                    if once:
+                        alerts = poller.stream_new(timeout=args.interval)
+                    else:
+                        emitted_count = 0
+                        for alert in poller.iter_stream_new(timeout=args.interval):
+                            emitted_count += handle_alert_batch(
+                                api,
+                                [alert],
+                                popup=popup,
+                                json_lines=json_lines,
+                                details=details,
+                                state_store=state_store,
+                                ack=ack,
+                                ack_by=ack_by,
+                                ack_note=ack_note,
+                            )
+                        alerts = []
                     stream_fallback.mark_stream_success()
                     heartbeat_action = (
-                        f"events:{len(alerts)}" if alerts else "events_waiting"
+                        f"events:{len(alerts) if once else emitted_count}"
+                        if (alerts if once else emitted_count)
+                        else "events_waiting"
                     )
+                    if not once and emitted_count and ack:
+                        heartbeat_action = f"ack:{emitted_count}"
                 else:
                     alerts = poller.poll_new()
                     stream_fallback.mark_poll_attempt()
@@ -602,23 +656,19 @@ def run_alert_client(args: argparse.Namespace) -> int:
                 continue
 
             if alerts:
-                if details:
-                    alerts = attach_alert_details(api, alerts)
-                emit_alerts(
+                handled_count = handle_alert_batch(
+                    api,
                     alerts,
                     popup=popup,
                     json_lines=json_lines,
+                    details=details,
+                    state_store=state_store,
+                    ack=ack,
+                    ack_by=ack_by,
+                    ack_note=ack_note,
                 )
-                if state_store is not None:
-                    state_store.record_alerts(alerts)
                 if ack:
-                    ack_emitted_alerts(
-                        api,
-                        alerts,
-                        acknowledged_by=ack_by,
-                        note=ack_note,
-                    )
-                    heartbeat_action = f"ack:{len(alerts)}"
+                    heartbeat_action = f"ack:{handled_count}"
                     heartbeat_last_success_at = heartbeat_now_iso()
 
             if once:

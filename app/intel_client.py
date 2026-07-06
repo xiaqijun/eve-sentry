@@ -441,6 +441,29 @@ class IntelApiClient:
         min_level: str = "",
     ) -> list[dict[str, Any]]:
         """Fetch alert events from the server-sent event stream."""
+        return list(
+            self.iter_alert_events(
+                since=since,
+                last_event_id=last_event_id,
+                limit=limit,
+                timeout=timeout,
+                acknowledged=acknowledged,
+                min_score=min_score,
+                min_level=min_level,
+            )
+        )
+
+    def iter_alert_events(
+        self,
+        since: str = "",
+        last_event_id: str = "",
+        limit: int = 50,
+        timeout: float = 30.0,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str = "",
+    ):
+        """Yield alert events incrementally from the server-sent event stream."""
         params = {"limit": str(limit), "timeout": str(timeout)}
         if since:
             params["since"] = since
@@ -461,7 +484,7 @@ class IntelApiClient:
         )
         try:
             with urlopen(request, timeout=self.timeout + max(0.0, timeout)) as response:
-                body = response.read().decode("utf-8")
+                yield from self._iter_alert_events(response)
         except HTTPError as exc:
             message = self._read_error_message(exc)
             raise IntelApiError(message) from exc
@@ -469,7 +492,6 @@ class IntelApiClient:
             raise IntelApiError(str(exc.reason)) from exc
         except OSError as exc:
             raise IntelApiError(str(exc)) from exc
-        return self._parse_alert_events(body)
 
     def _request(
         self,
@@ -525,23 +547,52 @@ class IntelApiClient:
     def _parse_alert_events(self, body: str) -> list[dict[str, Any]]:
         alerts: list[dict[str, Any]] = []
         for block in body.split("\n\n"):
-            event_name = ""
-            data_lines = []
-            for line in block.splitlines():
-                if line.startswith("event:"):
-                    event_name = line[len("event:"):].strip()
-                if line.startswith("data:"):
-                    data_lines.append(line[len("data:"):].lstrip())
-            if event_name not in {"", "alert"} or not data_lines:
+            alert = self._parse_alert_event_block(block.splitlines())
+            if alert is None:
                 continue
-            try:
-                payload = json.loads("\n".join(data_lines))
-            except json.JSONDecodeError as exc:
-                raise IntelApiError("server returned invalid SSE JSON") from exc
-            if not isinstance(payload, dict):
-                raise IntelApiError("server returned non-object SSE event data")
-            alerts.append(payload)
+            alerts.append(alert)
         return alerts
+
+    def _iter_alert_events(self, response):
+        block_lines: list[str] = []
+        while True:
+            raw_line = response.readline()
+            if raw_line == b"" or raw_line == "":
+                if block_lines:
+                    alert = self._parse_alert_event_block(block_lines)
+                    if alert is not None:
+                        yield alert
+                return
+            if isinstance(raw_line, bytes):
+                line = raw_line.decode("utf-8")
+            else:
+                line = str(raw_line)
+            line = line.rstrip("\r\n")
+            if line == "":
+                alert = self._parse_alert_event_block(block_lines)
+                block_lines = []
+                if alert is not None:
+                    yield alert
+                continue
+            block_lines.append(line)
+
+    def _parse_alert_event_block(self, lines: list[str]) -> dict[str, Any] | None:
+        event_name = ""
+        data_lines = []
+        for line in lines:
+            if line.startswith("event:"):
+                event_name = line[len("event:"):].strip()
+            if line.startswith("data:"):
+                data_lines.append(line[len("data:"):].lstrip())
+        if event_name not in {"", "alert"} or not data_lines:
+            return None
+        try:
+            payload = json.loads("\n".join(data_lines))
+        except json.JSONDecodeError as exc:
+            raise IntelApiError("server returned invalid SSE JSON") from exc
+        if not isinstance(payload, dict):
+            raise IntelApiError("server returned non-object SSE event data")
+        return payload
 
 
 def _bool_param(value: bool) -> str:
@@ -652,6 +703,23 @@ class AlertPoller:
         )
         self._remember_alert_cursor(alerts)
         return self._filter_new(alerts, newest_first=False)
+
+    def iter_stream_new(self, timeout: float = 30.0):
+        """Yield new alerts from the server-sent event stream as they arrive."""
+        since = "" if self._stream_last_event_id else self._stream_since
+        for alert in self.api.iter_alert_events(
+            since=since,
+            last_event_id=self._stream_last_event_id,
+            limit=self.limit,
+            timeout=timeout,
+            acknowledged=self.acknowledged,
+            min_score=self.min_score,
+            min_level=self.min_level,
+        ):
+            self._remember_alert_cursor([alert])
+            new_alerts = self._filter_new([alert], newest_first=False)
+            if new_alerts:
+                yield new_alerts[0]
 
     def _remember_alert_cursor(self, alerts: list[dict[str, Any]]) -> None:
         for alert in alerts:
