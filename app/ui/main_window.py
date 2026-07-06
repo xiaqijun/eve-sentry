@@ -10,6 +10,8 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -38,6 +40,7 @@ from app.models.region_prefs import RegionPreferences
 from app.models.whitelist import Whitelist
 from app.ui.region_selector import RegionSelector
 from app.ui.settings import SettingsPanel
+from app.ui.theme import APP_QSS, monitor_button_style, status_card_style
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +51,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EVE Sentry")
-        self.setMinimumSize(700, 450)
+        self.setMinimumSize(860, 560)
+        self.setStyleSheet(APP_QSS)
 
         self._whitelist = Whitelist("whitelist.json")
         self._region_prefs = RegionPreferences("region_prefs.json")
@@ -108,6 +112,7 @@ class MainWindow(QMainWindow):
         self._alert_queue: list[list[str]] = []
         self._manual_region: dict | None = None
         self._detected_region: dict | None = None
+        self._status_cards: dict[str, tuple[QFrame, QLabel, QLabel]] = {}
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -116,7 +121,7 @@ class MainWindow(QMainWindow):
         root.setSpacing(8)
 
         self._settings = SettingsPanel(self._whitelist)
-        self._settings.setFixedWidth(220)
+        self._settings.setFixedWidth(240)
         root.addWidget(self._settings)
 
         right = QVBoxLayout()
@@ -124,41 +129,40 @@ class MainWindow(QMainWindow):
 
         self._monitor_btn = QPushButton("Start Monitor")
         self._monitor_btn.setMinimumHeight(40)
-        self._monitor_btn.setStyleSheet(
-            "QPushButton { background: #228b22; color: white; border-radius: 4px; "
-            "font-size: 16px; font-weight: bold; }"
-            "QPushButton:hover { background: #2ea62e; }"
-            "QPushButton:checked { background: #cc0000; }"
-        )
+        self._monitor_btn.setStyleSheet(monitor_button_style(active=False))
         self._monitor_btn.setCheckable(True)
         self._monitor_btn.clicked.connect(self._toggle_monitor)
         right.addWidget(self._monitor_btn)
 
         self._window_combo = QComboBox()
-        self._window_combo.setStyleSheet("font-size: 11px;")
         self._window_combo.currentIndexChanged.connect(self._on_window_selected)
         right.addWidget(self._window_combo)
 
         self._window_label = QLabel("Window: not detected")
-        self._window_label.setStyleSheet("color: #666; font-size: 11px;")
         right.addWidget(self._window_label)
 
-        right.addWidget(QLabel("Status Log:"))
+        status_grid = QGridLayout()
+        status_grid.setSpacing(6)
+        for index, key in enumerate(
+            ["server", "esi", "ocr", "channel", "window", "region"]
+        ):
+            card = self._make_status_card(key)
+            status_grid.addWidget(card, index // 3, index % 3)
+        right.addLayout(status_grid)
+
+        right.addWidget(QLabel("运行日志"))
 
         self._log = QTextEdit()
         self._log.setReadOnly(True)
-        self._log.setStyleSheet(
-            "QTextEdit { background: #1a1a2e; color: #e0e0e0; "
-            "font-family: Consolas, monospace; font-size: 12px; }"
-        )
+        self._log.setStyleSheet("font-family: Consolas, 'Cascadia Mono', monospace;")
         right.addWidget(self._log)
 
         btn_row = QHBoxLayout()
-        clear_btn = QPushButton("Clear Log")
+        clear_btn = QPushButton("清空日志")
         clear_btn.clicked.connect(self._log.clear)
         btn_row.addWidget(clear_btn)
 
-        select_btn = QPushButton("Select Member List")
+        select_btn = QPushButton("选择成员列表区域")
         select_btn.clicked.connect(self._select_region)
         btn_row.addWidget(select_btn)
 
@@ -169,7 +173,7 @@ class MainWindow(QMainWindow):
 
         self._status = QStatusBar()
         self.setStatusBar(self._status)
-        self._status_label = QLabel("Idle")
+        self._status_label = QLabel("待机")
         self._status.addWidget(self._status_label)
 
         self._setup_tray()
@@ -177,6 +181,106 @@ class MainWindow(QMainWindow):
         if self._intel_client is not None:
             self._heartbeat_timer.start()
             self._publish_heartbeat()
+        self._refresh_status_cards()
+
+    def _make_status_card(self, key: str) -> QFrame:
+        """Build a compact status card for the desktop HUD."""
+        titles = {
+            "server": "服务端",
+            "esi": "ESI 星系",
+            "ocr": "OCR 上报",
+            "channel": "频道日志",
+            "window": "EVE 窗口",
+            "region": "监控区域",
+        }
+        frame = QFrame()
+        frame.setObjectName(f"status-card-{key}")
+        frame.setMinimumHeight(58)
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 7, 10, 7)
+        layout.setSpacing(2)
+        title = QLabel(titles[key])
+        title.setStyleSheet("color: #79c6dc; font-size: 11px; font-weight: 600;")
+        value = QLabel("未就绪")
+        value.setStyleSheet("color: #f2fbff; font-size: 13px; font-weight: 700;")
+        value.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(value)
+        self._status_cards[key] = (frame, title, value)
+        self._set_status_card(key, "未就绪", "idle")
+        return frame
+
+    def _set_status_card(self, key: str, value: str, tone: str = "idle") -> None:
+        """Update a desktop HUD status card if it exists."""
+        try:
+            cards = self.__dict__.get("_status_cards", {})
+        except RuntimeError:
+            return
+        card = cards.get(key)
+        if card is None:
+            return
+        frame, _title, value_label = card
+        frame.setStyleSheet(status_card_style(tone))
+        value_label.setText(value)
+
+    def _refresh_status_cards(self) -> None:
+        """Refresh passive status cards from current runtime state."""
+        try:
+            cards = self.__dict__.get("_status_cards")
+        except RuntimeError:
+            return
+        if not cards:
+            return
+
+        intel_client = getattr(self, "_intel_client", None)
+        last_heartbeat_error = getattr(self, "_last_heartbeat_error", "")
+        if intel_client is None:
+            self._set_status_card("server", "未配置", "warn")
+        elif last_heartbeat_error:
+            self._set_status_card("server", "连接异常", "danger")
+        else:
+            self._set_status_card("server", "已配置", "ok")
+
+        intel_system = getattr(self, "_intel_system", "") or "Unknown"
+        intel_system_id = getattr(self, "_intel_system_id", None)
+        intel_system_source = getattr(self, "_intel_system_source", "default")
+        esi_label = intel_system
+        if intel_system_id is not None:
+            esi_label = f"{esi_label} ({intel_system_id})"
+        self._set_status_card(
+            "esi",
+            esi_label,
+            "ok" if intel_system_source == "esi" else "warn",
+        )
+
+        worker = getattr(self, "_worker", None)
+        monitoring = bool(worker is not None and worker.isRunning())
+        self._set_status_card(
+            "ocr",
+            "监控中" if monitoring else "待启动",
+            "active" if monitoring else "idle",
+        )
+
+        channel_watcher = getattr(self, "_channel_watcher", None)
+        channel_names = list(getattr(self, "_channel_names", []))
+        settings = getattr(self, "_settings", None)
+        configured_channels = settings.get_channel_names() if settings else []
+        if channel_watcher is not None:
+            self._set_status_card("channel", f"{len(channel_names)} 个频道", "active")
+        elif configured_channels:
+            self._set_status_card("channel", "已配置, 未启动", "warn")
+        else:
+            self._set_status_card("channel", "未选择", "idle")
+
+        window_combo = getattr(self, "_window_combo", None)
+        window_title = window_combo.currentText().strip() if window_combo else ""
+        self._set_status_card("window", window_title or "未检测到", "ok" if window_title else "warn")
+
+        region = getattr(self, "_manual_region", None) or getattr(self, "_detected_region", None)
+        if region:
+            self._set_status_card("region", f"{region['w']}x{region['h']}", "ok")
+        else:
+            self._set_status_card("region", "未配置", "warn")
 
     def _detect_window(self) -> None:
         """Find all EVE windows and populate the window selector."""
@@ -197,6 +301,7 @@ class MainWindow(QMainWindow):
             self._detected_region = None
             self._capturer.close()
             self._window_label.setText("Window: not found")
+        self._refresh_status_cards()
 
     def _current_window_info(self) -> dict | None:
         """Return the currently selected EVE window info."""
@@ -221,6 +326,7 @@ class MainWindow(QMainWindow):
         if info is None:
             self._detected_region = None
             self._window_label.setText("Window: stale selection, re-detect needed")
+            self._refresh_status_cards()
             return
 
         self._capturer.select_window(
@@ -237,6 +343,7 @@ class MainWindow(QMainWindow):
         self._window_label.setText(
             f"Window: {title} -> member list {member['w']}x{member['h']}"
         )
+        self._refresh_status_cards()
 
     def _select_region(self) -> None:
         """Show overlay on top of EVE window for drag-to-select region."""
@@ -282,6 +389,7 @@ class MainWindow(QMainWindow):
             self._region_prefs.save_region(window, self._manual_region)
         self._window_label.setText(f"Manual region: ({x},{y}) {w}x{h}")
         self._log_message(f"Saved member-list region {w}x{h} @ ({x},{y})")
+        self._refresh_status_cards()
         self.show()
 
     def _on_selector_closed(self) -> None:
@@ -345,18 +453,15 @@ class MainWindow(QMainWindow):
         self._start_channel_monitor()
 
         self._monitor_btn.setText("Stop Monitor")
-        self._monitor_btn.setStyleSheet(
-            "QPushButton { background: #cc0000; color: white; border-radius: 4px; "
-            "font-size: 16px; font-weight: bold; }"
-            "QPushButton:hover { background: #ee2222; }"
-        )
+        self._monitor_btn.setStyleSheet(monitor_button_style(active=True))
         self._status_label.setText("Running")
-        self._status_label.setStyleSheet("color: #228b22; font-weight: bold;")
+        self._status_label.setStyleSheet("color: #37d6b0; font-weight: bold;")
         self._log_message("Monitor started")
         self._heartbeat_last_action = "monitor_started"
         self._heartbeat_last_error = ""
         self._heartbeat_last_success_at = heartbeat_now_iso()
         self._publish_heartbeat()
+        self._refresh_status_cards()
 
     def _disconnect_worker_signals(self) -> None:
         """Safely disconnect all signals from the current worker."""
@@ -390,17 +495,14 @@ class MainWindow(QMainWindow):
         self._stop_channel_monitor()
 
         self._monitor_btn.setText("Start Monitor")
-        self._monitor_btn.setStyleSheet(
-            "QPushButton { background: #228b22; color: white; border-radius: 4px; "
-            "font-size: 16px; font-weight: bold; }"
-            "QPushButton:hover { background: #2ea62e; }"
-        )
+        self._monitor_btn.setStyleSheet(monitor_button_style(active=False))
         self._status_label.setText("Stopped")
         self._status_label.setStyleSheet("color: #888;")
         self._log_message("Monitor stopped")
         self._heartbeat_last_action = "monitor_stopped"
         self._heartbeat_last_success_at = heartbeat_now_iso()
         self._publish_heartbeat()
+        self._refresh_status_cards()
 
     def _on_threat(self, threats: list[str]) -> None:
         """Show non-blocking alert dialog when threats are detected."""
@@ -419,9 +521,11 @@ class MainWindow(QMainWindow):
         self._channel_last_success_at = ""
         if not self._channel_names:
             self._log_message("Channel log monitor disabled: no channel selected")
+            self._refresh_status_cards()
             return False
         if self._intel_client is None:
             self._log_message("Channel log monitor disabled: server is not configured")
+            self._refresh_status_cards()
             return False
 
         self._channel_watcher = ChatLogWatcher(
@@ -434,11 +538,13 @@ class MainWindow(QMainWindow):
         self._channel_timer.start()
         joined = ", ".join(self._channel_names)
         self._log_message(f"Channel log monitor started: {joined}")
+        self._refresh_status_cards()
         return True
 
     def _stop_channel_monitor(self) -> None:
         self._channel_timer.stop()
         self._channel_watcher = None
+        self._refresh_status_cards()
 
     def _poll_channel_monitor(self) -> None:
         if self._channel_watcher is None or self._intel_client is None:
@@ -452,6 +558,7 @@ class MainWindow(QMainWindow):
             processed = process_once(
                 self._channel_watcher,
                 self._intel_client,
+                server_parse=True,
                 diagnostics=diagnostics,
             )
         except Exception as exc:
@@ -459,6 +566,7 @@ class MainWindow(QMainWindow):
             self._channel_last_error = str(exc)
             self._log_message(f"Channel log upload failed: {exc}")
             self._publish_heartbeat()
+            self._refresh_status_cards()
             return
 
         self._channel_last_action = str(
@@ -471,6 +579,7 @@ class MainWindow(QMainWindow):
         if processed:
             self._log_message(f"Channel observations uploaded: {processed}")
             self._publish_heartbeat()
+        self._refresh_status_cards()
 
     def _create_intel_client(self) -> IntelApiClient | None:
         enabled = (
@@ -509,6 +618,7 @@ class MainWindow(QMainWindow):
             self._heartbeat_last_action = "observation_error"
             self._heartbeat_last_error = str(exc)
             self._log_message(f"情报上报失败: {exc}")
+            self._refresh_status_cards()
             return
 
         observation_id = created.get("observation", {}).get("id", "")
@@ -517,6 +627,7 @@ class MainWindow(QMainWindow):
         self._heartbeat_last_error = ""
         self._heartbeat_last_success_at = heartbeat_now_iso()
         self._log_message(f"已上报情报: {len(threats)} 个目标{suffix}")
+        self._refresh_status_cards()
 
     def _publish_ocr_snapshot(self, names: list[str]) -> None:
         if self._intel_client is None:
@@ -535,6 +646,12 @@ class MainWindow(QMainWindow):
             self._heartbeat_last_action = "ocr_snapshot_error"
             self._heartbeat_last_error = str(exc)
             self._log_message(f"OCR snapshot upload failed: {exc}")
+            self._refresh_status_cards()
+            return
+        self._heartbeat_last_action = f"ocr_snapshot:{len(names)}"
+        self._heartbeat_last_error = ""
+        self._heartbeat_last_success_at = heartbeat_now_iso()
+        self._refresh_status_cards()
 
     def _publish_heartbeat(self) -> None:
         if self._intel_client is None:
@@ -576,6 +693,7 @@ class MainWindow(QMainWindow):
             if message != self._last_heartbeat_error:
                 self._last_heartbeat_error = message
                 self._log_message(f"Heartbeat update failed: {message}")
+        self._refresh_status_cards()
 
     def _refresh_intel_location(self, force: bool = False) -> bool:
         if (
@@ -598,6 +716,7 @@ class MainWindow(QMainWindow):
                 self._heartbeat_last_action = "esi_error"
                 self._heartbeat_last_error = message
                 self._log_message(f"ESI current-system sync unavailable: {message}")
+                self._refresh_status_cards()
             return False
 
         if not system:
@@ -607,6 +726,7 @@ class MainWindow(QMainWindow):
                 self._heartbeat_last_action = "esi_error"
                 self._heartbeat_last_error = message
                 self._log_message(f"ESI current-system sync unavailable: {message}")
+                self._refresh_status_cards()
             return False
 
         system_id = _positive_int(system.get("system_id"))
@@ -632,6 +752,7 @@ class MainWindow(QMainWindow):
             self._heartbeat_last_action = "esi_sync"
             self._heartbeat_last_success_at = heartbeat_now_iso()
             self._log_message(f"Current system from ESI: {label}")
+        self._refresh_status_cards()
         return True
 
     def _on_alert_closed(self) -> None:

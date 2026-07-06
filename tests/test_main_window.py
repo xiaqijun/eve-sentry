@@ -126,6 +126,35 @@ def test_channel_monitor_starts_only_for_selected_channels(monkeypatch):
     assert window._channel_timer.started is True
 
 
+def test_channel_monitor_delegates_parsing_to_server(monkeypatch):
+    calls = {}
+
+    def fake_process_once(watcher, api, **kwargs):
+        calls["watcher"] = watcher
+        calls["api"] = api
+        calls["kwargs"] = kwargs
+        kwargs["diagnostics"]["last_action"] = "server_parse:1"
+        kwargs["diagnostics"]["last_error"] = ""
+        kwargs["diagnostics"]["last_success_at"] = "2026-07-07T00:00:00Z"
+        return 1
+
+    monkeypatch.setattr("app.ui.main_window.process_once", fake_process_once)
+    window = make_channel_window(["wc.Venal+Br+Te"])
+    window._channel_watcher = object()
+    window._channel_names = ["wc.Venal+Br+Te"]
+    window._channel_last_error = ""
+    window._channel_last_success_at = ""
+    window._publish_heartbeat = lambda: None
+
+    MainWindow._poll_channel_monitor(window)
+
+    assert calls["watcher"] is window._channel_watcher
+    assert calls["api"] is window._intel_client
+    assert calls["kwargs"]["server_parse"] is True
+    assert window._channel_last_action == "server_parse:1"
+    assert window._log_messages == ["Channel observations uploaded: 1"]
+
+
 def test_switching_selected_window_clears_stale_manual_region():
     class FakeCombo:
         def currentData(self):
