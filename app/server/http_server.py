@@ -31,6 +31,7 @@ class IntelHTTPServer:
         port: int = 8765,
         config_store: Any | None = None,
         esi_session: Any | None = None,
+        esi_config: dict[str, Any] | None = None,
         map_config_store: Any | None = None,
     ) -> None:
         self.store = store
@@ -38,6 +39,7 @@ class IntelHTTPServer:
         self.port = port
         self.config_store = config_store
         self.esi_session = esi_session
+        self.esi_config = dict(esi_config or {})
         self.map_config_store = map_config_store
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -56,6 +58,7 @@ class IntelHTTPServer:
         self._httpd.store = self.store  # type: ignore[attr-defined]
         self._httpd.config_store = self.config_store  # type: ignore[attr-defined]
         self._httpd.esi_session = self.esi_session  # type: ignore[attr-defined]
+        self._httpd.esi_config = self.esi_config  # type: ignore[attr-defined]
         self._httpd.map_config_store = self.map_config_store  # type: ignore[attr-defined]
         self.host, self.port = self._httpd.server_address[:2]
         self._thread = threading.Thread(
@@ -1058,6 +1061,10 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
     def _esi_session(self) -> Any | None:
         return self.server.esi_session  # type: ignore[attr-defined,no-any-return]
 
+    def _esi_config(self) -> dict[str, Any]:
+        config = getattr(self.server, "esi_config", None)
+        return dict(config) if isinstance(config, dict) else {}
+
     def _esi_public_resolver(self) -> Any | None:
         resolver = getattr(self._store(), "_resolver", None)
         if resolver is None:
@@ -1075,6 +1082,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
     def _esi_status_payload(self) -> dict[str, Any]:
         session = self._esi_session()
         public_enabled = self._esi_public_resolver() is not None
+        config = self._esi_config()
         if session is None:
             if public_enabled:
                 return {
@@ -1082,14 +1090,16 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                     "public": True,
                     "authenticated": False,
                     "session": False,
+                    "config": config,
                 }
-            return {"enabled": False, "authenticated": False}
+            return {"enabled": False, "authenticated": False, "config": config}
         if not hasattr(session, "load_tokens"):
             return {
                 "enabled": True,
                 "public": public_enabled,
                 "authenticated": False,
                 "session": True,
+                "config": config,
                 "error": "ESI session cannot load tokens",
             }
         try:
@@ -1100,6 +1110,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 "public": public_enabled,
                 "authenticated": False,
                 "session": True,
+                "config": config,
                 "error": str(exc),
             }
         return {
@@ -1107,6 +1118,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             "public": public_enabled,
             "authenticated": True,
             "session": True,
+            "config": config,
             "character_id": tokens.character_id,
             "character_owner_hash": tokens.character_owner_hash,
             "scopes": list(tokens.scopes),

@@ -131,6 +131,36 @@ def test_server_cli_accepts_authenticated_esi_options():
     assert args.esi_scopes == ["esi-location.read_location.v1"]
 
 
+def test_server_cli_builds_esi_config_summary(tmp_path):
+    token_file = tmp_path / "esi_tokens.json"
+    token_file.write_text("{}", encoding="utf-8")
+    args = build_arg_parser().parse_args(
+        [
+            "--esi-client-id",
+            "client-id",
+            "--esi-token-file",
+            str(token_file),
+            "--esi-token-storage",
+            "plain",
+            "--esi-redirect-uri",
+            "http://127.0.0.1:9000/callback",
+            "--esi-scope",
+            "esi-location.read_location.v1",
+        ]
+    )
+
+    summary = server_main._build_esi_config(args)
+
+    assert summary == {
+        "client_id_configured": True,
+        "redirect_uri": "http://127.0.0.1:9000/callback",
+        "token_file": str(token_file),
+        "token_file_present": True,
+        "token_storage": "plain",
+        "scopes": ["esi-location.read_location.v1"],
+    }
+
+
 def test_server_cli_requires_client_id_for_login():
     parser = build_arg_parser()
     args = parser.parse_args(["--esi-login-only"])
@@ -179,6 +209,7 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
             port,
             config_store,
             esi_session,
+            esi_config,
             map_config_store,
         ):
             calls["server"].append(
@@ -186,11 +217,12 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
                     "store": store,
                     "host": host,
                     "port": port,
-                    "config_store": config_store,
-                    "esi_session": esi_session,
-                    "map_config_store": map_config_store,
-                }
-            )
+                        "config_store": config_store,
+                        "esi_session": esi_session,
+                        "esi_config": esi_config,
+                        "map_config_store": map_config_store,
+                    }
+                )
 
         def start(self):
             return None
@@ -255,4 +287,5 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
     assert calls["server"][0]["host"] == "127.0.0.1"
     assert calls["server"][0]["port"] == 8765
     assert calls["server"][0]["esi_session"] is None
+    assert calls["server"][0]["esi_config"]["client_id_configured"] is False
     assert calls["server"][0]["map_config_store"] is not None

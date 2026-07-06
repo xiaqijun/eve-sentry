@@ -96,10 +96,9 @@ def test_health_and_cors_preflight(tmp_path):
         assert payload["health"]["storage"]["path"].endswith("intel.json")
         assert payload["health"]["storage"]["writable"] is True
         assert payload["health"]["config"] == {"enabled": False}
-        assert payload["health"]["esi"] == {
-            "enabled": False,
-            "authenticated": False,
-        }
+        assert payload["health"]["esi"]["enabled"] is False
+        assert payload["health"]["esi"]["authenticated"] is False
+        assert payload["health"]["esi"]["config"] == {}
         assert payload["health"]["killboard"] == {"enabled": False}
         assert payload["health"]["events"]["alert_query_ok"] is True
         assert payload["health"]["events"]["sse"]["path"] == "/api/events"
@@ -235,7 +234,9 @@ def test_v1_bootstrap_and_map_routes_expose_workbench_payload(tmp_path):
         assert bootstrap["alerts"][0]["system_name"] == "Tama"
         assert bootstrap["clients"]["summary"]["count"] == 1
         assert bootstrap["config"]["schema_version"] == "scoring_config.v1"
-        assert bootstrap["esi"] == {"enabled": False, "authenticated": False}
+        assert bootstrap["esi"]["enabled"] is False
+        assert bootstrap["esi"]["authenticated"] is False
+        assert bootstrap["esi"]["config"] == {}
 
         status, map_payload = request_json(f"{server.url}/api/v1/map")
         assert status == 200
@@ -337,7 +338,9 @@ def test_esi_status_reports_disabled_session(tmp_path):
     try:
         status, payload = request_json(f"{server.url}/api/esi/status")
         assert status == 200
-        assert payload == {"enabled": False, "authenticated": False}
+        assert payload["enabled"] is False
+        assert payload["authenticated"] is False
+        assert payload["config"] == {}
 
         try:
             request_json(f"{server.url}/api/esi/session")
@@ -359,23 +362,31 @@ def test_esi_status_reports_public_resolver_without_session(tmp_path):
     server = IntelHTTPServer(
         IntelStore(tmp_path / "intel.json", resolver=FakeResolver()),
         port=0,
+        esi_config={
+            "client_id_configured": False,
+            "token_file": str(tmp_path / "esi_tokens.json"),
+            "token_file_present": False,
+            "token_storage": "plain",
+            "scopes": ["esi-location.read_location.v1"],
+        },
     )
     server.start()
     try:
         status, payload = request_json(f"{server.url}/api/v1/esi/status")
         assert status == 200
-        assert payload == {
-            "enabled": True,
-            "public": True,
-            "authenticated": False,
-            "session": False,
-        }
+        assert payload["enabled"] is True
+        assert payload["public"] is True
+        assert payload["authenticated"] is False
+        assert payload["session"] is False
+        assert payload["config"]["client_id_configured"] is False
+        assert payload["config"]["token_file_present"] is False
 
         status, health = request_json(f"{server.url}/api/health")
         assert status == 200
         assert health["health"]["esi"]["enabled"] is True
         assert health["health"]["esi"]["public"] is True
         assert health["health"]["esi"]["authenticated"] is False
+        assert health["health"]["esi"]["config"]["token_storage"] == "plain"
     finally:
         server.stop()
 
@@ -427,6 +438,13 @@ def test_esi_session_routes_expose_status_and_snapshot(tmp_path):
         IntelStore(tmp_path / "intel.json", resolver=FakeResolver()),
         port=0,
         esi_session=session,
+        esi_config={
+            "client_id_configured": True,
+            "token_file": str(tmp_path / "esi_tokens.json"),
+            "token_file_present": True,
+            "token_storage": "plain",
+            "scopes": ["esi-location.read_location.v1"],
+        },
     )
     server.start()
     try:
@@ -435,6 +453,9 @@ def test_esi_session_routes_expose_status_and_snapshot(tmp_path):
         assert status_payload["enabled"] is True
         assert status_payload["authenticated"] is True
         assert status_payload["character_id"] == 123
+        assert status_payload["config"]["client_id_configured"] is True
+        assert status_payload["config"]["token_file_present"] is True
+        assert "client_id" not in status_payload["config"]
         assert "access_token" not in status_payload
         assert "refresh_token" not in status_payload
         assert session.load_calls == [False]
@@ -475,12 +496,18 @@ def test_esi_session_snapshot_reports_missing_token(tmp_path):
         IntelStore(tmp_path / "intel.json"),
         port=0,
         esi_session=MissingTokenSession(),
+        esi_config={
+            "client_id_configured": True,
+            "token_file": str(tmp_path / "missing_esi_tokens.json"),
+            "token_file_present": False,
+        },
     )
     server.start()
     try:
         status, payload = request_json(f"{server.url}/api/esi/status")
         assert status == 200
         assert payload["authenticated"] is False
+        assert payload["config"]["token_file_present"] is False
         assert "no saved ESI token" in payload["error"]
 
         try:

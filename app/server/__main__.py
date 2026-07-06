@@ -3,6 +3,7 @@
 import argparse
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 from app.server.http_server import IntelHTTPServer
@@ -140,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         config_store=config_store,
         esi_session=esi_session,
+        esi_config=_build_esi_config(args),
         map_config_store=map_config_store,
     )
     server.start()
@@ -215,6 +217,19 @@ def _build_esi_session(args: argparse.Namespace) -> Any:
             storage=args.esi_token_storage,
         ),
     )
+
+
+def _build_esi_config(args: argparse.Namespace) -> dict[str, Any]:
+    token_file = str(args.esi_token_file or "").strip()
+    token_path = Path(token_file) if token_file else None
+    return {
+        "client_id_configured": bool(str(args.esi_client_id or "").strip()),
+        "redirect_uri": str(args.esi_redirect_uri or "").strip(),
+        "token_file": token_file,
+        "token_file_present": bool(token_path and token_path.exists()),
+        "token_storage": str(args.esi_token_storage or "").strip(),
+        "scopes": list(args.esi_scopes or []),
+    }
 
 
 def _run_esi_login(args: argparse.Namespace) -> Any:
