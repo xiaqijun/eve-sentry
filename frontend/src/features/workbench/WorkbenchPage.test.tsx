@@ -142,36 +142,15 @@ describe("WorkbenchPage", () => {
     expect(container).toHaveTextContent("预警情报工作台");
     expect(container).toHaveTextContent("敌对飞行员观察列表");
 
-    const mapButton = Array.from(container.querySelectorAll(".nav-panel button")).find(
-      (button) => button.textContent?.includes("星图"),
-    );
-    expect(mapButton).toBeInTheDocument();
-    await act(async () => {
-      (mapButton as HTMLButtonElement).click();
-    });
-    expect(mapButton).toHaveClass("active");
-
-    const viewModeButton = container.querySelector(
-      '[aria-label="切换视图模式"]',
-    ) as HTMLButtonElement;
-    expect(viewModeButton).toHaveTextContent("安全态势");
-    await act(async () => {
-      viewModeButton.click();
-    });
-    expect(viewModeButton).toHaveTextContent("敌对活动");
-
-    const listButton = container.querySelector(
-      '[aria-label="列表视图"]',
-    ) as HTMLButtonElement;
-    await act(async () => {
-      listButton.click();
-    });
-    expect(listButton).toHaveClass("active");
-    expect(
-      Array.from(container.querySelectorAll(".nav-panel button")).find((button) =>
-        button.textContent?.includes("观察列表"),
-      ),
-    ).toHaveClass("active");
+    expect(container.querySelector(".nav-panel")).not.toBeInTheDocument();
+    expect(container.querySelector(".quick-icons")).not.toBeInTheDocument();
+    expect(container.querySelector('[aria-label="切换区域"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[aria-label="切换视图模式"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[aria-label="切换视图"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[aria-label="列表视图"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[aria-label="设置"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[aria-label="情报过滤"]')).toBeInTheDocument();
+    expect(container.querySelector('[aria-label="Fit 星图"]')).toBeInTheDocument();
 
     expect(apiMocks.connectAlerts).toHaveBeenCalledTimes(1);
     await act(async () => {

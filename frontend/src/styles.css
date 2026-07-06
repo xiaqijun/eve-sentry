@@ -64,7 +64,6 @@ button {
 
 .brand-panel,
 .threat-status-panel,
-.nav-panel,
 .sector-panel,
 .panel,
 .map-pane,
@@ -103,8 +102,7 @@ button {
 .brand-panel span,
 .status-row span,
 .sector-stat span,
-.toolbar-status span,
-.select-control span {
+.toolbar-status span {
   color: #93a7b3;
   font-size: 12px;
 }
@@ -140,38 +138,6 @@ button {
   color: #ff4439 !important;
 }
 
-.nav-panel {
-  display: grid;
-  gap: 1px;
-  overflow: hidden;
-  padding: 0;
-}
-
-.nav-panel button {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  height: 48px;
-  padding: 0 18px;
-  border: 0;
-  color: #b8c8d2;
-  background: transparent;
-}
-
-.nav-panel button svg {
-  color: #a2b9c7;
-}
-
-.nav-panel button.active {
-  color: #ecfbff;
-  background:
-    linear-gradient(90deg, rgba(20, 162, 211, 0.42), rgba(8, 35, 48, 0.54));
-  box-shadow: inset 3px 0 0 #23c9ff;
-}
-
-.nav-panel button:hover,
-.select-control:hover,
-.icon-button:hover,
 .map-tools button:hover {
   border-color: rgba(84, 219, 255, 0.82);
   color: #f2fcff;
@@ -227,7 +193,7 @@ button {
 
 .map-toolbar {
   display: grid;
-  grid-template-columns: 170px 210px 170px minmax(180px, 1fr) 42px 42px;
+  grid-template-columns: 160px 190px 140px minmax(220px, 1fr);
   gap: 10px;
   align-items: center;
   padding: 10px 12px;
@@ -235,7 +201,7 @@ button {
   background: rgba(3, 12, 18, 0.82);
 }
 
-.select-control,
+.toolbar-status,
 .search-control {
   display: flex;
   align-items: center;
@@ -249,7 +215,7 @@ button {
   background: rgba(3, 13, 20, 0.86);
 }
 
-.select-control strong {
+.toolbar-status strong {
   overflow: hidden;
   font-size: 13px;
   text-overflow: ellipsis;
@@ -265,9 +231,7 @@ button {
   background: transparent;
 }
 
-.icon-button,
-.map-tools button,
-.quick-icons button {
+.map-tools button {
   display: grid;
   place-items: center;
   border: 1px solid rgba(46, 89, 108, 0.86);
@@ -276,12 +240,6 @@ button {
   background: rgba(5, 19, 27, 0.88);
 }
 
-.icon-button {
-  width: 36px;
-  height: 36px;
-}
-
-.icon-button.active,
 .map-tools button.active {
   border-color: rgba(47, 207, 255, 0.75);
   color: #e6fbff;
@@ -581,20 +539,10 @@ button {
 .bottom-bar {
   grid-column: 2 / 4;
   display: grid;
-  grid-template-columns: auto 170px minmax(0, 1fr) 92px 92px;
+  grid-template-columns: 170px minmax(0, 1fr) 92px 92px;
   align-items: center;
   gap: 18px;
   padding: 12px 16px;
-}
-
-.quick-icons {
-  display: flex;
-  gap: 8px;
-}
-
-.quick-icons button {
-  width: 34px;
-  height: 34px;
 }
 
 .bottom-bar span {

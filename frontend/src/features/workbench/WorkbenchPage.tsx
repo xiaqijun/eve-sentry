@@ -2,19 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
-  Bell,
   ChevronDown,
-  ClipboardList,
   Database,
   Filter,
-  Gauge,
-  Home,
-  Map,
-  Radio,
-  Settings,
-  ShipWheel,
   Skull,
-  type LucideIcon,
 } from "lucide-react";
 
 import { connectAlerts, fetchBootstrap } from "./api";
@@ -31,20 +22,6 @@ import type {
   PilotObservation,
 } from "./types";
 import { summarizeWorkbench } from "./workbenchSummary";
-
-const navItems: Array<[string, LucideIcon]> = [
-  ["仪表盘", Home],
-  ["星图", Map],
-  ["观察列表", ClipboardList],
-  ["情报订阅", Radio],
-  ["舰队追踪", ShipWheel],
-  ["告警中心", Bell],
-  ["威胁分析", Gauge],
-  ["设置", Settings],
-];
-
-const viewModes = ["安全态势", "敌对活动", "击毁热度"] as const;
-const mapViews = ["星图", "监控", "告警"] as const;
 
 function formatTime(value?: string): string {
   if (!value) {
@@ -134,10 +111,7 @@ function latestEventText(
 }
 
 export function WorkbenchPage() {
-  const [activeNav, setActiveNav] = useState("仪表盘");
   const [fitSignal, setFitSignal] = useState(0);
-  const [viewMode, setViewMode] = useState<(typeof viewModes)[number]>("安全态势");
-  const [mapView, setMapView] = useState<(typeof mapViews)[number]>("星图");
   const {
     filterText,
     selectedSystemId,
@@ -194,18 +168,6 @@ export function WorkbenchPage() {
   const activeSystemCount = bootstrap?.map.systems.filter((item) =>
     Number(item.hostile_count || 0) > 0 || Number(item.report_count || 0) > 0,
   ).length ?? 0;
-  const cycleViewMode = () => {
-    setViewMode((current) => {
-      const index = viewModes.indexOf(current);
-      return viewModes[(index + 1) % viewModes.length];
-    });
-  };
-  const cycleMapView = () => {
-    setMapView((current) => {
-      const index = mapViews.indexOf(current);
-      return mapViews[(index + 1) % mapViews.length];
-    });
-  };
 
   return (
     <main className="workbench-shell">
@@ -228,26 +190,6 @@ export function WorkbenchPage() {
             <strong>{activeSystemCount}</strong>
           </div>
         </section>
-
-        <nav className="nav-panel" aria-label="工作台导航">
-          {navItems.map(([label, Icon]) => (
-            <button
-              aria-pressed={activeNav === label}
-              className={activeNav === label ? "active" : ""}
-              key={label}
-              onClick={() => {
-                setActiveNav(label);
-                if (label === "星图") {
-                  setFitSignal((value) => value + 1);
-                }
-              }}
-              type="button"
-            >
-              <Icon size={18} />
-              <span>{label}</span>
-            </button>
-          ))}
-        </nav>
 
         <section className="sector-panel">
           <div className="section-title section-title-row">
@@ -276,36 +218,18 @@ export function WorkbenchPage() {
       <section className="center-stack" aria-label="星图工作区">
         <section className="map-pane">
           <header className="map-toolbar">
-            <button
-              className="select-control"
-              type="button"
-              aria-label="切换区域"
-              onClick={() => setFitSignal((value) => value + 1)}
-            >
+            <div className="toolbar-status">
               <span>区域：</span>
               <strong>Tenal</strong>
-              <ChevronDown size={15} />
-            </button>
-            <button
-              className="select-control"
-              type="button"
-              aria-label="切换视图模式"
-              onClick={cycleViewMode}
-            >
+            </div>
+            <div className="toolbar-status">
               <span>视图模式：</span>
-              <strong>{viewMode}</strong>
-              <ChevronDown size={15} />
-            </button>
-            <button
-              className="select-control"
-              type="button"
-              aria-label="切换视图"
-              onClick={cycleMapView}
-            >
+              <strong>实时态势</strong>
+            </div>
+            <div className="toolbar-status">
               <span>视图：</span>
-              <strong>{mapView}</strong>
-              <ChevronDown size={15} />
-            </button>
+              <strong>星图</strong>
+            </div>
             <label className="search-control">
               <Filter size={15} />
               <input
@@ -315,24 +239,6 @@ export function WorkbenchPage() {
                 placeholder="过滤：敌对活动"
               />
             </label>
-            <button
-              aria-pressed={activeNav === "观察列表"}
-              className={`icon-button ${activeNav === "观察列表" ? "active" : ""}`}
-              onClick={() => setActiveNav("观察列表")}
-              type="button"
-              aria-label="列表视图"
-            >
-              <ClipboardList size={17} />
-            </button>
-            <button
-              aria-pressed={activeNav === "设置"}
-              className={`icon-button ${activeNav === "设置" ? "active" : ""}`}
-              onClick={() => setActiveNav("设置")}
-              type="button"
-              aria-label="设置"
-            >
-              <Settings size={17} />
-            </button>
           </header>
 
           <div className="map-canvas">
@@ -361,17 +267,10 @@ export function WorkbenchPage() {
               >
                 Fit
               </button>
-              <button
-                className={mapView === "星图" ? "active" : ""}
-                type="button"
-                onClick={() => setMapView("星图")}
-              >
-                2D
-              </button>
+              <span>2D</span>
             </div>
           </div>
         </section>
-
       </section>
 
       <aside className="right-rail" aria-label="情报详情">
@@ -411,11 +310,6 @@ export function WorkbenchPage() {
       </aside>
 
       <footer className="bottom-bar" aria-label="最新事件">
-        <div className="quick-icons">
-          <button type="button"><Radio size={16} /></button>
-          <button type="button"><Bell size={16} /></button>
-          <button type="button"><Database size={16} /></button>
-        </div>
         <span>数据状态：<strong className="online-dot">在线</strong></span>
         <div className="latest-event">
           <AlertTriangle size={17} />
