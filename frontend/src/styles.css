@@ -290,6 +290,12 @@ button {
   line-height: 1.35;
 }
 
+.esi-login-note {
+  color: #8eddf6;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .map-canvas {
   position: relative;
   height: 100%;

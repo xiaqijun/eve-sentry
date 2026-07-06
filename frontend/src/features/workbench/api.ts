@@ -76,6 +76,11 @@ export async function startEsiLogin(): Promise<EsiLoginPayload> {
   return payload.login;
 }
 
+export async function fetchEsiLoginStatus(): Promise<EsiLoginPayload> {
+  const payload = await request<{ login: EsiLoginPayload }>("/api/v1/esi/login");
+  return payload.login;
+}
+
 export function connectAlerts(
   onAlert: (alert: AlertItem) => void,
   since?: string,

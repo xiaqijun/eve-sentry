@@ -9,7 +9,12 @@ import {
   Skull,
 } from "lucide-react";
 
-import { connectAlerts, fetchBootstrap, startEsiLogin } from "./api";
+import {
+  connectAlerts,
+  fetchBootstrap,
+  fetchEsiLoginStatus,
+  startEsiLogin,
+} from "./api";
 import { buildPilotObservations } from "./observations";
 import { ObservationTable } from "./ObservationTable";
 import { useWorkbenchStore } from "./store";
@@ -147,6 +152,8 @@ function latestEventSummary(
 export function WorkbenchPage() {
   const [fitSignal, setFitSignal] = useState(0);
   const [esiLoginStarting, setEsiLoginStarting] = useState(false);
+  const [esiLoginPending, setEsiLoginPending] = useState(false);
+  const [esiLoginStatus, setEsiLoginStatus] = useState("");
   const [esiLoginError, setEsiLoginError] = useState("");
   const {
     filterText,
@@ -202,6 +209,8 @@ export function WorkbenchPage() {
 
   const handleEsiLogin = useCallback(async () => {
     setEsiLoginStarting(true);
+    setEsiLoginPending(false);
+    setEsiLoginStatus("");
     setEsiLoginError("");
     const loginWindow = window.open("", "_blank");
     if (loginWindow) {
@@ -219,6 +228,8 @@ export function WorkbenchPage() {
       } else {
         window.open(authorizationUrl, "_blank", "noopener,noreferrer");
       }
+      setEsiLoginStatus(login.status || "pending");
+      setEsiLoginPending((login.status || "pending") === "pending");
       void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
     } catch (error) {
       loginWindow?.close();
@@ -229,6 +240,51 @@ export function WorkbenchPage() {
       setEsiLoginStarting(false);
     }
   }, [queryClient]);
+
+  useEffect(() => {
+    if (!esiLoginPending) {
+      return undefined;
+    }
+    if (bootstrap?.esi.authenticated) {
+      setEsiLoginPending(false);
+      setEsiLoginStatus("authenticated");
+      return undefined;
+    }
+
+    let cancelled = false;
+    const refreshLoginStatus = async () => {
+      try {
+        const login = await fetchEsiLoginStatus();
+        if (cancelled) {
+          return;
+        }
+        const status = login.status || "idle";
+        setEsiLoginStatus(status);
+        void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+        if (status === "authenticated") {
+          setEsiLoginPending(false);
+          return;
+        }
+        if (status === "error") {
+          setEsiLoginPending(false);
+          setEsiLoginError(login.error || "ESI 授权未完成");
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setEsiLoginError(
+            error instanceof Error ? error.message : "ESI 登录状态刷新失败",
+          );
+        }
+      }
+    };
+
+    void refreshLoginStatus();
+    const timer = window.setInterval(refreshLoginStatus, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [bootstrap?.esi.authenticated, esiLoginPending, queryClient]);
 
   const highRiskCount = observations.filter((item) =>
     item.level === "critical" || item.level === "high",
@@ -318,13 +374,22 @@ export function WorkbenchPage() {
           <div className="esi-actions">
             <button
               className="esi-login-button"
-              disabled={!canStartEsiLogin || esiLoginStarting}
+              disabled={!canStartEsiLogin || esiLoginStarting || esiLoginPending}
               type="button"
               onClick={handleEsiLogin}
             >
               <LogIn size={14} />
-              {bootstrap?.esi.authenticated ? "重新登录" : "登录 ESI"}
+              {esiLoginPending
+                ? "等待授权"
+                : bootstrap?.esi.authenticated
+                  ? "重新登录"
+                  : "登录 ESI"}
             </button>
+            {esiLoginPending ? (
+              <span className="esi-login-note">
+                {esiLoginStatus === "pending" ? "等待 EVE 授权回调" : "正在检查授权状态"}
+              </span>
+            ) : null}
             {esiLoginError ? (
               <span className="esi-login-error" role="alert">
                 {esiLoginError}

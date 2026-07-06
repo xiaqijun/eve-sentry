@@ -629,6 +629,16 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_V1_PREFIX}/esi/status":
             self._send_json(self._esi_status_payload())
             return
+        if path == f"{API_V1_PREFIX}/esi/login":
+            esi_login = self._esi_login()
+            if esi_login is None or not hasattr(esi_login, "snapshot"):
+                self._send_json(
+                    {"error": "ESI login not configured"},
+                    HTTPStatus.NOT_FOUND,
+                )
+                return
+            self._send_json({"login": esi_login.snapshot()})
+            return
         if path == f"{API_V1_PREFIX}/esi/session":
             query = parse_qs(parsed.query)
             try:

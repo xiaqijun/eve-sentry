@@ -424,6 +424,17 @@ def test_v1_esi_login_route_starts_configured_flow(tmp_path):
                 "error": "",
             }
 
+        def snapshot(self):
+            return {
+                "status": "pending",
+                "authorization_url": "https://login.test/authorize",
+                "started_at": 1000,
+                "expires_at": 1300,
+                "timeout_seconds": 300,
+                "character_id": None,
+                "error": "",
+            }
+
     login = FakeLogin()
     server = IntelHTTPServer(
         IntelStore(tmp_path / "intel.json"),
@@ -441,6 +452,11 @@ def test_v1_esi_login_route_starts_configured_flow(tmp_path):
         assert payload["login"]["status"] == "pending"
         assert payload["login"]["authorization_url"] == "https://login.test/authorize"
         assert login.calls == 1
+
+        status, snapshot = request_json(f"{server.url}/api/v1/esi/login")
+        assert status == 200
+        assert snapshot["login"]["status"] == "pending"
+        assert snapshot["login"]["authorization_url"] == "https://login.test/authorize"
     finally:
         server.stop()
 

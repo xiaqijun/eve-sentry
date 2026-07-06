@@ -91,6 +91,10 @@ const apiMocks = vi.hoisted(() => {
       return { close };
     }),
     fetchBootstrap: vi.fn(async () => bootstrap),
+    fetchEsiLoginStatus: vi.fn(async () => ({
+      status: "pending",
+      authorization_url: "https://login.test/authorize",
+    })),
     startEsiLogin: vi.fn(async () => ({
       status: "pending",
       authorization_url: "https://login.test/authorize",
@@ -116,6 +120,7 @@ vi.mock("react-force-graph-2d", () => ({
 vi.mock("./api", () => ({
   connectAlerts: apiMocks.connectAlerts,
   fetchBootstrap: apiMocks.fetchBootstrap,
+  fetchEsiLoginStatus: apiMocks.fetchEsiLoginStatus,
   startEsiLogin: apiMocks.startEsiLogin,
 }));
 
@@ -124,6 +129,10 @@ describe("WorkbenchPage", () => {
     vi.clearAllMocks();
     apiMocks.onAlert = undefined;
     apiMocks.fetchBootstrap.mockImplementation(async () => bootstrap);
+    apiMocks.fetchEsiLoginStatus.mockImplementation(async () => ({
+      status: "pending",
+      authorization_url: "https://login.test/authorize",
+    }));
     apiMocks.startEsiLogin.mockImplementation(async () => ({
       status: "pending",
       authorization_url: "https://login.test/authorize",
@@ -257,6 +266,9 @@ describe("WorkbenchPage", () => {
     expect(apiMocks.startEsiLogin).toHaveBeenCalledTimes(1);
     expect(openSpy).toHaveBeenCalledWith("", "_blank");
     expect(fakeWindow.location.href).toBe("https://login.test/authorize");
+    expect(button).toHaveTextContent("等待授权");
+    expect(container).toHaveTextContent("等待 EVE 授权回调");
+    expect(apiMocks.fetchEsiLoginStatus).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       root.unmount();

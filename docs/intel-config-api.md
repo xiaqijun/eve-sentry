@@ -96,7 +96,7 @@ server currently includes:
   `/api/intel/corporation/{corporation_id}`, and `/api/intel/alliance/{alliance_id}`
   for entity-centered observations, alerts, activity, counts, and filters.
 - `GET /api/v1/esi/status`, `GET /api/v1/esi/session`, and
-  `POST /api/v1/esi/login` for authenticated ESI state and browser-started SSO.
+  `GET/POST /api/v1/esi/login` for authenticated ESI state and browser-started SSO.
 - `GET /api/v1/kill-activity/...` for character, system, corporation, and alliance activity.
 
 ## Runtime Data

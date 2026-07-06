@@ -610,6 +610,7 @@ GET  /api/v1/characters/{character_id}
 GET  /api/v1/characters/by-name/{name}
 
 GET  /api/v1/esi/status
+GET  /api/v1/esi/login
 POST /api/v1/esi/login
 GET  /api/v1/esi/session?location=&contacts=
 
@@ -660,6 +661,8 @@ GET  /api/map/snapshot
 - `GET /api/v1/characters/by-name/{name}`: 需要启用 ESI，先解析名字再返回角色公开资料。
 - `GET /api/v1/esi/status`: 返回 authenticated ESI 会话是否启用、是否已有本地 token、
   角色 ID、scope 和过期状态，不返回 access token 或 refresh token。
+- `GET /api/v1/esi/login`: 返回当前浏览器 SSO 登录 flow 状态，用于前端在 pending
+  时轮询授权结果。
 - `POST /api/v1/esi/login`: 在已配置 ESI Client ID 时启动一次浏览器 SSO 登录，
   返回授权 URL 和 pending 状态；callback 成功后服务端保存 token，不向前端返回
   token 内容。
