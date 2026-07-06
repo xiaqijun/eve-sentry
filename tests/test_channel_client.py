@@ -8,6 +8,7 @@ from app.channel_client import (
     run_channel_client,
 )
 from app.channels.log_watcher import ChatLogWatcher
+from app.intel_client import IntelApiError
 
 
 class FakeApi:
@@ -34,6 +35,32 @@ class FakeRawApi:
         }
 
 
+class FailingOnceApi:
+    def __init__(self):
+        self.calls = 0
+        self.observations = []
+
+    def post_observation(self, **payload):
+        self.calls += 1
+        if self.calls == 1:
+            raise IntelApiError("server offline")
+        self.observations.append(payload)
+        return {"ok": True}
+
+
+class FailingOnceRawApi:
+    def __init__(self):
+        self.calls = 0
+        self.lines = []
+
+    def post_channel_line(self, line, channel=""):
+        self.calls += 1
+        if self.calls == 1:
+            raise IntelApiError("server offline")
+        self.lines.append((line, channel))
+        return {"ok": True, "ignored": False}
+
+
 def test_process_once_posts_parsed_observations_and_respects_offsets(tmp_path):
     log_dir = tmp_path / "Chatlogs"
     log_dir.mkdir()
@@ -51,7 +78,7 @@ def test_process_once_posts_parsed_observations_and_respects_offsets(tmp_path):
     )
     watcher = ChatLogWatcher(
         log_dir,
-        channels=["Alliance"],
+        channels=["Alliance Intel"],
         state_path=tmp_path / "s.json",
     )
     api = FakeApi()
@@ -63,6 +90,34 @@ def test_process_once_posts_parsed_observations_and_respects_offsets(tmp_path):
     assert api.observations[0]["metadata"]["hostile_count"] == 3
     assert api.observations[0]["metadata"]["sender"] == "Scout A"
     assert api.observations[1]["names"] == ["Some Pilot"]
+
+
+def test_process_once_retries_observation_when_post_fails(tmp_path):
+    log_dir = tmp_path / "Chatlogs"
+    log_dir.mkdir()
+    path = log_dir / "Alliance Intel_20260630_120000.txt"
+    path.write_text(
+        "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds\n",
+        encoding="utf-8",
+    )
+    state_path = tmp_path / "s.json"
+    watcher = ChatLogWatcher(
+        log_dir,
+        channels=["Alliance Intel"],
+        state_path=state_path,
+    )
+    api = FailingOnceApi()
+
+    assert process_once(watcher, api) == 0
+
+    restarted = ChatLogWatcher(
+        log_dir,
+        channels=["Alliance Intel"],
+        state_path=state_path,
+    )
+
+    assert process_once(restarted, api) == 1
+    assert api.observations[0]["system_name"] == "Tama"
 
 
 def test_process_once_can_delegate_raw_lines_to_server_parser(tmp_path):
@@ -82,7 +137,7 @@ def test_process_once_can_delegate_raw_lines_to_server_parser(tmp_path):
     )
     watcher = ChatLogWatcher(
         log_dir,
-        channels=["Alliance"],
+        channels=["Alliance Intel"],
         state_path=tmp_path / "s.json",
     )
     api = FakeRawApi()
@@ -92,6 +147,35 @@ def test_process_once_can_delegate_raw_lines_to_server_parser(tmp_path):
     assert [item[1] for item in api.lines] == ["Alliance Intel"] * 3
     assert api.lines[0][0] == "Listener: ignored header"
     assert api.lines[1][0].endswith("Tama +3 reds")
+
+
+def test_process_once_retries_server_parse_line_when_post_fails(tmp_path):
+    log_dir = tmp_path / "Chatlogs"
+    log_dir.mkdir()
+    path = log_dir / "Alliance Intel_20260630_120000.txt"
+    path.write_text(
+        "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds\n",
+        encoding="utf-8",
+    )
+    state_path = tmp_path / "s.json"
+    watcher = ChatLogWatcher(
+        log_dir,
+        channels=["Alliance Intel"],
+        state_path=state_path,
+    )
+    api = FailingOnceRawApi()
+
+    assert process_once(watcher, api, server_parse=True) == 0
+
+    restarted = ChatLogWatcher(
+        log_dir,
+        channels=["Alliance Intel"],
+        state_path=state_path,
+    )
+
+    assert process_once(restarted, api, server_parse=True) == 1
+    assert api.lines[0][1] == "Alliance Intel"
+    assert api.lines[0][0].endswith("Tama +3 reds")
 
 
 def test_process_once_dry_run_prints_json_without_api(tmp_path):

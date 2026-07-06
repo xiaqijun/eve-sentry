@@ -650,11 +650,20 @@ class MainWindow(QMainWindow):
             channels=self._channel_names,
             state_path=self._channel_state_path,
         )
+        matched_files = self._channel_watcher.discover_files()
         self._channel_watcher.seed_to_end()
         self._channel_timer.setInterval(5000)
         self._channel_timer.start()
         joined = ", ".join(self._channel_names)
-        self._log_message(f"Channel log monitor started: {joined}")
+        if matched_files:
+            self._log_message(
+                f"Channel log monitor started: {joined} ({len(matched_files)} files)"
+            )
+        else:
+            self._log_message(
+                "Channel log monitor started with no matching files yet: "
+                f"{joined}. Use full channel names or explicit * / ? wildcards."
+            )
         self._refresh_status_cards()
         return True
 

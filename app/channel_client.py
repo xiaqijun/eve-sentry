@@ -170,9 +170,10 @@ def process_once(
                 if diagnostics is not None:
                     diagnostics["last_action"] = "server_parse_error"
                     diagnostics["last_error"] = summarize_heartbeat_error(str(exc))
-                continue
+                break
             if not result.get("ignored"):
                 processed += 1
+            watcher.commit_line(line)
             if diagnostics is not None:
                 diagnostics["last_action"] = (
                     f"server_parse:{processed}" if processed else "server_parse_idle"
@@ -183,11 +184,13 @@ def process_once(
 
         parsed = parse_chat_line(line.text, channel=line.channel)
         if parsed is None:
+            watcher.commit_line(line)
             continue
         payload = parsed.to_observation_payload()
         if dry_run:
             emit_observation(payload, json_lines=json_lines, stream=stream)
             processed += 1
+            watcher.commit_line(line)
             if diagnostics is not None:
                 diagnostics["last_action"] = f"dry_run:{processed}"
                 diagnostics["last_error"] = ""
@@ -202,8 +205,9 @@ def process_once(
             if diagnostics is not None:
                 diagnostics["last_action"] = "observation_error"
                 diagnostics["last_error"] = summarize_heartbeat_error(str(exc))
-            continue
+            break
         processed += 1
+        watcher.commit_line(line)
         if diagnostics is not None:
             diagnostics["last_action"] = f"observation:{processed}"
             diagnostics["last_error"] = ""
@@ -280,7 +284,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--channel",
         action="append",
         default=[],
-        help="channel name filter; can be specified multiple times",
+        help="exact channel name; use * or ? for explicit wildcards; can be specified multiple times",
     )
     parser.add_argument("--state", default="channel_offsets.json")
     parser.add_argument("--interval", type=float, default=2.0)

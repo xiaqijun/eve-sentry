@@ -84,7 +84,7 @@ class SettingsPanel(QWidget):
 
         channel_layout.addWidget(QLabel("预警频道名"))
         self._channel_edit = QLineEdit(os.environ.get("EVE_SENTRY_CHANNEL", ""))
-        self._channel_edit.setPlaceholderText("例如: wc.Venal+Br+Te, intel")
+        self._channel_edit.setPlaceholderText("完整频道名或通配符，例如: wc.Venal+Br+Te, *Intel")
         channel_layout.addWidget(self._channel_edit)
 
         channel_layout.addWidget(QLabel("EVE Chatlogs 目录"))
