@@ -102,10 +102,6 @@ vi.mock("react-force-graph-2d", () => ({
   ),
 }));
 
-vi.mock("echarts-for-react", () => ({
-  default: () => <div data-testid="echarts-gauge" />,
-}));
-
 vi.mock("./api", () => ({
   connectAlerts: apiMocks.connectAlerts,
   fetchBootstrap: apiMocks.fetchBootstrap,
@@ -134,8 +130,11 @@ describe("WorkbenchPage", () => {
 
     expect(container.querySelector('[data-testid="tactical-star-map"]')).toBeInTheDocument();
     expect(container.querySelector('[data-testid="force-graph"]')).toBeInTheDocument();
-    expect(container.querySelector('[data-testid="threat-gauge"]')).toBeInTheDocument();
-    expect(container.querySelector('[data-testid="echarts-gauge"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-testid="threat-gauge"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-testid="echarts-gauge"]')).not.toBeInTheDocument();
+    expect(container).not.toHaveTextContent("当前威胁评分");
+    expect(container).not.toHaveTextContent("威胁评分");
+    expect(container).not.toHaveTextContent("ISK 损失风险");
     expect(container.querySelector('[data-testid="observation-table"]')).toBeInTheDocument();
     expect(container).toHaveTextContent("Pilot One");
     expect(container).toHaveTextContent("预警频道");

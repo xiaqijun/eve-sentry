@@ -58,7 +58,7 @@ button {
 
 .center-stack {
   display: grid;
-  grid-template-rows: minmax(520px, 1fr) 250px;
+  grid-template-rows: minmax(0, 1fr) 156px;
   gap: 10px;
   height: 100%;
 }
@@ -411,13 +411,13 @@ button {
 
 .lower-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.85fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   min-height: 0;
 }
 
 .right-rail {
-  grid-template-rows: minmax(220px, 0.92fr) 210px minmax(190px, 0.9fr);
+  grid-template-rows: minmax(360px, 1.2fr) minmax(220px, 0.8fr);
 }
 
 .intel-table {
@@ -429,7 +429,7 @@ button {
 .observation-table {
   display: grid;
   gap: 10px;
-  max-height: calc(100vh - 500px);
+  max-height: calc(100vh - 360px);
   overflow: auto;
 }
 

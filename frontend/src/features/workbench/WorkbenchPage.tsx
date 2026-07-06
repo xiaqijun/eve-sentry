@@ -23,7 +23,6 @@ import { ObservationTable } from "./ObservationTable";
 import { useWorkbenchStore } from "./store";
 import { buildTacticalGraph } from "./tacticalGraph";
 import { TacticalStarMap } from "./TacticalStarMap";
-import { ThreatGauge } from "./ThreatGauge";
 import type {
   AlertItem,
   BootstrapPayload,
@@ -114,10 +113,6 @@ function matchesObservationFilter(
   return haystack.includes(query);
 }
 
-function observationScore(item: PilotObservation): number {
-  return typeof item.score === "number" ? item.score : 0;
-}
-
 function latestEventText(
   alerts: AlertItem[],
   observations: PilotObservation[],
@@ -186,10 +181,6 @@ export function WorkbenchPage() {
     };
   }, [bootstrapQuery.isSuccess, queryClient]);
 
-  const maxThreatScore = observations.reduce(
-    (max, item) => Math.max(max, observationScore(item)),
-    0,
-  );
   const highRiskCount = observations.filter((item) =>
     item.level === "critical" || item.level === "high",
   ).length;
@@ -213,10 +204,6 @@ export function WorkbenchPage() {
           <div className="status-row">
             <span>安全等级状态</span>
             <strong>{highRiskCount > 0 ? "警戒" : "平稳"}</strong>
-          </div>
-          <div className="status-row">
-            <span>当前威胁评分</span>
-            <strong className="danger-text">{maxThreatScore}</strong>
           </div>
           <div className="status-row">
             <span>活跃星系</span>
@@ -341,19 +328,6 @@ export function WorkbenchPage() {
               {observations.length === 0 ? <div className="table-empty">暂无观察记录</div> : null}
             </div>
           </article>
-          <article className="panel score-panel">
-            <div className="section-title">
-              <Gauge size={16} />
-              <span>威胁评分</span>
-            </div>
-            <ThreatGauge
-              alerts={summary?.alerts ?? 0}
-              hostiles={summary?.hostiles ?? 0}
-              observations={observations.length}
-              score={maxThreatScore}
-              title="评分"
-            />
-          </article>
         </section>
       </section>
 
@@ -367,20 +341,6 @@ export function WorkbenchPage() {
             <strong>{observations.length}</strong>
           </div>
           <ObservationTable observations={observations} />
-        </section>
-
-        <section className="panel risk-panel">
-          <div className="section-title">
-            <Gauge size={16} />
-            <span>ISK 损失风险</span>
-          </div>
-          <ThreatGauge
-            alerts={summary?.alerts ?? 0}
-            hostiles={summary?.hostiles ?? 0}
-            observations={observations.length}
-            score={maxThreatScore}
-            title="风险"
-          />
         </section>
 
         <section className="panel alert-panel">
