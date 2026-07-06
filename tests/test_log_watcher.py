@@ -1,4 +1,9 @@
-from app.channels.log_watcher import ChatLogWatcher, channel_name_from_path, detect_encoding
+from app.channels.log_watcher import (
+    ChatLogWatcher,
+    OffsetStore,
+    channel_name_from_path,
+    detect_encoding,
+)
 
 
 def test_channel_name_strips_timestamp_suffix(tmp_path):
@@ -16,6 +21,31 @@ def test_channel_name_strips_eve_character_id_suffix(tmp_path):
 def test_detect_encoding_for_utf8_and_utf16():
     assert detect_encoding("hello".encode("utf-8")) == "utf-8-sig"
     assert detect_encoding("hello".encode("utf-16")) == "utf-16"
+
+
+def test_offset_store_saves_with_atomic_replace(tmp_path):
+    chatlog = tmp_path / "Alliance Intel_20260630_120000.txt"
+    chatlog.write_text("line\n", encoding="utf-8")
+    state = tmp_path / "offsets.json"
+    store = OffsetStore(state)
+
+    store.set(chatlog, 5)
+    store.save()
+
+    assert state.exists()
+    assert not (tmp_path / ".offsets.json.tmp").exists()
+    assert OffsetStore(state).get(chatlog) == 5
+
+
+def test_offset_store_backs_up_invalid_json(tmp_path):
+    state = tmp_path / "offsets.json"
+    state.write_text("{broken", encoding="utf-8")
+
+    store = OffsetStore(state)
+
+    assert store._offsets == {}
+    assert not state.exists()
+    assert (tmp_path / "offsets.json.invalid").read_text(encoding="utf-8") == "{broken"
 
 
 def test_watcher_reads_matching_files_and_persists_offsets(tmp_path):
