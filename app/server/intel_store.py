@@ -1261,11 +1261,22 @@ class IntelStore:
 
         reports = [report.to_dict() for report in report_items]
         observations = [report.to_observation().to_dict() for report in report_items]
+        active_source_ids = {
+            str(source_id)
+            for item in active_items
+            for source_id in item.get("source_observation_ids", [])
+            if source_id
+        }
         alerts = []
         for report in report_items:
             alert = self._alert_from_report(report)
             if alert is not None:
-                alerts.append(self._alert_to_dict(report, alert))
+                alert_data = self._alert_to_dict(report, alert)
+                source_id = str(
+                    alert_data.get("source_observation_id") or report.report_id
+                )
+                if source_id in active_source_ids:
+                    alerts.append(alert_data)
         system_intel = self._aggregate_active_by_system(active_items)
         character_intel = self._aggregate_by_character(reports)
 

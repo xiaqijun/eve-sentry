@@ -209,7 +209,7 @@ def test_v1_bootstrap_and_map_routes_expose_workbench_payload(tmp_path):
                 "names": ["Alice"],
                 "source": "intel_channel",
                 "raw_text": "Tama Alice",
-                "seen_at": "2026-06-29T12:00:00+00:00",
+                "seen_at": "2099-06-29T12:00:00+00:00",
             },
         )
         request_json(

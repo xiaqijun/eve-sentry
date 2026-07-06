@@ -82,14 +82,15 @@ def test_add_report_persists_and_snapshot_aggregates(tmp_path):
 
     assert snapshot["summary"]["report_count"] == 1
     assert snapshot["summary"]["observation_count"] == 1
-    assert snapshot["summary"]["alert_count"] == 1
+    assert snapshot["summary"]["alert_count"] == 0
     assert snapshot["summary"]["hostile_count"] == 2
     assert snapshot["systems"][0]["name"] == "Tama"
     assert snapshot["systems"][0]["hostiles"] == []
     assert snapshot["systems"][0]["hostile_count"] == 0
     assert snapshot["systems"][0]["report_count"] == 0
     assert snapshot["observations"][0]["system_name"] == "Tama"
-    assert snapshot["alerts"][0]["level"] == "low"
+    assert snapshot["alerts"] == []
+    assert reloaded.list_alerts()[0]["level"] == "low"
 
 
 def test_snapshot_map_uses_only_active_intel_for_system_hotness(tmp_path):
@@ -236,6 +237,44 @@ def test_channel_observation_creates_ttl_active_intel(tmp_path):
     assert active[0]["system_name"] == "S-KSWL"
     assert active[0]["expires_at"] == "2099-07-03T10:03:00+00:00"
     assert active[0]["source_observation_ids"] == [observation.observation_id]
+
+
+def test_snapshot_alerts_include_only_active_intel_sources(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    active_observation = store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "wc.Venal",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+            "raw_text": "Scout: S-KSWL Alice",
+            "metadata": {"hostile_count": 1, "sender": "Scout"},
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    expired_observation = store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "wc.Venal",
+            "system_name": "N5Y-4N",
+            "names": ["Bob"],
+            "raw_text": "Scout: N5Y-4N Bob",
+            "metadata": {"hostile_count": 1, "sender": "Scout"},
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+
+    snapshot = store.snapshot()
+    historical_alert_ids = {
+        item["source_observation_id"] for item in store.list_alerts()
+    }
+
+    assert [item["source_observation_id"] for item in snapshot["alerts"]] == [
+        active_observation.observation_id
+    ]
+    assert snapshot["summary"]["alert_count"] == 1
+    assert active_observation.observation_id in historical_alert_ids
+    assert expired_observation.observation_id in historical_alert_ids
 
 
 def test_channel_clear_deactivates_matching_system_state(tmp_path):
