@@ -41,17 +41,24 @@ class OffsetStore:
         self._offsets[str(file_path.resolve())] = max(0, int(offset))
 
     def save(self) -> None:
-        """Persist offsets to disk."""
+        """Persist offsets to disk with an atomic replace."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
+        temp_path = self.path.with_name(f".{self.path.name}.tmp")
+        temp_path.write_text(
             json.dumps(self._offsets, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        temp_path.replace(self.path)
 
     def _load(self) -> dict[str, int]:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except FileNotFoundError:
+            return {}
+        except json.JSONDecodeError:
+            self._backup_invalid_state()
+            return {}
+        except OSError:
             return {}
         if not isinstance(raw, dict):
             return {}
@@ -62,6 +69,13 @@ class OffsetStore:
             except (TypeError, ValueError):
                 continue
         return result
+
+    def _backup_invalid_state(self) -> None:
+        backup_path = self.path.with_name(f"{self.path.name}.invalid")
+        try:
+            self.path.replace(backup_path)
+        except OSError:
+            pass
 
 
 class ChatLogWatcher:
