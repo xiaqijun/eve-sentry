@@ -164,21 +164,41 @@ sudo systemctl reload nginx
 
 ## 6. authenticated ESI 登录
 
-先在服务器 shell 上做一次交互式登录，再重启服务:
+先确认环境文件里已经配置 authenticated ESI 的运行路径和 scopes:
+
+```bash
+EVE_SENTRY_SERVER_ESI_CLIENT_ID=YOUR_EVE_APP_CLIENT_ID
+EVE_SENTRY_SERVER_ESI_REDIRECT_URI=http://127.0.0.1:8766/callback
+EVE_SENTRY_SERVER_ESI_TOKEN_FILE=/var/lib/eve-sentry/esi_tokens.json
+EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain
+EVE_SENTRY_SERVER_ESI_SCOPES=esi-location.read_location.v1,esi-characters.read_contacts.v1
+```
+
+远端无浏览器环境推荐用 SSH 隧道完成 localhost 回调。先在本地终端打开隧道:
+
+```bash
+ssh -L 8766:127.0.0.1:8766 eve-sentry@YOUR_SERVER
+```
+
+再在服务器 shell 上做一次登录并保存 token:
 
 ```bash
 cd /opt/eve-sentry
-sudo -u eve-sentry .venv-server/bin/python scripts/run_server.py --esi-login-only
-sudo systemctl restart eve-sentry
+sudo -u eve-sentry env $(grep -v '^#' /etc/eve-sentry/eve-sentry.env | xargs) \
+  .venv-server/bin/python scripts/run_server.py --esi-login-only --esi-no-browser
 ```
 
-它会复用 `/etc/eve-sentry/eve-sentry.env` 里的这些配置:
+终端会打印授权 URL。在本地浏览器打开该 URL，EVE SSO 会回调到
+`http://127.0.0.1:8766/callback`，再通过 SSH 隧道转发到服务器上的登录进程。
+成功后重启服务:
 
-- `EVE_SENTRY_SERVER_ESI_CLIENT_ID`
-- `EVE_SENTRY_SERVER_ESI_REDIRECT_URI`
-- `EVE_SENTRY_SERVER_ESI_TOKEN_FILE`
+```bash
+sudo systemctl restart eve-sentry
+curl http://127.0.0.1:8765/api/v1/esi/status
+```
 
-无浏览器环境可额外加 `--esi-no-browser`，再手工打开终端打印的授权 URL。
+`authenticated` 为 `true` 后，`GET /api/v1/esi/session?location=true&contacts=true`
+会返回当前位置和 contacts/standings 快照。不要提交 `esi_tokens.json`。
 
 ## 7. 客户端对接
 
