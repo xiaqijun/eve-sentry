@@ -138,6 +138,45 @@ describe("buildTacticalGraph", () => {
     });
   });
 
+  it("uses only the one-hour recent kill count for map loss heat", () => {
+    const graph = buildTacticalGraph({
+      ...bootstrap,
+      map: {
+        ...bootstrap.map,
+        systems: [
+          {
+            name: "0-UVHJ",
+            system_id: 30003615,
+            x: 100,
+            y: 120,
+            hostile_count: 0,
+            report_count: 0,
+            recent_kill_count: 2,
+            kill_count: 12,
+            security: -0.1,
+          },
+          {
+            name: "NCG-PW",
+            system_id: 30003616,
+            x: 180,
+            y: 150,
+            hostile_count: 0,
+            report_count: 0,
+            kill_count: 9,
+            security: -0.3,
+          },
+        ],
+      },
+    });
+
+    expect(graph.nodes.find((node) => node.name === "0-UVHJ")).toMatchObject({
+      killCount: 2,
+    });
+    expect(graph.nodes.find((node) => node.name === "NCG-PW")).toMatchObject({
+      killCount: 0,
+    });
+  });
+
   it("marks deployed monitoring clients on their current systems", () => {
     const graph = buildTacticalGraph({
       ...bootstrap,

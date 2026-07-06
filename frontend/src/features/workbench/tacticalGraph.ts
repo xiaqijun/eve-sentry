@@ -216,7 +216,7 @@ export function buildTacticalGraph(
         hostileCount,
         reportCount,
         observationCount: realtimeSignalCount,
-        killCount: firstNumber(system.recent_kill_count, system.kill_count),
+        killCount: firstNumber(system.recent_kill_count) ?? 0,
         monitorCount: monitorSummary.count,
         monitorOnlineCount: monitorSummary.onlineCount,
         monitorLabels: monitorSummary.labels,

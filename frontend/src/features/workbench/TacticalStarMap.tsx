@@ -17,11 +17,11 @@ interface TacticalStarMapProps {
 }
 
 function nodeColor(node: TacticalGraphNode): string {
-  if (node.hasAlerts) {
+  if (node.hostileCount > 0) {
     return "#ff4038";
   }
-  if (node.hostileCount > 0) {
-    return "#ff9f16";
+  if ((node.killCount ?? 0) > 0) {
+    return "#ffb347";
   }
   if (node.observationCount > 0) {
     return "#17d7ff";
@@ -39,7 +39,8 @@ function drawGateLink(
     return;
   }
 
-  const isHot = source.hasAlerts || target.hasAlerts;
+  const isLossHot = (source.killCount ?? 0) > 0 || (target.killCount ?? 0) > 0;
+  const isHot = source.hostileCount > 0 || target.hostileCount > 0;
   const isSelected = source.isSelected || target.isSelected;
   const x1 = Number(source.x || 0);
   const y1 = Number(source.y || 0);
@@ -60,10 +61,12 @@ function drawGateLink(
   context.beginPath();
   context.moveTo(x1, y1);
   context.lineTo(x2, y2);
-  context.shadowColor = isHot ? "#ff4b40" : "#1ccfff";
+  context.shadowColor = isHot ? "#ff4b40" : isLossHot ? "#ffb347" : "#1ccfff";
   context.shadowBlur = isHot || isSelected ? 14 : 7;
   context.strokeStyle = isHot
     ? "rgba(255, 87, 70, 0.9)"
+    : isLossHot
+      ? "rgba(255, 179, 71, 0.76)"
     : isSelected
       ? "rgba(114, 232, 255, 0.96)"
       : "rgba(64, 207, 255, 0.72)";
@@ -90,7 +93,9 @@ function drawNode(
 ): void {
   const label = node.name;
   const color = nodeColor(node);
-  const radius = node.isSelected ? 6.5 : node.hasAlerts ? 5.8 : 4.6;
+  const lossCount = Math.max(0, node.killCount ?? 0);
+  const hasHud = node.hostileCount > 0 || lossCount > 0;
+  const radius = node.isSelected ? 6.5 : hasHud ? 5.8 : 4.4;
   const fontSize = Math.max(7, 10 / globalScale);
   const x = Number(node.x || 0);
   const y = Number(node.y || 0);
@@ -103,14 +108,17 @@ function drawNode(
   context.lineWidth = node.isSelected ? 2.2 : 1.6;
   context.strokeStyle = color;
   context.shadowColor = color;
-  context.shadowBlur = node.hasAlerts || node.isSelected ? 18 : 9;
+  context.shadowBlur = hasHud || node.isSelected ? 18 : 9;
   context.stroke();
 
-  if (node.hasAlerts || node.isSelected) {
+  if (hasHud || node.isSelected) {
     context.shadowBlur = 0;
-    context.strokeStyle = node.hasAlerts
-      ? "rgba(255, 64, 56, 0.34)"
-      : "rgba(255, 255, 255, 0.42)";
+    context.strokeStyle =
+      node.hostileCount > 0
+        ? "rgba(255, 64, 56, 0.34)"
+        : lossCount > 0
+          ? "rgba(255, 179, 71, 0.34)"
+          : "rgba(255, 255, 255, 0.42)";
     context.lineWidth = 1;
     context.beginPath();
     context.arc(x, y, radius + 10, 0, Math.PI * 2);
@@ -121,31 +129,24 @@ function drawNode(
   }
 
   if (node.monitorCount > 0) {
-    const badgeSize = Math.max(7, 10 / globalScale);
+    const badgeSize = Math.max(4, 6 / globalScale);
     const badgeX = x + radius + 5;
-    const badgeY = y - radius - badgeSize;
+    const badgeY = y - radius - badgeSize / 2;
     const monitorOnline = node.monitorOnlineCount > 0;
     context.shadowBlur = monitorOnline ? 12 : 8;
     context.shadowColor = monitorOnline ? "#20e879" : "#ffae32";
     context.fillStyle = monitorOnline
       ? "rgba(32, 232, 121, 0.9)"
       : "rgba(255, 174, 50, 0.82)";
-    context.fillRect(badgeX, badgeY, badgeSize, badgeSize);
+    context.beginPath();
+    context.arc(badgeX, badgeY, badgeSize, 0, Math.PI * 2);
+    context.fill();
     context.shadowBlur = 0;
     context.strokeStyle = monitorOnline
       ? "rgba(199, 255, 222, 0.95)"
       : "rgba(255, 229, 179, 0.88)";
     context.lineWidth = Math.max(0.8, 1 / globalScale);
-    context.strokeRect(badgeX, badgeY, badgeSize, badgeSize);
-    context.fillStyle = monitorOnline ? "#b8ffd2" : "#ffdca3";
-    context.font = `700 ${Math.max(6, 8 / globalScale)}px "Segoe UI", sans-serif`;
-    context.textAlign = "left";
-    context.textBaseline = "middle";
-    const offlineCount = Math.max(0, node.monitorCount - node.monitorOnlineCount);
-    const monitorLabel = monitorOnline
-      ? `在线 ${node.monitorOnlineCount}`
-      : `离线 ${offlineCount || node.monitorCount}`;
-    context.fillText(monitorLabel, badgeX + badgeSize + 3, badgeY + badgeSize / 2);
+    context.stroke();
   }
 
   context.shadowBlur = 0;
@@ -154,13 +155,50 @@ function drawNode(
   context.textBaseline = "top";
   context.fillStyle = "#eaf8ff";
   context.fillText(label, x, y + radius + 3);
-  context.fillStyle = node.hasAlerts ? "#ff5048" : "#9fb7c4";
-  context.font = `600 ${Math.max(6, 8 / globalScale)}px "Segoe UI", sans-serif`;
-  context.fillText(
-    `实时目标 ${node.hostileCount} 记录 ${node.reportCount} 击杀 ${node.killCount ?? "-"}`,
-    x,
-    y + radius + 3 + fontSize,
-  );
+  if (hasHud) {
+    const hudFontSize = Math.max(6, 8 / globalScale);
+    const paddingX = Math.max(4, 5 / globalScale);
+    const paddingY = Math.max(2, 3 / globalScale);
+    const gap = Math.max(3, 4 / globalScale);
+    const hudY = y + radius + 5 + fontSize;
+    const segments = [
+      { color: "#ff6a5f", text: "敌:" },
+      { color: "#ffffff", text: String(node.hostileCount) },
+      { color: "#ffc266", text: "损:" },
+      { color: "#ffffff", text: String(lossCount) },
+    ];
+
+    context.font = `700 ${hudFontSize}px "Cascadia Mono", "Consolas", "Segoe UI", monospace`;
+    const widths = segments.map((segment) => context.measureText(segment.text).width);
+    const textWidth = widths.reduce((sum, width) => sum + width, 0) + gap * 3;
+    const hudWidth = textWidth + paddingX * 2;
+    const hudHeight = hudFontSize + paddingY * 2;
+    const hudX = x - hudWidth / 2;
+
+    context.shadowColor = node.hostileCount > 0 ? "#ff4038" : "#ffb347";
+    context.shadowBlur = 12;
+    context.fillStyle =
+      node.hostileCount > 0
+        ? "rgba(24, 5, 5, 0.82)"
+        : "rgba(24, 16, 4, 0.78)";
+    context.fillRect(hudX, hudY, hudWidth, hudHeight);
+    context.shadowBlur = 0;
+    context.strokeStyle =
+      node.hostileCount > 0
+        ? "rgba(255, 90, 80, 0.62)"
+        : "rgba(255, 190, 92, 0.62)";
+    context.lineWidth = Math.max(0.8, 1 / globalScale);
+    context.strokeRect(hudX, hudY, hudWidth, hudHeight);
+
+    context.textAlign = "left";
+    context.textBaseline = "top";
+    let cursor = hudX + paddingX;
+    segments.forEach((segment, index) => {
+      context.fillStyle = segment.color;
+      context.fillText(segment.text, cursor, hudY + paddingY);
+      cursor += widths[index] + (index === 1 ? gap * 2 : gap);
+    });
+  }
   context.restore();
 }
 
@@ -242,7 +280,7 @@ export function TacticalStarMap({
         enableZoomInteraction
         linkColor={linkColor}
         linkDirectionalParticles={(link) =>
-          graphNode(link.source)?.hasAlerts ? 1 : 0
+          (graphNode(link.source)?.hostileCount || 0) > 0 ? 1 : 0
         }
         linkDirectionalParticleColor={() => "rgba(255, 74, 64, 0.82)"}
         linkDirectionalParticleSpeed={0.004}

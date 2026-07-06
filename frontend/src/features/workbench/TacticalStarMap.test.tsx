@@ -140,13 +140,16 @@ describe("TacticalStarMap", () => {
     container.remove();
   });
 
-  test("draws readable status labels for systems with deployed clients", async () => {
+  test("draws compact HUD metrics without monitor text labels", async () => {
     const monitoredGraphData: TacticalGraphData = {
       ...graphData,
       nodes: graphData.nodes.map((node) =>
         node.id === "0-UVHJ"
           ? {
               ...node,
+              hostileCount: 3,
+              killCount: 1,
+              hasAlerts: true,
               monitorCount: 1,
               monitorOnlineCount: 1,
               monitorLabels: ["Tenal OCR Monitor"],
@@ -168,6 +171,7 @@ describe("TacticalStarMap", () => {
     });
 
     const fillText = vi.fn();
+    const measureText = vi.fn((text: string) => ({ width: text.length * 6 }));
     const context = {
       save: vi.fn(),
       restore: vi.fn(),
@@ -178,22 +182,27 @@ describe("TacticalStarMap", () => {
       fillRect: vi.fn(),
       strokeRect: vi.fn(),
       fillText,
+      measureText,
     } as unknown as CanvasRenderingContext2D;
     const drawNode = forceGraphMock.latestProps?.nodeCanvasObject;
 
     expect(drawNode).toEqual(expect.any(Function));
     (drawNode as Function)(monitoredGraphData.nodes[0], context, 1);
 
-    expect(fillText).toHaveBeenCalledWith(
+    expect(fillText).not.toHaveBeenCalledWith(
       "在线 1",
       expect.any(Number),
       expect.any(Number),
     );
-    expect(fillText).toHaveBeenCalledWith(
-      "实时目标 0 记录 0 击杀 -",
+    expect(fillText).not.toHaveBeenCalledWith(
+      "实时目标 3 记录 0 击杀 1",
       expect.any(Number),
       expect.any(Number),
     );
+    expect(fillText).toHaveBeenCalledWith("敌:", expect.any(Number), expect.any(Number));
+    expect(fillText).toHaveBeenCalledWith("3", expect.any(Number), expect.any(Number));
+    expect(fillText).toHaveBeenCalledWith("损:", expect.any(Number), expect.any(Number));
+    expect(fillText).toHaveBeenCalledWith("1", expect.any(Number), expect.any(Number));
 
     await act(async () => {
       root.unmount();
