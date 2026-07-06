@@ -1,7 +1,9 @@
 import io
 import json
+import sys
 from types import SimpleNamespace
 
+import app.alert_client as alert_client_module
 from app.alert_client import (
     AlertClientState,
     AlertStreamFallback,
@@ -1141,6 +1143,101 @@ def test_alert_client_emit_alerts_supports_text_and_json_lines():
         "[ALERT] HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 70)"
     )
     assert json.loads(json_stream.getvalue()) == alert
+
+
+def test_alert_client_show_popup_uses_nonblocking_dialog(monkeypatch):
+    class FakeSignal:
+        def __init__(self):
+            self.callback = None
+
+        def connect(self, callback):
+            self.callback = callback
+
+    class FakeDialog:
+        instances = []
+
+        def __init__(self, entries):
+            self.entries = entries
+            self.finished = FakeSignal()
+            self.modal = None
+            self.shown = False
+            self.exec_called = False
+            self.instances.append(self)
+
+        def setModal(self, value):
+            self.modal = value
+
+        def show(self):
+            self.shown = True
+
+        def exec(self):
+            self.exec_called = True
+            raise AssertionError("popup must not block")
+
+    class FakeApplication:
+        instances = []
+
+        @staticmethod
+        def instance():
+            return None
+
+        def __init__(self, args):
+            self.args = args
+            self.processed = 0
+            self.instances.append(self)
+
+        def processEvents(self):
+            self.processed += 1
+
+    alert_client_module._ACTIVE_POPUPS.clear()
+    monkeypatch.setitem(sys.modules, "PyQt6", SimpleNamespace(__path__=[]))
+    monkeypatch.setitem(
+        sys.modules,
+        "PyQt6.QtWidgets",
+        SimpleNamespace(QApplication=FakeApplication),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.ui.alert_dialog",
+        SimpleNamespace(AlertDialog=FakeDialog),
+    )
+
+    alert_client_module.show_popup(["Tama - Alice"])
+
+    dialog = FakeDialog.instances[0]
+    assert dialog.entries == ["Tama - Alice"]
+    assert dialog.modal is False
+    assert dialog.shown is True
+    assert dialog.exec_called is False
+    assert FakeApplication.instances[0].processed == 1
+    assert alert_client_module._ACTIVE_POPUPS == [dialog]
+
+    dialog.finished.callback(0)
+    assert alert_client_module._ACTIVE_POPUPS == []
+
+
+def test_alert_client_emit_alerts_continues_when_popup_fails(monkeypatch):
+    alert = {
+        "id": "evt-1",
+        "system_name": "Tama",
+        "names": ["Alice"],
+        "created_at": "2026-06-29T12:00:00+00:00",
+        "level": "high",
+        "score": 70,
+    }
+    stream = io.StringIO()
+
+    def broken_popup(entries):
+        assert entries == ["Tama - Alice"]
+        raise RuntimeError("gui unavailable")
+
+    monkeypatch.setattr("app.alert_client.show_popup", broken_popup)
+
+    emit_alerts([alert], popup=True, stream=stream)
+
+    assert stream.getvalue().strip() == (
+        "[ALERT] HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 70)"
+    )
 
 
 def test_alert_client_attaches_alert_details_without_blocking_delivery():

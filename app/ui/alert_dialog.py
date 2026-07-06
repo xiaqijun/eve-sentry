@@ -1,4 +1,4 @@
-"""Modal alert dialog shown when threats are detected."""
+"""Alert dialog shown when threats are detected."""
 
 from pathlib import Path
 
@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 
 
 class AlertDialog(QDialog):
-    """Modal popup listing detected hostile player names."""
+    """Popup listing detected hostile player names."""
 
     def __init__(self, threats: list[str], parent=None):
         super().__init__(parent)
