@@ -1,8 +1,11 @@
 import json
 import importlib.util
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from app.server.intel_store import IntelStore
 from app.server.sqlite_store import SQLiteIntelStore
@@ -54,6 +57,81 @@ def test_run_server_help_runs_from_repo_root():
 
     assert result.returncode == 0
     assert "Run the intel server" in result.stdout
+
+
+def test_start_alert_client_powershell_script_wraps_alert_client():
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("PowerShell is not available")
+
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "scripts/start_alert_client.ps1",
+            "-PrintCommand",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["args"][:2] == ["-m", "app.alert_client"]
+    assert payload["cwd"].endswith("eve-sentry")
+    assert "--popup" in payload["args"]
+    assert "--details" in payload["args"]
+    assert "--state" in payload["args"]
+    state = payload["args"][payload["args"].index("--state") + 1]
+    assert "EVE Sentry" in state
+
+
+def test_start_alert_client_powershell_script_maps_optional_flags():
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("PowerShell is not available")
+
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "scripts/start_alert_client.ps1",
+            "-PrintCommand",
+            "-Server",
+            "http://example.invalid",
+            "-State",
+            "custom_state.json",
+            "-NoPopup",
+            "-NoDetails",
+            "-MinLevel",
+            "high",
+            "-Ack",
+            "-AckBy",
+            "operator",
+            "-UnacknowledgedOnly",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    args = payload["args"]
+    assert args[args.index("--server") + 1] == "http://example.invalid"
+    assert args[args.index("--state") + 1] == "custom_state.json"
+    assert "--popup" not in args
+    assert "--details" not in args
+    assert args[args.index("--min-level") + 1] == "high"
+    assert args[args.index("--ack-by") + 1] == "operator"
+    assert "--unacknowledged-only" in args
 
 
 def test_run_server_builds_argv_from_environment():

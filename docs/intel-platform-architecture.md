@@ -185,30 +185,32 @@ uv run python -m app.server --host 127.0.0.1 --port 8765
 当前入口建议:
 
 ```powershell
-uv run python -m app.alert_client --server http://127.0.0.1:8765
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765
 ```
 
 默认模式会订阅 `/api/v1/events` SSE 事件流，并按事件增量输出；如果事件流不可用，客户端会先
 回退到 `/api/v1/alerts` 轮询，并在 `--stream-retry-interval` 冷却后自动重试订阅。
 需要强制只用轮询时可加 `--poll`。
+PowerShell 启动脚本默认启用本地非阻塞弹窗和 details 输出；底层仍是
+`python -m app.alert_client`，适合调试时直接追加 CLI 参数。
 
 常用模式:
 
 ```powershell
 # 长驻订阅，并弹出本地预警窗口
-uv run python -m app.alert_client --server http://127.0.0.1:8765 --popup
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765
 
 # 输出/弹窗后回写已确认状态
-uv run python -m app.alert_client --server http://127.0.0.1:8765 --ack --ack-by alert-client
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -Ack -AckBy alert-client
 
 # 一次性检查当前服务端 alert，适合联调或脚本验证
-uv run python -m app.alert_client --server http://127.0.0.1:8765 --once --include-existing --json --poll --details --unacknowledged-only --min-level high
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -Once -IncludeExisting -Json -Poll -UnacknowledgedOnly -MinLevel high
 
 # 使用独立状态文件续接已处理 alert；需要重放时可加 --no-state 或删除状态文件
-uv run python -m app.alert_client --server http://127.0.0.1:8765 --details --state alert_client_state.json
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -State alert_client_state.json
 
 # 网络不稳定时加快事件流恢复尝试
-uv run python -m app.alert_client --server http://127.0.0.1:8765 --stream-retry-interval 10
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -StreamRetryInterval 10
 ```
 
 `--popup` 使用非阻塞本地窗口；弹窗未确认时，预警客户端仍会继续消费 SSE 或轮询告警。

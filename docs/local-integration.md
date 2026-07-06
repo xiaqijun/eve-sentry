@@ -120,15 +120,18 @@ POST 一份只包含 `names` 的 OCR 快照，例如同一 `client_id`、窗口�
 ### 5. 启动预警客户端
 
 ```powershell
-uv run python -m app.alert_client --server http://127.0.0.1:8765 --details --state alert_client_state.json
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765
 ```
+
+脚本默认启用 `--popup --details`，并把预警客户端 state 放到用户 LocalAppData
+下，适合作为 Windows 本地长驻入口。需要纯控制台联调时可加 `-NoPopup`。
 
 常用联调命令:
 
 ```powershell
-uv run python -m app.alert_client --server http://127.0.0.1:8765 --once --include-existing --json --poll --details
-uv run python -m app.alert_client --server http://127.0.0.1:8765 --popup --details
-uv run python -m app.alert_client --server http://127.0.0.1:8765 --ack --ack-by alert-client
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -Once -IncludeExisting -Json -Poll
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -Ack -AckBy alert-client
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -NoPopup -MinLevel high
 ```
 
 `--popup` 会显示非阻塞本地预警窗口并播放提示音；窗口未关闭时，客户端仍会继续消费后续告警事件。
