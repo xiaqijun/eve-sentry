@@ -51,18 +51,30 @@ active intel、ESI 状态、星图快照和 SSE 连通性。这个脚本只发 G
 不会创建 report、observation、alert、OCR snapshot、heartbeat，也不会 ack:
 
 ```powershell
-python scripts/integration_status_check.py --server http://127.0.0.1:8765 --check-esi --check-map --check-events-stream
+python scripts/integration_status_check.py --server http://127.0.0.1:8765 --check-esi --check-map --check-events-stream --output .\integration-status.json
 ```
 
 检测端和预警端都启动后，可加入期望条件作为验收门槛:
 
 ```powershell
-python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-detector --expect-alert-client --expect-monitoring --min-targets 1 --require-event-health --check-events-stream
+python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-detector --expect-alert-client --expect-monitoring --min-targets 1 --require-event-health --check-events-stream --output .\integration-status-live.json
 ```
 
 多开 EVE 联调时，把 `--min-targets` 调成实际窗口数，例如两个窗口用
 `--min-targets 2`。如果没有真实 active intel，不要加 `--require-active-intel`；
 真实频道或 OCR 上报产生实时情报后再使用该参数。
+`--output` 生成的 JSON 会记录检查时间、只读访问的 URL、启用的期望条件和
+`write_endpoints_called: []`，可作为本次联调留证文件。证据文件还会保留
+`detectors`、`alert_clients`、`channel_clients`、`detector_channel`、
+`active_ocr`、`active_channel` 和 `recent_alerts`，用于确认:
+
+- 检测端是否通过 `detector_client` heartbeat 在线。
+- 多 EVE 窗口是否出现在 `details.targets`，并带有各自的 `client_id`、
+  `window_title`、`region` 和 `monitoring`。
+- 频道日志是否通过检测端内置 `detector_channel` 字段，或独立
+  `channel_client` heartbeat 和 `active_channel` 实时态体现。
+- 预警端是否通过 `alert_client` heartbeat 在线，且 SSE 和 recent alerts
+  可读取。
 
 检测客户端启动后会以 `detector_client` 身份出现在这里；未开始监控时通常为
 `idle`，点击 `Start Monitor` 后会切到 `running`。返回结果里的 `summary`

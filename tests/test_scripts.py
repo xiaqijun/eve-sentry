@@ -108,6 +108,7 @@ def test_integration_status_check_help_runs_from_repo_root():
 
     assert result.returncode == 0
     assert "without creating reports" in result.stdout
+    assert "--output" in result.stdout
 
 
 def test_integration_status_check_classifies_client_heartbeats():
@@ -148,6 +149,7 @@ def test_integration_status_check_classifies_client_heartbeats():
 
 def test_integration_status_check_reads_empty_server_without_writing_intel(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    evidence_path = tmp_path / "evidence" / "integration-status.json"
     server.start()
     try:
         result = subprocess.run(
@@ -161,6 +163,8 @@ def test_integration_status_check_reads_empty_server_without_writing_intel(tmp_p
                 "--check-esi",
                 "--check-map",
                 "--check-events-stream",
+                "--output",
+                str(evidence_path),
             ],
             check=False,
             capture_output=True,
@@ -174,15 +178,36 @@ def test_integration_status_check_reads_empty_server_without_writing_intel(tmp_p
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["read_only"] is True
+    assert payload["schema_version"] == "integration_status.v2"
     assert payload["summary"]["client_count"] == 0
     assert payload["summary"]["recent_alert_count"] == 0
     assert payload["summary"]["active_intel_count"] == 0
+    assert payload["summary"]["active_ocr_count"] == 0
+    assert payload["summary"]["active_channel_count"] == 0
+    assert payload["detectors"] == []
+    assert payload["alert_clients"] == []
+    assert payload["channel_clients"] == []
+    assert payload["active_ocr"] == []
+    assert payload["active_channel"] == []
+    assert payload["recent_alerts"] == []
     assert payload["health"]["schema_version"] == "health.v1"
     checks = {item["name"]: item for item in payload["checks"]}
     assert checks["active_intel_endpoint"]["ok"] is True
     assert checks["esi_status"]["ok"] is True
     assert checks["map_snapshot"]["ok"] is True
     assert checks["events_stream"]["ok"] is True
+    assert evidence_path.exists()
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["ok"] is True
+    assert evidence["schema_version"] == "integration_status.v2"
+    assert evidence["evidence"]["write_endpoints_called"] == []
+    assert evidence["evidence"]["expected_conditions"]["event_health"] is True
+    assert any(url.endswith("/api/v1/clients") for url in evidence["evidence"]["checked_urls"])
+    assert any("/api/v1/events?" in url for url in evidence["evidence"]["checked_urls"])
+    endpoint_urls = [item["url"] for item in evidence["evidence"]["endpoints"]]
+    assert any(url.endswith("/api/v1/clients") for url in endpoint_urls)
+    assert any("/api/v1/active-intel?" in url for url in endpoint_urls)
+    assert all(item["method"] == "GET" for item in evidence["evidence"]["endpoints"])
 
 
 def test_integration_status_check_expect_detector_fails_without_client(tmp_path):
