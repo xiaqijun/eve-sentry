@@ -7,6 +7,7 @@ import pytest
 
 from app.esi.sso import (
     AuthorizationSession,
+    EsiLoginManager,
     EsiSsoError,
     EsiTokenStore,
     EveSsoClient,
@@ -241,3 +242,83 @@ def test_local_callback_server_keeps_loopback_redirect_local():
     assert server.host == "127.0.0.1"
     assert server.port == 8766
     assert server.path == "/callback"
+
+
+def test_esi_login_manager_starts_api_flow_and_saves_tokens():
+    class FakeServer:
+        def __init__(self) -> None:
+            self.started = False
+            self.stopped = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def wait_for_callback(self, timeout_seconds):
+            assert timeout_seconds == 10
+            return "http://127.0.0.1:8766/callback?code=abc&state=fixed-state"
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    class FakeClient:
+        redirect_uri = "http://127.0.0.1:8766/callback"
+
+        def create_authorization_session(self):
+            return AuthorizationSession(
+                authorization_url="https://login.test/authorize",
+                state="fixed-state",
+                redirect_uri=self.redirect_uri,
+                code_verifier="verifier",
+                scopes=["esi-location.read_location.v1"],
+            )
+
+        def parse_callback_url(self, session, callback_url):
+            assert session.state == "fixed-state"
+            assert "code=abc" in callback_url
+            return "abc"
+
+        def exchange_code(self, code, session):
+            assert code == "abc"
+            return TokenSet.from_payload(
+                {
+                    "access_token": jwt({"sub": "CHARACTER:EVE:123"}),
+                    "expires_in": 1200,
+                    "refresh_token": "refresh-token",
+                },
+                now=lambda: 1000.0,
+            )
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.saved = []
+
+        def save(self, tokens) -> None:
+            self.saved.append(tokens)
+
+    server = FakeServer()
+    store = FakeStore()
+    manager = EsiLoginManager(
+        client=FakeClient(),
+        token_store=store,
+        timeout_seconds=10,
+        callback_server_factory=lambda redirect_uri: server,
+        now=lambda: 2000.0,
+    )
+
+    login = manager.start()
+    snapshot = manager.snapshot()
+    for _ in range(20):
+        if snapshot["status"] != "pending":
+            break
+        thread = getattr(manager, "_thread", None)
+        if thread is not None:
+            thread.join(timeout=0.05)
+        snapshot = manager.snapshot()
+
+    assert server.started is True
+    assert server.stopped is True
+    assert login["status"] == "pending"
+    assert login["authorization_url"] == "https://login.test/authorize"
+    assert snapshot["status"] == "authenticated"
+    assert snapshot["character_id"] == 123
+    assert store.saved[0].refresh_token == "refresh-token"

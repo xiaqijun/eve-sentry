@@ -626,6 +626,129 @@ def run_local_sso_login(
         server.stop()
 
 
+class EsiLoginManager:
+    """Manage one browser-started EVE SSO login flow for the API server."""
+
+    def __init__(
+        self,
+        client: EveSsoClient,
+        token_store: EsiTokenStore,
+        timeout_seconds: float = 300.0,
+        callback_server_factory: Callable[[str], LocalCallbackServer] | None = None,
+        now: Callable[[], float] | None = None,
+    ) -> None:
+        self.client = client
+        self.token_store = token_store
+        self.timeout_seconds = max(1.0, float(timeout_seconds))
+        self._callback_server_factory = (
+            callback_server_factory or LocalCallbackServer.from_redirect_uri
+        )
+        self._now = now or time
+        self._lock = threading.Lock()
+        self._server: LocalCallbackServer | None = None
+        self._session: AuthorizationSession | None = None
+        self._thread: threading.Thread | None = None
+        self._status = "idle"
+        self._authorization_url = ""
+        self._started_at = 0.0
+        self._expires_at = 0.0
+        self._error = ""
+        self._character_id: int | None = None
+
+    def start(self) -> dict[str, Any]:
+        """Start a login attempt and return the authorization URL."""
+        with self._lock:
+            if self._is_pending_locked():
+                return self._snapshot_locked()
+
+            server = self._callback_server_factory(self.client.redirect_uri)
+            try:
+                server.start()
+            except OSError as exc:
+                self._status = "error"
+                self._error = str(exc)
+                raise EsiSsoError(f"cannot start SSO callback server: {exc}") from exc
+
+            session = self.client.create_authorization_session()
+            now = self._now()
+            self._server = server
+            self._session = session
+            self._status = "pending"
+            self._authorization_url = session.authorization_url
+            self._started_at = now
+            self._expires_at = now + self.timeout_seconds
+            self._error = ""
+            self._character_id = None
+            thread = threading.Thread(
+                target=self._complete_login,
+                args=(server, session),
+                name="eve-sentry-esi-login",
+                daemon=True,
+            )
+            self._thread = thread
+            thread.start()
+            return self._snapshot_locked()
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return the current login flow status without token secrets."""
+        with self._lock:
+            return self._snapshot_locked()
+
+    def _complete_login(
+        self,
+        server: LocalCallbackServer,
+        session: AuthorizationSession,
+    ) -> None:
+        status = "authenticated"
+        error = ""
+        character_id: int | None = None
+        try:
+            callback_url = server.wait_for_callback(self.timeout_seconds)
+            code = self.client.parse_callback_url(session, callback_url)
+            tokens = self.client.exchange_code(code, session)
+            self.token_store.save(tokens)
+            character_id = tokens.character_id
+        except EsiSsoError as exc:
+            status = "error"
+            error = str(exc)
+        except Exception as exc:
+            status = "error"
+            error = str(exc)
+        finally:
+            server.stop()
+
+        with self._lock:
+            if self._session != session:
+                return
+            self._status = status
+            self._error = error
+            self._character_id = character_id
+            self._server = None
+            self._thread = None
+
+    def _is_pending_locked(self) -> bool:
+        thread = self._thread
+        return (
+            self._status == "pending"
+            and thread is not None
+            and thread.is_alive()
+            and self._now() < self._expires_at
+        )
+
+    def _snapshot_locked(self) -> dict[str, Any]:
+        return {
+            "status": self._status,
+            "authorization_url": (
+                self._authorization_url if self._status == "pending" else ""
+            ),
+            "started_at": self._started_at,
+            "expires_at": self._expires_at,
+            "timeout_seconds": self.timeout_seconds,
+            "character_id": self._character_id,
+            "error": self._error,
+        }
+
+
 def create_pkce_challenge(verifier: str | None = None) -> PkceChallenge:
     verifier_value = verifier or secrets.token_urlsafe(64)
     return PkceChallenge(

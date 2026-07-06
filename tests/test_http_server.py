@@ -391,6 +391,60 @@ def test_esi_status_reports_public_resolver_without_session(tmp_path):
         server.stop()
 
 
+def test_v1_esi_login_route_reports_missing_configuration(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        try:
+            request_json(f"{server.url}/api/v1/esi/login", method="POST")
+        except HTTPError as exc:
+            assert exc.code == 404
+            error = json.loads(exc.read().decode("utf-8"))
+            assert "ESI login" in error["error"]
+        else:
+            raise AssertionError("expected HTTP 404")
+    finally:
+        server.stop()
+
+
+def test_v1_esi_login_route_starts_configured_flow(tmp_path):
+    class FakeLogin:
+        def __init__(self):
+            self.calls = 0
+
+        def start(self):
+            self.calls += 1
+            return {
+                "status": "pending",
+                "authorization_url": "https://login.test/authorize",
+                "started_at": 1000,
+                "expires_at": 1300,
+                "timeout_seconds": 300,
+                "character_id": None,
+                "error": "",
+            }
+
+    login = FakeLogin()
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json"),
+        port=0,
+        esi_login=login,
+    )
+    server.start()
+    try:
+        status, payload = request_json(
+            f"{server.url}/api/v1/esi/login",
+            method="POST",
+        )
+        assert status == 200
+        assert payload["ok"] is True
+        assert payload["login"]["status"] == "pending"
+        assert payload["login"]["authorization_url"] == "https://login.test/authorize"
+        assert login.calls == 1
+    finally:
+        server.stop()
+
+
 def test_esi_session_routes_expose_status_and_snapshot(tmp_path):
     class FakeTokens:
         character_id = 123
@@ -434,13 +488,15 @@ def test_esi_session_routes_expose_status_and_snapshot(tmp_path):
             return FakeSnapshot()
 
     session = FakeSession()
+    token_file = tmp_path / "esi_tokens.json"
+    token_file.write_text("{}", encoding="utf-8")
     server = IntelHTTPServer(
         IntelStore(tmp_path / "intel.json", resolver=FakeResolver()),
         port=0,
         esi_session=session,
         esi_config={
             "client_id_configured": True,
-            "token_file": str(tmp_path / "esi_tokens.json"),
+            "token_file": str(token_file),
             "token_file_present": True,
             "token_storage": "plain",
             "scopes": ["esi-location.read_location.v1"],
@@ -518,6 +574,37 @@ def test_esi_session_snapshot_reports_missing_token(tmp_path):
             assert "no saved ESI token" in error["error"]
         else:
             raise AssertionError("expected HTTP 401")
+    finally:
+        server.stop()
+
+
+def test_esi_status_refreshes_token_file_presence_after_start(tmp_path):
+    class MissingTokenSession:
+        def load_tokens(self, refresh_if_needed=True):
+            raise EsiSsoError("no saved ESI token")
+
+    token_file = tmp_path / "late_esi_tokens.json"
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json"),
+        port=0,
+        esi_session=MissingTokenSession(),
+        esi_config={
+            "client_id_configured": True,
+            "token_file": str(token_file),
+            "token_file_present": False,
+        },
+    )
+    server.start()
+    try:
+        status, before = request_json(f"{server.url}/api/v1/esi/status")
+        assert status == 200
+        assert before["config"]["token_file_present"] is False
+
+        token_file.write_text("{}", encoding="utf-8")
+
+        status, after = request_json(f"{server.url}/api/v1/esi/status")
+        assert status == 200
+        assert after["config"]["token_file_present"] is True
     finally:
         server.stop()
 

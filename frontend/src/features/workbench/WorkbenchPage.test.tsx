@@ -91,6 +91,10 @@ const apiMocks = vi.hoisted(() => {
       return { close };
     }),
     fetchBootstrap: vi.fn(async () => bootstrap),
+    startEsiLogin: vi.fn(async () => ({
+      status: "pending",
+      authorization_url: "https://login.test/authorize",
+    })),
   };
 });
 
@@ -112,6 +116,7 @@ vi.mock("react-force-graph-2d", () => ({
 vi.mock("./api", () => ({
   connectAlerts: apiMocks.connectAlerts,
   fetchBootstrap: apiMocks.fetchBootstrap,
+  startEsiLogin: apiMocks.startEsiLogin,
 }));
 
 describe("WorkbenchPage", () => {
@@ -119,6 +124,10 @@ describe("WorkbenchPage", () => {
     vi.clearAllMocks();
     apiMocks.onAlert = undefined;
     apiMocks.fetchBootstrap.mockImplementation(async () => bootstrap);
+    apiMocks.startEsiLogin.mockImplementation(async () => ({
+      status: "pending",
+      authorization_url: "https://login.test/authorize",
+    }));
   });
 
   test("renders the component-backed tactical workbench without reconnecting alerts on updates", async () => {
@@ -160,6 +169,8 @@ describe("WorkbenchPage", () => {
     expect(container).toHaveTextContent("未配置");
     expect(container).toHaveTextContent("Token");
     expect(container).toHaveTextContent("未保存");
+    expect(container.querySelector(".esi-login-button")).toHaveTextContent("登录 ESI");
+    expect(container.querySelector(".esi-login-button")).toBeDisabled();
 
     expect(container.querySelector(".nav-panel")).not.toBeInTheDocument();
     expect(container.querySelector(".quick-icons")).not.toBeInTheDocument();
@@ -196,6 +207,61 @@ describe("WorkbenchPage", () => {
       root.unmount();
     });
     expect(apiMocks.close).toHaveBeenCalledTimes(1);
+    container.remove();
+  });
+
+  test("opens the ESI authorization URL from the login button", async () => {
+    apiMocks.fetchBootstrap.mockResolvedValueOnce({
+      ...bootstrap,
+      esi: {
+        ...bootstrap.esi,
+        config: {
+          ...bootstrap.esi.config,
+          client_id_configured: true,
+        },
+      },
+    });
+    const fakeWindow = {
+      close: vi.fn(),
+      location: { href: "" },
+      opener: undefined,
+    } as unknown as Window;
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(fakeWindow);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkbenchPage />
+        </QueryClientProvider>,
+      );
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    const button = container.querySelector(".esi-login-button") as HTMLButtonElement;
+    expect(button).not.toBeDisabled();
+
+    await act(async () => {
+      button.click();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(apiMocks.startEsiLogin).toHaveBeenCalledTimes(1);
+    expect(openSpy).toHaveBeenCalledWith("", "_blank");
+    expect(fakeWindow.location.href).toBe("https://login.test/authorize");
+
+    await act(async () => {
+      root.unmount();
+    });
+    openSpy.mockRestore();
     container.remove();
   });
 

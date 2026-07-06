@@ -210,6 +210,7 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
             config_store,
             esi_session,
             esi_config,
+            esi_login,
             map_config_store,
         ):
             calls["server"].append(
@@ -220,6 +221,7 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
                         "config_store": config_store,
                         "esi_session": esi_session,
                         "esi_config": esi_config,
+                        "esi_login": esi_login,
                         "map_config_store": map_config_store,
                     }
                 )
@@ -288,4 +290,5 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
     assert calls["server"][0]["port"] == 8765
     assert calls["server"][0]["esi_session"] is None
     assert calls["server"][0]["esi_config"]["client_id_configured"] is False
+    assert calls["server"][0]["esi_login"] is None
     assert calls["server"][0]["map_config_store"] is not None

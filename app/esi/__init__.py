@@ -6,6 +6,7 @@ _EXPORTS = {
     "EsiAuthenticatedSession": ("app.esi.session", "EsiAuthenticatedSession"),
     "EsiSessionSnapshot": ("app.esi.session", "EsiSessionSnapshot"),
     "EsiSsoError": ("app.esi.sso", "EsiSsoError"),
+    "EsiLoginManager": ("app.esi.sso", "EsiLoginManager"),
     "EsiTokenStore": ("app.esi.sso", "EsiTokenStore"),
     "EveSsoClient": ("app.esi.sso", "EveSsoClient"),
     "LocalCallbackServer": ("app.esi.sso", "LocalCallbackServer"),

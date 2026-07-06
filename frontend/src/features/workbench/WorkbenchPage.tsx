@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ChevronDown,
   Database,
   Filter,
+  LogIn,
   Skull,
 } from "lucide-react";
 
-import { connectAlerts, fetchBootstrap } from "./api";
+import { connectAlerts, fetchBootstrap, startEsiLogin } from "./api";
 import { buildPilotObservations } from "./observations";
 import { ObservationTable } from "./ObservationTable";
 import { useWorkbenchStore } from "./store";
@@ -145,6 +146,8 @@ function latestEventSummary(
 
 export function WorkbenchPage() {
   const [fitSignal, setFitSignal] = useState(0);
+  const [esiLoginStarting, setEsiLoginStarting] = useState(false);
+  const [esiLoginError, setEsiLoginError] = useState("");
   const {
     filterText,
     selectedSystemId,
@@ -197,11 +200,42 @@ export function WorkbenchPage() {
     };
   }, [bootstrap?.generated_at, bootstrapQuery.isSuccess, queryClient]);
 
+  const handleEsiLogin = useCallback(async () => {
+    setEsiLoginStarting(true);
+    setEsiLoginError("");
+    const loginWindow = window.open("", "_blank");
+    if (loginWindow) {
+      loginWindow.opener = null;
+    }
+    try {
+      const login = await startEsiLogin();
+      const authorizationUrl = String(login.authorization_url || "").trim();
+      if (!authorizationUrl) {
+        loginWindow?.close();
+        throw new Error(login.error || "服务端没有返回 ESI 授权地址");
+      }
+      if (loginWindow) {
+        loginWindow.location.href = authorizationUrl;
+      } else {
+        window.open(authorizationUrl, "_blank", "noopener,noreferrer");
+      }
+      void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+    } catch (error) {
+      loginWindow?.close();
+      setEsiLoginError(
+        error instanceof Error ? error.message : "ESI 登录启动失败",
+      );
+    } finally {
+      setEsiLoginStarting(false);
+    }
+  }, [queryClient]);
+
   const highRiskCount = observations.filter((item) =>
     item.level === "critical" || item.level === "high",
   ).length;
   const latestEvent = latestEventSummary(bootstrap?.alerts || [], observations);
   const esiStatus = esiStatusText(bootstrap);
+  const canStartEsiLogin = Boolean(bootstrap?.esi.config?.client_id_configured);
   const activeSystemCount = bootstrap?.map.systems.filter((item) =>
     Number(item.hostile_count || 0) > 0 || Number(item.report_count || 0) > 0,
   ).length ?? 0;
@@ -280,6 +314,22 @@ export function WorkbenchPage() {
               <em>Storage</em>
               <span>{bootstrap?.esi.config?.token_storage || "-"}</span>
             </div>
+          </div>
+          <div className="esi-actions">
+            <button
+              className="esi-login-button"
+              disabled={!canStartEsiLogin || esiLoginStarting}
+              type="button"
+              onClick={handleEsiLogin}
+            >
+              <LogIn size={14} />
+              {bootstrap?.esi.authenticated ? "重新登录" : "登录 ESI"}
+            </button>
+            {esiLoginError ? (
+              <span className="esi-login-error" role="alert">
+                {esiLoginError}
+              </span>
+            ) : null}
           </div>
         </section>
       </aside>

@@ -136,6 +136,17 @@ export interface EsiPayload {
   [key: string]: unknown;
 }
 
+export interface EsiLoginPayload {
+  status: string;
+  authorization_url?: string;
+  started_at?: number;
+  expires_at?: number;
+  timeout_seconds?: number;
+  character_id?: number | null;
+  error?: string;
+  [key: string]: unknown;
+}
+
 export interface BootstrapPayload {
   schema_version: string;
   generated_at: string;

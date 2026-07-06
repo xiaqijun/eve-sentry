@@ -3,6 +3,7 @@ import type {
   BootstrapPayload,
   ClientsPayload,
   ConfigPayload,
+  EsiLoginPayload,
   MapSnapshotPayload,
 } from "./types";
 
@@ -66,6 +67,13 @@ export async function submitObservation(
     method: "POST",
     body: JSON.stringify(observation),
   });
+}
+
+export async function startEsiLogin(): Promise<EsiLoginPayload> {
+  const payload = await request<{ login: EsiLoginPayload }>("/api/v1/esi/login", {
+    method: "POST",
+  });
+  return payload.login;
 }
 
 export function connectAlerts(

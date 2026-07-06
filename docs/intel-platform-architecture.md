@@ -417,6 +417,10 @@ python -m app.server --enable-esi --esi-login --esi-client-id YOUR_EVE_APP_CLIEN
 传入 `--esi-scope`。如需兼容旧明文 token 文件或便于临时调试，可显式设置
 `--esi-token-storage plain`。
 
+服务端启动后，React 工作台也可以通过 ESI 状态面板的“登录 ESI”按钮发起同一套
+PKCE SSO 流程。按钮会调用 `POST /api/v1/esi/login`，服务端返回授权 URL 并在后台
+等待 `/callback` 保存 token；前端不会接触 access token 或 refresh token。
+
 启用后，服务端会在保存 observation 时尽力补全 `system_id` 和
 `character_ids`，并在生成 alert 时把角色公开资料作为评分证据。角色公开
 资料会尽力补齐 `corporation_name` 和 `alliance_name`，相关查询结果写入本地
@@ -606,6 +610,7 @@ GET  /api/v1/characters/{character_id}
 GET  /api/v1/characters/by-name/{name}
 
 GET  /api/v1/esi/status
+POST /api/v1/esi/login
 GET  /api/v1/esi/session?location=&contacts=
 
 GET  /api/v1/systems/{system_id}
@@ -655,6 +660,9 @@ GET  /api/map/snapshot
 - `GET /api/v1/characters/by-name/{name}`: 需要启用 ESI，先解析名字再返回角色公开资料。
 - `GET /api/v1/esi/status`: 返回 authenticated ESI 会话是否启用、是否已有本地 token、
   角色 ID、scope 和过期状态，不返回 access token 或 refresh token。
+- `POST /api/v1/esi/login`: 在已配置 ESI Client ID 时启动一次浏览器 SSO 登录，
+  返回授权 URL 和 pending 状态；callback 成功后服务端保存 token，不向前端返回
+  token 内容。
 - `GET /api/v1/esi/session`: 需要配置 authenticated ESI，会刷新过期 token，并按
   `location=true|false` 和 `contacts=true|false` 返回当前位置与 contacts/standings
   快照；未登录返回 401，未启用返回 404。

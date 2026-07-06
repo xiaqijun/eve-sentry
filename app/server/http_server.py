@@ -33,6 +33,7 @@ class IntelHTTPServer:
         esi_session: Any | None = None,
         esi_config: dict[str, Any] | None = None,
         map_config_store: Any | None = None,
+        esi_login: Any | None = None,
     ) -> None:
         self.store = store
         self.host = host
@@ -40,6 +41,7 @@ class IntelHTTPServer:
         self.config_store = config_store
         self.esi_session = esi_session
         self.esi_config = dict(esi_config or {})
+        self.esi_login = esi_login
         self.map_config_store = map_config_store
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -59,6 +61,7 @@ class IntelHTTPServer:
         self._httpd.config_store = self.config_store  # type: ignore[attr-defined]
         self._httpd.esi_session = self.esi_session  # type: ignore[attr-defined]
         self._httpd.esi_config = self.esi_config  # type: ignore[attr-defined]
+        self._httpd.esi_login = self.esi_login  # type: ignore[attr-defined]
         self._httpd.map_config_store = self.map_config_store  # type: ignore[attr-defined]
         self.host, self.port = self._httpd.server_address[:2]
         self._thread = threading.Thread(
@@ -824,6 +827,28 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def _handle_v1_post(self, path: str) -> None:
+        if path == f"{API_V1_PREFIX}/esi/login":
+            esi_login = self._esi_login()
+            if esi_login is None or not hasattr(esi_login, "start"):
+                self._send_json(
+                    {"error": "ESI login not configured"},
+                    HTTPStatus.NOT_FOUND,
+                )
+                return
+            try:
+                login = esi_login.start()
+            except EsiSsoError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+                return
+            except Exception as exc:
+                self._send_json(
+                    {"error": f"ESI login unavailable: {exc}"},
+                    HTTPStatus.BAD_GATEWAY,
+                )
+                return
+            self._send_json({"ok": True, "login": login})
+            return
+
         ack_prefix = f"{API_V1_PREFIX}/alerts/"
         if path.startswith(ack_prefix) and path.endswith("/ack"):
             alert_id = unquote(path[len(ack_prefix):-len("/ack")]).strip()
@@ -1061,9 +1086,16 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
     def _esi_session(self) -> Any | None:
         return self.server.esi_session  # type: ignore[attr-defined,no-any-return]
 
+    def _esi_login(self) -> Any | None:
+        return getattr(self.server, "esi_login", None)
+
     def _esi_config(self) -> dict[str, Any]:
         config = getattr(self.server, "esi_config", None)
-        return dict(config) if isinstance(config, dict) else {}
+        result = dict(config) if isinstance(config, dict) else {}
+        token_file = str(result.get("token_file") or "").strip()
+        if token_file:
+            result["token_file_present"] = os.path.exists(token_file)
+        return result
 
     def _esi_public_resolver(self) -> Any | None:
         resolver = getattr(self._store(), "_resolver", None)

@@ -79,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
 
     resolver = None
     esi_session = None
+    esi_login = None
     killboard = None
     enable_esi = _should_enable_esi(args)
     if enable_esi or args.enable_killboard:
@@ -90,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         resolver = EsiResolver(cache=EsiCache(args.esi_cache))
         if args.esi_client_id:
             esi_session = _build_esi_session(args)
+            esi_login = _build_esi_login(args)
 
     if args.enable_killboard:
         from app.killboard.zkill_client import ZKillboardClient
@@ -142,6 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         config_store=config_store,
         esi_session=esi_session,
         esi_config=_build_esi_config(args),
+        esi_login=esi_login,
         map_config_store=map_config_store,
     )
     server.start()
@@ -216,6 +219,19 @@ def _build_esi_session(args: argparse.Namespace) -> Any:
             args.esi_token_file,
             storage=args.esi_token_storage,
         ),
+    )
+
+
+def _build_esi_login(args: argparse.Namespace) -> Any:
+    from app.esi.sso import EsiLoginManager, build_token_store
+
+    return EsiLoginManager(
+        client=_build_esi_sso_client(args),
+        token_store=build_token_store(
+            args.esi_token_file,
+            storage=args.esi_token_storage,
+        ),
+        timeout_seconds=args.esi_login_timeout,
     )
 
 
