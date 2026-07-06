@@ -39,17 +39,21 @@ class RegionPreferences:
         w_ratio = region["w"] / window["w"]
         h_ratio = region["h"] / window["h"]
 
-        self._data["member_list_region"] = {
+        normalized = {
             "x_ratio": max(0.0, min(1.0, x_ratio)),
             "y_ratio": max(0.0, min(1.0, y_ratio)),
             "w_ratio": max(0.0, min(1.0, w_ratio)),
             "h_ratio": max(0.0, min(1.0, h_ratio)),
         }
+        self._data["member_list_region"] = normalized
+        regions = self._data.setdefault("member_list_regions", {})
+        if isinstance(regions, dict):
+            regions[self._window_key(window)] = normalized
         self._save()
 
     def resolve_region(self, window: dict) -> dict | None:
         """Return the saved region mapped onto the current window bounds."""
-        stored = self._data.get("member_list_region")
+        stored = self._region_for_window(window)
         if not isinstance(stored, dict):
             return None
 
@@ -72,3 +76,25 @@ class RegionPreferences:
         y = max(window["y"], min(y, max_y))
 
         return {"x": x, "y": y, "w": w, "h": h}
+
+    def _region_for_window(self, window: dict) -> dict | None:
+        """Return a saved region for the exact window, falling back to legacy data."""
+        regions = self._data.get("member_list_regions")
+        if isinstance(regions, dict):
+            stored = regions.get(self._window_key(window))
+            if isinstance(stored, dict):
+                return stored
+            if regions:
+                return None
+        stored = self._data.get("member_list_region")
+        return stored if isinstance(stored, dict) else None
+
+    def _window_key(self, window: dict) -> str:
+        """Return a stable-enough key for saving per-window region preferences."""
+        hwnd = window.get("hwnd")
+        title = str(window.get("title") or "").strip()
+        if title:
+            return title.casefold()
+        if hwnd not in {None, ""}:
+            return f"hwnd:{hwnd}"
+        return "default"

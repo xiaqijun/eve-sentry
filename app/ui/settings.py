@@ -31,6 +31,7 @@ class SettingsPanel(QWidget):
         self._whitelist = whitelist
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
         # --- Whitelist group ---
@@ -78,15 +79,15 @@ class SettingsPanel(QWidget):
 
         layout.addWidget(cfg_group)
 
-        channel_group = QGroupBox("Channel Log Monitor")
+        channel_group = QGroupBox("频道日志监控")
         channel_layout = QVBoxLayout(channel_group)
 
-        channel_layout.addWidget(QLabel("Intel channel names"))
+        channel_layout.addWidget(QLabel("预警频道名"))
         self._channel_edit = QLineEdit(os.environ.get("EVE_SENTRY_CHANNEL", ""))
-        self._channel_edit.setPlaceholderText("Example: wc.Venal+Br+Te")
+        self._channel_edit.setPlaceholderText("例如: wc.Venal+Br+Te, intel")
         channel_layout.addWidget(self._channel_edit)
 
-        channel_layout.addWidget(QLabel("Chatlogs directory"))
+        channel_layout.addWidget(QLabel("EVE Chatlogs 目录"))
         self._channel_log_dir_edit = QLineEdit(
             os.environ.get("EVE_SENTRY_CHATLOG_DIR", str(DEFAULT_CHATLOG_DIR))
         )
