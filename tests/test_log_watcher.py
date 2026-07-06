@@ -33,12 +33,15 @@ def test_watcher_reads_matching_files_and_persists_offsets(tmp_path):
         encoding="utf-8",
     )
 
-    watcher = ChatLogWatcher(log_dir, channels=["Alliance"], state_path=state)
+    watcher = ChatLogWatcher(log_dir, channels=["Alliance Intel"], state_path=state)
     first = watcher.poll_lines()
-    restarted = ChatLogWatcher(log_dir, channels=["Alliance"], state_path=state)
 
     assert [line.channel for line in first] == ["Alliance Intel"]
     assert first[0].text.endswith("Tama +3 reds")
+    watcher.commit_line(first[0])
+
+    restarted = ChatLogWatcher(log_dir, channels=["Alliance Intel"], state_path=state)
+
     assert restarted.poll_lines() == []
 
     with intel_log.open("a", encoding="utf-8") as handle:
@@ -48,6 +51,58 @@ def test_watcher_reads_matching_files_and_persists_offsets(tmp_path):
 
     assert len(second) == 1
     assert second[0].text.endswith("Oijanen Some Pilot")
+
+
+def test_watcher_channel_filters_are_exact_by_default(tmp_path):
+    log_dir = tmp_path / "Chatlogs"
+    log_dir.mkdir()
+    state = tmp_path / "offsets.json"
+    (log_dir / "Alliance Intel_20260630_120000.txt").write_text(
+        "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds\n",
+        encoding="utf-8",
+    )
+
+    watcher = ChatLogWatcher(log_dir, channels=["Alliance"], state_path=state)
+
+    assert watcher.poll_lines() == []
+
+
+def test_watcher_channel_filters_support_explicit_wildcards(tmp_path):
+    log_dir = tmp_path / "Chatlogs"
+    log_dir.mkdir()
+    state = tmp_path / "offsets.json"
+    (log_dir / "Alliance Intel_20260630_120000.txt").write_text(
+        "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds\n",
+        encoding="utf-8",
+    )
+
+    watcher = ChatLogWatcher(log_dir, channels=["Alliance*"], state_path=state)
+    lines = watcher.poll_lines()
+
+    assert [line.channel for line in lines] == ["Alliance Intel"]
+
+
+def test_watcher_keeps_incomplete_trailing_line_until_newline(tmp_path):
+    log_dir = tmp_path / "Chatlogs"
+    log_dir.mkdir()
+    state = tmp_path / "offsets.json"
+    path = log_dir / "Alliance Intel_20260630_120000.txt"
+    path.write_text(
+        "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds",
+        encoding="utf-8",
+    )
+
+    watcher = ChatLogWatcher(log_dir, channels=["Alliance Intel"], state_path=state)
+
+    assert watcher.poll_lines() == []
+
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("\n")
+
+    lines = watcher.poll_lines()
+
+    assert len(lines) == 1
+    assert lines[0].text.endswith("Tama +3 reds")
 
 
 def test_watcher_reads_utf16_chatlog(tmp_path):

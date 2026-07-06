@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Iterable
 
 
 DEFAULT_CHATLOG_DIR = Path.home() / "Documents" / "EVE" / "logs" / "Chatlogs"
 CHANNEL_SUFFIX_RE = re.compile(r"(?:[_-]\d{8})?(?:[_-]\d{6})(?:[_-]\d+)?$")
+WILDCARD_CHARS = frozenset("*?")
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,7 @@ class ChatLogLine:
     path: Path
     channel: str
     text: str
+    end_offset: int
 
 
 class OffsetStore:
@@ -71,7 +74,7 @@ class ChatLogWatcher:
         state_path: str | Path = "channel_offsets.json",
     ) -> None:
         self.log_dir = Path(log_dir)
-        self.channels = [item.casefold() for item in (channels or []) if item]
+        self.channels = normalize_channel_filters(channels or [])
         self.state = OffsetStore(state_path)
 
     def seed_to_end(self) -> None:
@@ -85,9 +88,13 @@ class ChatLogWatcher:
         lines: list[ChatLogLine] = []
         for path in self.discover_files():
             lines.extend(self._read_new_lines(path))
-        if lines:
-            self.state.save()
         return lines
+
+    def commit_line(self, line: ChatLogLine) -> None:
+        """Persist the offset for a line after it has been handled."""
+        if line.end_offset > self.state.get(line.path):
+            self.state.set(line.path, line.end_offset)
+            self.state.save()
 
     def discover_files(self) -> list[Path]:
         """Return matching chatlog text files sorted by mtime then name."""
@@ -110,22 +117,86 @@ class ChatLogWatcher:
             return []
 
         data = path.read_bytes()
-        chunk = data[offset:]
         encoding = detect_encoding(data)
-        text = chunk.decode(encoding, errors="replace")
-        self.state.set(path, size)
         channel = channel_name_from_path(path)
-        return [
-            ChatLogLine(path=path, channel=channel, text=line)
-            for line in text.splitlines()
-            if line.strip()
-        ]
+        newline = newline_sequence(data, encoding)
+        cursor = offset
+        lines: list[ChatLogLine] = []
+        blank_offset = offset
+        while cursor < size:
+            newline_at = data.find(newline, cursor)
+            if newline_at < 0:
+                break
+            end_offset = newline_at + len(newline)
+            raw_line = data[cursor:end_offset]
+            text = raw_line.decode(
+                line_decode_encoding(data, cursor, encoding),
+                errors="replace",
+            ).lstrip("\ufeff")
+            if text.strip():
+                lines.append(
+                    ChatLogLine(
+                        path=path,
+                        channel=channel,
+                        text=text.rstrip("\r\n"),
+                        end_offset=end_offset,
+                    )
+                )
+            else:
+                blank_offset = end_offset
+            cursor = end_offset
+        if not lines and blank_offset > offset:
+            self.state.set(path, blank_offset)
+            self.state.save()
+        return lines
 
     def _matches_channel(self, path: Path) -> bool:
         if not self.channels:
             return True
-        channel = channel_name_from_path(path).casefold()
-        return any(item in channel for item in self.channels)
+        channel = normalize_channel_name(channel_name_from_path(path))
+        return any(channel_filter_matches(item, channel) for item in self.channels)
+
+
+def normalize_channel_name(value: str) -> str:
+    """Normalize a channel name or configured filter for stable matching."""
+    return " ".join(str(value or "").strip().casefold().split())
+
+
+def normalize_channel_filters(channels: Iterable[str]) -> list[str]:
+    """Return non-empty normalized channel filters."""
+    result: list[str] = []
+    for item in channels:
+        normalized = normalize_channel_name(str(item))
+        if normalized:
+            result.append(normalized)
+    return result
+
+
+def channel_filter_matches(channel_filter: str, channel: str) -> bool:
+    """Match exact channel names unless a filter explicitly uses wildcards."""
+    if any(char in channel_filter for char in WILDCARD_CHARS):
+        return fnmatchcase(channel, channel_filter)
+    return channel == channel_filter
+
+
+def newline_sequence(data: bytes, encoding: str) -> bytes:
+    """Return the byte newline sequence for the detected text encoding."""
+    if encoding == "utf-16":
+        if data.startswith(b"\xfe\xff"):
+            return b"\x00\n"
+        return b"\n\x00"
+    return b"\n"
+
+
+def line_decode_encoding(data: bytes, offset: int, encoding: str) -> str:
+    """Return a codec that can decode an individual line from a byte offset."""
+    if encoding != "utf-16":
+        return encoding
+    if offset == 0 and (data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff")):
+        return "utf-16"
+    if data.startswith(b"\xfe\xff"):
+        return "utf-16-be"
+    return "utf-16-le"
 
 
 def detect_encoding(data: bytes) -> str:

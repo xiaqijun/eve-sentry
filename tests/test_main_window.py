@@ -190,6 +190,9 @@ def test_channel_monitor_starts_only_for_selected_channels(monkeypatch):
             created["state_path"] = state_path
             self.seeded = False
 
+        def discover_files(self):
+            return [object()]
+
         def seed_to_end(self):
             self.seeded = True
 
@@ -206,6 +209,33 @@ def test_channel_monitor_starts_only_for_selected_channels(monkeypatch):
     assert window._channel_watcher.seeded is True
     assert window._channel_timer.interval == 5000
     assert window._channel_timer.started is True
+    assert window._log_messages == [
+        "Channel log monitor started: wc.Venal+Br+Te (1 files)"
+    ]
+
+
+def test_channel_monitor_warns_when_no_channel_files_match(monkeypatch):
+    class FakeWatcher:
+        def __init__(self, log_dir, channels, state_path):
+            self.seeded = False
+
+        def discover_files(self):
+            return []
+
+        def seed_to_end(self):
+            self.seeded = True
+
+    monkeypatch.setattr("app.ui.main_window.ChatLogWatcher", FakeWatcher)
+    window = make_channel_window(["wc.Venal+Br+Te"])
+
+    assert MainWindow._start_channel_monitor(window) is True
+
+    assert window._channel_watcher.seeded is True
+    assert window._channel_timer.started is True
+    assert window._log_messages == [
+        "Channel log monitor started with no matching files yet: "
+        "wc.Venal+Br+Te. Use full channel names or explicit * / ? wildcards."
+    ]
 
 
 def test_channel_monitor_delegates_parsing_to_server(monkeypatch):

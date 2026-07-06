@@ -76,6 +76,8 @@ uv run python -m app.channel_client --log-dir .\samples\Chatlogs --once --includ
 uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Alliance Intel" --server-parse
 ```
 
+`--channel` 默认按完整频道名精确匹配；需要匹配一组频道时，显式使用 `*` 或 `?` 通配符。
+
 ### 4. 启动检测客户端
 
 ```powershell
