@@ -125,6 +125,9 @@ function summarizeMonitors(
   const summaries = new Map<string, MonitorSummary>();
   for (const heartbeat of bootstrap.clients.heartbeats || []) {
     const details = asRecord(heartbeat.details);
+    if (heartbeat.online !== true || details.monitoring !== true) {
+      continue;
+    }
     const systemId = firstNumber(
       heartbeat.system_id,
       heartbeat.solar_system_id,
@@ -158,9 +161,7 @@ function summarizeMonitors(
       heartbeat.client_id,
     );
     summary.count += 1;
-    if (heartbeat.online === true) {
-      summary.onlineCount += 1;
-    }
+    summary.onlineCount += 1;
     if (label && !summary.labels.includes(label)) {
       summary.labels.push(label);
     }

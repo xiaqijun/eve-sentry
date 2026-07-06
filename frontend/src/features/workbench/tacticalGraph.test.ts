@@ -177,11 +177,11 @@ describe("buildTacticalGraph", () => {
     });
   });
 
-  it("marks deployed monitoring clients on their current systems", () => {
+  it("marks only online monitoring clients on their current systems", () => {
     const graph = buildTacticalGraph({
       ...bootstrap,
       clients: {
-        count: 2,
+        count: 3,
         heartbeats: [
           {
             client_id: "detector-client:tenal-1",
@@ -203,10 +203,20 @@ describe("buildTacticalGraph", () => {
               system_id: 30003616,
             },
           },
+          {
+            client_id: "detector-client:tenal-3",
+            client_type: "detector_client",
+            label: "Idle Monitor",
+            online: true,
+            details: {
+              monitoring: false,
+              system_id: 30003616,
+            },
+          },
         ],
         summary: {
-          count: 2,
-          online_count: 1,
+          count: 3,
+          online_count: 2,
           stale_count: 1,
         },
       },
@@ -218,9 +228,9 @@ describe("buildTacticalGraph", () => {
       monitorLabels: ["Tenal OCR Monitor"],
     });
     expect(graph.nodes.find((node) => node.name === "NCG-PW")).toMatchObject({
-      monitorCount: 1,
+      monitorCount: 0,
       monitorOnlineCount: 0,
-      monitorLabels: ["NCG Monitor"],
+      monitorLabels: [],
     });
   });
 });
