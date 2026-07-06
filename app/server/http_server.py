@@ -641,8 +641,40 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_esi_snapshot(include_location, include_contacts)
             return
+        if path.startswith(f"{API_V1_PREFIX}/characters/by-name/"):
+            name = unquote(path[len(f"{API_V1_PREFIX}/characters/by-name/"):]).strip()
+            self._send_optional_json(
+                "character",
+                self._store().character_by_name(name),
+                "character not found or ESI not enabled",
+            )
+            return
+        if path.startswith(f"{API_V1_PREFIX}/characters/"):
+            try:
+                character_id = self._parse_path_int(
+                    path,
+                    f"{API_V1_PREFIX}/characters/",
+                    "character_id",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_optional_json(
+                "character",
+                self._store().character_profile(character_id),
+                "character not found or ESI not enabled",
+            )
+            return
         if path == f"{API_V1_PREFIX}/systems":
             self._send_json({"map": self._map_snapshot_payload()})
+            return
+        if path.startswith(f"{API_V1_PREFIX}/systems/by-name/"):
+            name = unquote(path[len(f"{API_V1_PREFIX}/systems/by-name/"):]).strip()
+            self._send_optional_json(
+                "system",
+                self._store().system_by_name(name),
+                "system not found or ESI not enabled",
+            )
             return
         if path.startswith(f"{API_V1_PREFIX}/systems/"):
             try:
@@ -675,6 +707,70 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "system not found"}, HTTPStatus.NOT_FOUND)
                 return
             self._send_json({"system": payload})
+            return
+        if path.startswith(f"{API_V1_PREFIX}/kill-activity/character/"):
+            try:
+                character_id = self._parse_path_int(
+                    path,
+                    f"{API_V1_PREFIX}/kill-activity/character/",
+                    "character_id",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_optional_json(
+                "activity",
+                self._store().character_kill_activity(character_id),
+                "character kill activity not found or killboard not enabled",
+            )
+            return
+        if path.startswith(f"{API_V1_PREFIX}/kill-activity/system/"):
+            try:
+                system_id = self._parse_path_int(
+                    path,
+                    f"{API_V1_PREFIX}/kill-activity/system/",
+                    "system_id",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_optional_json(
+                "activity",
+                self._store().system_kill_activity(system_id),
+                "system kill activity not found or killboard not enabled",
+            )
+            return
+        if path.startswith(f"{API_V1_PREFIX}/kill-activity/corporation/"):
+            try:
+                corporation_id = self._parse_path_int(
+                    path,
+                    f"{API_V1_PREFIX}/kill-activity/corporation/",
+                    "corporation_id",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_optional_json(
+                "activity",
+                self._store().corporation_kill_activity(corporation_id),
+                "corporation kill activity not found or killboard not enabled",
+            )
+            return
+        if path.startswith(f"{API_V1_PREFIX}/kill-activity/alliance/"):
+            try:
+                alliance_id = self._parse_path_int(
+                    path,
+                    f"{API_V1_PREFIX}/kill-activity/alliance/",
+                    "alliance_id",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_optional_json(
+                "activity",
+                self._store().alliance_kill_activity(alliance_id),
+                "alliance kill activity not found or killboard not enabled",
+            )
             return
         if path == f"{API_V1_PREFIX}/reports":
             self._send_report_list(parsed.query)

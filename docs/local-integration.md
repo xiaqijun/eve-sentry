@@ -140,8 +140,8 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --ack --ack-by 
 
 - 服务端是否正常: `GET /api/health`。
 - 客户端是否在线: `GET /api/heartbeats` 或 Web 面板 `Client Status`。
-- ESI 是否登录: `GET /api/esi/status`。
-- ESI session 快照: `GET /api/esi/session?location=true&contacts=true`。
+- ESI 是否登录: `GET /api/v1/esi/status`。
+- ESI session 快照: `GET /api/v1/esi/session?location=true&contacts=true`。
 - 当前 alert: `GET /api/alerts?limit=20`。
 - 单条详情: `GET /api/alerts/{id}`。
 - 事件流: `GET /api/events?timeout=10&heartbeat=5`。

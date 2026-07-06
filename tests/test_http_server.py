@@ -729,6 +729,59 @@ def test_public_lookup_routes_return_profiles_and_activity(tmp_path):
         assert alliance_activity["activity"]["alliance_id"] == 789
         assert alliance_activity["activity"]["kills"] == 0
         assert alliance_activity["activity"]["losses"] == 1
+
+        status, by_name = request_json(
+            f"{server.url}/api/v1/characters/by-name/Alice"
+        )
+        assert status == 200
+        assert by_name["character"]["character_id"] == 123
+        assert by_name["character"]["corporation_id"] == 456
+
+        status, by_id = request_json(f"{server.url}/api/v1/characters/123")
+        assert status == 200
+        assert by_id["character"]["alliance_id"] == 789
+
+        status, system = request_json(f"{server.url}/api/v1/systems/by-name/Tama")
+        assert status == 200
+        assert system["system"]["system_id"] == 30002813
+        assert system["system"]["security_status"] == 0.3
+
+        status, system = request_json(f"{server.url}/api/v1/systems/30002813")
+        assert status == 200
+        assert system["system"]["name"] == "Tama"
+        assert system["system"]["system_id"] == 30002813
+
+        status, character_activity = request_json(
+            f"{server.url}/api/v1/kill-activity/character/123"
+        )
+        assert status == 200
+        assert character_activity["activity"]["character_id"] == 123
+        assert character_activity["activity"]["kills"] == 1
+        assert character_activity["activity"]["losses"] == 1
+
+        status, system_activity = request_json(
+            f"{server.url}/api/v1/kill-activity/system/30002813"
+        )
+        assert status == 200
+        assert system_activity["activity"]["system_id"] == 30002813
+        assert system_activity["activity"]["kills"] == 1
+        assert system_activity["activity"]["character_ids"] == [123, 777]
+
+        status, corporation_activity = request_json(
+            f"{server.url}/api/v1/kill-activity/corporation/456"
+        )
+        assert status == 200
+        assert corporation_activity["activity"]["corporation_id"] == 456
+        assert corporation_activity["activity"]["kills"] == 1
+        assert corporation_activity["activity"]["losses"] == 1
+
+        status, alliance_activity = request_json(
+            f"{server.url}/api/v1/kill-activity/alliance/789"
+        )
+        assert status == 200
+        assert alliance_activity["activity"]["alliance_id"] == 789
+        assert alliance_activity["activity"]["kills"] == 0
+        assert alliance_activity["activity"]["losses"] == 1
     finally:
         server.stop()
 
@@ -785,7 +838,25 @@ def test_public_lookup_routes_report_disabled_sources(tmp_path):
             raise AssertionError("expected HTTP 404")
 
         try:
+            request_json(f"{server.url}/api/v1/characters/123")
+        except HTTPError as exc:
+            assert exc.code == 404
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert "ESI" in payload["error"]
+        else:
+            raise AssertionError("expected HTTP 404")
+
+        try:
             request_json(f"{server.url}/api/kill-activity/character/123")
+        except HTTPError as exc:
+            assert exc.code == 404
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert "killboard" in payload["error"]
+        else:
+            raise AssertionError("expected HTTP 404")
+
+        try:
+            request_json(f"{server.url}/api/v1/kill-activity/character/123")
         except HTTPError as exc:
             assert exc.code == 404
             payload = json.loads(exc.read().decode("utf-8"))
@@ -803,6 +874,15 @@ def test_public_lookup_routes_report_disabled_sources(tmp_path):
             raise AssertionError("expected HTTP 404")
 
         try:
+            request_json(f"{server.url}/api/v1/kill-activity/corporation/456")
+        except HTTPError as exc:
+            assert exc.code == 404
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert "killboard" in payload["error"]
+        else:
+            raise AssertionError("expected HTTP 404")
+
+        try:
             request_json(f"{server.url}/api/kill-activity/character/not-a-number")
         except HTTPError as exc:
             assert exc.code == 400
@@ -812,7 +892,27 @@ def test_public_lookup_routes_report_disabled_sources(tmp_path):
             raise AssertionError("expected HTTP 400")
 
         try:
+            request_json(
+                f"{server.url}/api/v1/kill-activity/character/not-a-number"
+            )
+        except HTTPError as exc:
+            assert exc.code == 400
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert "character_id" in payload["error"]
+        else:
+            raise AssertionError("expected HTTP 400")
+
+        try:
             request_json(f"{server.url}/api/kill-activity/alliance/not-a-number")
+        except HTTPError as exc:
+            assert exc.code == 400
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert "alliance_id" in payload["error"]
+        else:
+            raise AssertionError("expected HTTP 400")
+
+        try:
+            request_json(f"{server.url}/api/v1/kill-activity/alliance/not-a-number")
         except HTTPError as exc:
             assert exc.code == 400
             payload = json.loads(exc.read().decode("utf-8"))

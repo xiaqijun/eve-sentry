@@ -110,6 +110,12 @@ class RecordingClient(IntelApiClient):
                     "intel": {"entity": {"entity_type": "system"}},
                 }
             }
+        if "/characters/by-name/" in path or path.endswith("/characters/123"):
+            return {"character": {"character_id": 123, "name": "Alice Prime"}}
+        if path.endswith("/systems/by-name/S-KSWL"):
+            return {"system": {"system_id": 30002814, "name": "S-KSWL"}}
+        if "/kill-activity/" in path:
+            return {"activity": {"kills": 1, "losses": 0}}
         if path.endswith("/systems/30002813"):
             return {"system": {"system_id": 30002813, "name": "Tama"}}
         return {"ok": True, "report": {"id": "r-1"}, "observation": {"id": "o-1"}}
@@ -126,6 +132,13 @@ def test_intel_api_client_targets_v1_routes_for_http_requests():
     api.esi_status()
     api.esi_session(include_location=True, include_contacts=False)
     api.system_profile(30002813)
+    api.character_profile(123)
+    api.character_by_name("Alice Prime")
+    api.system_by_name("S-KSWL")
+    api.character_kill_activity(123)
+    api.system_kill_activity(30002813)
+    api.corporation_kill_activity(456)
+    api.alliance_kill_activity(789)
     api.list_reports()
     api.list_observations()
     api.list_alerts()
@@ -144,6 +157,13 @@ def test_intel_api_client_targets_v1_routes_for_http_requests():
         "/api/v1/esi/status",
         "/api/v1/esi/session",
         "/api/v1/systems/30002813",
+        "/api/v1/characters/123",
+        "/api/v1/characters/by-name/Alice%20Prime",
+        "/api/v1/systems/by-name/S-KSWL",
+        "/api/v1/kill-activity/character/123",
+        "/api/v1/kill-activity/system/30002813",
+        "/api/v1/kill-activity/corporation/456",
+        "/api/v1/kill-activity/alliance/789",
         "/api/v1/reports",
         "/api/v1/observations",
         "/api/v1/alerts",
@@ -362,6 +382,32 @@ def test_intel_api_client_posts_raw_channel_lines(tmp_path):
 
 def test_intel_api_client_fetches_esi_session_and_current_system(tmp_path):
     class FakeResolver:
+        def resolve_names(self, names):
+            assert names == ["Alice"] or names == ["Tama"]
+            if names == ["Alice"]:
+                return [
+                    SimpleNamespace(
+                        name="Alice",
+                        category="character",
+                        entity_id=123,
+                    )
+                ]
+            return [
+                SimpleNamespace(
+                    name="Tama",
+                    category="solar_system",
+                    entity_id=30002813,
+                )
+            ]
+
+        def character_profile(self, character_id):
+            assert character_id == 123
+            return {
+                "character_id": 123,
+                "name": "Alice",
+                "corporation_id": 456,
+            }
+
         def system_profile(self, system_id):
             assert system_id == 30002813
             return {
@@ -412,6 +458,15 @@ def test_intel_api_client_fetches_esi_session_and_current_system(tmp_path):
 
         system = api.system_profile(30002813)
         assert system["name"] == "Tama"
+
+        character = api.character_profile(123)
+        assert character["name"] == "Alice"
+
+        character = api.character_by_name("Alice")
+        assert character["character_id"] == 123
+
+        system = api.system_by_name("Tama")
+        assert system["system_id"] == 30002813
 
         current = api.current_esi_system()
         assert current is not None

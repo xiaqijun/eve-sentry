@@ -12,7 +12,7 @@ from app.server.map_config import MapConfigStore
 
 def build_arg_parser() -> argparse.ArgumentParser:
     """Return the standalone intel server argument parser."""
-    parser = argparse.ArgumentParser(description="Run the EVE Sentry intel server")
+    parser = argparse.ArgumentParser(description="Run the intel server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
     parser.add_argument("--data", default="intel_reports.json")

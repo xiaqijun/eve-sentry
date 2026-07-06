@@ -196,6 +196,79 @@ class IntelApiClient:
             raise IntelApiError("server returned an invalid system payload")
         return system
 
+    def character_profile(self, character_id: int) -> dict[str, Any]:
+        """Fetch one character profile by ESI id."""
+        character_id = int(character_id)
+        if character_id <= 0:
+            raise IntelApiError("character_id must be a positive integer")
+        payload = self._request("GET", self._v1_path(f"/characters/{character_id}"))
+        character = payload.get("character")
+        if not isinstance(character, dict):
+            raise IntelApiError("server returned an invalid character payload")
+        return character
+
+    def character_by_name(self, name: str) -> dict[str, Any]:
+        """Resolve and fetch one character profile by exact name."""
+        text = str(name or "").strip()
+        if not text:
+            raise IntelApiError("character name is required")
+        payload = self._request(
+            "GET",
+            self._v1_path(f"/characters/by-name/{quote(text, safe='')}"),
+        )
+        character = payload.get("character")
+        if not isinstance(character, dict):
+            raise IntelApiError("server returned an invalid character payload")
+        return character
+
+    def system_by_name(self, name: str) -> dict[str, Any]:
+        """Resolve and fetch one solar-system profile by exact name."""
+        text = str(name or "").strip()
+        if not text:
+            raise IntelApiError("system name is required")
+        payload = self._request(
+            "GET",
+            self._v1_path(f"/systems/by-name/{quote(text, safe='')}"),
+        )
+        system = payload.get("system")
+        if not isinstance(system, dict):
+            raise IntelApiError("server returned an invalid system payload")
+        return system
+
+    def character_kill_activity(self, character_id: int) -> dict[str, Any]:
+        """Fetch recent killboard activity for one character."""
+        return self._kill_activity("character", character_id, "character_id")
+
+    def system_kill_activity(self, system_id: int) -> dict[str, Any]:
+        """Fetch recent killboard activity for one solar system."""
+        return self._kill_activity("system", system_id, "system_id")
+
+    def corporation_kill_activity(self, corporation_id: int) -> dict[str, Any]:
+        """Fetch recent killboard activity for one corporation."""
+        return self._kill_activity("corporation", corporation_id, "corporation_id")
+
+    def alliance_kill_activity(self, alliance_id: int) -> dict[str, Any]:
+        """Fetch recent killboard activity for one alliance."""
+        return self._kill_activity("alliance", alliance_id, "alliance_id")
+
+    def _kill_activity(
+        self,
+        scope: str,
+        entity_id: int,
+        label: str,
+    ) -> dict[str, Any]:
+        entity_id = int(entity_id)
+        if entity_id <= 0:
+            raise IntelApiError(f"{label} must be a positive integer")
+        payload = self._request(
+            "GET",
+            self._v1_path(f"/kill-activity/{scope}/{entity_id}"),
+        )
+        activity = payload.get("activity")
+        if not isinstance(activity, dict):
+            raise IntelApiError("server returned an invalid kill activity payload")
+        return activity
+
     def bootstrap(self) -> dict[str, Any]:
         """Fetch the aggregated workbench bootstrap payload."""
         payload = self._request("GET", self._v1_path("/bootstrap"))

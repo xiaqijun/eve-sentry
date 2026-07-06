@@ -15,7 +15,7 @@
 - 事件推送: `/api/events` 已提供 SSE alert 事件流，支持过滤、游标续接、keepalive、并发订阅和轮询 fallback。
 - 预警频道采集: 已有 chatlog watcher、频道解析器和 `app.channel_client`，支持 UTF-16/UTF-8、断点续读、服务端解析上报。
 - ESI 公开补全: 已有 client/cache/resolver，支持名字解析、角色/星系公开资料、缓存和失败降级。
-- ESI SSO: 已有 PKCE 登录、token 保存/刷新、`/api/esi/status`、`/api/esi/session`、当前位置和 contacts/standings 快照。
+- ESI SSO: 已有 PKCE 登录、token 保存/刷新、`/api/v1/esi/status`、`/api/v1/esi/session`、当前位置和 contacts/standings 快照。
 - 击毁画像: 已有 zKillboard client/analyzer，支持角色、星系、军团、联盟近期活动画像，并能作为评分 evidence。
 - 多源评分: 已有置信度降噪、频道上下文、击毁活动、黑白名单、敌对 standing、冷却和可解释 evidence。
 - 存储: 默认 SQLite，保留 JSON 兼容路径，并有旧 JSON 导入脚本。
@@ -514,7 +514,7 @@ storage/config/ESI/killboard/clients/events 状态；新增 `GET /api/heartbeats
 
 - `app.esi.sso` 本地 PKCE 登录。
 - `app.esi.session` token refresh/session snapshot。
-- `/api/esi/status` 和 `/api/esi/session`。
+- `/api/v1/esi/status` 和 `/api/v1/esi/session`。
 - 检测端可从服务端 ESI session 同步当前位置。
 - Web 面板可展示 ESI session 状态和当前位置。
 
