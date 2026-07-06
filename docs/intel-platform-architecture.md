@@ -11,10 +11,10 @@
 
 | 模块 | 当前状态 | 主要待做 |
 | --- | --- | --- |
-| 检测客户端 | 已能后台截图、OCR 本地列表、可选监控指定预警频道日志、上报 observation 和 detector heartbeat，默认不弹本地预警 | 补区域选择排障细节 |
+| 检测客户端 | 已能后台截图、OCR 本地列表、多 EVE 窗口监控、可选监控指定预警频道日志、上报 observation 和 detector heartbeat，默认不弹本地预警 | 补区域选择排障细节和实机多开验收 |
 | 预警客户端 | 已独立消费 `/api/v1/events` / `/api/v1/alerts`，支持增量 SSE、详情、ack、弹窗可选 | 补在线状态和运行诊断 |
 | 服务端模型/API | 已有 `Observation`、`ThreatEvent`、alert detail、实体情报查询、ack、配置 API、health、heartbeats、SQLite | 补更细客户端诊断 |
-| 预警频道解析 | 已有 chatlog watcher、parser、`POST /api/channel-lines`、解析诊断和 ESI 辅助修正 | 扩更多真实频道格式 |
+| 预警频道解析 | 已有 chatlog watcher、parser、`POST /api/v1/channel-lines`、解析诊断和 ESI 辅助修正 | 扩更多真实频道格式 |
 | ESI | 已有公开解析、缓存状态、SSO、session、当前位置、contacts/standings | 补 token 迁移策略和更细失败类型 |
 | 击毁画像 | 已有 zKillboard 查询、角色/星系/军团/联盟活动画像、缓存状态和 scoring evidence | 补退避说明、聚合视图和 killmail 详情接入 |
 | 多源评分 | 已有置信度降噪、频道上下文、击毁、黑白名单、standing、冷却、规则版本和 evidence rule id | 补更完整 UI 说明 |
@@ -62,7 +62,7 @@ flowchart LR
 职责:
 
 - 查找 EVE 窗口。
-- 截取本地频道成员列表。
+- 为检测到的每个 EVE 窗口截取本地频道成员列表。
 - OCR 识别角色名。
 - 上报 `Observation`。
 - 如果选择了预警频道，自动监控 EVE Chatlogs 中匹配频道的新日志并上报。
@@ -83,10 +83,19 @@ uv run python -m app.detector_client
 检测客户端只上报到服务端，不弹出本地预警窗口，也不播放本地告警声音。
 `EVE_SENTRY_SHOW_POPUPS` 不再影响检测客户端；正式联调由独立预警客户端消费服务端 alert。
 
-检测客户端启动后会定期向 `/api/heartbeats` 上报 `detector_client` 状态，
+检测客户端启动后会定期向 `/api/v1/clients/heartbeats` 上报 `detector_client` 状态，
 并在开始/停止监控时立即刷新一次状态。心跳 `details` 当前包含是否正在监控、
-当前星系、星系来源、是否启用本地弹窗和当前窗口标题；可用
+当前星系、星系来源、是否启用本地弹窗和当前窗口标题；多窗口监控时还会带
+`target_count` 和 `targets[]`，每个 target 包含窗口 `client_id`、`window_title`、
+`region` 和 monitoring 状态；可用
 `EVE_SENTRY_HEARTBEAT_INTERVAL=15` 调整上报间隔。
+
+多窗口行为:
+
+- 启动监控时会枚举当前 EVE 窗口，并为每个窗口启动独立 worker。
+- 每个窗口使用独立 `client_id` 上报 OCR snapshot，避免 active intel 互相过期。
+- 成员列表区域按窗口保存；未保存过的窗口使用默认右侧成员列表区域。
+- 当前 ESI 位置仍是全局上下文，不区分多个角色处于不同星系的情况。
 
 当前星系来源:
 
@@ -590,11 +599,14 @@ context 会展示 cache/request 状态，用于区分 zKillboard 新查询、缓
 ```text
 POST /api/observations
 GET  /api/observations?source=&system=&name=&limit=
-POST /api/channel-lines
+POST /api/v1/channel-lines
 POST /api/v1/ocr/snapshot
 GET  /api/v1/active-intel?source=&system=&limit=
 GET  /api/health
-GET  /api/heartbeats
+GET  /api/v1/clients
+POST /api/v1/clients/heartbeats
+GET  /api/v1/config
+PUT  /api/v1/config
 
 GET  /api/v1/alerts?since=&limit=&acknowledged=&min_score=&min_level=
 GET  /api/v1/alerts/{id}
@@ -629,13 +641,13 @@ GET  /api/map/snapshot
 
 - `GET /api/health`: 返回 `health.v1`，汇总 storage、config、ESI、killboard、
   clients 和 SSE/alert 查询状态；该接口用于本地联调和运行排查，不返回 token。
-- `GET /api/heartbeats`: 返回最近客户端 heartbeat 列表，以及汇总诊断摘要，
+- `GET /api/v1/clients`: 返回最近客户端 heartbeat 列表，以及汇总诊断摘要，
   包括 `client_type`、`label`、`status`、`seen_at`、`age_seconds`、`online`，
   以及 `summary.by_type`、`summary.by_status`、`summary.stale_count` 等字段。
   客户端 `details` 当前会优先携带 `mode`、`last_action` 和 `last_error`，用于区分
   运行模式、最近一次成功动作和最近一次失败摘要；并补充 `client_version`、
   `host` 和 `last_success_at`，用于区分客户端构建、运行宿主和最近一次成功时间。
-- `POST /api/heartbeats`: 由检测客户端、预警客户端、频道采集器等运行时定期
+- `POST /api/v1/clients/heartbeats`: 由检测客户端、预警客户端、频道采集器等运行时定期
   上报在线状态。
 - `POST /api/v1/ocr/snapshot`: 检测客户端上传当前 OCR 扫描得到的 `names` 列表，
   服务端负责创建、刷新或过期 `active_intel`，同时保留历史 observations。

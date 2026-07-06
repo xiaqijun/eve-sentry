@@ -37,7 +37,7 @@ V1 已纳入范围:
 - 检测客户端、频道采集器、预警客户端、服务端拆分完成
 - 服务端统一接收 `Observation`，统一产出 `ThreatEvent`
 - 默认 SQLite 存储，保留 JSON 兼容导入路径
-- `GET /api/health`、`GET /api/heartbeats`、`GET /api/v1/alerts/{id}` 和实体情报查询接口可用
+- `GET /api/health`、`GET /api/v1/clients`、`GET /api/v1/alerts/{id}` 和实体情报查询接口可用
 - Web 面板可查看星图、手工情报、告警、详情、ESI 状态和客户端状态
 - heartbeat 已支持汇总诊断、SQLite 持久化，以及 `mode`、`last_action`、`last_error`、
   `client_version`、`host`、`last_success_at`
@@ -298,7 +298,7 @@ profile 和 kill activity。
 
 状态: 已完成第一版。频道 parser 会在 observation metadata 中写入
 `parse_diagnostics`，包含 `parse_pattern`、`system_candidates`、
-`name_candidates` 和 `ignored_tokens`；服务端 `/api/channel-lines` 会保留该诊断字段。
+`name_candidates` 和 `ignored_tokens`；服务端 `/api/v1/channel-lines` 会保留该诊断字段。
 
 范围:
 
@@ -431,10 +431,10 @@ kill activity，alert detail 的 kill context 会展示 cache/request 状态。
 优先级: P2
 
 状态: 已完成增强版。新增 `GET /api/health`，返回 `health.v1` 的
-storage/config/ESI/killboard/clients/events 状态；新增 `GET /api/heartbeats`
+storage/config/ESI/killboard/clients/events 状态；新增 `GET /api/v1/clients`
 和 Web 面板 `Client Status` 区块，用于显示检测端、预警端、频道采集器等客户端在线状态；
 检测端 GUI 现已上报 `detector_client` heartbeat，并在开始/停止监控时同步刷新状态；
-`/api/heartbeats` 现已补充 `summary.by_type`、`summary.by_status` 和 `stale_count`
+`/api/v1/clients` 现已补充 `summary.by_type`、`summary.by_status` 和 `stale_count`
 等汇总诊断字段，Web 面板会直接消费这些状态摘要；默认 SQLite store 现已把
 `client_heartbeats` 持久化到 `intel.sqlite3`，服务重启后可保留最近一次客户端状态；
 客户端 heartbeat `details` 现已补充 `mode`、`last_action` 和 `last_error`，
@@ -479,7 +479,7 @@ storage/config/ESI/killboard/clients/events 状态；新增 `GET /api/heartbeats
 - `app/channels/log_watcher.py`
 - `app/channels/parser.py`
 - `app/channel_client.py`
-- `POST /api/channel-lines`
+- `POST /api/v1/channel-lines`
 
 ### 阶段 3: ESI 公开数据补全
 

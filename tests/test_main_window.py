@@ -358,6 +358,137 @@ def test_start_monitor_creates_worker_per_eve_window(monkeypatch):
     }
 
 
+def test_publish_heartbeat_includes_multi_window_targets():
+    class FakeClient:
+        def __init__(self):
+            self.payload = None
+
+        def post_heartbeat(self, **payload):
+            self.payload = payload
+            return {"client_id": payload["client_id"], "online": True}
+
+    class FakeWorker:
+        def isRunning(self):
+            return True
+
+    class FakeCombo:
+        def currentText(self):
+            return "EVE - Pilot A"
+
+    window = MainWindow.__new__(MainWindow)
+    window._intel_client = FakeClient()
+    window._workers = {"eve - pilot a": FakeWorker(), "eve - pilot b": FakeWorker()}
+    window._worker = None
+    window._worker_contexts = {
+        "eve - pilot a": {
+            "key": "eve - pilot a",
+            "client_id": "detector-client:test:eve-pilot-a",
+            "window_title": "EVE - Pilot A",
+            "region": {"x": 600, "y": 0, "w": 200, "h": 600},
+        },
+        "eve - pilot b": {
+            "key": "eve - pilot b",
+            "client_id": "detector-client:test:eve-pilot-b",
+            "window_title": "EVE - Pilot B",
+            "region": {"x": 760, "y": 190, "w": 220, "h": 420},
+        },
+    }
+    window._heartbeat_client_id = "detector-client:test"
+    window._heartbeat_interval = 15.0
+    window._heartbeat_runtime = {
+        "client_version": "test-version",
+        "host": "test-host",
+    }
+    window._heartbeat_last_action = "monitor_started:2"
+    window._heartbeat_last_error = ""
+    window._heartbeat_last_success_at = "2026-07-07T00:00:00Z"
+    window._intel_system = "S-KSWL"
+    window._intel_system_source = "esi"
+    window._popup_alerts_enabled = False
+    window._window_combo = FakeCombo()
+    window._channel_watcher = None
+    window._channel_names = []
+    window._channel_last_action = ""
+    window._channel_last_error = ""
+    window._channel_last_success_at = ""
+    window._last_heartbeat_error = ""
+    window._refresh_status_cards = lambda: None
+
+    MainWindow._publish_heartbeat(window)
+
+    details = window._intel_client.payload["details"]
+    assert window._intel_client.payload["status"] == "running"
+    assert details["target_count"] == 2
+    assert details["targets"] == [
+        {
+            "client_id": "detector-client:test:eve-pilot-a",
+            "window_title": "EVE - Pilot A",
+            "region": {"x": 600, "y": 0, "w": 200, "h": 600},
+            "monitoring": True,
+        },
+        {
+            "client_id": "detector-client:test:eve-pilot-b",
+            "window_title": "EVE - Pilot B",
+            "region": {"x": 760, "y": 190, "w": 220, "h": 420},
+            "monitoring": True,
+        },
+    ]
+
+
+def test_stop_monitor_workers_stops_all_workers_and_clears_context():
+    class FakeSignal:
+        def __init__(self):
+            self.disconnects = 0
+
+        def disconnect(self):
+            self.disconnects += 1
+
+    class FakeWorker:
+        def __init__(self):
+            self.threat_detected = FakeSignal()
+            self.ocr_snapshot = FakeSignal()
+            self.status_update = FakeSignal()
+            self.scan_complete = FakeSignal()
+            self.running = True
+            self.stop_calls = 0
+            self.waits = []
+
+        def isRunning(self):
+            return self.running
+
+        def stop(self):
+            self.stop_calls += 1
+
+        def wait(self, timeout):
+            self.waits.append(timeout)
+            self.running = False
+            return True
+
+    first = FakeWorker()
+    second = FakeWorker()
+    window = MainWindow.__new__(MainWindow)
+    window._workers = {"first": first, "second": second}
+    window._worker = first
+    window._worker_contexts = {"first": {"window_title": "A"}}
+    window._log_messages = []
+    window._log_message = lambda message: window._log_messages.append(message)
+
+    assert MainWindow._stop_monitor_workers(window, timeout_ms=1234) is True
+
+    assert first.stop_calls == 1
+    assert second.stop_calls == 1
+    assert first.waits == [1234]
+    assert second.waits == [1234]
+    assert first.threat_detected.disconnects == 1
+    assert first.ocr_snapshot.disconnects == 1
+    assert first.status_update.disconnects == 1
+    assert first.scan_complete.disconnects == 1
+    assert second.threat_detected.disconnects == 1
+    assert window._workers == {}
+    assert window._worker_contexts == {}
+    assert window._worker is None
+
+
 def test_switching_selected_window_clears_stale_manual_region():
     class FakeCombo:
         def currentData(self):

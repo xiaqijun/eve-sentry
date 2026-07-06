@@ -97,7 +97,7 @@ sudo -u eve-sentry env $(grep -v '^#' /etc/eve-sentry/eve-sentry.env | xargs) \
 
 ```bash
 curl http://127.0.0.1:8765/api/health
-curl http://127.0.0.1:8765/api/heartbeats
+curl http://127.0.0.1:8765/api/v1/clients
 ```
 
 ## 4. 启用 systemd

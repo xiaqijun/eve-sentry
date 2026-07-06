@@ -43,7 +43,7 @@ curl http://127.0.0.1:8765/api/health
 查看客户端在线状态:
 
 ```powershell
-curl http://127.0.0.1:8765/api/heartbeats
+curl http://127.0.0.1:8765/api/v1/clients
 ```
 
 检测客户端启动后会以 `detector_client` 身份出现在这里；未开始监控时通常为
@@ -84,7 +84,14 @@ uv run python -m app.detector_client --server http://127.0.0.1:8765
 
 检测客户端负责截图、OCR 和 observation 上报；选择预警频道后，也会自动监控对应 Chatlogs 新日志并上报。未选择频道时不会提交频道日志情报。默认不弹本地预警窗口，正式联调由独立预警客户端消费服务端 alert。
 检测客户端启动后会自动向服务端上报 heartbeat，Web 面板 `Client Status`
-和 `GET /api/heartbeats` 都能看到它的在线状态。
+和 `GET /api/v1/clients` 都能看到它的在线状态。旧 `GET /api/heartbeats`
+仍保留给旧页面和旧客户端兼容。
+
+多开 EVE 时，检测客户端会为当前检测到的每个 EVE 窗口启动独立监控 worker。
+每个窗口使用独立 OCR `client_id`，避免一个窗口的空名单把另一个窗口仍存在的
+active intel 过期掉。成员列表区域按窗口标题保存；未单独保存区域的窗口会使用
+默认右侧成员列表区域。heartbeat `details.targets` 会列出每个窗口的
+`client_id`、`window_title` 和 `region`，`target_count` 表示当前监控窗口数量。
 
 常用环境变量:
 
@@ -139,13 +146,13 @@ uv run python -m app.alert_client --server http://127.0.0.1:8765 --ack --ack-by 
 ## 排查入口
 
 - 服务端是否正常: `GET /api/health`。
-- 客户端是否在线: `GET /api/heartbeats` 或 Web 面板 `Client Status`。
+- 客户端是否在线: `GET /api/v1/clients` 或 Web 面板 `Client Status`。
 - ESI 是否登录: `GET /api/v1/esi/status`。
 - ESI session 快照: `GET /api/v1/esi/session?location=true&contacts=true`。
 - 当前 alert: `GET /api/v1/alerts?limit=20`。
 - 单条详情: `GET /api/v1/alerts/{id}`。
 - 事件流: `GET /api/v1/events?timeout=10&heartbeat=5`。
-- 配置: `GET /api/config`。
+- 配置: `GET /api/v1/config`。
 
 兼容说明: 服务端仍保留旧 `/api/alerts`、`/api/events` 路由用于旧客户端过渡；新前端和预警客户端文档统一以 `/api/v1/alerts`、`/api/v1/events` 为准。
 

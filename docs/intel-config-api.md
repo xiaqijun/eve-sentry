@@ -29,7 +29,7 @@ To migrate old JSON data into SQLite explicitly:
 uv run python scripts/import_intel_json.py --source intel_reports.json --db intel.sqlite3 --json
 ```
 
-## GET /api/config
+## GET /api/v1/config
 
 Returns the active scoring config.
 
@@ -61,7 +61,7 @@ Returns the active scoring config.
 default weights. Some dynamic rules, such as killboard activity, use
 `null` for `default_weight` because the score is computed from activity volume.
 
-## PUT /api/config
+## PUT /api/v1/config
 
 Updates one or more config fields. Updates are persisted and applied
 immediately; existing alert cache is cleared so future `/api/v1/alerts` and
@@ -87,7 +87,7 @@ API surface is documented in `docs/intel-platform-architecture.md`; the active
 server currently includes:
 
 - `POST /api/observations` and legacy `POST /api/intel` for observation intake.
-- `POST /api/channel-lines` for server-side intel channel parsing.
+- `POST /api/v1/channel-lines` for server-side intel channel parsing.
 - `GET /api/health` for local integration health, including storage, config,
   ESI, killboard, and event-stream status.
 - `GET /api/v1/alerts`, `GET /api/v1/alerts/{id}`, and `POST /api/v1/alerts/{id}/ack`.
@@ -99,7 +99,7 @@ server currently includes:
   `GET/POST /api/v1/esi/login` for authenticated ESI state and browser-started SSO.
 - `GET /api/v1/kill-activity/...` for character, system, corporation, and alliance activity.
 
-Compatibility note: legacy `/api/alerts` and `/api/events` routes remain available for old clients during migration; new clients and docs should use `/api/v1/alerts` and `/api/v1/events`.
+Compatibility note: legacy `/api/config`, `/api/channel-lines`, `/api/alerts`, and `/api/events` routes remain available for old clients during migration; new clients and docs should use `/api/v1/config`, `/api/v1/channel-lines`, `/api/v1/alerts`, and `/api/v1/events`.
 
 ## Runtime Data
 
