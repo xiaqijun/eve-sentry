@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
-  ChevronDown,
   Database,
   Filter,
   LogIn,
@@ -298,13 +297,16 @@ export function WorkbenchPage() {
 
   return (
     <main className="workbench-shell">
-      <aside className="left-rail" aria-label="态势总览">
+      <aside className="left-rail" aria-label="工作台态势侧栏">
         <section className="brand-panel">
           <div>
             <p className="eyebrow">EVE 哨兵</p>
             <h1>预警情报工作台</h1>
           </div>
-          <span>系统时间 {generatedAt}</span>
+          <div className="rail-meta">
+            <span>实时态势侧栏</span>
+            <strong>{generatedAt}</strong>
+          </div>
         </section>
 
         <section className="threat-status-panel">
@@ -324,9 +326,8 @@ export function WorkbenchPage() {
               <Database size={16} />
               <span>区域概览</span>
             </div>
-            <ChevronDown size={15} />
+            <strong className="rail-value">Tenal</strong>
           </div>
-          <div className="sector-preview" aria-hidden="true" />
           <div className="sector-stat">
             <span>敌对活动</span>
             <strong className="danger-text">{summary?.alerts ?? 0}</strong>
@@ -441,9 +442,9 @@ export function WorkbenchPage() {
               onSelectSystem={setSelectedSystemId}
             />
             <div className="map-tools" aria-label="星图工具">
-              <span>滚轮缩放</span>
-              <span>拖拽平移</span>
-              <span>{selected?.name ? `锁定 ${selected.name}` : "未锁定星系"}</span>
+              <span className="map-tool-status">
+                {selected?.name ? `锁定 ${selected.name}` : "未锁定星系"}
+              </span>
               <button
                 type="button"
                 aria-label="Fit 星图"
@@ -451,7 +452,7 @@ export function WorkbenchPage() {
               >
                 Fit
               </button>
-              <span>2D</span>
+              <span className="map-tool-mode">2D</span>
             </div>
           </div>
         </section>

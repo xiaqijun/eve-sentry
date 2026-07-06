@@ -116,11 +116,25 @@ button {
 }
 
 .brand-panel span,
+.rail-meta strong,
 .status-row span,
 .sector-stat span,
 .toolbar-status span {
   color: #93a7b3;
   font-size: 12px;
+}
+
+.rail-meta {
+  display: grid;
+  gap: 4px;
+}
+
+.rail-meta strong {
+  overflow: hidden;
+  color: #dcebf2;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .threat-status-panel,
@@ -188,15 +202,10 @@ button {
   color: #ff554a;
 }
 
-.sector-preview {
-  height: 76px;
-  margin-bottom: 10px;
-  border: 1px solid rgba(43, 77, 92, 0.72);
-  background:
-    radial-gradient(circle at 72% 42%, rgba(240, 72, 164, 0.55), transparent 9%),
-    radial-gradient(circle at 33% 58%, rgba(36, 170, 255, 0.45), transparent 8%),
-    radial-gradient(circle at 50% 50%, rgba(81, 54, 139, 0.38), transparent 34%),
-    #07131b;
+.section-title-row > .rail-value {
+  color: #c8e8f2;
+  font-size: 12px;
+  letter-spacing: 0;
 }
 
 .map-pane {
@@ -229,6 +238,13 @@ button {
   border-radius: 3px;
   color: #dcebf2;
   background: rgba(3, 13, 20, 0.86);
+}
+
+.toolbar-status {
+  border-color: rgba(34, 66, 80, 0.62);
+  color: #9db6c1;
+  background: rgba(2, 10, 15, 0.36);
+  box-shadow: inset 0 -1px 0 rgba(92, 181, 213, 0.08);
 }
 
 .toolbar-status strong {
@@ -451,12 +467,19 @@ button {
 
 .map-tools span {
   height: 34px;
-  padding: 8px 13px;
-  border: 1px solid rgba(46, 89, 108, 0.86);
-  border-radius: 3px;
+  padding: 8px 0;
   color: #92a8b3;
   font-size: 12px;
-  background: rgba(5, 19, 27, 0.88);
+  background: transparent;
+}
+
+.map-tools .map-tool-status {
+  min-width: 112px;
+  color: #d4e9f1;
+}
+
+.map-tools .map-tool-mode {
+  color: #7c96a2;
 }
 
 .right-rail {
@@ -689,6 +712,9 @@ button {
   .workbench-shell {
     grid-template-columns: 240px minmax(680px, 1fr);
     grid-template-rows: auto auto auto;
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
   }
 
   .right-rail {
@@ -719,6 +745,10 @@ button {
 
   .map-toolbar {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .map-pane {
+    grid-template-rows: auto minmax(560px, 1fr);
   }
 
   .map-canvas {

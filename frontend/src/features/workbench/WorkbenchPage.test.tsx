@@ -171,6 +171,7 @@ describe("WorkbenchPage", () => {
     expect(container).toHaveTextContent("Pilot One");
     expect(container).toHaveTextContent("预警频道");
     expect(container).toHaveTextContent("预警情报工作台");
+    expect(container).toHaveTextContent("实时态势侧栏");
     expect(container).toHaveTextContent("敌对飞行员观察列表");
     expect(container).toHaveTextContent("ESI 状态");
     expect(container).toHaveTextContent("未授权");
@@ -183,6 +184,8 @@ describe("WorkbenchPage", () => {
 
     expect(container.querySelector(".nav-panel")).not.toBeInTheDocument();
     expect(container.querySelector(".quick-icons")).not.toBeInTheDocument();
+    expect(container.querySelector(".sector-preview")).not.toBeInTheDocument();
+    expect(container.querySelector('[aria-label="工作台态势侧栏"]')).toBeInTheDocument();
     expect(container.querySelector('[aria-label="切换区域"]')).not.toBeInTheDocument();
     expect(container.querySelector('[aria-label="切换视图模式"]')).not.toBeInTheDocument();
     expect(container.querySelector('[aria-label="切换视图"]')).not.toBeInTheDocument();
@@ -190,6 +193,8 @@ describe("WorkbenchPage", () => {
     expect(container.querySelector('[aria-label="设置"]')).not.toBeInTheDocument();
     expect(container.querySelector('[aria-label="情报过滤"]')).toBeInTheDocument();
     expect(container.querySelector('[aria-label="Fit 星图"]')).toBeInTheDocument();
+    expect(container).not.toHaveTextContent("滚轮缩放");
+    expect(container).not.toHaveTextContent("拖拽平移");
 
     expect(apiMocks.connectAlerts).toHaveBeenCalledTimes(1);
     expect(apiMocks.connectAlerts).toHaveBeenCalledWith(
