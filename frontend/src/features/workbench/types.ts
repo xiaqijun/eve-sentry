@@ -123,7 +123,15 @@ export interface ConfigPayload {
 export interface EsiPayload {
   enabled: boolean;
   authenticated: boolean;
+  session?: boolean;
   character_id?: number;
+  config?: {
+    client_id_configured?: boolean;
+    token_file_present?: boolean;
+    token_storage?: string;
+    scopes?: string[];
+    [key: string]: unknown;
+  };
   error?: string;
   [key: string]: unknown;
 }

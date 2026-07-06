@@ -71,6 +71,13 @@ const bootstrap: BootstrapPayload = {
   esi: {
     enabled: true,
     authenticated: false,
+    session: false,
+    config: {
+      client_id_configured: false,
+      token_file_present: false,
+      token_storage: "plain",
+      scopes: ["esi-location.read_location.v1"],
+    },
   },
 };
 
@@ -147,6 +154,12 @@ describe("WorkbenchPage", () => {
     expect(container).toHaveTextContent("预警频道");
     expect(container).toHaveTextContent("预警情报工作台");
     expect(container).toHaveTextContent("敌对飞行员观察列表");
+    expect(container).toHaveTextContent("ESI 状态");
+    expect(container).toHaveTextContent("未授权");
+    expect(container).toHaveTextContent("Client ID");
+    expect(container).toHaveTextContent("未配置");
+    expect(container).toHaveTextContent("Token");
+    expect(container).toHaveTextContent("未保存");
 
     expect(container.querySelector(".nav-panel")).not.toBeInTheDocument();
     expect(container.querySelector(".quick-icons")).not.toBeInTheDocument();

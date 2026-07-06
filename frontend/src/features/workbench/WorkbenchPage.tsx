@@ -64,6 +64,22 @@ function levelLabel(level?: Level | "unknown"): string {
   }
 }
 
+function esiStatusText(bootstrap: BootstrapPayload | undefined): {
+  publicState: string;
+  authState: string;
+  clientIdState: string;
+  tokenState: string;
+} {
+  const esi = bootstrap?.esi;
+  const config = esi?.config;
+  return {
+    publicState: esi?.enabled ? "已启用" : "未启用",
+    authState: esi?.authenticated ? "已授权" : "未授权",
+    clientIdState: config?.client_id_configured ? "已配置" : "未配置",
+    tokenState: config?.token_file_present ? "已保存" : "未保存",
+  };
+}
+
 function selectedSystem(
   bootstrap: BootstrapPayload | undefined,
   selectedSystemId: number | null,
@@ -185,6 +201,7 @@ export function WorkbenchPage() {
     item.level === "critical" || item.level === "high",
   ).length;
   const latestEvent = latestEventSummary(bootstrap?.alerts || [], observations);
+  const esiStatus = esiStatusText(bootstrap);
   const activeSystemCount = bootstrap?.map.systems.filter((item) =>
     Number(item.hostile_count || 0) > 0 || Number(item.report_count || 0) > 0,
   ).length ?? 0;
@@ -231,6 +248,38 @@ export function WorkbenchPage() {
           <div className="sector-stat">
             <span>本地信号</span>
             <strong>{summary?.reports ?? 0}</strong>
+          </div>
+        </section>
+
+        <section className="panel esi-panel">
+          <div className="section-title section-title-row">
+            <div>
+              <Database size={16} />
+              <span>ESI 状态</span>
+            </div>
+            <strong className={bootstrap?.esi.authenticated ? "online-dot" : "danger-text"}>
+              {esiStatus.authState}
+            </strong>
+          </div>
+          <div className="intel-table">
+            <div className="intel-row">
+              <span>Public</span>
+              <strong>{esiStatus.publicState}</strong>
+              <em>Resolver</em>
+              <span>{bootstrap?.esi.enabled ? "在线" : "离线"}</span>
+            </div>
+            <div className="intel-row">
+              <span>SSO</span>
+              <strong>{esiStatus.authState}</strong>
+              <em>Client ID</em>
+              <span>{esiStatus.clientIdState}</span>
+            </div>
+            <div className="intel-row">
+              <span>Token</span>
+              <strong>{esiStatus.tokenState}</strong>
+              <em>Storage</em>
+              <span>{bootstrap?.esi.config?.token_storage || "-"}</span>
+            </div>
           </div>
         </section>
       </aside>
