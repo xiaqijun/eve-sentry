@@ -569,6 +569,52 @@ def test_record_ocr_snapshot_expires_missing_names_after_grace_period(tmp_path):
     )
 
 
+def test_record_ocr_snapshot_isolates_missing_names_by_client_id(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    base = {
+        "system_name": "S-KSWL",
+        "names": ["Alice"],
+    }
+
+    store.record_ocr_snapshot(
+        {
+            **base,
+            "client_id": "detector-client:test:eve-pilot-a",
+            "source_instance": "EVE - Pilot A",
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            **base,
+            "client_id": "detector-client:test:eve-pilot-b",
+            "source_instance": "EVE - Pilot B",
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+    expired = store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test:eve-pilot-a",
+            "source_instance": "EVE - Pilot A",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-03T10:00:08+00:00",
+            "names": [],
+        }
+    )
+
+    active = store.list_active_intel(source="eve-sentry-detector")
+    inactive = store.list_active_intel(source="eve-sentry-detector", active=False)
+
+    assert expired["expired"] == 1
+    assert len(active) == 1
+    assert active[0]["source_instance"] == "EVE - Pilot B"
+    assert active[0]["metadata"] == {
+        "client_id": "detector-client:test:eve-pilot-b"
+    }
+    assert len(inactive) == 1
+    assert inactive[0]["source_instance"] == "EVE - Pilot A"
+
+
 def test_add_observation_deduplicates_same_source_time_and_raw_text(tmp_path):
     path = tmp_path / "intel_reports.json"
     store = IntelStore(path, systems={}, links=[])

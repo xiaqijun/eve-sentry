@@ -60,6 +60,8 @@ class MainWindow(QMainWindow):
         self._ocr = OCREngine(lang="en", confidence_threshold=0.7)
         self._detector = Detector(self._whitelist, cooldown_seconds=60.0)
         self._worker: MonitorWorker | None = None
+        self._workers: dict[str, MonitorWorker] = {}
+        self._worker_contexts: dict[str, dict] = {}
         self._intel_url = os.environ.get(
             "EVE_SENTRY_INTEL_URL",
             "http://127.0.0.1:8765",
@@ -253,11 +255,11 @@ class MainWindow(QMainWindow):
             "ok" if intel_system_source == "esi" else "warn",
         )
 
-        worker = getattr(self, "_worker", None)
-        monitoring = bool(worker is not None and worker.isRunning())
+        monitoring = self._is_monitoring()
+        worker_count = len(self._running_workers())
         self._set_status_card(
             "ocr",
-            "监控中" if monitoring else "待启动",
+            f"{worker_count} 窗口监控中" if monitoring else "待启动",
             "active" if monitoring else "idle",
         )
 
@@ -272,15 +274,87 @@ class MainWindow(QMainWindow):
         else:
             self._set_status_card("channel", "未选择", "idle")
 
-        window_combo = getattr(self, "_window_combo", None)
-        window_title = window_combo.currentText().strip() if window_combo else ""
-        self._set_status_card("window", window_title or "未检测到", "ok" if window_title else "warn")
-
-        region = getattr(self, "_manual_region", None) or getattr(self, "_detected_region", None)
-        if region:
-            self._set_status_card("region", f"{region['w']}x{region['h']}", "ok")
+        if monitoring:
+            self._set_status_card("window", f"{worker_count} 个窗口", "active")
         else:
-            self._set_status_card("region", "未配置", "warn")
+            window_combo = getattr(self, "_window_combo", None)
+            window_title = window_combo.currentText().strip() if window_combo else ""
+            self._set_status_card(
+                "window",
+                window_title or "未检测到",
+                "ok" if window_title else "warn",
+            )
+
+        contexts = getattr(self, "_worker_contexts", {})
+        if monitoring and contexts:
+            self._set_status_card("region", f"{len(contexts)} 个区域", "active")
+        else:
+            region = getattr(self, "_manual_region", None) or getattr(self, "_detected_region", None)
+            if region:
+                self._set_status_card("region", f"{region['w']}x{region['h']}", "ok")
+            else:
+                self._set_status_card("region", "未配置", "warn")
+
+    def _is_monitoring(self) -> bool:
+        """Return whether any detector worker is currently running."""
+        return bool(self._running_workers())
+
+    def _running_workers(self) -> list[MonitorWorker]:
+        """Return active workers, supporting both legacy and multi-window state."""
+        workers = [
+            worker
+            for worker in getattr(self, "_workers", {}).values()
+            if worker is not None and worker.isRunning()
+        ]
+        legacy_worker = getattr(self, "_worker", None)
+        if legacy_worker is not None and legacy_worker.isRunning():
+            if legacy_worker not in workers:
+                workers.append(legacy_worker)
+        return workers
+
+    def _window_monitor_key(self, window: dict) -> str:
+        """Return the key used for one monitored EVE window."""
+        title = str(window.get("title") or "").strip()
+        if title:
+            return title.casefold()
+        return f"hwnd:{window.get('hwnd', '')}"
+
+    def _window_client_id(self, window: dict) -> str:
+        """Return a unique OCR client id for one EVE window."""
+        raw = self._window_monitor_key(window)
+        slug = "".join(
+            char if ("a" <= char <= "z" or "0" <= char <= "9") else "-"
+            for char in raw.lower()
+        ).strip("-")
+        slug = "-".join(part for part in slug.split("-") if part)
+        return f"{self._heartbeat_client_id}:{slug or 'window'}"
+
+    def _build_monitor_targets(self) -> list[dict]:
+        """Build monitor targets for every currently detected EVE window."""
+        keyword = self._settings.get_keyword()
+        windows = self._capturer.list_eve_windows(keyword)
+        if not windows:
+            current = self._current_window_info()
+            windows = [current] if current is not None else []
+
+        targets: list[dict] = []
+        for window in windows:
+            if window is None:
+                continue
+            region = self._region_prefs.resolve_region(window)
+            if region is None:
+                region = self._capturer.get_member_list_region(window)
+            key = self._window_monitor_key(window)
+            targets.append(
+                {
+                    "key": key,
+                    "client_id": self._window_client_id(window),
+                    "window": dict(window),
+                    "window_title": str(window.get("title") or key),
+                    "region": dict(region),
+                }
+            )
+        return targets
 
     def _detect_window(self) -> None:
         """Find all EVE windows and populate the window selector."""
@@ -404,94 +478,100 @@ class MainWindow(QMainWindow):
             self._stop_monitor()
 
     def _start_monitor(self) -> None:
-        if self._detected_region is None:
+        targets = self._build_monitor_targets()
+        if not targets:
             self._detect_window()
+            targets = self._build_monitor_targets()
 
-        region = self._manual_region or self._detected_region
-        window = self._current_window_info()
-        if window is None:
-            self._detect_window()
-            region = self._manual_region or self._detected_region
-            window = self._current_window_info()
-
-        if region is None:
-            QMessageBox.critical(self, "Error", "No capture region is configured.")
-            self._monitor_btn.setChecked(False)
-            return
-        if window is None:
+        if not targets:
             QMessageBox.critical(self, "Error", "No EVE window is available.")
             self._monitor_btn.setChecked(False)
             return
 
         self._refresh_intel_location(force=True)
 
-        if self._worker is not None:
-            if self._worker.isRunning():
-                self._log_message("Stopping previous monitor thread...")
-                self._worker.stop()
-                if not self._worker.wait(5000):
-                    logger.warning("Old worker thread did not stop within 5 s")
-                    self._monitor_btn.setChecked(False)
-                    QMessageBox.critical(
-                        self,
-                        "Error",
-                        "Failed to stop the previous monitor thread.",
-                    )
-                    return
-                self._log_message("Previous monitor thread stopped")
-            self._disconnect_worker_signals()
+        if not self._stop_monitor_workers(timeout_ms=5000):
+            self._monitor_btn.setChecked(False)
+            QMessageBox.critical(
+                self,
+                "Error",
+                "Failed to stop the previous monitor thread.",
+            )
+            return
 
-        self._worker = MonitorWorker(self._capturer, self._ocr, self._detector)
-        self._worker.set_window(window)
-        self._worker.set_region(region["x"], region["y"], region["w"], region["h"])
-        self._worker.set_interval(self._settings.get_interval())
-        self._worker.threat_detected.connect(self._on_threat_detected)
-        self._worker.ocr_snapshot.connect(self._publish_ocr_snapshot)
-        self._worker.status_update.connect(self._log_message)
-        self._worker.scan_complete.connect(self._update_scan_count)
-        self._worker.start()
+        self._workers = {}
+        self._worker_contexts = {}
+        interval = self._settings.get_interval()
+        for target in targets:
+            worker = MonitorWorker(
+                Capturer(),
+                OCREngine(lang="en", confidence_threshold=0.7),
+                Detector(self._whitelist, cooldown_seconds=60.0),
+            )
+            window = target["window"]
+            region = target["region"]
+            worker.set_window(window)
+            worker.set_region(region["x"], region["y"], region["w"], region["h"])
+            worker.set_interval(interval)
+            worker.threat_detected.connect(
+                lambda threats, context=target: self._on_threat_detected(
+                    threats, context=context
+                )
+            )
+            worker.ocr_snapshot.connect(
+                lambda names, context=target: self._publish_ocr_snapshot(
+                    names, context=context
+                )
+            )
+            worker.status_update.connect(
+                lambda message, context=target: self._log_message(
+                    f"{context['window_title']}: {message}"
+                )
+            )
+            worker.scan_complete.connect(self._update_scan_count)
+            self._workers[target["key"]] = worker
+            self._worker_contexts[target["key"]] = target
+
+        self._worker = next(iter(self._workers.values()), None)
+        for worker in self._workers.values():
+            worker.start()
         self._start_channel_monitor()
 
         self._monitor_btn.setText("Stop Monitor")
         self._monitor_btn.setStyleSheet(monitor_button_style(active=True))
         self._status_label.setText("Running")
         self._status_label.setStyleSheet("color: #37d6b0; font-weight: bold;")
-        self._log_message("Monitor started")
-        self._heartbeat_last_action = "monitor_started"
+        self._log_message(f"Monitor started for {len(self._workers)} EVE window(s)")
+        self._heartbeat_last_action = f"monitor_started:{len(self._workers)}"
         self._heartbeat_last_error = ""
         self._heartbeat_last_success_at = heartbeat_now_iso()
         self._publish_heartbeat()
         self._refresh_status_cards()
 
-    def _disconnect_worker_signals(self) -> None:
+    def _disconnect_worker_signals(self, worker: MonitorWorker | None = None) -> None:
         """Safely disconnect all signals from the current worker."""
+        worker = worker or self._worker
+        if worker is None:
+            return
         try:
-            self._worker.threat_detected.disconnect()
+            worker.threat_detected.disconnect()
         except TypeError:
             pass
         try:
-            self._worker.ocr_snapshot.disconnect()
+            worker.ocr_snapshot.disconnect()
         except TypeError:
             pass
         try:
-            self._worker.status_update.disconnect()
+            worker.status_update.disconnect()
         except TypeError:
             pass
         try:
-            self._worker.scan_complete.disconnect()
+            worker.scan_complete.disconnect()
         except TypeError:
             pass
 
     def _stop_monitor(self) -> None:
-        if self._worker:
-            self._worker.stop()
-            if not self._worker.wait(3000):
-                logger.warning("Worker thread did not stop within 3 s timeout")
-                self._disconnect_worker_signals()
-                self._capturer = Capturer()
-                self._ocr = OCREngine(lang="en", confidence_threshold=0.7)
-                self._detector = Detector(self._whitelist, cooldown_seconds=60.0)
-            self._worker = None
+        self._stop_monitor_workers(timeout_ms=3000)
         self._stop_channel_monitor()
 
         self._monitor_btn.setText("Start Monitor")
@@ -504,13 +584,50 @@ class MainWindow(QMainWindow):
         self._publish_heartbeat()
         self._refresh_status_cards()
 
+    def _stop_monitor_workers(self, timeout_ms: int) -> bool:
+        """Stop all detector workers and return whether they exited cleanly."""
+        workers = list(getattr(self, "_workers", {}).values())
+        legacy_worker = getattr(self, "_worker", None)
+        if legacy_worker is not None and legacy_worker not in workers:
+            workers.append(legacy_worker)
+        if not workers:
+            return True
+
+        failed = False
+        running_workers = [worker for worker in workers if worker.isRunning()]
+        if running_workers:
+            self._log_message(f"Stopping {len(running_workers)} monitor thread(s)...")
+        for worker in workers:
+            worker.stop()
+        for worker in workers:
+            if worker.isRunning() and not worker.wait(timeout_ms):
+                failed = True
+                logger.warning("Worker thread did not stop within %s ms timeout", timeout_ms)
+            self._disconnect_worker_signals(worker)
+
+        if failed:
+            self._capturer = Capturer()
+            self._ocr = OCREngine(lang="en", confidence_threshold=0.7)
+            self._detector = Detector(self._whitelist, cooldown_seconds=60.0)
+        self._workers = {}
+        self._worker_contexts = {}
+        self._worker = None
+        return not failed
+
     def _on_threat(self, threats: list[str]) -> None:
         """Show non-blocking alert dialog when threats are detected."""
         _ = threats
 
-    def _on_threat_detected(self, threats: list[str]) -> None:
+    def _on_threat_detected(
+        self,
+        threats: list[str],
+        context: dict | None = None,
+    ) -> None:
         """Publish detected threats to the intel server."""
-        self._publish_intel(threats)
+        if context is None:
+            self._publish_intel(threats)
+        else:
+            self._publish_intel(threats, context=context)
 
     def _start_channel_monitor(self) -> bool:
         """Start selected-channel log monitoring when configured."""
@@ -595,22 +712,36 @@ class MainWindow(QMainWindow):
             timeout = 1.0
         return IntelApiClient(self._intel_url, timeout=timeout)
 
-    def _publish_intel(self, threats: list[str]) -> None:
+    def _publish_intel(
+        self,
+        threats: list[str],
+        context: dict | None = None,
+    ) -> None:
         if self._intel_client is None or not threats:
             return
 
         self._refresh_intel_location()
         source = "eve-sentry-detector"
-        window_title = self._window_combo.currentText()
+        window_title = (
+            str(context.get("window_title") or "").strip()
+            if context
+            else self._window_combo.currentText()
+        )
         metadata = {"system_source": self._intel_system_source}
         if window_title:
             metadata["window_title"] = window_title
+        if context:
+            if context.get("key"):
+                metadata["target_id"] = context["key"]
+            if context.get("client_id"):
+                metadata["client_id"] = context["client_id"]
         try:
             created = self._intel_client.post_observation(
                 system_name=self._intel_system or "Unknown",
                 system_id=self._intel_system_id,
                 names=threats,
                 source=source,
+                source_instance=window_title,
                 raw_text=", ".join(threats),
                 metadata=metadata,
             )
@@ -629,15 +760,24 @@ class MainWindow(QMainWindow):
         self._log_message(f"已上报情报: {len(threats)} 个目标{suffix}")
         self._refresh_status_cards()
 
-    def _publish_ocr_snapshot(self, names: list[str]) -> None:
+    def _publish_ocr_snapshot(
+        self,
+        names: list[str],
+        context: dict | None = None,
+    ) -> None:
         if self._intel_client is None:
             return
 
         self._refresh_intel_location()
+        client_id = self._heartbeat_client_id
+        source_instance = self._window_combo.currentText()
+        if context:
+            client_id = str(context.get("client_id") or client_id)
+            source_instance = str(context.get("window_title") or source_instance)
         try:
             self._intel_client.post_ocr_snapshot(
-                client_id=self._heartbeat_client_id,
-                source_instance=self._window_combo.currentText(),
+                client_id=client_id,
+                source_instance=source_instance,
                 system_name=self._intel_system or "Unknown",
                 system_id=self._intel_system_id,
                 names=names,
@@ -656,7 +796,7 @@ class MainWindow(QMainWindow):
     def _publish_heartbeat(self) -> None:
         if self._intel_client is None:
             return
-        monitoring = bool(self._worker is not None and self._worker.isRunning())
+        monitoring = self._is_monitoring()
         try:
             details = build_detector_heartbeat_details(
                 monitoring=monitoring,
@@ -670,6 +810,18 @@ class MainWindow(QMainWindow):
                 host=self._heartbeat_runtime["host"],
                 last_success_at=self._heartbeat_last_success_at,
             )
+            contexts = list(getattr(self, "_worker_contexts", {}).values())
+            if contexts:
+                details["targets"] = [
+                    {
+                        "client_id": context["client_id"],
+                        "window_title": context["window_title"],
+                        "region": context["region"],
+                        "monitoring": context["key"] in getattr(self, "_workers", {}),
+                    }
+                    for context in contexts
+                ]
+                details["target_count"] = len(contexts)
             details["channel_monitoring"] = self._channel_watcher is not None
             if self._channel_names:
                 details["channels"] = list(self._channel_names)

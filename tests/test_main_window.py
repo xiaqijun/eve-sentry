@@ -50,6 +50,88 @@ def test_publish_ocr_snapshot_posts_only_detected_names():
     assert "inactive" not in window._intel_client.payload
 
 
+def test_publish_ocr_snapshot_uses_window_context_client_id():
+    class FakeClient:
+        def __init__(self):
+            self.payload = None
+
+        def post_ocr_snapshot(self, **payload):
+            self.payload = payload
+            return {"created": 1}
+
+    class FakeCombo:
+        def currentText(self):
+            return "EVE - Current"
+
+    window = MainWindow.__new__(MainWindow)
+    window._intel_client = FakeClient()
+    window._heartbeat_client_id = "detector-client:test"
+    window._window_combo = FakeCombo()
+    window._intel_system = "S-KSWL"
+    window._intel_system_id = 30000142
+    window._refresh_intel_location = lambda: True
+
+    MainWindow._publish_ocr_snapshot(
+        window,
+        ["Alice"],
+        context={
+            "client_id": "detector-client:test:eve-pilot-a",
+            "key": "eve - pilot a",
+            "window_title": "EVE - Pilot A",
+        },
+    )
+
+    assert window._intel_client.payload == {
+        "client_id": "detector-client:test:eve-pilot-a",
+        "source_instance": "EVE - Pilot A",
+        "system_name": "S-KSWL",
+        "system_id": 30000142,
+        "names": ["Alice"],
+    }
+
+
+def test_publish_intel_uses_window_context_metadata():
+    class FakeClient:
+        def __init__(self):
+            self.payload = None
+
+        def post_observation(self, **payload):
+            self.payload = payload
+            return {"observation": {"id": "obs_12345678"}}
+
+    class FakeCombo:
+        def currentText(self):
+            return "EVE - Current"
+
+    window = MainWindow.__new__(MainWindow)
+    window._intel_client = FakeClient()
+    window._window_combo = FakeCombo()
+    window._intel_system = "S-KSWL"
+    window._intel_system_id = 30000142
+    window._intel_system_source = "esi"
+    window._refresh_intel_location = lambda: True
+    window._log_messages = []
+    window._log_message = lambda message: window._log_messages.append(message)
+
+    MainWindow._publish_intel(
+        window,
+        ["Alice"],
+        context={
+            "client_id": "detector-client:test:eve-pilot-a",
+            "key": "eve - pilot a",
+            "window_title": "EVE - Pilot A",
+        },
+    )
+
+    assert window._intel_client.payload["source_instance"] == "EVE - Pilot A"
+    assert window._intel_client.payload["metadata"] == {
+        "client_id": "detector-client:test:eve-pilot-a",
+        "system_source": "esi",
+        "target_id": "eve - pilot a",
+        "window_title": "EVE - Pilot A",
+    }
+
+
 class FakeChannelTimer:
     def __init__(self):
         self.started = False
@@ -153,6 +235,127 @@ def test_channel_monitor_delegates_parsing_to_server(monkeypatch):
     assert calls["kwargs"]["server_parse"] is True
     assert window._channel_last_action == "server_parse:1"
     assert window._log_messages == ["Channel observations uploaded: 1"]
+
+
+def test_start_monitor_creates_worker_per_eve_window(monkeypatch):
+    created_workers = []
+
+    class FakeSignal:
+        def __init__(self):
+            self.callbacks = []
+
+        def connect(self, callback):
+            self.callbacks.append(callback)
+
+        def disconnect(self):
+            self.callbacks.clear()
+
+    class FakeWorker:
+        def __init__(self, capturer, ocr, detector):
+            self.capturer = capturer
+            self.ocr = ocr
+            self.detector = detector
+            self.threat_detected = FakeSignal()
+            self.ocr_snapshot = FakeSignal()
+            self.status_update = FakeSignal()
+            self.scan_complete = FakeSignal()
+            self.window = None
+            self.region = None
+            self.interval = None
+            self.running = False
+            created_workers.append(self)
+
+        def set_window(self, window):
+            self.window = dict(window)
+
+        def set_region(self, x, y, w, h):
+            self.region = {"x": x, "y": y, "w": w, "h": h}
+
+        def set_interval(self, seconds):
+            self.interval = seconds
+
+        def start(self):
+            self.running = True
+
+        def isRunning(self):
+            return self.running
+
+        def stop(self):
+            self.running = False
+
+        def wait(self, timeout):
+            return True
+
+    class FakeCapturer:
+        def list_eve_windows(self, keyword):
+            assert keyword == "EVE -"
+            return [
+                {"hwnd": 1, "title": "EVE - Pilot A", "x": 0, "y": 0, "w": 800, "h": 600},
+                {"hwnd": 2, "title": "EVE - Pilot B", "x": 20, "y": 30, "w": 1000, "h": 800},
+            ]
+
+        def get_member_list_region(self, window):
+            return {
+                "x": window["x"] + window["w"] - 200,
+                "y": window["y"],
+                "w": 200,
+                "h": window["h"],
+            }
+
+    class FakeRegionPrefs:
+        def resolve_region(self, window):
+            if window["title"] == "EVE - Pilot B":
+                return {"x": 760, "y": 190, "w": 220, "h": 420}
+            return None
+
+    monkeypatch.setattr("app.ui.main_window.MonitorWorker", FakeWorker)
+    monkeypatch.setattr("app.ui.main_window.Capturer", lambda: object())
+    monkeypatch.setattr("app.ui.main_window.OCREngine", lambda **kwargs: object())
+    monkeypatch.setattr("app.ui.main_window.Detector", lambda *args, **kwargs: object())
+
+    window = MainWindow.__new__(MainWindow)
+    window._capturer = FakeCapturer()
+    window._settings = type(
+        "Settings",
+        (),
+        {
+            "get_keyword": lambda self: "EVE -",
+            "get_interval": lambda self: 2.0,
+            "get_channel_names": lambda self: [],
+        },
+    )()
+    window._region_prefs = FakeRegionPrefs()
+    window._whitelist = object()
+    window._heartbeat_client_id = "detector-client:test"
+    window._workers = {}
+    window._worker_contexts = {}
+    window._worker = None
+    window._refresh_intel_location = lambda force=False: True
+    window._start_channel_monitor = lambda: False
+    window._publish_heartbeat = lambda: None
+    window._refresh_status_cards = lambda: None
+    window._log_messages = []
+    window._log_message = lambda message: window._log_messages.append(message)
+    window._monitor_btn = type("Button", (), {"setChecked": lambda self, value: None, "setText": lambda self, text: None, "setStyleSheet": lambda self, text: None})()
+    window._status_label = type("Label", (), {"setText": lambda self, text: None, "setStyleSheet": lambda self, text: None})()
+
+    MainWindow._start_monitor(window)
+
+    assert len(created_workers) == 2
+    assert {worker.window["title"] for worker in created_workers} == {
+        "EVE - Pilot A",
+        "EVE - Pilot B",
+    }
+    assert created_workers[0].region == {"x": 600, "y": 0, "w": 200, "h": 600}
+    assert created_workers[1].region == {"x": 760, "y": 190, "w": 220, "h": 420}
+    assert all(worker.interval == 2.0 for worker in created_workers)
+    assert set(window._workers) == {"eve - pilot a", "eve - pilot b"}
+    assert {
+        context["client_id"] for context in window._worker_contexts.values()
+    } == {
+        "detector-client:test:eve-pilot-a",
+        "detector-client:test:eve-pilot-b",
+    }
 
 
 def test_switching_selected_window_clears_stale_manual_region():
