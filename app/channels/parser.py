@@ -104,6 +104,14 @@ SYSTEM_STOP_WORDS = {
     "clr",
     "clear",
 }
+INLINE_SENDER_STOP_WORDS = {
+    "kill",
+    "loss",
+    "report",
+    "intel",
+    "status",
+    "main bank",
+}
 
 
 @dataclass(frozen=True)
@@ -197,10 +205,12 @@ def parse_chat_line(line: str, channel: str = "") -> ParsedIntelLine | None:
     if not match:
         return None
 
-    message = match.group("message").strip()
     sender = match.group("sender").strip()
     if sender.casefold().startswith("eve"):
         return None
+    message = strip_inline_sender_prefix(
+        strip_repeated_sender_prefix(match.group("message"), sender)
+    )
     seen_at = parse_eve_timestamp(match.group("timestamp"))
     system_candidates = extract_system_candidates(message)
     if not message:
@@ -289,6 +299,38 @@ def _raw_line(
         system_candidates=system_candidates or [],
         name_candidates=name_candidates or [],
     )
+
+
+def strip_repeated_sender_prefix(message: str, sender: str) -> str:
+    """Remove a repeated chat sender from the start of the message body."""
+    text = str(message or "").strip()
+    sender_text = str(sender or "").strip()
+    if not text or not sender_text:
+        return text
+    if not text.casefold().startswith(sender_text.casefold()):
+        return text
+    rest = text[len(sender_text):]
+    if rest and rest[0] not in " \t:：->-—":
+        return text
+    return rest.strip(" \t:：->-—,;")
+
+
+def strip_inline_sender_prefix(message: str) -> str:
+    """Remove a leading ``sender:`` wrapper when the body contains intel."""
+    text = str(message or "").strip()
+    match = re.match(r"^(?P<sender>[^:：]{3,64})[:：]\s*(?P<body>.+)$", text)
+    if not match:
+        return text
+
+    sender = match.group("sender").strip()
+    body = match.group("body").strip()
+    if not sender or not body or not re.search(r"[A-Za-z0-9]", sender):
+        return text
+    if sender.casefold() in INLINE_SENDER_STOP_WORDS:
+        return text
+    if extract_system(body) or extract_hostile_count(body) is not None:
+        return body
+    return text
 
 
 def parse_eve_timestamp(value: str) -> str:

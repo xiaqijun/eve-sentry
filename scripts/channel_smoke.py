@@ -44,7 +44,7 @@ def run_smoke(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                 channels=args.channel,
                 state_path=tmp_path / "channel_offsets.json",
             )
-            posted = process_once(watcher, api, server_parse=True)
+            posted = process_once(watcher, api)
             observations = api.list_observations(limit=args.limit)
             alerts = api.list_alerts(limit=args.limit)
         except IntelApiError as exc:

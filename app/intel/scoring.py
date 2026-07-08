@@ -90,6 +90,11 @@ class ScoringEngine:
             evidence.extend(self._group_activity_evidence(activity))
         evidence.extend(self._channel_mention_evidence(channel_mentions))
 
+        if self._is_local_ocr_observation(observation) and not self._has_hostile_evidence(
+            evidence
+        ):
+            return None
+
         score = sum(item.weight for item in evidence)
         if score <= 0:
             return None
@@ -210,6 +215,27 @@ class ScoringEngine:
         return bool(
             observation.character_ids
             or _optional_int(observation.metadata.get("hostile_count")) is not None
+        )
+
+    def _is_local_ocr_observation(self, observation: Observation) -> bool:
+        return observation.source.strip().casefold() in {
+            "local_ocr",
+            "ocr",
+            "eve-sentry-detector",
+        }
+
+    def _has_hostile_evidence(self, evidence: list[Evidence]) -> bool:
+        hostile_types = {
+            "blacklist_match",
+            "hostile_corporation",
+            "hostile_alliance",
+            "hostile_standing",
+            "recent_kill_activity",
+        }
+        return any(
+            item.evidence_type in hostile_types
+            or item.evidence_type.endswith("_kill_activity")
+            for item in evidence
         )
 
     def _is_unknown_system(self, observation: Observation) -> bool:
@@ -459,10 +485,17 @@ class ScoringEngine:
         return [observation.raw_text or "Unknown target"]
 
     def _all_names_whitelisted(self, names: list[str]) -> bool:
-        whitelist = {name.casefold() for name in self.watchlist.whitelist}
+        whitelist = {
+            key
+            for name in self.watchlist.whitelist
+            for key in _ocr_name_match_keys(name)
+        }
         if not whitelist:
             return False
-        return all(name.casefold() in whitelist for name in names)
+        return all(
+            bool(_ocr_name_match_keys(name) & whitelist)
+            for name in names
+        )
 
     def _all_targets_have_friendly_profiles(
         self,
@@ -532,6 +565,19 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _ocr_name_match_keys(name: str) -> set[str]:
+    text = str(name or "").strip().casefold()
+    if not text:
+        return set()
+    keys = {text}
+    first = text[0]
+    if first == "l":
+        keys.add(f"i{text[1:]}")
+    elif first == "i":
+        keys.add(f"l{text[1:]}")
+    return keys
 
 
 def _clean_meta_string(value: Any) -> str:

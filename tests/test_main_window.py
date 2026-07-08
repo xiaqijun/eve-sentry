@@ -21,43 +21,8 @@ def qt_app():
     return _QT_APP
 
 
-def test_detector_client_does_not_post_observation_for_local_threats():
-    window = MainWindow.__new__(MainWindow)
-    logs = []
-
-    class FakeCombo:
-        def currentText(self):
-            return "EVE - Current"
-
-    window._window_combo = FakeCombo()
-    window._heartbeat_last_action = ""
-    window._heartbeat_last_error = ""
-    window._log_message = lambda message: logs.append(message)
-    window._refresh_status_cards = lambda: None
-
-    MainWindow._on_threat_detected(window, ["Varg Vikernes"])
-
-    assert window._heartbeat_last_action == "local_detection:1"
-    assert logs == ["EVE - Current: 本地识别到 1 个名单，已通过 OCR snapshot 上报"]
-
-
-def test_detector_client_does_not_post_context_observation_for_local_threats():
-    window = MainWindow.__new__(MainWindow)
-    logs = []
-
-    window._heartbeat_last_action = ""
-    window._heartbeat_last_error = ""
-    window._log_message = lambda message: logs.append(message)
-    window._refresh_status_cards = lambda: None
-
-    MainWindow._on_threat_detected(
-        window,
-        ["Alice", "Bob"],
-        context={"window_title": "EVE - Pilot A"},
-    )
-
-    assert window._heartbeat_last_action == "local_detection:2"
-    assert logs == ["EVE - Pilot A: 本地识别到 2 个名单，已通过 OCR snapshot 上报"]
+def test_detector_client_has_no_local_threat_handler():
+    assert not hasattr(MainWindow, "_on_threat_detected")
 
 
 def test_publish_ocr_snapshot_posts_only_detected_names():
@@ -413,7 +378,7 @@ def test_channel_monitor_warns_when_no_channel_files_match(monkeypatch):
     ]
 
 
-def test_channel_monitor_delegates_parsing_to_server(monkeypatch):
+def test_channel_monitor_uploads_raw_records_to_server(monkeypatch):
     calls = {}
 
     def fake_process_once(watcher, api, **kwargs):
@@ -437,7 +402,7 @@ def test_channel_monitor_delegates_parsing_to_server(monkeypatch):
 
     assert calls["watcher"] is window._channel_watcher
     assert calls["api"] is window._intel_client
-    assert calls["kwargs"]["server_parse"] is True
+    assert "server_parse" not in calls["kwargs"]
     assert window._channel_last_action == "server_parse:1"
     assert window._channel_timer.interval() == CHANNEL_POLL_INTERVAL_MS
     assert window._log_messages == ["Channel observations uploaded: 1"]
@@ -501,11 +466,9 @@ def test_start_monitor_creates_worker_per_eve_window(monkeypatch):
             self.callbacks.clear()
 
     class FakeWorker:
-        def __init__(self, capturer, ocr, detector):
+        def __init__(self, capturer, ocr):
             self.capturer = capturer
             self.ocr = ocr
-            self.detector = detector
-            self.threat_detected = FakeSignal()
             self.ocr_snapshot = FakeSignal()
             self.status_update = FakeSignal()
             self.scan_complete = FakeSignal()
@@ -561,7 +524,6 @@ def test_start_monitor_creates_worker_per_eve_window(monkeypatch):
     monkeypatch.setattr("app.ui.main_window.MonitorWorker", FakeWorker)
     monkeypatch.setattr("app.ui.main_window.Capturer", lambda: object())
     monkeypatch.setattr("app.ui.main_window.OCREngine", lambda **kwargs: object())
-    monkeypatch.setattr("app.ui.main_window.Detector", lambda *args, **kwargs: object())
 
     window = MainWindow.__new__(MainWindow)
     window._capturer = FakeCapturer()
@@ -575,7 +537,6 @@ def test_start_monitor_creates_worker_per_eve_window(monkeypatch):
         },
     )()
     window._region_prefs = FakeRegionPrefs()
-    window._whitelist = object()
     window._heartbeat_client_id = "detector-client:test"
     window._workers = {}
     window._worker_contexts = {}
@@ -1052,7 +1013,6 @@ def test_stop_monitor_workers_stops_all_workers_and_clears_context():
 
     class FakeWorker:
         def __init__(self):
-            self.threat_detected = FakeSignal()
             self.ocr_snapshot = FakeSignal()
             self.status_update = FakeSignal()
             self.scan_complete = FakeSignal()
@@ -1086,11 +1046,9 @@ def test_stop_monitor_workers_stops_all_workers_and_clears_context():
     assert second.stop_calls == 1
     assert first.waits == [1234]
     assert second.waits == [1234]
-    assert first.threat_detected.disconnects == 1
     assert first.ocr_snapshot.disconnects == 1
     assert first.status_update.disconnects == 1
     assert first.scan_complete.disconnects == 1
-    assert second.threat_detected.disconnects == 1
     assert window._workers == {}
     assert window._worker_contexts == {}
     assert window._worker is None

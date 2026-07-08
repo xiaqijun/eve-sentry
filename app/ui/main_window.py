@@ -35,7 +35,6 @@ from app.core.heartbeat import (
     heartbeat_now_iso,
     resolve_runtime_identity,
 )
-from app.engine.detector import Detector
 from app.engine.ocr import OCREngine
 from app.engine.worker import MonitorWorker
 from app.intel_client import IntelApiClient, IntelApiError
@@ -50,13 +49,6 @@ CHANNEL_POLL_INTERVAL_MS = 5000
 CHANNEL_ERROR_BACKOFF_MS = 30000
 
 
-class _DisabledWhitelist:
-    """Client-side whitelist is disabled; the server owns filtering/scoring."""
-
-    def match(self, _name: str) -> bool:
-        return False
-
-
 class MainWindow(QMainWindow):
     """Top-level window: settings on the left, log on the right, tray icon."""
 
@@ -66,11 +58,9 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(860, 560)
         self.setStyleSheet(APP_QSS)
 
-        self._whitelist = _DisabledWhitelist()
         self._region_prefs = RegionPreferences("region_prefs.json")
         self._capturer = Capturer()
         self._ocr = OCREngine(lang="en", confidence_threshold=0.7)
-        self._detector = Detector(self._whitelist, cooldown_seconds=60.0)
         self._worker: MonitorWorker | None = None
         self._workers: dict[str, MonitorWorker] = {}
         self._worker_contexts: dict[str, dict] = {}
@@ -676,18 +666,12 @@ class MainWindow(QMainWindow):
             worker = MonitorWorker(
                 Capturer(),
                 OCREngine(lang="en", confidence_threshold=0.7),
-                Detector(self._whitelist, cooldown_seconds=60.0),
             )
             window = target["window"]
             region = target["region"]
             worker.set_window(window)
             worker.set_region(region["x"], region["y"], region["w"], region["h"])
             worker.set_interval(interval)
-            worker.threat_detected.connect(
-                lambda threats, context=target: self._on_threat_detected(
-                    threats, context=context
-                )
-            )
             worker.ocr_snapshot.connect(
                 lambda names, context=target: self._publish_ocr_snapshot(
                     names, context=context
@@ -742,10 +726,6 @@ class MainWindow(QMainWindow):
         if worker is None:
             return
         try:
-            worker.threat_detected.disconnect()
-        except TypeError:
-            pass
-        try:
             worker.ocr_snapshot.disconnect()
         except TypeError:
             pass
@@ -796,36 +776,11 @@ class MainWindow(QMainWindow):
         if failed:
             self._capturer = Capturer()
             self._ocr = OCREngine(lang="en", confidence_threshold=0.7)
-            self._detector = Detector(self._whitelist, cooldown_seconds=60.0)
         self._workers = {}
         self._worker_contexts = {}
         self._worker = None
         self._refresh_window_status_table()
         return not failed
-
-    def _on_threat_detected(
-        self,
-        threats: list[str],
-        context: dict | None = None,
-    ) -> None:
-        """Record local detector hits without posting extra observations."""
-        if not threats:
-            return
-        window_title = (
-            str(context.get("window_title") or "").strip()
-            if context
-            else self._window_combo.currentText()
-        )
-        prefix = f"{window_title}: " if window_title else ""
-        self._heartbeat_last_action = f"local_detection:{len(threats)}"
-        self._heartbeat_last_error = ""
-        self._log_message(f"{prefix}本地识别到 {len(threats)} 个名单，已通过 OCR snapshot 上报")
-        self._update_window_status(
-            context,
-            "识别到名单",
-            f"本地名单 {len(threats)}",
-        )
-        self._refresh_status_cards()
 
     def _start_channel_monitor(self) -> bool:
         """Start selected-channel log monitoring when configured."""
@@ -885,7 +840,6 @@ class MainWindow(QMainWindow):
             processed = process_once(
                 self._channel_watcher,
                 self._intel_client,
-                server_parse=True,
                 diagnostics=diagnostics,
             )
         except Exception as exc:
@@ -933,7 +887,6 @@ class MainWindow(QMainWindow):
         if self._intel_client is None:
             return
 
-        self._refresh_intel_location()
         client_id = self._heartbeat_client_id
         source_instance = self._window_combo.currentText()
         if context:
@@ -943,6 +896,7 @@ class MainWindow(QMainWindow):
                 or context.get("window_title")
                 or source_instance
             )
+        self._refresh_intel_location()
         try:
             self._intel_client.post_ocr_snapshot(
                 client_id=client_id,

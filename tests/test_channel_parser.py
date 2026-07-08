@@ -23,6 +23,34 @@ def test_parse_plus_count_reds():
     assert parsed.seen_at == "2026-06-30T12:01:12+00:00"
 
 
+def test_parse_chat_line_does_not_treat_repeated_sender_as_target():
+    parsed = parse_chat_line(
+        "[ 2026.06.30 12:01:12 ] Scout A > Scout A Tama +3 reds",
+        channel="Alliance Intel",
+    )
+
+    assert parsed is not None
+    assert parsed.sender == "Scout A"
+    assert parsed.raw_text == "Tama +3 reds"
+    assert parsed.system_name == "Tama"
+    assert parsed.names == []
+    assert parsed.hostile_count == 3
+    assert parsed.to_observation_payload()["raw_text"] == "Scout A: Tama +3 reds"
+
+
+def test_parse_chat_line_does_not_treat_inline_sender_as_target():
+    parsed = parse_chat_line(
+        "[ 2026.06.30 12:01:12 ] Scout A > stoneyflap: 8-4GQM Hector Audeles",
+        channel="Alliance Intel",
+    )
+
+    assert parsed is not None
+    assert parsed.raw_text == "8-4GQM Hector Audeles"
+    assert parsed.system_name == "8-4GQM"
+    assert parsed.names == ["Hector Audeles"]
+    assert "stoneyflap" not in parsed.names
+
+
 def test_parse_chat_line_ignores_utf_bom_prefix():
     parsed = parse_chat_line(
         "\ufeff[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds",

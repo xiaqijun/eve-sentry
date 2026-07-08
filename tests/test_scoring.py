@@ -28,24 +28,23 @@ def evidence_types(event):
     return [item.evidence_type for item in event.evidence]
 
 
-def test_local_ocr_scores_medium_with_evidence():
+def test_local_ocr_without_hostile_evidence_does_not_alert():
     event = ScoringEngine(cooldown_seconds=0).score(observation())
 
+    assert event is None
+
+
+def test_medium_confidence_local_ocr_with_hostile_evidence_is_downweighted():
+    engine = ScoringEngine(
+        watchlist=Watchlist(blacklist={"alice"}),
+        cooldown_seconds=0,
+    )
+
+    event = engine.score(observation(confidence=0.5))
+
     assert event is not None
-    assert event.score == 40
-    assert event.level == "medium"
-    assert event.names == ["Alice"]
-    assert event.scoring_version == SCORING_VERSION
-    assert evidence_types(event) == ["local_ocr_seen"]
-    assert event.evidence[0].rule_id == "local_ocr_seen"
-
-
-def test_medium_confidence_local_ocr_is_downweighted():
-    event = ScoringEngine(cooldown_seconds=0).score(observation(confidence=0.5))
-
-    assert event is not None
-    assert event.score == 30
-    assert event.level == "low"
+    assert event.score == 110
+    assert event.level == "critical"
     assert event.evidence[0].weight == 30
 
 
@@ -169,6 +168,15 @@ def test_whitelist_suppresses_all_whitelisted_names():
     )
 
     assert engine.score(observation(names=["Alice", "Bob"])) is None
+
+
+def test_whitelist_suppresses_ocr_leading_i_l_confusion():
+    engine = ScoringEngine(
+        watchlist=Watchlist(whitelist={"Iona Gonemion"}),
+        cooldown_seconds=0,
+    )
+
+    assert engine.score(observation(names=["lona Gonemion"])) is None
 
 
 def test_friendly_corporation_profile_suppresses_event():
@@ -328,7 +336,7 @@ def test_group_kill_activity_adds_conservative_bonus_evidence():
     )
 
 
-def test_recent_channel_mentions_add_context_evidence():
+def test_recent_channel_mentions_do_not_alert_local_ocr_without_hostile_evidence():
     same_system = Observation(
         source="intel_channel",
         system_name="Tama",
@@ -354,18 +362,53 @@ def test_recent_channel_mentions_add_context_evidence():
         ],
     )
 
+    assert event is None
+
+
+def test_recent_channel_mentions_add_context_after_hostile_evidence():
+    same_system = Observation(
+        source="intel_channel",
+        system_name="Tama",
+        raw_text="Scout A: Tama +3 reds",
+        seen_at="2026-06-29T11:58:00+00:00",
+    )
+    adjacent_system = Observation(
+        source="intel_channel",
+        system_name="Oijanen",
+        raw_text="Scout B: Oijanen Some Pilot",
+        seen_at="2026-06-29T11:40:00+00:00",
+    )
+    engine = ScoringEngine(
+        watchlist=Watchlist(hostile_alliance_ids={99}),
+        cooldown_seconds=0,
+    )
+
+    event = engine.score(
+        observation(source="local_ocr"),
+        character_profile={"alliance_id": 99},
+        channel_mentions=[
+            ChannelMention(same_system, relation="same_system", age_seconds=120),
+            ChannelMention(
+                adjacent_system,
+                relation="adjacent_system",
+                age_seconds=1200,
+            ),
+        ],
+    )
+
     assert event is not None
-    assert event.score == 85
-    assert event.level == "high"
+    assert event.score == 145
+    assert event.level == "critical"
     assert evidence_types(event) == [
         "local_ocr_seen",
+        "hostile_alliance",
         "intel_channel_same_system_recent",
         "intel_channel_adjacent_system_recent",
     ]
-    assert event.evidence[1].summary == (
+    assert event.evidence[2].summary == (
         "Recent intel channel mention 2 minutes ago in Tama"
     )
-    assert event.evidence[2].summary == (
+    assert event.evidence[3].summary == (
         "Recent intel channel mention 20 minutes ago in adjacent system Oijanen"
     )
 
@@ -400,13 +443,14 @@ def test_multiple_enrichment_items_add_profile_and_kill_evidence():
 def test_cooldown_suppresses_repeat_alerts_for_same_system_and_names():
     clock = [1000.0]
     engine = ScoringEngine(cooldown_seconds=60, now=lambda: clock[0])
+    item = observation(source="intel_channel")
 
-    assert engine.score(observation()) is not None
-    assert engine.score(observation()) is None
+    assert engine.score(item) is not None
+    assert engine.score(item) is None
 
     clock[0] = 1061.0
 
-    assert engine.score(observation()) is not None
+    assert engine.score(item) is not None
 
 
 def test_scoring_replay_records_version_and_predictable_rule_ids():

@@ -7,7 +7,11 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from app.core.active_intel import ActiveIntelItem
+from app.core.active_intel import (
+    ActiveIntelItem,
+    ActiveIntelSnapshotResult,
+    DEFAULT_OCR_GRACE_SECONDS,
+)
 from app.core.models import Observation
 from app.server.intel_store import IntelReport, IntelStore, StarSystem, utc_now_iso
 
@@ -145,9 +149,168 @@ class SQLiteIntelStore(IntelStore):
 
     def record_ocr_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Record an OCR snapshot and persist derived active intel state."""
-        result = super().record_ocr_snapshot(payload)
-        self._replace_active_intel()
-        return result
+        client_id = str(payload.get("client_id") or "").strip()
+        if not client_id:
+            raise ValueError("client_id is required")
+
+        source = "eve-sentry-detector"
+        source_instance = (
+            str(payload.get("source_instance") or client_id).strip() or client_id
+        )
+        system_name = self._normalize_system(
+            str(payload.get("system_name") or payload.get("system") or "")
+        )
+        system_id = self._optional_int(payload.get("system_id"))
+        names = self._normalize_ocr_names(payload.get("names"))
+        seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
+        raw_text = ", ".join(names)
+        result = ActiveIntelSnapshotResult()
+        seen_name_keys = {name.casefold() for name in names}
+
+        with self._lock:
+            new_reports: list[IntelReport] = []
+            for name in names:
+                active_id = self._active_ocr_id(client_id, system_name, name)
+                item = self._active_intel.get(active_id)
+                if item is None or not item.active:
+                    report, observation = self._build_ocr_observation_report(
+                        source=source,
+                        source_instance=source_instance,
+                        system_name=system_name,
+                        system_id=system_id,
+                        client_id=client_id,
+                        name=name,
+                        seen_at=seen_at,
+                    )
+                    duplicate = self._find_duplicate_observation(report)
+                    if duplicate is not None:
+                        observation = duplicate.to_observation()
+                    else:
+                        self._ensure_system(report.system)
+                        self._reports.append(report)
+                        new_reports.append(report)
+                    if self._observation_is_suppressed(observation):
+                        item = self._active_intel.get(active_id)
+                        if item is not None and item.active:
+                            item.active = False
+                            item.left_at = seen_at
+                        result.filtered += 1
+                        continue
+                    self._active_intel[active_id] = ActiveIntelItem(
+                        active_id=active_id,
+                        source=source,
+                        source_instance=source_instance,
+                        system_name=system_name,
+                        system_id=system_id,
+                        character_id=(
+                            observation.character_ids[0]
+                            if observation.character_ids
+                            else None
+                        ),
+                        target_type="character",
+                        name=name,
+                        raw_text=raw_text,
+                        metadata={"client_id": client_id},
+                        first_seen_at=seen_at,
+                        last_seen_at=seen_at,
+                        active=True,
+                        seen_count=1,
+                        source_observation_ids=[observation.observation_id],
+                    )
+                    result.created += 1
+                    continue
+
+                if self._active_item_is_suppressed(item):
+                    item.active = False
+                    item.left_at = seen_at
+                    result.filtered += 1
+                    continue
+
+                elapsed = self._seconds_between_iso(item.last_seen_at, seen_at)
+                if elapsed is None or elapsed >= 0:
+                    item.last_seen_at = seen_at
+                    item.source_instance = source_instance
+                    item.raw_text = raw_text
+                item.active = True
+                item.left_at = ""
+                item.seen_count += 1
+                result.refreshed += 1
+
+            for item in self._active_intel.values():
+                if not item.active:
+                    continue
+                if item.source != source:
+                    continue
+                if item.metadata.get("client_id") != client_id:
+                    continue
+                if item.system_name.casefold() != system_name.casefold():
+                    continue
+                if item.name.casefold() in seen_name_keys:
+                    continue
+
+                elapsed = self._seconds_between_iso(item.last_seen_at, seen_at)
+                if elapsed is None or elapsed <= DEFAULT_OCR_GRACE_SECONDS:
+                    result.missing += 1
+                    continue
+
+                item.active = False
+                item.left_at = seen_at
+                result.expired += 1
+
+            result.active = [
+                item.to_dict()
+                for item in self._active_intel.values()
+                if item.active and item.source == source
+            ]
+            report_rows = [self._row_from_report(report) for report in new_reports]
+            active_rows = [
+                self._active_row(item) for item in self._active_intel.values()
+            ]
+            with self._connect() as connection:
+                if report_rows:
+                    connection.executemany(
+                        """
+                        INSERT INTO intel_reports (
+                            report_id, system, names_json, source, source_instance,
+                            system_id, character_ids_json, confidence, note, raw_text,
+                            metadata_json, seen_at, received_at, acknowledged_at,
+                            acknowledged_by, acknowledgement_note
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(report_id) DO UPDATE SET
+                            system = excluded.system,
+                            names_json = excluded.names_json,
+                            source = excluded.source,
+                            source_instance = excluded.source_instance,
+                            system_id = excluded.system_id,
+                            character_ids_json = excluded.character_ids_json,
+                            confidence = excluded.confidence,
+                            note = excluded.note,
+                            raw_text = excluded.raw_text,
+                            metadata_json = excluded.metadata_json,
+                            seen_at = excluded.seen_at,
+                            received_at = excluded.received_at,
+                            acknowledged_at = excluded.acknowledged_at,
+                            acknowledged_by = excluded.acknowledged_by,
+                            acknowledgement_note = excluded.acknowledgement_note
+                        """,
+                        report_rows,
+                    )
+                connection.execute("DELETE FROM active_intel")
+                connection.executemany(
+                    """
+                    INSERT INTO active_intel (
+                        active_id, source, source_instance, system, system_id,
+                        target_type, name, character_id, raw_text, metadata_json,
+                        first_seen_at, last_seen_at, expires_at, left_at,
+                        cleared_at, active, seen_count, confidence,
+                        source_observation_ids_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    active_rows,
+                )
+        return result.to_dict(include_active=False)
 
     def expire_active_intel(self, now: str | None = None) -> int:
         """Expire TTL-based active intel and persist changed rows."""
@@ -586,20 +749,21 @@ class SQLiteIntelStore(IntelStore):
 
     def record_heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Persist heartbeats in SQLite while keeping the base in-memory cache."""
-        heartbeat = super().record_heartbeat(payload)
-        raw = {
-            "client_id": heartbeat["client_id"],
-            "client_type": heartbeat["client_type"],
-            "label": heartbeat["label"],
-            "status": heartbeat["status"],
-            "seen_at": heartbeat["seen_at"],
-            "heartbeat_interval_seconds": heartbeat["heartbeat_interval_seconds"],
-            "details": dict(heartbeat.get("details") or {}),
-        }
-        self._write_heartbeat(raw)
-        if raw["client_type"] == "detector_client":
-            self._replace_active_intel()
-        return heartbeat
+        with self._lock:
+            heartbeat = super().record_heartbeat(payload)
+            raw = {
+                "client_id": heartbeat["client_id"],
+                "client_type": heartbeat["client_type"],
+                "label": heartbeat["label"],
+                "status": heartbeat["status"],
+                "seen_at": heartbeat["seen_at"],
+                "heartbeat_interval_seconds": heartbeat["heartbeat_interval_seconds"],
+                "details": dict(heartbeat.get("details") or {}),
+            }
+            self._write_heartbeat(raw)
+            if raw["client_type"] == "detector_client":
+                self._replace_active_intel()
+            return heartbeat
 
     def _read_heartbeats(self) -> dict[str, dict[str, Any]]:
         with self._connect() as connection:

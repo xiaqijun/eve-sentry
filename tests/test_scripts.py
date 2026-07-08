@@ -5,6 +5,7 @@ import io
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,13 @@ import pytest
 from app.server.intel_store import IntelStore
 from app.server.http_server import IntelHTTPServer
 from app.server.sqlite_store import SQLiteIntelStore
+
+
+def eve_chat_timestamp(offset_seconds: int = 0) -> str:
+    return (
+        datetime.now(timezone.utc).replace(microsecond=0)
+        + timedelta(seconds=offset_seconds)
+    ).strftime("%Y.%m.%d %H:%M:%S")
 
 
 def test_live_ocr_probe_help_runs_from_repo_root():
@@ -1945,8 +1953,8 @@ def test_channel_smoke_posts_sample_chatlog_to_local_server(tmp_path):
         "\n".join(
             [
                 "Listener: Alliance Intel",
-                "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds",
-                "[ 2026.06.30 12:02:44 ] Scout B > Some Pilot in Oijanen",
+                f"[ {eve_chat_timestamp()} ] Scout A > Tama +3 reds",
+                f"[ {eve_chat_timestamp(1)} ] Scout B > Some Pilot in Oijanen",
             ]
         )
         + "\n",

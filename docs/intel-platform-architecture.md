@@ -29,6 +29,7 @@ EVE Sentry 后续不再只依赖本地频道 OCR。系统应同时接入本地�
 - 检测端只负责采集和上报，不负责最终威胁判断。
 - 预警端只负责接收和通知，不直接依赖 OCR 或 ESI。
 - 服务端是唯一情报中心，负责身份解析、缓存、评分、去重、冷却和事件生成。
+- OCR 名单只表示“当前本地可见”，不是敌对证据；只有服务端确认敌对证据后才生成告警。
 - 所有情报最终落到稳定 ID 上，例如 `character_id`、`corporation_id`、`alliance_id`、`solar_system_id`。
 - 所有告警必须带证据链，能解释为什么报警。
 
@@ -64,13 +65,14 @@ flowchart LR
 - 查找 EVE 窗口。
 - 为检测到的每个 EVE 窗口截取本地频道成员列表。
 - OCR 识别角色名。
-- 上报 `Observation`。
+- 通过 `/api/v1/ocr/snapshot` 上报当前扫描到的角色名列表、星系、窗口和时间上下文。
 - 如果选择了预警频道，自动监控 EVE Chatlogs 中匹配频道的新日志并上报。
 - 如果没有选择频道，不提交任何频道日志情报。
 
 不负责:
 
 - 不做最终报警判断。
+- 不判断敌对、友军、白名单或黑名单。
 - 不直接查 ESI 或 zKillboard。
 - 不维护全局白名单/黑名单。
 
@@ -84,6 +86,13 @@ flowchart LR
 `EVE_SENTRY_SHOW_POPUPS` 不再影响检测客户端；正式联调由独立预警客户端消费服务端 alert。
 PowerShell 启动脚本会把 `-Server` 映射为 `EVE_SENTRY_INTEL_URL`，并可用
 `-Channel`、`-ChatlogDir`、`-System`、`-NoPublish` 等参数配置本地运行。
+
+OCR 上报语义:
+
+- 每次扫描只提交当前可见名单，不提交“新增威胁”或“已过滤威胁”。
+- 人名中 `I` / `l` 等易混字符由服务端结合 ESI 解析和缓存做规范化。
+- 客户端日志中的“无威胁”只表示本地没有生成弹窗或告警，不代表已经完成敌对判断。
+- 同一窗口、同一星系、同一角色的刷新、离开和过期都由服务端 `active_intel` 维护。
 
 检测客户端启动后会定期向 `/api/v1/clients/heartbeats` 上报 `detector_client` 状态，
 并在开始/停止监控时立即刷新一次状态。心跳 `details` 当前包含是否正在监控、
@@ -144,8 +153,7 @@ uv run python scripts/channel_smoke.py --json
 uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Alliance Intel"
 ```
 
-独立频道 CLI 默认把原始日志行提交到 `/api/v1/channel-lines`，由服务端解析和入库；
-`--client-parse` 仅保留给离线调试本地解析器使用。
+独立频道 CLI 只把原始日志行提交到 `/api/v1/channel-lines`，由服务端解析和入库。
 
 实现注意:
 
@@ -160,11 +168,19 @@ uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Al
 职责:
 
 - 接收所有来源的 `Observation`。
-- 调用 ESI 做名字解析和身份补全。
+- 对 OCR 名单和频道文本调用 ESI 做名字解析、角色 ID、军团和联盟补全，并缓存结果。
 - 调用击毁查询层补充近期行为画像。
-- 执行白名单、黑名单、关系、击毁活跃度、频道提及、冷却去重等规则。
+- 执行白名单、友军军团/联盟、黑名单、敌对军团/联盟、standing、击毁活跃度、频道提及、冷却去重等规则。
 - 生成 `ThreatEvent`。
 - 提供 REST API 给检测端、频道采集器、预警端和 Web 面板。
+
+OCR 告警门槛:
+
+- `local_ocr` / `ocr` / `eve-sentry-detector` observation 默认只刷新实时可见名单。
+- 命中白名单、友军军团/联盟或友好 standing 时，服务端抑制该 observation 的实时威胁展示。
+- 没有敌对证据时，OCR observation 不生成 `ThreatEvent`，即使附近有频道上下文也不直接告警。
+- 可把 OCR 升级为告警的敌对证据包括黑名单、敌对军团/联盟、敌对 standing、近期 zKill 击毁活动等。
+- 预警频道上下文只作为辅助证据加分，不能单独把一个 OCR 可见角色判定为敌对。
 
 当前入口建议:
 
@@ -278,6 +294,10 @@ OCR 上传走 `/api/v1/ocr/snapshot`，客户端只提交当前扫描检测到�
 缺失超过 grace period 的角色标记为 inactive 并写入 `left_at`。默认实时列表只返回
 active 行，历史 observations 继续可查。
 
+active OCR 行代表“当前可见名单”，不等同于告警。Web 星图可以用它显示本地可见人数，
+但预警客户端只消费服务端生成的 `ThreatEvent`。如果某个 OCR 名字经 ESI 解析后没有
+命中敌对证据，它可以保留为历史 observation 或 active row，但不会出现在 alert 列表。
+
 预警频道同样保留 observation 作为审计记录，但 active state 由频道语义维护。普通
 频道报告按 metadata 计算 TTL，并写入带 `expires_at` 的 `active_intel` 行；包含
 clear 信号的同频道、同星系消息会将匹配实时态标记为 inactive 并写入 `cleared_at`，
@@ -332,9 +352,9 @@ clear 信号的同频道、同星系消息会将匹配实时态标记为 inactiv
   "name": "Some Pilot",
   "evidence": [
     {
-      "type": "local_ocr_seen",
-      "weight": 40,
-      "summary": "本地频道 OCR 看到 Some Pilot"
+      "type": "hostile_corporation",
+      "weight": 60,
+      "summary": "Some Pilot 属于敌对军团"
     },
     {
       "type": "intel_channel_report",
@@ -367,9 +387,12 @@ clear 信号的同频道、同星系消息会将匹配实时态标记为 inactiv
   },
   "explanation": {
     "summary": "HIGH alert for Some Pilot in Tama (score 85)",
-    "reasons": ["Local OCR saw Some Pilot in Tama"],
-    "context": ["Recent channel same-system mention in Tama 2m ago"],
-    "sources": ["local_ocr", "scoring", "enrichment"]
+    "reasons": ["Hostile corporation matched for Some Pilot"],
+    "context": [
+      "Local OCR saw Some Pilot in Tama",
+      "Recent channel same-system mention in Tama 2m ago"
+    ],
+    "sources": ["local_ocr", "esi", "scoring", "enrichment"]
   }
 }
 ```
@@ -586,7 +609,7 @@ context 会展示 cache/request 状态，用于区分 zKillboard 新查询、缓
 
 | 证据 | 分值 |
 | --- | ---: |
-| 本地 OCR 看到非白名单角色 | +40 |
+| OCR 可见名单 | 0，默认只刷新 active state |
 | 命中黑名单角色 | +80 |
 | 命中敌对军团/联盟 | +60 |
 | 10 分钟内同星系预警频道提及 | +30 |

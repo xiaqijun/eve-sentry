@@ -6,23 +6,20 @@ from typing import Optional
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from app.engine.capturer import Capturer
-from app.engine.detector import Detector, ocr_candidate_names
 from app.engine.ocr import OCREngine
+from app.engine.ocr_names import ocr_candidate_names
 
 logger = logging.getLogger(__name__)
 
 
-def build_scan_status(
-    ocr_results: list[tuple[str, float]],
-    threats: list[str],
-) -> str:
+def build_scan_status(ocr_results: list[tuple[str, float]]) -> str:
     """Build the monitor status text using cleaned member names, not OCR noise."""
     member_names = ocr_candidate_names(ocr_results)
     return (
-        "识别: "
+        "名单识别: "
         f"{len(member_names)} 个成员 / "
         f"{len(member_names)} 个唯一 / "
-        f"{len(threats)} 个新告警"
+        "已上报服务器"
     )
 
 
@@ -32,9 +29,8 @@ def build_ocr_snapshot_names(ocr_results: list[tuple[str, float]]) -> list[str]:
 
 
 class MonitorWorker(QThread):
-    """Runs capture -> OCR -> detect on a timer in a background thread."""
+    """Runs capture -> OCR -> report-only snapshot publishing on a timer."""
 
-    threat_detected = pyqtSignal(list)   # list[str] -- new threat names
     status_update = pyqtSignal(str)       # human-readable status message
     scan_complete = pyqtSignal(int)       # total scan count
     ocr_snapshot = pyqtSignal(list)       # list[str] -- current OCR names
@@ -43,13 +39,11 @@ class MonitorWorker(QThread):
         self,
         capturer: Capturer,
         ocr: OCREngine,
-        detector: Detector,
         parent=None,
     ):
         super().__init__(parent)
         self._capturer = capturer
         self._ocr = ocr
-        self._detector = detector
         self._interval = 2.0           # seconds between scans
         self._running = False
         self._region: Optional[dict] = None  # {x, y, w, h}
@@ -121,19 +115,17 @@ class MonitorWorker(QThread):
                         )
                         ocr_ready = True
 
-                    # 3. Detect
-                    self.ocr_snapshot.emit(build_ocr_snapshot_names(ocr_results))
-                    threats = self._detector.check(ocr_results)
+                    # 3. Publish the raw OCR snapshot; server owns filtering/scoring.
+                    names = build_ocr_snapshot_names(ocr_results)
+                    self.ocr_snapshot.emit(names)
                     scan_count += 1
                     self.scan_complete.emit(scan_count)
-                    self.status_update.emit(build_scan_status(ocr_results, threats))
+                    self.status_update.emit(build_scan_status(ocr_results))
 
-                    if threats:
-                        names = ", ".join(threats)
-                        self.threat_detected.emit(threats)
-                        self.status_update.emit(f"发现威胁: {names}")
+                    if names:
+                        self.status_update.emit(f"名单已上报: {len(names)} 个")
                     else:
-                        self.status_update.emit("无威胁")
+                        self.status_update.emit("未识别到名单")
 
                 except Exception:
                     logger.exception("Scan cycle failed")

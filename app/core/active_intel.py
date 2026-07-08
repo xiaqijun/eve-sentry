@@ -46,6 +46,7 @@ class ActiveIntelItem:
     source_observation_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        display_name = self.name or self.system_name or self.raw_text
         return {
             "id": self.active_id,
             "source": self.source,
@@ -54,6 +55,7 @@ class ActiveIntelItem:
             "system_id": self.system_id,
             "target_type": self.target_type,
             "name": self.name,
+            "display_name": display_name,
             "character_id": self.character_id,
             "raw_text": self.raw_text,
             "metadata": dict(self.metadata),
@@ -78,16 +80,19 @@ class ActiveIntelSnapshotResult:
     filtered: int = 0
     active: list[dict[str, Any]] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, include_active: bool = True) -> dict[str, Any]:
+        payload = {
             "ok": True,
             "created": self.created,
             "refreshed": self.refreshed,
             "missing": self.missing,
             "expired": self.expired,
             "filtered": self.filtered,
-            "active": list(self.active),
+            "active_count": len(self.active),
         }
+        if include_active:
+            payload["active"] = list(self.active)
+        return payload
 
 
 def contains_clear_signal(text: str) -> bool:

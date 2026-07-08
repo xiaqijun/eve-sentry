@@ -122,8 +122,8 @@ uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Al
 
 `--channel` 默认按完整频道名精确匹配；未传 `--channel` 时不会扫描或上传任何
 Chatlogs。需要匹配一组频道时，显式使用 `*` 或 `?` 通配符；需要独立 CLI
-扫描全部频道时，必须显式加 `--all-channels`。频道 CLI 默认把原始日志行提交到
-`/api/v1/channel-lines` 由服务端解析；只有离线调试本地解析时才加 `--client-parse`。
+扫描全部频道时，必须显式加 `--all-channels`。频道 CLI 只把原始日志行提交到
+`/api/v1/channel-lines`，由服务端统一解析、ESI 补全和评分。
 
 ### 4. 启动检测客户端
 
@@ -154,6 +154,10 @@ Chatlogs。需要匹配一组频道时，显式使用 `*` 或 `?` 通配符；�
 ```
 
 检测客户端负责截图 OCR 并通过 OCR snapshot 只上报检测到的名单；选择预警频道后，也会自动监控对应 Chatlogs 新日志并交给服务端解析上报。未选择频道时不会提交频道日志情报。默认不弹本地预警窗口，正式联调由独立预警客户端消费服务端 alert。
+检测客户端不做敌对判断、不做白名单过滤、不查 ESI，也不直接生成告警。OCR 名单只表示
+“当前本地可见”，服务端收到后再解析 ESI、套用白名单/友军/敌对配置、查询 zKill 和生成
+可解释 `ThreatEvent`。因此联调误报时优先检查服务端配置和 alert evidence，而不是检查
+客户端本地白名单。
 检测客户端启动后会自动向服务端上报 heartbeat，Web 面板 `Client Status`
 和 `GET /api/v1/clients` 都能看到它的在线状态。旧 `GET /api/heartbeats`
 仍保留给旧页面和旧客户端兼容。
@@ -167,6 +171,15 @@ observations 和 alerts 仍会保留。
 检测客户端内置频道监控会请求服务端先完成解析和入库，并默认延后 ESI/zkill
 enrichment，避免实时 Chatlogs 上报被外部情报源阻塞；历史 observation 会保留
 `metadata.enrichment_deferred=true` 作为审计标记。
+
+OCR 告警排查:
+
+- 先查 `GET /api/v1/active-intel?source=eve-sentry-detector`，确认客户端是否只上报了当前名单。
+- 再查 `GET /api/v1/alerts?limit=20` 和 `GET /api/v1/alerts/{id}`，看告警 evidence 是否包含黑名单、敌对军团/联盟、敌对 standing 或 zKill 击毁活动。
+- 如果 evidence 只有 `local_ocr_seen` 或频道上下文，说明服务端评分规则不符合当前设计，应优先修服务端。
+- 用 `GET /api/v1/characters/by-name/{name}` 验证服务端是否已经查到角色 ID、军团和联盟。
+- 用 `GET /api/v1/config` 验证白名单、友军军团/联盟、敌对军团/联盟和 standing 阈值是否正确。
+- 误报清理只处理服务端 active intel / alert 数据；不要在客户端加入临时过滤逻辑。
 
 多开 EVE 时，检测客户端会为当前检测到的每个 EVE 窗口启动独立监控 worker。
 每个窗口使用独立 OCR `client_id`，避免一个窗口的空名单把另一个窗口仍存在的
@@ -339,7 +352,6 @@ python scripts/live_acceptance_bundle.py --server http://127.0.0.1:8765 --output
 - `zkill_cache.json`: zKillboard 查询缓存。
 - `channel_offsets.json`: chatlog 采集偏移。
 - `alert_client_state.json`: 预警客户端已处理 alert 状态。
-- `whitelist.json`: 旧本地白名单状态。
 
 ## 排查入口
 

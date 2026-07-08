@@ -221,6 +221,13 @@ curl http://127.0.0.1:8765/api/v1/esi/status
 只有在服务器本机调试或明确放通内网访问时，才直连 `http://127.0.0.1:8765`。
 公网部署应收口到 Nginx，不要直接把 `8765` 对全网开放。
 
+职责边界:
+
+- 检测客户端只上传 OCR snapshot 和可选频道日志，不查询 ESI、不做白名单/敌对过滤、不生成告警。
+- 服务端必须启用并配置好 ESI、白名单/友军配置、敌对配置和可选 zKill，才能完成最终威胁判断。
+- OCR active intel 代表“本地当前可见名单”，不是告警；只有服务端评分产生的 `ThreatEvent` 才会进入 `/api/v1/alerts` 和 SSE。
+- 如果公网联调出现“非敌对也告警”，先看 `GET /api/v1/alerts/{id}` 的 evidence 和 `GET /api/v1/config`，不要在客户端加过滤。
+
 ## Runtime Data
 
 常见服务端运行期文件:

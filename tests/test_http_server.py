@@ -269,9 +269,44 @@ def test_v1_ocr_snapshot_endpoint_updates_active_intel(tmp_path):
 
         assert status == 201
         assert result["created"] == 1
+        assert result["active_count"] == 1
+        assert "active" not in result
         assert status2 == 200
         assert active["count"] == 1
         assert active["active_intel"][0]["name"] == "Alice"
+    finally:
+        server.stop()
+
+
+def test_v1_alerts_do_not_fabricate_alerts_from_ocr_active_intel(tmp_path):
+    server = IntelHTTPServer(
+        IntelStore(
+            tmp_path / "intel.json",
+            systems={},
+            links=[],
+            scorer=ScoringEngine(cooldown_seconds=0),
+        ),
+        port=0,
+    )
+    server.start()
+    try:
+        status, result = request_json(
+            f"{server.url}/api/v1/ocr/snapshot",
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "source_instance": "EVE - Hajimi6",
+                "system_name": "S-KSWL",
+                "seen_at": "2026-07-08T08:00:00+00:00",
+                "names": ["Dictator 74"],
+            },
+        )
+        status2, payload = request_json(f"{server.url}/api/v1/alerts")
+
+        assert status == 201
+        assert result["created"] == 1
+        assert status2 == 200
+        assert payload["alerts"] == []
     finally:
         server.stop()
 
@@ -1094,10 +1129,11 @@ def test_authenticated_standings_contribute_to_alert_scoring(tmp_path):
             f"{server.url}/api/observations",
             method="POST",
             payload={
-                "source": "local_ocr",
+                "source": "intel_channel",
                 "system_name": "Tama",
                 "names": ["Alice"],
                 "character_ids": [123],
+                "metadata": {"hostile_count": 1},
                 "seen_at": "2026-06-30T12:00:00+00:00",
             },
         )
@@ -1105,7 +1141,7 @@ def test_authenticated_standings_contribute_to_alert_scoring(tmp_path):
         assert status == 201
         evidence_types = {item["type"] for item in created["alert"]["evidence"]}
         assert "hostile_standing" in evidence_types
-        assert created["alert"]["score"] == 110
+        assert created["alert"]["score"] == 100
 
         status, payload = request_json(
             f"{server.url}/api/alerts/{created['alert']['id']}"
@@ -1293,10 +1329,11 @@ def test_alert_detail_route_reports_degraded_sources_without_enrichment(tmp_path
             f"{server.url}/api/observations",
             method="POST",
             payload={
-                "source": "local_ocr",
+                "source": "intel_channel",
                 "system_name": "Tama",
                 "names": ["Alice"],
                 "character_ids": [123],
+                "metadata": {"hostile_count": 1},
                 "seen_at": "2026-06-30T12:00:00+00:00",
             },
         )
@@ -1351,10 +1388,11 @@ def test_alert_detail_route_includes_esi_cache_status_in_explanation(tmp_path):
             f"{server.url}/api/observations",
             method="POST",
             payload={
-                "source": "local_ocr",
+                "source": "intel_channel",
                 "system_name": "Tama",
                 "names": ["Alice"],
                 "character_ids": [123],
+                "metadata": {"hostile_count": 1},
                 "seen_at": "2026-06-30T12:00:00+00:00",
             },
         )
@@ -1646,6 +1684,54 @@ def test_create_channel_line_ignores_non_chat_headers(tmp_path):
         status, observations = request_json(f"{server.url}/api/observations")
         assert status == 200
         assert observations["count"] == 0
+    finally:
+        server.stop()
+
+
+def test_create_channel_line_does_not_treat_repeated_sender_as_target(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/channel-lines",
+            method="POST",
+            payload={
+                "channel": "Alliance Intel",
+                "line": "[ 2026.06.30 12:01:12 ] Scout A > Scout A Tama +3 reds",
+            },
+        )
+
+        assert status == 201
+        assert created["parsed"]["system_name"] == "Tama"
+        assert created["parsed"]["names"] == []
+        assert created["observation"]["names"] == []
+        assert created["observation"]["metadata"]["sender"] == "Scout A"
+        assert created["observation"]["raw_text"] == "Scout A: Tama +3 reds"
+    finally:
+        server.stop()
+
+
+def test_create_channel_line_does_not_treat_inline_sender_as_target(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/channel-lines",
+            method="POST",
+            payload={
+                "channel": "Alliance Intel",
+                "line": (
+                    "[ 2026.06.30 12:01:12 ] Scout A > "
+                    "stoneyflap: 8-4GQM Hector Audeles"
+                ),
+            },
+        )
+
+        assert status == 201
+        assert created["parsed"]["system_name"] == "8-4GQM"
+        assert created["parsed"]["names"] == ["Hector Audeles"]
+        assert created["observation"]["names"] == ["Hector Audeles"]
+        assert "stoneyflap" not in created["observation"]["names"]
     finally:
         server.stop()
 
@@ -2107,7 +2193,7 @@ def test_v1_events_stream_returns_alert_sse(tmp_path):
         server.stop()
 
 
-def test_v1_alerts_tolerates_legacy_active_item_without_source_ids(tmp_path):
+def test_v1_alerts_ignores_legacy_active_item_without_source_ids(tmp_path):
     store = IntelStore(tmp_path / "intel.json")
     observation = store.add_observation(
         {
@@ -2129,8 +2215,8 @@ def test_v1_alerts_tolerates_legacy_active_item_without_source_ids(tmp_path):
     try:
         status, payload = request_json(f"{server.url}/api/v1/alerts")
         assert status == 200
-        assert payload["count"] == 1
-        assert payload["alerts"][0]["system_name"] == observation.system_name
+        assert payload["count"] == 0
+        assert payload["alerts"] == []
     finally:
         server.stop()
 

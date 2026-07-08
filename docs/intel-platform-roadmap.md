@@ -8,8 +8,8 @@
 
 已经完成并有测试覆盖的主干能力:
 
-- 桌面检测客户端: EVE 窗口识别、区域截图、PaddleOCR 本地频道识别、后台截图、检测端默认不弹窗。
-- 客户端拆分: 检测客户端负责采集和上报，独立预警客户端负责消费服务端 alert。
+- 桌面检测客户端: EVE 窗口识别、区域截图、PaddleOCR 本地频道识别、后台截图、OCR snapshot 上报、检测端默认不弹窗。
+- 客户端拆分: 检测客户端只负责采集和上报，独立预警客户端只负责消费服务端 alert，敌对判断统一在服务端完成。
 - 统一情报模型: `Observation` 和 `ThreatEvent` 已作为服务端统一输入/输出模型。
 - 服务端 API: 已支持 observation 上报、旧 `/api/intel` 兼容、alert 查询、alert detail、实体情报查询、ack、地图快照、配置更新和 health。
 - 事件推送: `/api/v1/events` 已提供 SSE alert 事件流，支持过滤、游标续接、keepalive、并发订阅和轮询 fallback。
@@ -17,7 +17,7 @@
 - ESI 公开补全: 已有 client/cache/resolver，支持名字解析、角色/星系公开资料、缓存和失败降级。
 - ESI SSO: 已有 PKCE 登录、token 保存/刷新、`/api/v1/esi/status`、`/api/v1/esi/session`、当前位置和 contacts/standings 快照。
 - 击毁画像: 已有 zKillboard client/analyzer，支持角色、星系、军团、联盟近期活动画像，并能作为评分 evidence。
-- 多源评分: 已有置信度降噪、频道上下文、击毁活动、黑白名单、敌对 standing、冷却和可解释 evidence。
+- 多源评分: 已有置信度降噪、频道上下文、击毁活动、黑白名单、友军/敌对军团联盟、敌对 standing、冷却和可解释 evidence；OCR 可见名单本身不再单独生成告警。
 - 存储: 默认 SQLite，保留 JSON 兼容路径，并有旧 JSON 导入脚本。
 - Web 面板: 已有星图、手工情报、评分配置、服务端 alert detail 展示、实体情报摘要、ESI session 状态、客户端 heartbeat 状态和 SSE 更新。
 
@@ -46,6 +46,7 @@ V1 已纳入范围:
 - 预警客户端和 Web 面板优先消费服务端解释链，而不是各自重复推断
 - Active Intel realtime state: OCR snapshot diffing, channel TTL, clear-message
   deactivation, and frontend active list.
+- OCR 观察和最终告警分离: 本地名单只刷新 active state，只有服务端确认敌对 evidence 后才生成 alert。
 
 V1 暂不包含:
 
@@ -77,6 +78,7 @@ V1 暂不包含:
 
 - 低置信度 OCR / 频道 observation 会降权，无法解析出有效目标或星系时保留 observation 但不直接生成 alert。
 - 启用 ESI resolver 时，observation 会记录 `esi_resolution`，用于解释解析、修正或抑制的原因。
+- OCR observation 现在只表示本地可见名单；没有黑名单、敌对军团/联盟、敌对 standing、zKill 击毁活动等敌对证据时，不会因为 `local_ocr_seen` 或频道上下文单独生成 alert。
 - 频道行中唯一星系候选可修正 `system_name`，并重算 `names` / `hostile_count`。
 - 多个星系候选不再盲目修正，会以 `ambiguous` 状态保存在 `esi_resolution`。
 - 像 `Tama Oijanen` 这种由已解析星系组成的链路名会从角色候选中抑制，并记录到 `suppressed_name_candidates`。

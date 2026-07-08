@@ -18,6 +18,8 @@ from app.channels.parser import (
     extract_names,
     extract_system_candidates,
     remove_system,
+    strip_inline_sender_prefix,
+    strip_repeated_sender_prefix,
 )
 from app.core.active_intel import (
     ActiveIntelItem,
@@ -43,6 +45,35 @@ ALERT_LEVEL_RANKS = {
 def utc_now_iso() -> str:
     """Return an ISO-8601 UTC timestamp with second precision."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _ocr_i_l_candidates(name: str) -> list[str]:
+    text = str(name or "").strip()
+    if not text:
+        return []
+    positions = [
+        index for index, char in enumerate(text)
+        if char in {"I", "l"}
+    ]
+    if not positions:
+        return [text]
+
+    candidates = [text]
+    seen = {text.casefold()}
+    total = 1 << len(positions)
+    for mask in range(1, total):
+        chars = list(text)
+        for bit, position in enumerate(positions):
+            if not mask & (1 << bit):
+                continue
+            chars[position] = "l" if chars[position] == "I" else "I"
+        candidate = "".join(chars)
+        key = candidate.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+    return candidates
 
 
 @dataclass(frozen=True)
@@ -188,6 +219,7 @@ class IntelStore:
         self._alert_cache: dict[str, ThreatEvent | None] = {}
         self._heartbeats: dict[str, dict[str, Any]] = {}
         self._active_intel: dict[str, ActiveIntelItem] = {}
+        self._ocr_name_corrections: dict[str, str] = {}
         self._reports: list[IntelReport] = self._load_reports()
 
     def set_scorer(self, scorer: Any | None) -> None:
@@ -405,6 +437,54 @@ class IntelStore:
             self._save_reports()
         return report.to_observation()
 
+    def _report_from_observation(self, observation: Observation) -> IntelReport:
+        return IntelReport(
+            report_id=observation.observation_id,
+            system=observation.system_name,
+            names=observation.names,
+            source=observation.source.strip() or "api",
+            source_instance=observation.source_instance.strip(),
+            system_id=observation.system_id,
+            character_ids=observation.character_ids,
+            confidence=observation.confidence,
+            note=observation.raw_text.strip(),
+            raw_text=observation.raw_text.strip(),
+            metadata=dict(observation.metadata),
+            seen_at=observation.seen_at or utc_now_iso(),
+            received_at=observation.received_at or utc_now_iso(),
+        )
+
+    def _build_ocr_observation_report(
+        self,
+        *,
+        source: str,
+        source_instance: str,
+        system_name: str,
+        system_id: int | None,
+        client_id: str,
+        name: str,
+        seen_at: str,
+    ) -> tuple[IntelReport, Observation]:
+        observation = Observation.from_payload(
+            {
+                "source": source,
+                "source_instance": source_instance,
+                "system_name": system_name,
+                "system_id": system_id,
+                "names": [name],
+                "raw_text": name,
+                "metadata": {"client_id": client_id},
+                "seen_at": seen_at,
+            }
+        )
+        observation.system_name = self._normalize_system(observation.system_name)
+        observation.names = self._normalize_names(observation.names)
+        observation.character_ids = self._normalize_ints(observation.character_ids)
+        observation = self._enrich_observation(observation)
+        observation.validate()
+        report = self._report_from_observation(observation)
+        return report, observation
+
     def _enrich_observation(self, observation: Observation) -> Observation:
         """Optionally enrich an observation without blocking ingestion on failure."""
         if bool(observation.metadata.get("enrichment_deferred")):
@@ -485,7 +565,14 @@ class IntelStore:
         if sender:
             prefix = f"{sender}:"
             if raw_text.startswith(prefix):
-                return raw_text[len(prefix):].strip()
+                raw_text = raw_text[len(prefix):].strip()
+            else:
+                stripped = strip_repeated_sender_prefix(raw_text, sender)
+                if stripped != raw_text:
+                    raw_text = stripped
+        inline_stripped = strip_inline_sender_prefix(raw_text)
+        if inline_stripped != raw_text:
+            return inline_stripped
         if ":" in raw_text:
             _, body = raw_text.split(":", 1)
             return body.strip()
@@ -733,9 +820,9 @@ class IntelStore:
         seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
         raw_text = ", ".join(names)
         result = ActiveIntelSnapshotResult()
-
+        seen_name_keys = {name.casefold() for name in names}
+        changed_reports = False
         with self._lock:
-            seen_name_keys = {name.casefold() for name in names}
             for name in names:
                 active_id = self._active_ocr_id(
                     client_id,
@@ -744,18 +831,22 @@ class IntelStore:
                 )
                 item = self._active_intel.get(active_id)
                 if item is None or not item.active:
-                    observation = self.add_observation(
-                        {
-                            "source": source,
-                            "source_instance": source_instance,
-                            "system_name": system_name,
-                            "system_id": system_id,
-                            "names": [name],
-                            "raw_text": name,
-                            "metadata": {"client_id": client_id},
-                            "seen_at": seen_at,
-                        }
+                    report, observation = self._build_ocr_observation_report(
+                        source=source,
+                        source_instance=source_instance,
+                        system_name=system_name,
+                        system_id=system_id,
+                        client_id=client_id,
+                        name=name,
+                        seen_at=seen_at,
                     )
+                    duplicate = self._find_duplicate_observation(report)
+                    if duplicate is not None:
+                        observation = duplicate.to_observation()
+                    else:
+                        self._ensure_system(report.system)
+                        self._reports.append(report)
+                        changed_reports = True
                     if self._observation_is_suppressed(observation):
                         item = self._active_intel.get(active_id)
                         if item is not None and item.active:
@@ -825,8 +916,10 @@ class IntelStore:
                 result.expired += 1
 
             result.active = self.list_active_intel(source=source)
+            if changed_reports:
+                self._save_reports()
 
-        return result.to_dict()
+        return result.to_dict(include_active=False)
 
     def list_active_intel(
         self,
@@ -2303,10 +2396,7 @@ class IntelStore:
     def _observation_is_suppressed(self, observation: Observation) -> bool:
         if self._scorer is None or not hasattr(self._scorer, "suppresses_observation"):
             return False
-        kwargs = self._scoring_kwargs(observation)
-        profiles = kwargs.get("character_profiles")
-        if not isinstance(profiles, list):
-            profiles = []
+        profiles = self._character_profiles_for_observation(observation)
         try:
             return bool(self._scorer.suppresses_observation(observation, None, profiles))
         except Exception:
@@ -2576,12 +2666,61 @@ class IntelStore:
         seen: set[str] = set()
         result: list[str] = []
         for name in self._normalize_names(names):
+            name = self._canonicalize_ocr_name(name)
             key = name.casefold()
             if key in seen:
                 continue
             seen.add(key)
             result.append(name)
         return result
+
+    def _canonicalize_ocr_name(self, name: str) -> str:
+        text = str(name or "").strip()
+        if not text or self._resolver is None:
+            return text
+        cache_key = text.casefold()
+        cached = self._ocr_name_corrections.get(cache_key)
+        if cached is not None:
+            return cached
+
+        candidates = _ocr_i_l_candidates(text)
+        canonical = self._resolve_character_name_candidate(candidates) or text
+        self._ocr_name_corrections[cache_key] = canonical
+        return canonical
+
+    def _resolve_character_name_candidate(self, candidates: list[str]) -> str | None:
+        if self._resolver is None or not hasattr(self._resolver, "resolve_names"):
+            return None
+        try:
+            resolved = self._resolver.resolve_names(candidates)
+        except Exception:
+            return None
+        matches: dict[str, Any] = {}
+        for item in resolved:
+            if str(getattr(item, "category", "")).casefold() != "character":
+                continue
+            item_name = str(getattr(item, "name", "")).strip()
+            if not item_name:
+                continue
+            for candidate in candidates:
+                if item_name.casefold() == candidate.casefold():
+                    matches[candidate.casefold()] = item
+
+        if not matches:
+            return None
+
+        original_key = candidates[0].casefold()
+        if original_key in matches:
+            selected = matches[original_key]
+        elif len(matches) == 1:
+            selected = next(iter(matches.values()))
+        else:
+            return None
+
+        character_id = self._optional_int(getattr(selected, "entity_id", None))
+        if character_id is not None:
+            self.character_profile(character_id)
+        return str(getattr(selected, "name", "")).strip() or None
 
     def _seconds_between_iso(self, left: str, right: str) -> float | None:
         left_at = self._parse_timestamp(left)

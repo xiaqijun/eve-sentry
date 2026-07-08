@@ -8,8 +8,8 @@ def test_scan_status_counts_cleaned_member_names_not_raw_ocr_blocks():
         ("Bob", 0.95),
     ]
 
-    assert build_scan_status(ocr_results, ["Bob"]) == (
-        "识别: 2 个成员 / 2 个唯一 / 1 个新告警"
+    assert build_scan_status(ocr_results) == (
+        "名单识别: 2 个成员 / 2 个唯一 / 已上报服务器"
     )
 
 
@@ -60,18 +60,13 @@ def test_monitor_worker_uses_bound_window_capture_session(monkeypatch):
         def recognize(self, image, progress=None):
             _ = image, progress
             self.calls += 1
-            return []
-
-    class FakeDetector:
-        def check(self, ocr_results):
-            assert ocr_results == []
             worker.stop()
             return []
 
     monkeypatch.setattr("app.engine.worker.Capturer", FakeOwnedCapturer)
     monkeypatch.setattr(MonitorWorker, "msleep", staticmethod(lambda _ms: None))
 
-    worker = MonitorWorker(OriginalCapturer(), FakeOcr(), FakeDetector())
+    worker = MonitorWorker(OriginalCapturer(), FakeOcr())
     worker.set_window({"hwnd": 42, "title": "EVE - Window", "w": 1280, "h": 720})
     worker.set_region(1000, 80, 260, 620)
 

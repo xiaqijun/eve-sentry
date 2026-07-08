@@ -1074,21 +1074,23 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         scorer = getattr(store, "_scorer", None)
         watchlist = getattr(scorer, "watchlist", None)
         whitelist = getattr(watchlist, "whitelist", None)
-        if not whitelist:
-            return list(items)
-        whitelist_names = {str(name).casefold() for name in whitelist}
         with store._lock:
             reports = list(store._reports)
+        whitelist_names = {str(name).casefold() for name in whitelist or []}
         all_source_ids = {str(report.report_id) for report in reports}
         visible_source_ids = {
             str(report.report_id) for report in store._visible_reports(reports)
         }
         hidden_source_ids = all_source_ids - visible_source_ids
-        return [
-            item for item in items
-            if str(item.get("name") or "").casefold() not in whitelist_names
-            and not self._active_item_only_has_hidden_sources(item, hidden_source_ids)
-        ]
+        visible = []
+        for item in items:
+            name_key = str(item.get("name") or "").casefold()
+            if name_key in whitelist_names:
+                continue
+            if self._active_item_only_has_hidden_sources(item, hidden_source_ids):
+                continue
+            visible.append(item)
+        return visible
 
     def _active_item_only_has_hidden_sources(
         self,
@@ -1117,37 +1119,22 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         active_items: list[dict[str, Any]],
         limit: int | None,
     ) -> list[dict[str, Any]]:
-        _ = (store, reports)
+        _ = reports
+        active_by_source_id: dict[str, dict[str, Any]] = {}
+        for item in active_items:
+            for source_id in self._active_item_source_ids(item):
+                active_by_source_id[source_id] = item
+
         alerts = []
-        ordered_items = sorted(
-            active_items,
-            key=lambda item: str(item.get("last_seen_at") or ""),
-            reverse=True,
-        )
-        for item in ordered_items:
-            source_ids = self._active_item_source_ids(item)
-            source_id = source_ids[-1] if source_ids else str(item.get("id") or "")
-            name = str(item.get("name") or "").strip()
-            created_at = str(
-                item.get("last_seen_at") or item.get("first_seen_at") or utc_now_iso()
-            )
-            alerts.append(
-                {
-                    "id": f"evt_{source_id}",
-                    "source_observation_id": source_id,
-                    "system_name": str(item.get("system_name") or ""),
-                    "system_id": item.get("system_id"),
-                    "names": [name] if name else [],
-                    "level": "high",
-                    "score": 70,
-                    "created_at": created_at,
-                    "source": item.get("source"),
-                    "source_instance": item.get("source_instance"),
-                    "raw_text": item.get("raw_text") or name,
-                    "acknowledged": False,
-                    "active_intel_id": item.get("id"),
-                }
-            )
+        for alert in store.list_alerts(limit=None):
+            source_id = str(alert.get("source_observation_id") or "")
+            active_item = active_by_source_id.get(source_id)
+            if active_item is None:
+                continue
+            data = dict(alert)
+            data["active_intel_id"] = active_item.get("id")
+            alerts.append(data)
+
         alerts.sort(key=lambda alert: alert["created_at"], reverse=True)
         if limit is not None:
             alerts = alerts[:max(0, limit)]
@@ -1918,7 +1905,10 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self._send_common_headers("application/json; charset=utf-8", len(body))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def _send_optional_json(
         self,

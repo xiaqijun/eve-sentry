@@ -322,6 +322,208 @@ def test_record_ocr_snapshot_hides_whitelisted_names_from_default_lists(tmp_path
     assert snapshot["observations"] == []
 
 
+def test_record_ocr_snapshot_canonicalizes_leading_i_l_ocr_name(tmp_path):
+    class FakeResolver:
+        def __init__(self):
+            self.resolve_calls = []
+            self.profile_calls = []
+
+        def resolve_names(self, names):
+            self.resolve_calls.append(list(names))
+            if names == ["lona Gonemion", "Iona Gonemion"]:
+                return [
+                    SimpleNamespace(
+                        name="Iona Gonemion",
+                        category="character",
+                        entity_id=90621602,
+                    )
+                ]
+            return []
+
+        def character_profile(self, character_id):
+            self.profile_calls.append(int(character_id))
+            return {
+                "character_id": int(character_id),
+                "name": "Iona Gonemion",
+                "corporation_id": 98530802,
+                "alliance_id": 99003581,
+            }
+
+        def enrich_observation(self, observation):
+            if observation.names == ["Iona Gonemion"]:
+                observation.character_ids = [90621602]
+            return observation
+
+    resolver = FakeResolver()
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        resolver=resolver,
+    )
+    payload = {
+        "client_id": "detector:test",
+        "system_name": "S-KSWL",
+        "names": ["lona Gonemion"],
+        "seen_at": "2026-07-03T10:00:00+00:00",
+    }
+
+    store.record_ocr_snapshot(payload)
+    store.record_ocr_snapshot(
+        {**payload, "seen_at": "2026-07-03T10:00:02+00:00"}
+    )
+
+    active = store.list_active_intel()
+    assert active[0]["name"] == "Iona Gonemion"
+    assert active[0]["character_id"] == 90621602
+    assert active[0]["seen_count"] == 2
+    assert store.list_observations(include_suppressed=True)[0]["names"] == [
+        "Iona Gonemion"
+    ]
+    assert resolver.resolve_calls == [["lona Gonemion", "Iona Gonemion"]]
+    assert resolver.profile_calls == [90621602]
+
+
+def test_record_ocr_snapshot_keeps_exact_i_l_name_when_esi_resolves_it(tmp_path):
+    class FakeResolver:
+        def __init__(self):
+            self.resolve_calls = []
+
+        def resolve_names(self, names):
+            self.resolve_calls.append(list(names))
+            return [
+                SimpleNamespace(
+                    name="lona Gonemion",
+                    category="character",
+                    entity_id=90000001,
+                ),
+                SimpleNamespace(
+                    name="Iona Gonemion",
+                    category="character",
+                    entity_id=90621602,
+                ),
+            ]
+
+        def character_profile(self, character_id):
+            return {"character_id": int(character_id), "name": "lona Gonemion"}
+
+        def enrich_observation(self, observation):
+            if observation.names == ["lona Gonemion"]:
+                observation.character_ids = [90000001]
+            return observation
+
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        resolver=FakeResolver(),
+    )
+
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector:test",
+            "system_name": "S-KSWL",
+            "names": ["lona Gonemion"],
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+
+    active = store.list_active_intel()
+    assert active[0]["name"] == "lona Gonemion"
+    assert active[0]["character_id"] == 90000001
+
+
+def test_record_ocr_snapshot_resolves_new_names_without_i_l_once(tmp_path):
+    class FakeResolver:
+        def __init__(self):
+            self.resolve_calls = []
+            self.profile_calls = []
+
+        def resolve_names(self, names):
+            self.resolve_calls.append(list(names))
+            if names == ["Bob"]:
+                return [
+                    SimpleNamespace(
+                        name="Bob",
+                        category="character",
+                        entity_id=123,
+                    )
+                ]
+            return []
+
+        def character_profile(self, character_id):
+            self.profile_calls.append(int(character_id))
+            return {
+                "character_id": int(character_id),
+                "name": "Bob",
+                "corporation_id": 456,
+                "alliance_id": 789,
+            }
+
+        def enrich_observation(self, observation):
+            if observation.names == ["Bob"]:
+                observation.character_ids = [123]
+            return observation
+
+    resolver = FakeResolver()
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        resolver=resolver,
+    )
+    payload = {
+        "client_id": "detector:test",
+        "system_name": "S-KSWL",
+        "names": ["Bob"],
+        "seen_at": "2026-07-03T10:00:00+00:00",
+    }
+
+    store.record_ocr_snapshot(payload)
+    store.record_ocr_snapshot(
+        {**payload, "seen_at": "2026-07-03T10:00:02+00:00"}
+    )
+
+    active = store.list_active_intel()
+    assert active[0]["name"] == "Bob"
+    assert active[0]["character_id"] == 123
+    assert active[0]["seen_count"] == 2
+    assert resolver.resolve_calls == [["Bob"]]
+    assert resolver.profile_calls == [123]
+
+
+def test_record_ocr_snapshot_only_confuses_upper_i_with_lower_l(tmp_path):
+    class FakeResolver:
+        def __init__(self):
+            self.resolve_calls = []
+
+        def resolve_names(self, names):
+            self.resolve_calls.append(list(names))
+            return []
+
+        def enrich_observation(self, observation):
+            return observation
+
+    resolver = FakeResolver()
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        resolver=resolver,
+    )
+
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector:test",
+            "system_name": "S-KSWL",
+            "names": ["Mira LName"],
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+
+    assert resolver.resolve_calls == [["Mira LName"]]
+
+
 def test_record_ocr_snapshot_filters_positive_esi_corporation_standing(tmp_path):
     class FriendlyResolver:
         def enrich_observation(self, observation):
@@ -1421,7 +1623,7 @@ def test_list_alerts_scores_group_kill_activity_from_enricher(tmp_path):
     ]
 
 
-def test_list_alerts_uses_recent_channel_context(tmp_path):
+def test_list_alerts_does_not_promote_ocr_context_without_hostile_evidence(tmp_path):
     store = IntelStore(
         tmp_path / "intel_reports.json",
         systems={},
@@ -1466,29 +1668,9 @@ def test_list_alerts_uses_recent_channel_context(tmp_path):
     )
 
     alerts = store.list_alerts()
-    alert = next(
-        item
-        for item in alerts
-        if item["source_observation_id"] == observation.observation_id
+    assert not any(
+        item["source_observation_id"] == observation.observation_id for item in alerts
     )
-
-    assert alert["score"] == 85
-    assert alert["level"] == "high"
-    assert [item["type"] for item in alert["evidence"]] == [
-        "local_ocr_seen",
-        "intel_channel_same_system_recent",
-        "intel_channel_adjacent_system_recent",
-    ]
-
-    detail = store.alert_detail(alert["id"])
-
-    assert detail is not None
-    assert detail["alert"]["id"] == alert["id"]
-    assert detail["observation"]["id"] == observation.observation_id
-    assert [item["relation"] for item in detail["context"]["channel_mentions"]] == [
-        "same_system",
-        "adjacent_system",
-    ]
 
 
 def test_enricher_failure_falls_back_to_base_scoring(tmp_path):
