@@ -1,4 +1,4 @@
-"""Standalone client that parses EVE intel channel logs and posts observations."""
+"""Standalone client that uploads EVE intel channel log lines."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import time
 from typing import Any
 
 from app.channels.log_watcher import DEFAULT_CHATLOG_DIR, ChatLogWatcher
-from app.channels.parser import parse_chat_line
 from app.core.heartbeat import (
     build_channel_heartbeat_details,
     heartbeat_now_iso,
@@ -74,16 +73,14 @@ def run_channel_client(args: argparse.Namespace) -> int:
         )
     if args.dry_run:
         print(
-            "Dry-run mode: parsed observations will not be posted",
+            "Dry-run mode: raw channel lines will not be posted",
             file=status_stream,
         )
-    elif args.server_parse:
+    else:
         print(
             f"Posting raw channel lines to {args.server} for server-side parsing",
             file=status_stream,
         )
-    else:
-        print(f"Posting observations to {args.server}", file=status_stream)
     heartbeat_client_id = f"channel-client:{os.getpid()}"
     runtime_identity = resolve_runtime_identity()
     heartbeat_interval = max(5.0, float(args.interval))
@@ -100,7 +97,7 @@ def run_channel_client(args: argparse.Namespace) -> int:
                         api,
                         heartbeat_client_id,
                         heartbeat_interval,
-                        args.server_parse,
+                        True,
                         last_action=heartbeat_action,
                         last_error=heartbeat_error,
                         client_version=runtime_identity["client_version"],
@@ -121,7 +118,6 @@ def run_channel_client(args: argparse.Namespace) -> int:
                     api,
                     dry_run=args.dry_run,
                     json_lines=args.json,
-                    server_parse=args.server_parse,
                     diagnostics=diagnostics,
                 )
             else:
@@ -140,7 +136,7 @@ def run_channel_client(args: argparse.Namespace) -> int:
                             api,
                             heartbeat_client_id,
                             heartbeat_interval,
-                            args.server_parse,
+                            True,
                             last_action=heartbeat_action,
                             last_error=heartbeat_error,
                             client_version=runtime_identity["client_version"],
@@ -149,8 +145,8 @@ def run_channel_client(args: argparse.Namespace) -> int:
                         )
                     except IntelApiError as exc:
                         logger.warning("Heartbeat update failed: %s", exc)
-                action = "Parsed" if args.dry_run else "Posted"
-                print(f"{action} {processed} observations", file=status_stream)
+                action = "Read" if args.dry_run else "Posted"
+                print(f"{action} {processed} channel lines", file=status_stream)
                 return 0
             time.sleep(args.interval)
     except KeyboardInterrupt:
@@ -163,24 +159,23 @@ def process_once(
     dry_run: bool = False,
     json_lines: bool = False,
     stream: Any | None = None,
-    server_parse: bool = False,
     diagnostics: dict[str, str] | None = None,
 ) -> int:
-    """Read available lines once and post parsed observations."""
+    """Read available lines once and post raw channel records."""
     if api is None and not dry_run:
         raise ValueError("api is required unless dry_run is enabled")
 
     stream = stream or sys.stdout
     processed = 0
-    mode = "server_parse" if server_parse else "observation"
+    mode = "server_parse"
     for line in watcher.poll_lines():
-        if server_parse and not dry_run:
+        if not dry_run:
             try:
                 assert api is not None
                 result = api.post_channel_line(
                     line.text,
                     channel=line.channel,
-                    defer_enrichment=True,
+                    defer_enrichment=False,
                 )
             except IntelApiError as exc:
                 logger.warning("Failed to post channel line: %s", exc)
@@ -199,49 +194,32 @@ def process_once(
                 diagnostics["last_success_at"] = heartbeat_now_iso()
             continue
 
-        parsed = parse_chat_line(line.text, channel=line.channel)
-        if parsed is None:
-            watcher.commit_line(line)
-            continue
-        payload = parsed.to_observation_payload()
-        if dry_run:
-            emit_observation(payload, json_lines=json_lines, stream=stream)
-            processed += 1
-            watcher.commit_line(line)
-            if diagnostics is not None:
-                diagnostics["last_action"] = f"dry_run:{processed}"
-                diagnostics["last_error"] = ""
-                diagnostics["last_success_at"] = heartbeat_now_iso()
-            continue
-
-        try:
-            assert api is not None
-            api.post_observation(**payload_to_client_args(payload))
-        except IntelApiError as exc:
-            logger.warning("Failed to post channel observation: %s", exc)
-            if diagnostics is not None:
-                diagnostics["last_action"] = "observation_error"
-                diagnostics["last_error"] = summarize_heartbeat_error(str(exc))
-            break
+        emit_channel_line(line, json_lines=json_lines, stream=stream)
         processed += 1
         watcher.commit_line(line)
         if diagnostics is not None:
-            diagnostics["last_action"] = f"observation:{processed}"
+            diagnostics["last_action"] = f"dry_run_raw:{processed}"
             diagnostics["last_error"] = ""
             diagnostics["last_success_at"] = heartbeat_now_iso()
+        continue
+
     if diagnostics is not None and not diagnostics.get("last_action"):
         diagnostics["last_action"] = f"{mode}_idle"
         diagnostics["last_error"] = ""
     return processed
 
 
-def emit_observation(
-    payload: dict[str, Any],
+def emit_channel_line(
+    line: Any,
     json_lines: bool = False,
     stream: Any | None = None,
 ) -> None:
-    """Print a parsed observation for dry-run verification."""
+    """Print a raw channel line for dry-run verification."""
     stream = stream or sys.stdout
+    payload = {
+        "channel": getattr(line, "channel", ""),
+        "text": getattr(line, "text", ""),
+    }
     if json_lines:
         print(
             json.dumps(payload, ensure_ascii=False, sort_keys=True),
@@ -249,48 +227,9 @@ def emit_observation(
             flush=True,
         )
         return
-    print(f"[OBS] {format_observation(payload)}", file=stream, flush=True)
-
-
-def format_observation(payload: dict[str, Any]) -> str:
-    """Return a compact one-line dry-run observation summary."""
-    system = str(payload.get("system_name") or "Unknown")
-    raw_text = str(payload.get("raw_text") or "").strip()
-    raw_metadata = payload.get("metadata")
-    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
-
-    details: list[str] = []
-    hostile_count = metadata.get("hostile_count")
-    if hostile_count not in {None, ""}:
-        details.append(f"{hostile_count} hostile")
-        if str(hostile_count) != "1":
-            details[-1] += "s"
-    jump_count = metadata.get("jump_count")
-    if jump_count not in {None, ""}:
-        suffix = "jump" if str(jump_count) == "1" else "jumps"
-        details.append(f"{jump_count} {suffix}")
-    direction = str(metadata.get("direction") or "").strip()
-    if direction:
-        details.append(f"toward {direction}")
-
-    suffix = f" ({'; '.join(details)})" if details else ""
-    if raw_text:
-        return f"{system}: {raw_text}{suffix}"
-    return f"{system}{suffix}"
-
-
-def payload_to_client_args(payload: dict) -> dict:
-    """Translate parser payload keys into IntelApiClient.post_observation args."""
-    return {
-        "system_name": payload["system_name"],
-        "names": payload.get("names", []),
-        "source": payload.get("source", "intel_channel"),
-        "source_instance": payload.get("source_instance", ""),
-        "confidence": payload.get("confidence"),
-        "raw_text": payload.get("raw_text", ""),
-        "metadata": payload.get("metadata"),
-        "seen_at": payload.get("seen_at"),
-    }
+    channel = str(payload["channel"] or "").strip()
+    prefix = f"[{channel}] " if channel else ""
+    print(f"[RAW] {prefix}{payload['text']}", file=stream, flush=True)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -315,30 +254,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="parse and print observations without posting to the server",
+        help="print raw channel lines without posting to the server",
     )
     parser.add_argument(
         "--json",
         action="store_true",
-        help="print dry-run observations as JSON Lines",
+        help="print dry-run channel lines as JSON Lines",
     )
     parser.add_argument(
         "--include-existing",
         action="store_false",
         dest="ignore_existing",
         help="post existing chatlog lines when the client starts",
-    )
-    parser.add_argument(
-        "--server-parse",
-        action="store_true",
-        default=True,
-        help="send raw chatlog lines to the server for parsing (default)",
-    )
-    parser.add_argument(
-        "--client-parse",
-        action="store_false",
-        dest="server_parse",
-        help="parse channel lines locally and post observations; intended for offline debugging",
     )
     return parser.parse_args(argv)
 

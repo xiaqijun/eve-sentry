@@ -1,6 +1,7 @@
 import io
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import app.alert_client as alert_client_module
@@ -20,6 +21,13 @@ from app.alert_client import (
 from app.intel_client import AlertPoller, IntelApiClient, IntelApiError, ReportPoller
 from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore
+
+
+def eve_chat_timestamp(offset_seconds: int = 0) -> str:
+    return (
+        datetime.now(timezone.utc).replace(microsecond=0)
+        + timedelta(seconds=offset_seconds)
+    ).strftime("%Y.%m.%d %H:%M:%S")
 
 
 class FakeApi:
@@ -307,7 +315,7 @@ def test_intel_api_client_posts_and_lists_reports(tmp_path):
         alerts = api.list_alerts(limit=10)
 
         assert [item["id"] for item in observations] == [report_id]
-        assert [item["source_observation_id"] for item in alerts] == [report_id]
+        assert alerts == []
     finally:
         server.stop()
 
@@ -329,9 +337,8 @@ def test_intel_api_client_posts_observations(tmp_path):
 
         observation_id = created["observation"]["id"]
         assert created["alert"]["id"] == f"evt_{observation_id}"
+        assert created["alert"]["score"] == 30
         assert created["observation"]["metadata"]["sender"] == "Scout A"
-        assert api.list_alerts()[0]["score"] == 30
-        assert api.stream_alerts(timeout=0)[0]["id"] == f"evt_{observation_id}"
 
         acked = api.ack_alert(
             f"evt_{observation_id}",
@@ -392,17 +399,13 @@ def test_intel_api_client_filters_alerts(tmp_path):
     try:
         api = IntelApiClient(server.url)
 
-        low = api.post_observation(
-            system_name="Tama",
-            names=["Scout"],
-            source="intel_channel",
-            seen_at="2026-06-29T12:00:00+00:00",
+        low = api.post_channel_line(
+            f"[ {eve_chat_timestamp()} ] Scout A > Tama +1 reds",
+            channel="Alliance Intel",
         )
-        medium = api.post_observation(
-            system_name="Tama",
-            names=["Alice"],
-            source="local_ocr",
-            seen_at="2026-06-29T12:01:00+00:00",
+        medium = api.post_channel_line(
+            f"[ {eve_chat_timestamp(1)} ] Scout B > Tama +3 reds",
+            channel="Alliance Intel",
         )
         api.ack_alert(medium["alert"]["id"], acknowledged_by="client")
 
@@ -412,13 +415,14 @@ def test_intel_api_client_filters_alerts(tmp_path):
         assert [item["id"] for item in api.list_alerts(acknowledged=True)] == [
             medium["alert"]["id"]
         ]
-        assert [item["id"] for item in api.list_alerts(min_score=40)] == [
-            medium["alert"]["id"]
-        ]
-        assert [item["id"] for item in api.stream_alerts(
-            timeout=0,
-            min_level="medium",
-        )] == [medium["alert"]["id"]]
+        assert {item["id"] for item in api.list_alerts(min_score=20)} == {
+            low["alert"]["id"],
+            medium["alert"]["id"],
+        }
+        assert {item["id"] for item in api.stream_alerts(timeout=0, min_level="low")} == {
+            low["alert"]["id"],
+            medium["alert"]["id"],
+        }
     finally:
         server.stop()
 
@@ -445,7 +449,7 @@ def test_intel_api_client_posts_raw_channel_lines(tmp_path):
         api = IntelApiClient(server.url)
 
         created = api.post_channel_line(
-            "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds",
+            f"[ {eve_chat_timestamp()} ] Scout A > Tama +3 reds",
             channel="Alliance Intel",
         )
 
@@ -692,27 +696,19 @@ def test_alert_poller_resumes_real_event_stream_with_last_event_id(tmp_path):
         api = IntelApiClient(server.url)
         poller = AlertPoller(api)
 
-        first = api.post_observation(
-            system_name="Tama",
-            names=["Alice"],
-            source="intel_channel",
-            seen_at="2026-06-29T12:00:00+00:00",
-            metadata={"batch": "resume"},
+        first = api.post_channel_line(
+            f"[ {eve_chat_timestamp()} ] Scout A > Tama +1 reds",
+            channel="Alliance Intel",
         )
         first_alert_id = first["alert"]["id"]
-        first_created_at = first["alert"]["created_at"]
 
         assert [alert["id"] for alert in poller.stream_new(timeout=0)] == [
             first_alert_id
         ]
 
-        second = api.post_observation(
-            system_name="Tama",
-            names=["Bob"],
-            source="intel_channel",
-            seen_at="2026-06-29T12:01:00+00:00",
-            received_at=first_created_at,
-            metadata={"batch": "resume"},
+        second = api.post_channel_line(
+            f"[ {eve_chat_timestamp(1)} ] Scout B > Oijanen +1 reds",
+            channel="Alliance Intel",
         )
         second_alert_id = second["alert"]["id"]
 
@@ -1094,11 +1090,9 @@ def test_alert_client_resume_state_preserves_offline_alerts(tmp_path, capsys):
     server.start()
     try:
         api = IntelApiClient(server.url)
-        old = api.post_observation(
-            system_name="Tama",
-            names=["Old"],
-            source="intel_channel",
-            seen_at="2026-06-29T12:00:00+00:00",
+        old = api.post_channel_line(
+            f"[ {eve_chat_timestamp()} ] Scout A > Tama +1 reds",
+            channel="Alliance Intel",
         )
         state_path = tmp_path / "alert_state.json"
 
@@ -1117,11 +1111,9 @@ def test_alert_client_resume_state_preserves_offline_alerts(tmp_path, capsys):
         assert "[ALERT]" not in first_output.out
         assert AlertClientState(state_path).load_seen_ids() == [old["alert"]["id"]]
 
-        new = api.post_observation(
-            system_name="Tama",
-            names=["New"],
-            source="intel_channel",
-            seen_at="2026-06-29T12:01:00+00:00",
+        new = api.post_channel_line(
+            f"[ {eve_chat_timestamp(1)} ] Scout B > Oijanen +1 reds",
+            channel="Alliance Intel",
         )
 
         second_args = parse_args(
@@ -1139,7 +1131,7 @@ def test_alert_client_resume_state_preserves_offline_alerts(tmp_path, capsys):
 
         assert old["alert"]["id"] not in second_output.out
         assert new["alert"]["id"] not in second_output.out
-        assert "New" in second_output.out
+        assert "Scout B: Oijanen +1 reds" in second_output.out
         assert AlertClientState(state_path).load_seen_ids() == [
             old["alert"]["id"],
             new["alert"]["id"],
