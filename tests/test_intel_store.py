@@ -1002,6 +1002,33 @@ def test_stale_detector_heartbeat_does_not_expire_snapshot_after_stale_deadline(
     assert active[0]["source_instance"] == "EVE - Pilot"
 
 
+def test_stale_detector_heartbeat_expires_snapshot_after_stale_deadline_grace(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": "2026-01-01T00:00:01+00:00",
+            "heartbeat_interval_seconds": 5,
+            "details": {"monitoring": True},
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Pilot",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+            "seen_at": "2026-01-01T00:00:30+00:00",
+        }
+    )
+
+    assert store.list_active_intel(source="eve-sentry-detector") == []
+    inactive = store.list_active_intel(source="eve-sentry-detector", active=False)
+    assert inactive[0]["left_at"] == "2026-01-01T00:00:36+00:00"
+
+
 def test_add_observation_deduplicates_same_source_time_and_raw_text(tmp_path):
     path = tmp_path / "intel_reports.json"
     store = IntelStore(path, systems={}, links=[])

@@ -1344,6 +1344,9 @@ class IntelStore:
         return deactivated
 
     def _expire_stale_detector_ocr_active_intel(self, left_at: str) -> int:
+        now_at = self._parse_timestamp(left_at)
+        if now_at is None:
+            return 0
         stale_client_ids: dict[str, str] = {}
         for heartbeat in self._heartbeats.values():
             if str(heartbeat.get("client_type") or "").strip() != "detector_client":
