@@ -36,6 +36,10 @@ class OffsetStore:
         """Return the remembered byte offset for a file."""
         return int(self._offsets.get(str(file_path.resolve()), 0))
 
+    def has(self, file_path: Path) -> bool:
+        """Return whether a file already has a remembered offset."""
+        return str(file_path.resolve()) in self._offsets
+
     def set(self, file_path: Path, offset: int) -> None:
         """Remember the byte offset for a file."""
         self._offsets[str(file_path.resolve())] = max(0, int(offset))
@@ -86,10 +90,12 @@ class ChatLogWatcher:
         log_dir: str | Path = DEFAULT_CHATLOG_DIR,
         channels: Iterable[str] | None = None,
         state_path: str | Path = "channel_offsets.json",
+        start_at_end_for_new_files: bool = False,
     ) -> None:
         self.log_dir = Path(log_dir)
         self.channels = normalize_channel_filters(channels or [])
         self.state = OffsetStore(state_path)
+        self.start_at_end_for_new_files = bool(start_at_end_for_new_files)
 
     def seed_to_end(self) -> None:
         """Mark current files as consumed without returning their content."""
@@ -111,22 +117,34 @@ class ChatLogWatcher:
             self.state.save()
 
     def discover_files(self) -> list[Path]:
-        """Return matching chatlog text files sorted by mtime then name."""
+        """Return the newest matching chatlog text file for each channel."""
         if not self.log_dir.exists():
             return []
-        files = [
-            path
-            for path in self.log_dir.glob("*.txt")
-            if path.is_file() and self._matches_channel(path)
-        ]
+        latest_by_channel: dict[str, tuple[float, str, Path]] = {}
+        for path in self.log_dir.glob("*.txt"):
+            if not path.is_file() or not self._matches_channel(path):
+                continue
+            channel = normalize_channel_name(channel_name_from_path(path))
+            marker = (path.stat().st_mtime, path.name, path)
+            current = latest_by_channel.get(channel)
+            if current is None or marker[:2] > current[:2]:
+                latest_by_channel[channel] = marker
+        files = [item[2] for item in latest_by_channel.values()]
         files.sort(key=lambda item: (item.stat().st_mtime, item.name))
         return files
 
     def _read_new_lines(self, path: Path) -> list[ChatLogLine]:
         size = path.stat().st_size
+        known_offset = self.state.has(path)
         offset = self.state.get(path)
         if offset > size:
-            offset = 0
+            offset = size if self.start_at_end_for_new_files else 0
+            self.state.set(path, offset)
+            self.state.save()
+        if not known_offset and self.start_at_end_for_new_files:
+            self.state.set(path, size)
+            self.state.save()
+            return []
         if offset == size:
             return []
 

@@ -52,18 +52,26 @@ def _send_heartbeat(
 
 def run_channel_client(args: argparse.Namespace) -> int:
     """Run the chatlog watcher loop."""
+    selected_channels = list(args.channel or [])
+    channels_selected = bool(selected_channels or args.all_channels)
     watcher = ChatLogWatcher(
         log_dir=args.log_dir,
-        channels=args.channel,
+        channels=selected_channels,
         state_path=args.state,
+        start_at_end_for_new_files=args.ignore_existing,
     )
     api = None if args.dry_run else IntelApiClient(args.server, timeout=args.timeout)
     status_stream = sys.stderr if args.json else sys.stdout
 
-    if args.ignore_existing:
+    if channels_selected and args.ignore_existing:
         watcher.seed_to_end()
 
     print(f"Channel client watching {watcher.log_dir}", file=status_stream)
+    if not channels_selected:
+        print(
+            "No channel selected; chatlog lines will not be scanned or posted",
+            file=status_stream,
+        )
     if args.dry_run:
         print(
             "Dry-run mode: parsed observations will not be posted",
@@ -107,14 +115,19 @@ def run_channel_client(args: argparse.Namespace) -> int:
                 "last_error": heartbeat_error,
                 "last_success_at": heartbeat_last_success_at,
             }
-            processed = process_once(
-                watcher,
-                api,
-                dry_run=args.dry_run,
-                json_lines=args.json,
-                server_parse=args.server_parse,
-                diagnostics=diagnostics,
-            )
+            if channels_selected:
+                processed = process_once(
+                    watcher,
+                    api,
+                    dry_run=args.dry_run,
+                    json_lines=args.json,
+                    server_parse=args.server_parse,
+                    diagnostics=diagnostics,
+                )
+            else:
+                processed = 0
+                diagnostics["last_action"] = "channel_unselected"
+                diagnostics["last_error"] = ""
             heartbeat_action = str(diagnostics.get("last_action") or heartbeat_action)
             heartbeat_error = str(diagnostics.get("last_error") or "")
             heartbeat_last_success_at = str(
@@ -164,7 +177,11 @@ def process_once(
         if server_parse and not dry_run:
             try:
                 assert api is not None
-                result = api.post_channel_line(line.text, channel=line.channel)
+                result = api.post_channel_line(
+                    line.text,
+                    channel=line.channel,
+                    defer_enrichment=True,
+                )
             except IntelApiError as exc:
                 logger.warning("Failed to post channel line: %s", exc)
                 if diagnostics is not None:
@@ -286,6 +303,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=[],
         help="exact channel name; use * or ? for explicit wildcards; can be specified multiple times",
     )
+    parser.add_argument(
+        "--all-channels",
+        action="store_true",
+        help="explicitly monitor every chatlog channel; by default no --channel means no upload",
+    )
     parser.add_argument("--state", default="channel_offsets.json")
     parser.add_argument("--interval", type=float, default=2.0)
     parser.add_argument("--timeout", type=float, default=3.0)
@@ -309,7 +331,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--server-parse",
         action="store_true",
-        help="send raw chatlog lines to the server for parsing",
+        default=True,
+        help="send raw chatlog lines to the server for parsing (default)",
+    )
+    parser.add_argument(
+        "--client-parse",
+        action="store_false",
+        dest="server_parse",
+        help="parse channel lines locally and post observations; intended for offline debugging",
     )
     return parser.parse_args(argv)
 

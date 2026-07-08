@@ -13,6 +13,7 @@ from app.alert_client import (
     emit_alerts,
     format_alert,
     format_report,
+    handle_alert_batch,
     parse_args,
     run_alert_client,
 )
@@ -178,6 +179,29 @@ def test_intel_api_client_targets_v1_routes_for_http_requests():
         "/api/v1/bootstrap",
         "/api/v1/map",
         "/api/v1/map/systems/30002813",
+    ]
+
+
+def test_intel_api_client_can_defer_channel_line_enrichment():
+    api = RecordingClient()
+
+    api.post_channel_line(
+        "Tama Alice",
+        channel="Alliance Intel",
+        defer_enrichment=True,
+    )
+
+    assert api.calls == [
+        {
+            "method": "POST",
+            "path": "/api/v1/channel-lines",
+            "payload": {
+                "line": "Tama Alice",
+                "channel": "Alliance Intel",
+                "defer_enrichment": True,
+            },
+            "params": None,
+        }
     ]
 
 
@@ -1266,6 +1290,109 @@ def test_alert_client_attaches_alert_details_without_blocking_delivery():
     assert alerts[0]["detail"]["alert"]["id"] == "evt-1"
     assert alerts[1]["detail_error"] == "detail offline"
     assert "detail" not in alerts[2]
+
+
+def test_alert_client_handle_alert_batch_orders_detail_emit_state_and_ack(monkeypatch):
+    calls = []
+    alerts = [{"id": "evt-1", "names": ["Alice"]}]
+
+    class StateStore:
+        def record_alerts(self, items):
+            calls.append(("state", items))
+
+    def fake_attach(api, items):
+        calls.append(("details", api, items))
+        return [{**item, "detail": {"alert": {"id": item["id"]}}} for item in items]
+
+    def fake_emit(items, popup=False, json_lines=False):
+        calls.append(("emit", items, popup, json_lines))
+
+    def fake_ack(api, items, acknowledged_by="", note=""):
+        calls.append(("ack", api, items, acknowledged_by, note))
+        return len(items)
+
+    api = object()
+    monkeypatch.setattr(alert_client_module, "attach_alert_details", fake_attach)
+    monkeypatch.setattr(alert_client_module, "emit_alerts", fake_emit)
+    monkeypatch.setattr(alert_client_module, "ack_emitted_alerts", fake_ack)
+
+    count = handle_alert_batch(
+        api,
+        alerts,
+        popup=True,
+        json_lines=True,
+        details=True,
+        state_store=StateStore(),
+        ack=True,
+        ack_by="cli",
+        ack_note="handled",
+    )
+
+    detailed = [{"id": "evt-1", "names": ["Alice"], "detail": {"alert": {"id": "evt-1"}}}]
+    assert count == 1
+    assert calls == [
+        ("details", api, alerts),
+        ("emit", detailed, True, True),
+        ("state", detailed),
+        ("ack", api, detailed, "cli", "handled"),
+    ]
+
+
+def test_alert_client_handle_alert_batch_keeps_delivery_when_detail_or_ack_fails(monkeypatch):
+    calls = []
+
+    class BatchApi:
+        def alert_detail(self, alert_id):
+            calls.append(("detail", alert_id))
+            if alert_id == "bad":
+                raise IntelApiError("detail offline")
+            return {"alert": {"id": alert_id}}
+
+        def ack_alert(self, alert_id, acknowledged_by="", note=""):
+            calls.append(("ack", alert_id, acknowledged_by, note))
+            if alert_id == "bad":
+                raise IntelApiError("ack offline")
+            return {"id": alert_id, "acknowledged": True}
+
+    class StateStore:
+        def __init__(self):
+            self.items = []
+
+        def record_alerts(self, items):
+            calls.append(("state", [item["id"] for item in items]))
+            self.items = list(items)
+
+    def fake_emit(items, popup=False, json_lines=False):
+        calls.append(("emit", [item["id"] for item in items], popup, json_lines))
+
+    api = BatchApi()
+    state = StateStore()
+    monkeypatch.setattr(alert_client_module, "emit_alerts", fake_emit)
+
+    count = handle_alert_batch(
+        api,
+        [{"id": "ok"}, {"id": "bad"}, {"id": "later"}],
+        details=True,
+        state_store=state,
+        ack=True,
+        ack_by="cli",
+        ack_note="handled",
+    )
+
+    assert count == 3
+    assert state.items[0]["detail"]["alert"]["id"] == "ok"
+    assert state.items[1]["detail_error"] == "detail offline"
+    assert state.items[2]["detail"]["alert"]["id"] == "later"
+    assert calls == [
+        ("detail", "ok"),
+        ("detail", "bad"),
+        ("detail", "later"),
+        ("emit", ["ok", "bad", "later"], False, False),
+        ("state", ["ok", "bad", "later"]),
+        ("ack", "ok", "cli", "handled"),
+        ("ack", "bad", "cli", "handled"),
+        ("ack", "later", "cli", "handled"),
+    ]
 
 
 def test_alert_client_acknowledges_emitted_alerts():

@@ -734,7 +734,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--poll",
         action="store_true",
-        help="use /api/alerts polling instead of the event stream",
+        help="use /api/v1/alerts polling instead of the event stream",
     )
     parser.add_argument(
         "--stream-retry-interval",

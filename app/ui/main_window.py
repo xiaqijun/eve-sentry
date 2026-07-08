@@ -18,7 +18,10 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QStatusBar,
+    QStyle,
     QSystemTrayIcon,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -37,12 +40,21 @@ from app.engine.ocr import OCREngine
 from app.engine.worker import MonitorWorker
 from app.intel_client import IntelApiClient, IntelApiError
 from app.models.region_prefs import RegionPreferences
-from app.models.whitelist import Whitelist
 from app.ui.region_selector import RegionSelector
 from app.ui.settings import SettingsPanel
 from app.ui.theme import APP_QSS, monitor_button_style, status_card_style
 
 logger = logging.getLogger(__name__)
+
+CHANNEL_POLL_INTERVAL_MS = 5000
+CHANNEL_ERROR_BACKOFF_MS = 30000
+
+
+class _DisabledWhitelist:
+    """Client-side whitelist is disabled; the server owns filtering/scoring."""
+
+    def match(self, _name: str) -> bool:
+        return False
 
 
 class MainWindow(QMainWindow):
@@ -54,7 +66,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(860, 560)
         self.setStyleSheet(APP_QSS)
 
-        self._whitelist = Whitelist("whitelist.json")
+        self._whitelist = _DisabledWhitelist()
         self._region_prefs = RegionPreferences("region_prefs.json")
         self._capturer = Capturer()
         self._ocr = OCREngine(lang="en", confidence_threshold=0.7)
@@ -97,7 +109,7 @@ class MainWindow(QMainWindow):
         self._heartbeat_timer.setInterval(int(self._heartbeat_interval * 1000))
         self._heartbeat_timer.timeout.connect(self._publish_heartbeat)
         self._channel_timer = QTimer(self)
-        self._channel_timer.setInterval(5000)
+        self._channel_timer.setInterval(CHANNEL_POLL_INTERVAL_MS)
         self._channel_timer.timeout.connect(self._poll_channel_monitor)
         self._channel_watcher: ChatLogWatcher | None = None
         self._channel_names: list[str] = []
@@ -108,6 +120,7 @@ class MainWindow(QMainWindow):
         self._channel_last_action = ""
         self._channel_last_error = ""
         self._channel_last_success_at = ""
+        self._channel_error_backoff_ms = CHANNEL_ERROR_BACKOFF_MS
 
         self._popup_alerts_enabled = False
         self._alert_visible = False
@@ -122,14 +135,14 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
-        self._settings = SettingsPanel(self._whitelist)
+        self._settings = SettingsPanel()
         self._settings.setFixedWidth(240)
         root.addWidget(self._settings)
 
         right = QVBoxLayout()
         right.setSpacing(6)
 
-        self._monitor_btn = QPushButton("Start Monitor")
+        self._monitor_btn = QPushButton("开始监控")
         self._monitor_btn.setMinimumHeight(40)
         self._monitor_btn.setStyleSheet(monitor_button_style(active=False))
         self._monitor_btn.setCheckable(True)
@@ -140,8 +153,20 @@ class MainWindow(QMainWindow):
         self._window_combo.currentIndexChanged.connect(self._on_window_selected)
         right.addWidget(self._window_combo)
 
-        self._window_label = QLabel("Window: not detected")
+        self._window_label = QLabel("窗口：未检测")
         right.addWidget(self._window_label)
+
+        right.addWidget(QLabel("窗口状态"))
+        self._window_status_table = QTableWidget(0, 4)
+        self._window_status_table.setHorizontalHeaderLabels(
+            ["窗口", "区域", "状态", "最近动作"]
+        )
+        self._window_status_table.setMinimumHeight(96)
+        self._window_status_table.verticalHeader().setVisible(False)
+        self._window_status_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._window_status_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._window_status_table.horizontalHeader().setStretchLastSection(True)
+        right.addWidget(self._window_status_table)
 
         status_grid = QGridLayout()
         status_grid.setSpacing(6)
@@ -180,10 +205,20 @@ class MainWindow(QMainWindow):
 
         self._setup_tray()
         self._detect_window()
+        self._refresh_window_status_table()
         if self._intel_client is not None:
             self._heartbeat_timer.start()
             self._publish_heartbeat()
         self._refresh_status_cards()
+        if _env_flag("EVE_SENTRY_AUTO_START_MONITOR", default=False):
+            QTimer.singleShot(0, self._auto_start_monitor)
+
+    def _auto_start_monitor(self) -> None:
+        """Start monitoring once the event loop is ready when explicitly requested."""
+        if self._monitor_btn.isChecked():
+            return
+        self._monitor_btn.setChecked(True)
+        self._start_monitor()
 
     def _make_status_card(self, key: str) -> QFrame:
         """Build a compact status card for the desktop HUD."""
@@ -295,6 +330,75 @@ class MainWindow(QMainWindow):
             else:
                 self._set_status_card("region", "未配置", "warn")
 
+    def _region_label(self, region: dict | None) -> str:
+        if not region:
+            return "-"
+        return (
+            f"{int(region.get('w', 0))}x{int(region.get('h', 0))} "
+            f"@ {int(region.get('x', 0))},{int(region.get('y', 0))}"
+        )
+
+    def _refresh_window_status_table(self) -> None:
+        """Refresh the per-window monitor status table."""
+        try:
+            table = self.__dict__.get("_window_status_table")
+        except RuntimeError:
+            return
+        if table is None:
+            return
+
+        contexts = list(getattr(self, "_worker_contexts", {}).values())
+        rows: list[dict] = []
+        if contexts:
+            rows = contexts
+        else:
+            window_combo = getattr(self, "_window_combo", None)
+            title = window_combo.currentText().strip() if window_combo else ""
+            region = getattr(self, "_manual_region", None) or getattr(self, "_detected_region", None)
+            rows = [
+                {
+                    "window_title": title or "未检测到 EVE 窗口",
+                    "region": region,
+                    "runtime_status": "待启动" if title else "未检测",
+                    "last_action": "选择窗口并点击开始监控" if title else "点击刷新或确认 EVE 已启动",
+                }
+            ]
+
+        table.setRowCount(len(rows))
+        for row_index, context in enumerate(rows):
+            values = [
+                str(context.get("window_title") or "-"),
+                self._region_label(context.get("region")),
+                str(context.get("runtime_status") or "待启动"),
+                str(context.get("last_action") or "-"),
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                table.setItem(row_index, column, item)
+        table.resizeColumnsToContents()
+
+    def _update_window_status(
+        self,
+        context: dict | None,
+        status: str,
+        action: str = "",
+        error: str = "",
+    ) -> None:
+        if not context:
+            self._refresh_window_status_table()
+            return
+        context["runtime_status"] = status
+        if action:
+            context["last_action"] = action
+        if error:
+            context["last_error"] = error
+            context["last_action"] = error
+        elif "last_error" in context:
+            context["last_error"] = ""
+        context["updated_at"] = datetime.now().strftime("%H:%M:%S")
+        self._refresh_window_status_table()
+
     def _is_monitoring(self) -> bool:
         """Return whether any detector worker is currently running."""
         return bool(self._running_workers())
@@ -315,9 +419,10 @@ class MainWindow(QMainWindow):
     def _window_monitor_key(self, window: dict) -> str:
         """Return the key used for one monitored EVE window."""
         title = str(window.get("title") or "").strip()
-        if title:
-            return title.casefold()
-        return f"hwnd:{window.get('hwnd', '')}"
+        hwnd = str(window.get("hwnd") or "").strip()
+        if hwnd:
+            return f"hwnd:{hwnd}:{title.casefold()}" if title else f"hwnd:{hwnd}"
+        return title.casefold() if title else "window"
 
     def _window_client_id(self, window: dict) -> str:
         """Return a unique OCR client id for one EVE window."""
@@ -337,6 +442,13 @@ class MainWindow(QMainWindow):
             current = self._current_window_info()
             windows = [current] if current is not None else []
 
+        title_counts: dict[str, int] = {}
+        for window in windows:
+            if window is None:
+                continue
+            title = str(window.get("title") or "").casefold()
+            title_counts[title] = title_counts.get(title, 0) + 1
+        title_indexes: dict[str, int] = {}
         targets: list[dict] = []
         for window in windows:
             if window is None:
@@ -345,16 +457,44 @@ class MainWindow(QMainWindow):
             if region is None:
                 region = self._capturer.get_member_list_region(window)
             key = self._window_monitor_key(window)
+            title = str(window.get("title") or "").casefold()
+            title_indexes[title] = title_indexes.get(title, 0) + 1
+            source_instance = self._window_combo_label(
+                window,
+                duplicate_index=title_indexes[title],
+                duplicate_count=title_counts.get(title, 1),
+            )
             targets.append(
                 {
                     "key": key,
                     "client_id": self._window_client_id(window),
                     "window": dict(window),
                     "window_title": str(window.get("title") or key),
+                    "source_instance": source_instance,
                     "region": dict(region),
                 }
             )
         return targets
+
+    def _window_combo_label(
+        self,
+        window: dict,
+        duplicate_index: int = 1,
+        duplicate_count: int = 1,
+    ) -> str:
+        """Return a user-facing label for one EVE window in the selector."""
+        title = str(window.get("title") or "EVE 窗口").strip()
+        if duplicate_count <= 1:
+            return title
+        details: list[str] = [f"{title} #{duplicate_index}"]
+        hwnd = window.get("hwnd")
+        if hwnd not in {None, ""}:
+            details.append(f"hwnd {hwnd}")
+        width = int(window.get("w") or 0)
+        height = int(window.get("h") or 0)
+        if width > 0 and height > 0:
+            details.append(f"{width}x{height}")
+        return " · ".join(details)
 
     def _detect_window(self) -> None:
         """Find all EVE windows and populate the window selector."""
@@ -363,19 +503,34 @@ class MainWindow(QMainWindow):
         self._window_combo.blockSignals(True)
         self._window_combo.clear()
         if windows:
+            title_counts: dict[str, int] = {}
             for window in windows:
-                self._window_combo.addItem(window["title"], window["hwnd"])
+                title = str(window.get("title") or "").casefold()
+                title_counts[title] = title_counts.get(title, 0) + 1
+            title_indexes: dict[str, int] = {}
+            for window in windows:
+                title = str(window.get("title") or "").casefold()
+                title_indexes[title] = title_indexes.get(title, 0) + 1
+                self._window_combo.addItem(
+                    self._window_combo_label(
+                        window,
+                        duplicate_index=title_indexes[title],
+                        duplicate_count=title_counts[title],
+                    ),
+                    window["hwnd"],
+                )
         self._window_combo.blockSignals(False)
 
         if windows:
             self._window_combo.setCurrentIndex(0)
             self._on_window_selected(0)
-            self._log_message(f"Found {len(windows)} EVE window(s)")
+            self._log_message(f"已发现 {len(windows)} 个 EVE 窗口")
         else:
             self._detected_region = None
             self._capturer.close()
-            self._window_label.setText("Window: not found")
+            self._window_label.setText("窗口：未找到")
         self._refresh_status_cards()
+        self._refresh_window_status_table()
 
     def _current_window_info(self) -> dict | None:
         """Return the currently selected EVE window info."""
@@ -396,10 +551,9 @@ class MainWindow(QMainWindow):
         self._manual_region = None
 
         info = self._current_window_info()
-        title = self._window_combo.currentText()
         if info is None:
             self._detected_region = None
-            self._window_label.setText("Window: stale selection, re-detect needed")
+            self._window_label.setText("窗口：选择已失效，请重新检测")
             self._refresh_status_cards()
             return
 
@@ -415,9 +569,10 @@ class MainWindow(QMainWindow):
             member = self._capturer.get_member_list_region(info)
         self._detected_region = member
         self._window_label.setText(
-            f"Window: {title} -> member list {member['w']}x{member['h']}"
+            f"窗口：{self._window_combo.currentText()} -> 成员列表 {member['w']}x{member['h']}"
         )
         self._refresh_status_cards()
+        self._refresh_window_status_table()
 
     def _select_region(self) -> None:
         """Show overlay on top of EVE window for drag-to-select region."""
@@ -429,7 +584,7 @@ class MainWindow(QMainWindow):
         if info is None:
             info = self._capturer.find_eve_window(keyword=self._settings.get_keyword())
         if info is None:
-            QMessageBox.critical(self, "Error", "EVE window not found.")
+            QMessageBox.critical(self, "错误", "未找到 EVE 窗口。")
             return
 
         self._capturer.activate_window(info["hwnd"])
@@ -443,7 +598,7 @@ class MainWindow(QMainWindow):
             start_capture=False,
         )
         self._log_message(
-            f"Selecting region on {info['title']} at ({info['x']},{info['y']}) "
+            f"正在选择区域：{info['title']} ({info['x']},{info['y']}) "
             f"{info['w']}x{info['h']}"
         )
 
@@ -461,9 +616,10 @@ class MainWindow(QMainWindow):
         window = self._current_window_info()
         if window is not None:
             self._region_prefs.save_region(window, self._manual_region)
-        self._window_label.setText(f"Manual region: ({x},{y}) {w}x{h}")
-        self._log_message(f"Saved member-list region {w}x{h} @ ({x},{y})")
+        self._window_label.setText(f"手动区域：({x},{y}) {w}x{h}")
+        self._log_message(f"已保存成员列表区域 {w}x{h} @ ({x},{y})")
         self._refresh_status_cards()
+        self._refresh_window_status_table()
         self.show()
 
     def _on_selector_closed(self) -> None:
@@ -484,7 +640,23 @@ class MainWindow(QMainWindow):
             targets = self._build_monitor_targets()
 
         if not targets:
-            QMessageBox.critical(self, "Error", "No EVE window is available.")
+            if self._start_channel_monitor():
+                self._monitor_btn.setText("停止监控")
+                self._monitor_btn.setStyleSheet(monitor_button_style(active=True))
+                self._status_label.setText("频道日志监控中")
+                self._status_label.setStyleSheet("color: #37d6b0; font-weight: bold;")
+                self._log_message("未发现 EVE 窗口，已仅启动频道日志监控")
+                self._heartbeat_last_action = "channel_monitor_started"
+                self._heartbeat_last_error = ""
+                self._heartbeat_last_success_at = heartbeat_now_iso()
+                self._publish_heartbeat()
+                self._refresh_status_cards()
+                return
+            QMessageBox.critical(
+                self,
+                "错误",
+                "当前没有可用的 EVE 窗口。若只监控预警频道，请先在左侧填写频道名。",
+            )
             self._monitor_btn.setChecked(False)
             return
 
@@ -494,8 +666,8 @@ class MainWindow(QMainWindow):
             self._monitor_btn.setChecked(False)
             QMessageBox.critical(
                 self,
-                "Error",
-                "Failed to stop the previous monitor thread.",
+                "错误",
+                "无法停止上一轮监控线程。",
             )
             return
 
@@ -524,29 +696,47 @@ class MainWindow(QMainWindow):
                 )
             )
             worker.status_update.connect(
-                lambda message, context=target: self._log_message(
-                    f"{context['window_title']}: {message}"
+                lambda message, context=target: self._on_worker_status_update(
+                    message,
+                    context,
                 )
             )
             worker.scan_complete.connect(self._update_scan_count)
+            target["runtime_status"] = "准备中"
+            target["last_action"] = "等待 OCR 初始化"
             self._workers[target["key"]] = worker
             self._worker_contexts[target["key"]] = target
 
         self._worker = next(iter(self._workers.values()), None)
         for worker in self._workers.values():
             worker.start()
+        for target in self._worker_contexts.values():
+            self._update_window_status(target, "运行中", "监控线程已启动")
         self._start_channel_monitor()
 
-        self._monitor_btn.setText("Stop Monitor")
+        self._monitor_btn.setText("停止监控")
         self._monitor_btn.setStyleSheet(monitor_button_style(active=True))
-        self._status_label.setText("Running")
+        self._status_label.setText("监控中")
         self._status_label.setStyleSheet("color: #37d6b0; font-weight: bold;")
-        self._log_message(f"Monitor started for {len(self._workers)} EVE window(s)")
+        self._log_message(f"已启动 {len(self._workers)} 个 EVE 窗口监控")
         self._heartbeat_last_action = f"monitor_started:{len(self._workers)}"
         self._heartbeat_last_error = ""
         self._heartbeat_last_success_at = heartbeat_now_iso()
         self._publish_heartbeat()
         self._refresh_status_cards()
+        self._refresh_window_status_table()
+
+    def _on_worker_status_update(self, message: str, context: dict) -> None:
+        """Record one worker status update in log and the per-window table."""
+        text = str(message or "").strip()
+        self._log_message(f"{context['window_title']}: {text}")
+        lowered = text.casefold()
+        status = "运行中"
+        if "error" in lowered or "失败" in text or "异常" in text:
+            status = "异常"
+        elif "ocr" in lowered or "scan" in lowered or "扫描" in text:
+            status = "扫描中"
+        self._update_window_status(context, status, text)
 
     def _disconnect_worker_signals(self, worker: MonitorWorker | None = None) -> None:
         """Safely disconnect all signals from the current worker."""
@@ -574,11 +764,11 @@ class MainWindow(QMainWindow):
         self._stop_monitor_workers(timeout_ms=3000)
         self._stop_channel_monitor()
 
-        self._monitor_btn.setText("Start Monitor")
+        self._monitor_btn.setText("开始监控")
         self._monitor_btn.setStyleSheet(monitor_button_style(active=False))
-        self._status_label.setText("Stopped")
+        self._status_label.setText("已停止")
         self._status_label.setStyleSheet("color: #888;")
-        self._log_message("Monitor stopped")
+        self._log_message("监控已停止")
         self._heartbeat_last_action = "monitor_stopped"
         self._heartbeat_last_success_at = heartbeat_now_iso()
         self._publish_heartbeat()
@@ -596,7 +786,7 @@ class MainWindow(QMainWindow):
         failed = False
         running_workers = [worker for worker in workers if worker.isRunning()]
         if running_workers:
-            self._log_message(f"Stopping {len(running_workers)} monitor thread(s)...")
+            self._log_message(f"正在停止 {len(running_workers)} 个监控线程...")
         for worker in workers:
             worker.stop()
         for worker in workers:
@@ -612,6 +802,7 @@ class MainWindow(QMainWindow):
         self._workers = {}
         self._worker_contexts = {}
         self._worker = None
+        self._refresh_window_status_table()
         return not failed
 
     def _on_threat(self, threats: list[str]) -> None:
@@ -623,25 +814,41 @@ class MainWindow(QMainWindow):
         threats: list[str],
         context: dict | None = None,
     ) -> None:
-        """Publish detected threats to the intel server."""
-        if context is None:
-            self._publish_intel(threats)
-        else:
-            self._publish_intel(threats, context=context)
+        """Record local detector hits without posting extra observations."""
+        if not threats:
+            return
+        window_title = (
+            str(context.get("window_title") or "").strip()
+            if context
+            else self._window_combo.currentText()
+        )
+        prefix = f"{window_title}: " if window_title else ""
+        self._heartbeat_last_action = f"local_detection:{len(threats)}"
+        self._heartbeat_last_error = ""
+        self._log_message(f"{prefix}本地识别到 {len(threats)} 个名单，已通过 OCR snapshot 上报")
+        self._update_window_status(
+            context,
+            "识别到名单",
+            f"本地名单 {len(threats)}",
+        )
+        self._refresh_status_cards()
 
     def _start_channel_monitor(self) -> bool:
         """Start selected-channel log monitoring when configured."""
         self._stop_channel_monitor()
+        save_channel_config = getattr(self._settings, "save_channel_config", None)
+        if callable(save_channel_config):
+            save_channel_config()
         self._channel_names = self._settings.get_channel_names()
         self._channel_last_action = ""
         self._channel_last_error = ""
         self._channel_last_success_at = ""
         if not self._channel_names:
-            self._log_message("Channel log monitor disabled: no channel selected")
+            self._log_message("频道日志监控未启动：未选择频道")
             self._refresh_status_cards()
             return False
         if self._intel_client is None:
-            self._log_message("Channel log monitor disabled: server is not configured")
+            self._log_message("频道日志监控未启动：未配置服务端")
             self._refresh_status_cards()
             return False
 
@@ -652,17 +859,17 @@ class MainWindow(QMainWindow):
         )
         matched_files = self._channel_watcher.discover_files()
         self._channel_watcher.seed_to_end()
-        self._channel_timer.setInterval(5000)
+        self._channel_timer.setInterval(CHANNEL_POLL_INTERVAL_MS)
         self._channel_timer.start()
         joined = ", ".join(self._channel_names)
         if matched_files:
             self._log_message(
-                f"Channel log monitor started: {joined} ({len(matched_files)} files)"
+                f"频道日志监控已启动：{joined}（匹配 {len(matched_files)} 个日志文件）"
             )
         else:
             self._log_message(
-                "Channel log monitor started with no matching files yet: "
-                f"{joined}. Use full channel names or explicit * / ? wildcards."
+                "频道日志监控已启动，但暂未匹配到日志文件："
+                f"{joined}。请使用完整频道名，或显式使用 * / ? 通配符。"
             )
         self._refresh_status_cards()
         return True
@@ -690,6 +897,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._channel_last_action = "observation_error"
             self._channel_last_error = str(exc)
+            self._channel_timer.setInterval(self._channel_error_backoff_ms)
             self._log_message(f"Channel log upload failed: {exc}")
             self._publish_heartbeat()
             self._refresh_status_cards()
@@ -705,6 +913,8 @@ class MainWindow(QMainWindow):
         if processed:
             self._log_message(f"Channel observations uploaded: {processed}")
             self._publish_heartbeat()
+        if self._channel_timer.interval() != CHANNEL_POLL_INTERVAL_MS:
+            self._channel_timer.setInterval(CHANNEL_POLL_INTERVAL_MS)
         self._refresh_status_cards()
 
     def _create_intel_client(self) -> IntelApiClient | None:
@@ -714,7 +924,7 @@ class MainWindow(QMainWindow):
         )
         if not enabled or not self._intel_url:
             return None
-        timeout_raw = os.environ.get("EVE_SENTRY_INTEL_TIMEOUT", "1.0")
+        timeout_raw = os.environ.get("EVE_SENTRY_INTEL_TIMEOUT", "3.0")
         try:
             timeout = max(0.1, float(timeout_raw))
         except ValueError:
@@ -736,9 +946,16 @@ class MainWindow(QMainWindow):
             if context
             else self._window_combo.currentText()
         )
+        source_instance = (
+            str(context.get("source_instance") or "").strip()
+            if context
+            else window_title
+        ) or window_title
         metadata = {"system_source": self._intel_system_source}
         if window_title:
             metadata["window_title"] = window_title
+        if source_instance:
+            metadata["source_instance"] = source_instance
         if context:
             if context.get("key"):
                 metadata["target_id"] = context["key"]
@@ -750,7 +967,7 @@ class MainWindow(QMainWindow):
                 system_id=self._intel_system_id,
                 names=threats,
                 source=source,
-                source_instance=window_title,
+                source_instance=source_instance,
                 raw_text=", ".join(threats),
                 metadata=metadata,
             )
@@ -782,7 +999,11 @@ class MainWindow(QMainWindow):
         source_instance = self._window_combo.currentText()
         if context:
             client_id = str(context.get("client_id") or client_id)
-            source_instance = str(context.get("window_title") or source_instance)
+            source_instance = str(
+                context.get("source_instance")
+                or context.get("window_title")
+                or source_instance
+            )
         try:
             self._intel_client.post_ocr_snapshot(
                 client_id=client_id,
@@ -795,17 +1016,20 @@ class MainWindow(QMainWindow):
             self._heartbeat_last_action = "ocr_snapshot_error"
             self._heartbeat_last_error = str(exc)
             self._log_message(f"OCR snapshot upload failed: {exc}")
+            self._update_window_status(context, "上报异常", str(exc), error=str(exc))
             self._refresh_status_cards()
             return
         self._heartbeat_last_action = f"ocr_snapshot:{len(names)}"
         self._heartbeat_last_error = ""
         self._heartbeat_last_success_at = heartbeat_now_iso()
+        self._update_window_status(context, "运行中", f"OCR 名单 {len(names)}")
         self._refresh_status_cards()
 
     def _publish_heartbeat(self) -> None:
         if self._intel_client is None:
             return
         monitoring = self._is_monitoring()
+        channel_monitoring = self._channel_watcher is not None
         try:
             details = build_detector_heartbeat_details(
                 monitoring=monitoring,
@@ -825,13 +1049,19 @@ class MainWindow(QMainWindow):
                     {
                         "client_id": context["client_id"],
                         "window_title": context["window_title"],
+                        "source_instance": context.get(
+                            "source_instance",
+                            context["window_title"],
+                        ),
                         "region": context["region"],
                         "monitoring": context["key"] in getattr(self, "_workers", {}),
                     }
                     for context in contexts
                 ]
                 details["target_count"] = len(contexts)
-            details["channel_monitoring"] = self._channel_watcher is not None
+            details["channel_monitoring"] = channel_monitoring
+            if channel_monitoring and not monitoring:
+                details["mode"] = "channel_monitoring"
             if self._channel_names:
                 details["channels"] = list(self._channel_names)
             if self._channel_last_action:
@@ -844,7 +1074,7 @@ class MainWindow(QMainWindow):
                 client_id=self._heartbeat_client_id,
                 client_type="detector_client",
                 label="Detector Client",
-                status="running" if monitoring else "idle",
+                status="running" if (monitoring or channel_monitoring) else "idle",
                 heartbeat_interval_seconds=self._heartbeat_interval,
                 details=details,
             )
@@ -932,6 +1162,9 @@ class MainWindow(QMainWindow):
 
     def _setup_tray(self) -> None:
         self._tray = QSystemTrayIcon(self)
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+        self.setWindowIcon(icon)
+        self._tray.setIcon(icon)
         self._tray.setToolTip("EVE Sentry")
         self._tray.activated.connect(self._on_tray_activated)
 
