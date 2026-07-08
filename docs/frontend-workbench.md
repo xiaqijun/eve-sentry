@@ -128,6 +128,8 @@ npm run build
 
 - `/` 指向 `frontend/dist/`
 - `/api/` 反向代理到 Python intel server
+- 工作台和预警客户端默认订阅 `/api/v1/events` SSE；旧 `/api/events` 仅保留兼容。
+- Nginx 模板必须对 `/api/v1/events` 和 `/api/events` 关闭 buffering，避免告警推送被代理缓存。
 
 ## 测试重点
 

@@ -138,6 +138,69 @@ describe("buildTacticalGraph", () => {
     });
   });
 
+  it("keeps channel intel off the primary hostile HUD when active intel is available", () => {
+    const graph = buildTacticalGraph({
+      ...bootstrap,
+      active_intel: [
+        {
+          id: "channel-1",
+          source: "intel_channel",
+          source_instance: "wc.Venal+Br+Te",
+          system_name: "0-UVHJ",
+          raw_text: "0-UVHJ hostile movement",
+          active: true,
+          seen_count: 1,
+        },
+        {
+          id: "ocr-1",
+          source: "eve-sentry-detector",
+          source_instance: "EVE - Hajimi6",
+          system_name: "NCG-PW",
+          name: "Observed Pilot",
+          active: true,
+          seen_count: 9,
+        },
+      ],
+      map: {
+        ...bootstrap.map,
+        systems: [
+          {
+            name: "0-UVHJ",
+            system_id: 30003615,
+            x: 100,
+            y: 120,
+            hostile_count: 1,
+            report_count: 1,
+            security: -0.1,
+          },
+          {
+            name: "NCG-PW",
+            system_id: 30003616,
+            x: 180,
+            y: 150,
+            hostile_count: 0,
+            report_count: 0,
+            security: -0.3,
+          },
+        ],
+      },
+    });
+
+    expect(graph.nodes.find((node) => node.name === "0-UVHJ")).toMatchObject({
+      hostileCount: 0,
+      channelIntelCount: 1,
+      observationCount: 1,
+      hasAlerts: false,
+      threatLevel: "unknown",
+    });
+    expect(graph.nodes.find((node) => node.name === "NCG-PW")).toMatchObject({
+      hostileCount: 1,
+      channelIntelCount: 0,
+      observationCount: 1,
+      hasAlerts: true,
+    });
+  });
+
   it("uses only the one-hour recent kill count for map loss heat", () => {
     const graph = buildTacticalGraph({
       ...bootstrap,

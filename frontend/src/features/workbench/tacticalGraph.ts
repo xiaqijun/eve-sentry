@@ -12,6 +12,7 @@ export interface TacticalGraphNode {
   hostileCount: number;
   reportCount: number;
   observationCount: number;
+  channelIntelCount: number;
   killCount: number | null;
   monitorCount: number;
   monitorOnlineCount: number;
@@ -51,6 +52,19 @@ interface MonitorSummary {
   onlineCount: number;
   labels: string[];
 }
+
+interface ActiveIntelSummary {
+  ocrCount: number;
+  channelCount: number;
+  reportCount: number;
+}
+
+const OCR_SOURCES = new Set(["local_ocr", "ocr", "eve-sentry-detector"]);
+const CHANNEL_SOURCES = new Set([
+  "channel",
+  "intel_channel",
+  "intel_channel_report",
+]);
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null
@@ -170,6 +184,72 @@ function summarizeMonitors(
   return summaries;
 }
 
+function activeIntelWeight(item: Record<string, unknown>): number {
+  const metadata = asRecord(item.metadata);
+  const hostileCount = firstNumber(metadata.hostile_count);
+  if (hostileCount !== null && hostileCount > 0) {
+    return hostileCount;
+  }
+  const seenCount = firstNumber(item.seen_count);
+  if (seenCount !== null && seenCount > 0) {
+    return seenCount;
+  }
+  return 1;
+}
+
+function activeIntelNodeName(
+  item: Record<string, unknown>,
+  systemsById: Map<number, string>,
+  systemsByName: Map<string, string>,
+): string {
+  const systemId = firstNumber(item.system_id);
+  const systemName = firstString(item.system_name);
+  return (
+    (systemId !== null ? systemsById.get(systemId) : undefined) ||
+    systemsByName.get(systemName.toLowerCase()) ||
+    ""
+  );
+}
+
+function summarizeActiveIntel(
+  bootstrap: BootstrapPayload,
+): Map<string, ActiveIntelSummary> {
+  const systemsById = new Map<number, string>();
+  const systemsByName = new Map<string, string>();
+  for (const system of bootstrap.map.systems) {
+    if (typeof system.system_id === "number") {
+      systemsById.set(system.system_id, system.name);
+    }
+    systemsByName.set(system.name.trim().toLowerCase(), system.name);
+  }
+
+  const summaries = new Map<string, ActiveIntelSummary>();
+  for (const item of bootstrap.active_intel || []) {
+    if (item.active === false) {
+      continue;
+    }
+    const source = String(item.source || "").trim().toLowerCase();
+    const nodeName = activeIntelNodeName(item, systemsById, systemsByName);
+    if (!nodeName) {
+      continue;
+    }
+    const summary = summaries.get(nodeName) || {
+      ocrCount: 0,
+      channelCount: 0,
+      reportCount: 0,
+    };
+    if (OCR_SOURCES.has(source)) {
+      summary.ocrCount += 1;
+      summary.reportCount += activeIntelWeight(item);
+    } else if (CHANNEL_SOURCES.has(source)) {
+      summary.channelCount += activeIntelWeight(item);
+      summary.reportCount += activeIntelWeight(item);
+    }
+    summaries.set(nodeName, summary);
+  }
+  return summaries;
+}
+
 export function buildTacticalGraph(
   bootstrap: BootstrapPayload,
   selectedSystemId?: number | null,
@@ -185,6 +265,8 @@ export function buildTacticalGraph(
       ]);
   }
   const monitorsBySystem = summarizeMonitors(bootstrap);
+  const activeIntelBySystem = summarizeActiveIntel(bootstrap);
+  const hasActiveIntelPayload = Array.isArray(bootstrap.active_intel);
 
   return {
     nodes: bootstrap.map.systems.map((system) => {
@@ -195,10 +277,24 @@ export function buildTacticalGraph(
       const alertSummary = summarizeAlerts(systemAlerts);
       const x = Number(system.x || 0);
       const y = Number(system.y || 0);
-      const reportCount = Number(system.report_count || 0);
-      const hostileCount = Number(system.hostile_count || 0);
-      const realtimeSignalCount = Math.max(reportCount, hostileCount);
-      const hasRealtimeIntel = realtimeSignalCount > 0;
+      const activeSummary = activeIntelBySystem.get(system.name) || {
+        ocrCount: 0,
+        channelCount: 0,
+        reportCount: 0,
+      };
+      const reportCount = hasActiveIntelPayload
+        ? activeSummary.reportCount
+        : Number(system.report_count || 0);
+      const hostileCount = hasActiveIntelPayload
+        ? activeSummary.ocrCount
+        : Number(system.hostile_count || 0);
+      const channelIntelCount = hasActiveIntelPayload
+        ? activeSummary.channelCount
+        : 0;
+      const realtimeSignalCount = hasActiveIntelPayload
+        ? hostileCount + channelIntelCount
+        : Math.max(reportCount, hostileCount);
+      const hasRealtimeIntel = hostileCount > 0;
       const monitorSummary = monitorsBySystem.get(system.name) || {
         count: 0,
         onlineCount: 0,
@@ -217,6 +313,7 @@ export function buildTacticalGraph(
         hostileCount,
         reportCount,
         observationCount: realtimeSignalCount,
+        channelIntelCount,
         killCount: firstNumber(system.recent_kill_count) ?? 0,
         monitorCount: monitorSummary.count,
         monitorOnlineCount: monitorSummary.onlineCount,

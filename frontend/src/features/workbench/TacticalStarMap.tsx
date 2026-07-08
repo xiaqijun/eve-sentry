@@ -23,7 +23,7 @@ function nodeColor(node: TacticalGraphNode): string {
   if ((node.killCount ?? 0) > 0) {
     return "#ffb347";
   }
-  if (node.observationCount > 0) {
+  if (node.channelIntelCount > 0 || node.observationCount > 0) {
     return "#17d7ff";
   }
   return "#a9d8ef";
@@ -95,6 +95,7 @@ function drawNode(
   const color = nodeColor(node);
   const lossCount = Math.max(0, node.killCount ?? 0);
   const hasHud = node.hostileCount > 0 || lossCount > 0;
+  const hasChannelIntel = node.channelIntelCount > 0;
   const radius = node.isSelected ? 6.5 : hasHud ? 5.8 : 4.4;
   const fontSize = Math.max(7, 10 / globalScale);
   const x = Number(node.x || 0);
@@ -146,6 +147,21 @@ function drawNode(
       ? "rgba(199, 255, 222, 0.95)"
       : "rgba(255, 229, 179, 0.88)";
     context.lineWidth = Math.max(0.8, 1 / globalScale);
+    context.stroke();
+  }
+
+  if (hasChannelIntel && !hasHud) {
+    const intelRadius = Math.max(3.2, 4.8 / globalScale);
+    context.shadowBlur = 12;
+    context.shadowColor = "#17d7ff";
+    context.strokeStyle = "rgba(23, 215, 255, 0.82)";
+    context.lineWidth = Math.max(0.8, 1 / globalScale);
+    context.beginPath();
+    context.moveTo(x, y - radius - intelRadius - 3);
+    context.lineTo(x + intelRadius, y - radius - 3);
+    context.lineTo(x, y - radius + intelRadius - 3);
+    context.lineTo(x - intelRadius, y - radius - 3);
+    context.closePath();
     context.stroke();
   }
 

@@ -463,7 +463,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
                 return
 
-            self._store().set_map_data(systems, links)
+            self._store().set_map_data(systems, links, allow_unmapped_systems=False)
             self._send_json(
                 {
                     "ok": True,
@@ -540,7 +540,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
 
-            self._store().set_map_data(systems, links)
+            self._store().set_map_data(systems, links, allow_unmapped_systems=False)
             self._send_json(
                 {
                     "ok": True,
@@ -795,7 +795,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             self._send_observation_list(parsed.query)
             return
         if path == f"{API_V1_PREFIX}/alerts":
-            self._send_alert_list(parsed.query)
+            self._send_alert_list(parsed.query, active_only=True)
             return
         if path.startswith(f"{API_V1_PREFIX}/alerts/"):
             alert_id = unquote(path[len(f"{API_V1_PREFIX}/alerts/"):]).strip()
@@ -831,6 +831,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 limit=50 if parsed_limit is None else parsed_limit,
                 timeout_seconds=30.0 if parsed_timeout is None else parsed_timeout,
                 heartbeat_seconds=15.0 if parsed_heartbeat is None else parsed_heartbeat,
+                active_only=True,
                 **filters,
             )
             return
@@ -973,7 +974,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _bootstrap_payload(self) -> dict[str, Any]:
-        snapshot = self._store().snapshot()
+        snapshot = self._runtime_snapshot()
         return {
             "schema_version": "intel_bootstrap.v1",
             "generated_at": snapshot.get("generated_at", ""),
@@ -981,24 +982,240 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             "reports": snapshot.get("reports", []),
             "observations": snapshot.get("observations", []),
             "alerts": snapshot.get("alerts", []),
-            "active_intel": self._store().list_active_intel(),
+            "active_intel": snapshot.get("active_intel", []),
             "clients": self._store().heartbeat_snapshot(),
             "config": self._config_store().to_dict() if self._config_store() else None,
             "esi": self._esi_status_payload(),
         }
 
     def _map_snapshot_payload(self) -> dict[str, Any]:
-        return self._map_snapshot_from_snapshot(self._store().snapshot())
+        return self._map_snapshot_from_snapshot(
+            self._runtime_snapshot(include_reports=False, include_alerts=False)
+        )
+
+    def _runtime_snapshot(
+        self,
+        include_reports: bool = True,
+        include_alerts: bool = True,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        store = self._store()
+        active_items = self._visible_active_items(store, store.list_active_intel())
+        system_intel = store._aggregate_active_by_system(active_items)
+        with store._lock:
+            system_items = dict(store._systems)
+            link_items = list(store._links)
+            heartbeat_count = len(store._heartbeats)
+            report_items = list(store._reports) if include_reports else []
+
+        systems = []
+        for name, system in sorted(system_items.items()):
+            data = system.to_dict()
+            data.update(system_intel.get(name, store._empty_system_intel()))
+            if isinstance(data["hostiles"], set):
+                data["hostiles"] = sorted(data["hostiles"])
+            systems.append(data)
+
+        reports = []
+        observations = []
+        if include_reports:
+            report_items = store._visible_reports(report_items)
+            recent_reports = sorted(
+                report_items,
+                key=lambda report: report.seen_at,
+                reverse=True,
+            )
+            reports = [report.to_dict() for report in recent_reports[:limit]]
+            observations = [
+                report.to_observation().to_dict() for report in recent_reports[:limit]
+            ]
+
+        alerts = (
+            self._active_alerts_from_reports(store, report_items, active_items, limit)
+            if include_alerts
+            else []
+        )
+        return {
+            "generated_at": utc_now_iso(),
+            "systems": systems,
+            "links": [
+                {"from": source, "to": target}
+                for source, target in link_items
+                if source in system_items and target in system_items
+            ],
+            "reports": reports,
+            "observations": observations,
+            "alerts": alerts,
+            "active_intel": active_items,
+            "summary": {
+                "system_count": len(system_items),
+                "active_system_count": sum(
+                    1
+                    for name, data in system_intel.items()
+                    if name in system_items and data["hostile_count"]
+                ),
+                "report_count": len(report_items),
+                "observation_count": len(report_items),
+                "alert_count": len(alerts),
+                "hostile_count": sum(
+                    len(data["hostiles"])
+                    for name, data in system_intel.items()
+                    if name in system_items
+                ),
+                "heartbeat_count": heartbeat_count,
+            },
+        }
+
+    def _visible_active_items(
+        self,
+        store: IntelStore,
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        scorer = getattr(store, "_scorer", None)
+        watchlist = getattr(scorer, "watchlist", None)
+        whitelist = getattr(watchlist, "whitelist", None)
+        if not whitelist:
+            return list(items)
+        whitelist_names = {str(name).casefold() for name in whitelist}
+        with store._lock:
+            reports = list(store._reports)
+        all_source_ids = {str(report.report_id) for report in reports}
+        visible_source_ids = {
+            str(report.report_id) for report in store._visible_reports(reports)
+        }
+        hidden_source_ids = all_source_ids - visible_source_ids
+        return [
+            item for item in items
+            if str(item.get("name") or "").casefold() not in whitelist_names
+            and not self._active_item_only_has_hidden_sources(item, hidden_source_ids)
+        ]
+
+    def _active_item_only_has_hidden_sources(
+        self,
+        item: dict[str, Any],
+        hidden_source_ids: set[str],
+    ) -> bool:
+        source_ids = self._active_item_source_ids(item)
+        return bool(source_ids) and all(
+            source_id in hidden_source_ids for source_id in source_ids
+        )
+
+    def _active_item_source_ids(self, item: dict[str, Any]) -> list[str]:
+        raw_source_ids = item.get("source_observation_ids", [])
+        if raw_source_ids is None:
+            return []
+        if isinstance(raw_source_ids, str):
+            raw_source_ids = [raw_source_ids]
+        if not isinstance(raw_source_ids, list):
+            return []
+        return [str(source_id) for source_id in raw_source_ids if source_id]
+
+    def _active_alerts_from_reports(
+        self,
+        store: IntelStore,
+        reports: list[Any],
+        active_items: list[dict[str, Any]],
+        limit: int | None,
+    ) -> list[dict[str, Any]]:
+        _ = (store, reports)
+        alerts = []
+        ordered_items = sorted(
+            active_items,
+            key=lambda item: str(item.get("last_seen_at") or ""),
+            reverse=True,
+        )
+        for item in ordered_items:
+            source_ids = self._active_item_source_ids(item)
+            source_id = source_ids[-1] if source_ids else str(item.get("id") or "")
+            name = str(item.get("name") or "").strip()
+            created_at = str(
+                item.get("last_seen_at") or item.get("first_seen_at") or utc_now_iso()
+            )
+            alerts.append(
+                {
+                    "id": f"evt_{source_id}",
+                    "source_observation_id": source_id,
+                    "system_name": str(item.get("system_name") or ""),
+                    "system_id": item.get("system_id"),
+                    "names": [name] if name else [],
+                    "level": "high",
+                    "score": 70,
+                    "created_at": created_at,
+                    "source": item.get("source"),
+                    "source_instance": item.get("source_instance"),
+                    "raw_text": item.get("raw_text") or name,
+                    "acknowledged": False,
+                    "active_intel_id": item.get("id"),
+                }
+            )
+        alerts.sort(key=lambda alert: alert["created_at"], reverse=True)
+        if limit is not None:
+            alerts = alerts[:max(0, limit)]
+        return alerts
 
     def _map_snapshot_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         summary = snapshot.get("summary")
+        systems = snapshot.get("systems", [])
+        links = snapshot.get("links", [])
+        allowed_systems = self._configured_map_system_keys()
+        if allowed_systems:
+            systems = [
+                system
+                for system in systems
+                if self._map_system_matches_keys(system, allowed_systems)
+            ]
+            allowed_names = {
+                str(system.get("name") or "").strip()
+                for system in systems
+                if isinstance(system, dict)
+            }
+            links = [
+                link
+                for link in links
+                if isinstance(link, dict)
+                and str(link.get("from") or "").strip() in allowed_names
+                and str(link.get("to") or "").strip() in allowed_names
+            ]
         return {
             "schema_version": "map_snapshot.v1",
             "generated_at": snapshot.get("generated_at", ""),
-            "systems": snapshot.get("systems", []),
-            "links": snapshot.get("links", []),
+            "systems": systems,
+            "links": links,
             "summary": summary if isinstance(summary, dict) else {},
         }
+
+    def _configured_map_system_keys(self) -> set[tuple[str, str]]:
+        map_config_store = self._map_config_store()
+        if map_config_store is None:
+            return set()
+        config = map_config_store.to_dict()
+        systems = config.get("systems", [])
+        if not isinstance(systems, list):
+            return set()
+        keys: set[tuple[str, str]] = set()
+        for system in systems:
+            if not isinstance(system, dict):
+                continue
+            system_id = self._optional_positive_int(system.get("system_id"))
+            if system_id is not None:
+                keys.add(("id", str(system_id)))
+            name = str(system.get("name") or "").strip()
+            if name:
+                keys.add(("name", name.casefold()))
+        return keys
+
+    def _map_system_matches_keys(
+        self,
+        system: Any,
+        keys: set[tuple[str, str]],
+    ) -> bool:
+        if not isinstance(system, dict):
+            return False
+        system_id = self._optional_positive_int(system.get("system_id"))
+        if system_id is not None and ("id", str(system_id)) in keys:
+            return True
+        name = str(system.get("name") or "").strip()
+        return bool(name and ("name", name.casefold()) in keys)
 
     def _map_system_payload(self, system_id: int) -> dict[str, Any] | None:
         profile = self._store().system_profile(system_id)
@@ -1064,6 +1281,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             active=True,
             limit=limit,
         )
+        active = self._visible_active_items(self._store(), active)
         self._send_json(
             {
                 "active_intel": active,
@@ -1072,7 +1290,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             }
         )
 
-    def _send_alert_list(self, raw_query: str) -> None:
+    def _send_alert_list(self, raw_query: str, active_only: bool = False) -> None:
         query = parse_qs(raw_query)
         try:
             limit = self._parse_optional_int(query.get("limit", [""])[0])
@@ -1080,12 +1298,69 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
-        alerts = self._store().list_alerts(
-            since=query.get("since", [""])[0],
-            limit=limit,
-            **filters,
-        )
+        if active_only:
+            try:
+                alerts = self._active_alert_list(
+                    since=query.get("since", [""])[0],
+                    limit=limit,
+                    **filters,
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+        else:
+            alerts = self._store().list_alerts(
+                since=query.get("since", [""])[0],
+                limit=limit,
+                **filters,
+            )
         self._send_json({"alerts": alerts, "count": len(alerts)})
+
+    def _active_alert_list(
+        self,
+        since: str | None = None,
+        limit: int | None = None,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str | None = None,
+        include_since: bool = False,
+    ) -> list[dict[str, Any]]:
+        store = self._store()
+        active_items = self._visible_active_items(store, store.list_active_intel())
+        alerts = self._active_alerts_from_reports(
+            store,
+            [],
+            active_items,
+            limit=None,
+        )
+
+        since_query = since.strip() if since else ""
+        if since_query:
+            if include_since:
+                alerts = [
+                    alert for alert in alerts
+                    if alert["created_at"] >= since_query
+                ]
+            else:
+                alerts = [
+                    alert for alert in alerts
+                    if alert["created_at"] > since_query
+                ]
+
+        min_score_value = store._optional_score(min_score)
+        min_level_rank = store._alert_level_rank(min_level)
+        alerts = [
+            alert for alert in alerts
+            if store._alert_passes_filters(
+                alert,
+                acknowledged=acknowledged,
+                min_score=min_score_value,
+                min_level_rank=min_level_rank,
+            )
+        ]
+        if limit is not None:
+            alerts = alerts[:max(0, limit)]
+        return alerts
 
     def _store(self) -> IntelStore:
         return self.server.store  # type: ignore[attr-defined,no-any-return]
@@ -1254,30 +1529,13 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         }
 
     def _event_health(self, store: IntelStore) -> dict[str, Any]:
-        try:
-            reports = store._reports_snapshot()
-        except Exception as exc:
-            return {
-                "alert_query_ok": False,
-                "error": str(exc),
-                "sse": {"enabled": True},
-            }
-        latest = max(
-            reports,
-            key=lambda report: str(report.received_at or report.seen_at or ""),
-            default=None,
-        )
+        _ = store
         return {
             "alert_query_ok": True,
-            "latest_alert_id": f"evt_{latest.report_id}" if latest is not None else "",
-            "latest_alert_created_at": (
-                str(latest.received_at or latest.seen_at or "")
-                if latest is not None
-                else ""
-            ),
             "sse": {
                 "enabled": True,
-                "path": "/api/events",
+                "path": "/api/v1/events",
+                "legacy_path": "/api/events",
             },
         }
 
@@ -1356,14 +1614,22 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         observation_payload = parsed.to_observation_payload()
         metadata = dict(observation_payload.get("metadata") or {})
         metadata["raw_line"] = line
+        defer_enrichment = self._payload_bool(payload.get("defer_enrichment"))
+        if defer_enrichment:
+            metadata["enrichment_deferred"] = True
         observation_payload["metadata"] = metadata
         observation = self._store().add_observation(observation_payload)
+        alert = (
+            None
+            if defer_enrichment
+            else self._alert_for_observation(observation.observation_id)
+        )
         return {
             "ok": True,
             "ignored": False,
             "parsed": observation_payload,
             "observation": observation.to_dict(),
-            "alert": self._alert_for_observation(observation.observation_id),
+            "alert": alert,
         }
 
     def _read_json(self) -> dict[str, Any]:
@@ -1475,6 +1741,15 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             return False
         raise ValueError(f"{label} must be true or false")
 
+    def _payload_bool(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().casefold() in {"1", "true", "yes", "y", "on"}
+        return False
+
     def _parse_optional_bool_default(
         self,
         raw: str,
@@ -1532,6 +1807,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str | None = None,
+        active_only: bool = False,
     ) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -1553,14 +1829,24 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 current_include_since = bool(last_seen) and (
                     include_since or bool(sent_ids)
                 )
-                alerts = self._store().list_alerts(
-                    since=last_seen,
-                    limit=limit,
-                    include_since=current_include_since,
-                    acknowledged=acknowledged,
-                    min_score=min_score,
-                    min_level=min_level,
-                )
+                if active_only:
+                    alerts = self._active_alert_list(
+                        since=last_seen,
+                        limit=limit,
+                        include_since=current_include_since,
+                        acknowledged=acknowledged,
+                        min_score=min_score,
+                        min_level=min_level,
+                    )
+                else:
+                    alerts = self._store().list_alerts(
+                        since=last_seen,
+                        limit=limit,
+                        include_since=current_include_since,
+                        acknowledged=acknowledged,
+                        min_score=min_score,
+                        min_level=min_level,
+                    )
                 ordered_alerts = sorted(
                     alerts,
                     key=lambda item: str(item.get("created_at") or ""),

@@ -60,9 +60,21 @@ python scripts/integration_status_check.py --server http://127.0.0.1:8765 --chec
 python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-detector --expect-alert-client --expect-monitoring --min-targets 1 --require-event-health --check-events-stream --output .\integration-status-live.json
 ```
 
+如果本轮还要验收检测客户端内置的预警频道 Chatlogs 监控，启动检测端时先设置
+`-Channel`，再加入 `--expect-channel-monitoring`。这个检查只接受在线
+`detector_client` heartbeat 里的 `details.channel_monitoring=true` 和非空
+`details.channels`，不会因为检测端在线就误判频道监控已完成:
+
+```powershell
+python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-detector --expect-monitoring --expect-channel-monitoring --output .\integration-status-channel.json
+```
+
 多开 EVE 联调时，把 `--min-targets` 调成实际窗口数，例如两个窗口用
 `--min-targets 2`。如果没有真实 active intel，不要加 `--require-active-intel`；
-真实频道或 OCR 上报产生实时情报后再使用该参数。
+真实频道或 OCR 上报产生实时情报后再使用该参数。`--min-targets` 只证明
+检测端 heartbeat 里有多个窗口 target；当真实 OCR 已经识别并上报名单时，再加
+`--min-active-ocr-targets 实际窗口数`，证明服务端 active OCR rows 来自多个
+不同 `client_id` / `source_instance`。
 `--output` 生成的 JSON 会记录检查时间、只读访问的 URL、启用的期望条件和
 `write_endpoints_called: []`，可作为本次联调留证文件。证据文件还会保留
 `detectors`、`alert_clients`、`channel_clients`、`detector_channel`、
@@ -73,6 +85,8 @@ python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expe
   `window_title`、`region` 和 `monitoring`。
 - 频道日志是否通过检测端内置 `detector_channel` 字段，或独立
   `channel_client` heartbeat 和 `active_channel` 实时态体现。
+- `--expect-channel-monitoring` 是否证明检测端已经选择频道并启动内置
+  Chatlogs 监听。
 - 预警端是否通过 `alert_client` heartbeat 在线，且 SSE 和 recent alerts
   可读取。
 
@@ -97,16 +111,19 @@ uv run python scripts/channel_smoke.py --json
 只解析并打印样例，不连接服务端:
 
 ```powershell
-uv run python -m app.channel_client --log-dir .\samples\Chatlogs --once --include-existing --dry-run --json
+uv run python -m app.channel_client --log-dir .\samples\Chatlogs --once --include-existing --dry-run --json --all-channels
 ```
 
 独立长驻监听仅用于调试；正式监控客户端会在选择频道后自动监控并上报:
 
 ```powershell
-uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Alliance Intel" --server-parse
+uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Alliance Intel"
 ```
 
-`--channel` 默认按完整频道名精确匹配；需要匹配一组频道时，显式使用 `*` 或 `?` 通配符。
+`--channel` 默认按完整频道名精确匹配；未传 `--channel` 时不会扫描或上传任何
+Chatlogs。需要匹配一组频道时，显式使用 `*` 或 `?` 通配符；需要独立 CLI
+扫描全部频道时，必须显式加 `--all-channels`。频道 CLI 默认把原始日志行提交到
+`/api/v1/channel-lines` 由服务端解析；只有离线调试本地解析时才加 `--client-parse`。
 
 ### 4. 启动检测客户端
 
@@ -120,19 +137,73 @@ uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Al
 .\scripts\start_monitor_client.ps1 -Server http://127.0.0.1:8765 -Channel "wc.Venal+Br+Te"
 ```
 
-检测客户端负责截图、OCR 和 observation 上报；选择预警频道后，也会自动监控对应 Chatlogs 新日志并上报。未选择频道时不会提交频道日志情报。默认不弹本地预警窗口，正式联调由独立预警客户端消费服务端 alert。
+需要由脚本后台拉起检测端，并把 stdout/stderr 写入日志目录时:
+
+```powershell
+.\scripts\start_monitor_client.ps1 -Server http://127.0.0.1:8765 -Channel "wc.Venal+Br+Te" -Background -LogDir "$env:LOCALAPPDATA\EVE Sentry\logs"
+```
+
+后台启动只负责拉起检测端 GUI 并预填服务端、频道和 Chatlogs 环境变量；真实 OCR
+和多窗口监控仍需要桌面上存在实际 EVE 窗口，并在检测端里确认区域后点击
+`开始监控`。如果已经选择频道但当前没有 EVE 窗口，点击 `开始监控` 仍会启动
+频道日志监控并在心跳里上报 `channel_monitoring=true`；OCR worker 会等有窗口后再验收。
+如果只想检查启动参数，不启动 GUI，使用:
+
+```powershell
+.\scripts\start_monitor_client.ps1 -PrintCommand -Background -Channel "wc.Venal+Br+Te"
+```
+
+检测客户端负责截图 OCR 并通过 OCR snapshot 只上报检测到的名单；选择预警频道后，也会自动监控对应 Chatlogs 新日志并交给服务端解析上报。未选择频道时不会提交频道日志情报。默认不弹本地预警窗口，正式联调由独立预警客户端消费服务端 alert。
 检测客户端启动后会自动向服务端上报 heartbeat，Web 面板 `Client Status`
 和 `GET /api/v1/clients` 都能看到它的在线状态。旧 `GET /api/heartbeats`
 仍保留给旧页面和旧客户端兼容。
 当检测端停止监控或 heartbeat 切到 `idle` 时，服务端会把该检测端对应的
 OCR realtime rows 标记为 inactive，避免旧名单继续点亮星图；历史
 observations 和 alerts 仍会保留。
+频道日志上传失败时，检测端会把轮询间隔从 5 秒退避到 30 秒，避免在服务端
+处理超时或外部 ESI/zkill 降级时持续压接口。公网联调如果出现
+`Channel log upload failed: timed out`，先停止检测端并检查服务端健康状态，
+不要反复启动写入压测。
+检测客户端内置频道监控会请求服务端先完成解析和入库，并默认延后 ESI/zkill
+enrichment，避免实时 Chatlogs 上报被外部情报源阻塞；历史 observation 会保留
+`metadata.enrichment_deferred=true` 作为审计标记。
 
 多开 EVE 时，检测客户端会为当前检测到的每个 EVE 窗口启动独立监控 worker。
 每个窗口使用独立 OCR `client_id`，避免一个窗口的空名单把另一个窗口仍存在的
 active intel 过期掉。成员列表区域按窗口标题保存；未单独保存区域的窗口会使用
 默认右侧成员列表区域。heartbeat `details.targets` 会列出每个窗口的
 `client_id`、`window_title` 和 `region`，`target_count` 表示当前监控窗口数量。
+监控客户端界面中的“窗口状态”表会逐行显示每个窗口的标题、区域、运行状态和
+最近动作，便于确认多开时每个 worker 都在独立工作。
+
+在没有真实 EVE 窗口时，可以先跑检测客户端 UI smoke，验证窗口能离屏创建、
+主题样式已应用、状态卡布局不重叠、截图证据可生成，并确认不会触发真实截图、
+OCR 识别或网络请求:
+
+```powershell
+uv run python scripts/monitor_ui_smoke.py --json --screenshot .\monitor-ui-smoke.png
+```
+
+验证窗口选择器能展示多个 EVE 窗口时，使用受控假窗口数量；这只验证 UI 和
+selector 行为，不构造情报样本、不启动监控 worker:
+
+```powershell
+uv run python scripts/monitor_ui_smoke.py --json --fake-window-count 2
+```
+
+真实多开联调仍以实际 EVE 窗口为准。开始监控后，用只读检查脚本验证
+`details.target_count` 和 `details.targets[]`，并把 `--min-targets` 设为实际窗口数:
+
+```powershell
+uv run python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-detector --expect-monitoring --min-targets 2 --output .\integration-status-multibox.json
+```
+
+当两个窗口都已经 OCR 到真实成员名单，并且服务端 `/api/v1/active-intel`
+出现对应 realtime rows 后，再增加 active OCR target 门槛:
+
+```powershell
+uv run python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-detector --expect-monitoring --min-targets 2 --min-active-ocr-targets 2 --output .\integration-status-multibox-active.json
+```
 
 常用环境变量:
 
@@ -158,6 +229,47 @@ POST 一份只包含 `names` 的 OCR 快照，例如同一 `client_id`、窗口�
 确认客户端只上传当前检测到的名单，服务端负责 refresh/create/expire，而审计历史
 不随实时态清除。
 
+### 真实验收记录模板
+
+以下记录只用于真实 Windows / EVE / 服务端联调。不要用 sample chatlog、
+fake window 或手写 POST 情报来填写“真实”结果；这些受控输入只能证明解析和
+脚本行为。
+
+建议每轮联调保存一个目录，例如 `.\evidence\2026-07-07-live\`，至少保留:
+
+- 服务端地址: `http://127.0.0.1:8765` 或公网地址。
+- 检测端启动命令: 记录 `-Server`、`-Channel`、`-ChatlogDir`、`-System`
+  和是否启用 ESI 当前星系。
+- 真实 Chatlogs: 记录频道名、实际文件名、编码如果可见、`channel_offsets.json`
+  或自定义 offset state 路径。
+- 真实 EVE 窗口: 记录实际窗口数、窗口标题、成员列表区域截图。
+- 多窗口只读证据: 保存
+  `integration_status_check.py --expect-detector --expect-monitoring --min-targets 实际窗口数`
+  的 `--output` JSON，检查 `summary.detector_target_count`、
+  `detectors[].details.target_count` 和 `detectors[].details.targets[]`。
+- 多窗口 OCR 实时证据: 当真实 OCR 已有识别结果时，保存带
+  `--min-active-ocr-targets 实际窗口数` 的 `--output` JSON，检查
+  `summary.active_ocr_target_count` 和 `active_ocr[].metadata.client_id`。
+- 频道监控只读证据: 如果选择了频道，保存带 `--expect-channel-monitoring`
+  的 `--output` JSON，检查 `detector_channel[].channel_monitoring=true`、
+  `detector_channel[].channels` 非空，且没有 `channel_last_error`。
+- 实时情报证据: 只有真实 OCR 或真实频道日志产生情报后，才使用
+  `--require-active-intel`，并检查 `active_ocr` 或 `active_channel`。
+- 预警客户端证据: 保存带
+  `--expect-alert-client --expect-alert-mode events --expect-alert-details --check-events-stream --check-alert-detail`
+  的 `--output` JSON；如果按默认方式启动并希望验收弹窗配置，再加
+  `--expect-alert-popup`。如果有真实 alert，记录 alert id、是否收到 popup/声音、
+  details 是否可读、是否执行 ack。没有最近真实 alert 时，`--check-alert-detail`
+  会记录 `skipped:no recent alerts`，不会创建测试 alert。
+
+推荐命令:
+
+```powershell
+mkdir .\evidence\live
+python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-detector --expect-monitoring --min-targets 2 --min-active-ocr-targets 2 --expect-channel-monitoring --expect-channel-client --output .\evidence\live\detector-channel.json
+python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-alert-client --expect-alert-mode events --expect-alert-details --check-events-stream --check-alert-detail --output .\evidence\live\alert-client.json
+```
+
 ### 5. 启动预警客户端
 
 ```powershell
@@ -175,7 +287,45 @@ POST 一份只包含 `names` 的 OCR 快照，例如同一 `client_id`、窗口�
 .\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -NoPopup -MinLevel high
 ```
 
+真实联调推荐用后台长驻模式，便于同时观察 Web 工作台和检测端:
+
+```powershell
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -NoPopup -Background -LogDir "$env:LOCALAPPDATA\EVE Sentry\logs"
+python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-alert-client --expect-alert-mode events --expect-alert-details --check-events-stream --check-alert-detail
+```
+
+`-Once` 只适合一次性读取 recent alerts，不适合作为在线验收，因为它退出后
+`alert_client` heartbeat 会很快变成 stale。
+
+只验证启动脚本参数映射、不连接服务端、不消费真实告警时，用 `-PrintCommand`:
+
+```powershell
+.\scripts\start_alert_client.ps1 -PrintCommand -Server http://127.0.0.1:8765 -Once -IncludeExisting -Json -Poll -NoPopup -NoDetails -NoState
+```
+
 `--popup` 会显示非阻塞本地预警窗口并播放提示音；窗口未关闭时，客户端仍会继续消费后续告警事件。
+
+### 一键生成现场证据包
+
+真实联调时推荐最后跑一次只读证据包脚本。它只是连续读取服务端 GET
+接口并写本地 JSON 文件，不启动客户端、不提交 OCR、不上传频道样本、不 ack
+告警:
+
+```powershell
+python scripts/live_acceptance_bundle.py --server http://127.0.0.1:8765 --output-dir .\evidence\live --expect-detector --expect-monitoring --min-targets 2 --min-active-ocr-targets 2 --expect-channel-monitoring --expect-channel-client --expect-alert-client --expect-alert-mode events --expect-alert-details --check-events-stream --check-alert-detail --check-esi --check-map
+```
+
+脚本会创建带时间戳的子目录，写入:
+
+- `baseline.json`: 服务端 health、clients、active intel、可选 ESI / map / SSE 基线。
+- `detector-channel.json`: 检测端在线、监控中、多窗口 target 数、频道监控状态。
+- `alert-client.json`: 预警客户端在线、SSE 连通性，以及 heartbeat 中的
+  events/poll、popup、details 配置状态；有最近真实 alert 时还会读取
+  `GET /api/v1/alerts/{id}` 详情。
+- `manifest.json`: 汇总每个检查文件、期望条件和 `write_endpoints_called: []`。
+
+如果现场没有真实 active intel，不要加 `--require-active-intel`。只有真实 OCR
+名单或真实频道日志已经进入服务端后，才把这个参数加入证据包命令。
 
 ## Runtime Data
 

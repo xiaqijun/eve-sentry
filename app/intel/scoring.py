@@ -25,8 +25,11 @@ class Watchlist:
 
     whitelist: set[str] = field(default_factory=set)
     blacklist: set[str] = field(default_factory=set)
+    friendly_corporation_ids: set[int] = field(default_factory=set)
+    friendly_alliance_ids: set[int] = field(default_factory=set)
     hostile_corporation_ids: set[int] = field(default_factory=set)
     hostile_alliance_ids: set[int] = field(default_factory=set)
+    friendly_standing_threshold: float | None = 5.0
     hostile_standing_threshold: float | None = -5.0
 
 
@@ -68,7 +71,8 @@ class ScoringEngine:
     ) -> ThreatEvent | None:
         """Return a threat event, or None when suppressed by rules/cooldown."""
         names = self._event_names(observation)
-        if self._is_whitelisted(names):
+        profiles = self._profile_inputs(character_profile, character_profiles)
+        if self.suppresses_observation(observation, names, profiles):
             return None
 
         cooldown_key = self._cooldown_key(observation, names)
@@ -78,7 +82,7 @@ class ScoringEngine:
         evidence: list[Evidence] = []
         evidence.extend(self._source_evidence(observation, names))
         evidence.extend(self._watchlist_evidence(names))
-        for profile in self._profile_inputs(character_profile, character_profiles):
+        for profile in profiles:
             evidence.extend(self._profile_evidence(profile))
         for activity in self._activity_inputs(kill_activity, kill_activities):
             evidence.extend(self._kill_activity_evidence(activity))
@@ -432,6 +436,21 @@ class ScoringEngine:
         activities.extend(item for item in group_activities or [] if item is not None)
         return activities
 
+    def suppresses_observation(
+        self,
+        observation: Observation,
+        names: list[str] | None = None,
+        character_profiles: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """Return true when a target is fully covered by friendly watchlists."""
+        event_names = self._event_names(observation) if names is None else list(names)
+        if self._all_names_whitelisted(event_names):
+            return True
+        return self._all_targets_have_friendly_profiles(
+            observation,
+            character_profiles or [],
+        )
+
     def _event_names(self, observation: Observation) -> list[str]:
         if observation.names:
             return list(observation.names)
@@ -439,11 +458,46 @@ class ScoringEngine:
             return [str(item) for item in observation.character_ids]
         return [observation.raw_text or "Unknown target"]
 
-    def _is_whitelisted(self, names: list[str]) -> bool:
+    def _all_names_whitelisted(self, names: list[str]) -> bool:
         whitelist = {name.casefold() for name in self.watchlist.whitelist}
         if not whitelist:
             return False
         return all(name.casefold() in whitelist for name in names)
+
+    def _all_targets_have_friendly_profiles(
+        self,
+        observation: Observation,
+        profiles: list[dict[str, Any]],
+    ) -> bool:
+        if not profiles:
+            return False
+        friendly_profiles = [
+            profile for profile in profiles if self._is_friendly_profile(profile)
+        ]
+        if not friendly_profiles:
+            return False
+        target_count = max(
+            len(observation.names),
+            len(observation.character_ids),
+            len(profiles),
+        )
+        return target_count > 0 and len(friendly_profiles) >= target_count
+
+    def _is_friendly_profile(self, profile: dict[str, Any]) -> bool:
+        corporation_id = _optional_int(profile.get("corporation_id"))
+        alliance_id = _optional_int(profile.get("alliance_id"))
+        standing = _optional_float(profile.get("contact_standing"))
+        if standing is None:
+            standing = _optional_float(profile.get("standing"))
+        return (
+            corporation_id in self.watchlist.friendly_corporation_ids
+            or alliance_id in self.watchlist.friendly_alliance_ids
+            or (
+                standing is not None
+                and self.watchlist.friendly_standing_threshold is not None
+                and standing >= self.watchlist.friendly_standing_threshold
+            )
+        )
 
     def _blacklist_names(self) -> set[str]:
         return {name.casefold() for name in self.watchlist.blacklist}

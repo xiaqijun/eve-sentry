@@ -176,6 +176,7 @@ def _build_store(
             resolver=resolver,
             scorer=scorer,
             enricher=enricher,
+            allow_unmapped_systems=False,
         )
     return IntelStore(
         args.data,
@@ -184,6 +185,7 @@ def _build_store(
         resolver=resolver,
         scorer=scorer,
         enricher=enricher,
+        allow_unmapped_systems=False,
     )
 
 

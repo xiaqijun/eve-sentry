@@ -101,7 +101,8 @@ def test_health_and_cors_preflight(tmp_path):
         assert payload["health"]["esi"]["config"] == {}
         assert payload["health"]["killboard"] == {"enabled": False}
         assert payload["health"]["events"]["alert_query_ok"] is True
-        assert payload["health"]["events"]["sse"]["path"] == "/api/events"
+        assert payload["health"]["events"]["sse"]["path"] == "/api/v1/events"
+        assert payload["health"]["events"]["sse"]["legacy_path"] == "/api/events"
 
         request = Request(f"{server.url}/api/intel", method="OPTIONS")
         with urlopen(request, timeout=3) as response:
@@ -138,7 +139,8 @@ def test_health_does_not_generate_alerts(tmp_path):
 
         assert status == 200
         assert payload["health"]["events"]["alert_query_ok"] is True
-        assert payload["health"]["events"]["latest_alert_id"]
+        assert payload["health"]["events"]["sse"]["enabled"] is True
+        assert "latest_alert_id" not in payload["health"]["events"]
         assert store.list_alerts_calls == 0
     finally:
         server.stop()
@@ -178,7 +180,9 @@ def test_health_reports_config_sqlite_and_killboard(tmp_path):
         assert health["config"]["evidence_rule_count"] > 0
         assert health["killboard"]["enabled"] is True
         assert health["killboard"]["client"] == "FakeKillboard"
-        assert health["events"]["latest_alert_id"]
+        assert health["events"]["alert_query_ok"] is True
+        assert health["events"]["sse"]["enabled"] is True
+        assert "latest_alert_id" not in health["events"]
     finally:
         server.stop()
 
@@ -1760,6 +1764,44 @@ def test_create_channel_line_repairs_unique_esi_system_match(tmp_path):
         server.stop()
 
 
+def test_create_channel_line_can_defer_expensive_enrichment(tmp_path):
+    class ExplodingResolver:
+        def resolve_names(self, names):
+            raise AssertionError(f"resolve_names should be deferred: {names}")
+
+        def enrich_observation(self, observation):
+            raise AssertionError("enrich_observation should be deferred")
+
+    store = IntelStore(
+        tmp_path / "intel.json",
+        resolver=ExplodingResolver(),
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/channel-lines",
+            method="POST",
+            payload={
+                "channel": "Alliance Intel",
+                "line": "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds",
+                "defer_enrichment": True,
+            },
+        )
+
+        assert status == 201
+        assert created["ignored"] is False
+        assert created["observation"]["system_name"] == "Tama"
+        assert created["observation"]["metadata"]["enrichment_deferred"] is True
+        assert created["observation"]["metadata"]["raw_line"] == (
+            "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds"
+        )
+        assert created["alert"] is None
+    finally:
+        server.stop()
+
+
 def test_create_channel_line_suppresses_invalid_system_after_esi_resolution(tmp_path):
     class FakeResolver:
         def enrich_observation(self, observation):
@@ -1886,7 +1928,6 @@ def test_ack_alert_route_marks_alert(tmp_path):
                 "system_name": "Tama",
                 "names": ["Alice"],
                 "source": "intel_channel",
-                "seen_at": "2026-06-29T12:00:00+00:00",
             },
         )
         assert status == 201
@@ -2033,6 +2074,63 @@ def test_events_stream_returns_alert_sse(tmp_path):
         data_line = next(line for line in body.splitlines() if line.startswith("data:"))
         payload = json.loads(data_line[len("data:"):].strip())
         assert payload["id"] == created["alert"]["id"]
+    finally:
+        server.stop()
+
+
+def test_v1_events_stream_returns_alert_sse(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        status, created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+            },
+        )
+        assert status == 201
+
+        status, headers, body = request_text(
+            f"{server.url}/api/v1/events?{urlencode({'timeout': '0', 'limit': '5'})}"
+        )
+
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/event-stream")
+        assert "event: alert" in body
+        data_line = next(line for line in body.splitlines() if line.startswith("data:"))
+        payload = json.loads(data_line[len("data:"):].strip())
+        assert payload["id"] == created["alert"]["id"]
+    finally:
+        server.stop()
+
+
+def test_v1_alerts_tolerates_legacy_active_item_without_source_ids(tmp_path):
+    store = IntelStore(tmp_path / "intel.json")
+    observation = store.add_observation(
+        {
+            "system_name": "Tama",
+            "names": ["Alice"],
+            "source": "intel_channel",
+        }
+    )
+    active = store.list_active_intel()[0]
+    active["source_observation_ids"] = None
+
+    class LegacyActiveStore(IntelStore):
+        def list_active_intel(self, *args, **kwargs):
+            return [active]
+
+    server = IntelHTTPServer(LegacyActiveStore(tmp_path / "legacy.json"), port=0)
+    server.store._reports = store._reports
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/v1/alerts")
+        assert status == 200
+        assert payload["count"] == 1
+        assert payload["alerts"][0]["system_name"] == observation.system_name
     finally:
         server.stop()
 
@@ -2347,6 +2445,21 @@ def test_config_api_updates_scoring_rules_and_clears_cached_alerts(tmp_path):
         assert status == 201
         assert suppressed["alert"] is None
 
+        status, observations = request_json(f"{server.url}/api/observations")
+        assert status == 200
+        assert observations == {"observations": [], "count": 0}
+
+        status, v1_observations = request_json(f"{server.url}/api/v1/observations")
+        assert status == 200
+        assert v1_observations == {"observations": [], "count": 0}
+
+        status, bootstrap_payload = request_json(f"{server.url}/api/v1/bootstrap")
+        assert status == 200
+        bootstrap = bootstrap_payload["bootstrap"]
+        assert bootstrap["reports"] == []
+        assert bootstrap["observations"] == []
+        assert bootstrap["alerts"] == []
+
         status, config = request_json(f"{server.url}/api/config")
         assert status == 200
         assert config["config"]["whitelist"] == ["Alice"]
@@ -2424,11 +2537,97 @@ def test_map_config_api_updates_active_topology(tmp_path):
         assert {item["name"] for item in payload["systems"]} == {"Tama", "Kedama"}
         assert payload["links"] == [{"from": "Tama", "to": "Kedama"}]
 
+        status, report = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Jita",
+                "names": ["Alice"],
+                "source": "intel_channel",
+                "raw_text": "Jita Alice",
+                "seen_at": "2099-06-29T12:00:00+00:00",
+            },
+        )
+        assert status == 201
+        assert report["observation"]["system_name"] == "Jita"
+
+        status, payload = request_json(f"{server.url}/api/systems")
+        assert status == 200
+        assert {item["name"] for item in payload["systems"]} == {"Tama", "Kedama"}
+
         status, health = request_json(f"{server.url}/api/health")
         assert status == 200
         assert health["health"]["map"]["enabled"] is True
         assert health["health"]["map"]["source"] == "manual"
         assert health["health"]["map"]["system_count"] == 2
+    finally:
+        server.stop()
+
+
+def test_v1_map_filters_nodes_to_configured_topology(tmp_path):
+    map_config_store = MapConfigStore(tmp_path / "intel_map.json")
+    map_config_store.update(
+        {
+            "source": "manual",
+            "layout_mode": "manual",
+            "systems": [
+                {
+                    "system_id": 30002813,
+                    "name": "Tama",
+                    "x": 100,
+                    "y": 120,
+                    "region": "The Citadel",
+                    "security": 0.3,
+                },
+                {
+                    "system_id": 30002819,
+                    "name": "Kedama",
+                    "x": 180,
+                    "y": 180,
+                    "region": "The Citadel",
+                    "security": 0.2,
+                },
+            ],
+            "links": [{"from": "Tama", "to": "Kedama"}],
+        }
+    )
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={
+            "Tama": StarSystem("Tama", 100, 120, "The Citadel", 0.3, 30002813),
+            "Kedama": StarSystem(
+                "Kedama",
+                180,
+                180,
+                "The Citadel",
+                0.2,
+                30002819,
+            ),
+            "Jita": StarSystem("Jita", 240, 180, "The Forge", 0.9, 30000142),
+        },
+        links=[("Tama", "Kedama"), ("Kedama", "Jita")],
+    )
+    server = IntelHTTPServer(
+        store,
+        port=0,
+        map_config_store=map_config_store,
+    )
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/v1/map")
+        assert status == 200
+        assert {item["name"] for item in payload["map"]["systems"]} == {
+            "Tama",
+            "Kedama",
+        }
+        assert payload["map"]["links"] == [{"from": "Tama", "to": "Kedama"}]
+
+        status, payload = request_json(f"{server.url}/api/v1/bootstrap")
+        assert status == 200
+        assert {item["name"] for item in payload["bootstrap"]["map"]["systems"]} == {
+            "Tama",
+            "Kedama",
+        }
     finally:
         server.stop()
 

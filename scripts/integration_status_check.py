@@ -18,6 +18,19 @@ if str(REPO_ROOT) not in sys.path:
 
 from app.intel_client import IntelApiClient, IntelApiError
 
+SENSITIVE_KEYS = {
+    "access_token",
+    "authorization",
+    "character_owner_hash",
+    "client_secret",
+    "cookie",
+    "password",
+    "refresh_token",
+    "secret",
+    "token",
+    "token_file",
+}
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -45,15 +58,58 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="fail unless at least one alert_client heartbeat is online",
     )
     parser.add_argument(
+        "--expect-alert-mode",
+        choices=["events", "poll"],
+        default="",
+        help="fail unless an online alert_client heartbeat reports this transport mode",
+    )
+    parser.add_argument(
+        "--expect-alert-popup",
+        action="store_true",
+        help="fail unless an online alert_client heartbeat reports popup=true",
+    )
+    parser.add_argument(
+        "--expect-alert-details",
+        action="store_true",
+        help="fail unless an online alert_client heartbeat reports details=true",
+    )
+    parser.add_argument(
+        "--expect-alert-healthy",
+        action="store_true",
+        help="fail unless an online alert_client heartbeat has last_success_at and no last_error",
+    )
+    parser.add_argument(
+        "--expect-channel-client",
+        action="store_true",
+        help="fail unless at least one standalone channel_client heartbeat is online",
+    )
+    parser.add_argument(
         "--expect-monitoring",
         action="store_true",
         help="fail unless a detector client reports running/monitoring state",
+    )
+    parser.add_argument(
+        "--expect-channel-monitoring",
+        action="store_true",
+        help=(
+            "fail unless an online detector client reports selected-channel "
+            "Chatlogs monitoring"
+        ),
     )
     parser.add_argument(
         "--min-targets",
         type=int,
         default=0,
         help="fail unless detector heartbeat details include at least this many targets",
+    )
+    parser.add_argument(
+        "--min-active-ocr-targets",
+        type=int,
+        default=0,
+        help=(
+            "fail unless /api/v1/active-intel contains OCR rows from at least "
+            "this many distinct detector targets"
+        ),
     )
     parser.add_argument(
         "--require-event-health",
@@ -81,6 +137,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="connect to /api/v1/events briefly; no alert is required",
     )
     parser.add_argument(
+        "--check-alert-detail",
+        action="store_true",
+        help="read detail for the newest real alert when one exists; skips when none exist",
+    )
+    parser.add_argument(
         "--limit-alerts",
         type=int,
         default=5,
@@ -94,6 +155,8 @@ def fetch_json(url: str, timeout: float) -> dict[str, Any]:
     try:
         with urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
+    except TimeoutError as exc:
+        raise RuntimeError(f"GET {url} timed out after {timeout}s") from exc
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"GET {url} failed with HTTP {exc.code}: {body}") from exc
@@ -123,7 +186,12 @@ def probe_event_stream(server: str, timeout: float) -> dict[str, Any]:
     try:
         with urlopen(request, timeout=max(timeout, 1.0)) as response:
             content_type = response.headers.get("Content-Type", "")
-            sample = response.read(256).decode("utf-8", errors="replace")
+            try:
+                sample = response.readline().decode("utf-8", errors="replace")
+            except TimeoutError:
+                sample = ""
+    except TimeoutError as exc:
+        raise RuntimeError(f"GET {url} timed out after {max(timeout, 1.0)}s") from exc
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"GET {url} failed with HTTP {exc.code}: {body}") from exc
@@ -146,6 +214,16 @@ def endpoint_record(url: str, ok: bool, detail: str = "", count: int | None = No
     if count is not None:
         record["count"] = count
     return record
+
+
+def alert_detail_id(alerts: list[dict[str, Any]]) -> str:
+    for alert in alerts:
+        if not isinstance(alert, dict):
+            continue
+        alert_id = str(alert.get("id") or "").strip()
+        if alert_id:
+            return alert_id
+    return ""
 
 
 def classify_clients(clients: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
@@ -207,10 +285,76 @@ def detector_is_monitoring(detectors: list[dict[str, Any]]) -> bool:
     return False
 
 
-def compact_heartbeat(item: dict[str, Any]) -> dict[str, Any]:
+def detector_channel_is_monitoring(detectors: list[dict[str, Any]]) -> bool:
+    for item in detectors:
+        details = item.get("details", {})
+        if isinstance(details, dict) and details.get("channel_monitoring") is True:
+            channels = details.get("channels", [])
+            return not isinstance(channels, list) or bool(channels)
+    return False
+
+
+def detector_channel_count(detectors: list[dict[str, Any]]) -> int:
+    highest = 0
+    for item in detectors:
+        details = item.get("details", {})
+        if not isinstance(details, dict) or details.get("channel_monitoring") is not True:
+            continue
+        channels = details.get("channels", [])
+        if isinstance(channels, list):
+            highest = max(highest, len(channels))
+        else:
+            highest = max(highest, 1)
+    return highest
+
+
+def heartbeat_details(item: dict[str, Any]) -> dict[str, Any]:
     details = item.get("details", {})
-    if not isinstance(details, dict):
-        details = {}
+    return details if isinstance(details, dict) else {}
+
+
+def alert_client_modes(alert_clients: list[dict[str, Any]]) -> list[str]:
+    modes = []
+    for item in alert_clients:
+        details = heartbeat_details(item)
+        for key in ("mode", "transport"):
+            mode = str(details.get(key) or "").strip()
+            if mode and mode not in modes:
+                modes.append(mode)
+    return modes
+
+
+def alert_client_has_mode(alert_clients: list[dict[str, Any]], mode: str) -> bool:
+    expected = str(mode or "").strip().casefold()
+    if not expected:
+        return True
+    for item in alert_clients:
+        details = heartbeat_details(item)
+        values = {
+            str(details.get("mode") or "").strip().casefold(),
+            str(details.get("transport") or "").strip().casefold(),
+        }
+        if expected in values:
+            return True
+    return False
+
+
+def alert_client_flag_enabled(alert_clients: list[dict[str, Any]], field: str) -> bool:
+    return any(heartbeat_details(item).get(field) is True for item in alert_clients)
+
+
+def alert_client_is_healthy(alert_clients: list[dict[str, Any]]) -> bool:
+    for item in alert_clients:
+        details = heartbeat_details(item)
+        last_error = str(details.get("last_error") or "").strip()
+        last_success_at = str(details.get("last_success_at") or "").strip()
+        if not last_error and last_success_at:
+            return True
+    return False
+
+
+def compact_heartbeat(item: dict[str, Any]) -> dict[str, Any]:
+    details = heartbeat_details(item)
     return {
         "client_id": item.get("client_id", ""),
         "client_type": item.get("client_type", ""),
@@ -231,6 +375,26 @@ def active_source_rows(rows: list[dict[str, Any]], source: str) -> list[dict[str
         for row in rows
         if isinstance(row, dict) and str(row.get("source") or "") == source
     ]
+
+
+def active_ocr_target_key(row: dict[str, Any]) -> str:
+    metadata = row.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    client_id = str(metadata.get("client_id") or "").strip()
+    if client_id:
+        return f"client:{client_id}"
+    source_instance = str(
+        row.get("source_instance") or metadata.get("source_instance") or ""
+    ).strip()
+    if source_instance:
+        return f"source:{source_instance}"
+    system_name = str(row.get("system_name") or "").strip()
+    return f"system:{system_name}" if system_name else "unknown"
+
+
+def active_ocr_target_count(rows: list[dict[str, Any]]) -> int:
+    return len({active_ocr_target_key(row) for row in rows if isinstance(row, dict)})
 
 
 def detector_channel_states(detectors: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -264,13 +428,21 @@ def expected_conditions(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "detector_client": bool(args.expect_detector),
         "alert_client": bool(args.expect_alert_client),
+        "alert_mode": str(args.expect_alert_mode or ""),
+        "alert_popup": bool(args.expect_alert_popup),
+        "alert_details": bool(args.expect_alert_details),
+        "alert_healthy": bool(args.expect_alert_healthy),
+        "channel_client": bool(args.expect_channel_client),
         "detector_monitoring": bool(args.expect_monitoring),
+        "detector_channel_monitoring": bool(args.expect_channel_monitoring),
         "min_targets": max(0, int(args.min_targets)),
+        "min_active_ocr_targets": max(0, int(args.min_active_ocr_targets)),
         "event_health": bool(args.require_event_health),
         "active_intel": bool(args.require_active_intel),
         "esi_status": bool(args.check_esi),
         "map_snapshot": bool(args.check_map),
         "events_stream": bool(args.check_events_stream),
+        "alert_detail": bool(args.check_alert_detail),
     }
 
 
@@ -297,6 +469,32 @@ def write_output(path: Path, payload: dict[str, Any]) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def is_sensitive_key(key: str) -> bool:
+    normalized = str(key or "").strip().casefold()
+    return (
+        normalized in SENSITIVE_KEYS
+        or normalized.endswith("_token")
+        or normalized.endswith("_secret")
+        or "authorization" in normalized
+        or "cookie" in normalized
+        or "password" in normalized
+    )
+
+
+def redact_sensitive(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            if is_sensitive_key(str(key)):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = redact_sensitive(item)
+        return redacted
+    if isinstance(value, list):
+        return [redact_sensitive(item) for item in value]
+    return value
 
 
 def build_status(args: argparse.Namespace) -> dict[str, Any]:
@@ -360,8 +558,14 @@ def build_status(args: argparse.Namespace) -> dict[str, Any]:
     online_detectors = [item for item in detectors if is_online(item)]
     online_alert_clients = [item for item in alert_clients if is_online(item)]
     online_channel_clients = [item for item in channel_clients if is_online(item)]
-    highest_targets = detector_target_count(detectors)
-    monitoring = detector_is_monitoring(detectors)
+    alert_modes = alert_client_modes(online_alert_clients)
+    alert_popup_enabled = alert_client_flag_enabled(online_alert_clients, "popup")
+    alert_details_enabled = alert_client_flag_enabled(online_alert_clients, "details")
+    alert_healthy = alert_client_is_healthy(online_alert_clients)
+    highest_targets = detector_target_count(online_detectors)
+    monitoring = detector_is_monitoring(online_detectors)
+    channel_monitoring = detector_channel_is_monitoring(online_detectors)
+    channel_count = detector_channel_count(online_detectors)
 
     add_check(
         checks,
@@ -383,14 +587,59 @@ def build_status(args: argparse.Namespace) -> dict[str, Any]:
             bool(online_alert_clients),
             f"{len(online_alert_clients)} online alert client(s)",
         )
+    if args.expect_alert_mode:
+        add_check(
+            checks,
+            "alert_client_mode",
+            alert_client_has_mode(online_alert_clients, args.expect_alert_mode),
+            (
+                f"modes={alert_modes or []} "
+                f"expected={args.expect_alert_mode}"
+            ),
+        )
+    if args.expect_alert_popup:
+        add_check(
+            checks,
+            "alert_client_popup",
+            alert_popup_enabled,
+            f"popup={alert_popup_enabled}",
+        )
+    if args.expect_alert_details:
+        add_check(
+            checks,
+            "alert_client_details",
+            alert_details_enabled,
+            f"details={alert_details_enabled}",
+        )
+    if args.expect_alert_healthy:
+        add_check(
+            checks,
+            "alert_client_healthy",
+            alert_healthy,
+            f"healthy={alert_healthy}",
+        )
+    if args.expect_channel_client:
+        add_check(
+            checks,
+            "channel_client_online",
+            bool(online_channel_clients),
+            f"{len(online_channel_clients)} online channel client(s)",
+        )
     if args.expect_monitoring:
         add_check(checks, "detector_monitoring", monitoring, str(monitoring))
+    if args.expect_channel_monitoring:
+        add_check(
+            checks,
+            "detector_channel_monitoring",
+            channel_monitoring,
+            f"{channel_count} monitored channel(s)",
+        )
     if args.min_targets > 0:
         add_check(
             checks,
             "detector_targets",
             highest_targets >= args.min_targets,
-            f"highest target_count={highest_targets}",
+            f"highest target_count={highest_targets} expected>={args.min_targets}",
         )
 
     alerts = api.list_alerts(limit=max(0, int(args.limit_alerts)))
@@ -404,6 +653,32 @@ def build_status(args: argparse.Namespace) -> dict[str, Any]:
         )
     )
     add_check(checks, "alerts_endpoint", isinstance(alerts, list), f"{len(alerts)} alert(s)")
+    alert_detail = None
+    if args.check_alert_detail:
+        detail_id = alert_detail_id(alerts)
+        if detail_id:
+            detail_url = f"{base_url(args.server)}/api/v1/alerts/{detail_id}"
+            try:
+                alert_detail = api.alert_detail(detail_id)
+            except IntelApiError as exc:
+                endpoints.append(endpoint_record(detail_url, False, str(exc)))
+                add_check(checks, "alert_detail", False, str(exc))
+            else:
+                endpoints.append(
+                    endpoint_record(
+                        detail_url,
+                        isinstance(alert_detail, dict),
+                        f"alert_id={detail_id}",
+                    )
+                )
+                add_check(
+                    checks,
+                    "alert_detail",
+                    isinstance(alert_detail, dict),
+                    f"alert_id={detail_id}",
+                )
+        else:
+            add_check(checks, "alert_detail", True, "skipped:no recent alerts")
     active_payload = api.get_active_intel(limit=50)
     active_rows = active_payload.get("active_intel", [])
     if not isinstance(active_rows, list):
@@ -418,6 +693,7 @@ def build_status(args: argparse.Namespace) -> dict[str, Any]:
     )
     active_ocr = active_source_rows(active_rows, "eve-sentry-detector")
     active_channel = active_source_rows(active_rows, "intel_channel")
+    active_ocr_targets = active_ocr_target_count(active_ocr)
     if args.require_active_intel:
         add_check(
             checks,
@@ -431,6 +707,16 @@ def build_status(args: argparse.Namespace) -> dict[str, Any]:
             "active_intel_endpoint",
             isinstance(active_payload, dict),
             f"{len(active_rows)} active row(s)",
+        )
+    if args.min_active_ocr_targets > 0:
+        add_check(
+            checks,
+            "active_ocr_targets",
+            active_ocr_targets >= args.min_active_ocr_targets,
+            (
+                f"{active_ocr_targets} active OCR target(s) "
+                f"expected>={args.min_active_ocr_targets}"
+            ),
         )
     esi = None
     if args.check_esi:
@@ -470,7 +756,7 @@ def build_status(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     ok = all(item["ok"] for item in checks)
-    return {
+    payload = {
         "ok": ok,
         "server": base_url(args.server),
         "read_only": True,
@@ -490,6 +776,7 @@ def build_status(args: argparse.Namespace) -> dict[str, Any]:
         "active_ocr": active_ocr,
         "active_channel": active_channel,
         "recent_alerts": alerts,
+        "recent_alert_detail": alert_detail,
         "checks": checks,
         "summary": {
             "client_count": len(heartbeats),
@@ -497,13 +784,20 @@ def build_status(args: argparse.Namespace) -> dict[str, Any]:
             "online_detector_count": len(online_detectors),
             "alert_client_count": len(alert_clients),
             "online_alert_client_count": len(online_alert_clients),
+            "alert_client_modes": alert_modes,
+            "alert_client_popup": alert_popup_enabled,
+            "alert_client_details": alert_details_enabled,
+            "alert_client_healthy": alert_healthy,
             "channel_client_count": len(channel_clients),
             "online_channel_client_count": len(online_channel_clients),
             "detector_monitoring": monitoring,
             "detector_target_count": highest_targets,
+            "detector_channel_monitoring": channel_monitoring,
+            "detector_channel_count": channel_count,
             "recent_alert_count": len(alerts),
             "active_intel_count": len(active_rows),
             "active_ocr_count": len(active_ocr),
+            "active_ocr_target_count": active_ocr_targets,
             "active_channel_count": len(active_channel),
         },
         "health": {
@@ -524,6 +818,7 @@ def build_status(args: argparse.Namespace) -> dict[str, Any]:
         if map_snapshot is not None
         else None,
     }
+    return redact_sensitive(payload)
 
 
 def render_text(payload: dict[str, Any]) -> str:
@@ -543,11 +838,15 @@ def render_text(payload: dict[str, Any]) -> str:
             "Summary:",
             f"  detector clients: {summary['online_detector_count']}/{summary['detector_count']} online",
             f"  alert clients: {summary['online_alert_client_count']}/{summary['alert_client_count']} online",
+            f"  alert client modes: {summary['alert_client_modes']}",
+            f"  alert client popup/details: {summary['alert_client_popup']}/{summary['alert_client_details']}",
+            f"  alert client healthy: {summary['alert_client_healthy']}",
             f"  detector monitoring: {summary['detector_monitoring']}",
             f"  detector targets: {summary['detector_target_count']}",
             f"  recent alerts read: {summary['recent_alert_count']}",
             f"  active intel rows: {summary['active_intel_count']}",
             f"  active OCR rows: {summary['active_ocr_count']}",
+            f"  active OCR targets: {summary['active_ocr_target_count']}",
             f"  active channel rows: {summary['active_channel_count']}",
             f"Alerts URL: {payload['server']}/api/v1/alerts?{query}",
         ]

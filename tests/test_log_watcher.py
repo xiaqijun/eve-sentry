@@ -1,3 +1,5 @@
+import os
+
 from app.channels.log_watcher import (
     ChatLogWatcher,
     OffsetStore,
@@ -81,6 +83,57 @@ def test_watcher_reads_matching_files_and_persists_offsets(tmp_path):
 
     assert len(second) == 1
     assert second[0].text.endswith("Oijanen Some Pilot")
+
+
+def test_watcher_reads_only_latest_file_per_channel(tmp_path):
+    log_dir = tmp_path / "Chatlogs"
+    log_dir.mkdir()
+    state = tmp_path / "offsets.json"
+    old_log = log_dir / "Alliance Intel_20260630_120000.txt"
+    latest_log = log_dir / "Alliance Intel_20260630_130000.txt"
+    old_log.write_text(
+        "[ 2026.06.30 12:01:12 ] Scout A > Old system +3 reds\n",
+        encoding="utf-8",
+    )
+    latest_log.write_text(
+        "[ 2026.06.30 13:01:12 ] Scout B > Latest system +1 red\n",
+        encoding="utf-8",
+    )
+    os.utime(old_log, (1, 1))
+    os.utime(latest_log, (2, 2))
+
+    watcher = ChatLogWatcher(log_dir, channels=["Alliance Intel"], state_path=state)
+    lines = watcher.poll_lines()
+
+    assert [line.path for line in lines] == [latest_log]
+    assert lines[0].text.endswith("Latest system +1 red")
+
+
+def test_watcher_starts_new_files_at_end_when_requested(tmp_path):
+    log_dir = tmp_path / "Chatlogs"
+    log_dir.mkdir()
+    state = tmp_path / "offsets.json"
+    path = log_dir / "Alliance Intel_20260630_120000.txt"
+    path.write_text(
+        "[ 2026.06.30 12:01:12 ] Scout A > Existing line\n",
+        encoding="utf-8",
+    )
+    watcher = ChatLogWatcher(
+        log_dir,
+        channels=["Alliance Intel"],
+        state_path=state,
+        start_at_end_for_new_files=True,
+    )
+
+    assert watcher.poll_lines() == []
+
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("[ 2026.06.30 12:02:00 ] Scout B > New line\n")
+
+    lines = watcher.poll_lines()
+
+    assert len(lines) == 1
+    assert lines[0].text.endswith("New line")
 
 
 def test_watcher_channel_filters_are_exact_by_default(tmp_path):

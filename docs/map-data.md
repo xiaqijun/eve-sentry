@@ -73,6 +73,10 @@ Notes:
   repositories and compatible with the official YAML package contents.
 - If `--map-region` and `--map-system` are both omitted, the importer loads the
   full available topology.
+- When the server is started from `intel_map.json` / SDE config, the map
+  topology is fixed to that configured system set. Reports for systems outside
+  the configured region are still stored as intel, but they do not create extra
+  star-map nodes.
 
 ## Tenal Example
 

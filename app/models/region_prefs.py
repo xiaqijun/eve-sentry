@@ -84,6 +84,9 @@ class RegionPreferences:
             stored = regions.get(self._window_key(window))
             if isinstance(stored, dict):
                 return stored
+            legacy_stored = regions.get(self._legacy_window_key(window))
+            if isinstance(legacy_stored, dict):
+                return legacy_stored
             if regions:
                 return None
         stored = self._data.get("member_list_region")
@@ -93,8 +96,19 @@ class RegionPreferences:
         """Return a stable-enough key for saving per-window region preferences."""
         hwnd = window.get("hwnd")
         title = str(window.get("title") or "").strip()
+        if hwnd not in {None, ""}:
+            title_key = title.casefold()
+            return f"hwnd:{hwnd}:{title_key}" if title_key else f"hwnd:{hwnd}"
         if title:
             return title.casefold()
+        return "default"
+
+    def _legacy_window_key(self, window: dict) -> str:
+        """Return the pre-hwnd per-window key for backward compatibility."""
+        title = str(window.get("title") or "").strip()
+        if title:
+            return title.casefold()
+        hwnd = window.get("hwnd")
         if hwnd not in {None, ""}:
             return f"hwnd:{hwnd}"
         return "default"

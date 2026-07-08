@@ -34,6 +34,7 @@ class SQLiteIntelStore(IntelStore):
         resolver: Any | None = None,
         scorer: Any | None = None,
         enricher: Any | None = None,
+        allow_unmapped_systems: bool = True,
     ) -> None:
         self._db_path = Path(db_path)
         self._import_json_path = Path(import_json_path) if import_json_path else None
@@ -44,6 +45,7 @@ class SQLiteIntelStore(IntelStore):
             resolver=resolver,
             scorer=scorer,
             enricher=enricher,
+            allow_unmapped_systems=allow_unmapped_systems,
         )
         self._active_intel = self._read_active_intel()
         self._heartbeats = self._read_heartbeats()

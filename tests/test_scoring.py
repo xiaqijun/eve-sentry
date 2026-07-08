@@ -171,6 +171,78 @@ def test_whitelist_suppresses_all_whitelisted_names():
     assert engine.score(observation(names=["Alice", "Bob"])) is None
 
 
+def test_friendly_corporation_profile_suppresses_event():
+    engine = ScoringEngine(
+        watchlist=Watchlist(friendly_corporation_ids={42}),
+        cooldown_seconds=0,
+    )
+
+    event = engine.score(
+        observation(source="intel_channel"),
+        character_profile={"character_id": 123, "corporation_id": "42"},
+    )
+
+    assert event is None
+
+
+def test_friendly_alliance_profile_suppresses_event():
+    engine = ScoringEngine(
+        watchlist=Watchlist(friendly_alliance_ids={77}),
+        cooldown_seconds=0,
+    )
+
+    event = engine.score(
+        observation(source="intel_channel"),
+        character_profile={"character_id": 123, "alliance_id": "77"},
+    )
+
+    assert event is None
+
+
+def test_friendly_contact_standing_suppresses_event():
+    engine = ScoringEngine(cooldown_seconds=0)
+
+    event = engine.score(
+        observation(source="intel_channel"),
+        character_profile={"character_id": 123, "contact_standing": 5.0},
+    )
+
+    assert event is None
+
+
+def test_friendly_contact_standing_can_be_disabled():
+    engine = ScoringEngine(
+        watchlist=Watchlist(friendly_standing_threshold=None),
+        cooldown_seconds=0,
+    )
+
+    event = engine.score(
+        observation(source="intel_channel"),
+        character_profile={"character_id": 123, "contact_standing": 10.0},
+    )
+
+    assert event is not None
+    assert evidence_types(event) == ["intel_channel_report"]
+
+
+def test_mixed_friendly_and_unknown_profiles_still_alerts():
+    engine = ScoringEngine(
+        watchlist=Watchlist(friendly_corporation_ids={42}),
+        cooldown_seconds=0,
+    )
+
+    event = engine.score(
+        observation(source="intel_channel", names=["Alice", "Bob"]),
+        character_profiles=[
+            {"character_id": 123, "corporation_id": "42"},
+            {"character_id": 456, "corporation_id": "99"},
+        ],
+    )
+
+    assert event is not None
+    assert evidence_types(event) == ["intel_channel_report"]
+
+
 def test_hostile_corporation_profile_adds_evidence():
     engine = ScoringEngine(
         watchlist=Watchlist(hostile_corporation_ids={42}),

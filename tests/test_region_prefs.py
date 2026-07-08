@@ -38,6 +38,43 @@ def test_region_preferences_keeps_regions_per_window(tmp_path):
     assert prefs.resolve_region(second_window) == second_region
 
 
+def test_region_preferences_keeps_regions_per_same_title_window(tmp_path):
+    prefs = RegionPreferences(str(tmp_path / "region_prefs.json"))
+    first_window = {"hwnd": 1, "title": "EVE - Pilot", "x": 0, "y": 0, "w": 800, "h": 600}
+    second_window = {"hwnd": 2, "title": "EVE - Pilot", "x": 20, "y": 30, "w": 1000, "h": 800}
+    first_region = {"x": 600, "y": 100, "w": 180, "h": 300}
+    second_region = {"x": 760, "y": 190, "w": 220, "h": 420}
+
+    prefs.save_region(first_window, first_region)
+    prefs.save_region(second_window, second_region)
+
+    assert prefs.resolve_region(first_window) == first_region
+    assert prefs.resolve_region(second_window) == second_region
+
+
+def test_region_preferences_reads_legacy_title_key_for_window(tmp_path):
+    prefs_path = tmp_path / "region_prefs.json"
+    prefs_path.write_text(
+        """
+{
+  "member_list_regions": {
+    "eve - pilot": {
+      "x_ratio": 0.75,
+      "y_ratio": 0.1,
+      "w_ratio": 0.2,
+      "h_ratio": 0.5
+    }
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    prefs = RegionPreferences(str(prefs_path))
+    window = {"hwnd": 99, "title": "EVE - Pilot", "x": 10, "y": 20, "w": 1000, "h": 800}
+
+    assert prefs.resolve_region(window) == {"x": 760, "y": 100, "w": 200, "h": 400}
+
+
 def test_region_preferences_does_not_reuse_region_for_unknown_window(tmp_path):
     prefs = RegionPreferences(str(tmp_path / "region_prefs.json"))
     saved_window = {"hwnd": 1, "title": "EVE - Pilot A", "x": 0, "y": 0, "w": 800, "h": 600}

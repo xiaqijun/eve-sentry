@@ -127,6 +127,8 @@ vi.mock("./api", () => ({
 describe("WorkbenchPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+    Element.prototype.scrollIntoView = vi.fn();
     apiMocks.onAlert = undefined;
     apiMocks.fetchBootstrap.mockImplementation(async () => bootstrap);
     apiMocks.fetchEsiLoginStatus.mockImplementation(async () => ({
@@ -176,16 +178,18 @@ describe("WorkbenchPage", () => {
     expect(container).toHaveTextContent("实时态势");
     expect(container).toHaveTextContent("区域态势");
     expect(container).toHaveTextContent("敌对飞行员观察列表");
-    expect(container).toHaveTextContent("ESI 状态");
-    expect(container).toHaveTextContent("未授权");
-    expect(container).toHaveTextContent("Client ID");
-    expect(container).toHaveTextContent("未配置");
-    expect(container).toHaveTextContent("Token");
-    expect(container).toHaveTextContent("未保存");
-    expect(container.querySelector(".esi-login-button")).toHaveTextContent("登录 ESI");
-    expect(container.querySelector(".esi-login-button")).toBeDisabled();
+    expect(container).not.toHaveTextContent("ESI 状态");
+    expect(container.querySelector(".esi-login-button")).not.toBeInTheDocument();
 
-    expect(container.querySelector(".nav-panel")).not.toBeInTheDocument();
+    const navPanel = container.querySelector('[aria-label="右侧面板切换"]');
+    expect(navPanel).toBeInTheDocument();
+    expect(navPanel).toHaveTextContent("右侧面板");
+    expect(navPanel).toHaveTextContent("总览");
+    expect(navPanel).toHaveTextContent("观察列表和告警队列同时显示");
+    expect(navPanel).toHaveTextContent("观察");
+    expect(navPanel).toHaveTextContent("告警");
+    expect(navPanel).toHaveTextContent("ESI登录");
+    expect(container.querySelector('.nav-panel button[aria-pressed="true"]')).toHaveTextContent("总览");
     expect(container.querySelector(".quick-icons")).not.toBeInTheDocument();
     expect(container.querySelector(".sector-preview")).not.toBeInTheDocument();
     expect(container.querySelector('[aria-label="实时态势栏"]')).toBeInTheDocument();
@@ -196,6 +200,8 @@ describe("WorkbenchPage", () => {
     expect(container.querySelector('[aria-label="设置"]')).not.toBeInTheDocument();
     expect(container.querySelector('[aria-label="情报过滤"]')).toBeInTheDocument();
     expect(container.querySelector('[aria-label="Fit 星图"]')).toBeInTheDocument();
+    expect(container.querySelector(".latest-event")).toHaveClass("is-empty");
+    expect(container.querySelector(".latest-event")).toHaveTextContent("暂无实时威胁事件");
     expect(container).not.toHaveTextContent("滚轮缩放");
     expect(container).not.toHaveTextContent("拖拽平移");
 
@@ -224,6 +230,143 @@ describe("WorkbenchPage", () => {
       root.unmount();
     });
     expect(apiMocks.close).toHaveBeenCalledTimes(1);
+    container.remove();
+  });
+
+  test("left workbench panel switcher changes the right rail panel", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkbenchPage />
+        </QueryClientProvider>,
+      );
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    const buttons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".nav-panel button"),
+    );
+    const alertButton = buttons.find((button) => button.dataset.navId === "alerts");
+    expect(alertButton).toBeDefined();
+
+    await act(async () => {
+      alertButton?.click();
+    });
+
+    expect(container.querySelector('.nav-panel button[aria-pressed="true"]')).toHaveTextContent(
+      "告警",
+    );
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+    expect(container.querySelector("#workbench-alert-panel")).toBeInTheDocument();
+    expect(container.querySelector("#workbench-observation-panel")).not.toBeInTheDocument();
+
+    const esiButton = buttons.find((button) => button.dataset.navId === "esi");
+    expect(esiButton).toBeDefined();
+
+    await act(async () => {
+      esiButton?.click();
+    });
+
+    expect(container.querySelector('.nav-panel button[aria-pressed="true"]')).toHaveTextContent(
+      "ESI登录",
+    );
+    expect(container.querySelector(".nav-panel-status")).toHaveTextContent(
+      "显示 ESI 登录、授权和连接状态",
+    );
+    expect(container.querySelector("#workbench-esi-panel")).toBeInTheDocument();
+    expect(container.querySelector("#workbench-alert-panel")).not.toBeInTheDocument();
+
+    const observationButton = buttons.find((button) => button.dataset.navId === "observations");
+    expect(observationButton).toBeDefined();
+
+    await act(async () => {
+      observationButton?.click();
+    });
+
+    expect(container.querySelector("#workbench-observation-panel")).toBeInTheDocument();
+    expect(container.querySelector("#workbench-alert-panel")).not.toBeInTheDocument();
+
+    const mapButton = buttons.find((button) => button.dataset.navId === "map");
+    expect(mapButton).toBeDefined();
+
+    await act(async () => {
+      mapButton?.click();
+    });
+
+    expect(container.querySelector('.nav-panel button[aria-pressed="true"]')).toHaveTextContent(
+      "总览",
+    );
+    expect(container.querySelector("#workbench-observation-panel")).toBeInTheDocument();
+    expect(container.querySelector("#workbench-alert-panel")).toBeInTheDocument();
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  test("left panel switcher scrolls to detail panels only on narrow screens", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkbenchPage />
+        </QueryClientProvider>,
+      );
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    const esiButton = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".nav-panel button"),
+    ).find((button) => button.dataset.navId === "esi");
+    expect(esiButton).toBeDefined();
+
+    await act(async () => {
+      esiButton?.click();
+    });
+
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "start",
+    });
+    expect(container.querySelector("#workbench-esi-panel")).toBeInTheDocument();
+
+    const mapButton = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".nav-panel button"),
+    ).find((button) => button.dataset.navId === "map");
+    expect(mapButton).toBeDefined();
+
+    await act(async () => {
+      mapButton?.click();
+    });
+
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("#workbench-observation-panel")).toBeInTheDocument();
+    expect(container.querySelector("#workbench-alert-panel")).toBeInTheDocument();
+
+    await act(async () => {
+      root.unmount();
+    });
     container.remove();
   });
 
@@ -261,6 +404,14 @@ describe("WorkbenchPage", () => {
 
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    const esiNavButton = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".nav-panel button"),
+    ).find((button) => button.dataset.navId === "esi");
+
+    await act(async () => {
+      esiNavButton?.click();
     });
 
     const button = container.querySelector(".esi-login-button") as HTMLButtonElement;

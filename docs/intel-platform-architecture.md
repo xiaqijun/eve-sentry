@@ -99,6 +99,14 @@ PowerShell 启动脚本会把 `-Server` 映射为 `EVE_SENTRY_INTEL_URL`，并�
 - 成员列表区域按窗口保存；未保存过的窗口使用默认右侧成员列表区域。
 - 当前 ESI 位置仍是全局上下文，不区分多个角色处于不同星系的情况。
 
+无真实 EVE 窗口时，用 `uv run python scripts/monitor_ui_smoke.py --json --fake-window-count 2`
+验证检测客户端 UI 能展示多个窗口 selector，且不会触发真实截图、OCR 或网络请求。
+真实多开验收必须看服务端只读检查结果里的 `details.target_count` 和
+`details.targets[]`，例如 `uv run python scripts/integration_status_check.py --expect-detector --expect-monitoring --min-targets 2`。
+当真实 OCR 已经识别并上报成员名单时，再加
+`--min-active-ocr-targets 2`，用服务端 active OCR rows 的不同 `client_id` /
+`source_instance` 证明多个窗口都实际产生了实时名单。
+
 当前星系来源:
 
 - 设置 `EVE_SENTRY_SYSTEM=Tama` 时，检测客户端使用该手工星系名上报。
@@ -133,8 +141,11 @@ uv run python -m app.channel_client --log-dir .\samples\Chatlogs --once --includ
 uv run python scripts/channel_smoke.py --json
 
 # 长驻采集并上报到本地服务端
-uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Alliance Intel" --server-parse
+uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Alliance Intel"
 ```
+
+独立频道 CLI 默认把原始日志行提交到 `/api/v1/channel-lines`，由服务端解析和入库；
+`--client-parse` 仅保留给离线调试本地解析器使用。
 
 实现注意:
 

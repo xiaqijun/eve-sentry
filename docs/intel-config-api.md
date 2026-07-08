@@ -40,6 +40,7 @@ Returns the active scoring config.
     "scoring_version": "scoring.v1",
     "defaults": {
       "source": "builtin",
+      "friendly_standing_threshold": 5.0,
       "hostile_standing_threshold": -5.0,
       "cooldown_seconds": 60.0
     },
@@ -49,8 +50,11 @@ Returns the active scoring config.
     ],
     "whitelist": [],
     "blacklist": [],
+    "friendly_corporation_ids": [],
+    "friendly_alliance_ids": [],
     "hostile_corporation_ids": [],
     "hostile_alliance_ids": [],
+    "friendly_standing_threshold": 5.0,
     "hostile_standing_threshold": -5.0,
     "cooldown_seconds": 60.0
   }
@@ -71,14 +75,27 @@ immediately; existing alert cache is cleared so future `/api/v1/alerts` and
 {
   "whitelist": ["Friendly Pilot"],
   "blacklist": ["Known Hostile"],
+  "friendly_corporation_ids": [98000002],
+  "friendly_alliance_ids": [99000002],
   "hostile_corporation_ids": [98000001],
   "hostile_alliance_ids": [99000001],
+  "friendly_standing_threshold": 5.0,
   "hostile_standing_threshold": -5.0,
   "cooldown_seconds": 60
 }
 ```
 
-Set `hostile_standing_threshold` to `null` to disable standing-based evidence.
+Set `friendly_standing_threshold` to `null` to disable automatic friendly
+filtering from authenticated ESI contacts. Set `hostile_standing_threshold` to
+`null` to disable standing-based hostile evidence.
+
+`whitelist` suppresses targets by pilot name. `friendly_corporation_ids` and
+`friendly_alliance_ids` suppress targets after ESI resolves the pilot profile.
+When authenticated ESI contacts are enabled, a character, corporation, or
+alliance contact whose standing is at or above `friendly_standing_threshold`
+also suppresses that target automatically. Suppressed targets are kept as
+historical observations, but they do not create alerts and do not enter realtime
+OCR or channel active-intel state.
 
 ## Related Intel APIs
 

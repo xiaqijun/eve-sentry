@@ -95,7 +95,7 @@ class TestFindEveWindow:
         assert [item["hwnd"] for item in result] == [2, 1]
         assert result[0]["w"] == 1280
         assert result[0]["h"] == 720
-        mock_win32process.GetWindowThreadProcessId.assert_not_called()
+        assert mock_win32process.GetWindowThreadProcessId.call_count == 4
 
     @patch("app.engine.capturer.win32gui")
     @patch("app.engine.capturer.win32process")
@@ -234,6 +234,35 @@ class TestFindEveWindowByProcess:
             mock_get_window_thread_process_id,
             mock_process,
         )
+
+    @patch("app.engine.capturer.win32gui")
+    @patch("app.engine.capturer.win32process")
+    @patch("app.engine.capturer.psutil")
+    def test_process_name_supplements_title_matches(
+        self, mock_psutil, mock_win32process, mock_win32gui
+    ):
+        """Process-name matches are included even when a title matched first."""
+        windows = [
+            (1, "EVE - Pilot A", (0, 0, 800, 600), 100, "exefile.exe"),
+            (2, "EVE Launcher", (50, 50, 1050, 850), 200, "exefile.exe"),
+            (3, "Chrome", (0, 0, 500, 400), 300, "chrome.exe"),
+        ]
+        (
+            em, gwt, gcr, cts, gwtpid, mkproc
+        ) = self.make_windows(windows)
+
+        mock_win32gui.EnumWindows = em
+        mock_win32gui.GetWindowText = gwt
+        mock_win32gui.GetClientRect = gcr
+        mock_win32gui.ClientToScreen = cts
+        mock_win32process.GetWindowThreadProcessId = gwtpid
+        mock_psutil.Process = mkproc
+
+        c = Capturer()
+        result = c.list_eve_windows(keyword="EVE -")
+
+        assert [item["hwnd"] for item in result] == [2, 1]
+        assert [item["title"] for item in result] == ["EVE Launcher", "EVE - Pilot A"]
 
     @patch("app.engine.capturer.win32gui")
     @patch("app.engine.capturer.win32process")

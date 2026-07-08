@@ -43,8 +43,11 @@ class ScoringConfig:
 
     whitelist: list[str] = field(default_factory=list)
     blacklist: list[str] = field(default_factory=list)
+    friendly_corporation_ids: list[int] = field(default_factory=list)
+    friendly_alliance_ids: list[int] = field(default_factory=list)
     hostile_corporation_ids: list[int] = field(default_factory=list)
     hostile_alliance_ids: list[int] = field(default_factory=list)
+    friendly_standing_threshold: float | None = 5.0
     hostile_standing_threshold: float | None = -5.0
     cooldown_seconds: float = 60.0
 
@@ -53,16 +56,29 @@ class ScoringConfig:
         return cls(
             whitelist=_clean_string_list(payload.get("whitelist", [])),
             blacklist=_clean_string_list(payload.get("blacklist", [])),
+            friendly_corporation_ids=_clean_int_list(
+                payload.get("friendly_corporation_ids", [])
+            ),
+            friendly_alliance_ids=_clean_int_list(
+                payload.get("friendly_alliance_ids", [])
+            ),
             hostile_corporation_ids=_clean_int_list(
                 payload.get("hostile_corporation_ids", [])
             ),
             hostile_alliance_ids=_clean_int_list(
                 payload.get("hostile_alliance_ids", [])
             ),
+            friendly_standing_threshold=_optional_float(
+                payload["friendly_standing_threshold"]
+                if "friendly_standing_threshold" in payload
+                else 5.0,
+                "friendly_standing_threshold",
+            ),
             hostile_standing_threshold=_optional_float(
                 payload["hostile_standing_threshold"]
                 if "hostile_standing_threshold" in payload
-                else -5.0
+                else -5.0,
+                "hostile_standing_threshold",
             ),
             cooldown_seconds=_clean_cooldown(payload.get("cooldown_seconds", 60.0)),
         )
@@ -73,14 +89,18 @@ class ScoringConfig:
             "scoring_version": SCORING_VERSION,
             "defaults": {
                 "source": "builtin",
+                "friendly_standing_threshold": 5.0,
                 "hostile_standing_threshold": -5.0,
                 "cooldown_seconds": 60.0,
             },
             "evidence_rules": [dict(item) for item in EVIDENCE_RULES],
             "whitelist": list(self.whitelist),
             "blacklist": list(self.blacklist),
+            "friendly_corporation_ids": list(self.friendly_corporation_ids),
+            "friendly_alliance_ids": list(self.friendly_alliance_ids),
             "hostile_corporation_ids": list(self.hostile_corporation_ids),
             "hostile_alliance_ids": list(self.hostile_alliance_ids),
+            "friendly_standing_threshold": self.friendly_standing_threshold,
             "hostile_standing_threshold": self.hostile_standing_threshold,
             "cooldown_seconds": self.cooldown_seconds,
         }
@@ -89,8 +109,11 @@ class ScoringConfig:
         return Watchlist(
             whitelist=set(self.whitelist),
             blacklist=set(self.blacklist),
+            friendly_corporation_ids=set(self.friendly_corporation_ids),
+            friendly_alliance_ids=set(self.friendly_alliance_ids),
             hostile_corporation_ids=set(self.hostile_corporation_ids),
             hostile_alliance_ids=set(self.hostile_alliance_ids),
+            friendly_standing_threshold=self.friendly_standing_threshold,
             hostile_standing_threshold=self.hostile_standing_threshold,
         )
 
@@ -184,13 +207,13 @@ def _clean_int_list(values: Any) -> list[int]:
     return result
 
 
-def _optional_float(value: Any) -> float | None:
+def _optional_float(value: Any, label: str) -> float | None:
     if value in {None, ""}:
         return None
     try:
         return float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError("hostile_standing_threshold must be a number or null") from exc
+        raise ValueError(f"{label} must be a number or null") from exc
 
 
 def _clean_cooldown(value: Any) -> float:

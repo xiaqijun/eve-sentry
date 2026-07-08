@@ -3,9 +3,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Activity,
+  Bell,
   Database,
   Filter,
+  LayoutDashboard,
   LogIn,
+  Map,
   Radar,
   Skull,
 } from "lucide-react";
@@ -29,6 +32,10 @@ import type {
   PilotObservation,
 } from "./types";
 import { summarizeWorkbench } from "./workbenchSummary";
+
+type WorkbenchNavId = "map" | "observations" | "alerts" | "esi";
+
+const REALTIME_EVENT_WINDOW_MS = 60 * 60 * 1000;
 
 function formatTime(value?: string): string {
   if (!value) {
@@ -122,11 +129,24 @@ interface LatestEventSummary {
   text: string;
 }
 
+function isRecentEvent(value: string | undefined, nowMs: number): boolean {
+  if (!value) {
+    return false;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return false;
+  }
+  const ageMs = nowMs - parsed.getTime();
+  return ageMs >= 0 && ageMs <= REALTIME_EVENT_WINDOW_MS;
+}
+
 function latestEventSummary(
   alerts: AlertItem[],
   observations: PilotObservation[],
+  nowMs: number = Date.now(),
 ): LatestEventSummary {
-  const alert = alerts[0];
+  const alert = alerts.find((item) => isRecentEvent(item.created_at, nowMs));
   if (alert) {
     return {
       active: true,
@@ -136,7 +156,9 @@ function latestEventSummary(
       }`,
     };
   }
-  const observation = observations[0];
+  const observation = observations.find((item) =>
+    isRecentEvent(item.latestSeen, nowMs),
+  );
   if (observation) {
     return {
       active: true,
@@ -156,6 +178,7 @@ export function WorkbenchPage() {
   const [esiLoginPending, setEsiLoginPending] = useState(false);
   const [esiLoginStatus, setEsiLoginStatus] = useState("");
   const [esiLoginError, setEsiLoginError] = useState("");
+  const [activeNav, setActiveNav] = useState<WorkbenchNavId>("map");
   const {
     filterText,
     selectedSystemId,
@@ -293,9 +316,123 @@ export function WorkbenchPage() {
   const latestEvent = latestEventSummary(bootstrap?.alerts || [], observations);
   const esiStatus = esiStatusText(bootstrap);
   const canStartEsiLogin = Boolean(bootstrap?.esi.config?.client_id_configured);
-  const activeSystemCount = bootstrap?.map.systems.filter((item) =>
-    Number(item.hostile_count || 0) > 0 || Number(item.report_count || 0) > 0,
-  ).length ?? 0;
+  const activeSystemCount = graphData.nodes.filter((item) =>
+    item.hostileCount > 0 || (item.killCount ?? 0) > 0 || item.monitorCount > 0,
+  ).length;
+  const navItems: {
+    id: WorkbenchNavId;
+    label: string;
+    badge: string;
+    status: string;
+    panelId: string;
+    icon: typeof Map;
+  }[] = [
+    {
+      id: "map",
+      label: "总览",
+      badge: "全",
+      status: "观察列表和告警队列同时显示",
+      panelId: "workbench-detail-rail",
+      icon: LayoutDashboard,
+    },
+    {
+      id: "observations",
+      label: "观察",
+      badge: String(observations.length),
+      status: "只显示敌对飞行员观察列表",
+      panelId: "workbench-observation-panel",
+      icon: Skull,
+    },
+    {
+      id: "alerts",
+      label: "告警",
+      badge: String(bootstrap?.alerts.length ?? 0),
+      status: "只显示实时告警队列",
+      panelId: "workbench-alert-panel",
+      icon: Bell,
+    },
+    {
+      id: "esi",
+      label: "ESI登录",
+      badge: bootstrap?.esi.authenticated ? "已授权" : "未登录",
+      status: "显示 ESI 登录、授权和连接状态",
+      panelId: "workbench-esi-panel",
+      icon: Database,
+    },
+  ];
+  const activeNavItem = navItems.find((item) => item.id === activeNav) || navItems[0];
+  const showObservationPanel = activeNav === "map" || activeNav === "observations";
+  const showAlertPanel = activeNav === "map" || activeNav === "alerts";
+  const showEsiPanel = activeNav === "esi";
+  const rightRailClassName = `right-rail right-rail-${activeNav}`;
+  const activateNav = (id: WorkbenchNavId) => {
+    setActiveNav(id);
+    if (window.innerWidth <= 900) {
+      const targetId = id === "map" ? "workbench-map-panel" : "workbench-detail-rail";
+      document.getElementById(targetId)?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  };
+  const esiPanel = (
+    <section className="panel esi-panel" id="workbench-esi-panel">
+      <div className="section-title section-title-row">
+        <div>
+          <Database size={16} />
+          <span>ESI 状态</span>
+        </div>
+        <strong className={bootstrap?.esi.authenticated ? "online-dot" : "danger-text"}>
+          {esiStatus.authState}
+        </strong>
+      </div>
+      <div className="esi-summary-grid">
+        <div className="esi-summary-card">
+          <span>Public Resolver</span>
+          <strong className={bootstrap?.esi.enabled ? "online-dot" : "danger-text"}>
+            {esiStatus.publicState}
+          </strong>
+        </div>
+        <div className="esi-summary-card">
+          <span>Client ID</span>
+          <strong>{esiStatus.clientIdState}</strong>
+        </div>
+        <div className="esi-summary-card">
+          <span>Token</span>
+          <strong>{esiStatus.tokenState}</strong>
+        </div>
+        <div className="esi-summary-card">
+          <span>存储</span>
+          <strong>{bootstrap?.esi.config?.token_storage || "-"}</strong>
+        </div>
+      </div>
+      <div className="esi-actions">
+        <button
+          className="esi-login-button"
+          disabled={!canStartEsiLogin || esiLoginStarting || esiLoginPending}
+          type="button"
+          onClick={handleEsiLogin}
+        >
+          <LogIn size={14} />
+          {esiLoginPending
+            ? "等待授权"
+            : bootstrap?.esi.authenticated
+              ? "重新登录"
+              : "登录 ESI"}
+        </button>
+        {esiLoginPending ? (
+          <span className="esi-login-note">
+            {esiLoginStatus === "pending" ? "等待 EVE 授权回调" : "正在检查授权状态"}
+          </span>
+        ) : null}
+        {esiLoginError ? (
+          <span className="esi-login-error" role="alert">
+            {esiLoginError}
+          </span>
+        ) : null}
+      </div>
+    </section>
+  );
 
   return (
     <main className="workbench-shell">
@@ -305,15 +442,57 @@ export function WorkbenchPage() {
             <p className="eyebrow">EVE 哨兵</p>
             <h1>预警情报工作台</h1>
           </div>
-          <div className="rail-meta">
-            <span>状态更新时间</span>
-            <strong>{generatedAt}</strong>
+          <div className="rail-meta-grid">
+            <div className="rail-meta">
+              <span>状态更新时间</span>
+              <strong>{generatedAt}</strong>
+            </div>
+            <div className="rail-meta">
+              <span>在线客户端</span>
+              <strong>{summary?.onlineClients ?? 0}</strong>
+            </div>
           </div>
           <span className="rail-status-chip">
             <Activity size={13} />
             在线监控
           </span>
         </section>
+
+        <nav className="nav-panel" aria-label="右侧面板切换">
+          <div className="nav-panel-header">
+            <span>右侧面板</span>
+            <strong>{activeNavItem.label}</strong>
+          </div>
+          <div className="nav-panel-tabs" aria-label="右侧面板">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const selected = activeNav === item.id;
+              return (
+                <button
+                  aria-controls={item.panelId}
+                  aria-label={`切换到${item.label}面板`}
+                  aria-pressed={selected}
+                  className={selected ? "active" : ""}
+                  data-nav-id={item.id}
+                  key={item.id}
+                  title={item.status}
+                  type="button"
+                  onClick={() => activateNav(item.id)}
+                >
+                  <Icon size={16} />
+                  <span>
+                    <strong>{item.label}</strong>
+                  </span>
+                  <b>{item.badge}</b>
+                </button>
+              );
+            })}
+          </div>
+          <p className="nav-panel-status">
+            <span>当前显示</span>
+            <strong>{activeNavItem.status}</strong>
+          </p>
+        </nav>
 
         <section className="threat-status-panel">
           <div className="section-title compact-title">
@@ -364,66 +543,10 @@ export function WorkbenchPage() {
           </div>
         </section>
 
-        <section className="panel esi-panel">
-          <div className="section-title section-title-row">
-            <div>
-              <Database size={16} />
-              <span>ESI 状态</span>
-            </div>
-            <strong className={bootstrap?.esi.authenticated ? "online-dot" : "danger-text"}>
-              {esiStatus.authState}
-            </strong>
-          </div>
-          <div className="intel-table">
-            <div className="intel-row">
-              <span>Public</span>
-              <strong>{esiStatus.publicState}</strong>
-              <em>Resolver</em>
-              <span>{bootstrap?.esi.enabled ? "在线" : "离线"}</span>
-            </div>
-            <div className="intel-row">
-              <span>SSO</span>
-              <strong>{esiStatus.authState}</strong>
-              <em>Client ID</em>
-              <span>{esiStatus.clientIdState}</span>
-            </div>
-            <div className="intel-row">
-              <span>Token</span>
-              <strong>{esiStatus.tokenState}</strong>
-              <em>Storage</em>
-              <span>{bootstrap?.esi.config?.token_storage || "-"}</span>
-            </div>
-          </div>
-          <div className="esi-actions">
-            <button
-              className="esi-login-button"
-              disabled={!canStartEsiLogin || esiLoginStarting || esiLoginPending}
-              type="button"
-              onClick={handleEsiLogin}
-            >
-              <LogIn size={14} />
-              {esiLoginPending
-                ? "等待授权"
-                : bootstrap?.esi.authenticated
-                  ? "重新登录"
-                  : "登录 ESI"}
-            </button>
-            {esiLoginPending ? (
-              <span className="esi-login-note">
-                {esiLoginStatus === "pending" ? "等待 EVE 授权回调" : "正在检查授权状态"}
-              </span>
-            ) : null}
-            {esiLoginError ? (
-              <span className="esi-login-error" role="alert">
-                {esiLoginError}
-              </span>
-            ) : null}
-          </div>
-        </section>
       </aside>
 
       <section className="center-stack" aria-label="星图工作区">
-        <section className="map-pane">
+        <section className="map-pane" id="workbench-map-panel">
           <header className="map-toolbar">
             <div className="toolbar-status">
               <span>区域：</span>
@@ -480,40 +603,45 @@ export function WorkbenchPage() {
         </section>
       </section>
 
-      <aside className="right-rail" aria-label="情报详情">
-        <section className="panel observation-panel">
-          <div className="section-title section-title-row">
-            <div>
-              <Skull size={16} />
-              <span>敌对飞行员观察列表</span>
-            </div>
-            <strong>{observations.length}</strong>
-          </div>
-          <ObservationTable observations={observations} />
-        </section>
-
-        <section className="panel alert-panel">
-          <div className="section-title section-title-row">
-            <div>
-              <AlertTriangle size={16} />
-              <span>告警队列</span>
-            </div>
-            <strong className="danger-text">{bootstrap?.alerts.length ?? 0}</strong>
-          </div>
-          <div className="intel-table">
-            {(bootstrap?.alerts || []).slice(0, 6).map((item) => (
-              <div className="intel-row alert-row" key={item.id}>
-                <span>{formatClock(item.created_at)}</span>
-                <strong>{item.system_name || "未知星系"}</strong>
-                <em>{levelLabel(item.level)}</em>
-                <span>{item.acknowledged ? "确认中" : "新"}</span>
+      <aside className={rightRailClassName} id="workbench-detail-rail" aria-label="情报详情">
+        {showEsiPanel ? esiPanel : null}
+        {showObservationPanel ? (
+          <section className="panel observation-panel" id="workbench-observation-panel">
+            <div className="section-title section-title-row">
+              <div>
+                <Skull size={16} />
+                <span>敌对飞行员观察列表</span>
               </div>
-            ))}
-            {(!bootstrap || bootstrap.alerts.length === 0) ? (
-              <div className="table-empty">暂无告警</div>
-            ) : null}
-          </div>
-        </section>
+              <strong>{observations.length}</strong>
+            </div>
+            <ObservationTable observations={observations} />
+          </section>
+        ) : null}
+
+        {showAlertPanel ? (
+          <section className="panel alert-panel" id="workbench-alert-panel">
+            <div className="section-title section-title-row">
+              <div>
+                <AlertTriangle size={16} />
+                <span>告警队列</span>
+              </div>
+              <strong className="danger-text">{bootstrap?.alerts.length ?? 0}</strong>
+            </div>
+            <div className="intel-table">
+              {(bootstrap?.alerts || []).slice(0, 6).map((item) => (
+                <div className="intel-row alert-row" key={item.id}>
+                  <span>{formatClock(item.created_at)}</span>
+                  <strong>{item.system_name || "未知星系"}</strong>
+                  <em>{levelLabel(item.level)}</em>
+                  <span>{item.acknowledged ? "确认中" : "新"}</span>
+                </div>
+              ))}
+              {(!bootstrap || bootstrap.alerts.length === 0) ? (
+                <div className="table-empty">暂无告警</div>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
       </aside>
 
       <footer className="bottom-bar" aria-label="最新事件">

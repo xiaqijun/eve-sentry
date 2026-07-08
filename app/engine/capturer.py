@@ -45,7 +45,7 @@ class Capturer:
             title = win32gui.GetWindowText(hwnd)
             if title.lower().startswith(keyword.lower()):
                 info = self._build_window_info(hwnd)
-                if info is not None:
+                if info is not None and not any(item["hwnd"] == hwnd for item in results):
                     results.append(info)
             return True
 
@@ -56,14 +56,13 @@ class Capturer:
                 _, pid = win32process.GetWindowThreadProcessId(hwnd)
                 if "exefile" in psutil.Process(pid).name().lower():
                     info = self._build_window_info(hwnd)
-                    if info is not None and info not in results:
+                    if info is not None and not any(item["hwnd"] == hwnd for item in results):
                         results.append(info)
             except Exception:
                 pass
             return True
 
-        if not results:
-            win32gui.EnumWindows(process_callback, None)
+        win32gui.EnumWindows(process_callback, None)
 
         # Sort: prefer larger windows (real client > thumbnail), then by name
         results.sort(key=lambda i: (-i["w"] * i["h"], i["title"]))

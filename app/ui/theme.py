@@ -38,12 +38,23 @@ QComboBox::drop-down {
     border: none;
     width: 22px;
 }
-QListWidget, QTextEdit {
+QListWidget, QTableWidget, QTextEdit {
     border: 1px solid #153849;
     border-radius: 6px;
     background: #041018;
     color: #d5e9ef;
     selection-background-color: #0f6076;
+}
+QHeaderView::section {
+    border: none;
+    border-bottom: 1px solid #1c4254;
+    padding: 4px 6px;
+    background: #092331;
+    color: #8bdaf1;
+    font-weight: 600;
+}
+QTableWidget::item {
+    padding: 3px 5px;
 }
 QPushButton {
     min-height: 28px;

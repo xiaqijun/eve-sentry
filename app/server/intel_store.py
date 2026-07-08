@@ -175,10 +175,12 @@ class IntelStore:
         resolver: Any | None = None,
         scorer: Any | None = None,
         enricher: Any | None = None,
+        allow_unmapped_systems: bool = True,
     ) -> None:
         self._filepath = Path(filepath)
         self._systems = dict(DEFAULT_SYSTEMS if systems is None else systems)
         self._links = list(DEFAULT_LINKS if links is None else links)
+        self._allow_unmapped_systems = bool(allow_unmapped_systems)
         self._resolver = resolver
         self._scorer = scorer
         self._enricher = enricher
@@ -204,11 +206,14 @@ class IntelStore:
         self,
         systems: dict[str, StarSystem],
         links: list[tuple[str, str]],
+        allow_unmapped_systems: bool | None = None,
     ) -> None:
         """Replace the configured map topology without touching stored reports."""
         with self._lock:
             self._systems = dict(systems)
             self._links = list(links)
+            if allow_unmapped_systems is not None:
+                self._allow_unmapped_systems = bool(allow_unmapped_systems)
             for report in self._reports:
                 self._ensure_system(report.system)
 
@@ -402,6 +407,8 @@ class IntelStore:
 
     def _enrich_observation(self, observation: Observation) -> Observation:
         """Optionally enrich an observation without blocking ingestion on failure."""
+        if bool(observation.metadata.get("enrichment_deferred")):
+            return observation
         observation = self._repair_channel_observation(observation)
         if self._resolver is None:
             return observation
@@ -667,9 +674,14 @@ class IntelStore:
         system: str | None = None,
         name: str | None = None,
         limit: int | None = None,
+        include_suppressed: bool = False,
     ) -> list[dict[str, Any]]:
         """Return recent reports, optionally filtered by system or character."""
-        reports = [report.to_dict() for report in self._reports_snapshot()]
+        report_items = self._visible_reports(
+            self._reports_snapshot(),
+            include_suppressed=include_suppressed,
+        )
+        reports = [report.to_dict() for report in report_items]
         return self._filter_report_like(reports, system=system, name=name, limit=limit)
 
     def list_observations(
@@ -678,11 +690,16 @@ class IntelStore:
         system: str | None = None,
         name: str | None = None,
         limit: int | None = None,
+        include_suppressed: bool = False,
     ) -> list[dict[str, Any]]:
         """Return recent observations, optionally filtered by source/system/name."""
         source_query = source.strip().casefold() if source else ""
+        report_items = self._visible_reports(
+            self._reports_snapshot(),
+            include_suppressed=include_suppressed,
+        )
         observations = [
-            report.to_observation().to_dict() for report in self._reports_snapshot()
+            report.to_observation().to_dict() for report in report_items
         ]
 
         filtered = []
@@ -739,12 +756,24 @@ class IntelStore:
                             "seen_at": seen_at,
                         }
                     )
+                    if self._observation_is_suppressed(observation):
+                        item = self._active_intel.get(active_id)
+                        if item is not None and item.active:
+                            item.active = False
+                            item.left_at = seen_at
+                        result.filtered += 1
+                        continue
                     self._active_intel[active_id] = ActiveIntelItem(
                         active_id=active_id,
                         source=source,
                         source_instance=source_instance,
                         system_name=system_name,
                         system_id=system_id,
+                        character_id=(
+                            observation.character_ids[0]
+                            if observation.character_ids
+                            else None
+                        ),
                         target_type="character",
                         name=name,
                         raw_text=raw_text,
@@ -756,6 +785,12 @@ class IntelStore:
                         source_observation_ids=[observation.observation_id],
                     )
                     result.created += 1
+                    continue
+
+                if self._active_item_is_suppressed(item):
+                    item.active = False
+                    item.left_at = seen_at
+                    result.filtered += 1
                     continue
 
                 elapsed = self._seconds_between_iso(item.last_seen_at, seen_at)
@@ -1315,18 +1350,20 @@ class IntelStore:
                 continue
             view = self._heartbeat_view(heartbeat)
             heartbeat_seen_at = str(view.get("seen_at") or left_at).strip() or left_at
+            stale_left_at = self._detector_heartbeat_stale_left_at(view, heartbeat_seen_at)
             details = view.get("details", {})
             if not isinstance(details, dict):
                 details = {}
             status = str(view.get("status") or "").strip().lower()
             monitoring = details.get("monitoring")
             last_action = str(details.get("last_action") or "").strip().lower()
-            heartbeat_stopped = (
-                not view.get("online")
-                or status not in {"running", "monitoring"}
+            explicit_stop = (
+                status not in {"running", "monitoring"}
                 or monitoring is False
                 or last_action == "monitor_stopped"
             )
+            heartbeat_stopped = not view.get("online") or explicit_stop
+            inactive_left_at = heartbeat_seen_at if explicit_stop else stale_left_at
             target_ids: list[str] = []
             targets = details.get("targets", [])
             if isinstance(targets, list):
@@ -1342,9 +1379,9 @@ class IntelStore:
             if heartbeat_stopped:
                 client_id = str(view.get("client_id") or "").strip()
                 if client_id:
-                    stale_client_ids[client_id] = heartbeat_seen_at
+                    stale_client_ids[client_id] = inactive_left_at
                 for target_client_id in target_ids:
-                    stale_client_ids[target_client_id] = heartbeat_seen_at
+                    stale_client_ids[target_client_id] = inactive_left_at
 
         if not stale_client_ids:
             return 0
@@ -1358,13 +1395,41 @@ class IntelStore:
             client_id = str(item.metadata.get("client_id") or "").strip()
             stale_seen_at = stale_client_ids.get(client_id)
             if not stale_seen_at:
+                for stale_client_id, candidate_seen_at in stale_client_ids.items():
+                    if client_id.startswith(f"{stale_client_id}:"):
+                        stale_seen_at = candidate_seen_at
+                        break
+            if not stale_seen_at:
                 continue
             if self._channel_seen_after(item.last_seen_at, stale_seen_at):
-                continue
+                last_seen_at = self._parse_timestamp(item.last_seen_at)
+                if last_seen_at is None or now_at <= last_seen_at + timedelta(
+                    seconds=DEFAULT_OCR_GRACE_SECONDS
+                ):
+                    continue
+                stale_seen_at = (
+                    last_seen_at + timedelta(seconds=DEFAULT_OCR_GRACE_SECONDS)
+                ).isoformat()
             item.active = False
             item.left_at = stale_seen_at
             expired += 1
         return expired
+
+    def _detector_heartbeat_stale_left_at(
+        self,
+        heartbeat: dict[str, Any],
+        seen_at: str,
+    ) -> str:
+        try:
+            stale_after_seconds = float(heartbeat.get("stale_after_seconds") or 0)
+        except (TypeError, ValueError):
+            stale_after_seconds = 0.0
+        if stale_after_seconds <= 0:
+            return seen_at
+        parsed = self._parse_timestamp(seen_at)
+        if parsed is None:
+            return seen_at
+        return (parsed + timedelta(seconds=stale_after_seconds)).isoformat()
 
     def snapshot(self) -> dict[str, Any]:
         """Return systems, links, reports, observations, alerts, and summary."""
@@ -1378,8 +1443,11 @@ class IntelStore:
                 item.to_dict() for item in self._active_intel.values() if item.active
             ]
 
-        reports = [report.to_dict() for report in report_items]
-        observations = [report.to_observation().to_dict() for report in report_items]
+        visible_report_items = self._visible_reports(report_items)
+        reports = [report.to_dict() for report in visible_report_items]
+        observations = [
+            report.to_observation().to_dict() for report in visible_report_items
+        ]
         active_source_ids = {
             str(source_id)
             for item in active_items
@@ -1387,7 +1455,7 @@ class IntelStore:
             if source_id
         }
         alerts = []
-        for report in report_items:
+        for report in visible_report_items:
             alert = self._alert_from_report(report)
             if alert is not None:
                 alert_data = self._alert_to_dict(report, alert)
@@ -1438,7 +1506,9 @@ class IntelStore:
             "summary": {
                 "system_count": len(system_items),
                 "active_system_count": sum(
-                    1 for data in system_intel.values() if data["hostile_count"]
+                    1
+                    for name, data in system_intel.items()
+                    if name in system_items and data["hostile_count"]
                 ),
                 "report_count": len(reports),
                 "observation_count": len(observations),
@@ -2200,15 +2270,25 @@ class IntelStore:
             kwargs["channel_mentions"] = channel_mentions
 
         if self._enricher is None:
+            character_profiles = self._character_profiles_for_observation(observation)
+            if character_profiles:
+                kwargs["character_profiles"] = character_profiles
             return kwargs
         try:
             enrichment = self._enricher.enrich(observation)
         except Exception:
+            character_profiles = self._character_profiles_for_observation(observation)
+            if character_profiles:
+                kwargs["character_profiles"] = character_profiles
             return kwargs
 
         character_profiles = getattr(enrichment, "character_profiles", None)
         if character_profiles:
             kwargs["character_profiles"] = character_profiles
+        elif observation.character_ids:
+            character_profiles = self._character_profiles_for_observation(observation)
+            if character_profiles:
+                kwargs["character_profiles"] = character_profiles
         kill_activities = getattr(enrichment, "kill_activities", None)
         if kill_activities:
             kwargs["kill_activities"] = kill_activities
@@ -2216,6 +2296,61 @@ class IntelStore:
         if group_activities:
             kwargs["group_activities"] = group_activities
         return kwargs
+
+    def _observation_is_suppressed(self, observation: Observation) -> bool:
+        if self._scorer is None or not hasattr(self._scorer, "suppresses_observation"):
+            return False
+        kwargs = self._scoring_kwargs(observation)
+        profiles = kwargs.get("character_profiles")
+        if not isinstance(profiles, list):
+            profiles = []
+        try:
+            return bool(self._scorer.suppresses_observation(observation, None, profiles))
+        except Exception:
+            return False
+
+    def _visible_reports(
+        self,
+        reports: list[IntelReport],
+        include_suppressed: bool = False,
+    ) -> list[IntelReport]:
+        if include_suppressed:
+            return list(reports)
+        return [
+            report for report in reports
+            if not self._report_has_whitelisted_names(report)
+        ]
+
+    def _report_has_whitelisted_names(self, report: IntelReport) -> bool:
+        scorer = self._scorer
+        watchlist = getattr(scorer, "watchlist", None)
+        whitelist = getattr(watchlist, "whitelist", None)
+        if not whitelist:
+            return False
+        names = self._normalize_names(report.names)
+        if not names:
+            observation = report.to_observation()
+            names = self._normalize_names(observation.names)
+        if not names:
+            return False
+        whitelist_names = {str(name).casefold() for name in whitelist}
+        return all(name.casefold() in whitelist_names for name in names)
+
+    def _active_item_is_suppressed(self, item: ActiveIntelItem) -> bool:
+        observation = Observation(
+            source=item.source,
+            source_instance=item.source_instance,
+            system_name=item.system_name,
+            system_id=item.system_id,
+            names=[item.name] if item.name else [],
+            character_ids=[item.character_id] if item.character_id is not None else [],
+            raw_text=item.raw_text,
+            metadata=dict(item.metadata),
+            seen_at=item.last_seen_at or utc_now_iso(),
+            received_at=item.last_seen_at or utc_now_iso(),
+        )
+        observation = self._enrich_observation(observation)
+        return self._observation_is_suppressed(observation)
 
     def _channel_mentions_for_observation(
         self,
@@ -2328,6 +2463,8 @@ class IntelStore:
 
     def _apply_channel_active_state(self, report: IntelReport) -> None:
         if report.source.strip().casefold() != "intel_channel":
+            return
+        if self._observation_is_suppressed(report.to_observation()):
             return
 
         seen_at = report.seen_at or report.received_at or utc_now_iso()
@@ -2590,6 +2727,8 @@ class IntelStore:
 
     def _ensure_system(self, system: str) -> None:
         if system in self._systems:
+            return
+        if not self._allow_unmapped_systems:
             return
         self._systems[system] = self._generated_system(system)
 

@@ -75,6 +75,8 @@ sudo -u eve-sentry .venv-server/bin/python scripts/sync_sde.py \
 
 `Tenal` 的官方 region id 是 `10000045`，可直接写到
 `EVE_SENTRY_SERVER_MAP_REGION_IDS=10000045`。
+服务端按这个配置启动后，星图拓扑会固定在配置区域内；其他星系的
+预警/OCR 情报会继续入库和出现在情报列表里，但不会自动新增成星图节点。
 
 如果启用 authenticated ESI，Linux 上建议:
 
@@ -208,15 +210,16 @@ curl http://127.0.0.1:8765/api/v1/esi/status
 
 ## 7. 客户端对接
 
-服务端可访问后，把本地客户端指向远端地址:
+服务端可访问后，把本地客户端指向 Nginx 统一入口:
 
 ```text
-检测客户端: EVE_SENTRY_INTEL_URL=http://YOUR_SERVER:8765
-频道客户端: --server http://YOUR_SERVER:8765
-预警客户端: --server http://YOUR_SERVER:8765
+检测客户端: EVE_SENTRY_INTEL_URL=http://YOUR_SERVER
+频道客户端: --server http://YOUR_SERVER
+预警客户端: --server http://YOUR_SERVER
 ```
 
-如果服务暴露到公网，建议放到反向代理和网络访问控制后面，不要直接把 `8765` 对全网开放。
+只有在服务器本机调试或明确放通内网访问时，才直连 `http://127.0.0.1:8765`。
+公网部署应收口到 Nginx，不要直接把 `8765` 对全网开放。
 
 ## Runtime Data
 

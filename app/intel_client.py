@@ -79,11 +79,18 @@ class IntelApiClient:
             payload["received_at"] = received_at
         return self._request("POST", self._v1_path("/observations"), payload=payload)
 
-    def post_channel_line(self, line: str, channel: str = "") -> dict[str, Any]:
+    def post_channel_line(
+        self,
+        line: str,
+        channel: str = "",
+        defer_enrichment: bool = False,
+    ) -> dict[str, Any]:
         """Publish one raw intel channel log line for server-side parsing."""
-        payload = {"line": line}
+        payload: dict[str, Any] = {"line": line}
         if channel:
             payload["channel"] = channel
+        if defer_enrichment:
+            payload["defer_enrichment"] = True
         return self._request("POST", self._v1_path("/channel-lines"), payload=payload)
 
     def post_ocr_snapshot(

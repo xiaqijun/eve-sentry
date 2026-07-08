@@ -2,7 +2,7 @@ import pytest
 
 from app.server import __main__ as server_main
 from app.server.__main__ import build_arg_parser
-from app.server.intel_store import IntelStore
+from app.server.intel_store import IntelStore, StarSystem
 from app.server.sqlite_store import SQLiteIntelStore
 
 
@@ -97,6 +97,25 @@ def test_server_cli_build_store_can_use_legacy_json_storage(tmp_path):
     assert not isinstance(store, SQLiteIntelStore)
     assert json_path.exists()
     assert [item["id"] for item in store.list_reports()] == [report.report_id]
+
+
+def test_server_cli_build_store_keeps_configured_map_locked(tmp_path):
+    json_path = tmp_path / "intel_reports.json"
+    args = build_arg_parser().parse_args(
+        ["--storage", "json", "--data", str(json_path)]
+    )
+
+    store = server_main._build_store(
+        args,
+        systems={"0-UVHJ": StarSystem("0-UVHJ", 100, 120, "Tenal")},
+        links=[],
+    )
+    store.add_report("Jita", ["Alice"], seen_at="2099-01-01T00:00:00+00:00")
+
+    snapshot = store.snapshot()
+
+    assert [system["name"] for system in snapshot["systems"]] == ["0-UVHJ"]
+    assert snapshot["reports"][0]["system_name"] == "Jita"
 
 
 def test_server_cli_accepts_authenticated_esi_options():

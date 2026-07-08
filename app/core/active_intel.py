@@ -75,6 +75,7 @@ class ActiveIntelSnapshotResult:
     refreshed: int = 0
     missing: int = 0
     expired: int = 0
+    filtered: int = 0
     active: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -84,6 +85,7 @@ class ActiveIntelSnapshotResult:
             "refreshed": self.refreshed,
             "missing": self.missing,
             "expired": self.expired,
+            "filtered": self.filtered,
             "active": list(self.active),
         }
 
