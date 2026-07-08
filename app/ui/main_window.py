@@ -123,8 +123,6 @@ class MainWindow(QMainWindow):
         self._channel_error_backoff_ms = CHANNEL_ERROR_BACKOFF_MS
 
         self._popup_alerts_enabled = False
-        self._alert_visible = False
-        self._alert_queue: list[list[str]] = []
         self._manual_region: dict | None = None
         self._detected_region: dict | None = None
         self._status_cards: dict[str, tuple[QFrame, QLabel, QLabel]] = {}
@@ -805,10 +803,6 @@ class MainWindow(QMainWindow):
         self._refresh_window_status_table()
         return not failed
 
-    def _on_threat(self, threats: list[str]) -> None:
-        """Show non-blocking alert dialog when threats are detected."""
-        _ = threats
-
     def _on_threat_detected(
         self,
         threats: list[str],
@@ -930,61 +924,6 @@ class MainWindow(QMainWindow):
         except ValueError:
             timeout = 1.0
         return IntelApiClient(self._intel_url, timeout=timeout)
-
-    def _publish_intel(
-        self,
-        threats: list[str],
-        context: dict | None = None,
-    ) -> None:
-        if self._intel_client is None or not threats:
-            return
-
-        self._refresh_intel_location()
-        source = "eve-sentry-detector"
-        window_title = (
-            str(context.get("window_title") or "").strip()
-            if context
-            else self._window_combo.currentText()
-        )
-        source_instance = (
-            str(context.get("source_instance") or "").strip()
-            if context
-            else window_title
-        ) or window_title
-        metadata = {"system_source": self._intel_system_source}
-        if window_title:
-            metadata["window_title"] = window_title
-        if source_instance:
-            metadata["source_instance"] = source_instance
-        if context:
-            if context.get("key"):
-                metadata["target_id"] = context["key"]
-            if context.get("client_id"):
-                metadata["client_id"] = context["client_id"]
-        try:
-            created = self._intel_client.post_observation(
-                system_name=self._intel_system or "Unknown",
-                system_id=self._intel_system_id,
-                names=threats,
-                source=source,
-                source_instance=source_instance,
-                raw_text=", ".join(threats),
-                metadata=metadata,
-            )
-        except IntelApiError as exc:
-            self._heartbeat_last_action = "observation_error"
-            self._heartbeat_last_error = str(exc)
-            self._log_message(f"情报上报失败: {exc}")
-            self._refresh_status_cards()
-            return
-
-        observation_id = created.get("observation", {}).get("id", "")
-        suffix = f" ({observation_id[:8]})" if observation_id else ""
-        self._heartbeat_last_action = f"observation:{len(threats)}"
-        self._heartbeat_last_error = ""
-        self._heartbeat_last_success_at = heartbeat_now_iso()
-        self._log_message(f"已上报情报: {len(threats)} 个目标{suffix}")
-        self._refresh_status_cards()
 
     def _publish_ocr_snapshot(
         self,
@@ -1145,13 +1084,6 @@ class MainWindow(QMainWindow):
             self._log_message(f"Current system from ESI: {label}")
         self._refresh_status_cards()
         return True
-
-    def _on_alert_closed(self) -> None:
-        """Called when the alert dialog is dismissed."""
-        self._alert_visible = False
-        if self._alert_queue:
-            next_threats = self._alert_queue.pop(0)
-            self._publish_intel(next_threats)
 
     def _log_message(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")

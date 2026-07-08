@@ -23,14 +23,12 @@ def qt_app():
 
 def test_detector_client_does_not_post_observation_for_local_threats():
     window = MainWindow.__new__(MainWindow)
-    published = []
     logs = []
 
     class FakeCombo:
         def currentText(self):
             return "EVE - Current"
 
-    window._publish_intel = lambda threats: published.append(list(threats))
     window._window_combo = FakeCombo()
     window._heartbeat_last_action = ""
     window._heartbeat_last_error = ""
@@ -39,19 +37,14 @@ def test_detector_client_does_not_post_observation_for_local_threats():
 
     MainWindow._on_threat_detected(window, ["Varg Vikernes"])
 
-    assert published == []
     assert window._heartbeat_last_action == "local_detection:1"
     assert logs == ["EVE - Current: 本地识别到 1 个名单，已通过 OCR snapshot 上报"]
 
 
 def test_detector_client_does_not_post_context_observation_for_local_threats():
     window = MainWindow.__new__(MainWindow)
-    published = []
     logs = []
 
-    window._publish_intel = lambda threats, context=None: published.append(
-        {"threats": list(threats), "context": context}
-    )
     window._heartbeat_last_action = ""
     window._heartbeat_last_error = ""
     window._log_message = lambda message: logs.append(message)
@@ -63,7 +56,6 @@ def test_detector_client_does_not_post_context_observation_for_local_threats():
         context={"window_title": "EVE - Pilot A"},
     )
 
-    assert published == []
     assert window._heartbeat_last_action == "local_detection:2"
     assert logs == ["EVE - Pilot A: 本地识别到 2 个名单，已通过 OCR snapshot 上报"]
 
@@ -141,53 +133,6 @@ def test_publish_ocr_snapshot_uses_window_context_client_id():
         "system_name": "S-KSWL",
         "system_id": 30000142,
         "names": ["Alice"],
-    }
-
-
-def test_publish_intel_uses_window_context_metadata():
-    class FakeClient:
-        def __init__(self):
-            self.payload = None
-
-        def post_observation(self, **payload):
-            self.payload = payload
-            return {"observation": {"id": "obs_12345678"}}
-
-    class FakeCombo:
-        def currentText(self):
-            return "EVE - Current"
-
-    window = MainWindow.__new__(MainWindow)
-    window._intel_client = FakeClient()
-    window._window_combo = FakeCombo()
-    window._intel_system = "S-KSWL"
-    window._intel_system_id = 30000142
-    window._intel_system_source = "esi"
-    window._refresh_intel_location = lambda: True
-    window._log_messages = []
-    window._log_message = lambda message: window._log_messages.append(message)
-
-    MainWindow._publish_intel(
-        window,
-        ["Alice"],
-        context={
-            "client_id": "detector-client:test:eve-pilot-a",
-            "key": "eve - pilot a",
-            "source_instance": "EVE - Pilot A #1 · hwnd 1 · 800x600",
-            "window_title": "EVE - Pilot A",
-        },
-    )
-
-    assert (
-        window._intel_client.payload["source_instance"]
-        == "EVE - Pilot A #1 · hwnd 1 · 800x600"
-    )
-    assert window._intel_client.payload["metadata"] == {
-        "client_id": "detector-client:test:eve-pilot-a",
-        "source_instance": "EVE - Pilot A #1 · hwnd 1 · 800x600",
-        "system_source": "esi",
-        "target_id": "eve - pilot a",
-        "window_title": "EVE - Pilot A",
     }
 
 
