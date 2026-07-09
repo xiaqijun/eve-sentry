@@ -1876,8 +1876,6 @@ def test_run_server_builds_argv_from_environment():
             "EVE_SENTRY_SERVER_ESI_SCOPES": (
                 "esi-location.read_location.v1,esi-characters.read_contacts.v1"
             ),
-            "EVE_SENTRY_SERVER_ENABLE_KILLBOARD": "true",
-            "EVE_SENTRY_SERVER_ZKILL_CACHE": "/srv/eve/zkill_cache.json",
         }
     )
 
@@ -1918,9 +1916,6 @@ def test_run_server_builds_argv_from_environment():
         "esi-location.read_location.v1",
         "--esi-scope",
         "esi-characters.read_contacts.v1",
-        "--enable-killboard",
-        "--zkill-cache",
-        "/srv/eve/zkill_cache.json",
     ]
 
 
@@ -1939,10 +1934,8 @@ def test_run_server_main_appends_cli_args(monkeypatch):
         lambda env=None: ["--host", "127.0.0.1", "--port", "8765"],
     )
 
-    assert module.main(["--enable-killboard"]) == 7
-    assert recorded == [
-        ["--host", "127.0.0.1", "--port", "8765", "--enable-killboard"]
-    ]
+    assert module.main(["--enable-esi"]) == 7
+    assert recorded == [["--host", "127.0.0.1", "--port", "8765", "--enable-esi"]]
 
 
 def test_channel_smoke_posts_sample_chatlog_to_local_server(tmp_path):

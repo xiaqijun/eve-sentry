@@ -1,5 +1,9 @@
 # EVE Sentry 服务端部署指南
 
+> Current status (2026-07-09): zKillboard/killboard enrichment is disabled and
+> should not be configured on the server. Remove old zKill cache files from the
+> runtime directory during deployment to avoid loading stale large JSON caches.
+
 > 日期: 2026-07-01
 
 这份文档只覆盖情报服务端部署。桌面 OCR 检测端、频道采集器和预警客户端仍然运行在本地机器上，通过 HTTP 连接远端服务端。
@@ -62,7 +66,6 @@ sudo chmod 640 /etc/eve-sentry/eve-sentry.env
 - `EVE_SENTRY_SERVER_MAP_SDE_PATH`
 - `EVE_SENTRY_SERVER_MAP_REGION_IDS`
 - `EVE_SENTRY_SERVER_ENABLE_ESI`
-- `EVE_SENTRY_SERVER_ENABLE_KILLBOARD`
 
 如果地图使用官方 SDE，先在服务器上同步一次 YAML 地图表，再启动服务:
 
@@ -236,7 +239,6 @@ curl http://127.0.0.1:8765/api/v1/esi/status
 - `intel_config.json`
 - `esi_cache.json`
 - `esi_tokens.json`
-- `zkill_cache.json`
 - 可选 `intel_reports.json`，用于历史 JSON 导入或迁移
 
 ## 补充说明

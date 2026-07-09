@@ -1,5 +1,13 @@
 # EVE Sentry 本地联调指南
 
+> Current status (2026-07-09): local integration should not enable or validate
+> zKillboard/killboard enrichment. The detector client uploads OCR snapshots and
+> optional channel log lines only; the server resolves ESI identity/standing and
+> applies friendly/hostile filtering.
+
+> Current workflow baseline (2026-07-09): 联调不验证威胁评分。服务端只查询未查询过
+> ESI 的角色，并在角色被分类为白名或红名时触发一次性告警。
+
 > 日期: 2026-07-01
 
 这份文档用于在一台机器上启动服务端、检测客户端和预警客户端，验证本地威胁情报闭环。检测客户端内置可选频道日志监控；独立频道采集器仅用于调试或批处理。
@@ -33,9 +41,9 @@ curl http://127.0.0.1:8765/api/health
 `GET /api/health` 返回 `health.v1`，包括:
 
 - `storage`: store 类型、SQLite/JSON 路径、是否可写。
-- `config`: 配置文件路径、配置 schema、评分规则版本和 evidence 规则数量。
+- `config`: 配置文件路径、配置 schema、分类规则版本和白名/红名规则数量。
 - `esi`: 是否启用、是否已登录、token 是否过期。
-- `killboard`: 是否启用、client 类型和缓存类型。
+- `killboard`: 禁用兼容状态；第一版不验证 killboard。
 - `clients`: heartbeat 客户端数量、在线数量和最近客户端状态，包含检测端、
   预警端和频道采集器。
 - `events`: alert 查询是否正常、最近 alert、SSE `/api/v1/events` 状态。
@@ -123,7 +131,7 @@ uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Al
 `--channel` 默认按完整频道名精确匹配；未传 `--channel` 时不会扫描或上传任何
 Chatlogs。需要匹配一组频道时，显式使用 `*` 或 `?` 通配符；需要独立 CLI
 扫描全部频道时，必须显式加 `--all-channels`。频道 CLI 只把原始日志行提交到
-`/api/v1/channel-lines`，由服务端统一解析、ESI 补全和评分。
+`/api/v1/channel-lines`，由服务端统一解析、ESI 补全、白名/红名分类和一次性告警。
 
 ### 4. 启动检测客户端
 
@@ -155,9 +163,10 @@ Chatlogs。需要匹配一组频道时，显式使用 `*` 或 `?` 通配符；�
 
 检测客户端负责截图 OCR 并通过 OCR snapshot 只上报检测到的名单；选择预警频道后，也会自动监控对应 Chatlogs 新日志并交给服务端解析上报。未选择频道时不会提交频道日志情报。默认不弹本地预警窗口，正式联调由独立预警客户端消费服务端 alert。
 检测客户端不做敌对判断、不做白名单过滤、不查 ESI，也不直接生成告警。OCR 名单只表示
-“当前本地可见”，服务端收到后再解析 ESI、套用白名单/友军/敌对配置、查询 zKill 和生成
-可解释 `ThreatEvent`。因此联调误报时优先检查服务端配置和 alert evidence，而不是检查
-客户端本地白名单。
+“当前本地可见”，服务端收到后再检查该角色是否从未查询过 ESI，随后套用白名单/红名单、
+友军/敌对配置和 standings 做分类。只有分类为白名或红名时，服务端才生成一次性
+`ThreatEvent`。因此联调误报时优先检查服务端配置和 alert detail 的
+`classification` / `reason`，而不是检查客户端本地白名单。
 检测客户端启动后会自动向服务端上报 heartbeat，Web 面板 `Client Status`
 和 `GET /api/v1/clients` 都能看到它的在线状态。旧 `GET /api/heartbeats`
 仍保留给旧页面和旧客户端兼容。
@@ -165,18 +174,18 @@ Chatlogs。需要匹配一组频道时，显式使用 `*` 或 `?` 通配符；�
 OCR realtime rows 标记为 inactive，避免旧名单继续点亮星图；历史
 observations 和 alerts 仍会保留。
 频道日志上传失败时，检测端会把轮询间隔从 5 秒退避到 30 秒，避免在服务端
-处理超时或外部 ESI/zkill 降级时持续压接口。公网联调如果出现
+处理超时或外部 ESI 降级时持续压接口。公网联调如果出现
 `Channel log upload failed: timed out`，先停止检测端并检查服务端健康状态，
 不要反复启动写入压测。
-检测客户端内置频道监控会请求服务端先完成解析和入库，并默认延后 ESI/zkill
+检测客户端内置频道监控会请求服务端先完成解析和入库，并默认延后 ESI
 enrichment，避免实时 Chatlogs 上报被外部情报源阻塞；历史 observation 会保留
 `metadata.enrichment_deferred=true` 作为审计标记。
 
 OCR 告警排查:
 
 - 先查 `GET /api/v1/active-intel?source=eve-sentry-detector`，确认客户端是否只上报了当前名单。
-- 再查 `GET /api/v1/alerts?limit=20` 和 `GET /api/v1/alerts/{id}`，看告警 evidence 是否包含黑名单、敌对军团/联盟、敌对 standing 或 zKill 击毁活动。
-- 如果 evidence 只有 `local_ocr_seen` 或频道上下文，说明服务端评分规则不符合当前设计，应优先修服务端。
+- 再查 `GET /api/v1/alerts?limit=20` 和 `GET /api/v1/alerts/{id}`，看告警 `classification` 和 `reason` 是否命中白名/红名规则。
+- 如果 alert 仍依赖 `score`、`min_level` 或只有 `local_ocr_seen` / 频道上下文，说明服务端仍在走旧评分模型，应优先修服务端。
 - 用 `GET /api/v1/characters/by-name/{name}` 验证服务端是否已经查到角色 ID、军团和联盟。
 - 用 `GET /api/v1/config` 验证白名单、友军军团/联盟、敌对军团/联盟和 standing 阈值是否正确。
 - 误报清理只处理服务端 active intel / alert 数据；不要在客户端加入临时过滤逻辑。
@@ -346,10 +355,9 @@ python scripts/live_acceptance_bundle.py --server http://127.0.0.1:8765 --output
 
 - `intel.sqlite3`: 默认 SQLite 情报数据库，也包含持久化的 client heartbeat 状态。
 - `intel_reports.json`: 旧 JSON 情报数据，主要用于兼容或迁移。
-- `intel_config.json`: 本地评分配置。
+- `intel_config.json`: 本地分类/告警配置。
 - `esi_tokens.json`: ESI SSO token。
 - `esi_cache.json`: ESI 公开资料缓存。
-- `zkill_cache.json`: zKillboard 查询缓存。
 - `channel_offsets.json`: chatlog 采集偏移。
 - `alert_client_state.json`: 预警客户端已处理 alert 状态。
 

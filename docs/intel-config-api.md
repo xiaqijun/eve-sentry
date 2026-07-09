@@ -1,8 +1,11 @@
 # EVE Sentry Intel Config API
 
 > Date: 2026-07-01
+> Current workflow baseline (2026-07-09): 第一版配置语义从 scoring 转为
+> classification。服务端只在角色被分类为白名或红名时触发一次性告警；`score`、
+> `min_score` 和 `min_level` 属于旧兼容字段。
 
-The intel server can load and update scoring rules from `intel_config.json`.
+The intel server can load and update classification rules from `intel_config.json`.
 The default server entrypoint enables this store automatically.
 
 ## Start Server
@@ -31,22 +34,24 @@ uv run python scripts/import_intel_json.py --source intel_reports.json --db inte
 
 ## GET /api/v1/config
 
-Returns the active scoring config.
+Returns the active classification config. Existing deployments may still expose
+legacy `scoring_*` fields during migration, but new design should consume
+classification rules and alert reasons.
 
 ```json
 {
   "config": {
-    "schema_version": "scoring_config.v1",
-    "scoring_version": "scoring.v1",
+    "schema_version": "classification_config.v1",
+    "classification_version": "classification.v1",
     "defaults": {
       "source": "builtin",
       "friendly_standing_threshold": 5.0,
       "hostile_standing_threshold": -5.0,
       "cooldown_seconds": 60.0
     },
-    "evidence_rules": [
-      {"type": "local_ocr_seen", "default_weight": 40, "source": "builtin"},
-      {"type": "blacklist_match", "default_weight": 80, "source": "builtin"}
+    "classification_rules": [
+      {"reason": "manual_red", "classification": "red", "source": "builtin"},
+      {"reason": "manual_white", "classification": "white", "source": "builtin"}
     ],
     "whitelist": [],
     "blacklist": [],
@@ -56,14 +61,14 @@ Returns the active scoring config.
     "hostile_alliance_ids": [],
     "friendly_standing_threshold": 5.0,
     "hostile_standing_threshold": -5.0,
-    "cooldown_seconds": 60.0
+    "alert_once": true
   }
 }
 ```
 
-`evidence_rules` is a compact registry of known evidence types and built-in
-default weights. Some dynamic rules, such as killboard activity, use
-`null` for `default_weight` because the score is computed from activity volume.
+`classification_rules` is a compact registry of known classification reasons.
+zKillboard/killboard evidence is not part of the current server classification
+path.
 
 ## PUT /api/v1/config
 
@@ -81,46 +86,50 @@ immediately; existing alert cache is cleared so future `/api/v1/alerts` and
   "hostile_alliance_ids": [99000001],
   "friendly_standing_threshold": 5.0,
   "hostile_standing_threshold": -5.0,
-  "cooldown_seconds": 60
+  "alert_once": true
 }
 ```
 
-Set `friendly_standing_threshold` to `null` to disable automatic friendly
-filtering from authenticated ESI contacts. Set `hostile_standing_threshold` to
-`null` to disable standing-based hostile evidence.
+Set `friendly_standing_threshold` to `null` to disable automatic white
+classification from authenticated ESI contacts. Set `hostile_standing_threshold`
+to `null` to disable standing-based red classification.
 
-`whitelist` suppresses targets by pilot name. `friendly_corporation_ids` and
-`friendly_alliance_ids` suppress targets after ESI resolves the pilot profile.
+`whitelist` classifies targets by pilot name as white. `friendly_corporation_ids`
+and `friendly_alliance_ids` classify targets as white after ESI resolves the
+pilot profile.
 When authenticated ESI contacts are enabled, a character, corporation, or
 alliance contact whose standing is at or above `friendly_standing_threshold`
-also suppresses that target automatically. Suppressed targets are kept as
-historical observations, but they do not create alerts and do not enter realtime
-OCR or channel active-intel state.
+also classifies that target as white automatically. `blacklist`,
+`hostile_corporation_ids`, `hostile_alliance_ids`, and hostile standings classify
+targets as red. White and red classifications both create a one-time alert.
+Neutral and unknown targets are kept as observations but do not create alerts.
 
 ## Related Intel APIs
 
-Scoring config affects alert generation and event streaming. The broader intel
+Classification config affects alert generation and event streaming. The broader intel
 API surface is documented in `docs/intel-platform-architecture.md`; the active
 server currently includes:
 
 - `POST /api/observations` and legacy `POST /api/intel` for observation intake.
 - `POST /api/v1/channel-lines` for server-side intel channel parsing.
 - `GET /api/health` for local integration health, including storage, config,
-  ESI, killboard, and event-stream status.
+  ESI, and event-stream status. The `killboard` health key is retained only as
+  a disabled compatibility field.
 - `GET /api/v1/alerts`, `GET /api/v1/alerts/{id}`, and `POST /api/v1/alerts/{id}/ack`.
 - `GET /api/v1/events` for SSE alert streaming with the same alert filters.
 - `GET /api/intel/character/{character_id}`, `/api/intel/system/{system_id}`,
   `/api/intel/corporation/{corporation_id}`, and `/api/intel/alliance/{alliance_id}`
-  for entity-centered observations, alerts, activity, counts, and filters.
+  for entity-centered observations, alerts, counts, and filters.
 - `GET /api/v1/esi/status`, `GET /api/v1/esi/session`, and
   `GET/POST /api/v1/esi/login` for authenticated ESI state and browser-started SSO.
-- `GET /api/v1/kill-activity/...` for character, system, corporation, and alliance activity.
+- `GET /api/v1/kill-activity/...` is retained as a disabled compatibility route
+  and returns 404 while killboard enrichment is removed.
 
 Compatibility note: legacy `/api/config`, `/api/channel-lines`, `/api/alerts`, and `/api/events` routes remain available for old clients during migration; new clients and docs should use `/api/v1/config`, `/api/v1/channel-lines`, `/api/v1/alerts`, and `/api/v1/events`.
 
 ## Runtime Data
 
 Do not commit local config files. `intel_config.json`, ESI token files,
-SQLite databases, zKillboard caches, and other runtime state should stay local.
+SQLite databases, ESI caches, and other runtime state should stay local.
 The local startup flow and runtime file list are documented in
 `docs/local-integration.md`.

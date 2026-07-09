@@ -1,5 +1,14 @@
 # React SPA 情报工作台设计轨道
 
+> Current status (2026-07-09): zKillboard/killboard data is not available in the
+> active product path. The workbench must not show fabricated killmail counts;
+> node summaries should use real OCR/channel/ESI/server state only. Killmail
+> fields remain deferred until a new bounded server-side design is approved.
+
+> Current workflow baseline (2026-07-09): 前端不展示威胁评分。服务端返回
+> `classification=red|white|neutral|unknown` 和 `reason`，星图节点和观察列表只展示
+> 红名/白名数量、分类原因和真实来源。
+
 ## 当前方向
 
 `frontend/` 是独立维护的 React SPA，生产环境由 Nginx 托管静态资源，并把 `/api/` 反向代理到 Python intel server。
@@ -15,18 +24,18 @@
 - TanStack Query
 - Zustand
 - `react-force-graph-2d`：战术星图、拖拽平移、滚轮缩放、节点选中、fitView
-- `echarts` + `echarts-for-react`：威胁评分和 ISK 风险仪表
+- `echarts` + `echarts-for-react`：仅用于后续趋势图；第一版不展示威胁评分和 ISK 风险仪表
 - `@tanstack/react-table`：敌对飞行员观察列表
 - Vitest + Testing Library
 
 ## 当前实现进度
 
 - 已用 `react-force-graph-2d` 替换原 React Flow 星图交互。
-- 星图节点显示星系名、安全等级、敌对数、观察数、击毁数、最高威胁等级和分数。
+- 星图节点显示星系名、安全等级、红名数、白名数和观察数。
 - 右侧 OCR 和情报列表已合并为“敌对飞行员观察列表”。
-- 观察列表当前合并来源包括 reports 与 alerts；同一飞行员会按来源、等级、分数和最近时间合并为一条记录。
+- 观察列表当前合并来源包括 reports 与 alerts；同一飞行员会按来源、分类、原因和最近时间合并为一条记录。
 - 页面不会从 `raw_text` 猜测飞行员，不会构造假 zKill / ESI 情报填充界面。
-- killboard 未提供真实字段时显示 `-`，不伪造击毁数据。
+- killboard 不进入第一版界面，不伪造击毁数据。
 - 已补充前端测试覆盖战术图数据映射、核心工作台渲染、观察列表合并。
 
 ## 工作台信息架构
@@ -34,7 +43,7 @@
 - 左侧：区域状态、导航、筛选、系统状态。
 - 中间：战术星图，负责展示星系态势和当前选中上下文。
 - 右侧：敌对飞行员观察列表，回答“现在有哪些人值得盯，以及为什么”。
-- 下方：舰队动向、威胁评分、告警队列、最新严重事件。
+- 下方：舰队动向、告警队列、最新分类事件。
 
 核心原则：
 
@@ -61,16 +70,15 @@
 
 ```text
 乌寞-F4
-敌 2  观 5  杀 -
-严重 86
+红 2  白 1
+观 5
 ```
 
 字段含义：
 
-- `敌`：该星系相关敌对或高危飞行员数量。
-- `观`：该星系合并后的观察记录数量，来源可包括 OCR、频道、预警、zKill、ESI、手动情报等。
-- `杀`：近期击毁数；killboard 未启用或没有真实数据时显示 `-`。
-- `严重 86`：该星系最高威胁等级和评分。
+- `红`：该星系当前 classified as red 的活跃观察数量。
+- `白`：该星系当前 classified as white 的活跃观察数量。
+- `观`：该星系合并后的观察记录数量，来源可包括 OCR、频道、ESI、手动情报等。
 
 ## 敌对飞行员观察列表
 
@@ -79,16 +87,15 @@
 - OCR 本地识别
 - 情报频道解析
 - 服务端预警 alerts
-- zKill / killboard 击毁情报
 - ESI standing / contacts / 军团联盟
 - 手动情报
 
 同一个飞行员被多个来源命中时合并为一条观察记录，避免重复刷屏。列表建议字段：
 
 ```text
-飞行员          星系      来源            等级    最近出现
-Varg Vikernes  乌寞-F4   OCR / 预警      敌对    20:46
-Khanid Shadows 乌寞-F4   zKill / 频道    可疑    20:45
+飞行员          星系      来源            分类    原因              最近出现
+Varg Vikernes  乌寞-F4   OCR / 预警      红名    hostile_alliance  20:46
+Khanid Shadows 乌寞-F4   频道 / ESI      白名    friendly_standing 20:45
 ```
 
 字段约定：
@@ -97,9 +104,9 @@ Khanid Shadows 乌寞-F4   zKill / 频道    可疑    20:45
 - 关联星系。
 - 军团 / 联盟，只在真实数据存在时展示。
 - 来源标签按真实来源组合展示。
-- 威胁等级。
+- 分类: 红名、白名、中立或未知。
+- 命中原因: 例如 `hostile_alliance`、`friendly_corporation`、`standing_red`。
 - 最近出现时间。
-- 评分或证据数量。
 
 交互约定：
 
@@ -139,11 +146,11 @@ npm run build
 - SSE 告警能合并进入缓存，不整页刷新。
 - 手动上报与配置表单提交 payload 正确。
 - 观察列表按真实来源合并飞行员。
-- killboard / ESI 不可用时展示明确降级状态。
+- ESI 不可用时展示明确降级状态；killboard 不进入第一版状态展示。
 
 ## 下一步
 
 - 继续联调真实 `/api/v1/bootstrap` 数据，确认星图节点和观察列表字段完整。
-- 把 zKill / killboard 击毁字段接入节点摘要和观察列表证据链。
+- 把 `classification` / `reason` 接入节点摘要、观察列表和告警详情。
 - 优化打包体积：ECharts 按需导入，星图模块按路由切分。
 - 清理旧 React Flow 依赖和历史节点组件，前提是 `summarizeWorkbench` 等剩余逻辑完成拆分。

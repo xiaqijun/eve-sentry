@@ -1,5 +1,15 @@
 # EVE Sentry 情报平台开发路线
 
+> Current status (2026-07-09): zKillboard/killboard work is no longer part of
+> the active first-version scope. Runtime code, scoring evidence, deployment
+> environment variables, and tests have been removed or disabled. Future
+> killmail intelligence should be planned again with bounded storage and memory
+> behavior before implementation.
+
+> Current workflow baseline (2026-07-09): 第一版去掉评分系统，改为服务端白名/红名
+> 分类和一次性告警。ESI 只查询“未查询过 ESI”的角色。具体工作流以
+> `docs/intel-workflows.md` 为准。
+
 > 日期: 2026-07-01
 > 配套文档: `docs/intel-platform-architecture.md`
 > 状态: 当前实现已经进入“多源情报闭环补强”阶段，不再是早期单机 OCR 规划。
@@ -16,10 +26,10 @@
 - 预警频道采集: 已有 chatlog watcher、频道解析器和 `app.channel_client`，支持 UTF-16/UTF-8、断点续读、服务端解析上报。
 - ESI 公开补全: 已有 client/cache/resolver，支持名字解析、角色/星系公开资料、缓存和失败降级。
 - ESI SSO: 已有 PKCE 登录、token 保存/刷新、`/api/v1/esi/status`、`/api/v1/esi/session`、当前位置和 contacts/standings 快照。
-- 击毁画像: 已有 zKillboard client/analyzer，支持角色、星系、军团、联盟近期活动画像，并能作为评分 evidence。
-- 多源评分: 已有置信度降噪、频道上下文、击毁活动、黑白名单、友军/敌对军团联盟、敌对 standing、冷却和可解释 evidence；OCR 可见名单本身不再单独生成告警。
+- 击毁画像: 已从第一版移除，不再作为告警来源。
+- 分类告警: 第一版目标改为白名/红名分类和一次性告警；OCR 可见名单本身只刷新实时态。
 - 存储: 默认 SQLite，保留 JSON 兼容路径，并有旧 JSON 导入脚本。
-- Web 面板: 已有星图、手工情报、评分配置、服务端 alert detail 展示、实体情报摘要、ESI session 状态、客户端 heartbeat 状态和 SSE 更新。
+- Web 面板: 已有星图、手工情报、配置入口、服务端 alert detail 展示、实体情报摘要、ESI session 状态、客户端 heartbeat 状态和 SSE 更新；评分配置入口需要改为分类配置。
 
 ## 版本分层
 
@@ -42,17 +52,17 @@ V1 已纳入范围:
 - heartbeat 已支持汇总诊断、SQLite 持久化，以及 `mode`、`last_action`、`last_error`、
   `client_version`、`host`、`last_success_at`
 - ESI 公开解析、SSO 会话、当前位置和 contacts/standings 已接入第一版
-- zKillboard 画像和评分 evidence 已接入第一版
+- zKillboard 画像和评分 evidence 已移出第一版
 - 预警客户端和 Web 面板优先消费服务端解释链，而不是各自重复推断
 - Active Intel realtime state: OCR snapshot diffing, channel TTL, clear-message
   deactivation, and frontend active list.
-- OCR 观察和最终告警分离: 本地名单只刷新 active state，只有服务端确认敌对 evidence 后才生成 alert。
+- OCR 观察和最终告警分离: 本地名单只刷新 active state，只有服务端分类为白名或红名后才生成一次性 alert。
 
 V1 暂不包含:
 
 - 用大量真实频道样本覆盖更多联盟/军团格式
 - 完整的 ESI token 迁移和轮换策略
-- 更细粒度的 killboard TTL / 退避策略产品化
+- ESI 查询缓存治理: resolved / not_found / failed / retry_after
 - 更完整的客户端运行诊断字段
 - 更强的 UI 产品化打磨和回放工具
 
@@ -62,14 +72,14 @@ V1 暂不包含:
 
 - 基于真实频道样本继续补解析规则
 - ESI token 迁移和轮换策略
-- killboard TTL / 退避配置细化
+- PostgreSQL 分类告警 schema 和 ESI 查询缓存表
 - heartbeat 继续补 `startup_time`、`pid` 和最近一次成功 payload 摘要
 
 ### V2: 更完整的平台化能力
 
 后续再纳入:
 
-- 更完整的评分产品化和回放工具
+- 分类告警产品化、状态变化告警和查询缓存治理
 - 更强的多源画像聚合视图
 - 更成熟的 UI/运维体验
 - 更系统化的告警与追踪工作流
@@ -78,7 +88,7 @@ V1 暂不包含:
 
 - 低置信度 OCR / 频道 observation 会降权，无法解析出有效目标或星系时保留 observation 但不直接生成 alert。
 - 启用 ESI resolver 时，observation 会记录 `esi_resolution`，用于解释解析、修正或抑制的原因。
-- OCR observation 现在只表示本地可见名单；没有黑名单、敌对军团/联盟、敌对 standing、zKill 击毁活动等敌对证据时，不会因为 `local_ocr_seen` 或频道上下文单独生成 alert。
+- OCR observation 现在只表示本地可见名单；没有被分类为白名或红名时，不会因为 `local_ocr_seen` 或频道上下文单独生成 alert。
 - 频道行中唯一星系候选可修正 `system_name`，并重算 `names` / `hostile_count`。
 - 多个星系候选不再盲目修正，会以 `ambiguous` 状态保存在 `esi_resolution`。
 - 像 `Tama Oijanen` 这种由已解析星系组成的链路名会从角色候选中抑制，并记录到 `suppressed_name_candidates`。
@@ -92,8 +102,8 @@ V1 暂不包含:
 待做:
 
 - 增强 `GET /api/v1/alerts/{id}` 的稳定输出契约，明确 `context` 和 `explanation` 字段版本。
-- 把 ESI 解析结果、频道上下文、击毁画像、standing、评分 evidence 统一成一个可前端直接展示的详情结构。
-- 增加按角色、星系、军团、联盟查询相关 observation / alert / kill activity 的组合接口。
+- 把 ESI 解析结果、频道上下文、standing、分类结果和分类原因统一成一个可前端直接展示的详情结构。
+- 增加按角色、星系、军团、联盟查询相关 observation / alert / classification 的组合接口。
 - 给预警客户端补更完整的 `--details` 展示格式，优先消费服务端解释，不在客户端重复推断。
 - Web 面板详情视图复用服务端 `alert_detail.v1` 和实体情报查询接口。
 - 补接口文档和回归测试，确保旧 alert detail 兼容。
@@ -102,7 +112,7 @@ V1 暂不包含:
 
 - 单条 alert 能展示“谁、在哪、为什么报、证据来自哪里、哪些候选被 ESI 抑制或修正”。
 - 预警客户端和 Web 面板读取同一份服务端详情，不再各自拼接证据链。
-- 关闭 ESI 或 killboard 时详情接口仍返回可用的降级解释。
+- ESI 未启用或临时失败时详情接口仍返回可用的降级解释。
 
 ### P1: 预警频道解析增强
 
@@ -134,38 +144,40 @@ V1 暂不包含:
 验收:
 
 - alert 详情能解释“该角色为何被视为敌对/中立/未知”。
-- ESI 不可用时服务端仍能上报和评分，只降低相关 evidence。
+- ESI 不可用时服务端仍能上报 observation，但分类为 `unknown`，不生成白名/红名告警。
 
 ### P1: 击毁查询和行为画像补强
 
-目标: 把 zKillboard 近期活动从加分项变成可查询、可解释、可降级的情报源。
+状态: 暂停并移出第一版。
+
+目标: 后续如重新引入 killmail 情报，必须先完成有界缓存和内存上限设计。
 
 待做:
 
-- 明确角色、星系、军团、联盟的缓存 TTL、退避和失败状态。
-- 增加按区域/星系聚合的近期击毁热度解释。
-- 在 alert detail 中展示最近击毁时间、常见活动星系、kills/losses、来源和缓存状态。
-- 后续在已有 killmail id/hash 时接 ESI killmail 权威详情。
+- 不部署 zKillboard client。
+- 不维护 `zkill_cache.json`。
+- 不把击毁画像纳入第一版分类或告警。
+- 后续在已有 killmail id/hash 时再评估 ESI killmail 权威详情。
 
 验收:
 
-- 网络失败时使用过期缓存或空画像，不影响主报警链路。
-- 击毁活跃只作为 evidence，不单独等同当前威胁。
+- 第一版主报警链路不依赖 killmail 数据。
 
-### P2: 多源评分和配置产品化
+### P2: 分类告警和配置产品化
 
-目标: 让评分规则可理解、可调、可回放。
+目标: 让白名/红名分类规则可理解、可调、可追踪。
 
 待做:
 
-- 给 evidence 增加更稳定的类型枚举和权重说明。
+- 给 `classification` 和 `reason` 增加稳定枚举。
 - 让配置 API 暴露当前规则版本、默认值来源和更新时间。
-- 增加评分回放测试: 同一 observation 在不同配置下生成可预测分数。
-- 为黑白名单、敌对军团/联盟、standing 阈值提供更明确的 UI/接口说明。
+- 增加分类回放测试: 同一 observation 在不同配置下生成可预测分类。
+- 为白名/红名、友军/敌对军团联盟、standing 阈值提供更明确的 UI/接口说明。
+- 建立 ESI 查询缓存表，保证只查询未查询过 ESI 的角色，并缓存 not_found / failed 状态。
 
 验收:
 
-- 用户能从 alert detail 看懂分数如何产生。
+- 用户能从 alert detail 看懂白名/红名分类如何产生。
 - 调整配置后，新 alert 和事件流使用新规则，旧 alert 的历史解释不被悄悄改写。
 
 ### P2: 运行和联调体验
@@ -175,14 +187,14 @@ V1 暂不包含:
 待做:
 
 - 已补本地联调文档，说明服务端、检测端、频道采集器、预警客户端启动顺序。
-- 已增加健康检查接口，暴露 ESI、killboard、SQLite、配置和 SSE/alert 查询状态。
-- 已为客户端状态文件、SQLite、ESI token、zKill 缓存补统一 runtime data 说明。
+- 已增加健康检查接口，暴露 ESI、SQLite、配置和 SSE/alert 查询状态；killboard 仅保留禁用兼容状态。
+- 已为客户端状态文件、SQLite、ESI token/cache 补统一 runtime data 说明。
 - 更新截图区域选择和后台监控说明，区分检测端 UI 和服务端预警链路。
 
 验收:
 
 - 新机器按文档能启动本地闭环。
-- 断网、ESI 未登录、killboard 不可用、客户端重启都有明确提示。
+- 断网、ESI 未登录、客户端重启都有明确提示。
 
 ## Backlog 明细
 
@@ -207,14 +219,14 @@ V1 暂不包含:
 - `alert`: 原始 alert 字段，保持向后兼容。
 - `observation`: 源 observation。
 - `entities`: 角色、星系、军团、联盟等稳定 ID 和展示名。
-- `context`: 频道上下文、ESI profile、kill activity、standing、suppressed candidates。
+- `context`: 频道上下文、ESI profile、ESI lookup 状态、standing、suppressed candidates。
 - `explanation`: `summary`、`reasons`、`context`、`sources`、`degraded_sources`。
 
 完成标准:
 
 - 旧客户端读取原有 `alert` / `observation` / `context` / `explanation` 不破。
-- 关闭 ESI / killboard 时 `degraded_sources` 能说明降级原因。
-- 新测试覆盖 ESI 修正、歧义候选、星系链抑制、击毁画像缺失四种场景。
+- 关闭 ESI 时 `degraded_sources` 能说明降级原因；killboard 不再是第一版降级源。
+- 新测试覆盖 ESI 修正、歧义候选、星系链抑制、ESI 查询失败四种场景。
 
 ### INTEL-P0-02: 统一预警客户端详情展示
 
@@ -234,13 +246,13 @@ V1 暂不包含:
 待做:
 
 - 优先展示服务端 `explanation.summary`、`explanation.reasons` 和 `explanation.context`。
-- 展示 `degraded_sources`，例如 ESI 未启用、killboard 查询失败、仅使用过期缓存。
+- 展示 `degraded_sources`，例如 ESI 未启用、ESI 查询失败、仅使用过期缓存。
 - 对 suppressed candidates 使用明确文本，例如“频道链路名已抑制为角色候选”。
 - `--json` 模式保留结构化完整 detail；普通文本模式只显示高信号摘要。
 
 完成标准:
 
-- 预警客户端不再自行推断 ESI / killboard 解释，只格式化服务端 detail。
+- 预警客户端不再自行推断 ESI 或分类解释，只格式化服务端 detail。
 - detail 查询失败时仍能回退到 alert 基础格式。
 
 ### INTEL-P0-03: 增加情报查询接口
@@ -261,15 +273,15 @@ V1 暂不包含:
 
 接口草案:
 
-- `GET /api/intel/character/{character_id}`: 角色相关 observation、alert、profile、kill activity。
-- `GET /api/intel/system/{system_id}`: 星系相关 observation、alert、system kill activity。
-- `GET /api/intel/corporation/{corporation_id}`: 军团相关 profile、alert、kill activity。
-- `GET /api/intel/alliance/{alliance_id}`: 联盟相关 profile、alert、kill activity。
+- `GET /api/intel/character/{character_id}`: 角色相关 observation、alert、profile、classification。
+- `GET /api/intel/system/{system_id}`: 星系相关 observation、alert、classification 聚合。
+- `GET /api/intel/corporation/{corporation_id}`: 军团相关 profile、alert、classification 聚合。
+- `GET /api/intel/alliance/{alliance_id}`: 联盟相关 profile、alert、classification 聚合。
 
 完成标准:
 
-- 支持 `limit`、`since`、`acknowledged`、`min_level` 这类通用过滤。
-- 无 ESI / killboard 时接口仍返回已知 observation 和 alert。
+- 支持 `limit`、`since`、`acknowledged`、`classification`、`reason` 这类通用过滤。
+- 无 ESI 时接口仍返回已知 observation；未分类为白名/红名时不生成新 alert。
 - Web 面板后续可以直接用这些接口做详情页或侧栏。
 
 ### INTEL-P0-04: Web 面板复用服务端详情
@@ -281,7 +293,7 @@ V1 暂不包含:
 `explanation.summary`、`reasons`、`context`、`degraded_sources` 和实体列表；
 同时按 detail 中的角色、星系、军团、联盟 ID 调用 `/api/intel/...` 展示关联
 observation / alert / activity 摘要，不再在浏览器端分别拼角色 profile、星系
-profile 和 kill activity。
+profile 和 classification。
 
 范围:
 
@@ -292,7 +304,7 @@ profile 和 kill activity。
 
 - Web 面板和预警客户端消费同一份服务端 explanation。
 - 实体详情优先走 `/api/intel/character|system|corporation|alliance/...`。
-- ESI 或 killboard 不可用时，Web 面板展示服务端 `degraded_sources`，不自行推断。
+- ESI 不可用时，Web 面板展示服务端 `degraded_sources`，不自行推断。
 
 ### INTEL-P1-01: 频道解析诊断字段
 
@@ -371,69 +383,65 @@ detail 的 profile context 会把 cache 状态写入 explanation。
 完成标准:
 
 - 用户能知道 ESI 资料是新鲜缓存、过期缓存，还是根本没查到。
-- ESI 失败不影响 observation 保存和基础评分。
+- ESI 失败不影响 observation 保存；分类为 `unknown`，不触发白名/红名告警。
 
 ### INTEL-P1-04: zKillboard 查询状态和聚合解释
 
 优先级: P1
 
-状态: 已完成第一版。`ZKillboardClient` 会记录 activity 查询的 `cache_status`、
-`fetched_at`、`expires_at`、`request_status`、`error` 和 `retry_after`；遇到
-网络错误、420/429 或 5xx 时会记录失败类型并进入退避，退避期优先使用过期缓存。
-`ThreatEnricher` 会把这些状态注入 character、system、corporation、alliance
-kill activity，alert detail 的 kill context 会展示 cache/request 状态。
+状态: 已从第一版撤回。早期 zKillboard JSON cache 会导致服务端内存持续增长，
+相关 runtime client、analyzer、scoring evidence、部署环境变量和测试已删除或禁用。
+后续如恢复击毁画像，需要重新设计有界缓存、持久化结构、限速、退避和内存上限。
 
 范围:
 
-- `app/killboard/zkill_client.py`、`app/killboard/analyzer.py`。
-- `app/intel/enrichment.py`。
-- `app/server/intel_store.py` 的 kill context summary。
-- `tests/test_intel_enrichment.py`、`tests/test_scoring.py`。
+- 当前保留禁用兼容路由 `GET /api/v1/kill-activity/...`，返回 404。
+- `app/intel/enrichment.py` 不再收集 kill activity。
+- `app/intel/scoring.py` 不再生成 killboard evidence。
 
 待做:
 
-- 给 kill activity 增加缓存状态、查询窗口、最新击毁时间、主要活动星系。
+- 本项暂停；不要继续实现 kill activity 字段。
 - 明确角色、星系、军团、联盟各自 TTL 和失败 fallback。
 - 进一步细化退避策略配置，例如不同 HTTP 状态码、不同 scope 的退避时长。
 
 完成标准:
 
-- alert detail 能说明击毁画像来自哪个窗口、是否过期、为什么只作为加分 evidence。
-- killboard 不可用时评分仍可生成，只少相关 evidence。
+- 本项已撤回；击毁画像不再进入第一版 alert detail。
 
-### INTEL-P2-01: evidence 类型和评分规则版本化
+### INTEL-P2-01: 分类规则版本化
 
 优先级: P2
 
-状态: 已完成第一版。`ThreatEvent` 会携带 `scoring_version`，新评分引擎输出
-`scoring.v1`；`Evidence` 支持 `rule_id`，默认等于 evidence type；配置 API 会返回
-`schema_version`、`scoring_version`、`defaults` 和 `evidence_rules`，并已补评分回放测试。
+状态: 需要按新工作流重做。旧 `scoring_version`、`Evidence.rule_id` 和评分回放属于
+兼容历史；第一版主线应改为 `classification_version`、`classification`、`reason`
+和分类回放测试。
 
 范围:
 
-- `app/intel/scoring.py`。
-- `app/core/models.py` 的 evidence 序列化。
+- 新 `app/intel/classification.py`。
+- `app/core/models.py` 的 alert / classification 序列化。
 - `docs/intel-config-api.md`。
-- `tests/test_scoring.py`。
+- 新分类测试。
 
 待做:
 
-- 梳理 evidence type 枚举和权重来源。
-- 在 alert 或 explanation 中记录 `scoring_version`。
-- 配置 API 返回规则版本和默认值来源。
-- 增加评分回放测试，固定同一 observation 在不同 config 下的输出。
+- 梳理 `classification` / `reason` 枚举。
+- 在 alert 或 explanation 中记录 `classification_version`。
+- 配置 API 返回分类规则版本和默认值来源。
+- 增加分类回放测试，固定同一 observation 在不同 config 下的输出。
 
 完成标准:
 
-- 用户能从 alert detail 看到分数由哪些规则贡献。
-- 未来调整权重时，可以区分历史 alert 和新规则 alert。
+- 用户能从 alert detail 看到白名/红名由哪条规则命中。
+- 未来调整分类规则时，可以区分历史 alert 和新规则 alert。
 
 ### INTEL-P2-02: 本地联调和健康检查
 
 优先级: P2
 
 状态: 已完成增强版。新增 `GET /api/health`，返回 `health.v1` 的
-storage/config/ESI/killboard/clients/events 状态；新增 `GET /api/v1/clients`
+storage/config/ESI/clients/events 状态；新增 `GET /api/v1/clients`
 和 Web 面板 `Client Status` 区块，用于显示检测端、预警端、频道采集器等客户端在线状态；
 检测端 GUI 现已上报 `detector_client` heartbeat，并在开始/停止监控时同步刷新状态；
 `/api/v1/clients` 现已补充 `summary.by_type`、`summary.by_status` 和 `stale_count`
@@ -455,14 +463,14 @@ storage/config/ESI/killboard/clients/events 状态；新增 `GET /api/v1/clients
 
 - `storage`: SQLite 是否可写、当前 db 路径。
 - `esi`: 是否启用、是否登录、token 是否过期。
-- `killboard`: 是否启用、最近成功/失败时间。
+- `killboard`: 禁用兼容状态。
 - `events`: SSE 是否可用、最近 alert 时间。
 - `config`: 配置文件路径和加载状态。
 
 完成标准:
 
 - 新机器按文档能启动服务端、检测端、频道采集器、预警客户端。
-- 遇到 ESI 未登录、killboard 不可用、截图区域没选好时有明确排查入口。
+- 遇到 ESI 未登录、截图区域没选好时有明确排查入口。
 
 ## 已完成阶段归档
 
@@ -495,20 +503,19 @@ storage/config/ESI/killboard/clients/events 状态；新增 `GET /api/v1/clients
 
 ### 阶段 4: 击毁查询和行为画像
 
-状态: 已完成第一版，进入查询策略和解释增强阶段。
+状态: 暂停并移出第一版。
 
-- `app/killboard/zkill_client.py`
-- `app/killboard/analyzer.py`
-- `KillActivity` / system / corporation / alliance activity。
-- 击毁画像参与 scoring evidence。
+- 不部署 zKillboard client。
+- 不维护 `zkill_cache.json`。
+- 不把击毁画像纳入当前分类或告警。
 
-### 阶段 5: 多源威胁评分
+### 阶段 5: 分类告警
 
-状态: 已完成基础版，进入规则产品化阶段。
+状态: 旧实现待替换。第一版主线改为分类告警。
 
-- `app/intel/scoring.py`
-- 置信度降噪、频道上下文、击毁活动、黑白名单、standing、冷却。
-- alert detail 已有 evidence、context、explanation。
+- 计划新增 `app/intel/classification.py`。
+- 白名/红名、友军/敌对军团联盟、standing 分类。
+- alert detail 应包含 classification、reason、context 和 explanation。
 
 ### 阶段 6: ESI SSO
 
@@ -535,14 +542,16 @@ storage/config/ESI/killboard/clients/events 状态；新增 `GET /api/v1/clients
 ## 当前建议开发顺序
 
 1. 等待真实预警频道样本后继续补解析规则；没有真实样本时不构造频道数据作为测试依据。
-2. 设计 ESI token 迁移策略，并进一步细化 killboard 不同 scope 的 TTL/退避配置。
-3. 继续补 heartbeat 诊断字段，例如启动时间、进程标识和最近一次成功 payload 摘要。
+2. 设计 PostgreSQL schema，包括 observations、active_intel、alerts、ESI 查询缓存和配置表。
+3. 用 `ClassificationEngine` 替换旧 `ScoringEngine`，实现白名/红名一次性告警。
+4. 设计 ESI token 迁移策略。
+5. 继续补 heartbeat 诊断字段，例如启动时间、进程标识和最近一次成功 payload 摘要。
 
 ## 风险和约束
 
-- OCR 结果会误识别，必须继续依赖置信度、ESI 解析和上下文降噪。
+- OCR 结果会误识别，必须继续依赖 ESI 查询缓存和分类规则；未确认时保持 `unknown`。
 - 预警频道文本格式没有统一标准，解析器必须保留 raw text 和诊断信息。
-- ESI 和 zKillboard 都需要缓存、限速、退避和失败降级。
+- ESI 需要缓存、限速、退避和失败降级；未查询过的角色才触发 ESI 查询。
 - SSO scopes 要最小化，token 文件不能提交。
-- 击毁活跃不等于当前威胁，只能作为 evidence 之一。
-- SQLite 已是默认存储，但 runtime 数据和迁移说明还需要继续补齐。
+- 击毁活跃不进入第一版当前威胁判断。
+- PostgreSQL 是下一版服务端目标存储，SQLite 作为本地/兼容存储保留。

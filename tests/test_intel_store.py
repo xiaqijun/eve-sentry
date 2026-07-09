@@ -9,7 +9,6 @@ from app.esi.cache import EsiCache
 from app.esi.resolver import EsiResolver
 from app.intel.enrichment import ThreatEnricher, ThreatEnrichment
 from app.intel.scoring import ScoringEngine, Watchlist
-from app.killboard.analyzer import GroupKillActivity, KillActivity
 from app.server.intel_store import IntelStore, StarSystem
 
 
@@ -1545,7 +1544,7 @@ def test_list_alerts_scores_with_optional_enricher(tmp_path):
                     {"character_id": observation.character_ids[0], "corporation_id": 42}
                 ],
                 kill_activities=[
-                    KillActivity(
+                    SimpleNamespace(
                         character_id=observation.character_ids[0],
                         window="7d",
                         kills=5,
@@ -1575,21 +1574,20 @@ def test_list_alerts_scores_with_optional_enricher(tmp_path):
 
     alert = store.list_alerts()[0]
 
-    assert alert["score"] == 110
-    assert alert["level"] == "critical"
+    assert alert["score"] == 90
+    assert alert["level"] == "high"
     assert [item["type"] for item in alert["evidence"]] == [
         "intel_channel_report",
         "hostile_corporation",
-        "recent_kill_activity",
     ]
 
 
-def test_list_alerts_scores_group_kill_activity_from_enricher(tmp_path):
+def test_list_alerts_ignores_group_kill_activity_from_enricher(tmp_path):
     class FakeEnricher:
         def enrich(self, observation):
             return ThreatEnrichment(
                 group_activities=[
-                    GroupKillActivity(
+                    SimpleNamespace(
                         entity_type="alliance",
                         entity_id=789,
                         window="7d",
@@ -1616,11 +1614,8 @@ def test_list_alerts_scores_group_kill_activity_from_enricher(tmp_path):
 
     alert = store.list_alerts()[0]
 
-    assert alert["score"] == 45
-    assert [item["type"] for item in alert["evidence"]] == [
-        "intel_channel_report",
-        "alliance_kill_activity",
-    ]
+    assert alert["score"] == 30
+    assert [item["type"] for item in alert["evidence"]] == ["intel_channel_report"]
 
 
 def test_list_alerts_does_not_promote_ocr_context_without_hostile_evidence(tmp_path):

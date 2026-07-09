@@ -84,13 +84,6 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
     for scope in _split_scopes(values.get("EVE_SENTRY_SERVER_ESI_SCOPES", "")):
         argv.extend(["--esi-scope", scope])
 
-    if _env_flag(values.get("EVE_SENTRY_SERVER_ENABLE_KILLBOARD")):
-        argv.append("--enable-killboard")
-    _append_option(
-        argv,
-        "--zkill-cache",
-        values.get("EVE_SENTRY_SERVER_ZKILL_CACHE", ""),
-    )
     return argv
 
 

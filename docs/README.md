@@ -3,11 +3,13 @@
 ## 当前架构文档
 
 - `docs/intel-platform-architecture.md`
-  情报平台整体架构和当前实现状态，覆盖检测客户端、预警客户端、服务端、ESI、频道解析、击毁查询、多源评分、API 和存储规划。
+  情报平台整体架构和当前实现状态，覆盖检测客户端、预警客户端、服务端、ESI、频道解析、分类告警、API 和存储规划。
+- `docs/intel-workflows.md`
+  第一版情报工作流，定义客户端只采集、服务端只查询未查询过 ESI 的角色、白名/红名一次性告警，以及去掉评分系统后的前后端行为。
 - `docs/intel-platform-roadmap.md`
   当前完成度、第一版边界、待做清单和后续开发顺序。
 - `docs/intel-config-api.md`
-  服务端评分配置 API、SQLite/JSON 启动方式和 runtime 配置注意事项。
+  服务端分类/告警配置 API、SQLite/JSON 启动方式和 runtime 配置注意事项。
 - `docs/local-integration.md`
   本地联调启动顺序、健康检查、runtime data 和常见排查入口。
 - `docs/server-deployment.md`

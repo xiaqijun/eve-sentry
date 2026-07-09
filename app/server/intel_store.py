@@ -320,55 +320,23 @@ class IntelStore:
         return self._profile_result(profile, id_key="system_id", id_value=system_id)
 
     def character_kill_activity(self, character_id: int) -> dict[str, Any] | None:
-        """Return recent killboard activity for one character when enabled."""
-        character_id = self._optional_int(character_id)
-        if character_id is None or self._enricher is None:
-            return None
-        try:
-            activity = self._enricher.kill_activity(character_id)
-        except Exception:
-            return None
-        return self._activity_result(activity)
+        """Return killboard activity when the feature is available."""
+        return None
 
     def system_kill_activity(self, system_id: int) -> dict[str, Any] | None:
-        """Return recent killboard activity for one solar system when enabled."""
-        system_id = self._optional_int(system_id)
-        if system_id is None or self._enricher is None:
-            return None
-        try:
-            activity = self._enricher.system_kill_activity(system_id)
-        except Exception:
-            return None
-        return self._activity_result(activity)
+        """Return killboard activity when the feature is available."""
+        return None
 
     def corporation_kill_activity(
         self,
         corporation_id: int,
     ) -> dict[str, Any] | None:
-        """Return recent killboard activity for one corporation when enabled."""
-        corporation_id = self._optional_int(corporation_id)
-        if corporation_id is None or self._enricher is None:
-            return None
-        if not hasattr(self._enricher, "corporation_kill_activity"):
-            return None
-        try:
-            activity = self._enricher.corporation_kill_activity(corporation_id)
-        except Exception:
-            return None
-        return self._activity_result(activity)
+        """Return killboard activity when the feature is available."""
+        return None
 
     def alliance_kill_activity(self, alliance_id: int) -> dict[str, Any] | None:
-        """Return recent killboard activity for one alliance when enabled."""
-        alliance_id = self._optional_int(alliance_id)
-        if alliance_id is None or self._enricher is None:
-            return None
-        if not hasattr(self._enricher, "alliance_kill_activity"):
-            return None
-        try:
-            activity = self._enricher.alliance_kill_activity(alliance_id)
-        except Exception:
-            return None
-        return self._activity_result(activity)
+        """Return killboard activity when the feature is available."""
+        return None
 
     def add_report(
         self,
@@ -2078,13 +2046,6 @@ class IntelStore:
                 {
                     "source": "esi",
                     "reason": "character profiles unavailable",
-                }
-            )
-        if observation.character_ids and not context.get("kill_activities"):
-            degraded.append(
-                {
-                    "source": "killboard",
-                    "reason": "character kill activity unavailable",
                 }
             )
         if not observation.character_ids and observation.names and self._resolver is None:

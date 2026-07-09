@@ -1,5 +1,16 @@
 # EVE Sentry 情报平台架构
 
+> Current status (2026-07-09): zKillboard/killboard enrichment has been removed
+> from the first production path because the JSON cache caused sustained server
+> memory growth. The server now relies on OCR snapshots, intel channel lines,
+> ESI identity/profile data, standings, and configured friendly/hostile filters.
+> Any older killboard sections below are historical design notes and must not be
+> treated as an enabled runtime dependency.
+
+> Current workflow baseline (2026-07-09): 第一版不再使用威胁评分系统。服务端只做
+> ESI 查询缓存、白名/红名分类和一次性告警。ESI 查询条件是“角色从未查询过
+> ESI”，不是“本次名单新增”。后续架构设计以 `docs/intel-workflows.md` 为准。
+
 > 日期: 2026-07-01
 > 状态: 当前实现基线
 > 目标: 将 EVE Sentry 从单机 OCR 预警器升级为多源威胁情报平台。
@@ -16,22 +27,22 @@
 | 服务端模型/API | 已有 `Observation`、`ThreatEvent`、alert detail、实体情报查询、ack、配置 API、health、heartbeats、SQLite | 补更细客户端诊断 |
 | 预警频道解析 | 已有 chatlog watcher、parser、`POST /api/v1/channel-lines`、解析诊断和 ESI 辅助修正 | 扩更多真实频道格式 |
 | ESI | 已有公开解析、缓存状态、SSO、session、当前位置、contacts/standings | 补 token 迁移策略和更细失败类型 |
-| 击毁画像 | 已有 zKillboard 查询、角色/星系/军团/联盟活动画像、缓存状态和 scoring evidence | 补退避说明、聚合视图和 killmail 详情接入 |
-| 多源评分 | 已有置信度降噪、频道上下文、击毁、黑白名单、standing、冷却、规则版本和 evidence rule id | 补更完整 UI 说明 |
+| 击毁画像 | 已从第一版移除，不参与当前告警链路 | 后续如恢复，必须先设计有界缓存和内存上限 |
+| 分类告警 | 第一版目标改为白名/红名分类和一次性告警，不再使用威胁评分 | 用 `ClassificationEngine` 替代旧评分路径 |
 | 推送/存储 | 默认 SQLite，SSE 支持过滤、续接、keepalive、并发和轮询 fallback；runtime data、heartbeat 状态页和 SQLite heartbeat 持久化已接通 | 补更细状态字段 |
 
 ## 1. 架构目标
 
-EVE Sentry 后续不再只依赖本地频道 OCR。系统应同时接入本地频道、预警频道、ESI、击毁记录、手工名单等多种来源，并在服务端统一融合判断。
+EVE Sentry 后续不再只依赖本地频道 OCR。系统应同时接入本地 OCR、预警频道、ESI、手工名单等多种来源，并在服务端统一分类判断。
 
 核心原则:
 
 - 检测端只负责采集和上报，不负责最终威胁判断。
 - 预警端只负责接收和通知，不直接依赖 OCR 或 ESI。
-- 服务端是唯一情报中心，负责身份解析、缓存、评分、去重、冷却和事件生成。
-- OCR 名单只表示“当前本地可见”，不是敌对证据；只有服务端确认敌对证据后才生成告警。
+- 服务端是唯一情报中心，负责身份解析、ESI 查询缓存、白名/红名分类、告警去重和事件生成。
+- OCR 名单只表示“当前本地可见”，不是敌对证据；只有服务端把角色分类为白名或红名后才生成一次性告警。
 - 所有情报最终落到稳定 ID 上，例如 `character_id`、`corporation_id`、`alliance_id`、`solar_system_id`。
-- 所有告警必须带证据链，能解释为什么报警。
+- 所有告警必须带分类原因，能解释为什么报警。
 
 ## 2. 总体视图
 
@@ -45,15 +56,14 @@ flowchart LR
     CHAT -->|Observation| SERVER
 
     SERVER --> ESI["ESI 集成层"]
-    SERVER --> KILL["击毁查询层"]
     ESI --> CCP["CCP ESI / SSO"]
-    KILL --> ZKILL["zKillboard"]
 
-    SERVER --> RULES["威胁评分引擎"]
-    RULES --> ALERTS["ThreatEvent"]
+    SERVER --> LOOKUP["ESI查询缓存"]
+    SERVER --> CLASSIFY["白名/红名分类"]
+    CLASSIFY --> ALERTS["一次性告警"]
     ALERTS --> ALERTER["预警客户端"]
     ALERTS --> WEB["Web 地图/情报面板"]
-    SERVER --> DB["SQLite/本地存储"]
+    SERVER --> DB["PostgreSQL/持久化存储"]
 ```
 
 ## 3. 运行组件
@@ -168,19 +178,19 @@ uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Al
 职责:
 
 - 接收所有来源的 `Observation`。
-- 对 OCR 名单和频道文本调用 ESI 做名字解析、角色 ID、军团和联盟补全，并缓存结果。
-- 调用击毁查询层补充近期行为画像。
-- 执行白名单、友军军团/联盟、黑名单、敌对军团/联盟、standing、击毁活跃度、频道提及、冷却去重等规则。
-- 生成 `ThreatEvent`。
+- 对 OCR 名单和频道文本检查 ESI 查询缓存；只对从未查询过 ESI 的角色发起 ESI 查询。
+- 缓存角色 ID、军团、联盟、standing，以及 `not_found` / `failed` / `retry_after` 状态。
+- 执行白名单、红名单、友军/敌对军团联盟和 standing 分类规则。
+- 角色被分类为白名或红名时生成一次性 `ThreatEvent`。
 - 提供 REST API 给检测端、频道采集器、预警端和 Web 面板。
 
 OCR 告警门槛:
 
 - `local_ocr` / `ocr` / `eve-sentry-detector` observation 默认只刷新实时可见名单。
-- 命中白名单、友军军团/联盟或友好 standing 时，服务端抑制该 observation 的实时威胁展示。
-- 没有敌对证据时，OCR observation 不生成 `ThreatEvent`，即使附近有频道上下文也不直接告警。
-- 可把 OCR 升级为告警的敌对证据包括黑名单、敌对军团/联盟、敌对 standing、近期 zKill 击毁活动等。
-- 预警频道上下文只作为辅助证据加分，不能单独把一个 OCR 可见角色判定为敌对。
+- 命中白名单、友军军团/联盟或友好 standing 时，服务端分类为 `white` 并生成一次性白名告警。
+- 命中红名单、敌对军团/联盟或敌对 standing 时，服务端分类为 `red` 并生成一次性红名告警。
+- 没有白名/红名分类时，OCR observation 不生成 `ThreatEvent`。
+- 预警频道上下文只作为观察来源和解释上下文，不能单独把一个 OCR 可见角色判定为红名。
 
 当前入口建议:
 
@@ -191,7 +201,7 @@ uv run python -m app.server --host 127.0.0.1 --port 8765
 服务端默认使用 SQLite，数据文件为 `intel.sqlite3`；如需沿用旧 JSON
 联调数据，可显式指定 `--storage json --data intel_reports.json`。
 
-当前 Web 面板提供星图、手工情报录入、评分配置、服务端 alert detail 展示、
+当前 Web 面板提供星图、手工情报录入、分类配置、服务端 alert detail 展示、
 实体情报摘要、客户端 heartbeat 状态，以及 ESI session 状态/当前位置展示；
 `Client Status` 区块会显示检测端、预警端和频道采集器最近一次 heartbeat，
 当前位置可一键填入手工情报表单。
@@ -278,8 +288,7 @@ PowerShell 启动脚本默认启用本地非阻塞弹窗和 details 输出；底
 - `local_ocr`: 本地频道 OCR。
 - `intel_channel`: 预警频道日志。
 - `manual`: 用户手工录入。
-- `killboard`: 击毁记录导入或周期查询。
-- `esi`: ESI 补全产生的派生证据。
+- `esi`: ESI 补全产生的身份和分类依据。
 
 ### 4.2 Active Intel State
 
@@ -295,8 +304,9 @@ OCR 上传走 `/api/v1/ocr/snapshot`，客户端只提交当前扫描检测到�
 active 行，历史 observations 继续可查。
 
 active OCR 行代表“当前可见名单”，不等同于告警。Web 星图可以用它显示本地可见人数，
-但预警客户端只消费服务端生成的 `ThreatEvent`。如果某个 OCR 名字经 ESI 解析后没有
-命中敌对证据，它可以保留为历史 observation 或 active row，但不会出现在 alert 列表。
+但预警客户端只消费服务端生成的 `ThreatEvent`。如果某个 OCR 名字经 ESI 查询缓存后
+仍未分类为白名或红名，它可以保留为历史 observation 或 active row，但不会出现在
+alert 列表。
 
 预警频道同样保留 observation 作为审计记录，但 active state 由频道语义维护。普通
 频道报告按 metadata 计算 TTL，并写入带 `expires_at` 的 `active_intel` 行；包含
@@ -320,20 +330,22 @@ clear 信号的同频道、同星系消息会将匹配实时态标记为 inactiv
 }
 ```
 
-### 4.4 KillActivity
+### 4.4 EsiLookupState
 
-击毁行为画像。
+ESI 查询缓存状态。服务端只对从未查询过 ESI 的角色发起查询，并缓存失败状态，避免
+每次 OCR 或频道上报都重复查询。
 
 ```json
 {
+  "name": "Some Pilot",
   "character_id": 123456789,
-  "window": "24h",
-  "kills": 6,
-  "losses": 1,
-  "systems": ["Tama", "Oijanen"],
-  "ship_groups": ["Interceptor", "Stealth Bomber"],
-  "latest_kill_at": "2026-06-30T11:42:00Z",
-  "source": "zkillboard"
+  "status": "resolved",
+  "corporation_id": 987654,
+  "alliance_id": 555555,
+  "classification": "red",
+  "reason": "hostile_alliance",
+  "queried_at": "2026-06-30T12:00:03Z",
+  "retry_after": null
 }
 ```
 
@@ -344,29 +356,14 @@ clear 信号的同频道、同星系消息会将匹配实时态标记为 inactiv
 ```json
 {
   "id": "evt_...",
-  "level": "high",
-  "score": 82,
+  "classification": "red",
+  "reason": "hostile_alliance",
   "system_name": "Tama",
   "system_id": 30002813,
   "character_id": 123456789,
   "name": "Some Pilot",
-  "evidence": [
-    {
-      "type": "hostile_corporation",
-      "weight": 60,
-      "summary": "Some Pilot 属于敌对军团"
-    },
-    {
-      "type": "intel_channel_report",
-      "weight": 25,
-      "summary": "8 分钟前预警频道提到 Tama 有红"
-    },
-    {
-      "type": "recent_kill_activity",
-      "weight": 15,
-      "summary": "24 小时内在相邻区域有击毁"
-    }
-  ],
+  "sources": ["local_ocr", "esi"],
+  "alert_key": "123456789:red",
   "created_at": "2026-06-30T12:00:04Z"
 }
 ```
@@ -377,22 +374,21 @@ clear 信号的同频道、同星系消息会将匹配实时态标记为 inactiv
 
 ```json
 {
-  "alert": {"id": "evt_...", "level": "high", "score": 85},
+  "alert": {"id": "evt_...", "classification": "red", "reason": "hostile_alliance"},
   "observation": {"id": "obs_...", "source": "local_ocr"},
   "context": {
     "channel_mentions": [],
     "character_profiles": [],
-    "kill_activities": [],
-    "group_activities": []
+    "esi_lookup": {"status": "resolved"}
   },
   "explanation": {
-    "summary": "HIGH alert for Some Pilot in Tama (score 85)",
-    "reasons": ["Hostile corporation matched for Some Pilot"],
+    "summary": "RED alert for Some Pilot in Tama",
+    "reasons": ["Some Pilot matched hostile alliance 555555"],
     "context": [
       "Local OCR saw Some Pilot in Tama",
-      "Recent channel same-system mention in Tama 2m ago"
+      "ESI profile resolved Some Pilot to alliance 555555"
     ],
-    "sources": ["local_ocr", "esi", "scoring", "enrichment"]
+    "sources": ["local_ocr", "esi", "classification"]
   }
 }
 ```
@@ -428,8 +424,8 @@ ESI 是身份和宇宙数据的权威补全源。
 - token storage 支持 `auto`、`secure` 和 `plain`；`auto` 在 Windows 上使用当前
   用户 DPAPI 保护 token 文件，其他平台回退到普通 JSON，`secure` 在无可用保护器
   时会直接失败。
-- contacts 可转换成 `contact_standing` 注入角色 profile，供现有评分规则生成
-  `hostile_standing` evidence。
+- contacts 可转换成 `contact_standing` 注入角色 profile，供分类规则生成
+  `standing_red` 或 `standing_white` reason。
 
 设计要求:
 
@@ -472,11 +468,11 @@ PKCE SSO 流程。按钮会调用 `POST /api/v1/esi/login`，服务端返回授�
 等待 `/callback` 保存 token；前端不会接触 access token 或 refresh token。
 
 启用后，服务端会在保存 observation 时尽力补全 `system_id` 和
-`character_ids`，并在生成 alert 时把角色公开资料作为评分证据。角色公开
+`character_ids`，并在生成 alert 时把角色公开资料作为分类依据。角色公开
 资料会尽力补齐 `corporation_name` 和 `alliance_name`，相关查询结果写入本地
 ESI 缓存；ESI 查询失败时保留原 observation，不阻塞上报链路。若配置了
 authenticated ESI 会话，服务端会把 contacts/standings 缓存注入角色 profile，
-使 `hostile_standing` evidence 自动参与 alert 评分。`/api/v1/esi/session` 返回
+用于 `red` / `white` 分类。`/api/v1/esi/session` 返回
 当前位置时，服务端会尽力用 ESI resolver 补充 `solar_system_name` 和星系
 profile，供检测客户端自动填充当前星系。
 
@@ -492,46 +488,25 @@ ESI profile 会携带缓存状态，当前字段包括 `cache_status`、`fetched
 
 ## 6. 击毁查询
 
-击毁查询用于补充行为画像，不作为唯一报警来源。
+击毁查询已移出第一版，不参与分类或告警。
 
-推荐来源:
+禁用规则:
 
-- zKillboard: 查询近期 kills/losses，适合行为画像和活动区域判断。
-- ESI killmail endpoint: 当已有 killmail id/hash 时获取权威 killmail 详情。
+- 不部署 zKillboard client。
+- 不维护 `zkill_cache.json`。
+- 不在星图、观察列表或 alert detail 中展示伪造 killmail / ISK 数据。
+- 不把击毁行为作为 `red` / `white` 分类依据。
 
-第一阶段能力:
+当前服务端已移除 zKillboard 击毁画像运行链路。不要再使用
+`--enable-killboard` 或 `--zkill-cache` 部署服务端；旧参数只作为兼容 no-op
+保留，避免历史启动脚本直接失败。`GET /api/v1/kill-activity/...` 兼容路由会返回
+404，不会触发外部 zKillboard 请求。
 
-- 按角色查询最近击毁和损失。
-- 按军团/联盟查询近期活跃。
-- 按星系/区域查询近期击毁热度。
-- 提取常用舰种、常见活动区域、最新击毁时间。
+如后续重新引入击毁画像，必须先设计有界缓存、SQLite/分片存储、TTL、限速、退避和
+内存上限，不能再把大体积 JSON cache 整体加载进内存。
 
-缓存策略:
-
-- 同一角色的近期击毁查询至少缓存 10 分钟。
-- 同一军团/联盟的聚合查询至少缓存 30 分钟。
-- 星系热度至少缓存 5 分钟。
-- 请求必须设置明确 `User-Agent`。
-- 对 420/429/5xx 做退避，不在扫描循环里阻塞。
-
-当前服务端击毁画像通过启动参数启用:
-
-```bash
-python -m app.server --enable-killboard --zkill-cache zkill_cache.json
-```
-
-启用后，服务端会按 observation 内的 `character_ids` 查询近期 zKillboard 活动，生成 `recent_kill_activity` evidence，并把它纳入 `ThreatEvent` 分数。查询失败时优先使用本地过期缓存继续生成画像；无缓存或无角色 ID 时退回基础评分。
-HTTP API 也支持按角色、星系、军团、联盟查询近期击毁画像。
-
-击毁画像会携带查询缓存和请求状态，当前字段包括 `cache_status`、`fetched_at`、
-`expires_at`、`request_status`、`error` 和 `retry_after`。alert detail 的 kill
-context 会展示 cache/request 状态，用于区分 zKillboard 新查询、缓存命中、过期
-缓存 fallback、网络失败、限速和退避期。
-
-官方或一手参考:
-
-- zKillboard API wiki: https://github.com/zKillboard/zKillboard/wiki/API-%28Killmails%29
-- ESI killmails: https://developers.eveonline.com/docs/services/esi/endpoints/
+历史击毁画像字段和 zKillboard API 参考只作为后续重新设计时的背景资料，不属于当前
+第一版验收范围。
 
 ## 7. 预警频道解析
 
@@ -596,42 +571,51 @@ context 会展示 cache/request 状态，用于区分 zKillboard 新查询、缓
 - 服务端按 `source`、频道/`source_instance`、`seen_at` 和 `raw_text`
   对相同频道行做幂等去重，避免采集器重启或重复上报生成重复 alert。
 
-## 8. 威胁评分
+## 8. 分类告警
 
-评分引擎输出 `ThreatEvent`。
+第一版不使用威胁评分系统。服务端应把旧 `ScoringEngine` 下线或替换为
+`ClassificationEngine`，输出白名/红名分类结果和一次性告警决策。
 
-当前评分规则版本为 `scoring.v1`。服务端生成的 alert 会携带
-`scoring_version`，每条 evidence 会携带稳定 `type`，新评分器生成的 evidence
-还会带 `rule_id`。配置 API 会返回 `schema_version`、`scoring_version`、
-内置默认值来源和 evidence type 说明，便于后续回放或区分历史 alert。
+分类输入:
 
-建议初始规则:
+- 手工白名单和红名单。
+- 友军/敌对军团 ID。
+- 友军/敌对联盟 ID。
+- authenticated ESI contacts/standings。
+- ESI 角色公开资料。
 
-| 证据 | 分值 |
-| --- | ---: |
-| OCR 可见名单 | 0，默认只刷新 active state |
-| 命中黑名单角色 | +80 |
-| 命中敌对军团/联盟 | +60 |
-| 10 分钟内同星系预警频道提及 | +30 |
-| 30 分钟内相邻星系预警频道提及 | +15 |
-| 24 小时内角色在本区域有击毁 | +20 |
-| 7 天内角色高频击毁 | +10 |
-| 军团/联盟近期有击毁活跃 | +5 / +15 |
-| 常用舰种偏 PvP | +10 |
-| 命中白名单 | -100 |
-| 最近已报警且仍在冷却 | 抑制事件 |
+分类输出:
 
-等级建议:
+```json
+{
+  "classification": "red",
+  "reason": "hostile_alliance",
+  "alert_required": true
+}
+```
 
-- `low`: 20 到 39。
-- `medium`: 40 到 69。
-- `high`: 70 到 99。
-- `critical`: 100 以上。
+分类取值:
 
-告警必须包含 evidence，不允许只返回一个分数。
-服务端会按 `seen_at` 把近期 `intel_channel` observation 作为上下文 evidence：
-同星系生成 `intel_channel_same_system_recent`，相邻星系生成
-`intel_channel_adjacent_system_recent`；预警频道 observation 本身不再引用自身作为上下文。
+- `red`: 红名，首次出现或状态变化时生成告警。
+- `white`: 白名，首次出现或状态变化时生成告警。
+- `neutral`: 已识别但不在白名/红名规则内，只记录观察。
+- `unknown`: 尚未完成 ESI 查询或无法识别，只记录观察。
+
+ESI 查询规则:
+
+- 查询条件是“角色从未查询过 ESI”，不是“本次名单新增”。
+- 已查询过 ESI 的角色直接使用缓存结果。
+- 未查到和临时失败也要缓存，避免每次 OCR/频道上报都重复压 ESI。
+
+告警去重:
+
+```text
+alert_key = character_id + classification
+```
+
+同一角色同一分类只告警一次；从 `red` 变 `white` 或从 `white` 变 `red` 时可以再次告警。
+告警必须包含分类原因，不允许只返回一个分数。旧 `score` / `level` 字段可以保留为 API
+兼容字段，但新设计不能依赖它们。
 
 ## 9. API 草案
 
@@ -649,15 +633,15 @@ POST /api/v1/clients/heartbeats
 GET  /api/v1/config
 PUT  /api/v1/config
 
-GET  /api/v1/alerts?since=&limit=&acknowledged=&min_score=&min_level=
+GET  /api/v1/alerts?since=&limit=&acknowledged=&classification=&reason=
 GET  /api/v1/alerts/{id}
 POST /api/v1/alerts/{id}/ack
-GET  /api/v1/events?since=&limit=&timeout=&heartbeat=&acknowledged=&min_score=&min_level=
+GET  /api/v1/events?since=&limit=&timeout=&heartbeat=&acknowledged=&classification=&reason=
 
-GET  /api/intel/character/{character_id}?since=&limit=&acknowledged=&min_score=&min_level=
-GET  /api/intel/system/{system_id}?since=&limit=&acknowledged=&min_score=&min_level=
-GET  /api/intel/corporation/{corporation_id}?since=&limit=&acknowledged=&min_score=&min_level=
-GET  /api/intel/alliance/{alliance_id}?since=&limit=&acknowledged=&min_score=&min_level=
+GET  /api/intel/character/{character_id}?since=&limit=&acknowledged=&classification=&reason=
+GET  /api/intel/system/{system_id}?since=&limit=&acknowledged=&classification=&reason=
+GET  /api/intel/corporation/{corporation_id}?since=&limit=&acknowledged=&classification=&reason=
+GET  /api/intel/alliance/{alliance_id}?since=&limit=&acknowledged=&classification=&reason=
 
 GET  /api/v1/characters/{character_id}
 GET  /api/v1/characters/by-name/{name}
@@ -670,17 +654,14 @@ GET  /api/v1/esi/session?location=&contacts=
 GET  /api/v1/systems/{system_id}
 GET  /api/v1/systems/by-name/{name}
 
-GET  /api/v1/kill-activity/character/{character_id}
-GET  /api/v1/kill-activity/system/{system_id}
-GET  /api/v1/kill-activity/corporation/{corporation_id}
-GET  /api/v1/kill-activity/alliance/{alliance_id}
+GET  /api/v1/kill-activity/... 兼容禁用路由，返回 404
 
 GET  /api/map/snapshot
 ```
 
 当前服务端已实现:
 
-- `GET /api/health`: 返回 `health.v1`，汇总 storage、config、ESI、killboard、
+- `GET /api/health`: 返回 `health.v1`，汇总 storage、config、ESI、killboard 兼容状态、
   clients 和 SSE/alert 查询状态；该接口用于本地联调和运行排查，不返回 token。
 - `GET /api/v1/clients`: 返回最近客户端 heartbeat 列表，以及汇总诊断摘要，
   包括 `client_type`、`label`、`status`、`seen_at`、`age_seconds`、`online`，
@@ -697,19 +678,19 @@ GET  /api/map/snapshot
 - `POST /api/v1/alerts/{id}/ack`: 标记单个 alert 已确认，并在 JSON 和 SQLite
   存储中保留 `acknowledged`、`acknowledged_at`、`acknowledged_by` 和
   `acknowledgement_note`。
-- `GET /api/v1/alerts`: 支持 `acknowledged=true|false`、`min_score` 和
-  `min_level=low|medium|high|critical` 过滤；事件流 `/api/v1/events` 使用同一套
-  alert 过滤参数。
+- `GET /api/v1/alerts`: 主筛选应支持 `acknowledged=true|false`、`classification`
+  和 `reason`；旧 `min_score` / `min_level` 只作为兼容参数保留。事件流
+  `/api/v1/events` 使用同一套 alert 过滤参数。
 - `GET /api/v1/alerts/{id}`: 返回单个 alert 的解释详情，包括源 observation、
-  频道上下文、角色公开资料和击毁画像上下文。
+  频道上下文、角色公开资料、分类结果和分类原因。
 - `GET /api/intel/character/{character_id}`: 返回角色相关 observation、alert、
-  profile、kill activity、计数和查询过滤条件。
-- `GET /api/intel/system/{system_id}`: 返回星系相关 observation、alert、system
-  kill activity、计数和查询过滤条件。
+  profile、分类状态、计数和查询过滤条件。
+- `GET /api/intel/system/{system_id}`: 返回星系相关 observation、alert、
+  分类聚合、计数和查询过滤条件。
 - `GET /api/intel/corporation/{corporation_id}`: 返回军团相关 observation、alert、
-  kill activity、计数和查询过滤条件。
+  分类聚合、计数和查询过滤条件。
 - `GET /api/intel/alliance/{alliance_id}`: 返回联盟相关 observation、alert、
-  kill activity、计数和查询过滤条件。
+  分类聚合、计数和查询过滤条件。
 - `GET /api/v1/characters/{character_id}`: 需要启用 ESI，返回角色公开资料。
 - `GET /api/v1/characters/by-name/{name}`: 需要启用 ESI，先解析名字再返回角色公开资料。
 - `GET /api/v1/esi/status`: 返回 authenticated ESI 会话是否启用、是否已有本地 token、
@@ -724,15 +705,12 @@ GET  /api/map/snapshot
   快照；未登录返回 401，未启用返回 404。
 - `GET /api/v1/systems/{system_id}`: 需要启用 ESI，按 `solar_system_id` 返回星系公开资料。
 - `GET /api/v1/systems/by-name/{name}`: 需要启用 ESI，返回星系公开资料。
-- `GET /api/v1/kill-activity/character/{character_id}`: 需要启用 killboard，返回角色近期击毁画像。
-- `GET /api/v1/kill-activity/system/{system_id}`: 需要启用 killboard，返回星系近期击毁热度。
-- `GET /api/v1/kill-activity/corporation/{corporation_id}`: 需要启用 killboard，返回军团近期击毁/损失画像。
-- `GET /api/v1/kill-activity/alliance/{alliance_id}`: 需要启用 killboard，返回联盟近期击毁/损失画像。
+- `GET /api/v1/kill-activity/...`: 第一版禁用兼容路由，返回 404，不触发外部查询。
 
 实时推送:
 
 - `/api/v1/events` 提供 SSE alert 事件流，并复用 `/api/v1/alerts` 的 `acknowledged`、
-  `min_score` 和 `min_level` 等过滤参数。
+  `classification` 和 `reason` 等过滤参数；旧 `min_score` / `min_level` 只作为兼容参数保留。
 - 客户端可用 `since=<created_at>` 续接；浏览器 `EventSource` 重连时发送的
   `Last-Event-ID` 会被服务端解析回对应 alert 的 `created_at` 游标。
 - 事件流空闲时默认每 15 秒发送 SSE 注释帧 `: keepalive`；可通过
@@ -745,7 +723,7 @@ GET  /api/map/snapshot
 
 ## 10. 存储规划
 
-服务端默认使用 SQLite 存储，旧 JSON 文件仍保留为兼容导入来源。
+服务端目标存储切换为 PostgreSQL，SQLite 作为本地开发和兼容存储保留，旧 JSON 文件仍保留为兼容导入来源。
 
 建议表:
 
@@ -754,16 +732,18 @@ GET  /api/map/snapshot
 - `corporations`
 - `alliances`
 - `systems`
-- `kill_activity`
 - `threat_events`
-- `evidence`
+- `classifications`
+- `alert_dedupe`
 - `watchlist_entries`
+- `esi_lookup_cache`
 - `api_cache`
 - `client_heartbeats`
 
 迁移策略:
 
-- 新服务端默认写 SQLite。
+- 新生产服务端默认写 PostgreSQL。
+- 本地开发可继续使用 SQLite。
 - `--storage json --data intel_reports.json` 可继续用于旧联调数据。
 - SQLite 启动时可把 `intel_reports.json` 导入数据库，导入标记保存在
   `store_meta` 中，避免重复导入。
@@ -792,13 +772,10 @@ app/
     sso.py
     resolver.py
     cache.py
-  killboard/
-    zkill_client.py
-    analyzer.py
   intel/
     observations.py
-    scoring.py
-    evidence.py
+    classification.py
+    reasons.py
   server/
     api.py
     store.py

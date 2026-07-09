@@ -57,8 +57,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--esi-login-timeout", type=float, default=300.0)
     parser.add_argument("--esi-no-browser", action="store_true")
     parser.add_argument("--esi-scope", action="append", default=[], dest="esi_scopes")
-    parser.add_argument("--enable-killboard", action="store_true")
-    parser.add_argument("--zkill-cache", default="zkill_cache.json")
+    parser.add_argument(
+        "--enable-killboard",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument("--zkill-cache", default="zkill_cache.json", help=argparse.SUPPRESS)
     return parser
 
 
@@ -80,9 +84,8 @@ def main(argv: list[str] | None = None) -> int:
     resolver = None
     esi_session = None
     esi_login = None
-    killboard = None
     enable_esi = _should_enable_esi(args)
-    if enable_esi or args.enable_killboard:
+    if enable_esi:
         from app.esi.cache import EsiCache
 
     if enable_esi:
@@ -93,18 +96,12 @@ def main(argv: list[str] | None = None) -> int:
             esi_session = _build_esi_session(args)
             esi_login = _build_esi_login(args)
 
-    if args.enable_killboard:
-        from app.killboard.zkill_client import ZKillboardClient
-
-        killboard = ZKillboardClient(cache=EsiCache(args.zkill_cache))
-
     enricher = None
-    if resolver is not None or killboard is not None:
+    if resolver is not None or esi_session is not None:
         from app.intel.enrichment import ThreatEnricher
 
         enricher = ThreatEnricher(
             resolver=resolver,
-            killboard=killboard,
             esi_session=esi_session,
         )
 

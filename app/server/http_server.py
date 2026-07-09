@@ -1480,16 +1480,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         }
 
     def _killboard_health(self, store: IntelStore) -> dict[str, Any]:
-        enricher = getattr(store, "_enricher", None)
-        killboard = getattr(enricher, "killboard", None)
-        if killboard is None:
-            return {"enabled": False}
-        cache = getattr(killboard, "cache", None)
-        return {
-            "enabled": True,
-            "client": type(killboard).__name__,
-            "cache": type(cache).__name__ if cache is not None else "",
-        }
+        return {"enabled": False}
 
     def _map_health(self, store: IntelStore) -> dict[str, Any]:
         map_config_store = self._map_config_store()

@@ -129,8 +129,6 @@ class RecordingClient(IntelApiClient):
             return {"character": {"character_id": 123, "name": "Alice Prime"}}
         if path.endswith("/systems/by-name/S-KSWL"):
             return {"system": {"system_id": 30002814, "name": "S-KSWL"}}
-        if "/kill-activity/" in path:
-            return {"activity": {"kills": 1, "losses": 0}}
         if path.endswith("/systems/30002813"):
             return {"system": {"system_id": 30002813, "name": "Tama"}}
         return {"ok": True, "report": {"id": "r-1"}, "observation": {"id": "o-1"}}
@@ -150,10 +148,6 @@ def test_intel_api_client_targets_v1_routes_for_http_requests():
     api.character_profile(123)
     api.character_by_name("Alice Prime")
     api.system_by_name("S-KSWL")
-    api.character_kill_activity(123)
-    api.system_kill_activity(30002813)
-    api.corporation_kill_activity(456)
-    api.alliance_kill_activity(789)
     api.list_reports()
     api.list_observations()
     api.list_alerts()
@@ -175,10 +169,6 @@ def test_intel_api_client_targets_v1_routes_for_http_requests():
         "/api/v1/characters/123",
         "/api/v1/characters/by-name/Alice%20Prime",
         "/api/v1/systems/by-name/S-KSWL",
-        "/api/v1/kill-activity/character/123",
-        "/api/v1/kill-activity/system/30002813",
-        "/api/v1/kill-activity/corporation/456",
-        "/api/v1/kill-activity/alliance/789",
         "/api/v1/reports",
         "/api/v1/observations",
         "/api/v1/alerts",
@@ -858,16 +848,8 @@ def test_alert_client_formats_reports_for_console_and_popup():
                         "corporation_id": 456,
                     }
                 ],
-                "kill_activities": [
-                    {"character_id": 123, "kills": 2, "losses": 1}
-                ],
-                "group_activities": [
-                    {
-                        "entity_type": "corporation",
-                        "entity_id": 456,
-                        "kills": 5,
-                    }
-                ],
+                "kill_activities": [],
+                "group_activities": [],
             }
         },
     }
@@ -875,8 +857,7 @@ def test_alert_client_formats_reports_for_console_and_popup():
         format_alert(detailed_alert)
         == "HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 85) "
         "- Local OCR saw Alice | Context: channel same-system Tama; "
-        "profile Alice (corp 456); character 123 2 kills, 1 loss; "
-        "corporation 456 5 kills"
+        "profile Alice (corp 456)"
     )
 
     detailed_alert["detail"]["explanation"] = {
@@ -885,23 +866,15 @@ def test_alert_client_formats_reports_for_console_and_popup():
         "context": [
             "Recent channel same-system mention in Tama 2m ago",
             "ESI profile Alice: corp 456",
-            "Character 123 has 2 kills, 1 loss in 7d",
         ],
-        "degraded_sources": [
-            {
-                "source": "killboard",
-                "reason": "system activity unavailable",
-            }
-        ],
+        "degraded_sources": [],
     }
     assert (
         format_alert(detailed_alert)
         == "HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 85) "
         "- Detail: HIGH alert for Alice in Tama (score 85) | Reasons: Local "
         "OCR saw Alice; Recent hostile standing | Context: Recent channel "
-        "same-system mention in Tama 2m ago; ESI profile Alice: corp 456; "
-        "Character 123 has 2 kills, 1 loss in 7d | Degraded: killboard "
-        "(system activity unavailable)"
+        "same-system mention in Tama 2m ago; ESI profile Alice: corp 456"
     )
 
 

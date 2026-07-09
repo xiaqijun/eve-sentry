@@ -1,6 +1,7 @@
+from types import SimpleNamespace
+
 from app.core.models import Observation
 from app.intel.scoring import SCORING_VERSION, ChannelMention, ScoringEngine, Watchlist
-from app.killboard.analyzer import GroupKillActivity, KillActivity
 
 
 def observation(
@@ -297,21 +298,21 @@ def test_hostile_standing_profile_adds_evidence():
     assert evidence_types(event) == ["intel_channel_report", "hostile_standing"]
 
 
-def test_recent_kill_activity_adds_bonus_evidence():
-    activity = KillActivity(character_id=123, window="7d", kills=5)
+def test_recent_kill_activity_is_ignored_when_killboard_is_disabled():
+    activity = SimpleNamespace(character_id=123, window="7d", kills=5)
     event = ScoringEngine(cooldown_seconds=0).score(
         observation(source="intel_channel"),
         kill_activity=activity,
     )
 
     assert event is not None
-    assert event.score == 50
-    assert event.level == "medium"
-    assert evidence_types(event) == ["intel_channel_report", "recent_kill_activity"]
+    assert event.score == 30
+    assert event.level == "low"
+    assert evidence_types(event) == ["intel_channel_report"]
 
 
-def test_group_kill_activity_adds_conservative_bonus_evidence():
-    activity = GroupKillActivity(
+def test_group_kill_activity_is_ignored_when_killboard_is_disabled():
+    activity = SimpleNamespace(
         entity_type="corporation",
         entity_id=456,
         window="7d",
@@ -325,15 +326,9 @@ def test_group_kill_activity_adds_conservative_bonus_evidence():
     )
 
     assert event is not None
-    assert event.score == 45
-    assert event.level == "medium"
-    assert evidence_types(event) == [
-        "intel_channel_report",
-        "corporation_kill_activity",
-    ]
-    assert event.evidence[1].summary == (
-        "Corporation 456 has 12 recent kills from zKillboard and 2 losses"
-    )
+    assert event.score == 30
+    assert event.level == "low"
+    assert evidence_types(event) == ["intel_channel_report"]
 
 
 def test_recent_channel_mentions_do_not_alert_local_ocr_without_hostile_evidence():
@@ -413,7 +408,7 @@ def test_recent_channel_mentions_add_context_after_hostile_evidence():
     )
 
 
-def test_multiple_enrichment_items_add_profile_and_kill_evidence():
+def test_multiple_enrichment_items_add_profile_evidence_without_killboard_bonus():
     engine = ScoringEngine(
         watchlist=Watchlist(hostile_alliance_ids={99}),
         cooldown_seconds=0,
@@ -426,17 +421,16 @@ def test_multiple_enrichment_items_add_profile_and_kill_evidence():
             {"alliance_id": 99},
         ],
         kill_activities=[
-            KillActivity(character_id=123, window="7d", kills=5),
+            SimpleNamespace(character_id=123, window="7d", kills=5),
         ],
     )
 
     assert event is not None
-    assert event.score == 110
-    assert event.level == "critical"
+    assert event.score == 90
+    assert event.level == "high"
     assert evidence_types(event) == [
         "intel_channel_report",
         "hostile_alliance",
-        "recent_kill_activity",
     ]
 
 

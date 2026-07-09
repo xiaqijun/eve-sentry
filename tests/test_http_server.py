@@ -12,7 +12,7 @@ from app.esi.session import ContactStanding
 from app.esi.sso import EsiSsoError
 from app.intel.enrichment import ThreatEnricher
 from app.intel.config import IntelConfigStore
-from app.intel.scoring import ScoringEngine
+from app.intel.scoring import ScoringEngine, Watchlist
 from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore, StarSystem
 from app.server.map_config import MapConfigStore
@@ -146,15 +146,12 @@ def test_health_does_not_generate_alerts(tmp_path):
         server.stop()
 
 
-def test_health_reports_config_sqlite_and_killboard(tmp_path):
-    class FakeKillboard:
-        cache = SimpleNamespace()
-
+def test_health_reports_config_and_sqlite(tmp_path):
     config_store = IntelConfigStore(tmp_path / "intel_config.json")
     store = SQLiteIntelStore(
         tmp_path / "intel.sqlite3",
         scorer=config_store.build_scorer(),
-        enricher=ThreatEnricher(killboard=FakeKillboard()),
+        enricher=ThreatEnricher(),
     )
     store.add_observation(
         {
@@ -178,8 +175,7 @@ def test_health_reports_config_sqlite_and_killboard(tmp_path):
         assert health["config"]["schema_version"] == "scoring_config.v1"
         assert health["config"]["scoring_version"] == "scoring.v1"
         assert health["config"]["evidence_rule_count"] > 0
-        assert health["killboard"]["enabled"] is True
-        assert health["killboard"]["client"] == "FakeKillboard"
+        assert health["killboard"] == {"enabled": False}
         assert health["events"]["alert_query_ok"] is True
         assert health["events"]["sse"]["enabled"] is True
         assert "latest_alert_id" not in health["events"]
@@ -727,7 +723,7 @@ def test_create_query_and_delete_report(tmp_path):
         server.stop()
 
 
-def test_public_lookup_routes_return_profiles_and_activity(tmp_path):
+def test_public_lookup_routes_return_profiles_without_killboard_activity(tmp_path):
     class FakeResolver:
         def resolve_names(self, names):
             if names == ["Alice"]:
@@ -765,85 +761,11 @@ def test_public_lookup_routes_return_profiles_and_activity(tmp_path):
                 "security_status": 0.3,
             }
 
-    class FakeKillboard:
-        def character_recent(self, character_id):
-            assert character_id == 123
-            return [
-                {
-                    "killmail_id": 1,
-                    "killmail_time": "2026-06-30T10:00:00Z",
-                    "solar_system_id": 30002813,
-                    "victim": {"character_id": 999, "ship_type_id": 111},
-                    "attackers": [{"character_id": 123}],
-                },
-                {
-                    "killmail_id": 2,
-                    "killmail_time": "2026-06-30T11:00:00Z",
-                    "solar_system_id": 30002813,
-                    "victim": {"character_id": 123, "ship_type_id": 222},
-                    "attackers": [{"character_id": 456}],
-                },
-            ]
-
-        def system_recent(self, system_id):
-            assert system_id == 30002813
-            return [
-                {
-                    "killmail_id": 3,
-                    "killmail_time": "2026-06-30T12:00:00Z",
-                    "solar_system_id": 30002813,
-                    "victim": {"character_id": 777, "ship_type_id": 333},
-                    "attackers": [{"character_id": 123}],
-                },
-                {
-                    "killmail_id": 4,
-                    "killmail_time": "2026-06-30T13:00:00Z",
-                    "solar_system_id": 30002814,
-                    "victim": {"character_id": 888, "ship_type_id": 444},
-                    "attackers": [{"character_id": 456}],
-                },
-            ]
-
-        def corporation_recent(self, corporation_id):
-            assert corporation_id == 456
-            return [
-                {
-                    "killmail_id": 5,
-                    "killmail_time": "2026-06-30T14:00:00Z",
-                    "solar_system_id": 30002813,
-                    "victim": {"character_id": 999, "corporation_id": 777},
-                    "attackers": [{"character_id": 123, "corporation_id": 456}],
-                },
-                {
-                    "killmail_id": 6,
-                    "killmail_time": "2026-06-30T15:00:00Z",
-                    "solar_system_id": 30002814,
-                    "victim": {"character_id": 456, "corporation_id": 456},
-                    "attackers": [{"character_id": 888, "corporation_id": 777}],
-                },
-            ]
-
-        def alliance_recent(self, alliance_id):
-            assert alliance_id == 789
-            return [
-                {
-                    "killmail_id": 7,
-                    "killmail_time": "2026-06-30T16:00:00Z",
-                    "solar_system_id": 30002815,
-                    "victim": {"character_id": 555, "alliance_id": 789},
-                    "attackers": [{"character_id": 123, "alliance_id": 111}],
-                }
-            ]
-
     resolver = FakeResolver()
     store = IntelStore(
         tmp_path / "intel.json",
         resolver=resolver,
-        enricher=ThreatEnricher(
-            resolver=resolver,
-            killboard=FakeKillboard(),
-            kill_window="7d",
-        ),
+        enricher=ThreatEnricher(resolver=resolver),
     )
     server = IntelHTTPServer(store, port=0)
     server.start()
@@ -867,38 +789,6 @@ def test_public_lookup_routes_return_profiles_and_activity(tmp_path):
         assert system["system"]["name"] == "Tama"
         assert system["system"]["system_id"] == 30002813
 
-        status, character_activity = request_json(
-            f"{server.url}/api/kill-activity/character/123"
-        )
-        assert status == 200
-        assert character_activity["activity"]["character_id"] == 123
-        assert character_activity["activity"]["kills"] == 1
-        assert character_activity["activity"]["losses"] == 1
-
-        status, system_activity = request_json(
-            f"{server.url}/api/kill-activity/system/30002813"
-        )
-        assert status == 200
-        assert system_activity["activity"]["system_id"] == 30002813
-        assert system_activity["activity"]["kills"] == 1
-        assert system_activity["activity"]["character_ids"] == [123, 777]
-
-        status, corporation_activity = request_json(
-            f"{server.url}/api/kill-activity/corporation/456"
-        )
-        assert status == 200
-        assert corporation_activity["activity"]["corporation_id"] == 456
-        assert corporation_activity["activity"]["kills"] == 1
-        assert corporation_activity["activity"]["losses"] == 1
-
-        status, alliance_activity = request_json(
-            f"{server.url}/api/kill-activity/alliance/789"
-        )
-        assert status == 200
-        assert alliance_activity["activity"]["alliance_id"] == 789
-        assert alliance_activity["activity"]["kills"] == 0
-        assert alliance_activity["activity"]["losses"] == 1
-
         status, by_name = request_json(
             f"{server.url}/api/v1/characters/by-name/Alice"
         )
@@ -920,37 +810,6 @@ def test_public_lookup_routes_return_profiles_and_activity(tmp_path):
         assert system["system"]["name"] == "Tama"
         assert system["system"]["system_id"] == 30002813
 
-        status, character_activity = request_json(
-            f"{server.url}/api/v1/kill-activity/character/123"
-        )
-        assert status == 200
-        assert character_activity["activity"]["character_id"] == 123
-        assert character_activity["activity"]["kills"] == 1
-        assert character_activity["activity"]["losses"] == 1
-
-        status, system_activity = request_json(
-            f"{server.url}/api/v1/kill-activity/system/30002813"
-        )
-        assert status == 200
-        assert system_activity["activity"]["system_id"] == 30002813
-        assert system_activity["activity"]["kills"] == 1
-        assert system_activity["activity"]["character_ids"] == [123, 777]
-
-        status, corporation_activity = request_json(
-            f"{server.url}/api/v1/kill-activity/corporation/456"
-        )
-        assert status == 200
-        assert corporation_activity["activity"]["corporation_id"] == 456
-        assert corporation_activity["activity"]["kills"] == 1
-        assert corporation_activity["activity"]["losses"] == 1
-
-        status, alliance_activity = request_json(
-            f"{server.url}/api/v1/kill-activity/alliance/789"
-        )
-        assert status == 200
-        assert alliance_activity["activity"]["alliance_id"] == 789
-        assert alliance_activity["activity"]["kills"] == 0
-        assert alliance_activity["activity"]["losses"] == 1
     finally:
         server.stop()
 
@@ -1168,64 +1027,16 @@ def test_alert_detail_route_returns_explanation_context(tmp_path):
                 "alliance_id": 789,
             }
 
-    class FakeKillboard:
-        def character_recent(self, character_id):
-            assert character_id == 123
-            return [
-                {
-                    "killmail_id": 1,
-                    "killmail_time": "2026-06-30T10:00:00Z",
-                    "solar_system_id": 30002813,
-                    "victim": {"character_id": 999, "ship_type_id": 111},
-                    "attackers": [{"character_id": 123}],
-                }
-            ]
-
-        def corporation_recent(self, corporation_id):
-            assert corporation_id == 456
-            return [
-                {
-                    "killmail_id": 2,
-                    "killmail_time": "2026-06-30T11:00:00Z",
-                    "solar_system_id": 30002813,
-                    "victim": {"character_id": 999, "corporation_id": 777},
-                    "attackers": [{"character_id": 123, "corporation_id": 456}],
-                }
-            ]
-
-        def alliance_recent(self, alliance_id):
-            assert alliance_id == 789
-            return [
-                {
-                    "killmail_id": 3,
-                    "killmail_time": "2026-06-30T12:00:00Z",
-                    "solar_system_id": 30002813,
-                    "victim": {"character_id": 888, "alliance_id": 789},
-                    "attackers": [{"character_id": 123, "alliance_id": 111}],
-                }
-            ]
-
-        def activity_status(self, scope, entity_id):
-            assert scope in {"character", "corporation", "alliance"}
-            assert entity_id in {123, 456, 789}
-            return {
-                "cache_status": "stale",
-                "request_status": "network_error",
-                "error": "offline",
-                "retry_after": 130.0,
-            }
-
     resolver = FakeResolver()
     store = IntelStore(
         tmp_path / "intel.json",
         systems={},
         links=[],
-        scorer=ScoringEngine(cooldown_seconds=0),
-        enricher=ThreatEnricher(
-            resolver=resolver,
-            killboard=FakeKillboard(),
-            kill_window="7d",
+        scorer=ScoringEngine(
+            watchlist=Watchlist(hostile_alliance_ids={789}),
+            cooldown_seconds=0,
         ),
+        enricher=ThreatEnricher(resolver=resolver),
     )
     server = IntelHTTPServer(store, port=0)
     server.start()
@@ -1273,19 +1084,10 @@ def test_alert_detail_route_returns_explanation_context(tmp_path):
         assert detail["context"]["resolution"] == {}
         assert detail["context"]["channel_mentions"][0]["relation"] == "same_system"
         assert detail["context"]["character_profiles"][0]["character_id"] == 123
-        assert detail["context"]["kill_activities"][0]["character_id"] == 123
-        assert detail["context"]["kill_activities"][0]["cache_status"] == "stale"
-        assert (
-            detail["context"]["kill_activities"][0]["request_status"]
-            == "network_error"
-        )
-        assert detail["context"]["kill_activities"][0]["error"] == "offline"
-        assert {
-            item["entity_type"]
-            for item in detail["context"]["group_activities"]
-        } == {"corporation", "alliance"}
+        assert detail["context"]["kill_activities"] == []
+        assert detail["context"]["group_activities"] == []
         assert detail["explanation"]["summary"].startswith(
-            "HIGH alert for Alice in Tama"
+            "CRITICAL alert for Alice in Tama"
         )
         assert "scoring" in detail["explanation"]["sources"]
         assert "enrichment" in detail["explanation"]["sources"]
@@ -1296,10 +1098,6 @@ def test_alert_detail_route_returns_explanation_context(tmp_path):
         )
         assert "ESI profile Alice: corp 456, alliance 789" in (
             detail["explanation"]["context"]
-        )
-        assert (
-            "Character 123 has 1 kill in 7d (cache stale, request network_error)"
-            in detail["explanation"]["context"]
         )
         assert detail["explanation"]["degraded_sources"] == []
 
@@ -1354,10 +1152,6 @@ def test_alert_detail_route_reports_degraded_sources_without_enrichment(tmp_path
                 "source": "esi",
                 "reason": "character profiles unavailable",
             },
-            {
-                "source": "killboard",
-                "reason": "character kill activity unavailable",
-            },
         ]
     finally:
         server.stop()
@@ -1378,7 +1172,10 @@ def test_alert_detail_route_includes_esi_cache_status_in_explanation(tmp_path):
         tmp_path / "intel.json",
         systems={},
         links=[],
-        scorer=ScoringEngine(cooldown_seconds=0),
+        scorer=ScoringEngine(
+            watchlist=Watchlist(hostile_alliance_ids={789}),
+            cooldown_seconds=0,
+        ),
         enricher=ThreatEnricher(resolver=FakeResolver()),
     )
     server = IntelHTTPServer(store, port=0)
@@ -1428,65 +1225,15 @@ def test_entity_intel_routes_return_related_alerts_and_enrichment(tmp_path):
             assert system_id == 30002813
             return {"system_id": 30002813, "name": "Tama"}
 
-    class FakeKillboard:
-        def character_recent(self, character_id):
-            assert character_id == 123
-            return [
-                {
-                    "killmail_id": 1,
-                    "killmail_time": "2026-06-30T10:00:00Z",
-                    "solar_system_id": 30002813,
-                    "victim": {"character_id": 999},
-                    "attackers": [{"character_id": 123}],
-                }
-            ]
-
-        def system_recent(self, system_id):
-            assert system_id == 30002813
-            return [
-                {
-                    "killmail_id": 2,
-                    "killmail_time": "2026-06-30T11:00:00Z",
-                    "solar_system_id": 30002813,
-                    "victim": {"character_id": 999},
-                    "attackers": [{"character_id": 123}],
-                }
-            ]
-
-        def corporation_recent(self, corporation_id):
-            assert corporation_id == 456
-            return [
-                {
-                    "killmail_id": 3,
-                    "killmail_time": "2026-06-30T12:00:00Z",
-                    "solar_system_id": 30002813,
-                    "victim": {"corporation_id": 777},
-                    "attackers": [{"character_id": 123, "corporation_id": 456}],
-                }
-            ]
-
-        def alliance_recent(self, alliance_id):
-            assert alliance_id == 789
-            return [
-                {
-                    "killmail_id": 4,
-                    "killmail_time": "2026-06-30T12:30:00Z",
-                    "solar_system_id": 30002813,
-                    "victim": {"alliance_id": 777},
-                    "attackers": [{"character_id": 123, "alliance_id": 789}],
-                }
-            ]
-
     store = IntelStore(
         tmp_path / "intel.json",
         systems={},
         links=[],
-        scorer=ScoringEngine(cooldown_seconds=0),
-        enricher=ThreatEnricher(
-            resolver=FakeResolver(),
-            killboard=FakeKillboard(),
-            kill_window="7d",
+        scorer=ScoringEngine(
+            watchlist=Watchlist(hostile_alliance_ids={789}),
+            cooldown_seconds=0,
         ),
+        enricher=ThreatEnricher(resolver=FakeResolver()),
     )
     server = IntelHTTPServer(store, port=0)
     server.start()
@@ -1521,14 +1268,14 @@ def test_entity_intel_routes_return_related_alerts_and_enrichment(tmp_path):
             assert intel["alerts"][0]["id"] == created["alert"]["id"]
             assert intel["counts"]["observations"] == 1
             assert intel["counts"]["alerts"] == 1
-            assert intel["counts"]["has_activity"] is True
+            assert intel["counts"]["has_activity"] is False
 
         status, payload = request_json(
             f"{server.url}/api/intel/character/123?min_level=critical"
         )
         assert status == 200
         assert payload["intel"]["counts"]["observations"] == 1
-        assert payload["intel"]["counts"]["alerts"] == 0
+        assert payload["intel"]["counts"]["alerts"] == 1
 
         try:
             request_json(f"{server.url}/api/intel/character/not-an-id")

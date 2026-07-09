@@ -25,80 +25,11 @@ class FakeResolver:
         raise RuntimeError("offline")
 
 
-class FakeKillboard:
-    def __init__(self):
-        self.calls = []
-
-    def character_recent(self, character_id):
-        self.calls.append(character_id)
-        if character_id == 123:
-            return [
-                {
-                    "killmail_id": 1,
-                    "killmail_time": "2026-06-30T12:00:00Z",
-                    "solar_system_id": 30002813,
-                    "victim": {"character_id": 999, "ship_type_id": 111},
-                    "attackers": [{"character_id": 123}],
-                }
-            ]
-        raise RuntimeError("offline")
-
-    def system_recent(self, system_id):
-        if system_id == 30002813:
-            return [
-                {
-                    "killmail_id": 1,
-                    "killmail_time": "2026-06-30T12:00:00Z",
-                    "solar_system_id": 30002813,
-                    "victim": {"character_id": 999, "ship_type_id": 111},
-                    "attackers": [{"character_id": 123}],
-                }
-            ]
-        raise RuntimeError("offline")
-
-    def corporation_recent(self, corporation_id):
-        if corporation_id == 456:
-            return [
-                {
-                    "killmail_id": 2,
-                    "killmail_time": "2026-06-30T13:00:00Z",
-                    "solar_system_id": 30002814,
-                    "victim": {"character_id": 999, "corporation_id": 777},
-                    "attackers": [{"character_id": 123, "corporation_id": 456}],
-                }
-            ]
-        raise RuntimeError("offline")
-
-    def alliance_recent(self, alliance_id):
-        if alliance_id == 789:
-            return [
-                {
-                    "killmail_id": 3,
-                    "killmail_time": "2026-06-30T14:00:00Z",
-                    "solar_system_id": 30002815,
-                    "victim": {"character_id": 456, "alliance_id": 789},
-                    "attackers": [{"character_id": 123, "alliance_id": 111}],
-                }
-            ]
-        raise RuntimeError("offline")
-
-    def activity_status(self, scope, entity_id):
-        return {
-            "cache_status": "cached",
-            "fetched_at": 10.0,
-            "expires_at": 70.0,
-            "request_status": "backoff",
-            "error": "zKillboard HTTP 429",
-            "retry_after": 130.0,
-        }
-
-
-def test_threat_enricher_collects_profiles_and_kill_activity():
+def test_threat_enricher_collects_profiles_without_killboard_activity():
     resolver = FakeResolver()
-    killboard = FakeKillboard()
     enricher = ThreatEnricher(
         resolver=resolver,
-        killboard=killboard,
+        killboard=object(),
         kill_window="7d",
     )
     observation = Observation(
@@ -114,22 +45,9 @@ def test_threat_enricher_collects_profiles_and_kill_activity():
     assert enrichment.character_profiles == [
         {"character_id": 123, "corporation_id": 456, "alliance_id": 789}
     ]
-    assert len(enrichment.kill_activities) == 1
-    assert enrichment.kill_activities[0].character_id == 123
-    assert enrichment.kill_activities[0].kills == 1
-    assert enrichment.kill_activities[0].window == "7d"
-    assert enrichment.kill_activities[0].cache_status == "cached"
-    assert enrichment.kill_activities[0].fetched_at == 10.0
-    assert enrichment.kill_activities[0].request_status == "backoff"
-    assert enrichment.kill_activities[0].error == "zKillboard HTTP 429"
-    assert enrichment.kill_activities[0].retry_after == 130.0
-    assert [item.entity_type for item in enrichment.group_activities] == [
-        "corporation",
-        "alliance",
-    ]
-    assert enrichment.group_activities[0].cache_status == "cached"
+    assert enrichment.kill_activities == []
+    assert enrichment.group_activities == []
     assert resolver.calls == [123, 456]
-    assert killboard.calls == [123, 456]
 
 
 def test_threat_enricher_applies_authenticated_contact_standings():
@@ -224,37 +142,14 @@ def test_threat_enricher_returns_empty_data_without_sources():
     assert not enricher.enrich(observation).has_data()
 
 
-def test_threat_enricher_exposes_system_profile_and_activity():
+def test_threat_enricher_exposes_system_profile_without_activity_lookup():
     enricher = ThreatEnricher(
         resolver=FakeResolver(),
-        killboard=FakeKillboard(),
+        killboard=object(),
         kill_window="7d",
     )
 
     profile = enricher.system_profile(30002813)
-    activity = enricher.system_kill_activity(30002813)
 
     assert profile == {"system_id": 30002813, "name": "Tama"}
-    assert activity is not None
-    assert activity.system_id == 30002813
-    assert activity.kills == 1
-    assert activity.window == "7d"
-
-
-def test_threat_enricher_exposes_corporation_and_alliance_activity():
-    enricher = ThreatEnricher(killboard=FakeKillboard(), kill_window="7d")
-
-    corporation = enricher.corporation_kill_activity(456)
-    alliance = enricher.alliance_kill_activity(789)
-
-    assert corporation is not None
-    assert corporation.entity_type == "corporation"
-    assert corporation.entity_id == 456
-    assert corporation.kills == 1
-    assert corporation.losses == 0
-    assert corporation.window == "7d"
-    assert alliance is not None
-    assert alliance.entity_type == "alliance"
-    assert alliance.entity_id == 789
-    assert alliance.kills == 0
-    assert alliance.losses == 1
+    assert not hasattr(enricher, "system_kill_activity")
