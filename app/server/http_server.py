@@ -1,4 +1,4 @@
-"""Local HTTP server exposing the hostile intel map and JSON API."""
+"""Local HTTP server exposing the hostile intel JSON API."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from urllib.parse import parse_qs, unquote, urlparse
 from app.channels.parser import parse_chat_line
 from app.esi.sso import EsiSsoError
 from app.server.intel_store import IntelStore, utc_now_iso
-from app.server.star_map_page import INDEX_HTML
 
 logger = logging.getLogger(__name__)
 API_V1_PREFIX = "/api/v1"
@@ -100,9 +99,6 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         if path.startswith(API_V1_PREFIX):
             self._handle_v1_get(parsed)
-            return
-        if path in {"/", "/index.html"}:
-            self._send_text(INDEX_HTML, "text/html; charset=utf-8")
             return
         if path == "/api/health":
             self._send_json({"health": self._health_payload()})

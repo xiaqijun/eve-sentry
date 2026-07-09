@@ -169,7 +169,7 @@ Chatlogs。需要匹配一组频道时，显式使用 `*` 或 `?` 通配符；�
 `classification` / `reason`，而不是检查客户端本地白名单。
 检测客户端启动后会自动向服务端上报 heartbeat，Web 面板 `Client Status`
 和 `GET /api/v1/clients` 都能看到它的在线状态。旧 `GET /api/heartbeats`
-仍保留给旧页面和旧客户端兼容。
+仅保留给旧客户端兼容；Python 服务端不再托管旧内嵌页面。
 当检测端停止监控或 heartbeat 切到 `idle` 时，服务端会把该检测端对应的
 OCR realtime rows 标记为 inactive，避免旧名单继续点亮星图；历史
 observations 和 alerts 仍会保留。

@@ -1,5 +1,9 @@
 # EVE Sentry 服务端部署指南
 
+> Current status (2026-07-10): Python intel server is API/SSE only. The old
+> embedded HTML page has been removed; production UI is the React SPA under
+> `frontend/dist`, served by OpenResty/Nginx with `/api/` proxied to Python.
+
 > Current status (2026-07-09): zKillboard/killboard enrichment is disabled and
 > should not be configured on the server. Remove old zKill cache files from the
 > runtime directory during deployment to avoid loading stale large JSON caches.
@@ -10,7 +14,9 @@
 
 ## 部署内容
 
-- `app.server`: HTTP API、SSE 事件流、Web 面板
+- `app.server`: HTTP JSON API、SSE 事件流
+- `frontend/dist`: React 情报工作台静态资源
+- OpenResty/Nginx 统一入口: `/` 托管 React，`/api/` 反向代理 Python
 - PostgreSQL 存储、SQLite 兼容存储和运行期数据文件
 - 可选 ESI 补全
 - 可选 zKillboard 补全
@@ -117,6 +123,9 @@ curl http://127.0.0.1:8765/api/health
 curl http://127.0.0.1:8765/api/v1/clients
 ```
 
+`http://127.0.0.1:8765/` 不再返回页面；根路径由 OpenResty/Nginx 托管
+React SPA，Python 根路径返回 API 404。
+
 ## 4. 启用 systemd
 
 安装服务文件:
@@ -135,9 +144,9 @@ sudo journalctl -u eve-sentry -f
 sudo systemctl restart eve-sentry
 ```
 
-## 5. 配置 Nginx 统一入口
+## 5. 配置 OpenResty/Nginx 统一入口
 
-生产环境推荐由 Nginx 统一对外暴露 React 工作台和 Python API：
+生产环境推荐由 OpenResty 或 Nginx 统一对外暴露 React 工作台和 Python API：
 
 - `/` -> `frontend/dist`
 - `/api/` -> `http://127.0.0.1:8765`
@@ -157,7 +166,7 @@ sudo mkdir -p /var/www/eve-sentry/frontend
 sudo rsync -av --delete frontend/dist/ /var/www/eve-sentry/frontend/
 ```
 
-安装并启用 Nginx：
+如果使用系统 Nginx，安装并启用：
 
 ```bash
 sudo apt-get update
@@ -170,6 +179,13 @@ sudo systemctl enable --now nginx
 sudo systemctl reload nginx
 ```
 
+如果服务器使用 1Panel/OpenResty，可把同等 `server` 配置放到站点
+`conf.d` 中，并把静态目录挂载到 OpenResty 容器内。当前生产约定为：
+
+- React 静态目录: `/opt/1panel/www/eve-sentry`
+- 站点配置: `/opt/1panel/www/conf.d/eve-sentry.conf`
+- 后端 API: `http://127.0.0.1:8765`
+
 `deploy/linux/eve-sentry.nginx.conf` 默认会把：
 
 - `root` 指向 `/var/www/eve-sentry/frontend`
@@ -177,7 +193,7 @@ sudo systemctl reload nginx
 - 其他 `/api/` 请求反代到本地 intel server
 - 其余路径回退到 `index.html`，支持 React Router SPA 路由
 
-如果服务已经直接对外暴露 `8765`，切换完成后建议在安全组或防火墙层收口，只保留 Nginx 对外入口。
+如果服务已经直接对外暴露 `8765`，切换完成后建议在安全组或防火墙层收口，只保留 OpenResty/Nginx 对外入口。
 
 ## 6. authenticated ESI 登录
 
@@ -225,7 +241,7 @@ curl http://127.0.0.1:8765/api/v1/esi/status
 
 ## 7. 客户端对接
 
-服务端可访问后，把本地客户端指向 Nginx 统一入口:
+服务端可访问后，把本地客户端指向 OpenResty/Nginx 统一入口:
 
 ```text
 检测客户端: EVE_SENTRY_INTEL_URL=http://YOUR_SERVER
@@ -234,7 +250,7 @@ curl http://127.0.0.1:8765/api/v1/esi/status
 ```
 
 只有在服务器本机调试或明确放通内网访问时，才直连 `http://127.0.0.1:8765`。
-公网部署应收口到 Nginx，不要直接把 `8765` 对全网开放。
+公网部署应收口到 OpenResty/Nginx，不要直接把 `8765` 对全网开放。
 
 职责边界:
 

@@ -297,8 +297,8 @@ profile 和 classification。
 
 范围:
 
-- `app/server/star_map_page.py` 的 alert detail 渲染和加载逻辑。
-- `tests/test_star_map_page.py` 的页面能力断言。
+- React 工作台的 alert detail 渲染和加载逻辑。
+- 前端工作台测试中的告警详情能力断言。
 
 完成标准:
 

@@ -11,7 +11,7 @@
 
 ## 当前方向
 
-`frontend/` 是独立维护的 React SPA，生产环境由 Nginx 托管静态资源，并把 `/api/` 反向代理到 Python intel server。
+`frontend/` 是独立维护的 React SPA，生产环境由 OpenResty/Nginx 托管静态资源，并把 `/api/` 反向代理到 Python intel server。Python intel server 不再托管旧内嵌 HTML 页面。
 
 当前视觉目标不是通用后台 dashboard，而是 EVE 哨兵预警情报工作台：中心是可操作星图，右侧是敌对飞行员观察列表，底部和侧栏承载告警、态势、风险和系统状态。
 
@@ -135,8 +135,9 @@ npm run build
 
 - `/` 指向 `frontend/dist/`
 - `/api/` 反向代理到 Python intel server
+- Python intel server 的直连根路径不再服务页面，只保留 JSON API/SSE。
 - 工作台和预警客户端默认订阅 `/api/v1/events` SSE；旧 `/api/events` 仅保留兼容。
-- Nginx 模板必须对 `/api/v1/events` 和 `/api/events` 关闭 buffering，避免告警推送被代理缓存。
+- OpenResty/Nginx 模板必须对 `/api/v1/events` 和 `/api/events` 关闭 buffering，避免告警推送被代理缓存。
 
 ## 测试重点
 

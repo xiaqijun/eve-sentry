@@ -681,25 +681,20 @@ def test_esi_status_refreshes_token_file_presence_after_start(tmp_path):
         server.stop()
 
 
-def test_index_page_serves_config_panel(tmp_path):
+def test_root_path_does_not_serve_legacy_html(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
     try:
         request = Request(f"{server.url}/")
-        with urlopen(request, timeout=3) as response:
-            body = response.read().decode("utf-8")
-            assert response.status == 200
-            assert response.headers["Content-Type"].startswith("text/html")
-            assert "Scoring Config" in body
-            assert "Manual Intel" in body
-            assert 'id="tab-alerts"' in body
-            assert "function renderAlerts()" in body
-            assert "/api/config" in body
-            assert "/api/observations" in body
-            assert "data-alert-details" in body
-            assert "/api/alerts/" in body
-            assert "/api/intel/character/" in body
-            assert "/api/intel/system/" in body
+        try:
+            urlopen(request, timeout=3)
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8")
+            assert exc.code == 404
+            assert exc.headers["Content-Type"].startswith("application/json")
+            assert json.loads(body) == {"error": "not found"}
+        else:
+            raise AssertionError("expected root path to return 404")
     finally:
         server.stop()
 
