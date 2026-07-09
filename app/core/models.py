@@ -183,6 +183,8 @@ class ThreatEvent:
     source_observation_id: str = ""
     created_at: str = field(default_factory=utc_now_iso)
     scoring_version: str = ""
+    classification: str = ""
+    reason: str = ""
 
     @classmethod
     def from_observation(cls, observation: Observation) -> "ThreatEvent":
@@ -221,7 +223,7 @@ class ThreatEvent:
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable threat event."""
-        return {
+        data = {
             "id": self.event_id,
             "level": self.level or threat_level(self.score),
             "score": self.score,
@@ -236,6 +238,11 @@ class ThreatEvent:
             "seen_at": self.created_at,
             "scoring_version": self.scoring_version,
         }
+        if self.classification:
+            data["classification"] = self.classification
+        if self.reason:
+            data["reason"] = self.reason
+        return data
 
 
 def source_label(source: str) -> str:

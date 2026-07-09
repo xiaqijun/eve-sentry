@@ -573,8 +573,8 @@ ESI profile 会携带缓存状态，当前字段包括 `cache_status`、`fetched
 
 ## 8. 分类告警
 
-第一版不使用威胁评分系统。服务端应把旧 `ScoringEngine` 下线或替换为
-`ClassificationEngine`，输出白名/红名分类结果和一次性告警决策。
+第一版不使用威胁评分系统。当前服务端默认通过 `ClassificationEngine`
+输出白名/红名分类结果和一次性告警决策；旧 `ScoringEngine` 暂保留为兼容路径。
 
 分类输入:
 
@@ -605,7 +605,8 @@ ESI 查询规则:
 
 - 查询条件是“角色从未查询过 ESI”，不是“本次名单新增”。
 - 已查询过 ESI 的角色直接使用缓存结果。
-- 未查到和临时失败也要缓存，避免每次 OCR/频道上报都重复压 ESI。
+- 当前 `not_found` 已写入 ESI cache，避免每次 OCR/频道上报都重复压 ESI。
+- 临时失败、限速和 `retry_after` 仍需后续补充更细缓存状态。
 
 告警去重:
 

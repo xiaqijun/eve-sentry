@@ -24,10 +24,10 @@
 - 服务端 API: 已支持 observation 上报、旧 `/api/intel` 兼容、alert 查询、alert detail、实体情报查询、ack、地图快照、配置更新和 health。
 - 事件推送: `/api/v1/events` 已提供 SSE alert 事件流，支持过滤、游标续接、keepalive、并发订阅和轮询 fallback。
 - 预警频道采集: 已有 chatlog watcher、频道解析器和 `app.channel_client`，支持 UTF-16/UTF-8、断点续读、服务端解析上报。
-- ESI 公开补全: 已有 client/cache/resolver，支持名字解析、角色/星系公开资料、缓存和失败降级。
+- ESI 公开补全: 已有 client/cache/resolver，支持名字解析、角色/星系公开资料、缓存、`not_found` negative cache 和失败降级。
 - ESI SSO: 已有 PKCE 登录、token 保存/刷新、`/api/v1/esi/status`、`/api/v1/esi/session`、当前位置和 contacts/standings 快照。
 - 击毁画像: 已从第一版移除，不再作为告警来源。
-- 分类告警: 第一版目标改为白名/红名分类和一次性告警；OCR 可见名单本身只刷新实时态。
+- 分类告警: 第一版已接入 `ClassificationEngine`，默认服务端按白名/红名分类生成一次性告警；OCR 可见名单本身只刷新实时态。
 - 存储: 默认 SQLite，保留 JSON 兼容路径，并有旧 JSON 导入脚本。
 - Web 面板: 已有星图、手工情报、配置入口、服务端 alert detail 展示、实体情报摘要、ESI session 状态、客户端 heartbeat 状态和 SSE 更新；评分配置入口需要改为分类配置。
 
@@ -51,7 +51,7 @@ V1 已纳入范围:
 - Web 面板可查看星图、手工情报、告警、详情、ESI 状态和客户端状态
 - heartbeat 已支持汇总诊断、SQLite 持久化，以及 `mode`、`last_action`、`last_error`、
   `client_version`、`host`、`last_success_at`
-- ESI 公开解析、SSO 会话、当前位置和 contacts/standings 已接入第一版
+- ESI 公开解析、`not_found` 查询缓存、SSO 会话、当前位置和 contacts/standings 已接入第一版
 - zKillboard 画像和评分 evidence 已移出第一版
 - 预警客户端和 Web 面板优先消费服务端解释链，而不是各自重复推断
 - Active Intel realtime state: OCR snapshot diffing, channel TTL, clear-message
@@ -62,7 +62,7 @@ V1 暂不包含:
 
 - 用大量真实频道样本覆盖更多联盟/军团格式
 - 完整的 ESI token 迁移和轮换策略
-- ESI 查询缓存治理: resolved / not_found / failed / retry_after
+- ESI 查询缓存治理: `not_found` 已接入，`failed` / `retry_after` 和更细失败类型待补
 - 更完整的客户端运行诊断字段
 - 更强的 UI 产品化打磨和回放工具
 

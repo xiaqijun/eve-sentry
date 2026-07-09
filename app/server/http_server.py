@@ -1072,6 +1072,8 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         items: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         scorer = getattr(store, "_scorer", None)
+        if not bool(getattr(scorer, "suppress_whitelisted_reports", True)):
+            return list(items)
         watchlist = getattr(scorer, "watchlist", None)
         whitelist = getattr(watchlist, "whitelist", None)
         with store._lock:

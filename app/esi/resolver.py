@@ -41,6 +41,8 @@ class EsiResolver:
             key = self._name_key(name)
             value = self.cache.get(key)
             if isinstance(value, dict):
+                if value.get("status") == "not_found":
+                    continue
                 cached[name.casefold()] = ResolvedName(
                     name=str(value["name"]),
                     category=str(value["category"]),
@@ -51,6 +53,7 @@ class EsiResolver:
 
         if missing:
             resolved = self._resolve_missing(missing)
+            resolved_keys = {item.name.casefold() for item in resolved}
             for item in resolved:
                 cached[item.name.casefold()] = item
                 self.cache.set(
@@ -59,6 +62,17 @@ class EsiResolver:
                         "name": item.name,
                         "category": item.category,
                         "id": item.entity_id,
+                    },
+                    ttl_seconds=self.ttl_seconds,
+                )
+            for name in missing:
+                if name.casefold() in resolved_keys:
+                    continue
+                self.cache.set(
+                    self._name_key(name),
+                    {
+                        "name": name,
+                        "status": "not_found",
                     },
                     ttl_seconds=self.ttl_seconds,
                 )

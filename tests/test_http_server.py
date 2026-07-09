@@ -10,6 +10,7 @@ from app.esi.cache import EsiCache
 from app.esi.resolver import EsiResolver
 from app.esi.session import ContactStanding
 from app.esi.sso import EsiSsoError
+from app.intel.classification import CLASSIFICATION_VERSION
 from app.intel.enrichment import ThreatEnricher
 from app.intel.config import IntelConfigStore
 from app.intel.scoring import ScoringEngine, Watchlist
@@ -173,7 +174,7 @@ def test_health_reports_config_and_sqlite(tmp_path):
         assert health["storage"]["writable"] is True
         assert health["config"]["enabled"] is True
         assert health["config"]["schema_version"] == "scoring_config.v1"
-        assert health["config"]["scoring_version"] == "scoring.v1"
+        assert health["config"]["scoring_version"] == CLASSIFICATION_VERSION
         assert health["config"]["evidence_rule_count"] > 0
         assert health["killboard"] == {"enabled": False}
         assert health["events"]["alert_query_ok"] is True
@@ -185,6 +186,7 @@ def test_health_reports_config_and_sqlite(tmp_path):
 
 def test_v1_bootstrap_and_map_routes_expose_workbench_payload(tmp_path):
     config_store = IntelConfigStore(tmp_path / "intel_config.json")
+    config_store.update({"blacklist": ["Alice"]})
     server = IntelHTTPServer(
         IntelStore(
             tmp_path / "intel.json",
@@ -232,6 +234,7 @@ def test_v1_bootstrap_and_map_routes_expose_workbench_payload(tmp_path):
         assert bootstrap["reports"][0]["system_name"] == "Tama"
         assert bootstrap["observations"][0]["system_name"] == "Tama"
         assert bootstrap["alerts"][0]["system_name"] == "Tama"
+        assert bootstrap["alerts"][0]["classification"] == "red"
         assert bootstrap["clients"]["summary"]["count"] == 1
         assert bootstrap["config"]["schema_version"] == "scoring_config.v1"
         assert bootstrap["esi"]["enabled"] is False
@@ -2245,18 +2248,17 @@ def test_config_api_updates_scoring_rules_and_clears_cached_alerts(tmp_path):
             },
         )
         assert status == 201
-        assert created["alert"]["score"] == 30
-        assert created["alert"]["scoring_version"] == "scoring.v1"
+        assert created["alert"] is None
 
         status, updated = request_json(
             f"{server.url}/api/config",
             method="PUT",
-            payload={"whitelist": ["Alice"]},
+            payload={"blacklist": ["Alice"], "cooldown_seconds": 0},
         )
         assert status == 200
-        assert updated["config"]["whitelist"] == ["Alice"]
+        assert updated["config"]["blacklist"] == ["Alice"]
         assert updated["config"]["schema_version"] == "scoring_config.v1"
-        assert updated["config"]["scoring_version"] == "scoring.v1"
+        assert updated["config"]["scoring_version"] == CLASSIFICATION_VERSION
         assert any(
             item["type"] == "blacklist_match"
             for item in updated["config"]["evidence_rules"]
@@ -2264,38 +2266,41 @@ def test_config_api_updates_scoring_rules_and_clears_cached_alerts(tmp_path):
 
         status, alerts = request_json(f"{server.url}/api/alerts")
         assert status == 200
-        assert alerts == {"alerts": [], "count": 0}
+        assert alerts["count"] == 1
+        assert alerts["alerts"][0]["classification"] == "red"
 
-        status, suppressed = request_json(
+        status, classified = request_json(
             f"{server.url}/api/observations",
             method="POST",
             payload={
                 "system_name": "Tama",
                 "names": ["Alice"],
                 "source": "intel_channel",
+                "seen_at": "2026-06-29T12:01:00+00:00",
             },
         )
         assert status == 201
-        assert suppressed["alert"] is None
+        assert classified["alert"]["classification"] == "red"
+        assert classified["alert"]["scoring_version"] == CLASSIFICATION_VERSION
 
         status, observations = request_json(f"{server.url}/api/observations")
         assert status == 200
-        assert observations == {"observations": [], "count": 0}
+        assert observations["count"] == 2
 
         status, v1_observations = request_json(f"{server.url}/api/v1/observations")
         assert status == 200
-        assert v1_observations == {"observations": [], "count": 0}
+        assert v1_observations["count"] == 2
 
         status, bootstrap_payload = request_json(f"{server.url}/api/v1/bootstrap")
         assert status == 200
         bootstrap = bootstrap_payload["bootstrap"]
-        assert bootstrap["reports"] == []
-        assert bootstrap["observations"] == []
+        assert len(bootstrap["reports"]) == 2
+        assert len(bootstrap["observations"]) == 2
         assert bootstrap["alerts"] == []
 
         status, config = request_json(f"{server.url}/api/config")
         assert status == 200
-        assert config["config"]["whitelist"] == ["Alice"]
+        assert config["config"]["blacklist"] == ["Alice"]
     finally:
         server.stop()
 

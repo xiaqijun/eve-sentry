@@ -98,6 +98,22 @@ def test_resolve_names_uses_client_then_cache(tmp_path):
     assert client.resolve_calls == 1
 
 
+def test_resolve_names_negative_caches_unresolved_names(tmp_path):
+    class MissingNameClient(FakeEsiClient):
+        def resolve_ids(self, names):
+            self.resolve_calls += 1
+            assert names == ["Ghost Pilot"]
+            return {}
+
+    client = MissingNameClient()
+    resolver = EsiResolver(client=client, cache=EsiCache(tmp_path / "esi.json"))
+
+    assert resolver.resolve_names(["Ghost Pilot"]) == []
+    assert resolver.resolve_names(["Ghost Pilot"]) == []
+
+    assert client.resolve_calls == 1
+
+
 def test_profiles_are_cached(tmp_path):
     client = FakeEsiClient()
     resolver = EsiResolver(client=client, cache=EsiCache(tmp_path / "esi.json"))

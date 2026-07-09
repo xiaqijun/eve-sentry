@@ -1,3 +1,4 @@
+from app.intel.classification import CLASSIFICATION_VERSION, ClassificationEngine
 from app.intel.config import IntelConfigStore, ScoringConfig
 
 
@@ -26,11 +27,13 @@ def test_scoring_config_normalizes_payload_and_builds_scorer():
     assert config.friendly_standing_threshold == 4.5
     assert config.hostile_standing_threshold is None
     assert config.to_dict()["schema_version"] == "scoring_config.v1"
-    assert config.to_dict()["scoring_version"] == "scoring.v1"
+    assert config.to_dict()["scoring_version"] == CLASSIFICATION_VERSION
+    assert config.to_dict()["classification_version"] == CLASSIFICATION_VERSION
     assert any(
         item["type"] == "blacklist_match"
         for item in config.to_dict()["evidence_rules"]
     )
+    assert isinstance(scorer, ClassificationEngine)
     assert scorer.cooldown_seconds == 0
     assert scorer.watchlist.whitelist == {"Alice"}
     assert scorer.watchlist.friendly_corporation_ids == {24}

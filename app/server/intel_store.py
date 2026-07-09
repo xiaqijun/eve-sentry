@@ -2377,6 +2377,8 @@ class IntelStore:
 
     def _report_has_whitelisted_names(self, report: IntelReport) -> bool:
         scorer = self._scorer
+        if not bool(getattr(scorer, "suppress_whitelisted_reports", True)):
+            return False
         watchlist = getattr(scorer, "watchlist", None)
         whitelist = getattr(watchlist, "whitelist", None)
         if not whitelist:

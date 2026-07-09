@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.intel.scoring import SCORING_VERSION, ScoringEngine, Watchlist
+from app.intel.classification import CLASSIFICATION_VERSION, ClassificationEngine
+from app.intel.scoring import Watchlist
 
 
 CONFIG_SCHEMA_VERSION = "scoring_config.v1"
@@ -82,7 +83,8 @@ class ScoringConfig:
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": CONFIG_SCHEMA_VERSION,
-            "scoring_version": SCORING_VERSION,
+            "scoring_version": CLASSIFICATION_VERSION,
+            "classification_version": CLASSIFICATION_VERSION,
             "defaults": {
                 "source": "builtin",
                 "friendly_standing_threshold": 5.0,
@@ -113,8 +115,8 @@ class ScoringConfig:
             hostile_standing_threshold=self.hostile_standing_threshold,
         )
 
-    def build_scorer(self) -> ScoringEngine:
-        return ScoringEngine(
+    def build_scorer(self) -> ClassificationEngine:
+        return ClassificationEngine(
             watchlist=self.to_watchlist(),
             cooldown_seconds=self.cooldown_seconds,
         )
