@@ -11,7 +11,7 @@
 ## 部署内容
 
 - `app.server`: HTTP API、SSE 事件流、Web 面板
-- SQLite 存储和运行期数据文件
+- PostgreSQL 存储、SQLite 兼容存储和运行期数据文件
 - 可选 ESI 补全
 - 可选 zKillboard 补全
 
@@ -23,7 +23,7 @@
 /opt/eve-sentry/                  仓库目录
 /opt/eve-sentry/.venv-server/     服务端虚拟环境
 /etc/eve-sentry/eve-sentry.env    服务端环境变量
-/var/lib/eve-sentry/              sqlite 和 runtime data
+/var/lib/eve-sentry/              runtime data、ESI token/cache、SDE 数据
 ```
 
 ## 1. 准备主机
@@ -60,12 +60,24 @@ sudo chmod 640 /etc/eve-sentry/eve-sentry.env
 
 - `EVE_SENTRY_SERVER_HOST`
 - `EVE_SENTRY_SERVER_PORT`
+- `EVE_SENTRY_SERVER_STORAGE`
+- `EVE_SENTRY_SERVER_POSTGRES_DSN`
 - `EVE_SENTRY_SERVER_DB`
 - `EVE_SENTRY_SERVER_CONFIG`
 - `EVE_SENTRY_SERVER_MAP_SOURCE`
 - `EVE_SENTRY_SERVER_MAP_SDE_PATH`
 - `EVE_SENTRY_SERVER_MAP_REGION_IDS`
 - `EVE_SENTRY_SERVER_ENABLE_ESI`
+
+生产环境推荐:
+
+```dotenv
+EVE_SENTRY_SERVER_STORAGE=postgres
+EVE_SENTRY_SERVER_POSTGRES_DSN=postgresql://eve_sentry:<password>@127.0.0.1:5432/eve_sentry
+```
+
+`EVE_SENTRY_SERVER_DB` 仍保留给 SQLite 本地联调和回退使用。
+健康检查会返回脱敏后的 PostgreSQL DSN，不会暴露密码。
 
 如果地图使用官方 SDE，先在服务器上同步一次 YAML 地图表，再启动服务:
 

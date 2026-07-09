@@ -724,7 +724,11 @@ GET  /api/map/snapshot
 
 ## 10. 存储规划
 
-服务端目标存储切换为 PostgreSQL，SQLite 作为本地开发和兼容存储保留，旧 JSON 文件仍保留为兼容导入来源。
+服务端目标存储已开始切换为 PostgreSQL。当前代码已提供
+`PostgreSQLIntelStore` 和 `--storage postgres --postgres-dsn ...` 入口，
+第一版 PostgreSQL 表结构沿用现有 `intel_reports`、`active_intel`、
+`client_heartbeats` 和 `store_meta` 兼容模型；SQLite 作为本地开发和兼容存储保留，
+旧 JSON 文件仍保留为兼容导入来源。
 
 建议表:
 
@@ -743,7 +747,7 @@ GET  /api/map/snapshot
 
 迁移策略:
 
-- 新生产服务端默认写 PostgreSQL。
+- 新生产服务端使用 `--storage postgres --postgres-dsn ...` 写 PostgreSQL。
 - 本地开发可继续使用 SQLite。
 - `--storage json --data intel_reports.json` 可继续用于旧联调数据。
 - SQLite 启动时可把 `intel_reports.json` 导入数据库，导入标记保存在

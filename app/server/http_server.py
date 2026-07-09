@@ -1448,6 +1448,14 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         }
 
     def _storage_health(self, store: IntelStore) -> dict[str, Any]:
+        postgres_dsn = getattr(store, "_postgres_safe_dsn", "")
+        if postgres_dsn:
+            return {
+                "type": type(store).__name__,
+                "path": "",
+                "dsn": str(postgres_dsn),
+                "writable": True,
+            }
         path = getattr(store, "_db_path", None) or getattr(store, "_filepath", None)
         return {
             "type": type(store).__name__,

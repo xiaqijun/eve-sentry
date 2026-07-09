@@ -1859,8 +1859,11 @@ def test_run_server_builds_argv_from_environment():
         {
             "EVE_SENTRY_SERVER_HOST": "0.0.0.0",
             "EVE_SENTRY_SERVER_PORT": "9000",
-            "EVE_SENTRY_SERVER_STORAGE": "sqlite",
+            "EVE_SENTRY_SERVER_STORAGE": "postgres",
             "EVE_SENTRY_SERVER_DB": "/srv/eve/intel.sqlite3",
+            "EVE_SENTRY_SERVER_POSTGRES_DSN": (
+                "postgresql://eve:secret@db.internal:5432/eve_sentry"
+            ),
             "EVE_SENTRY_SERVER_CONFIG": "/srv/eve/intel_config.json",
             "EVE_SENTRY_SERVER_MAP_CONFIG": "/srv/eve/intel_map.json",
             "EVE_SENTRY_SERVER_MAP_SOURCE": "sde",
@@ -1885,9 +1888,11 @@ def test_run_server_builds_argv_from_environment():
         "--port",
         "9000",
         "--storage",
-        "sqlite",
+        "postgres",
         "--db",
         "/srv/eve/intel.sqlite3",
+        "--postgres-dsn",
+        "postgresql://eve:secret@db.internal:5432/eve_sentry",
         "--config",
         "/srv/eve/intel_config.json",
         "--map-config",

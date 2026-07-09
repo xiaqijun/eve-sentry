@@ -24,6 +24,11 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
     _append_option(argv, "--storage", values.get("EVE_SENTRY_SERVER_STORAGE", ""))
     _append_option(argv, "--data", values.get("EVE_SENTRY_SERVER_DATA", ""))
     _append_option(argv, "--db", values.get("EVE_SENTRY_SERVER_DB", ""))
+    _append_option(
+        argv,
+        "--postgres-dsn",
+        values.get("EVE_SENTRY_SERVER_POSTGRES_DSN", ""),
+    )
     _append_option(argv, "--config", values.get("EVE_SENTRY_SERVER_CONFIG", ""))
     _append_option(
         argv,

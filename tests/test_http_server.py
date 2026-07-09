@@ -184,6 +184,24 @@ def test_health_reports_config_and_sqlite(tmp_path):
         server.stop()
 
 
+def test_health_reports_postgres_storage_without_secret(tmp_path):
+    store = IntelStore(tmp_path / "intel.json")
+    store._postgres_safe_dsn = "postgresql://***@db.internal:5432/eve_sentry"
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/health")
+        assert status == 200
+        storage = payload["health"]["storage"]
+        assert storage["type"] == "IntelStore"
+        assert storage["path"] == ""
+        assert storage["dsn"] == "postgresql://***@db.internal:5432/eve_sentry"
+        assert storage["writable"] is True
+        assert "secret" not in json.dumps(storage)
+    finally:
+        server.stop()
+
+
 def test_v1_bootstrap_and_map_routes_expose_workbench_payload(tmp_path):
     config_store = IntelConfigStore(tmp_path / "intel_config.json")
     config_store.update({"blacklist": ["Alice"]})

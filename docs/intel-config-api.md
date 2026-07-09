@@ -14,7 +14,13 @@ The default server entrypoint enables this store automatically.
 uv run python -m app.server --host 127.0.0.1 --port 8765 --config intel_config.json
 ```
 
-The default server storage is SQLite. Use `--db` to choose the database path:
+Production deployments can use PostgreSQL:
+
+```powershell
+uv run python -m app.server --storage postgres --postgres-dsn postgresql://eve_sentry:secret@127.0.0.1:5432/eve_sentry --config intel_config.json
+```
+
+SQLite remains available for local development. Use `--db` to choose the database path:
 
 ```powershell
 uv run python -m app.server --db intel.sqlite3 --config intel_config.json

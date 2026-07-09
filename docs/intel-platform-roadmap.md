@@ -542,8 +542,8 @@ storage/config/ESI/clients/events 状态；新增 `GET /api/v1/clients`
 ## 当前建议开发顺序
 
 1. 等待真实预警频道样本后继续补解析规则；没有真实样本时不构造频道数据作为测试依据。
-2. 设计 PostgreSQL schema，包括 observations、active_intel、alerts、ESI 查询缓存和配置表。
-3. 用 `ClassificationEngine` 替换旧 `ScoringEngine`，实现白名/红名一次性告警。
+2. 部署并联调 PostgreSQL 第一版存储入口，验证 observations、active_intel、ack 和 heartbeat 持久化。
+3. 继续细化 PostgreSQL schema，拆出 ESI 查询缓存、classification history 和配置表。
 4. 设计 ESI token 迁移策略。
 5. 继续补 heartbeat 诊断字段，例如启动时间、进程标识和最近一次成功 payload 摘要。
 

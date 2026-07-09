@@ -3,6 +3,7 @@ import pytest
 from app.server import __main__ as server_main
 from app.server.__main__ import build_arg_parser
 from app.server.intel_store import IntelStore, StarSystem
+from app.server.postgres_store import PostgreSQLIntelStore
 from app.server.sqlite_store import SQLiteIntelStore
 
 
@@ -36,6 +37,28 @@ def test_server_cli_can_select_legacy_json_storage():
 
     assert args.storage == "json"
     assert args.data == "legacy.json"
+
+
+def test_server_cli_accepts_postgres_storage_options():
+    args = build_arg_parser().parse_args(
+        [
+            "--storage",
+            "postgres",
+            "--postgres-dsn",
+            "postgresql://user:secret@example.test:5432/eve_sentry",
+        ]
+    )
+
+    assert args.storage == "postgres"
+    assert args.postgres_dsn == "postgresql://user:secret@example.test:5432/eve_sentry"
+
+
+def test_server_cli_requires_postgres_dsn():
+    parser = build_arg_parser()
+    args = parser.parse_args(["--storage", "postgres"])
+
+    with pytest.raises(SystemExit):
+        server_main._validate_args(parser, args)
 
 
 def test_server_cli_accepts_map_sde_options():
@@ -97,6 +120,74 @@ def test_server_cli_build_store_can_use_legacy_json_storage(tmp_path):
     assert not isinstance(store, SQLiteIntelStore)
     assert json_path.exists()
     assert [item["id"] for item in store.list_reports()] == [report.report_id]
+
+
+def test_server_cli_build_store_can_use_postgres_storage(monkeypatch):
+    calls = []
+
+    class DummyPostgresStore:
+        def __init__(
+            self,
+            dsn,
+            import_json_path=None,
+            systems=None,
+            links=None,
+            resolver=None,
+            scorer=None,
+            enricher=None,
+            allow_unmapped_systems=True,
+        ):
+            calls.append(
+                {
+                    "dsn": dsn,
+                    "import_json_path": import_json_path,
+                    "systems": systems,
+                    "links": links,
+                    "resolver": resolver,
+                    "scorer": scorer,
+                    "enricher": enricher,
+                    "allow_unmapped_systems": allow_unmapped_systems,
+                }
+            )
+
+    monkeypatch.setattr(
+        "app.server.postgres_store.PostgreSQLIntelStore",
+        DummyPostgresStore,
+    )
+    args = build_arg_parser().parse_args(
+        [
+            "--storage",
+            "postgres",
+            "--postgres-dsn",
+            "postgresql://user:secret@example.test/eve_sentry",
+            "--data",
+            "legacy.json",
+        ]
+    )
+
+    store = server_main._build_store(
+        args,
+        systems={"Tama": StarSystem("Tama", 1, 2)},
+        links=[("Tama", "Kedama")],
+        resolver="resolver",
+        scorer="scorer",
+        enricher="enricher",
+    )
+
+    assert isinstance(store, DummyPostgresStore)
+    assert not isinstance(store, PostgreSQLIntelStore)
+    assert calls == [
+        {
+            "dsn": "postgresql://user:secret@example.test/eve_sentry",
+            "import_json_path": "legacy.json",
+            "systems": {"Tama": StarSystem("Tama", 1, 2)},
+            "links": [("Tama", "Kedama")],
+            "resolver": "resolver",
+            "scorer": "scorer",
+            "enricher": "enricher",
+            "allow_unmapped_systems": False,
+        }
+    ]
 
 
 def test_server_cli_build_store_keeps_configured_map_locked(tmp_path):

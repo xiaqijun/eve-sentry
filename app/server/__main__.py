@@ -17,8 +17,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
     parser.add_argument("--data", default="intel_reports.json")
-    parser.add_argument("--storage", choices=["json", "sqlite"], default="sqlite")
+    parser.add_argument(
+        "--storage",
+        choices=["json", "sqlite", "postgres"],
+        default="sqlite",
+    )
     parser.add_argument("--db", default="intel.sqlite3")
+    parser.add_argument("--postgres-dsn", default="")
     parser.add_argument("--config", default="intel_config.json")
     parser.add_argument("--map-config", default="intel_map.json")
     parser.add_argument(
@@ -175,6 +180,19 @@ def _build_store(
             enricher=enricher,
             allow_unmapped_systems=False,
         )
+    if args.storage == "postgres":
+        from app.server.postgres_store import PostgreSQLIntelStore
+
+        return PostgreSQLIntelStore(
+            args.postgres_dsn,
+            import_json_path=args.data,
+            systems=systems,
+            links=links,
+            resolver=resolver,
+            scorer=scorer,
+            enricher=enricher,
+            allow_unmapped_systems=False,
+        )
     return IntelStore(
         args.data,
         systems=systems,
@@ -192,6 +210,8 @@ def _validate_args(
 ) -> None:
     if (args.esi_login or args.esi_login_only) and not args.esi_client_id.strip():
         parser.error("--esi-client-id is required when using ESI login")
+    if args.storage == "postgres" and not str(args.postgres_dsn or "").strip():
+        parser.error("--postgres-dsn is required when using PostgreSQL storage")
 
 
 def _should_enable_esi(args: argparse.Namespace) -> bool:
