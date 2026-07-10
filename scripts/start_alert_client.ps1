@@ -1,25 +1,12 @@
 param(
     [string]$Server = $(if ($env:EVE_SENTRY_ALERT_SERVER) { $env:EVE_SENTRY_ALERT_SERVER } elseif ($env:EVE_SENTRY_SERVER) { $env:EVE_SENTRY_SERVER } else { "http://127.0.0.1:8765" }),
     [string]$State = $(if ($env:EVE_SENTRY_ALERT_STATE) { $env:EVE_SENTRY_ALERT_STATE } else { Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "EVE Sentry\alert_client_state.json" }),
-    [double]$Interval = 2.0,
-    [int]$Limit = 50,
-    [double]$Timeout = 3.0,
-    [double]$StreamRetryInterval = 30.0,
-    [string]$MinLevel = "",
-    [int]$MinScore = -1,
-    [string]$AckBy = "alert-client",
-    [string]$AckNote = "",
+    [double]$Timeout = 30.0,
+    [double]$HeartbeatInterval = 10.0,
+    [double]$ReconnectMaxDelay = 30.0,
     [string]$Python = "",
     [string]$LogDir = $(if ($env:EVE_SENTRY_ALERT_LOG_DIR) { $env:EVE_SENTRY_ALERT_LOG_DIR } else { Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "EVE Sentry\logs" }),
-    [switch]$NoPopup,
-    [switch]$NoDetails,
-    [switch]$Ack,
-    [switch]$Poll,
-    [switch]$Once,
-    [switch]$Json,
-    [switch]$IncludeExisting,
-    [switch]$UnacknowledgedOnly,
-    [switch]$NoState,
+    [switch]$Hidden,
     [switch]$Background,
     [switch]$PrintCommand
 )
@@ -40,27 +27,12 @@ $clientArgs = @(
     "-m", "app.alert_client",
     "--server", $Server,
     "--state", $State,
-    "--interval", [string]$Interval,
-    "--limit", [string]$Limit,
     "--timeout", [string]$Timeout,
-    "--stream-retry-interval", [string]$StreamRetryInterval
+    "--heartbeat-interval", [string]$HeartbeatInterval,
+    "--reconnect-max-delay", [string]$ReconnectMaxDelay
 )
 
-if (-not $NoPopup) { $clientArgs += "--popup" }
-if (-not $NoDetails) { $clientArgs += "--details" }
-if ($Poll) { $clientArgs += "--poll" }
-if ($Once) { $clientArgs += "--once" }
-if ($Json) { $clientArgs += "--json" }
-if ($IncludeExisting) { $clientArgs += "--include-existing" }
-if ($UnacknowledgedOnly) { $clientArgs += "--unacknowledged-only" }
-if ($NoState) { $clientArgs += "--no-state" }
-if ($MinLevel) { $clientArgs += @("--min-level", $MinLevel) }
-if ($MinScore -ge 0) { $clientArgs += @("--min-score", [string]$MinScore) }
-if ($Ack) {
-    $clientArgs += "--ack"
-    $clientArgs += @("--ack-by", $AckBy)
-    if ($AckNote) { $clientArgs += @("--ack-note", $AckNote) }
-}
+if ($Hidden) { $clientArgs += "--hidden" }
 
 function ConvertTo-PowerShellLiteral {
     param([string]$Value)

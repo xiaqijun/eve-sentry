@@ -6,8 +6,8 @@
 > killmail intelligence should be planned again with bounded storage and memory
 > behavior before implementation.
 
-> Current workflow baseline (2026-07-09): 第一版去掉评分系统，改为服务端白名/红名
-> 分类和一次性告警。ESI 只查询“未查询过 ESI”的角色。具体工作流以
+> Current workflow baseline (2026-07-10): 第一版去掉评分系统，改为服务端声望驱动
+> 敌对分类和一次性告警。ESI 只查询“未查询过 ESI”的角色；中立、不良、糟糕声望统一归为敌对。具体工作流以
 > `docs/intel-workflows.md` 为准。
 
 > 日期: 2026-07-01
@@ -27,7 +27,7 @@
 - ESI 公开补全: 已有 client/cache/resolver，支持名字解析、角色/星系公开资料、缓存、`not_found` negative cache 和失败降级。
 - ESI SSO: 已有 PKCE 登录、token 保存/刷新、`/api/v1/esi/status`、`/api/v1/esi/session`、当前位置和 contacts/standings 快照。
 - 击毁画像: 已从第一版移除，不再作为告警来源。
-- 分类告警: 第一版已接入 `ClassificationEngine`，默认服务端按白名/红名分类生成一次性告警；OCR 可见名单本身只刷新实时态。
+- 分类告警: 第一版已接入 `ClassificationEngine`，默认服务端按声望/军团/联盟规则把目标归为敌对后生成一次性告警；OCR 可见名单本身只刷新实时态。
 - 存储: 默认 SQLite，保留 JSON 兼容路径，并有旧 JSON 导入脚本。
 - Web 面板: 已有星图、手工情报、配置入口、服务端 alert detail 展示、实体情报摘要、ESI session 状态、客户端 heartbeat 状态和 SSE 更新；评分配置入口需要改为分类配置。
 
@@ -56,7 +56,7 @@ V1 已纳入范围:
 - 预警客户端和 Web 面板优先消费服务端解释链，而不是各自重复推断
 - Active Intel realtime state: OCR snapshot diffing, channel TTL, clear-message
   deactivation, and frontend active list.
-- OCR 观察和最终告警分离: 本地名单只刷新 active state，只有服务端分类为白名或红名后才生成一次性 alert。
+- OCR 观察和最终告警分离: 本地名单只刷新 active state，只有服务端分类为敌对后才生成一次性 alert。
 
 V1 暂不包含:
 
@@ -88,7 +88,7 @@ V1 暂不包含:
 
 - 低置信度 OCR / 频道 observation 会降权，无法解析出有效目标或星系时保留 observation 但不直接生成 alert。
 - 启用 ESI resolver 时，observation 会记录 `esi_resolution`，用于解释解析、修正或抑制的原因。
-- OCR observation 现在只表示本地可见名单；没有被分类为白名或红名时，不会因为 `local_ocr_seen` 或频道上下文单独生成 alert。
+- OCR observation 现在只表示本地可见名单；没有被分类为敌对时，不会因为 `local_ocr_seen` 或频道上下文单独生成 alert。
 - 频道行中唯一星系候选可修正 `system_name`，并重算 `names` / `hostile_count`。
 - 多个星系候选不再盲目修正，会以 `ambiguous` 状态保存在 `esi_resolution`。
 - 像 `Tama Oijanen` 这种由已解析星系组成的链路名会从角色候选中抑制，并记录到 `suppressed_name_candidates`。
@@ -97,21 +97,21 @@ V1 暂不包含:
 
 ### P0: 服务端情报详情查询层
 
-目标: 让预警客户端和 Web 面板拿到稳定、统一、可解释的威胁详情，而不是各自拼上下文。
+目标: 让 Web 面板拿到稳定、统一、可解释的威胁详情；预警客户端第一版只做本地提示和核心态势展示。
 
 待做:
 
 - 增强 `GET /api/v1/alerts/{id}` 的稳定输出契约，明确 `context` 和 `explanation` 字段版本。
 - 把 ESI 解析结果、频道上下文、standing、分类结果和分类原因统一成一个可前端直接展示的详情结构。
 - 增加按角色、星系、军团、联盟查询相关 observation / alert / classification 的组合接口。
-- 给预警客户端补更完整的 `--details` 展示格式，优先消费服务端解释，不在客户端重复推断。
+- 预警客户端只消费服务端 alert 事件，不在客户端重复推断，也不维护 `--details` 输出模式。
 - Web 面板详情视图复用服务端 `alert_detail.v1` 和实体情报查询接口。
 - 补接口文档和回归测试，确保旧 alert detail 兼容。
 
 验收:
 
 - 单条 alert 能展示“谁、在哪、为什么报、证据来自哪里、哪些候选被 ESI 抑制或修正”。
-- 预警客户端和 Web 面板读取同一份服务端详情，不再各自拼接证据链。
+- Web 面板读取服务端详情；预警客户端只显示 `星系名  敌:x` 并本地去重。
 - ESI 未启用或临时失败时详情接口仍返回可用的降级解释。
 
 ### P1: 预警频道解析增强
@@ -144,7 +144,7 @@ V1 暂不包含:
 验收:
 
 - alert 详情能解释“该角色为何被视为敌对/中立/未知”。
-- ESI 不可用时服务端仍能上报 observation，但分类为 `unknown`，不生成白名/红名告警。
+- ESI 不可用时服务端仍能上报 observation，但分类为 `unknown`，不生成敌对告警。
 
 ### P1: 击毁查询和行为画像补强
 
@@ -165,19 +165,19 @@ V1 暂不包含:
 
 ### P2: 分类告警和配置产品化
 
-目标: 让白名/红名分类规则可理解、可调、可追踪。
+目标: 让声望驱动的敌对分类规则可理解、可调、可追踪。
 
 待做:
 
 - 给 `classification` 和 `reason` 增加稳定枚举。
 - 让配置 API 暴露当前规则版本、默认值来源和更新时间。
 - 增加分类回放测试: 同一 observation 在不同配置下生成可预测分类。
-- 为白名/红名、友军/敌对军团联盟、standing 阈值提供更明确的 UI/接口说明。
+- 为友好/敌对军团联盟、standing 阈值和敌对声望映射提供更明确的 UI/接口说明。
 - 建立 ESI 查询缓存表，保证只查询未查询过 ESI 的角色，并缓存 not_found / failed 状态。
 
 验收:
 
-- 用户能从 alert detail 看懂白名/红名分类如何产生。
+- 用户能从 alert detail 看懂敌对分类如何产生。
 - 调整配置后，新 alert 和事件流使用新规则，旧 alert 的历史解释不被悄悄改写。
 
 ### P2: 运行和联调体验
@@ -228,32 +228,30 @@ V1 暂不包含:
 - 关闭 ESI 时 `degraded_sources` 能说明降级原因；killboard 不再是第一版降级源。
 - 新测试覆盖 ESI 修正、歧义候选、星系链抑制、ESI 查询失败四种场景。
 
-### INTEL-P0-02: 统一预警客户端详情展示
+### INTEL-P0-02: 重做独立预警客户端
 
 优先级: P0
 
-状态: 已完成第一版。`app.alert_client` 在带 `--details` 的普通文本输出中会优先
-格式化服务端 `explanation.summary`、`explanation.reasons`、
-`explanation.context` 和 `explanation.degraded_sources`；无新 explanation 时仍回退到
-旧 evidence / context 格式，`--json` 继续保留完整 detail 结构。
+状态: 已完成第一版。`app.alert_client` 已重做为托盘后台 + 桌面半透明浮窗，
+只消费 `/api/v1/events` 的 `alert` 事件，忽略 `bootstrap` / keepalive，
+本地保存 seen alert id 去重，不调用服务端 ack。
 
 范围:
 
-- `app/alert_client.py` 的 `--details` 输出。
-- `app/intel_client.py` 的 detail 获取和错误处理。
+- `app/alert_client.py` 的托盘、浮窗、SSE worker 和本地 state。
+- `scripts/start_alert_client.ps1` 的新参数模型。
 - `tests/test_intel_client.py`。
 
 待做:
 
-- 优先展示服务端 `explanation.summary`、`explanation.reasons` 和 `explanation.context`。
-- 展示 `degraded_sources`，例如 ESI 未启用、ESI 查询失败、仅使用过期缓存。
-- 对 suppressed candidates 使用明确文本，例如“频道链路名已抑制为角色候选”。
-- `--json` 模式保留结构化完整 detail；普通文本模式只显示高信号摘要。
+- 补更多托盘菜单和浮窗位置设置。
+- 补真实 Windows 桌面长驻验收截图。
+- 如后续需要详情，优先跳转 Web 工作台，不在本地客户端复制详情 UI。
 
 完成标准:
 
-- 预警客户端不再自行推断 ESI 或分类解释，只格式化服务端 detail。
-- detail 查询失败时仍能回退到 alert 基础格式。
+- 预警客户端不再自行推断 ESI、分类解释或评分。
+- 服务端有真实 alert 时，本地浮窗显示 `星系名  敌:x`，且不会 ack 服务端告警。
 
 ### INTEL-P0-03: 增加情报查询接口
 
@@ -281,7 +279,7 @@ V1 暂不包含:
 完成标准:
 
 - 支持 `limit`、`since`、`acknowledged`、`classification`、`reason` 这类通用过滤。
-- 无 ESI 时接口仍返回已知 observation；未分类为白名/红名时不生成新 alert。
+- 无 ESI 时接口仍返回已知 observation；未分类为敌对时不生成新 alert。
 - Web 面板后续可以直接用这些接口做详情页或侧栏。
 
 ### INTEL-P0-04: Web 面板复用服务端详情
@@ -383,7 +381,7 @@ detail 的 profile context 会把 cache 状态写入 explanation。
 完成标准:
 
 - 用户能知道 ESI 资料是新鲜缓存、过期缓存，还是根本没查到。
-- ESI 失败不影响 observation 保存；分类为 `unknown`，不触发白名/红名告警。
+- ESI 失败不影响 observation 保存；分类为 `unknown`，不触发敌对告警。
 
 ### INTEL-P1-04: zKillboard 查询状态和聚合解释
 
@@ -433,7 +431,7 @@ detail 的 profile context 会把 cache 状态写入 explanation。
 
 完成标准:
 
-- 用户能从 alert detail 看到白名/红名由哪条规则命中。
+- 用户能从 alert detail 看到敌对由哪条规则命中。
 - 未来调整分类规则时，可以区分历史 alert 和新规则 alert。
 
 ### INTEL-P2-02: 本地联调和健康检查
@@ -514,7 +512,7 @@ storage/config/ESI/clients/events 状态；新增 `GET /api/v1/clients`
 状态: 旧实现待替换。第一版主线改为分类告警。
 
 - 计划新增 `app/intel/classification.py`。
-- 白名/红名、友军/敌对军团联盟、standing 分类。
+- 敌对/友好、友军/敌对军团联盟、standing 分类。
 - alert detail 应包含 classification、reason、context 和 explanation。
 
 ### 阶段 6: ESI SSO
@@ -534,7 +532,7 @@ storage/config/ESI/clients/events 状态；新增 `GET /api/v1/clients`
 - 默认 SQLite store。
 - JSON 兼容和导入脚本。
 - `/api/v1/events` SSE 事件流。
-- Web 面板和独立预警客户端都支持 SSE，并保留轮询 fallback。
+- Web 面板和独立预警客户端都支持 SSE；独立预警客户端不保留轮询 fallback。
 - 已覆盖并发订阅、重连续接、重启后恢复等测试。
 
 兼容说明: 旧 `/api/alerts`、`/api/events` 路由仍保留给旧客户端过渡；新前端和客户端默认使用 `/api/v1/alerts`、`/api/v1/events`。

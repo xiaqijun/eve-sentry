@@ -69,9 +69,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="fail unless an online alert_client heartbeat reports popup=true",
     )
     parser.add_argument(
-        "--expect-alert-details",
+        "--expect-alert-overlay",
         action="store_true",
-        help="fail unless an online alert_client heartbeat reports details=true",
+        help="fail unless an online alert_client heartbeat reports overlay=true",
     )
     parser.add_argument(
         "--expect-alert-healthy",
@@ -430,7 +430,7 @@ def expected_conditions(args: argparse.Namespace) -> dict[str, Any]:
         "alert_client": bool(args.expect_alert_client),
         "alert_mode": str(args.expect_alert_mode or ""),
         "alert_popup": bool(args.expect_alert_popup),
-        "alert_details": bool(args.expect_alert_details),
+        "alert_overlay": bool(args.expect_alert_overlay),
         "alert_healthy": bool(args.expect_alert_healthy),
         "channel_client": bool(args.expect_channel_client),
         "detector_monitoring": bool(args.expect_monitoring),
@@ -560,7 +560,7 @@ def build_status(args: argparse.Namespace) -> dict[str, Any]:
     online_channel_clients = [item for item in channel_clients if is_online(item)]
     alert_modes = alert_client_modes(online_alert_clients)
     alert_popup_enabled = alert_client_flag_enabled(online_alert_clients, "popup")
-    alert_details_enabled = alert_client_flag_enabled(online_alert_clients, "details")
+    alert_overlay_enabled = alert_client_flag_enabled(online_alert_clients, "overlay")
     alert_healthy = alert_client_is_healthy(online_alert_clients)
     highest_targets = detector_target_count(online_detectors)
     monitoring = detector_is_monitoring(online_detectors)
@@ -604,12 +604,12 @@ def build_status(args: argparse.Namespace) -> dict[str, Any]:
             alert_popup_enabled,
             f"popup={alert_popup_enabled}",
         )
-    if args.expect_alert_details:
+    if args.expect_alert_overlay:
         add_check(
             checks,
-            "alert_client_details",
-            alert_details_enabled,
-            f"details={alert_details_enabled}",
+            "alert_client_overlay",
+            alert_overlay_enabled,
+            f"overlay={alert_overlay_enabled}",
         )
     if args.expect_alert_healthy:
         add_check(
@@ -786,7 +786,7 @@ def build_status(args: argparse.Namespace) -> dict[str, Any]:
             "online_alert_client_count": len(online_alert_clients),
             "alert_client_modes": alert_modes,
             "alert_client_popup": alert_popup_enabled,
-            "alert_client_details": alert_details_enabled,
+            "alert_client_overlay": alert_overlay_enabled,
             "alert_client_healthy": alert_healthy,
             "channel_client_count": len(channel_clients),
             "online_channel_client_count": len(online_channel_clients),
@@ -839,7 +839,7 @@ def render_text(payload: dict[str, Any]) -> str:
             f"  detector clients: {summary['online_detector_count']}/{summary['detector_count']} online",
             f"  alert clients: {summary['online_alert_client_count']}/{summary['alert_client_count']} online",
             f"  alert client modes: {summary['alert_client_modes']}",
-            f"  alert client popup/details: {summary['alert_client_popup']}/{summary['alert_client_details']}",
+            f"  alert client popup/overlay: {summary['alert_client_popup']}/{summary['alert_client_overlay']}",
             f"  alert client healthy: {summary['alert_client_healthy']}",
             f"  detector monitoring: {summary['detector_monitoring']}",
             f"  detector targets: {summary['detector_target_count']}",

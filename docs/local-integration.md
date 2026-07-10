@@ -5,8 +5,8 @@
 > optional channel log lines only; the server resolves ESI identity/standing and
 > applies friendly/hostile filtering.
 
-> Current workflow baseline (2026-07-09): 联调不验证威胁评分。服务端只查询未查询过
-> ESI 的角色，并在角色被分类为白名或红名时触发一次性告警。
+> Current workflow baseline (2026-07-10): 联调不验证威胁评分。服务端只查询未查询过
+> ESI 的角色，并在角色被分类为敌对时触发一次性告警；中立、不良、糟糕声望统一归为敌对。
 
 > 日期: 2026-07-01
 
@@ -41,7 +41,7 @@ curl http://127.0.0.1:8765/api/health
 `GET /api/health` 返回 `health.v1`，包括:
 
 - `storage`: store 类型、SQLite/JSON 路径、是否可写。
-- `config`: 配置文件路径、配置 schema、分类规则版本和白名/红名规则数量。
+- `config`: 配置文件路径、配置 schema、分类规则版本和声望/敌对规则数量。
 - `esi`: 是否启用、是否已登录、token 是否过期。
 - `killboard`: 禁用兼容状态；第一版不验证 killboard。
 - `clients`: heartbeat 客户端数量、在线数量和最近客户端状态，包含检测端、
@@ -131,7 +131,7 @@ uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Al
 `--channel` 默认按完整频道名精确匹配；未传 `--channel` 时不会扫描或上传任何
 Chatlogs。需要匹配一组频道时，显式使用 `*` 或 `?` 通配符；需要独立 CLI
 扫描全部频道时，必须显式加 `--all-channels`。频道 CLI 只把原始日志行提交到
-`/api/v1/channel-lines`，由服务端统一解析、ESI 补全、白名/红名分类和一次性告警。
+`/api/v1/channel-lines`，由服务端统一解析、ESI 补全、声望敌对分类和一次性告警。
 
 ### 4. 启动检测客户端
 
@@ -162,11 +162,12 @@ Chatlogs。需要匹配一组频道时，显式使用 `*` 或 `?` 通配符；�
 ```
 
 检测客户端负责截图 OCR 并通过 OCR snapshot 只上报检测到的名单；选择预警频道后，也会自动监控对应 Chatlogs 新日志并交给服务端解析上报。未选择频道时不会提交频道日志情报。默认不弹本地预警窗口，正式联调由独立预警客户端消费服务端 alert。
-检测客户端不做敌对判断、不做白名单过滤、不查 ESI，也不直接生成告警。OCR 名单只表示
-“当前本地可见”，服务端收到后再检查该角色是否从未查询过 ESI，随后套用白名单/红名单、
-友军/敌对配置和 standings 做分类。只有分类为白名或红名时，服务端才生成一次性
+检测客户端不做敌对判断、不做声望过滤、不查 ESI，也不直接生成告警。OCR 名单只表示
+“当前本地可见”，服务端收到后再检查该角色是否从未查询过 ESI，随后套用声望、
+友好/敌对军团联盟配置和 standings 做分类。中立声望、不良声望、糟糕声望统一视为
+敌对；优秀声望、良好声望视为友好。只有分类为敌对时，服务端才生成一次性
 `ThreatEvent`。因此联调误报时优先检查服务端配置和 alert detail 的
-`classification` / `reason`，而不是检查客户端本地白名单。
+`classification` / `reason`，而不是检查客户端本地过滤。
 检测客户端启动后会自动向服务端上报 heartbeat，Web 面板 `Client Status`
 和 `GET /api/v1/clients` 都能看到它的在线状态。旧 `GET /api/heartbeats`
 仅保留给旧客户端兼容；Python 服务端不再托管旧内嵌页面。
@@ -184,10 +185,10 @@ enrichment，避免实时 Chatlogs 上报被外部情报源阻塞；历史 obser
 OCR 告警排查:
 
 - 先查 `GET /api/v1/active-intel?source=eve-sentry-detector`，确认客户端是否只上报了当前名单。
-- 再查 `GET /api/v1/alerts?limit=20` 和 `GET /api/v1/alerts/{id}`，看告警 `classification` 和 `reason` 是否命中白名/红名规则。
+- 再查 `GET /api/v1/alerts?limit=20` 和 `GET /api/v1/alerts/{id}`，看告警 `classification` 和 `reason` 是否命中敌对声望或敌对军团/联盟规则。
 - 如果 alert 仍依赖 `score`、`min_level` 或只有 `local_ocr_seen` / 频道上下文，说明服务端仍在走旧评分模型，应优先修服务端。
 - 用 `GET /api/v1/characters/by-name/{name}` 验证服务端是否已经查到角色 ID、军团和联盟。
-- 用 `GET /api/v1/config` 验证白名单、友军军团/联盟、敌对军团/联盟和 standing 阈值是否正确。
+- 用 `GET /api/v1/config` 验证友好/敌对军团联盟和 standing 阈值是否正确，默认 `hostile_standing_threshold=0.0` 表示中立及以下都算敌对。
 - 误报清理只处理服务端 active intel / alert 数据；不要在客户端加入临时过滤逻辑。
 
 多开 EVE 时，检测客户端会为当前检测到的每个 EVE 窗口启动独立监控 worker。
@@ -278,18 +279,18 @@ fake window 或手写 POST 情报来填写“真实”结果；这些受控输�
 - 实时情报证据: 只有真实 OCR 或真实频道日志产生情报后，才使用
   `--require-active-intel`，并检查 `active_ocr` 或 `active_channel`。
 - 预警客户端证据: 保存带
-  `--expect-alert-client --expect-alert-mode events --expect-alert-details --check-events-stream --check-alert-detail`
-  的 `--output` JSON；如果按默认方式启动并希望验收弹窗配置，再加
-  `--expect-alert-popup`。如果有真实 alert，记录 alert id、是否收到 popup/声音、
-  details 是否可读、是否执行 ack。没有最近真实 alert 时，`--check-alert-detail`
-  会记录 `skipped:no recent alerts`，不会创建测试 alert。
+  `--expect-alert-client --expect-alert-mode events --check-events-stream --check-alert-detail`
+  的 `--output` JSON。预警客户端只接收服务端 alert，不执行 ack；如果有真实
+  alert，记录 alert id、是否收到托盘/浮窗/声音，以及详情接口是否可读。没有最近
+  真实 alert 时，`--check-alert-detail` 会记录 `skipped:no recent alerts`，
+  不会创建测试 alert。
 
 推荐命令:
 
 ```powershell
 mkdir .\evidence\live
 python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-detector --expect-monitoring --min-targets 2 --min-active-ocr-targets 2 --expect-channel-monitoring --expect-channel-client --output .\evidence\live\detector-channel.json
-python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-alert-client --expect-alert-mode events --expect-alert-details --check-events-stream --check-alert-detail --output .\evidence\live\alert-client.json
+python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-alert-client --expect-alert-mode events --check-events-stream --check-alert-detail --output .\evidence\live\alert-client.json
 ```
 
 ### 5. 启动预警客户端
@@ -298,34 +299,35 @@ python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expe
 .\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765
 ```
 
-脚本默认启用 `--popup --details`，并把预警客户端 state 放到用户 LocalAppData
-下，适合作为 Windows 本地长驻入口。需要纯控制台联调时可加 `-NoPopup`。
+脚本默认启动托盘后台和桌面半透明浮窗，并把预警客户端 state 放到用户
+LocalAppData 下。客户端只订阅 `/api/v1/events`，只消费 `alert` 事件，
+不做 ESI、分类、评分过滤或服务端 ack。
 
 常用联调命令:
 
 ```powershell
-.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -Once -IncludeExisting -Json -Poll
-.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -Ack -AckBy alert-client
-.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -NoPopup -MinLevel high
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -Hidden
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -State "$env:LOCALAPPDATA\EVE Sentry\alert_client_state.json"
 ```
 
 真实联调推荐用后台长驻模式，便于同时观察 Web 工作台和检测端:
 
 ```powershell
-.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -NoPopup -Background -LogDir "$env:LOCALAPPDATA\EVE Sentry\logs"
-python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-alert-client --expect-alert-mode events --expect-alert-details --check-events-stream --check-alert-detail
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -Background -LogDir "$env:LOCALAPPDATA\EVE Sentry\logs"
+python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expect-alert-client --expect-alert-mode events --check-events-stream --check-alert-detail
 ```
 
-`-Once` 只适合一次性读取 recent alerts，不适合作为在线验收，因为它退出后
-`alert_client` heartbeat 会很快变成 stale。
+预警客户端没有 `-Once`、`-Poll`、`-Ack`、`-MinLevel`、`-MinScore`
+这类旧参数；在线验收以 heartbeat 和 SSE 连通性为准。
 
 只验证启动脚本参数映射、不连接服务端、不消费真实告警时，用 `-PrintCommand`:
 
 ```powershell
-.\scripts\start_alert_client.ps1 -PrintCommand -Server http://127.0.0.1:8765 -Once -IncludeExisting -Json -Poll -NoPopup -NoDetails -NoState
+.\scripts\start_alert_client.ps1 -PrintCommand -Server http://127.0.0.1:8765 -Hidden
 ```
 
-`--popup` 会显示非阻塞本地预警窗口并播放提示音；窗口未关闭时，客户端仍会继续消费后续告警事件。
+浮窗只显示核心态势，例如 `S-KSWL  敌:9`。没有真实告警时只显示连接状态，不构造展示数据。
 
 ### 一键生成现场证据包
 
@@ -334,7 +336,7 @@ python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expe
 告警:
 
 ```powershell
-python scripts/live_acceptance_bundle.py --server http://127.0.0.1:8765 --output-dir .\evidence\live --expect-detector --expect-monitoring --min-targets 2 --min-active-ocr-targets 2 --expect-channel-monitoring --expect-channel-client --expect-alert-client --expect-alert-mode events --expect-alert-details --check-events-stream --check-alert-detail --check-esi --check-map
+python scripts/live_acceptance_bundle.py --server http://127.0.0.1:8765 --output-dir .\evidence\live --expect-detector --expect-monitoring --min-targets 2 --min-active-ocr-targets 2 --expect-channel-monitoring --expect-channel-client --expect-alert-client --expect-alert-mode events --check-events-stream --check-alert-detail --check-esi --check-map
 ```
 
 脚本会创建带时间戳的子目录，写入:
@@ -342,7 +344,7 @@ python scripts/live_acceptance_bundle.py --server http://127.0.0.1:8765 --output
 - `baseline.json`: 服务端 health、clients、active intel、可选 ESI / map / SSE 基线。
 - `detector-channel.json`: 检测端在线、监控中、多窗口 target 数、频道监控状态。
 - `alert-client.json`: 预警客户端在线、SSE 连通性，以及 heartbeat 中的
-  events/poll、popup、details 配置状态；有最近真实 alert 时还会读取
+  events、overlay、popup 配置状态；有最近真实 alert 时还会读取
   `GET /api/v1/alerts/{id}` 详情。
 - `manifest.json`: 汇总每个检查文件、期望条件和 `write_endpoints_called: []`。
 
@@ -377,5 +379,5 @@ python scripts/live_acceptance_bundle.py --server http://127.0.0.1:8765 --output
 如果截图区域不准，先重新选择检测客户端的成员列表区域；如果 Web 面板里看不到
 `detector_client`，优先检查检测端是否连到了正确的 `--server` 地址，以及
 `EVE_SENTRY_PUBLISH_INTEL` 是否被关闭；如果服务端已有 alert 但预警客户端不响，
-优先检查 `alert_client_state.json`、`--include-existing`、`--unacknowledged-only`
-和 `--min-level` 过滤条件。
+优先检查 `alert_client_state.json` 是否已记录该 alert id、SSE 是否连通，以及
+托盘进程 heartbeat 的 `last_error`。

@@ -790,7 +790,7 @@ def test_integration_status_check_expect_alert_client_fails_without_client(tmp_p
     assert checks["alert_client_online"]["ok"] is False
 
 
-def test_integration_status_check_accepts_alert_client_runtime_details(monkeypatch):
+def test_integration_status_check_accepts_alert_client_runtime_overlay(monkeypatch):
     module = _load_script_module(
         "integration_status_check",
         "scripts/integration_status_check.py",
@@ -812,8 +812,9 @@ def test_integration_status_check_accepts_alert_client_runtime_details(monkeypat
                             "mode": "events",
                             "transport": "events",
                             "popup": True,
-                            "details": True,
-                            "last_action": "events_waiting",
+                            "overlay": True,
+                            "details": False,
+                            "last_action": "connected",
                             "last_success_at": "2026-07-07T12:00:00+00:00",
                         },
                     }
@@ -842,7 +843,7 @@ def test_integration_status_check_accepts_alert_client_runtime_details(monkeypat
                 "--expect-alert-mode",
                 "events",
                 "--expect-alert-popup",
-                "--expect-alert-details",
+                "--expect-alert-overlay",
             ]
         )
     )
@@ -853,13 +854,13 @@ def test_integration_status_check_accepts_alert_client_runtime_details(monkeypat
     assert checks["alert_client_mode"]["ok"] is True
     assert checks["alert_client_mode"]["detail"] == "modes=['events'] expected=events"
     assert checks["alert_client_popup"]["ok"] is True
-    assert checks["alert_client_details"]["ok"] is True
+    assert checks["alert_client_overlay"]["ok"] is True
     assert payload["summary"]["alert_client_modes"] == ["events"]
     assert payload["summary"]["alert_client_popup"] is True
-    assert payload["summary"]["alert_client_details"] is True
+    assert payload["summary"]["alert_client_overlay"] is True
     assert payload["evidence"]["expected_conditions"]["alert_mode"] == "events"
     assert payload["evidence"]["expected_conditions"]["alert_popup"] is True
-    assert payload["evidence"]["expected_conditions"]["alert_details"] is True
+    assert payload["evidence"]["expected_conditions"]["alert_overlay"] is True
 
 
 def test_integration_status_check_reads_recent_alert_detail_when_available(monkeypatch):
@@ -983,6 +984,7 @@ def test_integration_status_check_alert_client_runtime_mismatch_is_explicit(monk
                             "mode": "poll",
                             "transport": "poll",
                             "popup": False,
+                            "overlay": False,
                             "details": False,
                         },
                     }
@@ -1010,7 +1012,7 @@ def test_integration_status_check_alert_client_runtime_mismatch_is_explicit(monk
                 "--expect-alert-mode",
                 "events",
                 "--expect-alert-popup",
-                "--expect-alert-details",
+                "--expect-alert-overlay",
             ]
         )
     )
@@ -1020,7 +1022,7 @@ def test_integration_status_check_alert_client_runtime_mismatch_is_explicit(monk
     assert checks["alert_client_mode"]["ok"] is False
     assert checks["alert_client_mode"]["detail"] == "modes=['poll'] expected=events"
     assert checks["alert_client_popup"]["detail"] == "popup=False"
-    assert checks["alert_client_details"]["detail"] == "details=False"
+    assert checks["alert_client_overlay"]["detail"] == "overlay=False"
     assert payload["summary"]["alert_client_modes"] == ["poll"]
 
 
@@ -1476,7 +1478,7 @@ def test_live_acceptance_bundle_surfaces_failed_expectations(tmp_path):
                 "--expect-alert-mode",
                 "events",
                 "--expect-alert-popup",
-                "--expect-alert-details",
+                "--expect-alert-overlay",
                 "--check-alert-detail",
                 "--expect-channel-client",
                 "--expect-detector",
@@ -1517,11 +1519,11 @@ def test_live_acceptance_bundle_surfaces_failed_expectations(tmp_path):
     assert alert_checks["alert_client_online"]["ok"] is False
     assert alert_checks["alert_client_mode"]["detail"] == "modes=[] expected=events"
     assert alert_checks["alert_client_popup"]["detail"] == "popup=False"
-    assert alert_checks["alert_client_details"]["detail"] == "details=False"
+    assert alert_checks["alert_client_overlay"]["detail"] == "overlay=False"
     assert alert_checks["alert_detail"]["detail"] == "skipped:no recent alerts"
     assert manifest["expected"]["alert_mode"] == "events"
     assert manifest["expected"]["alert_popup"] is True
-    assert manifest["expected"]["alert_details"] is True
+    assert manifest["expected"]["alert_overlay"] is True
     assert manifest["expected"]["alert_detail"] is True
 
 
@@ -1561,9 +1563,11 @@ def test_alert_client_module_help_runs_without_network():
     assert result.returncode == 0
     assert "usage: alert_client.py" in result.stdout
     assert "--server" in result.stdout
-    assert "--popup" in result.stdout
-    assert "--details" in result.stdout
-    assert "--ack" in result.stdout
+    assert "--heartbeat-interval" in result.stdout
+    assert "--reconnect-max-delay" in result.stdout
+    assert "--hidden" in result.stdout
+    assert "--ack" not in result.stdout
+    assert "--poll" not in result.stdout
 
 
 def test_start_alert_client_powershell_script_wraps_alert_client():
@@ -1590,8 +1594,10 @@ def test_start_alert_client_powershell_script_wraps_alert_client():
     payload = json.loads(result.stdout)
     assert payload["args"][:2] == ["-m", "app.alert_client"]
     assert payload["cwd"].endswith("eve-sentry")
-    assert "--popup" in payload["args"]
-    assert "--details" in payload["args"]
+    assert "--heartbeat-interval" in payload["args"]
+    assert "--reconnect-max-delay" in payload["args"]
+    assert "--ack" not in payload["args"]
+    assert "--poll" not in payload["args"]
     assert "--state" in payload["args"]
     state = payload["args"][payload["args"].index("--state") + 1]
     assert "EVE Sentry" in state
@@ -1618,31 +1624,13 @@ def test_start_alert_client_powershell_script_maps_optional_flags():
             "http://example.invalid",
             "-State",
             "custom_state.json",
-            "-NoPopup",
-            "-NoDetails",
-            "-MinLevel",
-            "high",
-            "-MinScore",
-            "75",
-            "-Ack",
-            "-AckBy",
-            "operator",
-            "-AckNote",
-            "reviewed",
-            "-UnacknowledgedOnly",
-            "-Poll",
-            "-Once",
-            "-Json",
-            "-IncludeExisting",
-            "-NoState",
-            "-Interval",
-            "5",
-            "-Limit",
-            "12",
             "-Timeout",
             "8",
-            "-StreamRetryInterval",
-            "9",
+            "-HeartbeatInterval",
+            "15",
+            "-ReconnectMaxDelay",
+            "20",
+            "-Hidden",
             "-Python",
             "custom-python.exe",
         ],
@@ -1657,23 +1645,13 @@ def test_start_alert_client_powershell_script_maps_optional_flags():
     assert payload["python"] == "custom-python.exe"
     assert args[args.index("--server") + 1] == "http://example.invalid"
     assert args[args.index("--state") + 1] == "custom_state.json"
-    assert args[args.index("--interval") + 1] == "5"
-    assert args[args.index("--limit") + 1] == "12"
     assert args[args.index("--timeout") + 1] == "8"
-    assert args[args.index("--stream-retry-interval") + 1] == "9"
-    assert "--popup" not in args
+    assert args[args.index("--heartbeat-interval") + 1] == "15"
+    assert args[args.index("--reconnect-max-delay") + 1] == "20"
+    assert "--hidden" in args
+    assert "--ack" not in args
+    assert "--poll" not in args
     assert "--details" not in args
-    assert "--poll" in args
-    assert "--once" in args
-    assert "--json" in args
-    assert "--include-existing" in args
-    assert "--no-state" in args
-    assert args[args.index("--min-level") + 1] == "high"
-    assert args[args.index("--min-score") + 1] == "75"
-    assert "--ack" in args
-    assert args[args.index("--ack-by") + 1] == "operator"
-    assert args[args.index("--ack-note") + 1] == "reviewed"
-    assert "--unacknowledged-only" in args
 
 
 def test_start_alert_client_powershell_script_prints_background_command():
@@ -1691,7 +1669,7 @@ def test_start_alert_client_powershell_script_prints_background_command():
             "scripts/start_alert_client.ps1",
             "-PrintCommand",
             "-Background",
-            "-NoPopup",
+            "-Hidden",
             "-State",
             "C:\\EVE Sentry\\alert client state.json",
             "-LogDir",
@@ -1710,7 +1688,7 @@ def test_start_alert_client_powershell_script_prints_background_command():
     assert payload["log_dir"] == "C:\\EVE Sentry\\logs"
     assert payload["stdout"] == "C:\\EVE Sentry\\logs\\alert-client.out.log"
     assert payload["stderr"] == "C:\\EVE Sentry\\logs\\alert-client.err.log"
-    assert "--popup" not in args
+    assert "--hidden" in args
     assert args[args.index("--state") + 1] == "C:\\EVE Sentry\\alert client state.json"
     assert "Set-Location -LiteralPath" in decoded
     assert "'C:\\EVE Sentry\\alert client state.json'" in decoded

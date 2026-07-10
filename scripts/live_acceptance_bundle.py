@@ -31,7 +31,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--expect-alert-client", action="store_true")
     parser.add_argument("--expect-alert-mode", choices=["events", "poll"], default="")
     parser.add_argument("--expect-alert-popup", action="store_true")
-    parser.add_argument("--expect-alert-details", action="store_true")
+    parser.add_argument("--expect-alert-overlay", action="store_true")
     parser.add_argument("--expect-alert-healthy", action="store_true")
     parser.add_argument("--expect-channel-client", action="store_true")
     parser.add_argument("--expect-monitoring", action="store_true")
@@ -104,8 +104,8 @@ def status_args(args: argparse.Namespace, scenario: str) -> argparse.Namespace:
         argv.extend(["--expect-alert-mode", args.expect_alert_mode])
     if scenario == "alert-client" and args.expect_alert_popup:
         argv.append("--expect-alert-popup")
-    if scenario == "alert-client" and args.expect_alert_details:
-        argv.append("--expect-alert-details")
+    if scenario == "alert-client" and args.expect_alert_overlay:
+        argv.append("--expect-alert-overlay")
     if scenario == "alert-client" and args.expect_alert_healthy:
         argv.append("--expect-alert-healthy")
     if scenario == "alert-client" and args.check_alert_detail:
@@ -153,7 +153,7 @@ def build_bundle(args: argparse.Namespace) -> dict[str, Any]:
             "alert_client": bool(args.expect_alert_client),
             "alert_mode": str(args.expect_alert_mode or ""),
             "alert_popup": bool(args.expect_alert_popup),
-            "alert_details": bool(args.expect_alert_details),
+            "alert_overlay": bool(args.expect_alert_overlay),
             "alert_healthy": bool(args.expect_alert_healthy),
             "channel_client": bool(args.expect_channel_client),
             "detector_monitoring": bool(args.expect_monitoring),

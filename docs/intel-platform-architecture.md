@@ -7,8 +7,8 @@
 > Any older killboard sections below are historical design notes and must not be
 > treated as an enabled runtime dependency.
 
-> Current workflow baseline (2026-07-09): 第一版不再使用威胁评分系统。服务端只做
-> ESI 查询缓存、白名/红名分类和一次性告警。ESI 查询条件是“角色从未查询过
+> Current workflow baseline (2026-07-10): 第一版不再使用威胁评分系统。服务端只做
+> ESI 查询缓存、声望驱动的敌对分类和一次性告警。ESI 查询条件是“角色从未查询过
 > ESI”，不是“本次名单新增”。后续架构设计以 `docs/intel-workflows.md` 为准。
 
 > 日期: 2026-07-01
@@ -23,13 +23,13 @@
 | 模块 | 当前状态 | 主要待做 |
 | --- | --- | --- |
 | 检测客户端 | 已能后台截图、OCR 本地列表、多 EVE 窗口监控、可选监控指定预警频道日志、上报 observation 和 detector heartbeat，默认不弹本地预警 | 补区域选择排障细节和实机多开验收 |
-| 预警客户端 | 已独立消费 `/api/v1/events` / `/api/v1/alerts`，支持增量 SSE、详情、ack、弹窗可选 | 补在线状态和运行诊断 |
+| 预警客户端 | 已重做为托盘后台 + 半透明浮窗，只消费 `/api/v1/events` 的 alert 事件，本地去重且不 ack | 补更多运行诊断 |
 | 服务端模型/API | 已有 `Observation`、`ThreatEvent`、alert detail、实体情报查询、ack、配置 API、health、heartbeats、SQLite | 补更细客户端诊断 |
 | 预警频道解析 | 已有 chatlog watcher、parser、`POST /api/v1/channel-lines`、解析诊断和 ESI 辅助修正 | 扩更多真实频道格式 |
 | ESI | 已有公开解析、缓存状态、SSO、session、当前位置、contacts/standings | 补 token 迁移策略和更细失败类型 |
 | 击毁画像 | 已从第一版移除，不参与当前告警链路 | 后续如恢复，必须先设计有界缓存和内存上限 |
-| 分类告警 | 第一版目标改为白名/红名分类和一次性告警，不再使用威胁评分 | 用 `ClassificationEngine` 替代旧评分路径 |
-| 推送/存储 | 默认 SQLite，SSE 支持过滤、续接、keepalive、并发和轮询 fallback；runtime data、heartbeat 状态页和 SQLite heartbeat 持久化已接通 | 补更细状态字段 |
+| 分类告警 | 第一版目标改为声望驱动的敌对分类和一次性告警，不再使用威胁评分 | 用 `ClassificationEngine` 替代旧评分路径 |
+| 推送/存储 | 默认 SQLite，SSE 支持过滤、续接、keepalive、并发；runtime data、heartbeat 状态页和 SQLite heartbeat 持久化已接通 | 补更细状态字段 |
 
 ## 1. 架构目标
 
@@ -39,8 +39,8 @@ EVE Sentry 后续不再只依赖本地频道 OCR。系统应同时接入本地 O
 
 - 检测端只负责采集和上报，不负责最终威胁判断。
 - 预警端只负责接收和通知，不直接依赖 OCR 或 ESI。
-- 服务端是唯一情报中心，负责身份解析、ESI 查询缓存、白名/红名分类、告警去重和事件生成。
-- OCR 名单只表示“当前本地可见”，不是敌对证据；只有服务端把角色分类为白名或红名后才生成一次性告警。
+- 服务端是唯一情报中心，负责身份解析、ESI 查询缓存、声望分类、告警去重和事件生成。
+- OCR 名单只表示“当前本地可见”，不是敌对证据；只有服务端把角色分类为敌对后才生成一次性告警。
 - 所有情报最终落到稳定 ID 上，例如 `character_id`、`corporation_id`、`alliance_id`、`solar_system_id`。
 - 所有告警必须带分类原因，能解释为什么报警。
 
@@ -50,7 +50,7 @@ EVE Sentry 后续不再只依赖本地频道 OCR。系统应同时接入本地 O
 flowchart LR
     EVE["EVE 客户端窗口"] --> OCR["检测客户端: 本地频道 OCR"]
     LOGS["EVE Chatlogs"] --> CHAT["频道采集器: 预警频道解析"]
-    USER["手工名单/白名单/黑名单"] --> SERVER["服务端情报中心"]
+    USER["声望/军团/联盟配置"] --> SERVER["服务端情报中心"]
 
     OCR -->|Observation| SERVER
     CHAT -->|Observation| SERVER
@@ -59,7 +59,7 @@ flowchart LR
     ESI --> CCP["CCP ESI / SSO"]
 
     SERVER --> LOOKUP["ESI查询缓存"]
-    SERVER --> CLASSIFY["白名/红名分类"]
+    SERVER --> CLASSIFY["声望敌对分类"]
     CLASSIFY --> ALERTS["一次性告警"]
     ALERTS --> ALERTER["预警客户端"]
     ALERTS --> WEB["Web 地图/情报面板"]
@@ -82,9 +82,9 @@ flowchart LR
 不负责:
 
 - 不做最终报警判断。
-- 不判断敌对、友军、白名单或黑名单。
+- 不判断敌对或友好声望。
 - 不直接查 ESI 或 zKillboard。
-- 不维护全局白名单/黑名单。
+- 不维护本地名单过滤。
 
 当前入口建议:
 
@@ -180,17 +180,17 @@ uv run python -m app.channel_client --server http://127.0.0.1:8765 --channel "Al
 - 接收所有来源的 `Observation`。
 - 对 OCR 名单和频道文本检查 ESI 查询缓存；只对从未查询过 ESI 的角色发起 ESI 查询。
 - 缓存角色 ID、军团、联盟、standing，以及 `not_found` / `failed` / `retry_after` 状态。
-- 执行白名单、红名单、友军/敌对军团联盟和 standing 分类规则。
-- 角色被分类为白名或红名时生成一次性 `ThreatEvent`。
+- 执行声望、友好/敌对军团联盟和 standing 分类规则。
+- 角色被分类为敌对时生成一次性 `ThreatEvent`。
 - 提供 REST API 给检测端、频道采集器、预警端和 Web 面板。
 
 OCR 告警门槛:
 
 - `local_ocr` / `ocr` / `eve-sentry-detector` observation 默认只刷新实时可见名单。
-- 命中白名单、友军军团/联盟或友好 standing 时，服务端分类为 `white` 并生成一次性白名告警。
-- 命中红名单、敌对军团/联盟或敌对 standing 时，服务端分类为 `red` 并生成一次性红名告警。
-- 没有白名/红名分类时，OCR observation 不生成 `ThreatEvent`。
-- 预警频道上下文只作为观察来源和解释上下文，不能单独把一个 OCR 可见角色判定为红名。
+- 优秀声望、良好声望归为友好，不进入敌对实时观察和告警。
+- 中立声望、不良声望、糟糕声望归为敌对，服务端分类为敌对并生成一次性告警。
+- 未查询到声望、ESI 查询失败或无配置命中时，OCR observation 只记录观察，不生成 `ThreatEvent`。
+- 预警频道上下文只作为观察来源和解释上下文，不能单独把一个 OCR 可见角色判定为敌对。
 
 当前入口建议:
 
@@ -210,9 +210,10 @@ uv run python -m app.server --host 127.0.0.1 --port 8765
 
 职责:
 
-- 轮询或订阅服务端的 `ThreatEvent`。
-- 播放声音、显示托盘通知或弹窗。
-- 展示最近预警列表和证据链。
+- 订阅服务端 `/api/v1/events` SSE 中的 `alert` 事件。
+- 常驻托盘后台，并显示桌面半透明浮窗。
+- 播放声音，浮窗只显示核心态势: `星系名  敌:x`。
+- 使用本地 state 去重，避免重启或重连后重复响。
 
 不负责:
 
@@ -220,6 +221,8 @@ uv run python -m app.server --host 127.0.0.1 --port 8765
 - 不 OCR。
 - 不解析频道日志。
 - 不直接查询外部 API。
+- 不做评分、声望、ESI 或敌友判断。
+- 不调用 `POST /api/v1/alerts/{id}/ack`。
 
 当前入口建议:
 
@@ -227,32 +230,25 @@ uv run python -m app.server --host 127.0.0.1 --port 8765
 .\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765
 ```
 
-默认模式会订阅 `/api/v1/events` SSE 事件流，并按事件增量输出；如果事件流不可用，客户端会先
-回退到 `/api/v1/alerts` 轮询，并在 `--stream-retry-interval` 冷却后自动重试订阅。
-需要强制只用轮询时可加 `--poll`。
-PowerShell 启动脚本默认启用本地非阻塞弹窗和 details 输出；底层仍是
-`python -m app.alert_client`，适合调试时直接追加 CLI 参数。
+默认模式只订阅 `/api/v1/events` SSE 事件流；事件流断开时自动重连，不回退到
+`/api/v1/alerts` 轮询。服务端会同时推送 `bootstrap` 和 `alert`，预警客户端只消费
+`event: alert`，并忽略 `bootstrap`、keepalive 和未知事件。
+PowerShell 启动脚本底层仍是 `python -m app.alert_client`。
 
 常用模式:
 
 ```powershell
-# 长驻订阅，并弹出本地预警窗口
+# 长驻托盘 + 桌面半透明浮窗
 .\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765
 
-# 输出/弹窗后回写已确认状态
-.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -Ack -AckBy alert-client
-
-# 一次性检查当前服务端 alert，适合联调或脚本验证
-.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -Once -IncludeExisting -Json -Poll -UnacknowledgedOnly -MinLevel high
-
-# 使用独立状态文件续接已处理 alert；需要重放时可加 --no-state 或删除状态文件
+# 使用独立状态文件记录本地已接收 alert
 .\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -State alert_client_state.json
 
-# 网络不稳定时加快事件流恢复尝试
-.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -StreamRetryInterval 10
+# 后台启动，stdout/stderr 写入本地日志目录
+.\scripts\start_alert_client.ps1 -Server http://127.0.0.1:8765 -Background -LogDir "$env:LOCALAPPDATA\EVE Sentry\logs"
 ```
 
-`--popup` 使用非阻塞本地窗口；弹窗未确认时，预警客户端仍会继续消费 SSE 或轮询告警。
+预警客户端只接收服务端告警，不 ack、不清理服务端告警状态；Web 工作台和预警客户端可以同时消费同一条 SSE。
 
 ## 4. 核心数据模型
 
@@ -305,7 +301,7 @@ active 行，历史 observations 继续可查。
 
 active OCR 行代表“当前可见名单”，不等同于告警。Web 星图可以用它显示本地可见人数，
 但预警客户端只消费服务端生成的 `ThreatEvent`。如果某个 OCR 名字经 ESI 查询缓存后
-仍未分类为白名或红名，它可以保留为历史 observation 或 active row，但不会出现在
+仍未分类为敌对，它可以保留为历史 observation 或 active row，但不会出现在
 alert 列表。
 
 预警频道同样保留 observation 作为审计记录，但 active state 由频道语义维护。普通
@@ -425,7 +421,7 @@ ESI 是身份和宇宙数据的权威补全源。
   用户 DPAPI 保护 token 文件，其他平台回退到普通 JSON，`secure` 在无可用保护器
   时会直接失败。
 - contacts 可转换成 `contact_standing` 注入角色 profile，供分类规则生成
-  `standing_red` 或 `standing_white` reason。
+  `hostile_standing` 或 `friendly_standing` reason。
 
 设计要求:
 
@@ -574,15 +570,15 @@ ESI profile 会携带缓存状态，当前字段包括 `cache_status`、`fetched
 ## 8. 分类告警
 
 第一版不使用威胁评分系统。当前服务端默认通过 `ClassificationEngine`
-输出白名/红名分类结果和一次性告警决策；旧 `ScoringEngine` 暂保留为兼容路径。
+输出声望驱动的敌对分类结果和一次性告警决策；旧 `ScoringEngine` 暂保留为兼容路径。
 
 分类输入:
 
-- 手工白名单和红名单。
-- 友军/敌对军团 ID。
-- 友军/敌对联盟 ID。
-- authenticated ESI contacts/standings。
 - ESI 角色公开资料。
+- authenticated ESI contacts/standings。
+- 友好/敌对军团 ID。
+- 友好/敌对联盟 ID。
+- 旧版手工名单字段仅作兼容，不作为当前主流程术语。
 
 分类输出:
 
@@ -596,10 +592,16 @@ ESI profile 会携带缓存状态，当前字段包括 `cache_status`、`fetched
 
 分类取值:
 
-- `red`: 红名，首次出现或状态变化时生成告警。
-- `white`: 白名，首次出现或状态变化时生成告警。
-- `neutral`: 已识别但不在白名/红名规则内，只记录观察。
+- `red`: 兼容字段，业务展示为敌对；首次出现或状态变化时生成告警。
+- `white`: 兼容字段，业务展示为友好；不进入敌对观察。
+- `neutral`: 已识别但无敌对声望或敌对配置命中，只记录观察。
 - `unknown`: 尚未完成 ESI 查询或无法识别，只记录观察。
+
+声望映射:
+
+- 优秀声望、良好声望: 友好。
+- 中立声望、不良声望、糟糕声望: 敌对。
+- 默认 `hostile_standing_threshold=0.0`，即 standing 小于等于 0 都归为敌对。
 
 ESI 查询规则:
 
@@ -718,8 +720,8 @@ GET  /api/map/snapshot
   `heartbeat=<seconds>` 调整，设为 `0` 可关闭。
 - Web 面板通过 `EventSource` 订阅 `/api/v1/events`，收到 alert 后先本地合并展示，
   再排队刷新完整快照；浏览器或网络不支持 SSE 时回退到短轮询。
-- 独立预警客户端默认订阅同一事件流；事件流失败时先用轮询兜底，再按冷却时间
-  自动恢复订阅。
+- 独立预警客户端默认订阅同一事件流；事件流失败时自动重连，不使用轮询兜底，
+  也不 ack 服务端告警。
 - 兼容说明: 旧 `/api/alerts`、`/api/events` 路由仍由服务端保留，供旧客户端过渡使用；新客户端、React 工作台和后续文档默认使用 `/api/v1/alerts` 与 `/api/v1/events`。
 
 ## 10. 存储规划
