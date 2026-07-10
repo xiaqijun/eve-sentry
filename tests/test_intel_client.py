@@ -1,24 +1,18 @@
-import io
 import json
-import sys
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-import app.alert_client as alert_client_module
 from app.alert_client import (
     AlertClientState,
-    AlertStreamFallback,
-    ack_emitted_alerts,
-    attach_alert_details,
-    build_popup_names,
-    emit_alerts,
-    format_alert,
-    format_report,
-    handle_alert_batch,
+    AlertEventConsumer,
+    AlertOverlay,
+    aggregate_alert_summaries,
+    alert_hostile_count,
+    build_heartbeat_details,
     parse_args,
-    run_alert_client,
+    summarize_alert,
 )
-from app.intel_client import AlertPoller, IntelApiClient, IntelApiError, ReportPoller
+from app.intel_client import AlertPoller, IntelApiClient, ReportPoller
 from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore
 
@@ -709,26 +703,39 @@ def test_alert_poller_resumes_real_event_stream_with_last_event_id(tmp_path):
         server.stop()
 
 
+def test_intel_api_client_ignores_bootstrap_sse_and_yields_alert():
+    api = IntelApiClient("http://example.invalid")
+    body = (
+        "id: bootstrap-1\n"
+        "event: bootstrap\n"
+        'data: {"schema_version": "intel_bootstrap.v1"}\n\n'
+        ": keepalive\n\n"
+        "id: evt-1\n"
+        "event: alert\n"
+        'data: {"id": "evt-1", "system_name": "S-KSWL", "names": ["Pilot"]}\n\n'
+    )
+
+    assert api._parse_alert_events(body) == [
+        {"id": "evt-1", "system_name": "S-KSWL", "names": ["Pilot"]},
+    ]
+
+
 def test_alert_client_state_persists_recent_seen_ids(tmp_path):
     state_path = tmp_path / "alert_state.json"
     state = AlertClientState(state_path, max_seen_ids=2)
 
     assert state.load_seen_ids() == []
     assert state.loaded is False
-
-    state.record_alerts(
-        [
-            {"id": "evt-1"},
-            {"id": "evt-2"},
-            {"id": "evt-2"},
-            {"id": "evt-3"},
-            {"names": ["missing"]},
-        ]
-    )
+    assert state.record_alert({"id": "evt-1"}) is True
+    assert state.record_alert({"id": "evt-2"}) is True
+    assert state.record_alert({"id": "evt-2"}) is False
+    assert state.record_alert({"id": "evt-3"}) is True
+    assert state.record_alert({"names": ["missing"]}) is False
 
     reloaded = AlertClientState(state_path, max_seen_ids=2)
     assert reloaded.load_seen_ids() == ["evt-2", "evt-3"]
     assert reloaded.loaded is True
+    assert reloaded.has_seen("evt-2") is True
 
 
 def test_alert_client_state_corruption_falls_back_to_empty(tmp_path):
@@ -741,642 +748,112 @@ def test_alert_client_state_corruption_falls_back_to_empty(tmp_path):
     assert state.loaded is True
 
 
-def test_alert_poller_passes_server_side_filters_to_polling_and_streaming():
-    api = FakeApi(
+def test_alert_event_consumer_deduplicates_before_ui(tmp_path):
+    state = AlertClientState(tmp_path / "alert_state.json")
+    state.load_seen_ids()
+    consumer = AlertEventConsumer(state)
+
+    assert consumer.accept({"id": "evt-1", "system_name": "S-KSWL"}) is True
+    assert consumer.accept({"id": "evt-1", "system_name": "S-KSWL"}) is False
+    assert consumer.accept({"system_name": "S-KSWL"}) is False
+
+
+def test_alert_client_summarizes_location_and_enemy_count():
+    assert summarize_alert(
+        {
+            "id": "evt-1",
+            "system_name": "S-KSWL",
+            "names": ["Pilot A", "Pilot B"],
+            "created_at": "2026-07-10T00:00:00Z",
+        }
+    ) == {
+        "id": "evt-1",
+        "system_name": "S-KSWL",
+        "hostile_count": 2,
+        "created_at": "2026-07-10T00:00:00Z",
+    }
+    assert alert_hostile_count({"metadata": {"hostile_count": 9}}) == 9
+
+
+def test_alert_client_aggregates_overlay_rows_by_system():
+    rows = aggregate_alert_summaries(
         [
-            [{"id": "poll", "created_at": "1", "names": ["Alice"]}],
-            [{"id": "stream", "created_at": "2", "names": ["Bob"]}],
-        ]
-    )
-    poller = AlertPoller(
-        api,
-        acknowledged=False,
-        min_score=70,
-        min_level="high",
-    )
-
-    assert [alert["id"] for alert in poller.poll_new()] == ["poll"]
-    assert [alert["id"] for alert in poller.stream_new(timeout=0)] == ["stream"]
-    assert api.alert_filters == [
-        (False, 70, "high"),
-        (False, 70, "high"),
-    ]
-
-
-def test_alert_stream_fallback_retries_stream_after_poll_and_cooldown():
-    now = 100.0
-    fallback = AlertStreamFallback(
-        enabled=True,
-        retry_interval=5.0,
-        clock=lambda: now,
-    )
-
-    assert fallback.should_stream() is True
-
-    fallback.mark_stream_failure()
-
-    assert fallback.should_stream() is False
-
-    fallback.mark_poll_attempt()
-
-    assert fallback.should_stream() is False
-
-    now = 105.0
-
-    assert fallback.should_stream() is True
-
-    fallback.mark_stream_success()
-
-    now = 106.0
-
-    assert fallback.should_stream() is True
-
-
-def test_alert_client_formats_reports_for_console_and_popup():
-    report = {
-        "system": "Tama",
-        "names": ["Alice", "Bob"],
-        "seen_at": "2026-06-29T12:00:00+00:00",
-    }
-
-    assert format_report(report) == "2026-06-29T12:00:00+00:00 Tama: Alice, Bob"
-    assert build_popup_names([report]) == ["Tama - Alice", "Tama - Bob"]
-
-    alert = {
-        "system_name": "Tama",
-        "names": ["Alice"],
-        "created_at": "2026-06-29T12:00:00+00:00",
-        "level": "medium",
-        "score": 40,
-    }
-    assert (
-        format_alert(alert)
-        == "MEDIUM 2026-06-29T12:00:00+00:00 Tama: Alice (score 40)"
-    )
-
-    alert["evidence"] = [
-        {"type": "local_ocr_seen", "weight": 40, "summary": "Local OCR saw Alice"},
-        {"type": "blacklist_match", "weight": 80, "summary": "Blacklisted pilot"},
-    ]
-    assert (
-        format_alert(alert)
-        == "MEDIUM 2026-06-29T12:00:00+00:00 Tama: Alice "
-        "(score 40) - Local OCR saw Alice; Blacklisted pilot"
-    )
-
-    detailed_alert = {
-        "system_name": "Tama",
-        "names": ["Alice"],
-        "created_at": "2026-06-29T12:00:00+00:00",
-        "level": "high",
-        "score": 85,
-        "evidence": [
-            {"type": "local_ocr_seen", "summary": "Local OCR saw Alice"},
-        ],
-        "detail": {
-            "context": {
-                "channel_mentions": [
-                    {
-                        "relation": "same_system",
-                        "observation": {"system_name": "Tama"},
-                    }
-                ],
-                "character_profiles": [
-                    {
-                        "character_id": 123,
-                        "name": "Alice",
-                        "corporation_id": 456,
-                    }
-                ],
-                "kill_activities": [],
-                "group_activities": [],
-            }
-        },
-    }
-    assert (
-        format_alert(detailed_alert)
-        == "HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 85) "
-        "- Local OCR saw Alice | Context: channel same-system Tama; "
-        "profile Alice (corp 456)"
-    )
-
-    detailed_alert["detail"]["explanation"] = {
-        "summary": "HIGH alert for Alice in Tama (score 85)",
-        "reasons": ["Local OCR saw Alice", "Recent hostile standing"],
-        "context": [
-            "Recent channel same-system mention in Tama 2m ago",
-            "ESI profile Alice: corp 456",
-        ],
-        "degraded_sources": [],
-    }
-    assert (
-        format_alert(detailed_alert)
-        == "HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 85) "
-        "- Detail: HIGH alert for Alice in Tama (score 85) | Reasons: Local "
-        "OCR saw Alice; Recent hostile standing | Context: Recent channel "
-        "same-system mention in Tama 2m ago; ESI profile Alice: corp 456"
-    )
-
-
-def test_alert_client_parse_args_supports_one_shot_json_mode():
-    args = parse_args(
-        [
-            "--once",
-            "--json",
-            "--poll",
-            "--include-existing",
-            "--ack",
-            "--ack-by",
-            "cli",
-            "--ack-note",
-            "handled",
-            "--details",
-            "--unacknowledged-only",
-            "--min-score",
-            "70",
-            "--min-level",
-            "high",
-            "--stream-retry-interval",
-            "15",
-            "--state",
-            "alerts.json",
-            "--no-state",
+            {"system_name": "S-KSWL", "hostile_count": 2, "created_at": "1"},
+            {"system_name": "8-4GQM", "hostile_count": 1, "created_at": "2"},
+            {"system_name": "S-KSWL", "hostile_count": 3, "created_at": "3"},
         ]
     )
 
-    assert args.once is True
-    assert args.json is True
-    assert args.poll is True
-    assert args.ignore_existing is False
-    assert args.ack is True
-    assert args.ack_by == "cli"
-    assert args.ack_note == "handled"
-    assert args.details is True
-    assert args.unacknowledged_only is True
-    assert args.min_score == 70
-    assert args.min_level == "high"
-    assert args.stream_retry_interval == 15
-    assert args.state == "alerts.json"
-    assert args.no_state is True
+    assert rows[0]["system_name"] == "S-KSWL"
+    assert rows[0]["hostile_count"] == 5
+    assert rows[1]["system_name"] == "8-4GQM"
 
 
-def test_alert_client_once_falls_back_to_polling_when_stream_fails(
-    monkeypatch,
-    capsys,
-):
-    class StreamingFailsApi:
-        instances = []
+def test_alert_overlay_can_render_compact_enemy_rows(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QApplication, QLabel
 
-        def __init__(self, base_url, timeout=3.0):
-            self.base_url = base_url
-            self.timeout = timeout
-            self.poll_calls = 0
-            self.stream_calls = 0
-            self.heartbeats = []
-            self.instances.append(self)
-
-        def post_heartbeat(self, **payload):
-            self.heartbeats.append(payload)
-            return {"client_id": payload["client_id"], "online": True}
-
-        def list_alerts(
-            self,
-            limit=50,
-            acknowledged=None,
-            min_score=None,
-            min_level="",
-        ):
-            self.poll_calls += 1
-            return [
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    try:
+        overlay.show_summaries(
+            [
                 {
-                    "id": "evt-poll",
-                    "system_name": "Tama",
-                    "names": ["Fallback"],
-                    "created_at": "2026-06-29T12:00:00+00:00",
-                    "level": "high",
-                    "score": 70,
+                    "system_name": "S-KSWL",
+                    "hostile_count": 9,
+                    "created_at": "2026-07-10T00:00:00Z",
                 }
             ]
-
-        def stream_alerts(
-            self,
-            since="",
-            last_event_id="",
-            limit=50,
-            timeout=30.0,
-            acknowledged=None,
-            min_score=None,
-            min_level="",
-        ):
-            _ = since, last_event_id
-            self.stream_calls += 1
-            raise IntelApiError("stream offline")
-
-    monkeypatch.setattr("app.alert_client.IntelApiClient", StreamingFailsApi)
-    monkeypatch.setenv("EVE_SENTRY_CLIENT_VERSION", "test-version")
-    monkeypatch.setenv("EVE_SENTRY_CLIENT_HOST", "test-host")
-
-    args = parse_args(
-        [
-            "--server",
-            "http://example.invalid",
-            "--once",
-            "--include-existing",
-            "--no-state",
-        ]
-    )
-
-    assert run_alert_client(args) == 0
-
-    output = capsys.readouterr()
-    api = StreamingFailsApi.instances[0]
-
-    assert len(api.heartbeats) == 1
-    assert api.heartbeats[0]["client_type"] == "alert_client"
-    assert api.heartbeats[0]["details"]["mode"] == "poll"
-    assert api.heartbeats[0]["details"]["last_action"] == "poll:1"
-    assert api.heartbeats[0]["details"]["client_version"] == "test-version"
-    assert api.heartbeats[0]["details"]["host"] == "test-host"
-    assert api.heartbeats[0]["details"]["last_success_at"]
-    assert "last_error" not in api.heartbeats[0]["details"]
-    assert api.stream_calls == 1
-    assert api.poll_calls == 1
-    assert "Fallback" in output.out
-
-
-def test_alert_client_emits_streamed_alert_before_stream_closes(monkeypatch, capsys):
-    class IncrementalApi:
-        instances = []
-
-        def __init__(self, base_url, timeout=3.0):
-            self.base_url = base_url
-            self.timeout = timeout
-            self.heartbeats = []
-            self.instances.append(self)
-
-        def post_heartbeat(self, **payload):
-            self.heartbeats.append(payload)
-            return {"client_id": payload["client_id"], "online": True}
-
-        def list_alerts(
-            self,
-            limit=50,
-            acknowledged=None,
-            min_score=None,
-            min_level="",
-        ):
-            _ = limit, acknowledged, min_score, min_level
-            return []
-
-        def iter_alert_events(self, **kwargs):
-            _ = kwargs
-            yield {
-                "id": "evt-stream",
-                "system_name": "Tama",
-                "names": ["Streamed"],
-                "created_at": "2026-06-29T12:00:00+00:00",
-                "level": "high",
-                "score": 70,
-            }
-            raise KeyboardInterrupt
-
-    monkeypatch.setattr("app.alert_client.IntelApiClient", IncrementalApi)
-
-    args = parse_args(
-        [
-            "--server",
-            "http://example.invalid",
-            "--include-existing",
-            "--no-state",
-        ]
-    )
-
-    assert run_alert_client(args) == 0
-
-    output = capsys.readouterr()
-    assert "Streamed" in output.out
-    assert IncrementalApi.instances[0].heartbeats[0]["details"]["mode"] == "events"
-
-
-def test_alert_client_resume_state_preserves_offline_alerts(tmp_path, capsys):
-    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
-    server.start()
-    try:
-        api = IntelApiClient(server.url)
-        old = api.post_channel_line(
-            f"[ {eve_chat_timestamp()} ] Scout A > Tama +1 reds",
-            channel="Alliance Intel",
         )
-        state_path = tmp_path / "alert_state.json"
+        app.processEvents()
 
-        first_args = parse_args(
-            [
-                "--server",
-                server.url,
-                "--once",
-                "--poll",
-                "--state",
-                str(state_path),
-            ]
-        )
-        assert run_alert_client(first_args) == 0
-        first_output = capsys.readouterr()
-        assert "[ALERT]" not in first_output.out
-        assert AlertClientState(state_path).load_seen_ids() == [old["alert"]["id"]]
-
-        new = api.post_channel_line(
-            f"[ {eve_chat_timestamp(1)} ] Scout B > Oijanen +1 reds",
-            channel="Alliance Intel",
-        )
-
-        second_args = parse_args(
-            [
-                "--server",
-                server.url,
-                "--once",
-                "--poll",
-                "--state",
-                str(state_path),
-            ]
-        )
-        assert run_alert_client(second_args) == 0
-        second_output = capsys.readouterr()
-
-        assert old["alert"]["id"] not in second_output.out
-        assert new["alert"]["id"] not in second_output.out
-        assert "Scout B: Oijanen +1 reds" in second_output.out
-        assert AlertClientState(state_path).load_seen_ids() == [
-            old["alert"]["id"],
-            new["alert"]["id"],
-        ]
+        labels = [item.text() for item in overlay.findChildren(QLabel)]
+        assert "S-KSWL  敌:9" in labels
+        assert overlay.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     finally:
-        server.stop()
+        overlay.close()
 
 
-def test_alert_client_emit_alerts_supports_text_and_json_lines():
-    alert = {
-        "id": "evt-1",
-        "system_name": "Tama",
-        "names": ["Alice"],
-        "created_at": "2026-06-29T12:00:00+00:00",
-        "level": "high",
-        "score": 70,
-    }
-    text_stream = io.StringIO()
-    json_stream = io.StringIO()
-
-    emit_alerts([alert], stream=text_stream)
-    emit_alerts([alert], json_lines=True, stream=json_stream)
-
-    assert text_stream.getvalue().strip() == (
-        "[ALERT] HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 70)"
-    )
-    assert json.loads(json_stream.getvalue()) == alert
-
-
-def test_alert_client_show_popup_uses_nonblocking_dialog(monkeypatch):
-    class FakeSignal:
-        def __init__(self):
-            self.callback = None
-
-        def connect(self, callback):
-            self.callback = callback
-
-    class FakeDialog:
-        instances = []
-
-        def __init__(self, entries):
-            self.entries = entries
-            self.finished = FakeSignal()
-            self.modal = None
-            self.shown = False
-            self.exec_called = False
-            self.instances.append(self)
-
-        def setModal(self, value):
-            self.modal = value
-
-        def show(self):
-            self.shown = True
-
-        def exec(self):
-            self.exec_called = True
-            raise AssertionError("popup must not block")
-
-    class FakeApplication:
-        instances = []
-
-        @staticmethod
-        def instance():
-            return None
-
-        def __init__(self, args):
-            self.args = args
-            self.processed = 0
-            self.instances.append(self)
-
-        def processEvents(self):
-            self.processed += 1
-
-    alert_client_module._ACTIVE_POPUPS.clear()
-    monkeypatch.setitem(sys.modules, "PyQt6", SimpleNamespace(__path__=[]))
-    monkeypatch.setitem(
-        sys.modules,
-        "PyQt6.QtWidgets",
-        SimpleNamespace(QApplication=FakeApplication),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "app.ui.alert_dialog",
-        SimpleNamespace(AlertDialog=FakeDialog),
+def test_alert_client_parse_args_supports_sse_overlay_mode():
+    args = parse_args(
+        [
+            "--server",
+            "http://example.invalid",
+            "--state",
+            "alerts.json",
+            "--timeout",
+            "12",
+            "--heartbeat-interval",
+            "15",
+            "--reconnect-max-delay",
+            "20",
+            "--hidden",
+        ]
     )
 
-    alert_client_module.show_popup(["Tama - Alice"])
-
-    dialog = FakeDialog.instances[0]
-    assert dialog.entries == ["Tama - Alice"]
-    assert dialog.modal is False
-    assert dialog.shown is True
-    assert dialog.exec_called is False
-    assert FakeApplication.instances[0].processed == 1
-    assert alert_client_module._ACTIVE_POPUPS == [dialog]
-
-    dialog.finished.callback(0)
-    assert alert_client_module._ACTIVE_POPUPS == []
+    assert args.server == "http://example.invalid"
+    assert args.state == "alerts.json"
+    assert args.timeout == 12
+    assert args.heartbeat_interval == 15
+    assert args.reconnect_max_delay == 20
+    assert args.hidden is True
 
 
-def test_alert_client_emit_alerts_continues_when_popup_fails(monkeypatch):
-    alert = {
-        "id": "evt-1",
-        "system_name": "Tama",
-        "names": ["Alice"],
-        "created_at": "2026-06-29T12:00:00+00:00",
-        "level": "high",
-        "score": 70,
-    }
-    stream = io.StringIO()
-
-    def broken_popup(entries):
-        assert entries == ["Tama - Alice"]
-        raise RuntimeError("gui unavailable")
-
-    monkeypatch.setattr("app.alert_client.show_popup", broken_popup)
-
-    emit_alerts([alert], popup=True, stream=stream)
-
-    assert stream.getvalue().strip() == (
-        "[ALERT] HIGH 2026-06-29T12:00:00+00:00 Tama: Alice (score 70)"
+def test_alert_client_heartbeat_details_are_events_overlay_only():
+    details = build_heartbeat_details(
+        "connected",
+        client_version="test-version",
+        host="test-host",
+        last_success_at="2026-07-10T00:00:00Z",
     )
 
-
-def test_alert_client_attaches_alert_details_without_blocking_delivery():
-    class DetailApi:
-        def __init__(self):
-            self.calls = []
-
-        def alert_detail(self, alert_id):
-            self.calls.append(alert_id)
-            if alert_id == "bad":
-                raise IntelApiError("detail offline")
-            return {
-                "alert": {"id": alert_id},
-                "observation": {"id": "obs-1"},
-                "context": {"channel_mentions": []},
-            }
-
-    api = DetailApi()
-
-    alerts = attach_alert_details(
-        api,
-        [{"id": "evt-1", "names": ["Alice"]}, {"id": "bad"}, {"names": ["No id"]}],
-    )
-
-    assert api.calls == ["evt-1", "bad"]
-    assert alerts[0]["detail"]["alert"]["id"] == "evt-1"
-    assert alerts[1]["detail_error"] == "detail offline"
-    assert "detail" not in alerts[2]
-
-
-def test_alert_client_handle_alert_batch_orders_detail_emit_state_and_ack(monkeypatch):
-    calls = []
-    alerts = [{"id": "evt-1", "names": ["Alice"]}]
-
-    class StateStore:
-        def record_alerts(self, items):
-            calls.append(("state", items))
-
-    def fake_attach(api, items):
-        calls.append(("details", api, items))
-        return [{**item, "detail": {"alert": {"id": item["id"]}}} for item in items]
-
-    def fake_emit(items, popup=False, json_lines=False):
-        calls.append(("emit", items, popup, json_lines))
-
-    def fake_ack(api, items, acknowledged_by="", note=""):
-        calls.append(("ack", api, items, acknowledged_by, note))
-        return len(items)
-
-    api = object()
-    monkeypatch.setattr(alert_client_module, "attach_alert_details", fake_attach)
-    monkeypatch.setattr(alert_client_module, "emit_alerts", fake_emit)
-    monkeypatch.setattr(alert_client_module, "ack_emitted_alerts", fake_ack)
-
-    count = handle_alert_batch(
-        api,
-        alerts,
-        popup=True,
-        json_lines=True,
-        details=True,
-        state_store=StateStore(),
-        ack=True,
-        ack_by="cli",
-        ack_note="handled",
-    )
-
-    detailed = [{"id": "evt-1", "names": ["Alice"], "detail": {"alert": {"id": "evt-1"}}}]
-    assert count == 1
-    assert calls == [
-        ("details", api, alerts),
-        ("emit", detailed, True, True),
-        ("state", detailed),
-        ("ack", api, detailed, "cli", "handled"),
-    ]
-
-
-def test_alert_client_handle_alert_batch_keeps_delivery_when_detail_or_ack_fails(monkeypatch):
-    calls = []
-
-    class BatchApi:
-        def alert_detail(self, alert_id):
-            calls.append(("detail", alert_id))
-            if alert_id == "bad":
-                raise IntelApiError("detail offline")
-            return {"alert": {"id": alert_id}}
-
-        def ack_alert(self, alert_id, acknowledged_by="", note=""):
-            calls.append(("ack", alert_id, acknowledged_by, note))
-            if alert_id == "bad":
-                raise IntelApiError("ack offline")
-            return {"id": alert_id, "acknowledged": True}
-
-    class StateStore:
-        def __init__(self):
-            self.items = []
-
-        def record_alerts(self, items):
-            calls.append(("state", [item["id"] for item in items]))
-            self.items = list(items)
-
-    def fake_emit(items, popup=False, json_lines=False):
-        calls.append(("emit", [item["id"] for item in items], popup, json_lines))
-
-    api = BatchApi()
-    state = StateStore()
-    monkeypatch.setattr(alert_client_module, "emit_alerts", fake_emit)
-
-    count = handle_alert_batch(
-        api,
-        [{"id": "ok"}, {"id": "bad"}, {"id": "later"}],
-        details=True,
-        state_store=state,
-        ack=True,
-        ack_by="cli",
-        ack_note="handled",
-    )
-
-    assert count == 3
-    assert state.items[0]["detail"]["alert"]["id"] == "ok"
-    assert state.items[1]["detail_error"] == "detail offline"
-    assert state.items[2]["detail"]["alert"]["id"] == "later"
-    assert calls == [
-        ("detail", "ok"),
-        ("detail", "bad"),
-        ("detail", "later"),
-        ("emit", ["ok", "bad", "later"], False, False),
-        ("state", ["ok", "bad", "later"]),
-        ("ack", "ok", "cli", "handled"),
-        ("ack", "bad", "cli", "handled"),
-        ("ack", "later", "cli", "handled"),
-    ]
-
-
-def test_alert_client_acknowledges_emitted_alerts():
-    class AckApi:
-        def __init__(self):
-            self.acks = []
-
-        def ack_alert(self, alert_id, acknowledged_by="", note=""):
-            self.acks.append((alert_id, acknowledged_by, note))
-            return {"id": alert_id, "acknowledged": True}
-
-    api = AckApi()
-
-    count = ack_emitted_alerts(
-        api,
-        [{"id": "evt-1"}, {"id": ""}, {"names": ["missing"]}],
-        acknowledged_by="cli",
-        note="handled",
-    )
-
-    assert count == 1
-    assert api.acks == [("evt-1", "cli", "handled")]
+    assert details["mode"] == "events"
+    assert details["transport"] == "events"
+    assert details["popup"] is True
+    assert details["overlay"] is True
+    assert details["details"] is False
+    assert details["last_action"] == "connected"
+    assert details["client_version"] == "test-version"
+    assert details["host"] == "test-host"
+    assert details["last_success_at"] == "2026-07-10T00:00:00Z"
