@@ -6,6 +6,7 @@ from app.channels.log_watcher import (
     channel_name_from_path,
     detect_encoding,
 )
+from app.channels.local_system import find_latest_local_system, parse_local_system_line
 
 
 def test_channel_name_strips_timestamp_suffix(tmp_path):
@@ -23,6 +24,41 @@ def test_channel_name_strips_eve_character_id_suffix(tmp_path):
 def test_detect_encoding_for_utf8_and_utf16():
     assert detect_encoding("hello".encode("utf-8")) == "utf-8-sig"
     assert detect_encoding("hello".encode("utf-16")) == "utf-16"
+
+
+def test_parse_local_system_line_from_chinese_channel_switch():
+    line = "[ 2026.07.09 17:16:04 ] EVE 系统 > 频道更换为本地：S-KSWL*"
+
+    assert parse_local_system_line(line) == "S-KSWL"
+
+
+def test_parse_local_system_line_from_english_channel_switch():
+    line = "[ 2026.07.09 17:16:04 ] EVE System > Channel changed to Local : 5-O8B1*"
+
+    assert parse_local_system_line(line) == "5-O8B1"
+
+
+def test_find_latest_local_system_reads_recent_local_chatlog(tmp_path):
+    log_dir = tmp_path / "Chatlogs"
+    log_dir.mkdir()
+    older = log_dir / "Local_20260709_170000.txt"
+    newer = log_dir / "本地_20260709_171000.txt"
+    older.write_text(
+        "[ 2026.07.09 17:00:00 ] EVE System > Channel changed to Local : 5-O8B1*\n",
+        encoding="utf-8",
+    )
+    newer.write_text(
+        "[ 2026.07.09 17:10:00 ] EVE 系统 > 频道更换为本地：S-KSWL*\n",
+        encoding="utf-16",
+    )
+    os.utime(older, (1, 1))
+    os.utime(newer, (2, 2))
+
+    detection = find_latest_local_system(log_dir)
+
+    assert detection is not None
+    assert detection.system_name == "S-KSWL"
+    assert detection.path == newer
 
 
 def test_offset_store_saves_with_atomic_replace(tmp_path):

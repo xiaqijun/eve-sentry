@@ -109,18 +109,90 @@ describe("buildPilotObservations", () => {
         { id: "active-1", source: "channel", name: "Channel Pilot", active: true },
         { id: "active-2", source: "intel_channel", name: "Intel Pilot", active: true },
         { id: "active-3", source: "intel_channel_report", name: "Report Pilot", active: true },
-        { id: "active-4", source: "local_ocr", name: "Local Pilot", active: true },
-        { id: "active-5", source: "local_ocr_seen", name: "Seen Pilot", active: true },
-        { id: "active-6", source: "ocr", name: "Ocr Pilot", active: true },
-        { id: "active-7", source: "eve-sentry-detector", name: "Detector Pilot", active: true },
-        { id: "active-8", source: "manual", name: "Manual Pilot", active: true },
-        { id: "active-9", source: "manual_intel", name: "Manual Intel Pilot", active: true },
-        { id: "active-10", source: "zkill", name: "Zkill Pilot", active: true },
-        { id: "active-11", source: "zkillboard", name: "Zkillboard Pilot", active: true },
-        { id: "active-12", source: "killboard", name: "Killboard Pilot", active: true },
-        { id: "active-13", source: "esi", name: "Esi Pilot", active: true },
-        { id: "active-14", source: "", name: "Unknown Pilot", active: true },
-        { id: "active-15", source: "unmapped_feed", name: "Mystery Pilot", active: true },
+        {
+          id: "active-4",
+          source: "local_ocr",
+          name: "Local Pilot",
+          active: true,
+          metadata: { contact_standing: 0 },
+        },
+        {
+          id: "active-5",
+          source: "local_ocr_seen",
+          name: "Seen Pilot",
+          active: true,
+          metadata: { contact_standing: 0 },
+        },
+        {
+          id: "active-6",
+          source: "ocr",
+          name: "Ocr Pilot",
+          active: true,
+          metadata: { contact_standing: 0 },
+        },
+        {
+          id: "active-7",
+          source: "eve-sentry-detector",
+          name: "Detector Pilot",
+          active: true,
+          metadata: { contact_standing: 0 },
+        },
+        {
+          id: "active-8",
+          source: "manual",
+          name: "Manual Pilot",
+          active: true,
+          metadata: { hostile_count: 1 },
+        },
+        {
+          id: "active-9",
+          source: "manual_intel",
+          name: "Manual Intel Pilot",
+          active: true,
+          metadata: { hostile_count: 1 },
+        },
+        {
+          id: "active-10",
+          source: "zkill",
+          name: "Zkill Pilot",
+          active: true,
+          metadata: { hostile_count: 1 },
+        },
+        {
+          id: "active-11",
+          source: "zkillboard",
+          name: "Zkillboard Pilot",
+          active: true,
+          metadata: { hostile_count: 1 },
+        },
+        {
+          id: "active-12",
+          source: "killboard",
+          name: "Killboard Pilot",
+          active: true,
+          metadata: { hostile_count: 1 },
+        },
+        {
+          id: "active-13",
+          source: "esi",
+          name: "Esi Pilot",
+          active: true,
+          metadata: { hostile_count: 1 },
+        },
+        {
+          id: "active-14",
+          source: "",
+          name: "Unknown Pilot",
+          active: true,
+          metadata: { hostile_count: 1 },
+        },
+        {
+          id: "active-15",
+          source: "unmapped_feed",
+          name: "Mystery Pilot",
+          active: true,
+          metadata: { hostile_count: 1 },
+        },
       ],
     } satisfies BootstrapPayload;
 
@@ -198,6 +270,7 @@ describe("buildPilotObservations", () => {
           active: true,
           seen_count: 3,
           last_seen_at: "2026-07-03T10:00:04+00:00",
+          metadata: { contact_standing: 0 },
         },
       ],
     } satisfies BootstrapPayload;
@@ -218,6 +291,52 @@ describe("buildPilotObservations", () => {
     expect(buildPilotObservations(payload)).toEqual([]);
   });
 
+  it("excludes friendly OCR active intel from the hostile pilot list", () => {
+    const payload = {
+      ...bootstrap,
+      reports: [],
+      observations: [],
+      alerts: [],
+      active_intel: [
+        {
+          id: "friendly-1",
+          source: "eve-sentry-detector",
+          source_instance: "EVE - Hajimi6",
+          system_name: "S-KSWL",
+          system_id: 30000001,
+          target_type: "character",
+          name: "Hajimi6",
+          active: true,
+          seen_count: 1,
+          last_seen_at: "2026-07-03T10:00:04+00:00",
+          metadata: {
+            contact_standing: 10,
+            standing_source: "esi_self",
+            standing_contact_type: "character",
+          },
+        },
+        {
+          id: "hostile-1",
+          source: "eve-sentry-detector",
+          source_instance: "EVE - Hajimi6",
+          system_name: "S-KSWL",
+          system_id: 30000001,
+          target_type: "character",
+          name: "Neutral Pilot",
+          active: true,
+          seen_count: 1,
+          last_seen_at: "2026-07-03T10:00:05+00:00",
+          metadata: { contact_standing: 0 },
+        },
+      ],
+    } satisfies BootstrapPayload;
+
+    const items = buildPilotObservations(payload);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].pilotName).toBe("Neutral Pilot");
+  });
+
   it("filters active intel by selected system when provided", () => {
     const payload = {
       ...bootstrap,
@@ -236,6 +355,7 @@ describe("buildPilotObservations", () => {
           active: true,
           seen_count: 1,
           last_seen_at: "2026-07-03T10:00:04+00:00",
+          metadata: { contact_standing: 0 },
         },
         {
           id: "active-2",
@@ -248,6 +368,7 @@ describe("buildPilotObservations", () => {
           active: true,
           seen_count: 2,
           last_seen_at: "2026-07-03T10:00:05+00:00",
+          metadata: { contact_standing: 0 },
         },
       ],
     } satisfies BootstrapPayload;

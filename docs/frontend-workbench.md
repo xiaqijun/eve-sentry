@@ -5,9 +5,9 @@
 > node summaries should use real OCR/channel/ESI/server state only. Killmail
 > fields remain deferred until a new bounded server-side design is approved.
 
-> Current workflow baseline (2026-07-09): 前端不展示威胁评分。服务端返回
-> `classification=red|white|neutral|unknown` 和 `reason`，星图节点和观察列表只展示
-> 红名/白名数量、分类原因和真实来源。
+> Current workflow baseline (2026-07-10): 前端不展示威胁评分。服务端返回
+> `classification=red|white|neutral|unknown` 和 `reason` 作为兼容字段，业务展示映射为
+> 敌对/友好/未知；星图节点和观察列表只展示敌对数量、分类原因和真实来源。
 
 ## 当前方向
 
@@ -31,7 +31,7 @@
 ## 当前实现进度
 
 - 已用 `react-force-graph-2d` 替换原 React Flow 星图交互。
-- 星图节点显示星系名、安全等级、红名数、白名数和观察数。
+- 星图节点显示星系名、安全等级、敌对数和最近 1 小时击毁数。
 - 右侧 OCR 和情报列表已合并为“敌对飞行员观察列表”。
 - 观察列表当前合并来源包括 reports 与 alerts；同一飞行员会按来源、分类、原因和最近时间合并为一条记录。
 - 页面不会从 `raw_text` 猜测飞行员，不会构造假 zKill / ESI 情报填充界面。
@@ -70,15 +70,13 @@
 
 ```text
 乌寞-F4
-红 2  白 1
-观 5
+敌 2  损 1
 ```
 
 字段含义：
 
-- `红`：该星系当前 classified as red 的活跃观察数量。
-- `白`：该星系当前 classified as white 的活跃观察数量。
-- `观`：该星系合并后的观察记录数量，来源可包括 OCR、频道、ESI、手动情报等。
+- `敌`：该星系当前敌对活跃观察数量；中立声望、不良声望、糟糕声望统一归入敌对。
+- `损`：该星系最近 1 小时击毁数量；没有真实击毁数据时不显示虚构数值。
 
 ## 敌对飞行员观察列表
 
@@ -94,8 +92,8 @@
 
 ```text
 飞行员          星系      来源            分类    原因              最近出现
-Varg Vikernes  乌寞-F4   OCR / 预警      红名    hostile_alliance  20:46
-Khanid Shadows 乌寞-F4   频道 / ESI      白名    friendly_standing 20:45
+Varg Vikernes  乌寞-F4   OCR / 预警      敌对    hostile_alliance  20:46
+Khanid Shadows 乌寞-F4   频道 / ESI      友好    friendly_standing 20:45
 ```
 
 字段约定：
@@ -104,8 +102,8 @@ Khanid Shadows 乌寞-F4   频道 / ESI      白名    friendly_standing 20:45
 - 关联星系。
 - 军团 / 联盟，只在真实数据存在时展示。
 - 来源标签按真实来源组合展示。
-- 分类: 红名、白名、中立或未知。
-- 命中原因: 例如 `hostile_alliance`、`friendly_corporation`、`standing_red`。
+- 分类: 敌对、友好或未知。
+- 命中原因: 例如 `hostile_alliance`、`friendly_corporation`、`hostile_standing`。
 - 最近出现时间。
 
 交互约定：

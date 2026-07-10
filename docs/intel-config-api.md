@@ -1,8 +1,8 @@
 # EVE Sentry Intel Config API
 
 > Date: 2026-07-01
-> Current workflow baseline (2026-07-09): 第一版配置语义从 scoring 转为
-> classification。服务端只在角色被分类为白名或红名时触发一次性告警；`score`、
+> Current workflow baseline (2026-07-10): 第一版配置语义从 scoring 转为
+> classification。服务端只在角色被分类为敌对时触发一次性告警；`score`、
 > `min_score` 和 `min_level` 属于旧兼容字段。
 
 The intel server can load and update classification rules from `intel_config.json`.
@@ -52,12 +52,12 @@ classification rules and alert reasons.
     "defaults": {
       "source": "builtin",
       "friendly_standing_threshold": 5.0,
-      "hostile_standing_threshold": -5.0,
+      "hostile_standing_threshold": 0.0,
       "cooldown_seconds": 60.0
     },
     "classification_rules": [
-      {"reason": "manual_red", "classification": "red", "source": "builtin"},
-      {"reason": "manual_white", "classification": "white", "source": "builtin"}
+      {"reason": "hostile_standing", "classification": "red", "source": "builtin"},
+      {"reason": "friendly_standing", "classification": "white", "source": "builtin"}
     ],
     "whitelist": [],
     "blacklist": [],
@@ -66,7 +66,7 @@ classification rules and alert reasons.
     "hostile_corporation_ids": [],
     "hostile_alliance_ids": [],
     "friendly_standing_threshold": 5.0,
-    "hostile_standing_threshold": -5.0,
+    "hostile_standing_threshold": 0.0,
     "alert_once": true
   }
 }
@@ -84,31 +84,33 @@ immediately; existing alert cache is cleared so future `/api/v1/alerts` and
 
 ```json
 {
-  "whitelist": ["Friendly Pilot"],
-  "blacklist": ["Known Hostile"],
+  "whitelist": [],
+  "blacklist": [],
   "friendly_corporation_ids": [98000002],
   "friendly_alliance_ids": [99000002],
   "hostile_corporation_ids": [98000001],
   "hostile_alliance_ids": [99000001],
   "friendly_standing_threshold": 5.0,
-  "hostile_standing_threshold": -5.0,
+  "hostile_standing_threshold": 0.0,
   "alert_once": true
 }
 ```
 
-Set `friendly_standing_threshold` to `null` to disable automatic white
+Set `friendly_standing_threshold` to `null` to disable automatic friendly
 classification from authenticated ESI contacts. Set `hostile_standing_threshold`
-to `null` to disable standing-based red classification.
+to `null` to disable standing-based hostile classification.
 
-`whitelist` classifies targets by pilot name as white. `friendly_corporation_ids`
-and `friendly_alliance_ids` classify targets as white after ESI resolves the
-pilot profile.
-When authenticated ESI contacts are enabled, a character, corporation, or
-alliance contact whose standing is at or above `friendly_standing_threshold`
-also classifies that target as white automatically. `blacklist`,
-`hostile_corporation_ids`, `hostile_alliance_ids`, and hostile standings classify
-targets as red. White and red classifications both create a one-time alert.
-Neutral and unknown targets are kept as observations but do not create alerts.
+Default standing semantics:
+
+- `friendly_standing_threshold=5.0`: good/excellent standings are friendly.
+- `hostile_standing_threshold=0.0`: neutral, bad, and terrible standings are hostile.
+- Missing standing, ESI failure, or unresolved names stay unknown and only create observations.
+
+`friendly_corporation_ids` and `friendly_alliance_ids` classify resolved pilots
+as friendly. `hostile_corporation_ids`, `hostile_alliance_ids`, and hostile
+standings classify resolved pilots as hostile. Only hostile classifications
+create a one-time alert. Legacy `whitelist` and `blacklist` fields remain in the
+API for compatibility but are not the primary workflow terminology.
 
 ## Related Intel APIs
 

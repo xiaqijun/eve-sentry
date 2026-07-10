@@ -189,7 +189,13 @@ class SQLiteIntelStore(IntelStore):
                         self._ensure_system(report.system)
                         self._reports.append(report)
                         new_reports.append(report)
-                    if self._observation_is_suppressed(observation):
+                    character_profiles = self._character_profiles_for_observation(
+                        observation
+                    )
+                    if self._observation_is_suppressed(
+                        observation,
+                        character_profiles=character_profiles,
+                    ):
                         item = self._active_intel.get(active_id)
                         if item is not None and item.active:
                             item.active = False
@@ -210,7 +216,11 @@ class SQLiteIntelStore(IntelStore):
                         target_type="character",
                         name=name,
                         raw_text=raw_text,
-                        metadata={"client_id": client_id},
+                        metadata=self._active_ocr_metadata(
+                            client_id,
+                            observation,
+                            character_profiles=character_profiles,
+                        ),
                         first_seen_at=seen_at,
                         last_seen_at=seen_at,
                         active=True,
@@ -220,12 +230,6 @@ class SQLiteIntelStore(IntelStore):
                     result.created += 1
                     continue
 
-                if self._active_item_is_suppressed(item):
-                    item.active = False
-                    item.left_at = seen_at
-                    result.filtered += 1
-                    continue
-
                 elapsed = self._seconds_between_iso(item.last_seen_at, seen_at)
                 if elapsed is None or elapsed >= 0:
                     item.last_seen_at = seen_at
@@ -233,7 +237,6 @@ class SQLiteIntelStore(IntelStore):
                     item.raw_text = raw_text
                 item.active = True
                 item.left_at = ""
-                item.seen_count += 1
                 result.refreshed += 1
 
             for item in self._active_intel.values():

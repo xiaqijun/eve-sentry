@@ -9,6 +9,10 @@ from typing import Any, Callable
 from app.esi.client import EsiClient
 from app.esi.sso import EsiSsoError, EsiTokenStore, EveSsoClient, TokenSet
 
+CHARACTER_CONTACT_SCOPE = "esi-characters.read_contacts.v1"
+CORPORATION_CONTACT_SCOPE = "esi-corporations.read_contacts.v1"
+ALLIANCE_CONTACT_SCOPE = "esi-alliances.read_contacts.v1"
+
 
 @dataclass(frozen=True)
 class ContactStanding:
@@ -109,7 +113,92 @@ class EsiAuthenticatedSession:
                     tokens.access_token,
                 )
             )
+            profile = self._authenticated_character_profile(tokens)
+            corporation_id = _optional_positive_int(profile.get("corporation_id"))
+            alliance_id = _optional_positive_int(profile.get("alliance_id"))
+            if (
+                corporation_id is not None
+                and CORPORATION_CONTACT_SCOPE in set(tokens.scopes)
+            ):
+                contacts.extend(
+                    contact_standings_from_payload(
+                        self._optional_contacts(
+                            "get_corporation_contacts",
+                            corporation_id,
+                            tokens.access_token,
+                        )
+                    )
+                )
+            if alliance_id is not None and ALLIANCE_CONTACT_SCOPE in set(tokens.scopes):
+                contacts.extend(
+                    contact_standings_from_payload(
+                        self._optional_contacts(
+                            "get_alliance_contacts",
+                            alliance_id,
+                            tokens.access_token,
+                        )
+                    )
+                )
+            contacts.append(
+                ContactStanding(
+                    contact_id=character_id,
+                    contact_type="character",
+                    standing=10.0,
+                    label="self",
+                    source="esi_self",
+                )
+            )
+            if corporation_id is not None:
+                contacts.append(
+                    ContactStanding(
+                        contact_id=corporation_id,
+                        contact_type="corporation",
+                        standing=10.0,
+                        label="self corporation",
+                        source="esi_self",
+                    )
+                )
+            if alliance_id is not None:
+                contacts.append(
+                    ContactStanding(
+                        contact_id=alliance_id,
+                        contact_type="alliance",
+                        standing=10.0,
+                        label="self alliance",
+                        source="esi_self",
+                    )
+                )
         return EsiSessionSnapshot(tokens=tokens, location=location, contacts=contacts)
+
+    def _authenticated_character_profile(self, tokens: TokenSet) -> dict[str, Any]:
+        scopes = set(tokens.scopes)
+        if not (
+            CORPORATION_CONTACT_SCOPE in scopes
+            or ALLIANCE_CONTACT_SCOPE in scopes
+        ):
+            return {}
+        character_id = tokens.character_id
+        if character_id is None or not hasattr(self.esi_client, "get_character"):
+            return {}
+        try:
+            profile = self.esi_client.get_character(character_id)
+        except Exception:
+            return {}
+        return profile if isinstance(profile, dict) else {}
+
+    def _optional_contacts(
+        self,
+        method_name: str,
+        entity_id: int,
+        access_token: str,
+    ) -> list[dict[str, Any]]:
+        if not hasattr(self.esi_client, method_name):
+            return []
+        try:
+            payload = getattr(self.esi_client, method_name)(entity_id, access_token)
+        except Exception:
+            return []
+        return payload if isinstance(payload, list) else []
 
 
 def contact_standings_from_payload(rows: Any) -> list[ContactStanding]:

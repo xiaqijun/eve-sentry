@@ -91,3 +91,15 @@ def test_friendly_profile_alerts_without_hiding_observation():
     assert event is not None
     assert event.classification == "white"
     assert engine.suppresses_observation(observation()) is False
+
+
+def test_neutral_standing_alerts_as_hostile_by_default():
+    event = ClassificationEngine(cooldown_seconds=0).score(
+        observation(),
+        character_profile={"character_id": 123, "contact_standing": 0.0},
+    )
+
+    assert event is not None
+    assert event.classification == "red"
+    assert event.reason == "Hostile standing 0"
+    assert evidence_types(event)[:1] == ["hostile_standing"]

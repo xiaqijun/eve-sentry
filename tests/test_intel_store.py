@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core.active_intel import ActiveIntelItem
 from app.core.models import Evidence, ThreatEvent
 from app.esi.cache import EsiCache
 from app.esi.resolver import EsiResolver
@@ -120,6 +121,44 @@ def test_snapshot_map_uses_only_active_intel_for_system_hotness(tmp_path):
     assert snapshot["systems"][0]["hostiles"] == []
     assert snapshot["systems"][0]["hostile_count"] == 0
     assert snapshot["systems"][0]["latest_seen"] is None
+    assert snapshot["systems"][0]["report_count"] == 0
+
+
+def test_snapshot_map_excludes_friendly_ocr_active_intel_from_hostile_counts(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={"S-KSWL": StarSystem("S-KSWL", 10, 20, "Tenal", -0.3)},
+        links=[],
+    )
+    store._active_intel["friendly"] = ActiveIntelItem(
+        active_id="friendly",
+        source="eve-sentry-detector",
+        source_instance="EVE - Hajimi6",
+        system_name="S-KSWL",
+        system_id=30003629,
+        character_id=2124219939,
+        target_type="character",
+        name="Hajimi6",
+        raw_text="Hajimi6",
+        metadata={
+            "client_id": "detector-client:test",
+            "contact_standing": 10.0,
+            "standing_source": "esi_self",
+            "standing_contact_type": "character",
+        },
+        first_seen_at="2026-07-10T01:00:00+00:00",
+        last_seen_at="2026-07-10T01:00:00+00:00",
+        active=True,
+        seen_count=1,
+        source_observation_ids=[],
+    )
+
+    snapshot = store.snapshot()
+
+    assert snapshot["summary"]["hostile_count"] == 0
+    assert snapshot["summary"]["active_system_count"] == 0
+    assert snapshot["systems"][0]["hostiles"] == []
+    assert snapshot["systems"][0]["hostile_count"] == 0
     assert snapshot["systems"][0]["report_count"] == 0
 
 
@@ -243,8 +282,134 @@ def test_record_ocr_snapshot_creates_and_refreshes_active_intel(tmp_path):
     assert second["refreshed"] == 2
     assert len(active) == 2
     assert {item["name"] for item in active} == {"Alice", "Bob"}
-    assert all(item["seen_count"] == 2 for item in active)
+    assert all(item["seen_count"] == 1 for item in active)
     assert len(store.list_observations()) == 2
+
+
+def test_record_ocr_snapshot_stores_esi_identity_metadata(tmp_path):
+    class IdentityResolver:
+        def enrich_observation(self, observation):
+            observation.character_ids = [123]
+            observation.metadata = {
+                **observation.metadata,
+                "esi_resolution": {
+                    "attempted": True,
+                    "resolved_character_names": ["Alice"],
+                    "resolved_character_count": 1,
+                },
+            }
+            return observation
+
+        def character_profile(self, character_id):
+            assert character_id == 123
+            return {
+                "character_id": 123,
+                "name": "Alice",
+                "corporation_id": 42,
+                "corporation_name": "Alice Corp",
+                "alliance_id": 77,
+                "alliance_name": "Alice Alliance",
+                "contact_standing": 0.0,
+                "standing_source": "character",
+            }
+
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=IdentityResolver(),
+    )
+
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-03T10:00:00+00:00",
+            "names": ["Alice"],
+        }
+    )
+
+    active = store.list_active_intel(source="eve-sentry-detector")[0]
+    metadata = active["metadata"]
+
+    assert active["character_id"] == 123
+    assert metadata["client_id"] == "detector-client:test"
+    assert metadata["character_id"] == 123
+    assert metadata["corporation_id"] == 42
+    assert metadata["corporation_name"] == "Alice Corp"
+    assert metadata["alliance_id"] == 77
+    assert metadata["alliance_name"] == "Alice Alliance"
+    assert metadata["contact_standing"] == 0.0
+    assert metadata["standing_source"] == "character"
+    assert metadata["esi_resolution"]["resolved_character_names"] == ["Alice"]
+    assert metadata["character_profiles"][0]["name"] == "Alice"
+
+
+def test_record_ocr_snapshot_skips_identity_refresh_for_active_duplicates(tmp_path):
+    class IdentityResolver:
+        def __init__(self):
+            self.enrich_calls = 0
+
+        def enrich_observation(self, observation):
+            self.enrich_calls += 1
+            observation.character_ids = [123]
+            return observation
+
+        def character_profile(self, character_id):
+            return {"character_id": int(character_id), "name": "Alice"}
+
+    class StandingEnricher:
+        def __init__(self):
+            self.calls = 0
+
+        def enrich(self, observation):
+            self.calls += 1
+            profile = {
+                "character_id": observation.character_ids[0],
+                "name": "Alice",
+                "corporation_id": 42,
+                "corporation_name": "Alice Corp",
+            }
+            if self.calls >= 2:
+                profile["contact_standing"] = 0.0
+                profile["standing_source"] = "character"
+            return SimpleNamespace(character_profiles=[profile])
+
+    resolver = IdentityResolver()
+    enricher = StandingEnricher()
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=resolver,
+        enricher=enricher,
+    )
+    payload = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Hajimi6",
+        "system_name": "S-KSWL",
+        "names": ["Alice"],
+    }
+
+    store.record_ocr_snapshot(
+        {**payload, "seen_at": "2026-07-03T10:00:00+00:00"}
+    )
+    first = store.list_active_intel(source="eve-sentry-detector")[0]
+    assert "contact_standing" not in first["metadata"]
+    resolver_calls_after_create = resolver.enrich_calls
+    enricher_calls_after_create = enricher.calls
+
+    second = store.record_ocr_snapshot(
+        {**payload, "seen_at": "2026-07-03T10:01:01+00:00"}
+    )
+    refreshed = store.list_active_intel(source="eve-sentry-detector")[0]
+
+    assert second["refreshed"] == 1
+    assert resolver.enrich_calls == resolver_calls_after_create
+    assert enricher.calls == enricher_calls_after_create
+    assert "contact_standing" not in refreshed["metadata"]
+    assert refreshed["metadata"]["corporation_name"] == "Alice Corp"
 
 
 def test_record_ocr_snapshot_filters_friendly_corporation_from_active_intel(tmp_path):
@@ -375,7 +540,7 @@ def test_record_ocr_snapshot_canonicalizes_leading_i_l_ocr_name(tmp_path):
     active = store.list_active_intel()
     assert active[0]["name"] == "Iona Gonemion"
     assert active[0]["character_id"] == 90621602
-    assert active[0]["seen_count"] == 2
+    assert active[0]["seen_count"] == 1
     assert store.list_observations(include_suppressed=True)[0]["names"] == [
         "Iona Gonemion"
     ]
@@ -486,7 +651,7 @@ def test_record_ocr_snapshot_resolves_new_names_without_i_l_once(tmp_path):
     active = store.list_active_intel()
     assert active[0]["name"] == "Bob"
     assert active[0]["character_id"] == 123
-    assert active[0]["seen_count"] == 2
+    assert active[0]["seen_count"] == 1
     assert resolver.resolve_calls == [["Bob"]]
     assert resolver.profile_calls == [123]
 

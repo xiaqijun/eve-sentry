@@ -101,6 +101,48 @@ def test_publish_ocr_snapshot_uses_window_context_client_id():
     }
 
 
+def test_refresh_intel_location_falls_back_to_local_chatlog(monkeypatch):
+    class FakeSettings:
+        def get_channel_log_dir(self):
+            return "C:/EVE/Chatlogs"
+
+    class FakeClient:
+        def current_esi_system(self):
+            raise RuntimeError("should not call ESI when disabled")
+
+    class Detection:
+        system_name = "S-KSWL"
+
+    monkeypatch.setattr(
+        "app.ui.main_window.find_latest_local_system",
+        lambda log_dir: Detection() if log_dir == "C:/EVE/Chatlogs" else None,
+    )
+    window = MainWindow.__new__(MainWindow)
+    window._use_esi_location = False
+    window._use_local_system_log = True
+    window._intel_client = FakeClient()
+    window._settings = FakeSettings()
+    window._intel_system = "Unknown"
+    window._intel_system_id = None
+    window._intel_system_source = "default"
+    window._esi_location_next_check = 0.0
+    window._esi_location_ttl = 30.0
+    window._last_local_system_error = ""
+    window._heartbeat_last_action = ""
+    window._heartbeat_last_success_at = ""
+    window._heartbeat_last_error = ""
+    window._log_messages = []
+    window._log_message = lambda message: window._log_messages.append(message)
+    window._refresh_status_cards = lambda: None
+
+    assert MainWindow._refresh_intel_location(window, force=True) is True
+
+    assert window._intel_system == "S-KSWL"
+    assert window._intel_system_id is None
+    assert window._intel_system_source == "chatlog"
+    assert window._heartbeat_last_action == "local_system_sync"
+
+
 class FakeChannelTimer:
     def __init__(self):
         self.started = False
@@ -1175,3 +1217,63 @@ def test_select_region_passes_window_title_to_selector(monkeypatch):
 
     assert created == {"args": (100, 200, 800, 600), "title": "EVE - Hajimi6"}
     assert window._selector.shown is True
+
+
+def test_region_selected_updates_running_worker_region():
+    class FakePrefs:
+        def __init__(self):
+            self.saved = None
+
+        def save_region(self, window, region):
+            self.saved = (dict(window), dict(region))
+
+    class FakeWorker:
+        def __init__(self):
+            self.region = None
+
+        def set_region(self, x, y, w, h):
+            self.region = {"x": x, "y": y, "w": w, "h": h}
+
+    window_info = {
+        "hwnd": 99,
+        "title": "EVE - Hajimi6",
+        "x": 100,
+        "y": 200,
+        "w": 800,
+        "h": 600,
+    }
+    key = "hwnd:99:eve - hajimi6"
+    worker = FakeWorker()
+    context = {"key": key, "region": {"x": 1, "y": 2, "w": 3, "h": 4}}
+    updates = []
+    heartbeats = []
+
+    window = MainWindow.__new__(MainWindow)
+    window._manual_region = None
+    window._current_window_info = lambda: window_info
+    window._region_prefs = FakePrefs()
+    window._workers = {key: worker}
+    window._worker_contexts = {key: context}
+    window._heartbeat_last_action = ""
+    window._heartbeat_last_success_at = ""
+    window._publish_heartbeat = lambda: heartbeats.append(True)
+    window._update_window_status = (
+        lambda item, status, action: updates.append((item, status, action))
+    )
+    window._window_label = type("Label", (), {"setText": lambda self, text: None})()
+    window._log_message = lambda message: None
+    window._refresh_status_cards = lambda: None
+    window._refresh_window_status_table = lambda: None
+    window.show = lambda: None
+
+    MainWindow._on_region_selected(window, 336, 223, 179, 762)
+
+    assert worker.region == {"x": 336, "y": 223, "w": 179, "h": 762}
+    assert context["region"] == {"x": 336, "y": 223, "w": 179, "h": 762}
+    assert window._region_prefs.saved == (
+        window_info,
+        {"x": 336, "y": 223, "w": 179, "h": 762},
+    )
+    assert updates == [(context, "运行中", "区域已更新")]
+    assert window._heartbeat_last_action == "region_updated"
+    assert heartbeats == [True]

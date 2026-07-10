@@ -44,6 +44,8 @@ esi_tokens.json
 zkill_cache.json
 
 # Local run/debug artifacts
+/.tmp_pytest/
+/.tmp_pytest_run/
 /_client_*.log
 /_server_*.log
 /_live_*

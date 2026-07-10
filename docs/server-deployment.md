@@ -254,8 +254,8 @@ curl http://127.0.0.1:8765/api/v1/esi/status
 
 职责边界:
 
-- 检测客户端只上传 OCR snapshot 和可选频道日志，不查询 ESI、不做白名单/敌对过滤、不生成告警。
-- 服务端必须启用并配置好 ESI、白名单/友军配置、敌对配置和可选 zKill，才能完成最终威胁判断。
+- 检测客户端只上传 OCR snapshot 和可选频道日志，不查询 ESI、不做声望/敌对过滤、不生成告警。
+- 服务端必须启用并配置好 ESI、友好/敌对军团联盟配置和 standing 阈值，才能完成最终敌对判断；默认中立、不良、糟糕声望都归为敌对。
 - OCR active intel 代表“本地当前可见名单”，不是告警；只有服务端评分产生的 `ThreatEvent` 才会进入 `/api/v1/alerts` 和 SSE。
 - 如果公网联调出现“非敌对也告警”，先看 `GET /api/v1/alerts/{id}` 的 evidence 和 `GET /api/v1/config`，不要在客户端加过滤。
 

@@ -85,6 +85,7 @@ export function connectAlerts(
   onAlert: (alert: AlertItem) => void,
   since?: string,
   onError?: () => void,
+  onBootstrap?: (bootstrap: BootstrapPayload) => void,
 ): EventSource {
   const query = new URLSearchParams({
     limit: "50",
@@ -96,6 +97,9 @@ export function connectAlerts(
   const stream = new EventSource(apiPath(`/api/v1/events?${query.toString()}`));
   stream.addEventListener("alert", (event) => {
     onAlert(JSON.parse(event.data) as AlertItem);
+  });
+  stream.addEventListener("bootstrap", (event) => {
+    onBootstrap?.(JSON.parse(event.data) as BootstrapPayload);
   });
   stream.addEventListener("error", () => {
     onError?.();

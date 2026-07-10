@@ -16,6 +16,39 @@ const LEVEL_RANK: Record<Level | "unknown", number> = {
   critical: 4,
 };
 
+const OCR_SOURCES = new Set([
+  "local_ocr",
+  "local_ocr_seen",
+  "ocr",
+  "eve-sentry-detector",
+]);
+const CHANNEL_SOURCES = new Set([
+  "channel",
+  "intel_channel",
+  "intel_channel_report",
+]);
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function firstNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return null;
+}
+
 function normalizeName(value: string): string {
   return value.trim().toLocaleLowerCase();
 }
@@ -193,12 +226,39 @@ function activeIntelObservation(item: ActiveIntelItem): PilotObservation {
   };
 }
 
+function activeIntelIsHostile(item: ActiveIntelItem): boolean {
+  const metadata = asRecord(item.metadata);
+  const hostileCount = firstNumber(metadata.hostile_count);
+  if (hostileCount !== null && hostileCount > 0) {
+    return true;
+  }
+
+  const source = String(item.source || "").trim().toLowerCase();
+  if (CHANNEL_SOURCES.has(source)) {
+    return true;
+  }
+  if (!OCR_SOURCES.has(source)) {
+    return false;
+  }
+
+  const standing = firstNumber(metadata.contact_standing, metadata.standing);
+  if (standing === null) {
+    return false;
+  }
+  if (standing >= 5) {
+    return false;
+  }
+  return standing <= 0;
+}
+
 export function buildPilotObservations(
   bootstrap: BootstrapPayload,
   selectedSystemId?: number | null,
 ): PilotObservation[] {
   if (Array.isArray(bootstrap.active_intel)) {
-    const activeIntel = bootstrap.active_intel.filter((item) => item.active !== false);
+    const activeIntel = bootstrap.active_intel.filter(
+      (item) => item.active !== false && activeIntelIsHostile(item),
+    );
     return activeIntel
       .map((item) => activeIntelObservation(item))
       .filter((item) => {

@@ -36,6 +36,7 @@ import { summarizeWorkbench } from "./workbenchSummary";
 type WorkbenchNavId = "map" | "observations" | "alerts" | "esi";
 
 const REALTIME_EVENT_WINDOW_MS = 60 * 60 * 1000;
+const BOOTSTRAP_REFRESH_INTERVAL_MS = 60000;
 
 function formatTime(value?: string): string {
   if (!value) {
@@ -189,6 +190,9 @@ export function WorkbenchPage() {
   const bootstrapQuery = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
+    refetchInterval: BOOTSTRAP_REFRESH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
   });
 
   const bootstrap = bootstrapQuery.data;
@@ -225,11 +229,15 @@ export function WorkbenchPage() {
         });
       },
       bootstrap?.generated_at,
+      undefined,
+      (nextBootstrap: BootstrapPayload) => {
+        queryClient.setQueryData<BootstrapPayload>(["bootstrap"], nextBootstrap);
+      },
     );
     return () => {
       stream.close();
     };
-  }, [bootstrap?.generated_at, bootstrapQuery.isSuccess, queryClient]);
+  }, [bootstrapQuery.isSuccess, queryClient]);
 
   const handleEsiLogin = useCallback(async () => {
     setEsiLoginStarting(true);

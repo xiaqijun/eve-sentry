@@ -60,7 +60,7 @@ class ThreatEnricher:
             profile = self._public_character_profile(character_id)
             if contacts:
                 base_profile = profile or {"character_id": character_id}
-                annotated = apply_contact_standing(base_profile, contacts)
+                annotated = _apply_contact_or_neutral_standing(base_profile, contacts)
                 if profile is not None or "contact_standing" in annotated:
                     profile = annotated
             if profile is not None:
@@ -80,7 +80,7 @@ class ThreatEnricher:
             return None
         contacts = self.contact_standings()
         if contacts:
-            return apply_contact_standing(profile, contacts)
+            return _apply_contact_or_neutral_standing(profile, contacts)
         return profile
 
     def contact_standings(self) -> list[ContactStanding]:
@@ -153,6 +153,18 @@ def _add_profile_entity_ids(
     alliance_id = _optional_positive_int(profile.get("alliance_id"))
     if alliance_id is not None:
         alliance_ids.add(alliance_id)
+
+
+def _apply_contact_or_neutral_standing(
+    profile: dict[str, Any],
+    contacts: list[ContactStanding],
+) -> dict[str, Any]:
+    result = apply_contact_standing(profile, contacts)
+    if "contact_standing" not in result:
+        result["contact_standing"] = 0.0
+        result["standing_source"] = "esi_contacts"
+        result["standing_contact_type"] = "neutral"
+    return result
 
 
 def _optional_positive_int(value: Any) -> int | None:

@@ -6,6 +6,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from app.core.models import Evidence, ThreatEvent
 from app.esi.cache import EsiCache
 from app.esi.resolver import EsiResolver
 from app.esi.session import ContactStanding
@@ -38,6 +39,22 @@ def request_text(url, headers=None, timeout=3):
     request = Request(url, headers=request_headers)
     with urlopen(request, timeout=timeout) as response:
         return response.status, response.headers, response.read().decode("utf-8")
+
+
+def sse_events(body):
+    events = []
+    for chunk in body.split("\n\n"):
+        event = {}
+        for line in chunk.splitlines():
+            if line.startswith("event:"):
+                event["event"] = line[len("event:"):].strip()
+            elif line.startswith("id:"):
+                event["id"] = line[len("id:"):].strip()
+            elif line.startswith("data:"):
+                event["data"] = json.loads(line[len("data:"):].strip())
+        if event:
+            events.append(event)
+    return events
 
 
 def write_sde_fixture(root):
@@ -1920,8 +1937,8 @@ def test_events_stream_returns_alert_sse(tmp_path):
         assert status == 200
         assert headers["Content-Type"].startswith("text/event-stream")
         assert "event: alert" in body
-        data_line = next(line for line in body.splitlines() if line.startswith("data:"))
-        payload = json.loads(data_line[len("data:"):].strip())
+        events = sse_events(body)
+        payload = next(item["data"] for item in events if item.get("event") == "alert")
         assert payload["id"] == created["alert"]["id"]
     finally:
         server.stop()
@@ -1948,10 +1965,73 @@ def test_v1_events_stream_returns_alert_sse(tmp_path):
 
         assert status == 200
         assert headers["Content-Type"].startswith("text/event-stream")
+        assert "event: bootstrap" in body
         assert "event: alert" in body
-        data_line = next(line for line in body.splitlines() if line.startswith("data:"))
-        payload = json.loads(data_line[len("data:"):].strip())
+        events = sse_events(body)
+        bootstrap = next(
+            item["data"] for item in events if item.get("event") == "bootstrap"
+        )
+        payload = next(item["data"] for item in events if item.get("event") == "alert")
+        assert bootstrap["schema_version"] == "intel_bootstrap.v1"
+        assert bootstrap["map"]["summary"]["alert_count"] == 1
         assert payload["id"] == created["alert"]["id"]
+    finally:
+        server.stop()
+
+
+def test_v1_active_alerts_exclude_friendly_classifications(tmp_path):
+    class FriendlyScorer:
+        def score(self, observation, **kwargs):
+            return ThreatEvent(
+                event_id=f"evt_{observation.observation_id}",
+                system_name=observation.system_name,
+                system_id=observation.system_id,
+                names=list(observation.names),
+                character_ids=list(observation.character_ids),
+                score=1,
+                level="low",
+                evidence=[
+                    Evidence(
+                        "friendly_standing",
+                        1,
+                        "Friendly standing 10",
+                    )
+                ],
+                source_observation_id=observation.observation_id,
+                created_at=observation.received_at,
+                scoring_version="classification.v1",
+                classification="white",
+                reason="Friendly standing 10",
+            )
+
+    store = IntelStore(tmp_path / "intel.json", scorer=FriendlyScorer())
+    store.add_observation(
+        {
+            "system_name": "Tama",
+            "names": ["Friendly Pilot"],
+            "source": "intel_channel",
+            "seen_at": "2026-07-10T01:46:36+00:00",
+        }
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, bootstrap_payload = request_json(f"{server.url}/api/v1/bootstrap")
+        assert status == 200
+        bootstrap = bootstrap_payload["bootstrap"]
+        assert bootstrap["alerts"] == []
+        assert bootstrap["map"]["summary"]["alert_count"] == 0
+
+        status, alerts = request_json(f"{server.url}/api/v1/alerts")
+        assert status == 200
+        assert alerts == {"alerts": [], "count": 0}
+
+        status, headers, body = request_text(
+            f"{server.url}/api/v1/events?{urlencode({'timeout': '0', 'limit': '5'})}"
+        )
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/event-stream")
+        assert "event: alert" not in body
     finally:
         server.stop()
 

@@ -4,6 +4,7 @@ import json
 import pytest
 
 from app.esi.session import (
+    ContactStanding,
     EsiAuthenticatedSession,
     apply_contact_standing,
     contact_standings_from_payload,
@@ -140,6 +141,9 @@ def test_authenticated_session_refreshes_and_fetches_snapshot(tmp_path):
     assert snapshot.tokens.character_owner_hash == "owner-new"
     assert snapshot.location == {"solar_system_id": 30002813}
     assert snapshot.contacts[0].contact_id == 456
+    assert snapshot.contacts[1].contact_id == 123
+    assert snapshot.contacts[1].standing == 10.0
+    assert snapshot.contacts[1].source == "esi_self"
     assert snapshot.to_dict()["contacts"][0]["standing"] == -10.0
     assert esi.calls == [
         ("location", 123, new_access),
@@ -147,6 +151,95 @@ def test_authenticated_session_refreshes_and_fetches_snapshot(tmp_path):
     ]
     assert saved is not None
     assert saved.refresh_token == "refresh-old"
+
+
+def test_authenticated_session_fetches_corporation_and_alliance_contacts(tmp_path):
+    access = jwt(
+        {
+            "sub": "CHARACTER:EVE:123",
+            "owner": "owner",
+            "scp": [
+                "esi-characters.read_contacts.v1",
+                "esi-corporations.read_contacts.v1",
+                "esi-alliances.read_contacts.v1",
+            ],
+        }
+    )
+    store = EsiTokenStore(tmp_path / "tokens.json")
+    store.save(
+        TokenSet.from_payload(
+            {
+                "access_token": access,
+                "expires_at": 2000,
+                "refresh_token": "refresh",
+            }
+        )
+    )
+
+    class FakeEsi:
+        def __init__(self):
+            self.calls = []
+
+        def get_character_contacts(self, character_id, access_token):
+            self.calls.append(("character_contacts", character_id, access_token))
+            return [{"contact_id": 321, "contact_type": "character", "standing": -5}]
+
+        def get_character(self, character_id):
+            self.calls.append(("character", character_id))
+            return {"corporation_id": 456, "alliance_id": 789}
+
+        def get_corporation_contacts(self, corporation_id, access_token):
+            self.calls.append(("corporation_contacts", corporation_id, access_token))
+            return [{"contact_id": 987, "contact_type": "alliance", "standing": 5}]
+
+        def get_alliance_contacts(self, alliance_id, access_token):
+            self.calls.append(("alliance_contacts", alliance_id, access_token))
+            return [{"contact_id": 654, "contact_type": "corporation", "standing": 10}]
+
+    esi = FakeEsi()
+    session = EsiAuthenticatedSession(
+        sso_client=object(),
+        esi_client=esi,
+        token_store=store,
+        now=lambda: 1000.0,
+    )
+
+    snapshot = session.snapshot(include_location=False)
+
+    assert [(item.contact_id, item.contact_type, item.standing) for item in snapshot.contacts] == [
+        (321, "character", -5.0),
+        (987, "alliance", 5.0),
+        (654, "corporation", 10.0),
+        (123, "character", 10.0),
+        (456, "corporation", 10.0),
+        (789, "alliance", 10.0),
+    ]
+    assert esi.calls == [
+        ("character_contacts", 123, access),
+        ("character", 123),
+        ("corporation_contacts", 456, access),
+        ("alliance_contacts", 789, access),
+    ]
+
+
+def test_self_standing_overrides_matching_contact_entry():
+    contacts = contact_standings_from_payload(
+        [{"contact_id": 123, "contact_type": "character", "standing": -10}]
+    )
+    contacts.append(
+        ContactStanding(
+            contact_id=123,
+            contact_type="character",
+            standing=10.0,
+            source="esi_self",
+        )
+    )
+    profile = {"character_id": 123}
+
+    annotated = apply_contact_standing(profile, contacts)
+
+    assert annotated["contact_standing"] == 10.0
+    assert annotated["standing_source"] == "esi_self"
 
 
 def test_authenticated_session_requires_saved_tokens(tmp_path):

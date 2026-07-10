@@ -5,7 +5,7 @@
 - `docs/intel-platform-architecture.md`
   情报平台整体架构和当前实现状态，覆盖检测客户端、预警客户端、服务端、ESI、频道解析、分类告警、API 和存储规划。
 - `docs/intel-workflows.md`
-  第一版情报工作流，定义客户端只采集、服务端只查询未查询过 ESI 的角色、白名/红名一次性告警，以及去掉评分系统后的前后端行为。
+  第一版情报工作流，定义客户端只采集、服务端只查询未查询过 ESI 的角色、按 ESI 声望把中立/不良/糟糕统一归为敌对，以及去掉评分系统后的前后端行为。
 - `docs/intel-platform-roadmap.md`
   当前完成度、第一版边界、待做清单和后续开发顺序。
 - `docs/intel-config-api.md`

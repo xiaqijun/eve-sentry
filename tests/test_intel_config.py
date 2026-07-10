@@ -57,3 +57,12 @@ def test_config_store_persists_partial_updates(tmp_path):
     assert reloaded.to_dict()["blacklist"] == ["Alice"]
     assert reloaded.to_dict()["hostile_standing_threshold"] == -10.0
     assert reloaded.to_dict()["cooldown_seconds"] == 60.0
+
+
+def test_config_defaults_treat_neutral_standing_as_hostile():
+    config = ScoringConfig.from_payload({})
+    scorer = config.build_scorer()
+
+    assert config.hostile_standing_threshold == 0.0
+    assert config.to_dict()["defaults"]["hostile_standing_threshold"] == 0.0
+    assert scorer.watchlist.hostile_standing_threshold == 0.0

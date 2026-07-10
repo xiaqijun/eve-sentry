@@ -48,7 +48,11 @@ class RegionPreferences:
         self._data["member_list_region"] = normalized
         regions = self._data.setdefault("member_list_regions", {})
         if isinstance(regions, dict):
-            regions[self._window_key(window)] = normalized
+            window_key = self._window_key(window)
+            regions[window_key] = normalized
+            title_key = self._legacy_window_key(window)
+            if title_key != window_key:
+                regions[title_key] = normalized
         self._save()
 
     def resolve_region(self, window: dict) -> dict | None:
@@ -87,6 +91,17 @@ class RegionPreferences:
             legacy_stored = regions.get(self._legacy_window_key(window))
             if isinstance(legacy_stored, dict):
                 return legacy_stored
+            title_key = self._legacy_window_key(window)
+            title_suffix = f":{title_key}"
+            title_matches = [
+                item
+                for key, item in regions.items()
+                if isinstance(item, dict)
+                and isinstance(key, str)
+                and key.endswith(title_suffix)
+            ]
+            if len(title_matches) == 1:
+                return title_matches[0]
             if regions:
                 return None
         stored = self._data.get("member_list_region")

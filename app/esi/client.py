@@ -79,6 +79,36 @@ class EsiClient:
             raise EsiApiError("ESI returned invalid contacts payload")
         return payload
 
+    def get_corporation_contacts(
+        self,
+        corporation_id: int,
+        access_token: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch authenticated corporation contacts and standings."""
+        payload = self._request(
+            "GET",
+            f"/corporations/{int(corporation_id)}/contacts/",
+            access_token=access_token,
+        )
+        if not isinstance(payload, list):
+            raise EsiApiError("ESI returned invalid corporation contacts payload")
+        return payload
+
+    def get_alliance_contacts(
+        self,
+        alliance_id: int,
+        access_token: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch authenticated alliance contacts and standings."""
+        payload = self._request(
+            "GET",
+            f"/alliances/{int(alliance_id)}/contacts/",
+            access_token=access_token,
+        )
+        if not isinstance(payload, list):
+            raise EsiApiError("ESI returned invalid alliance contacts payload")
+        return payload
+
     def _request(
         self,
         method: str,

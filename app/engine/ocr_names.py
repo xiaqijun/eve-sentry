@@ -10,6 +10,8 @@ def _clean_ocr_name(text: str) -> str:
     cleaned = _LEADING_ICON_RE.sub("", text.strip()).strip()
     if not re.search(r"\w", cleaned):
         return ""
+    if cleaned.isdigit():
+        return ""
     return cleaned
 
 

@@ -86,8 +86,15 @@ const apiMocks = vi.hoisted(() => {
   return {
     close,
     onAlert: undefined as ((alert: AlertItem) => void) | undefined,
-    connectAlerts: vi.fn((onAlert: (alert: AlertItem) => void, _since?: string) => {
+    onBootstrap: undefined as ((bootstrap: BootstrapPayload) => void) | undefined,
+    connectAlerts: vi.fn((
+      onAlert: (alert: AlertItem) => void,
+      _since?: string,
+      _onError?: () => void,
+      onBootstrap?: (bootstrap: BootstrapPayload) => void,
+    ) => {
       apiMocks.onAlert = onAlert;
+      apiMocks.onBootstrap = onBootstrap;
       return { close };
     }),
     fetchBootstrap: vi.fn(async () => bootstrap),
@@ -130,6 +137,7 @@ describe("WorkbenchPage", () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
     Element.prototype.scrollIntoView = vi.fn();
     apiMocks.onAlert = undefined;
+    apiMocks.onBootstrap = undefined;
     apiMocks.fetchBootstrap.mockImplementation(async () => bootstrap);
     apiMocks.fetchEsiLoginStatus.mockImplementation(async () => ({
       status: "pending",
@@ -209,21 +217,53 @@ describe("WorkbenchPage", () => {
     expect(apiMocks.connectAlerts).toHaveBeenCalledWith(
       expect.any(Function),
       "2026-07-02T12:00:00Z",
+      undefined,
+      expect.any(Function),
     );
+    const nextAlert = {
+      id: "alert-2",
+      system_name: "0-UVHJ",
+      system_id: 30003615,
+      names: ["Pilot Two"],
+      level: "medium",
+      score: 50,
+      created_at: "2026-07-02T12:02:00Z",
+    } satisfies AlertItem;
+    apiMocks.fetchBootstrap.mockResolvedValueOnce({
+      ...bootstrap,
+      alerts: [nextAlert, ...bootstrap.alerts],
+    });
+
     await act(async () => {
-      apiMocks.onAlert?.({
-        id: "alert-2",
-        system_name: "0-UVHJ",
-        system_id: 30003615,
-        names: ["Pilot Two"],
-        level: "medium",
-        score: 50,
-        created_at: "2026-07-02T12:02:00Z",
-      });
+      apiMocks.onAlert?.(nextAlert);
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
 
     expect(container).toHaveTextContent("Pilot Two");
+    expect(apiMocks.connectAlerts).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      apiMocks.onBootstrap?.({
+        ...bootstrap,
+        alerts: [],
+        active_intel: [],
+        reports: [],
+        observations: [],
+        map: {
+          ...bootstrap.map,
+          summary: {
+            ...bootstrap.map.summary,
+            alert_count: 0,
+            hostile_count: 0,
+            report_count: 0,
+          },
+        },
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(container).not.toHaveTextContent("Pilot Two");
+    expect(container.querySelector("#workbench-alert-panel")).toHaveTextContent("暂无告警");
     expect(apiMocks.connectAlerts).toHaveBeenCalledTimes(1);
 
     await act(async () => {

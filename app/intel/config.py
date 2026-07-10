@@ -45,7 +45,7 @@ class ScoringConfig:
     hostile_corporation_ids: list[int] = field(default_factory=list)
     hostile_alliance_ids: list[int] = field(default_factory=list)
     friendly_standing_threshold: float | None = 5.0
-    hostile_standing_threshold: float | None = -5.0
+    hostile_standing_threshold: float | None = 0.0
     cooldown_seconds: float = 60.0
 
     @classmethod
@@ -74,7 +74,7 @@ class ScoringConfig:
             hostile_standing_threshold=_optional_float(
                 payload["hostile_standing_threshold"]
                 if "hostile_standing_threshold" in payload
-                else -5.0,
+                else 0.0,
                 "hostile_standing_threshold",
             ),
             cooldown_seconds=_clean_cooldown(payload.get("cooldown_seconds", 60.0)),
@@ -88,7 +88,7 @@ class ScoringConfig:
             "defaults": {
                 "source": "builtin",
                 "friendly_standing_threshold": 5.0,
-                "hostile_standing_threshold": -5.0,
+                "hostile_standing_threshold": 0.0,
                 "cooldown_seconds": 60.0,
             },
             "evidence_rules": [dict(item) for item in EVIDENCE_RULES],

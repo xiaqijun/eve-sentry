@@ -59,7 +59,12 @@ interface ActiveIntelSummary {
   reportCount: number;
 }
 
-const OCR_SOURCES = new Set(["local_ocr", "ocr", "eve-sentry-detector"]);
+const OCR_SOURCES = new Set([
+  "local_ocr",
+  "local_ocr_seen",
+  "ocr",
+  "eve-sentry-detector",
+]);
 const CHANNEL_SOURCES = new Set([
   "channel",
   "intel_channel",
@@ -197,6 +202,31 @@ function activeIntelWeight(item: Record<string, unknown>): number {
   return 1;
 }
 
+function activeIntelIsHostile(item: Record<string, unknown>): boolean {
+  const metadata = asRecord(item.metadata);
+  const hostileCount = firstNumber(metadata.hostile_count);
+  if (hostileCount !== null && hostileCount > 0) {
+    return true;
+  }
+
+  const source = String(item.source || "").trim().toLowerCase();
+  if (CHANNEL_SOURCES.has(source)) {
+    return true;
+  }
+  if (!OCR_SOURCES.has(source)) {
+    return false;
+  }
+
+  const standing = firstNumber(metadata.contact_standing, metadata.standing);
+  if (standing === null) {
+    return false;
+  }
+  if (standing >= 5) {
+    return false;
+  }
+  return standing <= 0;
+}
+
 function activeIntelNodeName(
   item: Record<string, unknown>,
   systemsById: Map<number, string>,
@@ -238,6 +268,10 @@ function summarizeActiveIntel(
       channelCount: 0,
       reportCount: 0,
     };
+    if (!activeIntelIsHostile(item)) {
+      summaries.set(nodeName, summary);
+      continue;
+    }
     if (OCR_SOURCES.has(source)) {
       summary.ocrCount += 1;
       summary.reportCount += activeIntelWeight(item);

@@ -298,6 +298,16 @@ def test_hostile_standing_profile_adds_evidence():
     assert evidence_types(event) == ["intel_channel_report", "hostile_standing"]
 
 
+def test_neutral_standing_profile_adds_hostile_evidence_by_default():
+    event = ScoringEngine(cooldown_seconds=0).score(
+        observation(source="intel_channel"),
+        character_profile={"contact_standing": 0.0},
+    )
+
+    assert event is not None
+    assert evidence_types(event) == ["intel_channel_report", "hostile_standing"]
+
+
 def test_recent_kill_activity_is_ignored_when_killboard_is_disabled():
     activity = SimpleNamespace(character_id=123, window="7d", kills=5)
     event = ScoringEngine(cooldown_seconds=0).score(

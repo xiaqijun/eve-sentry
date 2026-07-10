@@ -24,7 +24,7 @@ class Watchlist:
     hostile_corporation_ids: set[int] = field(default_factory=set)
     hostile_alliance_ids: set[int] = field(default_factory=set)
     friendly_standing_threshold: float | None = 5.0
-    hostile_standing_threshold: float | None = -5.0
+    hostile_standing_threshold: float | None = 0.0
 
 
 @dataclass(frozen=True)

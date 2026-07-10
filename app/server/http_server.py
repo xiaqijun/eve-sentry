@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import time
+import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -1129,6 +1130,8 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             active_item = active_by_source_id.get(source_id)
             if active_item is None:
                 continue
+            if not self._active_alert_is_hostile(alert, active_item):
+                continue
             data = dict(alert)
             data["active_intel_id"] = active_item.get("id")
             alerts.append(data)
@@ -1137,6 +1140,41 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         if limit is not None:
             alerts = alerts[:max(0, limit)]
         return alerts
+
+    def _active_alert_is_hostile(
+        self,
+        alert: dict[str, Any],
+        active_item: dict[str, Any],
+    ) -> bool:
+        classification = str(alert.get("classification") or "").strip().casefold()
+        if classification == "white":
+            return False
+        if classification == "red":
+            return True
+
+        evidence = alert.get("evidence")
+        if isinstance(evidence, list):
+            evidence_types = {
+                str(item.get("type") or "").strip().casefold()
+                for item in evidence
+                if isinstance(item, dict)
+            }
+            if any(item.startswith("friendly_") for item in evidence_types):
+                return False
+            if any(item.startswith("hostile_") for item in evidence_types):
+                return True
+
+        metadata = (
+            active_item.get("metadata")
+            if isinstance(active_item.get("metadata"), dict)
+            else {}
+        )
+        hostile_count = metadata.get("hostile_count")
+        if isinstance(hostile_count, int) and hostile_count > 0:
+            return True
+
+        source = str(active_item.get("source") or "").strip().casefold()
+        return source in {"channel", "intel_channel", "intel_channel_report"}
 
     def _map_snapshot_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         summary = snapshot.get("summary")
@@ -1802,6 +1840,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         last_seen = since.strip()
         resume_after_id = resume_after_id.strip()
         sent_ids: set[str] = set()
+        last_bootstrap_fingerprint = ""
         deadline = time.monotonic() + max(0.0, timeout_seconds)
         heartbeat_interval = max(0.0, heartbeat_seconds)
         next_heartbeat_at = (
@@ -1810,6 +1849,13 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         while True:
             try:
                 wrote_event = False
+                if active_only:
+                    bootstrap = self._bootstrap_payload()
+                    fingerprint = self._bootstrap_event_fingerprint(bootstrap)
+                    if fingerprint != last_bootstrap_fingerprint:
+                        self._write_sse("bootstrap", fingerprint, bootstrap)
+                        last_bootstrap_fingerprint = fingerprint
+                        wrote_event = True
                 current_include_since = bool(last_seen) and (
                     include_since or bool(sent_ids)
                 )
@@ -1876,6 +1922,27 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             if heartbeat_interval:
                 sleep_for = min(sleep_for, max(0.0, next_heartbeat_at - now))
             time.sleep(sleep_for)
+
+    def _bootstrap_event_fingerprint(self, payload: dict[str, Any]) -> str:
+        stable_payload = self._without_generated_at(payload)
+        encoded = json.dumps(
+            stable_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()[:16]
+
+    def _without_generated_at(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: self._without_generated_at(item)
+                for key, item in value.items()
+                if key != "generated_at"
+            }
+        if isinstance(value, list):
+            return [self._without_generated_at(item) for item in value]
+        return value
 
     def _write_sse(
         self,

@@ -92,6 +92,41 @@ def test_threat_enricher_applies_authenticated_contact_standings():
     assert session.calls == [(False, True)]
 
 
+def test_threat_enricher_marks_unmatched_authenticated_contact_as_neutral():
+    class FakeSession:
+        def snapshot(self, include_location=True, include_contacts=True):
+            return SimpleNamespace(
+                contacts=[
+                    ContactStanding(
+                        contact_id=999,
+                        contact_type="character",
+                        standing=10,
+                    )
+                ]
+            )
+
+    enricher = ThreatEnricher(
+        resolver=FakeResolver(),
+        esi_session=FakeSession(),
+    )
+    observation = Observation(
+        source="local_ocr",
+        system_name="Tama",
+        names=["Alice"],
+        character_ids=[123],
+    )
+
+    enrichment = enricher.enrich(observation)
+    profile = enrichment.character_profiles[0]
+
+    assert profile["character_id"] == 123
+    assert profile["corporation_id"] == 456
+    assert profile["alliance_id"] == 789
+    assert profile["contact_standing"] == 0.0
+    assert profile["standing_source"] == "esi_contacts"
+    assert profile["standing_contact_type"] == "neutral"
+
+
 def test_threat_enricher_scores_direct_contact_without_public_profile():
     class EmptyResolver:
         def character_profile(self, character_id):

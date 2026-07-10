@@ -220,6 +220,7 @@ class IntelStore:
         self._heartbeats: dict[str, dict[str, Any]] = {}
         self._active_intel: dict[str, ActiveIntelItem] = {}
         self._ocr_name_corrections: dict[str, str] = {}
+        self._character_profile_cache: dict[int, dict[str, Any]] = {}
         self._reports: list[IntelReport] = self._load_reports()
 
     def set_scorer(self, scorer: Any | None) -> None:
@@ -233,6 +234,7 @@ class IntelStore:
         with self._lock:
             self._enricher = enricher
             self._alert_cache.clear()
+            self._character_profile_cache.clear()
 
     def set_map_data(
         self,
@@ -270,6 +272,10 @@ class IntelStore:
         character_id = self._optional_int(character_id)
         if character_id is None:
             return None
+        with self._lock:
+            cached = self._character_profile_cache.get(character_id)
+            if cached is not None:
+                return dict(cached)
 
         profile = self._call_enricher_profile("character_profile", character_id)
         if profile is None and self._resolver is not None:
@@ -280,11 +286,14 @@ class IntelStore:
             profile = resolved if isinstance(resolved, dict) else None
         if profile is None:
             return None
-        return self._profile_result(
+        result = self._profile_result(
             profile,
             id_key="character_id",
             id_value=character_id,
         )
+        with self._lock:
+            self._character_profile_cache[character_id] = dict(result)
+        return result
 
     def system_by_name(self, name: str) -> dict[str, Any] | None:
         """Resolve a solar-system name and return its public profile."""
@@ -815,7 +824,13 @@ class IntelStore:
                         self._ensure_system(report.system)
                         self._reports.append(report)
                         changed_reports = True
-                    if self._observation_is_suppressed(observation):
+                    character_profiles = self._character_profiles_for_observation(
+                        observation
+                    )
+                    if self._observation_is_suppressed(
+                        observation,
+                        character_profiles=character_profiles,
+                    ):
                         item = self._active_intel.get(active_id)
                         if item is not None and item.active:
                             item.active = False
@@ -836,7 +851,11 @@ class IntelStore:
                         target_type="character",
                         name=name,
                         raw_text=raw_text,
-                        metadata={"client_id": client_id},
+                        metadata=self._active_ocr_metadata(
+                            client_id,
+                            observation,
+                            character_profiles=character_profiles,
+                        ),
                         first_seen_at=seen_at,
                         last_seen_at=seen_at,
                         active=True,
@@ -846,12 +865,6 @@ class IntelStore:
                     result.created += 1
                     continue
 
-                if self._active_item_is_suppressed(item):
-                    item.active = False
-                    item.left_at = seen_at
-                    result.filtered += 1
-                    continue
-
                 elapsed = self._seconds_between_iso(item.last_seen_at, seen_at)
                 if elapsed is None or elapsed >= 0:
                     item.last_seen_at = seen_at
@@ -859,7 +872,6 @@ class IntelStore:
                     item.raw_text = raw_text
                 item.active = True
                 item.left_at = ""
-                item.seen_count += 1
                 result.refreshed += 1
 
             for item in self._active_intel.values():
@@ -2354,14 +2366,114 @@ class IntelStore:
             kwargs["group_activities"] = group_activities
         return kwargs
 
-    def _observation_is_suppressed(self, observation: Observation) -> bool:
+    def _observation_is_suppressed(
+        self,
+        observation: Observation,
+        character_profiles: list[dict[str, Any]] | None = None,
+    ) -> bool:
         if self._scorer is None or not hasattr(self._scorer, "suppresses_observation"):
             return False
-        profiles = self._character_profiles_for_observation(observation)
+        profiles = (
+            character_profiles
+            if character_profiles is not None
+            else self._character_profiles_for_observation(observation)
+        )
         try:
             return bool(self._scorer.suppresses_observation(observation, None, profiles))
         except Exception:
             return False
+
+    def _active_ocr_metadata(
+        self,
+        client_id: str,
+        observation: Observation,
+        checked_at: str | None = None,
+        character_profiles: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {"client_id": client_id}
+        if checked_at:
+            metadata["identity_checked_at"] = checked_at
+        resolution = observation.metadata.get("esi_resolution")
+        if isinstance(resolution, dict):
+            metadata["esi_resolution"] = dict(resolution)
+
+        profiles = self._active_character_profile_summaries(
+            observation,
+            character_profiles=character_profiles,
+        )
+        if not profiles:
+            return metadata
+
+        metadata["character_profiles"] = profiles
+        first = profiles[0]
+        for key in (
+            "character_id",
+            "corporation_id",
+            "corporation_name",
+            "alliance_id",
+            "alliance_name",
+            "contact_standing",
+            "standing",
+            "standing_source",
+            "standing_contact_id",
+            "standing_contact_type",
+            "standing_label",
+        ):
+            value = first.get(key)
+            if value not in {None, ""}:
+                metadata[key] = value
+        return metadata
+
+    def _active_character_profile_summaries(
+        self,
+        observation: Observation,
+        character_profiles: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        profiles = []
+        if self._enricher is not None:
+            enrichment = self._best_effort_enrichment(observation)
+            profiles = list(getattr(enrichment, "character_profiles", None) or [])
+        if not profiles:
+            profiles = list(character_profiles or [])
+        if not profiles:
+            profiles = self._character_profiles_for_observation(observation)
+
+        summaries: list[dict[str, Any]] = []
+        for profile in profiles:
+            if not isinstance(profile, dict):
+                continue
+            summary = self._active_character_profile_summary(profile)
+            if summary:
+                summaries.append(summary)
+        return summaries
+
+    def _active_character_profile_summary(
+        self,
+        profile: dict[str, Any],
+    ) -> dict[str, Any]:
+        summary: dict[str, Any] = {}
+        for key in (
+            "character_id",
+            "name",
+            "corporation_id",
+            "corporation_name",
+            "alliance_id",
+            "alliance_name",
+            "security_status",
+            "contact_standing",
+            "standing",
+            "standing_source",
+            "standing_contact_id",
+            "standing_contact_type",
+            "standing_label",
+            "cache_status",
+            "cached_at",
+            "expires_at",
+        ):
+            value = profile.get(key)
+            if value not in {None, ""}:
+                summary[key] = value
+        return summary
 
     def _visible_reports(
         self,
@@ -2391,22 +2503,6 @@ class IntelStore:
             return False
         whitelist_names = {str(name).casefold() for name in whitelist}
         return all(name.casefold() in whitelist_names for name in names)
-
-    def _active_item_is_suppressed(self, item: ActiveIntelItem) -> bool:
-        observation = Observation(
-            source=item.source,
-            source_instance=item.source_instance,
-            system_name=item.system_name,
-            system_id=item.system_id,
-            names=[item.name] if item.name else [],
-            character_ids=[item.character_id] if item.character_id is not None else [],
-            raw_text=item.raw_text,
-            metadata=dict(item.metadata),
-            seen_at=item.last_seen_at or utc_now_iso(),
-            received_at=item.last_seen_at or utc_now_iso(),
-        )
-        observation = self._enrich_observation(observation)
-        return self._observation_is_suppressed(observation)
 
     def _channel_mentions_for_observation(
         self,
@@ -2877,25 +2973,50 @@ class IntelStore:
             name = str(item.get("name") or "").strip()
             raw_text = str(item.get("raw_text") or "").strip()
             label = name or raw_text
-            if label:
+            is_hostile = self._active_item_is_hostile(item)
+            if label and is_hostile:
                 entry["hostiles"].add(label)
             entry["latest_seen"] = max(
                 entry["latest_seen"] or item["last_seen_at"],
                 item["last_seen_at"],
             )
-            entry["report_count"] += max(1, int(item.get("seen_count") or 1))
+            if is_hostile:
+                entry["report_count"] += max(1, int(item.get("seen_count") or 1))
             metadata = (
                 item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
             )
             hostile_count = metadata.get("hostile_count")
-            if isinstance(hostile_count, int) and hostile_count > 0:
+            if is_hostile and isinstance(hostile_count, int) and hostile_count > 0:
                 entry["hostile_count"] += hostile_count
-            elif label:
+            elif is_hostile and label:
                 entry["hostile_count"] += 1
 
         for entry in intel.values():
             entry["hostiles"] = sorted(entry["hostiles"])
         return intel
+
+    def _active_item_is_hostile(self, item: dict[str, Any]) -> bool:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        hostile_count = metadata.get("hostile_count")
+        if isinstance(hostile_count, int) and hostile_count > 0:
+            return True
+
+        source = str(item.get("source") or "").strip().casefold()
+        if source not in {"local_ocr", "ocr", "eve-sentry-detector"}:
+            return False
+
+        standing = self._optional_float(
+            metadata.get("contact_standing", metadata.get("standing"))
+        )
+        if standing is None:
+            return False
+        scorer = self._scorer
+        watchlist = getattr(scorer, "watchlist", None)
+        friendly_threshold = getattr(watchlist, "friendly_standing_threshold", 5.0)
+        hostile_threshold = getattr(watchlist, "hostile_standing_threshold", 0.0)
+        if friendly_threshold is not None and standing >= float(friendly_threshold):
+            return False
+        return hostile_threshold is not None and standing <= float(hostile_threshold)
 
     def _aggregate_by_character(
         self,
@@ -2985,3 +3106,11 @@ class IntelStore:
         except (TypeError, ValueError):
             return None
         return number if number > 0 else None
+
+    def _optional_float(self, value: Any) -> float | None:
+        if value in {None, ""}:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None

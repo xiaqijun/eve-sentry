@@ -159,6 +159,9 @@ describe("buildTacticalGraph", () => {
           name: "Observed Pilot",
           active: true,
           seen_count: 9,
+          metadata: {
+            contact_standing: -5,
+          },
         },
       ],
       map: {
@@ -198,6 +201,49 @@ describe("buildTacticalGraph", () => {
       channelIntelCount: 0,
       observationCount: 1,
       hasAlerts: true,
+    });
+  });
+
+  it("does not count friendly OCR active intel as hostile activity", () => {
+    const graph = buildTacticalGraph({
+      ...bootstrap,
+      active_intel: [
+        {
+          id: "ocr-friendly",
+          source: "eve-sentry-detector",
+          source_instance: "EVE - Hajimi6",
+          system_name: "NCG-PW",
+          name: "Hajimi6",
+          active: true,
+          seen_count: 1,
+          metadata: {
+            contact_standing: 10,
+            standing_source: "esi_self",
+            standing_contact_type: "character",
+          },
+        },
+      ],
+      map: {
+        ...bootstrap.map,
+        systems: [
+          {
+            name: "NCG-PW",
+            system_id: 30003616,
+            x: 180,
+            y: 150,
+            hostile_count: 0,
+            report_count: 0,
+            security: -0.3,
+          },
+        ],
+      },
+    });
+
+    expect(graph.nodes[0]).toMatchObject({
+      hostileCount: 0,
+      reportCount: 0,
+      observationCount: 0,
+      hasAlerts: false,
     });
   });
 
