@@ -75,6 +75,42 @@ def test_region_preferences_reads_legacy_title_key_for_window(tmp_path):
     assert prefs.resolve_region(window) == {"x": 760, "y": 100, "w": 200, "h": 400}
 
 
+def test_region_preferences_reuses_same_title_when_hwnd_changes(tmp_path):
+    prefs_path = tmp_path / "region_prefs.json"
+    prefs_path.write_text(
+        """
+{
+  "member_list_region": {
+    "x_ratio": 0.1,
+    "y_ratio": 0.1,
+    "w_ratio": 0.1,
+    "h_ratio": 0.1
+  },
+  "member_list_regions": {
+    "hwnd:135158:eve - hajimi6": {
+      "x_ratio": 0.17135416666666667,
+      "y_ratio": 0.19028741328047571,
+      "w_ratio": 0.09322916666666667,
+      "h_ratio": 0.755203171456888
+    }
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    prefs = RegionPreferences(str(prefs_path))
+    window = {
+        "hwnd": 2296266,
+        "title": "EVE - Hajimi6",
+        "x": 7,
+        "y": 31,
+        "w": 1920,
+        "h": 1009,
+    }
+
+    assert prefs.resolve_region(window) == {"x": 336, "y": 223, "w": 179, "h": 762}
+
+
 def test_region_preferences_does_not_reuse_region_for_unknown_window(tmp_path):
     prefs = RegionPreferences(str(tmp_path / "region_prefs.json"))
     saved_window = {"hwnd": 1, "title": "EVE - Pilot A", "x": 0, "y": 0, "w": 800, "h": 600}

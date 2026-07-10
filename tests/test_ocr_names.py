@@ -19,3 +19,12 @@ def test_ocr_candidate_names_split_comma_rows_and_deduplicate_case():
     ]
 
     assert ocr_candidate_names(results) == ["Alice", "Bob", "Carol"]
+
+
+def test_ocr_candidate_names_ignore_member_count_numbers():
+    results = [
+        ("3", 1.0),
+        ("Hajimi6", 0.95),
+    ]
+
+    assert ocr_candidate_names(results) == ["Hajimi6"]

@@ -111,6 +111,19 @@ function ConvertTo-WindowsArgument {
     return $result
 }
 
+function Normalize-ProcessPathEnvironment {
+    $pathValue = [Environment]::GetEnvironmentVariable("Path", "Process")
+    if (-not $pathValue) {
+        $pathValue = [Environment]::GetEnvironmentVariable("PATH", "Process")
+    }
+    if (-not $pathValue) {
+        return
+    }
+
+    [Environment]::SetEnvironmentVariable("PATH", $null, "Process")
+    [Environment]::SetEnvironmentVariable("Path", $pathValue, "Process")
+}
+
 $stdout = Join-Path $LogDir "monitor-client.out.log"
 $stderr = Join-Path $LogDir "monitor-client.err.log"
 $encodedCommand = New-EncodedMonitorClientCommand `
@@ -139,6 +152,7 @@ if ($Background) {
     foreach ($key in $envUpdates.Keys) {
         Set-Item -Path "Env:$key" -Value $envUpdates[$key]
     }
+    Normalize-ProcessPathEnvironment
     $argumentLine = ($clientArgs | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join " "
     $process = Start-Process `
         -FilePath $Python `

@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 
 from app.channel_client import process_once
 from app.channels.log_watcher import ChatLogWatcher
+from app.channels.local_system import find_latest_local_system
 from app.engine.capturer import Capturer
 from app.core.heartbeat import (
     build_detector_heartbeat_details,
@@ -72,6 +73,10 @@ class MainWindow(QMainWindow):
         self._intel_system = configured_system or "Unknown"
         self._intel_system_id: int | None = None
         self._intel_system_source = "env" if configured_system else "default"
+        self._use_local_system_log = _env_flag(
+            "EVE_SENTRY_USE_LOCAL_SYSTEM_LOG",
+            default=not bool(configured_system),
+        )
         self._use_esi_location = _env_flag(
             "EVE_SENTRY_USE_ESI_LOCATION",
             default=not bool(configured_system),
@@ -83,6 +88,7 @@ class MainWindow(QMainWindow):
         )
         self._esi_location_next_check = 0.0
         self._last_esi_location_error = ""
+        self._last_local_system_error = ""
         self._heartbeat_interval = _env_float(
             "EVE_SENTRY_HEARTBEAT_INTERVAL",
             default=15.0,
@@ -275,7 +281,7 @@ class MainWindow(QMainWindow):
         self._set_status_card(
             "esi",
             esi_label,
-            "ok" if intel_system_source == "esi" else "warn",
+            "ok" if intel_system_source in {"esi", "env", "chatlog"} else "warn",
         )
 
         monitoring = self._is_monitoring()
@@ -604,6 +610,17 @@ class MainWindow(QMainWindow):
         window = self._current_window_info()
         if window is not None:
             self._region_prefs.save_region(window, self._manual_region)
+            key = self._window_monitor_key(window)
+            worker = getattr(self, "_workers", {}).get(key)
+            if worker is not None:
+                worker.set_region(x, y, w, h)
+                context = getattr(self, "_worker_contexts", {}).get(key)
+                if context is not None:
+                    context["region"] = dict(self._manual_region)
+                    self._update_window_status(context, "运行中", "区域已更新")
+                self._heartbeat_last_action = "region_updated"
+                self._heartbeat_last_success_at = heartbeat_now_iso()
+                self._publish_heartbeat()
         self._window_label.setText(f"手动区域：({x},{y}) {w}x{h}")
         self._log_message(f"已保存成员列表区域 {w}x{h} @ ({x},{y})")
         self._refresh_status_cards()
@@ -980,43 +997,49 @@ class MainWindow(QMainWindow):
         self._refresh_status_cards()
 
     def _refresh_intel_location(self, force: bool = False) -> bool:
-        if (
-            not self._use_esi_location
-            or self._intel_client is None
-        ):
-            return False
-
         now = time.monotonic()
         if not force and now < self._esi_location_next_check:
-            return bool(self._intel_system_id)
+            return bool(
+                self._intel_system_id
+                or (
+                    self._intel_system_source in {"esi", "env", "chatlog"}
+                    and self._intel_system
+                    and self._intel_system != "Unknown"
+                )
+            )
         self._esi_location_next_check = now + self._esi_location_ttl
 
-        try:
-            system = self._intel_client.current_esi_system()
-        except IntelApiError as exc:
-            message = str(exc)
-            if message != self._last_esi_location_error:
-                self._last_esi_location_error = message
-                self._heartbeat_last_action = "esi_error"
-                self._heartbeat_last_error = message
-                self._log_message(f"ESI current-system sync unavailable: {message}")
-                self._refresh_status_cards()
-            return False
+        if self._use_esi_location and self._intel_client is not None:
+            try:
+                system = self._intel_client.current_esi_system()
+            except IntelApiError as exc:
+                message = str(exc)
+                if message != self._last_esi_location_error:
+                    self._last_esi_location_error = message
+                    self._heartbeat_last_action = "esi_error"
+                    self._heartbeat_last_error = message
+                    self._log_message(f"ESI current-system sync unavailable: {message}")
+                    self._refresh_status_cards()
+            else:
+                if self._apply_esi_system(system):
+                    return True
 
+                message = "location did not include a solar system"
+                if message != self._last_esi_location_error:
+                    self._last_esi_location_error = message
+                    self._heartbeat_last_action = "esi_error"
+                    self._heartbeat_last_error = message
+                    self._log_message(f"ESI current-system sync unavailable: {message}")
+                    self._refresh_status_cards()
+
+        return self._refresh_local_system_from_chatlog()
+
+    def _apply_esi_system(self, system: dict | None) -> bool:
         if not system:
-            message = "location did not include a solar system"
-            if message != self._last_esi_location_error:
-                self._last_esi_location_error = message
-                self._heartbeat_last_action = "esi_error"
-                self._heartbeat_last_error = message
-                self._log_message(f"ESI current-system sync unavailable: {message}")
-                self._refresh_status_cards()
             return False
 
         system_id = _positive_int(system.get("system_id"))
-        system_name = str(
-            system.get("system_name") or system.get("name") or ""
-        ).strip()
+        system_name = str(system.get("system_name") or system.get("name") or "").strip()
         if system_id is None and not system_name:
             return False
 
@@ -1036,6 +1059,39 @@ class MainWindow(QMainWindow):
             self._heartbeat_last_action = "esi_sync"
             self._heartbeat_last_success_at = heartbeat_now_iso()
             self._log_message(f"Current system from ESI: {label}")
+        self._refresh_status_cards()
+        return True
+
+    def _refresh_local_system_from_chatlog(self) -> bool:
+        if not getattr(self, "_use_local_system_log", False):
+            return False
+        settings = getattr(self, "_settings", None)
+        if settings is None:
+            return False
+
+        try:
+            detection = find_latest_local_system(settings.get_channel_log_dir())
+        except Exception as exc:
+            message = str(exc)
+            if message != self._last_local_system_error:
+                self._last_local_system_error = message
+                self._log_message(f"Local chatlog system sync unavailable: {message}")
+            return False
+        if detection is None:
+            return False
+
+        previous = self._intel_system
+        self._intel_system = detection.system_name
+        self._intel_system_id = None
+        self._intel_system_source = "chatlog"
+        self._last_local_system_error = ""
+        self._heartbeat_last_error = ""
+        if detection.system_name != previous:
+            self._heartbeat_last_action = "local_system_sync"
+            self._heartbeat_last_success_at = heartbeat_now_iso()
+            self._log_message(
+                f"Current system from local chatlog: {detection.system_name}"
+            )
         self._refresh_status_cards()
         return True
 
