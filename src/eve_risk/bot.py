@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import uuid
@@ -11,6 +12,7 @@ import uvicorn
 from redis.asyncio import Redis
 
 from eve_risk.admission import AdmissionController, AdmissionResult
+from eve_risk.alerts import EveSentryAlertRelay, alert_subscription_action
 from eve_risk.clients.qq import QQOpenAPIClient
 from eve_risk.config import get_settings
 from eve_risk.domain import AnalysisRequest
@@ -23,7 +25,8 @@ logger = logging.getLogger(__name__)
 HELP_TEXT = (
     "EVE 敌对舰队分析（Tranquility）\n"
     "用法：@机器人 分析，然后每行一个角色名；也支持逗号或分号分隔。\n"
-    "一次最多 30 人，默认分析近 90 天公开战报。"
+    "一次最多 30 人，默认分析近 90 天公开战报。\n"
+    "预警：@机器人 开启预警 / 关闭预警 / 预警状态。"
 )
 
 ADMISSION_MESSAGES = {
@@ -56,6 +59,26 @@ class RiskBotClient(botpy.Client):
             max_jobs=settings.global_max_jobs,
         )
         self.queue = AnalysisQueue(settings.redis_url)
+        self.alert_relay = EveSentryAlertRelay(
+            self.http_client,
+            self.redis,
+            self.qq,
+            settings.eve_sentry_events_url,
+            min_level=settings.eve_sentry_alert_min_level,
+            public_url=settings.eve_sentry_public_url,
+        )
+        self.alert_task: asyncio.Task[None] | None = None
+
+    async def on_ready(self) -> None:
+        if not self.alert_relay.enabled:
+            logger.info("EVE Sentry proactive alerts are disabled")
+            return
+        if self.alert_task is None or self.alert_task.done():
+            self.alert_task = asyncio.create_task(
+                self.alert_relay.run_forever(),
+                name="eve-sentry-alert-relay",
+            )
+            logger.info("EVE Sentry proactive alert relay started")
 
     async def on_group_at_message_create(self, message: object) -> None:
         msg_id = str(getattr(message, "id", ""))
@@ -73,6 +96,28 @@ class RiskBotClient(botpy.Client):
             f"qq:event:{msg_id}", "1", ex=self.settings.qq_context_ttl_seconds, nx=True
         )
         if not first_delivery:
+            return
+
+        subscription_action = alert_subscription_action(content)
+        if subscription_action:
+            if not self.alert_relay.enabled:
+                await self.qq.send_text(
+                    group_openid,
+                    msg_id,
+                    "主动预警尚未配置，请联系机器人管理员。",
+                    msg_seq=1,
+                )
+                return
+            if subscription_action == "enable":
+                await self.alert_relay.subscribe(group_openid)
+                reply = "已开启 EVE Sentry 主动预警，新敌对告警会推送到本群。"
+            elif subscription_action == "disable":
+                await self.alert_relay.unsubscribe(group_openid)
+                reply = "已关闭本群的 EVE Sentry 主动预警。"
+            else:
+                subscribed = await self.alert_relay.is_subscribed(group_openid)
+                reply = f"本群主动预警：{'已开启' if subscribed else '未开启'}。"
+            await self.qq.send_text(group_openid, msg_id, reply, msg_seq=1)
             return
 
         if is_help_command(content):

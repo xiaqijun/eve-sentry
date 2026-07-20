@@ -5,6 +5,7 @@
 ## 功能
 
 - QQ 官方机器人群聊 `@` 指令接入，不依赖 OneBot 或非官方客户端。
+- 订阅 EVE Sentry 实时 SSE 告警，向已启用的 QQ 群主动推送敌对预警。
 - 近 90 天公开战报分析，近 30 天数据按 2 倍权重计算。
 - 舰船角色、舰队规模、单收比例、北京时间活跃热力图、共现关系与重复构成。
 - 指挥视角的可解释威胁指数、近 7 天击杀/损失、舰队体系识别和关键人物画像。
@@ -29,12 +30,31 @@ Character Three
 
 角色名也可用英文/中文逗号或分号分隔。使用 `@机器人 帮助` 查看帮助。
 
+群内预警管理：
+
+```text
+@机器人 开启预警
+@机器人 预警状态
+@机器人 关闭预警
+```
+
+机器人只从执行“开启预警”的群开始推送，不会在启动时补发历史告警。订阅群和告警去重游标保存在 Redis 中，不写入 PostgreSQL 或应用日志。
+
 ## 部署
 
 1. 在 QQ 开放平台创建机器人，启用群聊消息能力，取得 `AppID` 与 `AppSecret`。
 2. 复制 `.env.example` 为 `.env`，填写 QQ 凭据和包含真实维护者联系方式的 `ZKILL_USER_AGENT`。
 3. 设置一个非默认的 `POSTGRES_PASSWORD`。
    如需排除己方成员，可填写逗号分隔的 `FRIENDLY_CHARACTER_IDS`、`FRIENDLY_CORPORATION_IDS` 和 `FRIENDLY_ALLIANCE_IDS`。公共战报不包含游戏内联系人声望，因此需要显式配置这些 ID。
+   如需主动预警，还应配置：
+
+   ```dotenv
+   EVE_SENTRY_EVENTS_URL=http://host.docker.internal:8765/api/v1/events
+   EVE_SENTRY_PUBLIC_URL=http://YOUR_EVE_SENTRY_HOST
+   EVE_SENTRY_ALERT_MIN_LEVEL=
+   ```
+
+   `EVE_SENTRY_ALERT_MIN_LEVEL` 留空表示推送所有等级，也可设置为 `low`、`medium`、`high` 或 `critical`。
 4. 启动服务：
 
    ```bash

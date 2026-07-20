@@ -31,3 +31,11 @@ def test_friendly_entity_ids_accept_common_separators() -> None:
     assert settings.friendly_character_id_set == {1001, 1002, 1003}
     assert settings.friendly_corporation_id_set == {2001}
     assert settings.friendly_alliance_id_set == {3001, 3002}
+
+
+def test_eve_sentry_alert_level_is_validated() -> None:
+    settings = Settings(_env_file=None, eve_sentry_alert_min_level="HIGH")
+    assert settings.eve_sentry_alert_min_level == "high"
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, eve_sentry_alert_min_level="urgent")

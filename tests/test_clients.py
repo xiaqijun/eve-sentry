@@ -35,6 +35,7 @@ async def test_qq_client_reuses_token_and_sends_media() -> None:
                 side_effect=[
                     httpx.Response(200, json={"id": "m1"}),
                     httpx.Response(200, json={"id": "m2"}),
+                    httpx.Response(200, json={"id": "m3"}),
                 ]
             )
             upload = router.post("https://api.sgroup.qq.com/v2/groups/group/files").mock(
@@ -42,11 +43,14 @@ async def test_qq_client_reuses_token_and_sends_media() -> None:
             )
 
             await client.send_text("group", "source", "hello", 1)
+            await client.send_proactive_text("group", "alert")
             await client.send_image("group", "source", b"png", 2)
 
             assert token.call_count == 1
-            assert text.call_count == 2
+            assert text.call_count == 3
             assert upload.call_count == 1
+            proactive_body = json.loads(text.calls[1].request.content)
+            assert proactive_body == {"content": "alert", "msg_type": 0}
             upload_body = json.loads(upload.calls[0].request.content)
             assert upload_body["file_data"] == "cG5n"
 

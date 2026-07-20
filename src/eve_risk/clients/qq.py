@@ -43,6 +43,17 @@ class QQOpenAPIClient:
             },
         )
 
+    async def send_proactive_text(
+        self, group_openid: str, content: str
+    ) -> dict[str, object]:
+        return await self._post_message(
+            group_openid,
+            {
+                "content": content,
+                "msg_type": 0,
+            },
+        )
+
     async def send_image(
         self, group_openid: str, msg_id: str, image_bytes: bytes, msg_seq: int
     ) -> dict[str, object]:

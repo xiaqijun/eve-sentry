@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     zkill_request_interval_seconds: float = 1.2
     zkill_cache_ttl_seconds: int = 1800
     qq_context_ttl_seconds: int = 600
+    eve_sentry_events_url: str = ""
+    eve_sentry_public_url: str = ""
+    eve_sentry_alert_min_level: str = ""
     friendly_character_ids: str = ""
     friendly_corporation_ids: str = ""
     friendly_alliance_ids: str = ""
@@ -58,6 +61,16 @@ class Settings(BaseSettings):
         if value and ("contact-pending" in normalized or "email@example.com" in normalized):
             raise ValueError("ZKILL_USER_AGENT must contain real maintainer contact details")
         return value
+
+    @field_validator("eve_sentry_alert_min_level")
+    @classmethod
+    def validate_alert_level(cls, value: str) -> str:
+        normalized = value.strip().casefold()
+        if normalized not in {"", "low", "medium", "high", "critical"}:
+            raise ValueError(
+                "EVE_SENTRY_ALERT_MIN_LEVEL must be low, medium, high, or critical"
+            )
+        return normalized
 
     def require_qq(self) -> None:
         missing = [

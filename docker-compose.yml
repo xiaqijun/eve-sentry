@@ -60,6 +60,8 @@ services:
       - sde_data:/data:ro
     ports:
       - "127.0.0.1:${HEALTH_PORT:-8080}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       migrate:
         condition: service_completed_successfully
