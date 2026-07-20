@@ -221,6 +221,14 @@ describe("WorkbenchPage", () => {
       "搜索飞行员、星系或来源",
     );
     expect(container.querySelector('[aria-label="Fit 星图"]')).toBeInTheDocument();
+    const mapLegend = container.querySelector(".map-legend");
+    expect(mapLegend).toHaveTextContent("监控在线");
+    expect(mapLegend).toHaveTextContent("敌对");
+    expect(mapLegend?.querySelectorAll("span")).toHaveLength(2);
+    expect(mapLegend).not.toHaveTextContent("高安全区");
+    expect(mapLegend).not.toHaveTextContent("低安全区");
+    expect(mapLegend).not.toHaveTextContent("跃迁通道");
+    expect(mapLegend).not.toHaveTextContent("跃迁抑制");
     expect(container.querySelector(".latest-event")).toHaveClass("is-empty");
     expect(container.querySelector(".latest-event")).toHaveTextContent("暂无实时威胁事件");
     expect(container).not.toHaveTextContent("滚轮缩放");

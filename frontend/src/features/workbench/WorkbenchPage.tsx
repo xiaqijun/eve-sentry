@@ -535,12 +535,8 @@ export function WorkbenchPage() {
           <div className="map-canvas">
             <div className="map-legend">
               <strong>图例</strong>
-              <span><i className="legend-dot safe" />高安全区</span>
-              <span><i className="legend-dot watch" />低安全区</span>
-              <span><i className="legend-dot danger" />敌对活动</span>
-              <span><i className="legend-dot monitor" />监控节点</span>
-              <span><i className="legend-line" />跃迁通道</span>
-              <span><i className="legend-line dashed" />跃迁抑制</span>
+              <span><i className="legend-dot monitor" />监控在线</span>
+              <span><i className="legend-dot danger" />敌对</span>
             </div>
             <TacticalStarMap
               fitSignal={fitSignal}

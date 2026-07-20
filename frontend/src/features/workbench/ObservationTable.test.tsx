@@ -48,11 +48,11 @@ describe("ObservationTable", () => {
     expect(container).toHaveTextContent("飞行员");
     expect(container).toHaveTextContent("星系");
     expect(container).toHaveTextContent("来源");
-    expect(container).toHaveTextContent("威胁");
+    expect(container).not.toHaveTextContent("威胁");
     expect(container).toHaveTextContent("最近出现");
     expect(container).toHaveTextContent("次数");
     expect(container).toHaveTextContent("预警频道 / 本地OCR");
-    expect(container.querySelector("tbody tr td:nth-child(6)")?.textContent).toBe("2");
+    expect(container.querySelector("tbody tr td:nth-child(5)")?.textContent).toBe("2");
 
     cleanup();
   });

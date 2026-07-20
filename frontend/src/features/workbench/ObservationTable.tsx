@@ -26,21 +26,6 @@ function formatClock(value?: string): string {
   });
 }
 
-function levelLabel(level?: string): string {
-  switch (level) {
-    case "critical":
-      return "严重";
-    case "high":
-      return "高危";
-    case "medium":
-      return "中危";
-    case "low":
-      return "低危";
-    default:
-      return "未知";
-  }
-}
-
 const columnHelper = createColumnHelper<PilotObservation>();
 
 const columns = [
@@ -61,10 +46,6 @@ const columns = [
     cell: (info) => info.getValue(),
     header: "来源",
     id: "sources",
-  }),
-  columnHelper.accessor("level", {
-    cell: (info) => <em>{levelLabel(info.getValue())}</em>,
-    header: "威胁",
   }),
   columnHelper.accessor((row) => formatClock(row.latestSeen), {
     cell: (info) => info.getValue(),
