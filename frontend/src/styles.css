@@ -672,9 +672,8 @@ button {
 
 .legend-dot.monitor {
   border-color: #20e879;
-  border-radius: 3px;
-  background: rgba(32, 232, 121, 0.28);
-  box-shadow: 0 0 12px rgba(32, 232, 121, 0.45);
+  background: transparent;
+  box-shadow: 0 0 8px rgba(32, 232, 121, 0.38);
 }
 
 .legend-line {

@@ -92,7 +92,7 @@ function drawNode(
   globalScale: number,
 ): void {
   const label = node.name;
-  const color = nodeColor(node);
+  const color = node.monitorOnlineCount > 0 ? "#20e879" : nodeColor(node);
   const lossCount = Math.max(0, node.killCount ?? 0);
   const hasHud = node.hostileCount > 0 || lossCount > 0;
   const hasChannelIntel = node.channelIntelCount > 0;
@@ -127,35 +127,6 @@ function drawNode(
     context.beginPath();
     context.arc(x, y, radius + 18, 0, Math.PI * 2);
     context.stroke();
-  }
-
-  if (node.monitorCount > 0) {
-    const badgeSize = Math.max(4, 6 / globalScale);
-    const badgeX = x + radius + 5;
-    const badgeY = y - radius - badgeSize / 2;
-    const monitorOnline = node.monitorOnlineCount > 0;
-    context.shadowBlur = monitorOnline ? 12 : 8;
-    context.shadowColor = monitorOnline ? "#20e879" : "#ffae32";
-    context.fillStyle = monitorOnline
-      ? "rgba(32, 232, 121, 0.9)"
-      : "rgba(255, 174, 50, 0.82)";
-    context.fillRect(
-      badgeX - badgeSize,
-      badgeY - badgeSize,
-      badgeSize * 2,
-      badgeSize * 2,
-    );
-    context.shadowBlur = 0;
-    context.strokeStyle = monitorOnline
-      ? "rgba(199, 255, 222, 0.95)"
-      : "rgba(255, 229, 179, 0.88)";
-    context.lineWidth = Math.max(0.8, 1 / globalScale);
-    context.strokeRect(
-      badgeX - badgeSize,
-      badgeY - badgeSize,
-      badgeSize * 2,
-      badgeSize * 2,
-    );
   }
 
   if (hasChannelIntel && !hasHud) {

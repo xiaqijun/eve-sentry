@@ -232,18 +232,19 @@ describe("TacticalStarMap", () => {
 
     const fillText = vi.fn();
     const arc = vi.fn();
-    const fillRect = vi.fn();
-    const strokeRect = vi.fn();
+    const strokeColors: string[] = [];
+    let context: CanvasRenderingContext2D;
+    const stroke = vi.fn(() => strokeColors.push(String(context.strokeStyle)));
     const measureText = vi.fn((text: string) => ({ width: text.length * 6 }));
-    const context = {
+    context = {
       save: vi.fn(),
       restore: vi.fn(),
       beginPath: vi.fn(),
       arc,
       fill: vi.fn(),
-      stroke: vi.fn(),
-      fillRect,
-      strokeRect,
+      stroke,
+      fillRect: vi.fn(),
+      strokeRect: vi.fn(),
       fillText,
       measureText,
     } as unknown as CanvasRenderingContext2D;
@@ -266,18 +267,7 @@ describe("TacticalStarMap", () => {
     expect(fillText).toHaveBeenCalledWith("3", expect.any(Number), expect.any(Number));
     expect(fillText).toHaveBeenCalledWith("损:", expect.any(Number), expect.any(Number));
     expect(fillText).toHaveBeenCalledWith("1", expect.any(Number), expect.any(Number));
-    expect(fillRect).toHaveBeenCalledWith(
-      expect.any(Number),
-      expect.any(Number),
-      12,
-      12,
-    );
-    expect(strokeRect).toHaveBeenCalledWith(
-      expect.any(Number),
-      expect.any(Number),
-      12,
-      12,
-    );
+    expect(strokeColors[0]).toBe("#20e879");
     expect(arc).toHaveBeenCalledTimes(3);
 
     await act(async () => {
