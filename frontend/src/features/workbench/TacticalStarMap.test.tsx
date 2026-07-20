@@ -231,16 +231,19 @@ describe("TacticalStarMap", () => {
     });
 
     const fillText = vi.fn();
+    const arc = vi.fn();
+    const fillRect = vi.fn();
+    const strokeRect = vi.fn();
     const measureText = vi.fn((text: string) => ({ width: text.length * 6 }));
     const context = {
       save: vi.fn(),
       restore: vi.fn(),
       beginPath: vi.fn(),
-      arc: vi.fn(),
+      arc,
       fill: vi.fn(),
       stroke: vi.fn(),
-      fillRect: vi.fn(),
-      strokeRect: vi.fn(),
+      fillRect,
+      strokeRect,
       fillText,
       measureText,
     } as unknown as CanvasRenderingContext2D;
@@ -263,6 +266,19 @@ describe("TacticalStarMap", () => {
     expect(fillText).toHaveBeenCalledWith("3", expect.any(Number), expect.any(Number));
     expect(fillText).toHaveBeenCalledWith("损:", expect.any(Number), expect.any(Number));
     expect(fillText).toHaveBeenCalledWith("1", expect.any(Number), expect.any(Number));
+    expect(fillRect).toHaveBeenCalledWith(
+      expect.any(Number),
+      expect.any(Number),
+      12,
+      12,
+    );
+    expect(strokeRect).toHaveBeenCalledWith(
+      expect.any(Number),
+      expect.any(Number),
+      12,
+      12,
+    );
+    expect(arc).toHaveBeenCalledTimes(3);
 
     await act(async () => {
       root.unmount();

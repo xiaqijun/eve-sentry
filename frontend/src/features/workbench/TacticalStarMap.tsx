@@ -139,15 +139,23 @@ function drawNode(
     context.fillStyle = monitorOnline
       ? "rgba(32, 232, 121, 0.9)"
       : "rgba(255, 174, 50, 0.82)";
-    context.beginPath();
-    context.arc(badgeX, badgeY, badgeSize, 0, Math.PI * 2);
-    context.fill();
+    context.fillRect(
+      badgeX - badgeSize,
+      badgeY - badgeSize,
+      badgeSize * 2,
+      badgeSize * 2,
+    );
     context.shadowBlur = 0;
     context.strokeStyle = monitorOnline
       ? "rgba(199, 255, 222, 0.95)"
       : "rgba(255, 229, 179, 0.88)";
     context.lineWidth = Math.max(0.8, 1 / globalScale);
-    context.stroke();
+    context.strokeRect(
+      badgeX - badgeSize,
+      badgeY - badgeSize,
+      badgeSize * 2,
+      badgeSize * 2,
+    );
   }
 
   if (hasChannelIntel && !hasHud) {
