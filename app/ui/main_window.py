@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+from concurrent.futures import Future
 from datetime import datetime
 
 from PyQt6.QtCore import QTimer
@@ -40,6 +41,7 @@ from app.engine.ocr import OCREngine
 from app.engine.worker import MonitorWorker
 from app.intel_client import IntelApiClient, IntelApiError
 from app.models.region_prefs import RegionPreferences
+from app.ui.background_tasks import BackgroundTaskRunner
 from app.ui.region_selector import RegionSelector
 from app.ui.settings import SettingsPanel
 from app.ui.theme import APP_QSS, monitor_button_style, status_card_style
@@ -100,6 +102,7 @@ class MainWindow(QMainWindow):
         self._heartbeat_last_error = ""
         self._heartbeat_last_success_at = ""
         self._last_heartbeat_error = ""
+        self._uploads_enabled = False
         self._intel_client = self._create_intel_client()
         self._heartbeat_timer = QTimer(self)
         self._heartbeat_timer.setInterval(int(self._heartbeat_interval * 1000))
@@ -117,6 +120,9 @@ class MainWindow(QMainWindow):
         self._channel_last_error = ""
         self._channel_last_success_at = ""
         self._channel_error_backoff_ms = CHANNEL_ERROR_BACKOFF_MS
+        self._channel_generation = 0
+        self._network_tasks = BackgroundTaskRunner(max_workers=2, parent=self)
+        self._network_tasks.completed.connect(self._on_network_task_completed)
 
         self._popup_alerts_enabled = False
         self._manual_region: dict | None = None
@@ -131,6 +137,8 @@ class MainWindow(QMainWindow):
 
         self._settings = SettingsPanel()
         self._settings.setFixedWidth(240)
+        self._settings.scan_settings_changed.connect(self._apply_scan_settings)
+        self._settings.channel_settings_changed.connect(self._apply_channel_settings)
         root.addWidget(self._settings)
 
         right = QVBoxLayout()
@@ -159,6 +167,9 @@ class MainWindow(QMainWindow):
         self._window_status_table.verticalHeader().setVisible(False)
         self._window_status_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._window_status_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._window_status_table.setColumnWidth(0, 180)
+        self._window_status_table.setColumnWidth(1, 125)
+        self._window_status_table.setColumnWidth(2, 90)
         self._window_status_table.horizontalHeader().setStretchLastSection(True)
         right.addWidget(self._window_status_table)
 
@@ -200,9 +211,6 @@ class MainWindow(QMainWindow):
         self._setup_tray()
         self._detect_window()
         self._refresh_window_status_table()
-        if self._intel_client is not None:
-            self._heartbeat_timer.start()
-            self._publish_heartbeat()
         self._refresh_status_cards()
         if _env_flag("EVE_SENTRY_AUTO_START_MONITOR", default=False):
             QTimer.singleShot(0, self._auto_start_monitor)
@@ -370,7 +378,6 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
                 table.setItem(row_index, column, item)
-        table.resizeColumnsToContents()
 
     def _update_window_status(
         self,
@@ -638,6 +645,146 @@ class MainWindow(QMainWindow):
         else:
             self._stop_monitor()
 
+    def _apply_scan_settings(self) -> None:
+        """Apply the current scan interval without restarting active workers."""
+        interval = self._settings.get_interval()
+        workers = self._running_workers()
+        for worker in workers:
+            worker.set_interval(interval)
+        if workers:
+            self._log_message(f"扫描间隔已实时更新为 {interval:g} 秒")
+        self._refresh_status_cards()
+
+    def _apply_channel_settings(self) -> None:
+        """Apply alert-channel settings while monitoring remains active."""
+        monitor_button = _instance_attr(self, "_monitor_btn")
+        channel_requested = bool(self._settings.get_channel_names())
+        if channel_requested:
+            started = self._start_channel_monitor()
+        else:
+            self._stop_channel_monitor()
+            started = False
+        if monitor_button is not None and not self._is_monitoring():
+            monitor_button.setChecked(started)
+            monitor_button.setText("停止监控" if started else "开始监控")
+            monitor_button.setStyleSheet(monitor_button_style(active=started))
+            self._status_label.setText("频道日志监控中" if started else "已停止")
+            self._status_label.setStyleSheet(
+                "color: #37d6b0; font-weight: bold;" if started else "color: #888;"
+            )
+        self._heartbeat_last_action = (
+            "channel_config_applied" if started else "channel_monitor_disabled"
+        )
+        self._heartbeat_last_error = ""
+        uploads_enabled = bool(started or self._is_monitoring())
+        self._uploads_enabled = uploads_enabled
+        self._set_heartbeat_enabled(uploads_enabled)
+        if uploads_enabled:
+            self._heartbeat_last_success_at = heartbeat_now_iso()
+            self._publish_heartbeat()
+        self._refresh_status_cards()
+
+    def _set_heartbeat_enabled(self, enabled: bool) -> None:
+        timer = _instance_attr(self, "_heartbeat_timer")
+        if timer is None:
+            return
+        if enabled:
+            if not timer.isActive():
+                timer.start()
+            return
+        timer.stop()
+
+    def _on_network_task_completed(
+        self,
+        key: str,
+        future: Future,
+        context: object,
+    ) -> None:
+        """Handle one blocking network job after it leaves the GUI thread."""
+        metadata = context if isinstance(context, dict) else {}
+        kind = str(metadata.get("kind") or "")
+        try:
+            result = future.result()
+        except Exception as exc:
+            if kind == "ocr":
+                self._handle_ocr_publish_error(exc, metadata)
+            elif kind == "heartbeat":
+                self._handle_heartbeat_publish_error(exc)
+            elif kind == "channel":
+                self._handle_channel_poll_error(exc, metadata)
+        else:
+            if kind == "ocr":
+                self._handle_ocr_publish_success(metadata)
+            elif kind == "heartbeat":
+                self._last_heartbeat_error = ""
+                self._refresh_status_cards()
+            elif kind == "channel":
+                self._handle_channel_poll_success(result, metadata)
+        finally:
+            runner = _instance_attr(self, "_network_tasks")
+            if runner is not None:
+                runner.finish(key)
+
+    def _handle_ocr_publish_error(self, exc: Exception, metadata: dict) -> None:
+        message = str(exc)
+        context = metadata.get("context")
+        self._heartbeat_last_action = "ocr_snapshot_error"
+        self._heartbeat_last_error = message
+        self._log_message(f"OCR snapshot upload failed: {message}")
+        self._update_window_status(context, "上报异常", message, error=message)
+        self._refresh_status_cards()
+
+    def _handle_ocr_publish_success(self, metadata: dict) -> None:
+        names = list(metadata.get("names") or [])
+        context = metadata.get("context")
+        self._heartbeat_last_action = f"ocr_snapshot:{len(names)}"
+        self._heartbeat_last_error = ""
+        self._heartbeat_last_success_at = heartbeat_now_iso()
+        self._update_window_status(context, "运行中", f"OCR 名单 {len(names)}")
+        self._refresh_status_cards()
+
+    def _handle_heartbeat_publish_error(self, exc: Exception) -> None:
+        message = str(exc)
+        if message != self._last_heartbeat_error:
+            self._last_heartbeat_error = message
+            self._log_message(f"Heartbeat update failed: {message}")
+        self._refresh_status_cards()
+
+    def _handle_channel_poll_error(self, exc: Exception, metadata: dict) -> None:
+        if not self._channel_result_is_current(metadata):
+            return
+        message = str(exc)
+        self._channel_last_action = "observation_error"
+        self._channel_last_error = message
+        self._channel_timer.setInterval(self._channel_error_backoff_ms)
+        self._log_message(f"Channel log upload failed: {message}")
+        self._publish_heartbeat()
+        self._refresh_status_cards()
+
+    def _handle_channel_poll_success(self, processed: object, metadata: dict) -> None:
+        if not self._channel_result_is_current(metadata):
+            return
+        diagnostics = metadata.get("diagnostics") or {}
+        self._channel_last_action = str(
+            diagnostics.get("last_action") or self._channel_last_action
+        )
+        self._channel_last_error = str(diagnostics.get("last_error") or "")
+        self._channel_last_success_at = str(
+            diagnostics.get("last_success_at") or self._channel_last_success_at
+        )
+        if processed:
+            self._log_message(f"Channel observations uploaded: {processed}")
+            self._publish_heartbeat()
+        if self._channel_timer.interval() != CHANNEL_POLL_INTERVAL_MS:
+            self._channel_timer.setInterval(CHANNEL_POLL_INTERVAL_MS)
+        self._refresh_status_cards()
+
+    def _channel_result_is_current(self, metadata: dict) -> bool:
+        return (
+            metadata.get("generation") == _instance_attr(self, "_channel_generation", 0)
+            and metadata.get("watcher") is _instance_attr(self, "_channel_watcher")
+        )
+
     def _start_monitor(self) -> None:
         targets = self._build_monitor_targets()
         if not targets:
@@ -646,6 +793,8 @@ class MainWindow(QMainWindow):
 
         if not targets:
             if self._start_channel_monitor():
+                self._uploads_enabled = True
+                self._set_heartbeat_enabled(True)
                 self._monitor_btn.setText("停止监控")
                 self._monitor_btn.setStyleSheet(monitor_button_style(active=True))
                 self._status_label.setText("频道日志监控中")
@@ -712,6 +861,8 @@ class MainWindow(QMainWindow):
         for target in self._worker_contexts.values():
             self._update_window_status(target, "运行中", "监控线程已启动")
         self._start_channel_monitor()
+        self._uploads_enabled = True
+        self._set_heartbeat_enabled(True)
 
         self._monitor_btn.setText("停止监控")
         self._monitor_btn.setStyleSheet(monitor_button_style(active=True))
@@ -728,7 +879,15 @@ class MainWindow(QMainWindow):
     def _on_worker_status_update(self, message: str, context: dict) -> None:
         """Record one worker status update in log and the per-window table."""
         text = str(message or "").strip()
-        self._log_message(f"{context['window_title']}: {text}")
+        if text.startswith("名单识别:"):
+            return
+        routine_update = text.startswith("名单已上报:") or text == "未识别到名单"
+        now = time.monotonic()
+        last_routine_log_at = float(context.get("_last_routine_log_at") or 0.0)
+        if not routine_update or now - last_routine_log_at >= 15.0:
+            self._log_message(f"{context['window_title']}: {text}")
+            if routine_update:
+                context["_last_routine_log_at"] = now
         lowered = text.casefold()
         status = "运行中"
         if "error" in lowered or "失败" in text or "异常" in text:
@@ -756,6 +915,11 @@ class MainWindow(QMainWindow):
             pass
 
     def _stop_monitor(self) -> None:
+        self._uploads_enabled = False
+        self._set_heartbeat_enabled(False)
+        network_tasks = _instance_attr(self, "_network_tasks")
+        if network_tasks is not None:
+            network_tasks.cancel_latest()
         self._stop_monitor_workers(timeout_ms=3000)
         self._stop_channel_monitor()
 
@@ -765,8 +929,6 @@ class MainWindow(QMainWindow):
         self._status_label.setStyleSheet("color: #888;")
         self._log_message("监控已停止")
         self._heartbeat_last_action = "monitor_stopped"
-        self._heartbeat_last_success_at = heartbeat_now_iso()
-        self._publish_heartbeat()
         self._refresh_status_cards()
 
     def _stop_monitor_workers(self, timeout_ms: int) -> bool:
@@ -841,6 +1003,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _stop_channel_monitor(self) -> None:
+        self._channel_generation = _instance_attr(self, "_channel_generation", 0) + 1
         self._channel_timer.stop()
         self._channel_watcher = None
         self._refresh_status_cards()
@@ -853,6 +1016,26 @@ class MainWindow(QMainWindow):
             "last_error": self._channel_last_error,
             "last_success_at": self._channel_last_success_at,
         }
+        runner = _instance_attr(self, "_network_tasks")
+        if runner is not None:
+            watcher = self._channel_watcher
+            client = self._intel_client
+            metadata = {
+                "kind": "channel",
+                "diagnostics": diagnostics,
+                "generation": _instance_attr(self, "_channel_generation", 0),
+                "watcher": watcher,
+            }
+            runner.submit_once(
+                "channel-poll",
+                lambda: process_once(
+                    watcher,
+                    client,
+                    diagnostics=diagnostics,
+                ),
+                metadata,
+            )
+            return
         try:
             processed = process_once(
                 self._channel_watcher,
@@ -901,7 +1084,10 @@ class MainWindow(QMainWindow):
         names: list[str],
         context: dict | None = None,
     ) -> None:
-        if self._intel_client is None:
+        if (
+            self._intel_client is None
+            or not _instance_attr(self, "_uploads_enabled", True)
+        ):
             return
 
         client_id = self._heartbeat_client_id
@@ -914,14 +1100,28 @@ class MainWindow(QMainWindow):
                 or source_instance
             )
         self._refresh_intel_location()
-        try:
-            self._intel_client.post_ocr_snapshot(
-                client_id=client_id,
-                source_instance=source_instance,
-                system_name=self._intel_system or "Unknown",
-                system_id=self._intel_system_id,
-                names=names,
+        payload = {
+            "client_id": client_id,
+            "source_instance": source_instance,
+            "system_name": self._intel_system or "Unknown",
+            "system_id": self._intel_system_id,
+            "names": list(names),
+        }
+        runner = _instance_attr(self, "_network_tasks")
+        if runner is not None:
+            client = self._intel_client
+            runner.submit_latest(
+                f"ocr:{client_id}",
+                lambda: client.post_ocr_snapshot(**payload),
+                {
+                    "kind": "ocr",
+                    "context": context,
+                    "names": list(names),
+                },
             )
+            return
+        try:
+            self._intel_client.post_ocr_snapshot(**payload)
         except IntelApiError as exc:
             self._heartbeat_last_action = "ocr_snapshot_error"
             self._heartbeat_last_error = str(exc)
@@ -936,58 +1136,71 @@ class MainWindow(QMainWindow):
         self._refresh_status_cards()
 
     def _publish_heartbeat(self) -> None:
-        if self._intel_client is None:
+        if (
+            self._intel_client is None
+            or not _instance_attr(self, "_uploads_enabled", True)
+        ):
             return
         monitoring = self._is_monitoring()
         channel_monitoring = self._channel_watcher is not None
+        details = build_detector_heartbeat_details(
+            monitoring=monitoring,
+            system_name=self._intel_system,
+            system_source=self._intel_system_source,
+            popup_alerts=self._popup_alerts_enabled,
+            window_title=self._window_combo.currentText(),
+            last_action=self._heartbeat_last_action,
+            last_error=self._heartbeat_last_error,
+            client_version=self._heartbeat_runtime["client_version"],
+            host=self._heartbeat_runtime["host"],
+            last_success_at=self._heartbeat_last_success_at,
+        )
+        contexts = list(getattr(self, "_worker_contexts", {}).values())
+        if contexts:
+            details["targets"] = [
+                {
+                    "client_id": context["client_id"],
+                    "window_title": context["window_title"],
+                    "source_instance": context.get(
+                        "source_instance",
+                        context["window_title"],
+                    ),
+                    "region": context["region"],
+                    "monitoring": context["key"] in getattr(self, "_workers", {}),
+                }
+                for context in contexts
+            ]
+            details["target_count"] = len(contexts)
+        details["channel_monitoring"] = channel_monitoring
+        if channel_monitoring and not monitoring:
+            details["mode"] = "channel_monitoring"
+        if self._channel_names:
+            details["channels"] = list(self._channel_names)
+        if self._channel_last_action:
+            details["channel_last_action"] = self._channel_last_action
+        if self._channel_last_error:
+            details["channel_last_error"] = self._channel_last_error
+        if self._channel_last_success_at:
+            details["channel_last_success_at"] = self._channel_last_success_at
+        payload = {
+            "client_id": self._heartbeat_client_id,
+            "client_type": "detector_client",
+            "label": "Detector Client",
+            "status": "running" if (monitoring or channel_monitoring) else "idle",
+            "heartbeat_interval_seconds": self._heartbeat_interval,
+            "details": details,
+        }
+        runner = _instance_attr(self, "_network_tasks")
+        if runner is not None:
+            client = self._intel_client
+            runner.submit_latest(
+                "heartbeat",
+                lambda: client.post_heartbeat(**payload),
+                {"kind": "heartbeat"},
+            )
+            return
         try:
-            details = build_detector_heartbeat_details(
-                monitoring=monitoring,
-                system_name=self._intel_system,
-                system_source=self._intel_system_source,
-                popup_alerts=self._popup_alerts_enabled,
-                window_title=self._window_combo.currentText(),
-                last_action=self._heartbeat_last_action,
-                last_error=self._heartbeat_last_error,
-                client_version=self._heartbeat_runtime["client_version"],
-                host=self._heartbeat_runtime["host"],
-                last_success_at=self._heartbeat_last_success_at,
-            )
-            contexts = list(getattr(self, "_worker_contexts", {}).values())
-            if contexts:
-                details["targets"] = [
-                    {
-                        "client_id": context["client_id"],
-                        "window_title": context["window_title"],
-                        "source_instance": context.get(
-                            "source_instance",
-                            context["window_title"],
-                        ),
-                        "region": context["region"],
-                        "monitoring": context["key"] in getattr(self, "_workers", {}),
-                    }
-                    for context in contexts
-                ]
-                details["target_count"] = len(contexts)
-            details["channel_monitoring"] = channel_monitoring
-            if channel_monitoring and not monitoring:
-                details["mode"] = "channel_monitoring"
-            if self._channel_names:
-                details["channels"] = list(self._channel_names)
-            if self._channel_last_action:
-                details["channel_last_action"] = self._channel_last_action
-            if self._channel_last_error:
-                details["channel_last_error"] = self._channel_last_error
-            if self._channel_last_success_at:
-                details["channel_last_success_at"] = self._channel_last_success_at
-            self._intel_client.post_heartbeat(
-                client_id=self._heartbeat_client_id,
-                client_type="detector_client",
-                label="Detector Client",
-                status="running" if (monitoring or channel_monitoring) else "idle",
-                heartbeat_interval_seconds=self._heartbeat_interval,
-                details=details,
-            )
+            self._intel_client.post_heartbeat(**payload)
             self._last_heartbeat_error = ""
         except IntelApiError as exc:
             message = str(exc)
@@ -1139,6 +1352,9 @@ class MainWindow(QMainWindow):
 
     def _quit_app(self):
         self._stop_monitor()
+        network_tasks = _instance_attr(self, "_network_tasks")
+        if network_tasks is not None:
+            network_tasks.shutdown()
         self._tray.hide()
         QApplication.quit()
 
@@ -1148,6 +1364,14 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _instance_attr(instance, name: str, default=None):
+    """Read attributes safely from normal and test-constructed Qt objects."""
+    try:
+        return instance.__dict__.get(name, default)
+    except RuntimeError:
+        return default
 
 
 def _env_float(name: str, default: float, minimum: float = 0.0) -> float:

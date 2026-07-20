@@ -6,11 +6,14 @@ from app.alert_client import (
     AlertClientState,
     AlertEventConsumer,
     AlertOverlay,
+    active_alert_keys_from_bootstrap,
     aggregate_alert_summaries,
     alert_hostile_count,
     build_heartbeat_details,
+    format_alert_time,
     parse_args,
     summarize_alert,
+    update_alert_summaries_active,
 )
 from app.intel_client import AlertPoller, IntelApiClient, ReportPoller
 from app.server.http_server import IntelHTTPServer
@@ -274,6 +277,46 @@ def test_intel_api_client_iterates_sse_alerts_incrementally(monkeypatch):
     first = next(api.iter_alert_events(timeout=0))
 
     assert first == {"id": "evt-1", "names": ["Alice"]}
+
+
+def test_intel_api_client_iterates_bootstrap_and_alert_events(monkeypatch):
+    class FakeResponse:
+        def __init__(self):
+            self.lines = iter(
+                [
+                    b"id: boot-1\n",
+                    b"event: bootstrap\n",
+                    b'data: {"alerts": []}\n',
+                    b"\n",
+                    b"id: evt-1\n",
+                    b"event: alert\n",
+                    b'data: {"id": "evt-1"}\n',
+                    b"\n",
+                    b"",
+                ]
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def readline(self):
+            return next(self.lines)
+
+    monkeypatch.setattr(
+        "app.intel_client.urlopen",
+        lambda request, timeout=0: FakeResponse(),
+    )
+    api = IntelApiClient("http://example.invalid", timeout=3.0)
+
+    events = list(api.iter_events(timeout=0))
+
+    assert events == [
+        {"id": "boot-1", "event": "bootstrap", "data": {"alerts": []}},
+        {"id": "evt-1", "event": "alert", "data": {"id": "evt-1"}},
+    ]
 
 
 def test_intel_api_client_posts_and_lists_reports(tmp_path):
@@ -771,6 +814,9 @@ def test_alert_client_summarizes_location_and_enemy_count():
         "system_name": "S-KSWL",
         "hostile_count": 2,
         "created_at": "2026-07-10T00:00:00Z",
+        "source_observation_id": "",
+        "active_intel_id": "",
+        "active": True,
     }
     assert alert_hostile_count({"metadata": {"hostile_count": 9}}) == 9
 
@@ -787,6 +833,43 @@ def test_alert_client_aggregates_overlay_rows_by_system():
     assert rows[0]["system_name"] == "S-KSWL"
     assert rows[0]["hostile_count"] == 5
     assert rows[1]["system_name"] == "8-4GQM"
+
+
+def test_alert_client_marks_summaries_inactive_from_bootstrap():
+    summaries = [
+        {
+            "id": "evt-active",
+            "source_observation_id": "obs-active",
+            "system_name": "S-KSWL",
+            "hostile_count": 1,
+            "created_at": "2026-07-10T00:00:00Z",
+            "active": True,
+        },
+        {
+            "id": "evt-left",
+            "source_observation_id": "obs-left",
+            "system_name": "5-O8B1",
+            "hostile_count": 1,
+            "created_at": "2026-07-10T00:01:00Z",
+            "active": True,
+        },
+    ]
+    active_keys = active_alert_keys_from_bootstrap(
+        {"alerts": [{"id": "evt-active", "source_observation_id": "obs-active"}]}
+    )
+
+    updated = update_alert_summaries_active(summaries, active_keys)
+
+    assert updated[0]["active"] is True
+    assert updated[1]["active"] is False
+
+
+def test_alert_client_formats_alert_time_as_local_clock():
+    expected = datetime(2026, 7, 10, 3, 59, tzinfo=timezone.utc).astimezone()
+
+    assert format_alert_time("2026-07-10T03:59:00+00:00") == expected.strftime("%H:%M")
+    assert format_alert_time("") == ""
+    assert format_alert_time("11:59") == "11:59"
 
 
 def test_alert_overlay_can_render_compact_enemy_rows(monkeypatch):
@@ -809,8 +892,138 @@ def test_alert_overlay_can_render_compact_enemy_rows(monkeypatch):
         app.processEvents()
 
         labels = [item.text() for item in overlay.findChildren(QLabel)]
-        assert "S-KSWL  敌:9" in labels
+        expected_time = format_alert_time("2026-07-10T00:00:00Z")
+        assert f"S-KSWL  敌:9  {expected_time}" in labels
         assert overlay.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    finally:
+        overlay.close()
+
+
+def test_alert_overlay_keeps_more_than_four_rows_scrollable(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QApplication, QLabel, QScrollArea
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    try:
+        overlay.show_summaries(
+            [
+                {
+                    "system_name": f"SYSTEM-{index}",
+                    "hostile_count": 1,
+                    "created_at": f"2026-07-10T00:0{index}:00Z",
+                    "active": index != 4,
+                }
+                for index in range(6)
+            ]
+        )
+        app.processEvents()
+
+        rows = [
+            item
+            for item in overlay.findChildren(QLabel)
+            if item.objectName() == "alertRow"
+        ]
+        scroll = overlay.findChild(QScrollArea, "alertScroll")
+        assert len(rows) == 6
+        assert rows[-1].property("inactive") == "true"
+        assert scroll is not None
+        assert scroll.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        assert scroll.maximumHeight() <= 144
+    finally:
+        overlay.close()
+
+
+def test_alert_overlay_can_drag_from_child_rows(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtCore import QEvent, QPointF, Qt
+    from PyQt6.QtWidgets import QApplication, QLabel
+
+    class FakeMouseEvent:
+        def __init__(self, event_type, global_x, global_y, button, buttons):
+            self._type = event_type
+            self._global_position = QPointF(global_x, global_y)
+            self._button = button
+            self._buttons = buttons
+            self.accepted = False
+
+        def type(self):
+            return self._type
+
+        def globalPosition(self):
+            return self._global_position
+
+        def button(self):
+            return self._button
+
+        def buttons(self):
+            return self._buttons
+
+        def accept(self):
+            self.accepted = True
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    try:
+        overlay.show_summaries(
+            [
+                {
+                    "system_name": "S-KSWL",
+                    "hostile_count": 1,
+                    "created_at": "2026-07-10T00:00:00Z",
+                }
+            ]
+        )
+        overlay.move(100, 100)
+        app.processEvents()
+        row = next(
+            item
+            for item in overlay.findChildren(QLabel)
+            if item.objectName() == "alertRow"
+        )
+
+        press = FakeMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            120,
+            120,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+        )
+        move = FakeMouseEvent(
+            QEvent.Type.MouseMove,
+            160,
+            170,
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.LeftButton,
+        )
+        release = FakeMouseEvent(
+            QEvent.Type.MouseButtonRelease,
+            160,
+            170,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.NoButton,
+        )
+
+        assert overlay.eventFilter(row, press) is True
+        assert overlay.eventFilter(row, move) is True
+        assert overlay.pos().x() == 140
+        assert overlay.pos().y() == 150
+        assert overlay.eventFilter(row, release) is True
+        overlay.show_summaries(
+            [
+                {
+                    "system_name": "S-KSWL",
+                    "hostile_count": 2,
+                    "created_at": "2026-07-10T00:01:00Z",
+                }
+            ]
+        )
+        assert overlay.pos().x() == 140
+        assert overlay.pos().y() == 150
+        assert press.accepted is True
+        assert move.accepted is True
+        assert release.accepted is True
     finally:
         overlay.close()
 

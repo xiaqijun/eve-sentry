@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -28,6 +28,41 @@ from PyQt6.QtWidgets import (
 from app.channels.log_watcher import DEFAULT_CHATLOG_DIR, channel_name_from_path
 
 
+class ChannelListWidget(QListWidget):
+    """Channel list whose entire row toggles the checkbox exactly once."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pressed_item: QListWidgetItem | None = None
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed_item = self.itemAt(event.position().toPoint())
+            if self._pressed_item is not None:
+                self.setCurrentItem(self._pressed_item)
+                self.setFocus()
+                event.accept()
+                return
+        self._pressed_item = None
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            item = self.itemAt(event.position().toPoint())
+            pressed_item = self._pressed_item
+            self._pressed_item = None
+            if item is not None and item is pressed_item:
+                next_state = (
+                    Qt.CheckState.Unchecked
+                    if item.checkState() == Qt.CheckState.Checked
+                    else Qt.CheckState.Checked
+                )
+                item.setCheckState(next_state)
+                event.accept()
+                return
+        super().mouseReleaseEvent(event)
+
+
 def default_channel_settings_path() -> Path:
     """Return the local client channel settings path."""
     base = os.environ.get("LOCALAPPDATA")
@@ -38,6 +73,9 @@ def default_channel_settings_path() -> Path:
 
 class SettingsPanel(QWidget):
     """Left-side control panel for monitor and channel settings."""
+
+    scan_settings_changed = pyqtSignal()
+    channel_settings_changed = pyqtSignal()
 
     def __init__(self, parent=None, config_path: str | Path | None = None):
         super().__init__(parent)
@@ -56,7 +94,7 @@ class SettingsPanel(QWidget):
         interval_row.addWidget(QLabel("扫描间隔"))
         self._interval_spin = QSpinBox()
         self._interval_spin.setRange(1, 10)
-        self._interval_spin.setValue(2)
+        self._interval_spin.setValue(int(channel_config["scan_interval"]))
         self._interval_spin.setSuffix(" 秒")
         interval_row.addWidget(self._interval_spin)
         interval_row.addStretch()
@@ -64,16 +102,20 @@ class SettingsPanel(QWidget):
 
         keyword_row = QHBoxLayout()
         keyword_row.addWidget(QLabel("窗口关键字"))
-        self._keyword_edit = QLineEdit("EVE -")
+        self._keyword_edit = QLineEdit(str(channel_config["window_keyword"]))
         keyword_row.addWidget(self._keyword_edit)
         scan_layout.addLayout(keyword_row)
 
+        scan_hint = QLabel("运行中修改扫描间隔会立即生效")
+        scan_hint.setWordWrap(True)
+        scan_layout.addWidget(scan_hint)
+
         layout.addWidget(scan_group)
 
-        channel_group = QGroupBox("频道日志监控")
+        channel_group = QGroupBox("预警设置")
         channel_layout = QVBoxLayout(channel_group)
 
-        self._channel_enabled = QCheckBox("启用频道日志监控")
+        self._channel_enabled = QCheckBox("开启预警频道监控")
         self._channel_enabled.setChecked(bool(channel_config["enabled"]))
         channel_layout.addWidget(self._channel_enabled)
 
@@ -115,18 +157,28 @@ class SettingsPanel(QWidget):
         discover_row.addWidget(discover_btn)
         channel_layout.addLayout(discover_row)
 
-        self._channel_list = QListWidget()
+        self._channel_list = ChannelListWidget()
         self._channel_list.setMaximumHeight(120)
         self._channel_list.itemChanged.connect(self._on_channel_item_changed)
         channel_layout.addWidget(self._channel_list)
 
-        save_btn = QPushButton("保存频道配置")
-        save_btn.clicked.connect(lambda: self.save_channel_config(show_message=True))
+        save_btn = QPushButton("应用预警配置")
+        save_btn.clicked.connect(self._apply_channel_config)
         channel_layout.addWidget(save_btn)
 
         layout.addWidget(channel_group)
         layout.addStretch()
         self._refresh_channel_list(show_message=False)
+        self._interval_spin.valueChanged.connect(self._on_scan_settings_changed)
+        self._keyword_edit.editingFinished.connect(self._on_scan_settings_changed)
+        self._channel_enabled.toggled.connect(self._on_channel_settings_changed)
+        self._channel_edit.editingFinished.connect(self._on_channel_settings_changed)
+        self._channel_log_dir_edit.editingFinished.connect(
+            self._on_channel_settings_changed
+        )
+        self._channel_recent_days_spin.valueChanged.connect(
+            self._on_channel_settings_changed
+        )
 
     def get_interval(self) -> float:
         return float(self._interval_spin.value())
@@ -144,14 +196,26 @@ class SettingsPanel(QWidget):
         return self._channel_log_dir_edit.text().strip() or str(DEFAULT_CHATLOG_DIR)
 
     def save_channel_config(self, show_message: bool = False) -> None:
-        """Persist channel log monitor settings locally."""
+        """Persist scan and alert-channel settings locally."""
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         self._config_path.write_text(
             json.dumps(self._channel_config_payload(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         if show_message:
-            QMessageBox.information(self, "频道配置", "频道日志配置已保存")
+            QMessageBox.information(self, "预警配置", "预警与扫描配置已应用")
+
+    def _on_scan_settings_changed(self, _value=None) -> None:
+        self.save_channel_config()
+        self.scan_settings_changed.emit()
+
+    def _on_channel_settings_changed(self, _value=None) -> None:
+        self.save_channel_config()
+        self.channel_settings_changed.emit()
+
+    def _apply_channel_config(self) -> None:
+        self.save_channel_config(show_message=True)
+        self.channel_settings_changed.emit()
 
     def _browse_channel_log_dir(self) -> None:
         selected = QFileDialog.getExistingDirectory(
@@ -162,7 +226,7 @@ class SettingsPanel(QWidget):
         if selected:
             self._channel_log_dir_edit.setText(selected)
             self._refresh_channel_list(show_message=False)
-            self.save_channel_config()
+            self._on_channel_settings_changed()
 
     def _refresh_channel_list(self, show_message: bool = False) -> None:
         selected = {name.casefold() for name in self._configured_channel_names()}
@@ -196,6 +260,7 @@ class SettingsPanel(QWidget):
         ]
         names = self._checked_channel_names() + manual_patterns
         self._channel_edit.setText(", ".join(self._dedupe_channel_names(names)))
+        self._on_channel_settings_changed()
 
     def _checked_channel_names(self) -> list[str]:
         names: list[str] = []
@@ -261,6 +326,18 @@ class SettingsPanel(QWidget):
         ).strip()
         enabled = payload.get("enabled")
         recent_days = self._clean_recent_days(payload.get("recent_days", 30))
+        scan_interval = self._clean_scan_interval(
+            os.environ.get(
+                "EVE_SENTRY_SCAN_INTERVAL",
+                payload.get("scan_interval", 2),
+            )
+        )
+        window_keyword = str(
+            os.environ.get(
+                "EVE_SENTRY_WINDOW_KEYWORD",
+                payload.get("window_keyword", "EVE -"),
+            )
+        ).strip() or "EVE -"
         if env_channel is not None:
             enabled = bool(channels)
         elif enabled is None:
@@ -270,6 +347,8 @@ class SettingsPanel(QWidget):
             "channels": channels,
             "chatlog_dir": chatlog_dir or str(DEFAULT_CHATLOG_DIR),
             "recent_days": recent_days,
+            "scan_interval": scan_interval,
+            "window_keyword": window_keyword,
         }
 
     def _channel_config_payload(self) -> dict[str, Any]:
@@ -278,7 +357,15 @@ class SettingsPanel(QWidget):
             "channels": ", ".join(self._configured_channel_names()),
             "chatlog_dir": self.get_channel_log_dir(),
             "recent_days": int(self._channel_recent_days_spin.value()),
+            "scan_interval": int(self._interval_spin.value()),
+            "window_keyword": self.get_keyword(),
         }
+
+    def _clean_scan_interval(self, value: Any) -> int:
+        try:
+            return max(1, min(10, int(value)))
+        except (TypeError, ValueError):
+            return 2
 
     def _clean_recent_days(self, value: Any) -> int:
         try:

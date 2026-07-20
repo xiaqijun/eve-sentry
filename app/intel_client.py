@@ -437,6 +437,29 @@ class IntelApiClient:
         min_level: str = "",
     ):
         """Yield alert events incrementally from the server-sent event stream."""
+        for event in self.iter_events(
+            since=since,
+            last_event_id=last_event_id,
+            limit=limit,
+            timeout=timeout,
+            acknowledged=acknowledged,
+            min_score=min_score,
+            min_level=min_level,
+        ):
+            if event.get("event") == "alert":
+                yield event["data"]
+
+    def iter_events(
+        self,
+        since: str = "",
+        last_event_id: str = "",
+        limit: int = 50,
+        timeout: float = 30.0,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str = "",
+    ):
+        """Yield raw server-sent events from the v1 event stream."""
         params = {"limit": str(limit), "timeout": str(timeout)}
         if since:
             params["since"] = since
@@ -457,7 +480,7 @@ class IntelApiClient:
         )
         try:
             with urlopen(request, timeout=self.timeout + max(0.0, timeout)) as response:
-                yield from self._iter_alert_events(response)
+                yield from self._iter_events(response)
         except HTTPError as exc:
             message = self._read_error_message(exc)
             raise IntelApiError(message) from exc
@@ -527,14 +550,19 @@ class IntelApiClient:
         return alerts
 
     def _iter_alert_events(self, response):
+        for event in self._iter_events(response):
+            if event.get("event") == "alert":
+                yield event["data"]
+
+    def _iter_events(self, response):
         block_lines: list[str] = []
         while True:
             raw_line = response.readline()
             if raw_line == b"" or raw_line == "":
                 if block_lines:
-                    alert = self._parse_alert_event_block(block_lines)
-                    if alert is not None:
-                        yield alert
+                    event = self._parse_event_block(block_lines)
+                    if event is not None:
+                        yield event
                 return
             if isinstance(raw_line, bytes):
                 line = raw_line.decode("utf-8")
@@ -542,22 +570,31 @@ class IntelApiClient:
                 line = str(raw_line)
             line = line.rstrip("\r\n")
             if line == "":
-                alert = self._parse_alert_event_block(block_lines)
+                event = self._parse_event_block(block_lines)
                 block_lines = []
-                if alert is not None:
-                    yield alert
+                if event is not None:
+                    yield event
                 continue
             block_lines.append(line)
 
     def _parse_alert_event_block(self, lines: list[str]) -> dict[str, Any] | None:
+        event = self._parse_event_block(lines)
+        if event is None or event.get("event") != "alert":
+            return None
+        return event["data"]
+
+    def _parse_event_block(self, lines: list[str]) -> dict[str, Any] | None:
+        event_id = ""
         event_name = ""
         data_lines = []
         for line in lines:
+            if line.startswith("id:"):
+                event_id = line[len("id:"):].strip()
             if line.startswith("event:"):
                 event_name = line[len("event:"):].strip()
             if line.startswith("data:"):
                 data_lines.append(line[len("data:"):].lstrip())
-        if event_name not in {"", "alert"} or not data_lines:
+        if not data_lines:
             return None
         try:
             payload = json.loads("\n".join(data_lines))
@@ -565,7 +602,11 @@ class IntelApiClient:
             raise IntelApiError("server returned invalid SSE JSON") from exc
         if not isinstance(payload, dict):
             raise IntelApiError("server returned non-object SSE event data")
-        return payload
+        return {
+            "id": event_id,
+            "event": event_name or "alert",
+            "data": payload,
+        }
 
 
 def _bool_param(value: bool) -> str:

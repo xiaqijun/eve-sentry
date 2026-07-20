@@ -1,5 +1,17 @@
 """Shared Qt theme helpers for the desktop client."""
 
+from pathlib import Path
+import sys
+
+
+def _resource_path(name: str) -> str:
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    return (root / "resources" / name).as_posix()
+
+
+_SPIN_UP_ICON = _resource_path("spin-up.svg")
+_SPIN_DOWN_ICON = _resource_path("spin-down.svg")
+
 APP_QSS = """
 QMainWindow, QWidget {
     background: #061017;
@@ -34,6 +46,42 @@ QLineEdit, QComboBox, QSpinBox {
     color: #edf8fc;
     selection-background-color: #0d88a8;
 }
+QSpinBox {
+    min-height: 32px;
+    padding: 3px 30px 3px 8px;
+}
+QSpinBox::up-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 26px;
+    border: none;
+    border-left: 1px solid #1c4254;
+    border-bottom: 1px solid #1c4254;
+    border-top-right-radius: 4px;
+    background: #092331;
+}
+QSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 26px;
+    border: none;
+    border-left: 1px solid #1c4254;
+    border-bottom-right-radius: 4px;
+    background: #092331;
+}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+    background: #0d3142;
+}
+QSpinBox::up-arrow {
+    image: url("__SPIN_UP_ICON__");
+    width: 12px;
+    height: 8px;
+}
+QSpinBox::down-arrow {
+    image: url("__SPIN_DOWN_ICON__");
+    width: 12px;
+    height: 8px;
+}
 QComboBox::drop-down {
     border: none;
     width: 22px;
@@ -44,6 +92,19 @@ QListWidget, QTableWidget, QTextEdit {
     background: #041018;
     color: #d5e9ef;
     selection-background-color: #0f6076;
+}
+QListWidget::item {
+    min-height: 28px;
+    padding: 3px 6px;
+}
+QListWidget::indicator, QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+}
+QCheckBox {
+    min-height: 28px;
+    spacing: 8px;
+    padding: 2px 4px;
 }
 QHeaderView::section {
     border: none;
@@ -57,10 +118,10 @@ QTableWidget::item {
     padding: 3px 5px;
 }
 QPushButton {
-    min-height: 28px;
+    min-height: 32px;
     border: 1px solid #24576b;
     border-radius: 4px;
-    padding: 4px 10px;
+    padding: 5px 12px;
     background: #092331;
     color: #e5f6fb;
     font-weight: 600;
@@ -78,6 +139,9 @@ QStatusBar {
     color: #9bb8c3;
 }
 """
+APP_QSS = APP_QSS.replace("__SPIN_UP_ICON__", _SPIN_UP_ICON).replace(
+    "__SPIN_DOWN_ICON__", _SPIN_DOWN_ICON
+)
 
 STATUS_CARD_BASE_QSS = """
 QFrame {
