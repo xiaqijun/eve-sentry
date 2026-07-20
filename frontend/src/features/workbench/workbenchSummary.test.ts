@@ -69,4 +69,25 @@ describe("summarizeWorkbench", () => {
       onlineClients: 1,
     });
   });
+
+  it("preserves explicit zero counts instead of falling back to array lengths", () => {
+    expect(summarizeWorkbench({
+      ...bootstrap,
+      map: {
+        ...bootstrap.map,
+        summary: {
+          system_count: 0,
+          hostile_count: 0,
+          report_count: 0,
+          alert_count: 0,
+        },
+      },
+    })).toEqual({
+      systems: 0,
+      hostiles: 0,
+      reports: 0,
+      alerts: 0,
+      onlineClients: 1,
+    });
+  });
 });

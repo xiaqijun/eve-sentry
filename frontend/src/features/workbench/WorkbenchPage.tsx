@@ -213,7 +213,6 @@ export function WorkbenchPage() {
     }
     return buildTacticalGraph(bootstrap, selectedSystemId);
   }, [bootstrap, selectedSystemId]);
-
   useEffect(() => {
     if (!bootstrapQuery.isSuccess) {
       return undefined;
@@ -529,56 +528,10 @@ export function WorkbenchPage() {
           </div>
         </section>
 
-        <section className="sector-panel">
-          <div className="section-title section-title-row">
-            <div>
-              <Database size={16} />
-              <span>区域态势</span>
-            </div>
-            <strong className="rail-value">Tenal</strong>
-          </div>
-          <div className="sector-stat">
-            <span>敌对活动</span>
-            <strong className="danger-text">{summary?.alerts ?? 0}</strong>
-          </div>
-          <div className="sector-stat">
-            <span>跃迁通道</span>
-            <strong>{bootstrap?.map.links.length ?? 0}</strong>
-          </div>
-          <div className="sector-stat">
-            <span>本地信号</span>
-            <strong>{summary?.reports ?? 0}</strong>
-          </div>
-        </section>
-
       </aside>
 
       <section className="center-stack" aria-label="星图工作区">
         <section className="map-pane" id="workbench-map-panel">
-          <header className="map-toolbar">
-            <div className="toolbar-status">
-              <span>区域：</span>
-              <strong>Tenal</strong>
-            </div>
-            <div className="toolbar-status">
-              <span>视图模式：</span>
-              <strong>实时态势</strong>
-            </div>
-            <div className="toolbar-status">
-              <span>视图：</span>
-              <strong>星图</strong>
-            </div>
-            <label className="search-control">
-              <Filter size={15} />
-              <input
-                aria-label="情报过滤"
-                value={filterText}
-                onChange={(event) => setFilterText(event.target.value)}
-                placeholder="过滤：敌对活动"
-              />
-            </label>
-          </header>
-
           <div className="map-canvas">
             <div className="map-legend">
               <strong>图例</strong>
@@ -622,6 +575,16 @@ export function WorkbenchPage() {
               </div>
               <strong>{observations.length}</strong>
             </div>
+            <label className="observation-search">
+              <Filter size={15} />
+              <input
+                aria-label="筛选敌对飞行员"
+                type="search"
+                value={filterText}
+                onChange={(event) => setFilterText(event.target.value)}
+                placeholder="搜索飞行员、星系或来源"
+              />
+            </label>
             <ObservationTable observations={observations} />
           </section>
         ) : null}

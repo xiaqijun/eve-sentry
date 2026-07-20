@@ -64,4 +64,27 @@ describe("ObservationTable", () => {
 
     cleanup();
   });
+
+  test("keeps the complete pilot name available in narrow observation tables", () => {
+    const pilotName = "A Very Long Hostile Capsuleer Name";
+    const { container, cleanup } = renderTable([
+      {
+        id: "long-pilot-name",
+        pilotName,
+        systemName: "0-UVHJ",
+        systemId: 30003615,
+        systemIds: [30003615],
+        sources: ["本地OCR"],
+        level: "high",
+        latestSeen: "2026-07-02T12:04:00Z",
+        evidenceCount: 1,
+      },
+    ]);
+
+    const pilotNameElement = container.querySelector(".pilot-name");
+    expect(pilotNameElement).toHaveTextContent(pilotName);
+    expect(pilotNameElement).toHaveAttribute("title", pilotName);
+
+    cleanup();
+  });
 });

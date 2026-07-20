@@ -151,7 +151,33 @@ sudo systemctl restart eve-sentry
 - `/` -> `frontend/dist`
 - `/api/` -> `http://127.0.0.1:8765`
 
-先在本地构建前端：
+推荐从 Windows 开发机使用固化的部署脚本。脚本会依次执行锁定依赖安装、
+前端测试、生产构建、压缩上传、服务器端备份、`rsync --delete` 原位同步、
+SHA256 对比以及内外网健康检查。远端同步或健康检查失败时，会自动恢复刚刚
+创建的备份：
+
+```powershell
+.\scripts\deploy_frontend.ps1 `
+  -Target root@YOUR_SERVER `
+  -IdentityFile "$HOME\.ssh\eve_server_key" `
+  -PublicUrl http://YOUR_SERVER
+```
+
+也可以通过环境变量保存当前终端的部署目标，避免每次重复输入：
+
+```powershell
+$env:EVE_SENTRY_DEPLOY_TARGET = "root@YOUR_SERVER"
+$env:EVE_SENTRY_DEPLOY_IDENTITY_FILE = "$HOME\.ssh\eve_server_key"
+.\scripts\deploy_frontend.ps1 -PublicUrl http://YOUR_SERVER
+```
+
+默认静态目录是当前 1Panel/OpenResty 生产约定的
+`/opt/1panel/www/eve-sentry`。其他环境可通过 `-RemoteRoot` 覆盖。仅在本地
+依赖已经由 `npm ci` 安装且本轮测试已经独立通过时，才使用 `-SkipInstall`
+或 `-SkipTests`。每次部署的旧版本保存在静态目录旁的
+`eve-sentry-backups/<时间戳>/` 中。
+
+需要手工部署或在非 Windows 环境联调时，先在本地构建前端：
 
 ```bash
 cd frontend

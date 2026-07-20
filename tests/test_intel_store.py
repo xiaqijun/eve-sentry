@@ -1,4 +1,5 @@
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -329,6 +330,7 @@ def test_record_ocr_snapshot_stores_esi_identity_metadata(tmp_path):
             "names": ["Alice"],
         }
     )
+    assert store.wait_for_esi_idle(timeout=1)
 
     active = store.list_active_intel(source="eve-sentry-detector")[0]
     metadata = active["metadata"]
@@ -344,6 +346,52 @@ def test_record_ocr_snapshot_stores_esi_identity_metadata(tmp_path):
     assert metadata["standing_source"] == "character"
     assert metadata["esi_resolution"]["resolved_character_names"] == ["Alice"]
     assert metadata["character_profiles"][0]["name"] == "Alice"
+
+
+def test_record_ocr_snapshot_does_not_wait_for_esi_resolution(tmp_path):
+    class BlockingResolver:
+        def __init__(self):
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def resolve_names(self, names):
+            self.started.set()
+            self.release.wait(timeout=2)
+            return []
+
+        def enrich_observation(self, observation):
+            return observation
+
+    resolver = BlockingResolver()
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=resolver,
+    )
+
+    started_at = time.perf_counter()
+    result = store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+        }
+    )
+    elapsed = time.perf_counter() - started_at
+
+    try:
+        assert elapsed < 0.5
+        assert result["created"] == 1
+        assert resolver.started.wait(timeout=1)
+        active = store.list_active_intel(source="eve-sentry-detector")[0]
+        assert active["metadata"]["identity_status"] == "pending"
+    finally:
+        resolver.release.set()
+
+    assert store.wait_for_esi_idle(timeout=2)
+    active = store.list_active_intel(source="eve-sentry-detector")[0]
+    assert active["metadata"]["identity_status"] == "unresolved"
 
 
 def test_record_ocr_snapshot_skips_identity_refresh_for_active_duplicates(tmp_path):
@@ -395,6 +443,7 @@ def test_record_ocr_snapshot_skips_identity_refresh_for_active_duplicates(tmp_pa
     store.record_ocr_snapshot(
         {**payload, "seen_at": "2026-07-03T10:00:00+00:00"}
     )
+    assert store.wait_for_esi_idle(timeout=1)
     first = store.list_active_intel(source="eve-sentry-detector")[0]
     assert "contact_standing" not in first["metadata"]
     resolver_calls_after_create = resolver.enrich_calls
@@ -446,9 +495,10 @@ def test_record_ocr_snapshot_filters_friendly_corporation_from_active_intel(tmp_
             "names": ["Alice"],
         }
     )
+    assert result["filtered"] == 0
+    assert result["created"] == 1
+    assert store.wait_for_esi_idle(timeout=1)
 
-    assert result["filtered"] == 1
-    assert result["created"] == 0
     assert store.list_active_intel(source="eve-sentry-detector") == []
     assert store.list_alerts() == []
     assert store.list_observations()[0]["character_ids"] == [123]
@@ -536,6 +586,7 @@ def test_record_ocr_snapshot_canonicalizes_leading_i_l_ocr_name(tmp_path):
     store.record_ocr_snapshot(
         {**payload, "seen_at": "2026-07-03T10:00:02+00:00"}
     )
+    assert store.wait_for_esi_idle(timeout=1)
 
     active = store.list_active_intel()
     assert active[0]["name"] == "Iona Gonemion"
@@ -591,6 +642,7 @@ def test_record_ocr_snapshot_keeps_exact_i_l_name_when_esi_resolves_it(tmp_path)
             "seen_at": "2026-07-03T10:00:00+00:00",
         }
     )
+    assert store.wait_for_esi_idle(timeout=1)
 
     active = store.list_active_intel()
     assert active[0]["name"] == "lona Gonemion"
@@ -647,6 +699,7 @@ def test_record_ocr_snapshot_resolves_new_names_without_i_l_once(tmp_path):
     store.record_ocr_snapshot(
         {**payload, "seen_at": "2026-07-03T10:00:02+00:00"}
     )
+    assert store.wait_for_esi_idle(timeout=1)
 
     active = store.list_active_intel()
     assert active[0]["name"] == "Bob"
@@ -684,6 +737,7 @@ def test_record_ocr_snapshot_only_confuses_upper_i_with_lower_l(tmp_path):
             "seen_at": "2026-07-03T10:00:00+00:00",
         }
     )
+    assert store.wait_for_esi_idle(timeout=1)
 
     assert resolver.resolve_calls == [["Mira LName"]]
 
@@ -735,8 +789,10 @@ def test_record_ocr_snapshot_filters_positive_esi_corporation_standing(tmp_path)
             "names": ["Alice"],
         }
     )
+    assert result["filtered"] == 0
+    assert result["created"] == 1
+    assert store.wait_for_esi_idle(timeout=1)
 
-    assert result["filtered"] == 1
     assert store.list_active_intel(source="eve-sentry-detector") == []
     assert store.list_alerts() == []
     assert store.list_observations()[0]["character_ids"] == [123]
@@ -1183,7 +1239,7 @@ def test_record_ocr_snapshot_isolates_missing_names_by_client_id(tmp_path):
     assert inactive[0]["source_instance"] == "EVE - Pilot A"
 
 
-def test_detector_idle_heartbeat_deactivates_ocr_active_intel(tmp_path):
+def test_detector_idle_heartbeat_does_not_deactivate_ocr_active_intel(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
     store.record_ocr_snapshot(
         {
@@ -1191,7 +1247,7 @@ def test_detector_idle_heartbeat_deactivates_ocr_active_intel(tmp_path):
             "source_instance": "EVE - Pilot",
             "system_name": "S-KSWL",
             "names": ["Alice"],
-            "seen_at": "2026-07-03T10:00:00+00:00",
+            "seen_at": "2099-07-03T10:00:00+00:00",
         }
     )
 
@@ -1200,18 +1256,21 @@ def test_detector_idle_heartbeat_deactivates_ocr_active_intel(tmp_path):
             "client_id": "detector-client:test",
             "client_type": "detector_client",
             "status": "idle",
-            "seen_at": "2026-07-03T10:00:05+00:00",
+            "seen_at": "2099-07-03T10:00:05+00:00",
             "details": {"monitoring": False, "last_action": "monitor_stopped"},
         }
     )
 
     assert heartbeat["status"] == "idle"
-    assert store.list_active_intel(source="eve-sentry-detector") == []
-    inactive = store.list_active_intel(source="eve-sentry-detector", active=False)
-    assert inactive[0]["left_at"] == "2026-07-03T10:00:05+00:00"
+    active = store.list_active_intel(source="eve-sentry-detector")
+    assert [item["name"] for item in active] == ["Alice"]
+    assert store.list_active_intel(
+        source="eve-sentry-detector",
+        active=False,
+    ) == []
 
 
-def test_detector_idle_heartbeat_deactivates_window_scoped_ocr_active_intel(tmp_path):
+def test_detector_idle_heartbeat_does_not_deactivate_window_scoped_ocr(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
     store.record_ocr_snapshot(
         {
@@ -1219,7 +1278,7 @@ def test_detector_idle_heartbeat_deactivates_window_scoped_ocr_active_intel(tmp_
             "source_instance": "EVE - Pilot",
             "system_name": "S-KSWL",
             "names": ["Alice"],
-            "seen_at": "2026-07-03T10:00:00+00:00",
+            "seen_at": "2099-07-03T10:00:00+00:00",
         }
     )
 
@@ -1228,20 +1287,22 @@ def test_detector_idle_heartbeat_deactivates_window_scoped_ocr_active_intel(tmp_
             "client_id": "detector-client:test",
             "client_type": "detector_client",
             "status": "idle",
-            "seen_at": "2026-07-03T10:00:05+00:00",
+            "seen_at": "2099-07-03T10:00:05+00:00",
             "details": {"monitoring": False, "last_action": "monitor_stopped"},
         }
     )
 
-    assert store.list_active_intel(source="eve-sentry-detector") == []
-    inactive = store.list_active_intel(source="eve-sentry-detector", active=False)
-    assert inactive[0]["metadata"] == {
+    active = store.list_active_intel(source="eve-sentry-detector")
+    assert active[0]["metadata"] == {
         "client_id": "detector-client:test:hwnd-123-eve-pilot"
     }
-    assert inactive[0]["left_at"] == "2026-07-03T10:00:05+00:00"
+    assert store.list_active_intel(
+        source="eve-sentry-detector",
+        active=False,
+    ) == []
 
 
-def test_detector_heartbeat_deactivates_only_stopped_window_target(tmp_path):
+def test_detector_heartbeat_target_flags_do_not_change_ocr_state(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
     for client_id, title in [
         ("detector-client:test:pilot-a", "EVE - Pilot A"),
@@ -1281,8 +1342,11 @@ def test_detector_heartbeat_deactivates_only_stopped_window_target(tmp_path):
 
     active = store.list_active_intel(source="eve-sentry-detector")
     inactive = store.list_active_intel(source="eve-sentry-detector", active=False)
-    assert [item["source_instance"] for item in active] == ["EVE - Pilot B"]
-    assert [item["source_instance"] for item in inactive] == ["EVE - Pilot A"]
+    assert [item["source_instance"] for item in active] == [
+        "EVE - Pilot A",
+        "EVE - Pilot B",
+    ]
+    assert inactive == []
 
 
 def test_stale_detector_heartbeat_expires_ocr_active_intel_on_read(tmp_path):

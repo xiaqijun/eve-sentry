@@ -22,6 +22,7 @@ const bootstrap: BootstrapPayload = {
         system_id: 30003615,
         x: 100,
         y: 120,
+        region: "Tenal",
         hostile_count: 1,
         report_count: 2,
       },
@@ -29,9 +30,9 @@ const bootstrap: BootstrapPayload = {
     links: [],
     summary: {
       system_count: 1,
-      hostile_count: 1,
-      report_count: 2,
-      alert_count: 1,
+      hostile_count: 3,
+      report_count: 9,
+      alert_count: 7,
     },
   },
   reports: [
@@ -184,7 +185,8 @@ describe("WorkbenchPage", () => {
     expect(container).toHaveTextContent("状态更新时间");
     expect(container).toHaveTextContent("在线监控");
     expect(container).toHaveTextContent("实时态势");
-    expect(container).toHaveTextContent("区域态势");
+    expect(container).not.toHaveTextContent("区域态势");
+    expect(container.querySelector(".sector-panel")).not.toBeInTheDocument();
     expect(container).toHaveTextContent("敌对飞行员观察列表");
     expect(container).not.toHaveTextContent("ESI 状态");
     expect(container.querySelector(".esi-login-button")).not.toBeInTheDocument();
@@ -206,7 +208,18 @@ describe("WorkbenchPage", () => {
     expect(container.querySelector('[aria-label="切换视图"]')).not.toBeInTheDocument();
     expect(container.querySelector('[aria-label="列表视图"]')).not.toBeInTheDocument();
     expect(container.querySelector('[aria-label="设置"]')).not.toBeInTheDocument();
-    expect(container.querySelector('[aria-label="情报过滤"]')).toBeInTheDocument();
+    expect(container.querySelector(".map-toolbar")).not.toBeInTheDocument();
+    expect(container).not.toHaveTextContent("视图模式：");
+    expect(container).not.toHaveTextContent("视图：星图");
+    const observationPanel = container.querySelector(".observation-panel");
+    const observationSearch = observationPanel?.querySelector(
+      '[aria-label="筛选敌对飞行员"]',
+    );
+    expect(observationSearch).toBeInTheDocument();
+    expect(observationSearch).toHaveAttribute(
+      "placeholder",
+      "搜索飞行员、星系或来源",
+    );
     expect(container.querySelector('[aria-label="Fit 星图"]')).toBeInTheDocument();
     expect(container.querySelector(".latest-event")).toHaveClass("is-empty");
     expect(container.querySelector(".latest-event")).toHaveTextContent("暂无实时威胁事件");

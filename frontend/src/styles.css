@@ -76,7 +76,6 @@ button {
 
 .brand-panel,
 .threat-status-panel,
-.sector-panel,
 .panel,
 .map-pane,
 .bottom-bar {
@@ -128,9 +127,7 @@ button {
 
 .brand-panel span,
 .rail-meta strong,
-.status-row span,
-.sector-stat span,
-.toolbar-status span {
+.status-row span {
   color: #93a7b3;
   font-size: 12px;
 }
@@ -355,27 +352,8 @@ button {
 }
 
 .threat-status-panel,
-.sector-panel,
 .panel {
   padding: 12px;
-}
-
-.sector-stat {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 30px;
-  border-bottom: 1px solid rgba(50, 82, 96, 0.42);
-}
-
-.sector-stat:last-child {
-  border-bottom: 0;
-}
-
-.sector-stat strong {
-  color: #e7f2f7;
-  font-size: 13px;
 }
 
 .compact-title {
@@ -456,37 +434,21 @@ button {
   color: #ff554a;
 }
 
-.section-title-row > .rail-value {
-  color: #c8e8f2;
-  font-size: 12px;
-  letter-spacing: 0;
-}
-
 .map-pane {
   display: grid;
-  grid-template-rows: 58px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   overflow: hidden;
 }
 
-.map-toolbar {
-  display: grid;
-  grid-template-columns: 160px 190px 140px minmax(220px, 1fr);
-  gap: 10px;
-  align-items: center;
-  padding: 10px 12px;
-  border-bottom: 1px solid rgba(41, 78, 95, 0.78);
-  background: rgba(3, 12, 18, 0.82);
-}
-
-.toolbar-status,
-.search-control {
+.observation-search {
   display: flex;
   align-items: center;
   gap: 8px;
   height: 36px;
   min-width: 0;
+  margin-bottom: 10px;
   padding: 0 12px;
   border: 1px solid rgba(48, 87, 105, 0.85);
   border-radius: 3px;
@@ -494,21 +456,7 @@ button {
   background: rgba(3, 13, 20, 0.86);
 }
 
-.toolbar-status {
-  border-color: rgba(34, 66, 80, 0.62);
-  color: #9db6c1;
-  background: rgba(2, 10, 15, 0.36);
-  box-shadow: inset 0 -1px 0 rgba(92, 181, 213, 0.08);
-}
-
-.toolbar-status strong {
-  overflow: hidden;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.search-control input {
+.observation-search input {
   width: 100%;
   min-width: 0;
   border: 0;
@@ -812,6 +760,36 @@ button {
   table-layout: fixed;
 }
 
+.observation-table th:nth-child(1),
+.observation-table td:nth-child(1) {
+  width: 34%;
+}
+
+.observation-table th:nth-child(2),
+.observation-table td:nth-child(2) {
+  width: 15%;
+}
+
+.observation-table th:nth-child(3),
+.observation-table td:nth-child(3) {
+  width: 17%;
+}
+
+.observation-table th:nth-child(4),
+.observation-table td:nth-child(4) {
+  width: 12%;
+}
+
+.observation-table th:nth-child(5),
+.observation-table td:nth-child(5) {
+  width: 15%;
+}
+
+.observation-table th:nth-child(6),
+.observation-table td:nth-child(6) {
+  width: 7%;
+}
+
 .observation-table th {
   height: 30px;
   padding: 0 8px;
@@ -843,11 +821,20 @@ button {
 }
 
 .observation-table .pilot-name {
-  overflow: hidden;
+  display: block;
+  overflow: visible;
   color: #ff4b40;
   font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.observation-table td:first-child {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .observation-table em,
@@ -1044,12 +1031,8 @@ button {
     grid-column: auto;
   }
 
-  .map-toolbar {
-    grid-template-columns: 1fr 1fr;
-  }
-
   .map-pane {
-    grid-template-rows: auto minmax(520px, 1fr);
+    grid-template-rows: minmax(520px, 1fr);
   }
 
   .map-canvas {
@@ -1139,7 +1122,6 @@ button {
   }
 
   .threat-status-panel,
-  .sector-panel,
   .panel {
     padding: 10px;
   }
@@ -1163,10 +1145,6 @@ button {
     font-size: 16px;
   }
 
-  .sector-stat {
-    min-height: 26px;
-  }
-
   .esi-summary-grid {
     display: none;
   }
@@ -1180,11 +1158,7 @@ button {
   }
 
   .map-pane {
-    grid-template-rows: 50px minmax(0, 1fr);
-  }
-
-  .map-toolbar {
-    padding: 7px 10px;
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .bottom-bar {

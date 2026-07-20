@@ -440,7 +440,7 @@ def test_monitor_ui_smoke_can_start_channel_only_without_eve_window():
     assert payload["status_card_values"]["channel"] == "1 个频道"
     assert payload["status_card_values"]["ocr"] == "待启动"
     assert payload["side_effects"]["intel_client_created"] == 1
-    assert payload["side_effects"]["heartbeat_posts"] >= 2
+    assert payload["side_effects"]["heartbeat_posts"] == 1
     assert payload["side_effects"]["network_requests"] == 0
     assert payload["side_effects"]["channel_line_posts"] == 0
     assert payload["side_effects"]["observation_posts"] == 0

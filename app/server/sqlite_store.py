@@ -13,7 +13,13 @@ from app.core.active_intel import (
     DEFAULT_OCR_GRACE_SECONDS,
 )
 from app.core.models import Observation
-from app.server.intel_store import IntelReport, IntelStore, StarSystem, utc_now_iso
+from app.server.intel_store import (
+    IntelReport,
+    IntelStore,
+    StarSystem,
+    _OcrEsiTask,
+    utc_now_iso,
+)
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -135,16 +141,17 @@ class SQLiteIntelStore(IntelStore):
             received_at=observation.received_at or utc_now_iso(),
         )
         with self._lock:
+            active_before = self._active_rows_snapshot()
             duplicate = self._find_duplicate_observation(report)
             if duplicate is not None:
                 self._apply_channel_active_state(duplicate)
-                self._replace_active_intel()
+                self._persist_active_intel_changes(active_before)
                 return duplicate.to_observation()
             self._ensure_system(report.system)
             self._reports.append(report)
             self._apply_channel_active_state(report)
             self._upsert_report(report)
-            self._replace_active_intel()
+            self._persist_active_intel_changes(active_before)
         return report.to_observation()
 
     def record_ocr_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -161,14 +168,20 @@ class SQLiteIntelStore(IntelStore):
             str(payload.get("system_name") or payload.get("system") or "")
         )
         system_id = self._optional_int(payload.get("system_id"))
-        names = self._normalize_ocr_names(payload.get("names"))
+        defer_esi = self._resolver is not None or self._enricher is not None
+        names = self._normalize_ocr_names(
+            payload.get("names"),
+            resolve=not defer_esi,
+        )
         seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
         raw_text = ", ".join(names)
         result = ActiveIntelSnapshotResult()
         seen_name_keys = {name.casefold() for name in names}
+        esi_tasks: list[_OcrEsiTask] = []
 
         with self._lock:
             new_reports: list[IntelReport] = []
+            changed_active_ids: set[str] = set()
             for name in names:
                 active_id = self._active_ocr_id(client_id, system_name, name)
                 item = self._active_intel.get(active_id)
@@ -181,6 +194,7 @@ class SQLiteIntelStore(IntelStore):
                         client_id=client_id,
                         name=name,
                         seen_at=seen_at,
+                        enrich=not defer_esi,
                     )
                     duplicate = self._find_duplicate_observation(report)
                     if duplicate is not None:
@@ -189,8 +203,10 @@ class SQLiteIntelStore(IntelStore):
                         self._ensure_system(report.system)
                         self._reports.append(report)
                         new_reports.append(report)
-                    character_profiles = self._character_profiles_for_observation(
-                        observation
+                    character_profiles = (
+                        []
+                        if defer_esi
+                        else self._character_profiles_for_observation(observation)
                     )
                     if self._observation_is_suppressed(
                         observation,
@@ -200,6 +216,7 @@ class SQLiteIntelStore(IntelStore):
                         if item is not None and item.active:
                             item.active = False
                             item.left_at = seen_at
+                            changed_active_ids.add(active_id)
                         result.filtered += 1
                         continue
                     self._active_intel[active_id] = ActiveIntelItem(
@@ -216,10 +233,14 @@ class SQLiteIntelStore(IntelStore):
                         target_type="character",
                         name=name,
                         raw_text=raw_text,
-                        metadata=self._active_ocr_metadata(
-                            client_id,
-                            observation,
-                            character_profiles=character_profiles,
+                        metadata=(
+                            {"client_id": client_id, "identity_status": "pending"}
+                            if defer_esi
+                            else self._active_ocr_metadata(
+                                client_id,
+                                observation,
+                                character_profiles=character_profiles,
+                            )
                         ),
                         first_seen_at=seen_at,
                         last_seen_at=seen_at,
@@ -227,6 +248,16 @@ class SQLiteIntelStore(IntelStore):
                         seen_count=1,
                         source_observation_ids=[observation.observation_id],
                     )
+                    if defer_esi:
+                        esi_tasks.append(
+                            _OcrEsiTask(
+                                active_id=active_id,
+                                report_id=observation.observation_id,
+                                client_id=client_id,
+                                original_name=name,
+                            )
+                        )
+                    changed_active_ids.add(active_id)
                     result.created += 1
                     continue
 
@@ -237,6 +268,7 @@ class SQLiteIntelStore(IntelStore):
                     item.raw_text = raw_text
                 item.active = True
                 item.left_at = ""
+                changed_active_ids.add(active_id)
                 result.refreshed += 1
 
             for item in self._active_intel.values():
@@ -258,6 +290,7 @@ class SQLiteIntelStore(IntelStore):
 
                 item.active = False
                 item.left_at = seen_at
+                changed_active_ids.add(item.active_id)
                 result.expired += 1
 
             result.active = [
@@ -267,7 +300,9 @@ class SQLiteIntelStore(IntelStore):
             ]
             report_rows = [self._row_from_report(report) for report in new_reports]
             active_rows = [
-                self._active_row(item) for item in self._active_intel.values()
+                self._active_row(self._active_intel[active_id])
+                for active_id in sorted(changed_active_ids)
+                if active_id in self._active_intel
             ]
             with self._connect() as connection:
                 if report_rows:
@@ -299,28 +334,46 @@ class SQLiteIntelStore(IntelStore):
                         """,
                         report_rows,
                     )
-                connection.execute("DELETE FROM active_intel")
-                connection.executemany(
-                    """
-                    INSERT INTO active_intel (
-                        active_id, source, source_instance, system, system_id,
-                        target_type, name, character_id, raw_text, metadata_json,
-                        first_seen_at, last_seen_at, expires_at, left_at,
-                        cleared_at, active, seen_count, confidence,
-                        source_observation_ids_json
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    active_rows,
-                )
+                self._upsert_active_intel_rows(connection, active_rows)
+        for task in esi_tasks:
+            self._esi_worker.submit(task.active_id, task)
         return result.to_dict(include_active=False)
+
+    def _persist_ocr_esi_result(
+        self,
+        report: IntelReport,
+        item: ActiveIntelItem | None,
+        *,
+        previous_active_id: str,
+    ) -> None:
+        self._upsert_report(report)
+        with self._connect() as connection:
+            if item is not None and previous_active_id != item.active_id:
+                connection.execute(
+                    "DELETE FROM active_intel WHERE active_id = ?",
+                    (previous_active_id,),
+                )
+            if item is not None:
+                self._upsert_active_intel_rows(connection, [self._active_row(item)])
 
     def expire_active_intel(self, now: str | None = None) -> int:
         """Expire TTL-based active intel and persist changed rows."""
-        expired = super().expire_active_intel(now)
-        if expired:
-            self._replace_active_intel()
-        return expired
+        with self._lock:
+            active_before = {
+                active_id
+                for active_id, item in self._active_intel.items()
+                if item.active
+            }
+            expired = super().expire_active_intel(now)
+            changed_rows = [
+                self._active_row(item)
+                for active_id, item in self._active_intel.items()
+                if active_id in active_before and not item.active
+            ]
+            if changed_rows:
+                with self._connect() as connection:
+                    self._upsert_active_intel_rows(connection, changed_rows)
+            return expired
 
     def ack_alert(
         self,
@@ -693,24 +746,65 @@ class SQLiteIntelStore(IntelStore):
                 [self._row_from_report(report) for report in reports],
             )
 
-    def _replace_active_intel(self) -> None:
-        with self._lock:
-            rows = [self._active_row(item) for item in self._active_intel.values()]
+    def _active_rows_snapshot(self) -> dict[str, tuple[Any, ...]]:
+        return {
+            active_id: self._active_row(item)
+            for active_id, item in self._active_intel.items()
+        }
+
+    def _persist_active_intel_changes(
+        self,
+        before: dict[str, tuple[Any, ...]],
+    ) -> None:
+        rows = [
+            row
+            for active_id, item in self._active_intel.items()
+            if (row := self._active_row(item)) != before.get(active_id)
+        ]
+        if not rows:
+            return
         with self._connect() as connection:
-            connection.execute("DELETE FROM active_intel")
-            connection.executemany(
-                """
-                INSERT INTO active_intel (
-                    active_id, source, source_instance, system, system_id,
-                    target_type, name, character_id, raw_text, metadata_json,
-                    first_seen_at, last_seen_at, expires_at, left_at,
-                    cleared_at, active, seen_count, confidence,
-                    source_observation_ids_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                rows,
+            self._upsert_active_intel_rows(connection, rows)
+
+    def _upsert_active_intel_rows(
+        self,
+        connection: Any,
+        rows: list[tuple[Any, ...]],
+    ) -> None:
+        if not rows:
+            return
+        connection.executemany(
+            """
+            INSERT INTO active_intel (
+                active_id, source, source_instance, system, system_id,
+                target_type, name, character_id, raw_text, metadata_json,
+                first_seen_at, last_seen_at, expires_at, left_at,
+                cleared_at, active, seen_count, confidence,
+                source_observation_ids_json
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(active_id) DO UPDATE SET
+                source = excluded.source,
+                source_instance = excluded.source_instance,
+                system = excluded.system,
+                system_id = excluded.system_id,
+                target_type = excluded.target_type,
+                name = excluded.name,
+                character_id = excluded.character_id,
+                raw_text = excluded.raw_text,
+                metadata_json = excluded.metadata_json,
+                first_seen_at = excluded.first_seen_at,
+                last_seen_at = excluded.last_seen_at,
+                expires_at = excluded.expires_at,
+                left_at = excluded.left_at,
+                cleared_at = excluded.cleared_at,
+                active = excluded.active,
+                seen_count = excluded.seen_count,
+                confidence = excluded.confidence,
+                source_observation_ids_json = excluded.source_observation_ids_json
+            """,
+            rows,
+        )
 
     def _upsert_report(self, report: IntelReport) -> None:
         with self._connect() as connection:
@@ -752,21 +846,18 @@ class SQLiteIntelStore(IntelStore):
 
     def record_heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Persist heartbeats in SQLite while keeping the base in-memory cache."""
-        with self._lock:
-            heartbeat = super().record_heartbeat(payload)
-            raw = {
-                "client_id": heartbeat["client_id"],
-                "client_type": heartbeat["client_type"],
-                "label": heartbeat["label"],
-                "status": heartbeat["status"],
-                "seen_at": heartbeat["seen_at"],
-                "heartbeat_interval_seconds": heartbeat["heartbeat_interval_seconds"],
-                "details": dict(heartbeat.get("details") or {}),
-            }
-            self._write_heartbeat(raw)
-            if raw["client_type"] == "detector_client":
-                self._replace_active_intel()
-            return heartbeat
+        heartbeat = super().record_heartbeat(payload)
+        raw = {
+            "client_id": heartbeat["client_id"],
+            "client_type": heartbeat["client_type"],
+            "label": heartbeat["label"],
+            "status": heartbeat["status"],
+            "seen_at": heartbeat["seen_at"],
+            "heartbeat_interval_seconds": heartbeat["heartbeat_interval_seconds"],
+            "details": dict(heartbeat.get("details") or {}),
+        }
+        self._write_heartbeat(raw)
+        return heartbeat
 
     def _read_heartbeats(self) -> dict[str, dict[str, Any]]:
         with self._connect() as connection:

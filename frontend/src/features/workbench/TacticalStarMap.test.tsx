@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, forwardRef, useImperativeHandle } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { TacticalStarMap } from "./TacticalStarMap";
 import type { TacticalGraphData } from "./tacticalGraph";
@@ -74,7 +74,65 @@ const graphData: TacticalGraphData = {
   links: [{ source: "0-UVHJ", target: "NCG-PW" }],
 };
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("TacticalStarMap", () => {
+  test("preserves the user zoom when refreshed graph data arrives", async () => {
+    vi.useFakeTimers();
+    forceGraphMock.zoomToFit.mockClear();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <TacticalStarMap graphData={graphData} onSelectSystem={() => {}} />,
+      );
+    });
+    act(() => vi.advanceTimersByTime(400));
+
+    expect(forceGraphMock.zoomToFit).toHaveBeenCalledTimes(2);
+
+    const refreshedGraphData: TacticalGraphData = {
+      ...graphData,
+      nodes: graphData.nodes.map((node) => ({
+        ...node,
+        hostileCount: node.hostileCount + 1,
+      })),
+    };
+    await act(async () => {
+      root.render(
+        <TacticalStarMap
+          graphData={refreshedGraphData}
+          onSelectSystem={() => {}}
+        />,
+      );
+    });
+    act(() => vi.advanceTimersByTime(400));
+
+    expect(forceGraphMock.zoomToFit).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      root.render(
+        <TacticalStarMap
+          fitSignal={1}
+          graphData={refreshedGraphData}
+          onSelectSystem={() => {}}
+        />,
+      );
+    });
+    act(() => vi.advanceTimersByTime(400));
+
+    expect(forceGraphMock.zoomToFit).toHaveBeenCalledTimes(4);
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
   test("uses a custom high-contrast link painter for gate connections", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);

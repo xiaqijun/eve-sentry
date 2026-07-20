@@ -263,15 +263,19 @@ export function TacticalStarMap({
   const fitGraph = useCallback((duration = 650) => {
     graphRef.current?.zoomToFit(duration, 96);
   }, []);
+  const hasGraphData = graphData.nodes.length > 0;
 
   useEffect(() => {
+    if (!hasGraphData) {
+      return undefined;
+    }
     const quickFit = window.setTimeout(() => fitGraph(0), 80);
     const settledFit = window.setTimeout(() => fitGraph(650), 360);
     return () => {
       window.clearTimeout(quickFit);
       window.clearTimeout(settledFit);
     };
-  }, [fitGraph, fitSignal, graphData, size.height, size.width]);
+  }, [fitGraph, fitSignal, hasGraphData]);
 
   const linkColor = useMemo(() => "rgba(39, 201, 255, 0.34)", []);
 

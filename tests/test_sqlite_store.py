@@ -21,6 +21,41 @@ def forbid_report_deletes(db_path):
         connection.close()
 
 
+def forbid_active_intel_writes(db_path):
+    connection = sqlite3.connect(db_path)
+    try:
+        for operation in ("INSERT", "UPDATE", "DELETE"):
+            connection.execute(
+                f"""
+                CREATE TRIGGER forbid_active_intel_{operation.lower()}
+                BEFORE {operation} ON active_intel
+                BEGIN
+                    SELECT RAISE(ABORT, 'unexpected active intel write');
+                END
+                """
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def forbid_active_intel_deletes(db_path):
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(
+            """
+            CREATE TRIGGER forbid_active_intel_deletes
+            BEFORE DELETE ON active_intel
+            BEGIN
+                SELECT RAISE(ABORT, 'unexpected active intel delete');
+            END
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def test_sqlite_store_persists_observations(tmp_path):
     db_path = tmp_path / "intel.sqlite3"
     store = SQLiteIntelStore(db_path, systems={}, links=[])
@@ -77,7 +112,46 @@ def test_sqlite_store_persists_active_intel(tmp_path):
     assert active[0]["seen_count"] == 1
 
 
-def test_sqlite_store_persists_detector_heartbeat_active_cleanup(tmp_path):
+def test_sqlite_store_persists_async_ocr_esi_enrichment(tmp_path):
+    class IdentityResolver:
+        def enrich_observation(self, observation):
+            observation.character_ids = [123]
+            return observation
+
+        def character_profile(self, character_id):
+            return {
+                "character_id": int(character_id),
+                "name": "Alice",
+                "corporation_id": 42,
+            }
+
+    db_path = tmp_path / "intel.sqlite3"
+    store = SQLiteIntelStore(
+        db_path,
+        systems={},
+        links=[],
+        resolver=IdentityResolver(),
+    )
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+        }
+    )
+    assert store.wait_for_esi_idle(timeout=1)
+
+    reloaded = SQLiteIntelStore(db_path, systems={}, links=[])
+    active = reloaded.list_active_intel(source="eve-sentry-detector")[0]
+    observation = reloaded.list_observations(include_suppressed=True)[0]
+
+    assert active["character_id"] == 123
+    assert active["metadata"]["corporation_id"] == 42
+    assert active["metadata"]["identity_status"] == "resolved"
+    assert observation["character_ids"] == [123]
+
+
+def test_sqlite_store_heartbeat_does_not_rewrite_active_intel(tmp_path):
     db_path = tmp_path / "intel.sqlite3"
     store = SQLiteIntelStore(db_path, systems={}, links=[])
     store.record_ocr_snapshot(
@@ -85,26 +159,51 @@ def test_sqlite_store_persists_detector_heartbeat_active_cleanup(tmp_path):
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
             "system_name": "S-KSWL",
-            "seen_at": "2026-07-03T10:00:00+00:00",
+            "seen_at": "2099-07-03T10:00:00+00:00",
             "names": ["Alice"],
         }
     )
+    forbid_active_intel_writes(db_path)
 
     store.record_heartbeat(
         {
             "client_id": "detector-client:test",
             "client_type": "detector_client",
             "status": "idle",
-            "seen_at": "2026-07-03T10:00:05+00:00",
+            "seen_at": "2099-07-03T10:00:05+00:00",
             "details": {"monitoring": False, "last_action": "monitor_stopped"},
         }
     )
 
     reloaded = SQLiteIntelStore(db_path, systems={}, links=[])
-    inactive = reloaded.list_active_intel(source="eve-sentry-detector", active=False)
+    active = reloaded.list_active_intel(source="eve-sentry-detector")
 
-    assert reloaded.list_active_intel(source="eve-sentry-detector") == []
-    assert inactive[0]["left_at"] == "2026-07-03T10:00:05+00:00"
+    assert [item["name"] for item in active] == ["Alice"]
+
+
+def test_sqlite_store_ocr_snapshot_upserts_without_deleting_active_table(tmp_path):
+    db_path = tmp_path / "intel.sqlite3"
+    store = SQLiteIntelStore(db_path, systems={}, links=[])
+    payload = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Hajimi6",
+        "system_name": "S-KSWL",
+        "seen_at": "2099-07-03T10:00:00+00:00",
+        "names": ["Alice"],
+    }
+    store.record_ocr_snapshot(payload)
+    forbid_active_intel_deletes(db_path)
+
+    store.record_ocr_snapshot(
+        {
+            **payload,
+            "seen_at": "2099-07-03T10:00:02+00:00",
+        }
+    )
+
+    reloaded = SQLiteIntelStore(db_path, systems={}, links=[])
+    active = reloaded.list_active_intel(source="eve-sentry-detector")
+    assert [item["name"] for item in active] == ["Alice"]
 
 
 def test_sqlite_store_persists_stale_detector_active_cleanup_on_read(tmp_path):

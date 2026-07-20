@@ -45,7 +45,11 @@ const columnHelper = createColumnHelper<PilotObservation>();
 
 const columns = [
   columnHelper.accessor("pilotName", {
-    cell: (info) => <strong className="pilot-name">{info.getValue()}</strong>,
+    cell: (info) => (
+      <strong className="pilot-name" title={info.getValue()}>
+        {info.getValue()}
+      </strong>
+    ),
     header: "飞行员",
   }),
   columnHelper.accessor((row) => row.systemName || "未知", {

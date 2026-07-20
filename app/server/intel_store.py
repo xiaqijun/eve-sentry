@@ -30,6 +30,7 @@ from app.core.active_intel import (
 )
 from app.core.models import Observation, ThreatEvent
 from app.intel.scoring import ChannelMention
+from app.server.esi_worker import EsiWorker
 
 
 CHANNEL_SAME_SYSTEM_WINDOW_SECONDS = 10 * 60
@@ -96,6 +97,14 @@ class StarSystem:
             "region": self.region,
             "security": self.security,
         }
+
+
+@dataclass(frozen=True)
+class _OcrEsiTask:
+    active_id: str
+    report_id: str
+    client_id: str
+    original_name: str
 
 
 @dataclass
@@ -222,6 +231,15 @@ class IntelStore:
         self._ocr_name_corrections: dict[str, str] = {}
         self._character_profile_cache: dict[int, dict[str, Any]] = {}
         self._reports: list[IntelReport] = self._load_reports()
+        self._esi_worker = EsiWorker(self._process_ocr_esi_task)
+
+    def wait_for_esi_idle(self, timeout: float | None = None) -> bool:
+        """Wait until queued OCR ESI enrichment has finished."""
+        return self._esi_worker.wait_idle(timeout=timeout)
+
+    def close(self, *, wait: bool = True) -> None:
+        """Stop the dedicated ESI worker."""
+        self._esi_worker.close(wait=wait)
 
     def set_scorer(self, scorer: Any | None) -> None:
         """Replace the alert scorer and force cached alerts to be regenerated."""
@@ -441,6 +459,7 @@ class IntelStore:
         client_id: str,
         name: str,
         seen_at: str,
+        enrich: bool = True,
     ) -> tuple[IntelReport, Observation]:
         observation = Observation.from_payload(
             {
@@ -457,10 +476,140 @@ class IntelStore:
         observation.system_name = self._normalize_system(observation.system_name)
         observation.names = self._normalize_names(observation.names)
         observation.character_ids = self._normalize_ints(observation.character_ids)
-        observation = self._enrich_observation(observation)
+        if enrich:
+            observation = self._enrich_observation(observation)
+        else:
+            observation.metadata["identity_status"] = "pending"
         observation.validate()
         report = self._report_from_observation(observation)
         return report, observation
+
+    def _process_ocr_esi_task(self, task: _OcrEsiTask) -> None:
+        with self._lock:
+            current_report = next(
+                (
+                    report
+                    for report in self._reports
+                    if report.report_id == task.report_id
+                ),
+                None,
+            )
+            if current_report is None:
+                return
+            observation = current_report.to_observation()
+
+        canonical_name = self._canonicalize_ocr_name(task.original_name)
+        observation.names = self._normalize_names([canonical_name])
+        observation.raw_text = canonical_name
+        observation = self._enrich_observation(observation)
+        observation.validate()
+        character_profiles = self._character_profiles_for_observation(observation)
+        suppressed = self._observation_is_suppressed(
+            observation,
+            character_profiles=character_profiles,
+        )
+        checked_at = utc_now_iso()
+        observation.metadata["identity_status"] = (
+            "resolved" if observation.character_ids else "unresolved"
+        )
+        observation.metadata["identity_checked_at"] = checked_at
+        enriched_report = self._report_from_observation(observation)
+
+        with self._lock:
+            report_index = next(
+                (
+                    index
+                    for index, report in enumerate(self._reports)
+                    if report.report_id == task.report_id
+                ),
+                None,
+            )
+            if report_index is None:
+                return
+            persisted_report = self._reports[report_index]
+            enriched_report.acknowledged_at = persisted_report.acknowledged_at
+            enriched_report.acknowledged_by = persisted_report.acknowledged_by
+            enriched_report.acknowledgement_note = (
+                persisted_report.acknowledgement_note
+            )
+            self._reports[report_index] = enriched_report
+            self._alert_cache.pop(task.report_id, None)
+
+            item = self._active_intel.get(task.active_id)
+            if item is None:
+                item = next(
+                    (
+                        candidate
+                        for candidate in self._active_intel.values()
+                        if task.report_id in candidate.source_observation_ids
+                    ),
+                    None,
+                )
+
+            previous_active_id = task.active_id
+            if item is not None:
+                previous_active_id = item.active_id
+                canonical_active_id = self._active_ocr_id(
+                    task.client_id,
+                    observation.system_name,
+                    canonical_name,
+                )
+                if canonical_active_id != item.active_id:
+                    existing = self._active_intel.get(canonical_active_id)
+                    if existing is not None and existing is not item:
+                        existing.first_seen_at = min(
+                            existing.first_seen_at,
+                            item.first_seen_at,
+                        )
+                        existing.last_seen_at = max(
+                            existing.last_seen_at,
+                            item.last_seen_at,
+                        )
+                        existing.active = existing.active or item.active
+                        for report_id in item.source_observation_ids:
+                            if report_id not in existing.source_observation_ids:
+                                existing.source_observation_ids.append(report_id)
+                        self._active_intel.pop(item.active_id, None)
+                        item = existing
+                    else:
+                        self._active_intel.pop(item.active_id, None)
+                        item.active_id = canonical_active_id
+                        self._active_intel[canonical_active_id] = item
+
+                item.name = canonical_name
+                item.system_id = observation.system_id
+                item.character_id = (
+                    observation.character_ids[0]
+                    if observation.character_ids
+                    else None
+                )
+                item.metadata = self._active_ocr_metadata(
+                    task.client_id,
+                    observation,
+                    checked_at=checked_at,
+                    character_profiles=character_profiles,
+                )
+                item.metadata["identity_status"] = observation.metadata[
+                    "identity_status"
+                ]
+                if suppressed:
+                    item.active = False
+                    item.left_at = item.last_seen_at or checked_at
+
+            self._persist_ocr_esi_result(
+                enriched_report,
+                item,
+                previous_active_id=previous_active_id,
+            )
+
+    def _persist_ocr_esi_result(
+        self,
+        report: IntelReport,
+        item: ActiveIntelItem | None,
+        *,
+        previous_active_id: str,
+    ) -> None:
+        self._save_reports()
 
     def _enrich_observation(self, observation: Observation) -> Observation:
         """Optionally enrich an observation without blocking ingestion on failure."""
@@ -793,12 +942,17 @@ class IntelStore:
             str(payload.get("system_name") or payload.get("system") or "")
         )
         system_id = self._optional_int(payload.get("system_id"))
-        names = self._normalize_ocr_names(payload.get("names"))
+        defer_esi = self._resolver is not None or self._enricher is not None
+        names = self._normalize_ocr_names(
+            payload.get("names"),
+            resolve=not defer_esi,
+        )
         seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
         raw_text = ", ".join(names)
         result = ActiveIntelSnapshotResult()
         seen_name_keys = {name.casefold() for name in names}
         changed_reports = False
+        esi_tasks: list[_OcrEsiTask] = []
         with self._lock:
             for name in names:
                 active_id = self._active_ocr_id(
@@ -816,6 +970,7 @@ class IntelStore:
                         client_id=client_id,
                         name=name,
                         seen_at=seen_at,
+                        enrich=not defer_esi,
                     )
                     duplicate = self._find_duplicate_observation(report)
                     if duplicate is not None:
@@ -824,8 +979,10 @@ class IntelStore:
                         self._ensure_system(report.system)
                         self._reports.append(report)
                         changed_reports = True
-                    character_profiles = self._character_profiles_for_observation(
-                        observation
+                    character_profiles = (
+                        []
+                        if defer_esi
+                        else self._character_profiles_for_observation(observation)
                     )
                     if self._observation_is_suppressed(
                         observation,
@@ -851,10 +1008,14 @@ class IntelStore:
                         target_type="character",
                         name=name,
                         raw_text=raw_text,
-                        metadata=self._active_ocr_metadata(
-                            client_id,
-                            observation,
-                            character_profiles=character_profiles,
+                        metadata=(
+                            {"client_id": client_id, "identity_status": "pending"}
+                            if defer_esi
+                            else self._active_ocr_metadata(
+                                client_id,
+                                observation,
+                                character_profiles=character_profiles,
+                            )
                         ),
                         first_seen_at=seen_at,
                         last_seen_at=seen_at,
@@ -862,6 +1023,15 @@ class IntelStore:
                         seen_count=1,
                         source_observation_ids=[observation.observation_id],
                     )
+                    if defer_esi:
+                        esi_tasks.append(
+                            _OcrEsiTask(
+                                active_id=active_id,
+                                report_id=observation.observation_id,
+                                client_id=client_id,
+                                original_name=name,
+                            )
+                        )
                     result.created += 1
                     continue
 
@@ -899,6 +1069,8 @@ class IntelStore:
             if changed_reports:
                 self._save_reports()
 
+        for task in esi_tasks:
+            self._esi_worker.submit(task.active_id, task)
         return result.to_dict(include_active=False)
 
     def list_active_intel(
@@ -1308,7 +1480,6 @@ class IntelStore:
         }
         with self._lock:
             self._heartbeats[client_id] = heartbeat
-            self._deactivate_ocr_for_detector_heartbeat(heartbeat)
         return self._heartbeat_view(heartbeat)
 
     def list_heartbeats(self) -> list[dict[str, Any]]:
@@ -1357,65 +1528,6 @@ class IntelStore:
             "items": items,
         }
 
-    def _deactivate_ocr_for_detector_heartbeat(
-        self,
-        heartbeat: dict[str, Any],
-    ) -> int:
-        """Deactivate OCR realtime rows when a detector reports it stopped."""
-        client_type = str(heartbeat.get("client_type") or "").strip()
-        if client_type != "detector_client":
-            return 0
-
-        details = heartbeat.get("details", {})
-        if not isinstance(details, dict):
-            details = {}
-        status = str(heartbeat.get("status") or "").strip().lower()
-        last_action = str(details.get("last_action") or "").strip().lower()
-        monitoring = details.get("monitoring")
-        should_clear_all = (
-            status not in {"running", "monitoring"}
-            or monitoring is False
-            or last_action == "monitor_stopped"
-        )
-        targets = details.get("targets", [])
-        target_client_ids: list[str] = []
-        inactive_target_ids: list[str] = []
-        if isinstance(targets, list):
-            for target in targets:
-                if not isinstance(target, dict):
-                    continue
-                target_client_id = str(target.get("client_id") or "").strip()
-                if not target_client_id:
-                    continue
-                target_client_ids.append(target_client_id)
-                if target.get("monitoring") is False:
-                    inactive_target_ids.append(target_client_id)
-
-        client_ids = set(inactive_target_ids)
-        if should_clear_all:
-            client_id = str(heartbeat.get("client_id") or "").strip()
-            if client_id:
-                client_ids.add(client_id)
-            client_ids.update(target_client_ids)
-        if not client_ids:
-            return 0
-
-        left_at = str(heartbeat.get("seen_at") or utc_now_iso()).strip() or utc_now_iso()
-        deactivated = 0
-        for item in self._active_intel.values():
-            if not item.active:
-                continue
-            if item.source != "eve-sentry-detector":
-                continue
-            if str(item.metadata.get("client_id") or "").strip() not in client_ids:
-                continue
-            if self._channel_seen_after(item.last_seen_at, left_at):
-                continue
-            item.active = False
-            item.left_at = left_at
-            deactivated += 1
-        return deactivated
-
     def _expire_stale_detector_ocr_active_intel(self, left_at: str) -> int:
         now_at = self._parse_timestamp(left_at)
         if now_at is None:
@@ -1427,37 +1539,11 @@ class IntelStore:
             view = self._heartbeat_view(heartbeat)
             heartbeat_seen_at = str(view.get("seen_at") or left_at).strip() or left_at
             stale_left_at = self._detector_heartbeat_stale_left_at(view, heartbeat_seen_at)
-            details = view.get("details", {})
-            if not isinstance(details, dict):
-                details = {}
-            status = str(view.get("status") or "").strip().lower()
-            monitoring = details.get("monitoring")
-            last_action = str(details.get("last_action") or "").strip().lower()
-            explicit_stop = (
-                status not in {"running", "monitoring"}
-                or monitoring is False
-                or last_action == "monitor_stopped"
-            )
-            heartbeat_stopped = not view.get("online") or explicit_stop
-            inactive_left_at = heartbeat_seen_at if explicit_stop else stale_left_at
-            target_ids: list[str] = []
-            targets = details.get("targets", [])
-            if isinstance(targets, list):
-                for target in targets:
-                    if not isinstance(target, dict):
-                        continue
-                    target_client_id = str(target.get("client_id") or "").strip()
-                    if not target_client_id:
-                        continue
-                    target_ids.append(target_client_id)
-                    if target.get("monitoring") is False:
-                        stale_client_ids[target_client_id] = heartbeat_seen_at
-            if heartbeat_stopped:
-                client_id = str(view.get("client_id") or "").strip()
-                if client_id:
-                    stale_client_ids[client_id] = inactive_left_at
-                for target_client_id in target_ids:
-                    stale_client_ids[target_client_id] = inactive_left_at
+            if view.get("online"):
+                continue
+            client_id = str(view.get("client_id") or "").strip()
+            if client_id:
+                stale_client_ids[client_id] = stale_left_at
 
         if not stale_client_ids:
             return 0
@@ -2721,11 +2807,19 @@ class IntelStore:
             raise ValueError("seen_at must be a valid ISO-8601 timestamp")
         return raw
 
-    def _normalize_ocr_names(self, names: list[str] | Any) -> list[str]:
+    def _normalize_ocr_names(
+        self,
+        names: list[str] | Any,
+        *,
+        resolve: bool = True,
+    ) -> list[str]:
         seen: set[str] = set()
         result: list[str] = []
         for name in self._normalize_names(names):
-            name = self._canonicalize_ocr_name(name)
+            if resolve:
+                name = self._canonicalize_ocr_name(name)
+            else:
+                name = self._ocr_name_corrections.get(name.casefold(), name)
             key = name.casefold()
             if key in seen:
                 continue

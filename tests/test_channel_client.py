@@ -54,7 +54,7 @@ def test_process_once_posts_raw_channel_lines_and_respects_offsets(tmp_path):
     assert process_once(watcher, api) == 2
     assert process_once(watcher, api) == 0
     assert [item[1] for item in api.lines] == ["Alliance Intel"] * 3
-    assert [item[2] for item in api.lines] == [False] * 3
+    assert [item[2] for item in api.lines] == [True] * 3
     assert api.lines[0][0] == "Listener: ignored header"
     assert api.lines[1][0].endswith("Tama +3 reds")
 
@@ -84,7 +84,7 @@ def test_process_once_retries_raw_line_when_post_fails(tmp_path):
 
     assert process_once(restarted, api) == 1
     assert api.lines[0][1] == "Alliance Intel"
-    assert api.lines[0][2] is False
+    assert api.lines[0][2] is True
     assert api.lines[0][0].endswith("Tama +3 reds")
 
 
@@ -223,7 +223,7 @@ def test_run_channel_client_once_posts_raw_line_and_heartbeat(monkeypatch, tmp_p
         {
             "line": "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds",
             "channel": "Alliance Intel",
-            "defer_enrichment": False,
+            "defer_enrichment": True,
         }
     ]
 

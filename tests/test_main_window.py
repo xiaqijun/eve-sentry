@@ -4,7 +4,8 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication, QStyle, QStyleOptionSpinBox
 
 from app.ui.main_window import (
     CHANNEL_ERROR_BACKOFF_MS,
@@ -12,6 +13,7 @@ from app.ui.main_window import (
     MainWindow,
 )
 from app.ui.settings import SettingsPanel
+from app.ui.theme import APP_QSS
 
 _QT_APP = None
 
@@ -99,6 +101,44 @@ def test_publish_ocr_snapshot_uses_window_context_client_id():
         "system_id": 30000142,
         "names": ["Alice"],
     }
+
+
+def test_publish_ocr_snapshot_dispatches_network_work_off_the_ui_thread():
+    class FakeClient:
+        def __init__(self):
+            self.payload = None
+
+        def post_ocr_snapshot(self, **payload):
+            self.payload = payload
+            return {"created": 1}
+
+    class FakeRunner:
+        def submit_latest(self, key, task, context):
+            self.key = key
+            self.task = task
+            self.context = context
+            return True
+
+    class FakeCombo:
+        def currentText(self):
+            return "EVE - Hajimi6"
+
+    window = MainWindow.__new__(MainWindow)
+    window._intel_client = FakeClient()
+    window._network_tasks = FakeRunner()
+    window._heartbeat_client_id = "detector-client:test"
+    window._window_combo = FakeCombo()
+    window._intel_system = "S-KSWL"
+    window._intel_system_id = 30000142
+    window._refresh_intel_location = lambda: True
+
+    MainWindow._publish_ocr_snapshot(window, ["Alice"])
+
+    assert window._intel_client.payload is None
+    assert window._network_tasks.key == "ocr:detector-client:test"
+    assert window._network_tasks.context["kind"] == "ocr"
+    window._network_tasks.task()
+    assert window._intel_client.payload["names"] == ["Alice"]
 
 
 def test_refresh_intel_location_falls_back_to_local_chatlog(monkeypatch):
@@ -206,6 +246,8 @@ def test_settings_panel_loads_and_saves_channel_config(tmp_path, monkeypatch):
         "channels": "Alliance Intel",
         "chatlog_dir": "D:/Logs/Chatlogs",
         "recent_days": 30,
+        "scan_interval": 2,
+        "window_keyword": "EVE -",
     }
     assert panel.get_channel_names() == []
 
@@ -230,6 +272,72 @@ def test_settings_panel_environment_overrides_saved_channel_config(tmp_path, mon
 
     assert panel.get_channel_names() == ["Env Intel"]
     assert panel.get_channel_log_dir() == "E:/Env/Chatlogs"
+
+
+def test_spinbox_buttons_match_visible_right_edge(tmp_path):
+    app = qt_app()
+    panel = SettingsPanel(config_path=tmp_path / "settings.json")
+    panel.setStyleSheet(APP_QSS)
+    panel.resize(260, 700)
+    panel.show()
+    app.processEvents()
+
+    for spinbox in (panel._interval_spin, panel._channel_recent_days_spin):
+        option = QStyleOptionSpinBox()
+        spinbox.initStyleOption(option)
+        up_rect = spinbox.style().subControlRect(
+            QStyle.ComplexControl.CC_SpinBox,
+            option,
+            QStyle.SubControl.SC_SpinBoxUp,
+            spinbox,
+        )
+        down_rect = spinbox.style().subControlRect(
+            QStyle.ComplexControl.CC_SpinBox,
+            option,
+            QStyle.SubControl.SC_SpinBoxDown,
+            spinbox,
+        )
+
+        assert up_rect.width() >= 26
+        assert down_rect.width() >= 26
+        assert up_rect.left() == down_rect.left()
+        assert up_rect.right() == spinbox.rect().right()
+        assert down_rect.right() == spinbox.rect().right()
+        assert up_rect.bottom() < down_rect.bottom()
+
+    panel.close()
+
+
+def test_settings_panel_persists_and_emits_live_scan_and_alert_changes(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("EVE_SENTRY_CHANNEL", raising=False)
+    monkeypatch.delenv("EVE_SENTRY_CHATLOG_DIR", raising=False)
+    monkeypatch.delenv("EVE_SENTRY_SCAN_INTERVAL", raising=False)
+    monkeypatch.delenv("EVE_SENTRY_WINDOW_KEYWORD", raising=False)
+    config_path = tmp_path / "channel_settings.json"
+
+    qt_app()
+    panel = SettingsPanel(config_path=config_path)
+    scan_changes = []
+    alert_changes = []
+    panel.scan_settings_changed.connect(lambda: scan_changes.append(True))
+    panel.channel_settings_changed.connect(lambda: alert_changes.append(True))
+
+    panel._interval_spin.setValue(5)
+    panel._keyword_edit.setText("EVE - Pilot")
+    panel._keyword_edit.editingFinished.emit()
+    panel._channel_edit.setText("Alliance Intel")
+    panel._channel_enabled.setChecked(True)
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["scan_interval"] == 5
+    assert saved["window_keyword"] == "EVE - Pilot"
+    assert saved["enabled"] is True
+    assert saved["channels"] == "Alliance Intel"
+    assert len(scan_changes) == 2
+    assert alert_changes == [True]
 
 
 def test_settings_panel_discovers_channel_list_from_chatlogs(tmp_path, monkeypatch):
@@ -272,6 +380,57 @@ def test_settings_panel_discovers_channel_list_from_chatlogs(tmp_path, monkeypat
     assert panel.get_channel_names() == ["Alliance Intel", "wc.Venal+Br+Te"]
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["channels"] == "Alliance Intel, wc.Venal+Br+Te"
+
+
+def test_clicking_channel_name_toggles_it_on_and_off_without_accumulating(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("EVE_SENTRY_CHANNEL", raising=False)
+    monkeypatch.delenv("EVE_SENTRY_CHATLOG_DIR", raising=False)
+    chatlogs = tmp_path / "Chatlogs"
+    chatlogs.mkdir()
+    (chatlogs / "Alliance Intel_20260720_120000.txt").write_text(
+        "[ 2026.07.20 12:00:00 ] Scout > clear\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "channel_settings.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "channels": "Alliance Intel",
+                "chatlog_dir": str(chatlogs),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app = qt_app()
+    panel = SettingsPanel(config_path=config_path)
+    panel.show()
+    app.processEvents()
+    item = panel._channel_list.item(0)
+    row_center = panel._channel_list.visualItemRect(item).center()
+
+    QTest.mouseClick(
+        panel._channel_list.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=row_center,
+    )
+    assert item.checkState() == Qt.CheckState.Unchecked
+    assert panel.get_channel_names() == []
+    assert panel._channel_edit.text() == ""
+
+    QTest.mouseClick(
+        panel._channel_list.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=row_center,
+    )
+    assert item.checkState() == Qt.CheckState.Checked
+    assert panel.get_channel_names() == ["Alliance Intel"]
+    assert panel._channel_edit.text() == "Alliance Intel"
+    panel.close()
 
 
 def test_settings_panel_filters_historical_channel_files(tmp_path, monkeypatch):
@@ -802,7 +961,7 @@ def test_window_status_table_lists_worker_contexts():
         ["EVE - Pilot A", "200x600 @ 600,0", "运行中", "监控线程已启动"],
         ["EVE - Pilot B", "220x420 @ 760,190", "扫描中", "OCR 名单 2"],
     ]
-    assert table.resized is True
+    assert table.resized is False
 
 
 def test_update_window_status_records_last_action():
@@ -912,6 +1071,70 @@ def test_auto_start_monitor_checks_button_and_starts_once():
 
     assert window._monitor_btn.set_checked_calls == [True]
     assert started == [True]
+
+
+def test_scan_interval_changes_apply_to_running_workers():
+    class FakeWorker:
+        def set_interval(self, value):
+            self.interval = value
+
+    worker = FakeWorker()
+    window = MainWindow.__new__(MainWindow)
+    window._settings = type("Settings", (), {"get_interval": lambda self: 5.0})()
+    window._running_workers = lambda: [worker]
+    window._log_messages = []
+    window._log_message = lambda message: window._log_messages.append(message)
+    window._refresh_status_cards = lambda: None
+
+    MainWindow._apply_scan_settings(window)
+
+    assert worker.interval == 5.0
+    assert window._log_messages == ["扫描间隔已实时更新为 5 秒"]
+
+
+def test_alert_channel_settings_can_start_while_scan_workers_are_stopped():
+    class FakeButton:
+        def setChecked(self, value):
+            self.checked = value
+
+        def setText(self, value):
+            self.text = value
+
+        def setStyleSheet(self, value):
+            self.style = value
+
+    class FakeLabel:
+        def setText(self, value):
+            self.text = value
+
+        def setStyleSheet(self, value):
+            self.style = value
+
+    window = MainWindow.__new__(MainWindow)
+    window._settings = type(
+        "Settings",
+        (),
+        {"get_channel_names": lambda self: ["Alliance Intel"]},
+    )()
+    window._monitor_btn = FakeButton()
+    window._status_label = FakeLabel()
+    window._channel_watcher = None
+    window._start_channel_monitor = lambda: True
+    window._is_monitoring = lambda: False
+    window._heartbeat_last_action = ""
+    window._heartbeat_last_error = ""
+    window._heartbeat_last_success_at = ""
+    heartbeats = []
+    window._publish_heartbeat = lambda: heartbeats.append(True)
+    window._refresh_status_cards = lambda: None
+
+    MainWindow._apply_channel_settings(window)
+
+    assert window._monitor_btn.checked is True
+    assert window._monitor_btn.text == "停止监控"
+    assert window._status_label.text == "频道日志监控中"
+    assert window._heartbeat_last_action == "channel_config_applied"
+    assert heartbeats == [True]
 
 
 def test_publish_heartbeat_includes_multi_window_targets():
@@ -1043,6 +1266,85 @@ def test_publish_heartbeat_marks_channel_only_monitor_as_running():
     assert details["channel_monitoring"] is True
     assert details["channels"] == ["wc.Venal+Br+Te"]
     assert details["channel_last_action"] == "server_parse_idle"
+
+
+def test_stopped_monitor_does_not_publish_ocr_or_heartbeat():
+    class FailingClient:
+        def post_ocr_snapshot(self, **_payload):
+            raise AssertionError("stopped monitor uploaded OCR")
+
+        def post_heartbeat(self, **_payload):
+            raise AssertionError("stopped monitor uploaded heartbeat")
+
+    window = MainWindow.__new__(MainWindow)
+    window._intel_client = FailingClient()
+    window._uploads_enabled = False
+
+    MainWindow._publish_ocr_snapshot(window, ["Alice"])
+    MainWindow._publish_heartbeat(window)
+
+
+def test_stop_monitor_disables_timer_and_queues_without_uploading():
+    class FakeTimer:
+        def __init__(self):
+            self.active = True
+            self.stop_calls = 0
+
+        def isActive(self):
+            return self.active
+
+        def start(self):
+            self.active = True
+
+        def stop(self):
+            self.active = False
+            self.stop_calls += 1
+
+    class FakeNetworkTasks:
+        def __init__(self):
+            self.cancel_calls = 0
+
+        def cancel_latest(self):
+            self.cancel_calls += 1
+
+    class FakeButton:
+        def setText(self, value):
+            self.text = value
+
+        def setStyleSheet(self, value):
+            self.style = value
+
+    class FakeLabel(FakeButton):
+        pass
+
+    window = MainWindow.__new__(MainWindow)
+    window._uploads_enabled = True
+    window._heartbeat_timer = FakeTimer()
+    window._network_tasks = FakeNetworkTasks()
+    window._stop_monitor_workers = lambda timeout_ms: timeout_ms == 3000
+    window._stop_channel_monitor = lambda: None
+    window._monitor_btn = FakeButton()
+    window._status_label = FakeLabel()
+    window._log_messages = []
+    window._log_message = lambda message: window._log_messages.append(message)
+    window._heartbeat_last_action = "running"
+    window._heartbeat_last_success_at = "previous-success"
+    window._refresh_status_cards = lambda: None
+    heartbeat_calls = []
+    window._publish_heartbeat = lambda: heartbeat_calls.append(True)
+
+    MainWindow._stop_monitor(window)
+
+    assert window._uploads_enabled is False
+    assert window._heartbeat_timer.active is False
+    assert window._heartbeat_timer.stop_calls == 1
+    assert window._network_tasks.cancel_calls == 1
+    assert window._monitor_btn.text == "开始监控"
+    assert window._status_label.text == "已停止"
+    assert window._heartbeat_last_action == "monitor_stopped"
+    assert window._heartbeat_last_success_at == "previous-success"
+    assert heartbeat_calls == []
+    assert window._log_messages == ["监控已停止"]
 
 
 def test_stop_monitor_workers_stops_all_workers_and_clears_context():

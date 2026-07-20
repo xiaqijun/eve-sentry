@@ -175,7 +175,7 @@ def process_once(
                 result = api.post_channel_line(
                     line.text,
                     channel=line.channel,
-                    defer_enrichment=False,
+                    defer_enrichment=True,
                 )
             except IntelApiError as exc:
                 logger.warning("Failed to post channel line: %s", exc)

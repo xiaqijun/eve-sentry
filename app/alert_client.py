@@ -9,10 +9,11 @@ import os
 import sys
 import time
 from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from PyQt6.QtCore import QTimer, Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtCore import QEvent, QPoint, QTimer, Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QFont
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import (
@@ -21,6 +22,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
+    QScrollArea,
     QStyle,
     QSystemTrayIcon,
     QVBoxLayout,
@@ -186,35 +188,105 @@ def summarize_alert(alert: dict[str, Any]) -> dict[str, Any]:
         "system_name": alert_system_name(alert),
         "hostile_count": alert_hostile_count(alert),
         "created_at": str(alert.get("created_at") or alert.get("seen_at") or ""),
+        "source_observation_id": str(alert.get("source_observation_id") or "").strip(),
+        "active_intel_id": str(alert.get("active_intel_id") or "").strip(),
+        "active": bool(alert.get("active", True)),
     }
 
 
 def aggregate_alert_summaries(
     summaries: list[dict[str, Any]],
-    max_rows: int = MAX_OVERLAY_ROWS,
+    max_rows: int | None = None,
 ) -> list[dict[str, Any]]:
     """Aggregate recent alert summaries by system for compact display."""
     by_system: OrderedDict[str, dict[str, Any]] = OrderedDict()
     for item in summaries:
         system = str(item.get("system_name") or "Unknown")
         hostile_count = int(item.get("hostile_count") or 1)
+        active = bool(item.get("active", True))
         existing = by_system.get(system)
         if existing is None:
             by_system[system] = {
                 "system_name": system,
                 "hostile_count": hostile_count,
+                "active_hostile_count": hostile_count if active else 0,
                 "created_at": str(item.get("created_at") or ""),
+                "active": active,
             }
         else:
             existing["hostile_count"] = int(existing["hostile_count"]) + hostile_count
-            existing["created_at"] = str(item.get("created_at") or existing["created_at"])
+            if active:
+                existing["active_hostile_count"] = (
+                    int(existing.get("active_hostile_count") or 0) + hostile_count
+                )
+                existing["active"] = True
+            created_at = str(item.get("created_at") or "")
+            if created_at >= str(existing.get("created_at") or ""):
+                existing["created_at"] = created_at
             by_system.move_to_end(system)
     ordered = list(by_system.values())
     ordered.sort(
-        key=lambda item: (int(item.get("hostile_count") or 0), str(item.get("created_at") or "")),
+        key=lambda item: (
+            1 if item.get("active") else 0,
+            int(item.get("active_hostile_count") or item.get("hostile_count") or 0),
+            str(item.get("created_at") or ""),
+        ),
         reverse=True,
     )
-    return ordered[:max(1, max_rows)]
+    if max_rows is not None:
+        return ordered[:max(1, max_rows)]
+    return ordered
+
+
+def format_alert_time(value: Any) -> str:
+    """Return a compact local display time for an alert timestamp."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return text[:5] if len(text) >= 5 else text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone().strftime("%H:%M")
+
+
+def alert_identity_keys(alert: dict[str, Any]) -> set[str]:
+    """Return stable keys used to match alert rows across bootstrap refreshes."""
+    keys = set()
+    for field in ("id", "source_observation_id", "active_intel_id"):
+        value = str(alert.get(field) or "").strip()
+        if value:
+            keys.add(f"{field}:{value}")
+    return keys
+
+
+def active_alert_keys_from_bootstrap(bootstrap: dict[str, Any]) -> set[str]:
+    """Return alert identity keys that are currently active server-side."""
+    alerts = bootstrap.get("alerts")
+    if not isinstance(alerts, list):
+        return set()
+    keys = set()
+    for alert in alerts:
+        if isinstance(alert, dict):
+            keys.update(alert_identity_keys(alert))
+    return keys
+
+
+def update_alert_summaries_active(
+    summaries: list[dict[str, Any]],
+    active_keys: set[str],
+) -> list[dict[str, Any]]:
+    """Mark existing alert summaries active or inactive from server state."""
+    updated = []
+    for summary in summaries:
+        item = dict(summary)
+        keys = alert_identity_keys(item)
+        item["active"] = bool(keys and keys.intersection(active_keys))
+        updated.append(item)
+    return updated
 
 
 def build_heartbeat_details(
@@ -282,6 +354,9 @@ class AlertOverlay(QWidget):
         self._status.setObjectName("statusLabel")
         self._title = QLabel("EVE SENTRY")
         self._title.setObjectName("titleLabel")
+        self._row_layout: QVBoxLayout | None = None
+        self._drag_position: QPoint | None = None
+        self._user_positioned = False
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -293,9 +368,12 @@ class AlertOverlay(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMinimumWidth(260)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.installEventFilter(self)
 
         frame = QFrame()
         frame.setObjectName("overlayFrame")
+        frame.installEventFilter(self)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(frame)
@@ -307,18 +385,30 @@ class AlertOverlay(QWidget):
         header = QHBoxLayout()
         self._title.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         self._status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._title.installEventFilter(self)
+        self._status.installEventFilter(self)
         header.addWidget(self._title)
         header.addStretch(1)
         header.addWidget(self._status)
         layout.addLayout(header)
 
-        for _index in range(MAX_OVERLAY_ROWS):
-            label = QLabel("")
-            label.setObjectName("alertRow")
-            label.setVisible(False)
-            label.setMinimumHeight(28)
-            layout.addWidget(label)
-            self._rows.append(label)
+        row_container = QWidget()
+        row_container.setObjectName("rowContainer")
+        row_container.installEventFilter(self)
+        self._row_layout = QVBoxLayout(row_container)
+        self._row_layout.setContentsMargins(0, 0, 0, 0)
+        self._row_layout.setSpacing(8)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("alertScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(row_container)
+        scroll.setMaximumHeight((28 + 8) * MAX_OVERLAY_ROWS)
+        scroll.viewport().installEventFilter(self)
+        layout.addWidget(scroll)
 
         self.setStyleSheet(
             """
@@ -344,6 +434,18 @@ class AlertOverlay(QWidget):
                 font-size: 18px;
                 font-weight: 700;
             }
+            QLabel#alertRow[inactive="true"] {
+                color: rgba(190, 203, 209, 170);
+                background: rgba(53, 64, 72, 110);
+                border: 1px solid rgba(118, 135, 145, 90);
+            }
+            QScrollArea#alertScroll {
+                background: transparent;
+                border: 0;
+            }
+            QScrollArea#alertScroll QWidget#rowContainer {
+                background: transparent;
+            }
             """
         )
 
@@ -357,18 +459,99 @@ class AlertOverlay(QWidget):
         self._status.setText(text)
         self._status.setStyleSheet(f"color: {color};")
 
+    def mousePressEvent(self, event) -> None:
+        if self._handle_drag_event(event):
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._handle_drag_event(event):
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._handle_drag_event(event):
+            return
+        super().mouseReleaseEvent(event)
+
+    def eventFilter(self, watched, event) -> bool:
+        _ = watched
+        if event.type() in {
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseMove,
+            QEvent.Type.MouseButtonRelease,
+        }:
+            return self._handle_drag_event(event)
+        return False
+
+    def _handle_drag_event(self, event) -> bool:
+        if event.type() == QEvent.Type.MouseButtonPress:
+            if event.button() != Qt.MouseButton.LeftButton:
+                return False
+            self._drag_position = (
+                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            )
+            event.accept()
+            return True
+        if event.type() == QEvent.Type.MouseMove:
+            if self._drag_position is None or not (
+                event.buttons() & Qt.MouseButton.LeftButton
+            ):
+                return False
+            self.move(event.globalPosition().toPoint() - self._drag_position)
+            event.accept()
+            return True
+        if event.type() == QEvent.Type.MouseButtonRelease:
+            if event.button() != Qt.MouseButton.LeftButton:
+                return False
+            if self._drag_position is not None:
+                self._user_positioned = True
+            self._drag_position = None
+            event.accept()
+            return True
+        return False
+
     def show_summaries(self, summaries: list[dict[str, Any]]) -> None:
-        rows = aggregate_alert_summaries(summaries, max_rows=len(self._rows))
+        rows = aggregate_alert_summaries(summaries)
+        self._ensure_row_count(len(rows))
         for index, label in enumerate(self._rows):
             if index >= len(rows):
                 label.setVisible(False)
                 label.setText("")
                 continue
             item = rows[index]
-            label.setText(f"{item['system_name']}  敌:{item['hostile_count']}")
+            alert_time = format_alert_time(item.get("created_at"))
+            suffix = f"  {alert_time}" if alert_time else ""
+            active = bool(item.get("active", True))
+            hostile_count = int(
+                item.get("active_hostile_count")
+                if active and item.get("active_hostile_count")
+                else item.get("hostile_count")
+                or 0
+            )
+            label.setText(
+                f"{item['system_name']}  敌:{hostile_count}{suffix}"
+            )
+            label.setProperty("inactive", "false" if active else "true")
+            label.style().unpolish(label)
+            label.style().polish(label)
             label.setVisible(True)
         self.adjustSize()
-        self.move_to_default_position()
+        if not self._user_positioned:
+            self.move_to_default_position()
+
+    def _ensure_row_count(self, count: int) -> None:
+        if self._row_layout is None:
+            return
+        while len(self._rows) < count:
+            label = QLabel("")
+            label.setObjectName("alertRow")
+            label.setVisible(False)
+            label.setMinimumHeight(28)
+            label.setProperty("inactive", "false")
+            label.installEventFilter(self)
+            self._row_layout.addWidget(label)
+            self._rows.append(label)
 
     def move_to_default_position(self) -> None:
         screen = QApplication.primaryScreen()
@@ -385,6 +568,7 @@ class AlertEventWorker(QThread):
     """Background SSE consumer for server-side alert events."""
 
     alert_received = pyqtSignal(dict)
+    bootstrap_received = pyqtSignal(dict)
     status_changed = pyqtSignal(str, str)
 
     def __init__(
@@ -424,10 +608,22 @@ class AlertEventWorker(QThread):
             try:
                 self.status_changed.emit("connected", "")
                 self._post_heartbeat(api, "connected", force=True)
-                for alert in api.iter_alert_events(timeout=self.timeout):
+                for event in api.iter_events(timeout=self.timeout):
                     if self._stop_requested:
                         break
+                    if not isinstance(event, dict):
+                        continue
                     self._last_success_at = heartbeat_now_iso()
+                    event_name = str(event.get("event") or "").strip()
+                    data = event.get("data")
+                    if event_name == "bootstrap" and isinstance(data, dict):
+                        self.bootstrap_received.emit(data)
+                        self._post_heartbeat(api, "connected")
+                        continue
+                    if event_name != "alert" or not isinstance(data, dict):
+                        self._post_heartbeat(api, "connected")
+                        continue
+                    alert = data
                     if self.consumer.accept(alert):
                         self.alert_received.emit(alert)
                         self._post_heartbeat(api, "alert:1", force=True)
@@ -499,6 +695,7 @@ class AlertTrayController:
         self.args = args
         self.state = AlertClientState(args.state)
         self.state.load_seen_ids()
+        self.api_factory = api_factory
         self.overlay = AlertOverlay()
         self.overlay.set_status("连接中", "warn")
         self.overlay.show()
@@ -515,6 +712,7 @@ class AlertTrayController:
         )
         self._setup_tray()
         self._worker.alert_received.connect(self._on_alert)
+        self._worker.bootstrap_received.connect(self._on_bootstrap)
         self._worker.status_changed.connect(self._on_status)
 
     def start(self) -> None:
@@ -573,8 +771,10 @@ class AlertTrayController:
             timeout=self.args.timeout,
             heartbeat_interval=self.args.heartbeat_interval,
             reconnect_max_delay=self.args.reconnect_max_delay,
+            api_factory=self.api_factory,
         )
         self._worker.alert_received.connect(self._on_alert)
+        self._worker.bootstrap_received.connect(self._on_bootstrap)
         self._worker.status_changed.connect(self._on_status)
         self._worker.start()
 
@@ -601,6 +801,14 @@ class AlertTrayController:
             "EVE Sentry Alert",
             f"{summary['system_name']}  敌:{summary['hostile_count']}",
         )
+
+    def _on_bootstrap(self, bootstrap: dict[str, Any]) -> None:
+        active_keys = active_alert_keys_from_bootstrap(bootstrap)
+        self._recent_summaries = update_alert_summaries_active(
+            self._recent_summaries,
+            active_keys,
+        )
+        self.overlay.show_summaries(self._recent_summaries)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
