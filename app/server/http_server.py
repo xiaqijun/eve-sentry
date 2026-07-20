@@ -814,6 +814,11 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                     query.get("heartbeat", [""])[0],
                     "heartbeat",
                 )
+                include_bootstrap = self._parse_optional_bool_default(
+                    query.get("bootstrap", [""])[0],
+                    True,
+                    "bootstrap",
+                )
                 filters = self._parse_alert_filters(query)
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -829,6 +834,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 timeout_seconds=30.0 if parsed_timeout is None else parsed_timeout,
                 heartbeat_seconds=15.0 if parsed_heartbeat is None else parsed_heartbeat,
                 active_only=True,
+                include_bootstrap=include_bootstrap,
                 **filters,
             )
             return
@@ -1830,6 +1836,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         min_score: int | None = None,
         min_level: str | None = None,
         active_only: bool = False,
+        include_bootstrap: bool = True,
     ) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -1849,7 +1856,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         while True:
             try:
                 wrote_event = False
-                if active_only:
+                if active_only and include_bootstrap:
                     bootstrap = self._bootstrap_payload()
                     fingerprint = self._bootstrap_event_fingerprint(bootstrap)
                     if fingerprint != last_bootstrap_fingerprint:

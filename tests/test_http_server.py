@@ -1975,6 +1975,15 @@ def test_v1_events_stream_returns_alert_sse(tmp_path):
         assert bootstrap["schema_version"] == "intel_bootstrap.v1"
         assert bootstrap["map"]["summary"]["alert_count"] == 1
         assert payload["id"] == created["alert"]["id"]
+
+        status, headers, body = request_text(
+            f"{server.url}/api/v1/events?"
+            f"{urlencode({'timeout': '0', 'limit': '5', 'bootstrap': '0'})}"
+        )
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/event-stream")
+        assert "event: bootstrap" not in body
+        assert "event: alert" in body
     finally:
         server.stop()
 
