@@ -5,7 +5,11 @@ from typing import Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from app.engine.capturer import Capturer
+from app.engine.capturer import (
+    BackgroundCaptureUnavailable,
+    Capturer,
+    TargetWindowClosed,
+)
 from app.engine.ocr import OCREngine
 from app.engine.ocr_names import ocr_candidate_names
 
@@ -67,8 +71,21 @@ class MonitorWorker(QThread):
         self._interval = max(1.0, min(10.0, float(seconds)))
 
     def stop(self) -> None:
-        """Request the loop to stop at the next iteration."""
+        """Request the current scan and the monitor loop to stop."""
         self._running = False
+        self.requestInterruption()
+
+    def _stop_requested(self) -> bool:
+        """Return whether shutdown was requested from the UI thread."""
+        return not self._running or self.isInterruptionRequested()
+
+    def _wait_for_next_scan(self) -> None:
+        """Wait between scans while remaining responsive to shutdown."""
+        remaining_ms = int(self._interval * 1000)
+        while remaining_ms > 0 and not self._stop_requested():
+            sleep_ms = min(100, remaining_ms)
+            self.msleep(sleep_ms)
+            remaining_ms -= sleep_ms
 
     def run(self) -> None:
         """Main loop.  Runs until :meth:`stop` is called."""
@@ -91,10 +108,10 @@ class MonitorWorker(QThread):
         self.status_update.emit("监控已启动")
 
         try:
-            while self._running:
+            while not self._stop_requested():
                 if self._region is None:
                     self.status_update.emit("未设置截图区域")
-                    self.msleep(500)
+                    self._wait_for_next_scan()
                     continue
 
                 try:
@@ -105,6 +122,8 @@ class MonitorWorker(QThread):
                             f"截图区域: ({r['x']},{r['y']}) {r['w']}×{r['h']}"
                         )
                     img = capturer.screenshot(r["x"], r["y"], r["w"], r["h"])
+                    if self._stop_requested():
+                        break
 
                     # 2. OCR (first call triggers model init with progress)
                     if ocr_ready:
@@ -114,6 +133,8 @@ class MonitorWorker(QThread):
                             img, progress=self.status_update.emit
                         )
                         ocr_ready = True
+                    if self._stop_requested():
+                        break
 
                     # 3. Publish the raw OCR snapshot; server owns filtering/scoring.
                     names = build_ocr_snapshot_names(ocr_results)
@@ -127,12 +148,19 @@ class MonitorWorker(QThread):
                     else:
                         self.status_update.emit("未识别到名单")
 
+                except TargetWindowClosed:
+                    logger.info("Target EVE window closed; stopping monitor worker")
+                    self.status_update.emit("EVE 窗口已关闭，监控已停止")
+                    break
+                except BackgroundCaptureUnavailable:
+                    logger.debug("Background capture unavailable; skipping OCR frame")
+                    self.status_update.emit("后台画面暂不可用，已跳过当前帧")
                 except Exception:
                     logger.exception("Scan cycle failed")
                     self.status_update.emit("扫描出错，已跳过当前帧")
 
                 # Wait between scans
-                self.msleep(int(self._interval * 1000))
+                self._wait_for_next_scan()
         finally:
             if owns_capturer:
                 capturer.close()

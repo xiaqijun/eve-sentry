@@ -17,6 +17,14 @@ from PIL import Image, ImageGrab
 logger = logging.getLogger(__name__)
 
 
+class BackgroundCaptureUnavailable(RuntimeError):
+    """Raised when a bound window has no background frame available."""
+
+
+class TargetWindowClosed(BackgroundCaptureUnavailable):
+    """Raised when the bound game window no longer exists."""
+
+
 class Capturer:
     """Window detection + background-capable screen capture."""
 
@@ -171,19 +179,25 @@ class Capturer:
         """Capture a region — background-capable when EVE hwnd is known."""
         with self._bg_lock:
             hwnd = self._hwnd
-            if hwnd and win32gui.IsWindow(hwnd):
+            if hwnd is not None:
+                if not win32gui.IsWindow(hwnd):
+                    raise TargetWindowClosed(f"EVE window is closed: hwnd={hwnd}")
                 result = self._capture_zbl_unlocked(x, y, w, h)
                 if result is not None:
                     if not getattr(self, "_zbl_logged", False):
                         logger.info("Using zbl background capture for hwnd=%d", hwnd)
                         self._zbl_logged = True
                     return result
-                else:
-                    logger.debug("zbl returned None, falling back to ImageGrab")
-                    if not getattr(self, "_fb_logged", False):
-                        logger.warning("zbl capture failed — falling back to screen grab")
-                        self._fb_logged = True
-        # Fallback to screen grab
+                if not getattr(self, "_bg_unavailable_logged", False):
+                    logger.warning(
+                        "Background capture unavailable for hwnd=%d; skipping frame",
+                        hwnd,
+                    )
+                    self._bg_unavailable_logged = True
+                raise BackgroundCaptureUnavailable(
+                    f"No background frame available for hwnd={hwnd}"
+                )
+        # Explicit screen capture remains available when no window is bound.
         return ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True)
 
     def _capture_zbl_unlocked(self, screen_x, screen_y, w, h) -> Optional[Image.Image]:
@@ -244,4 +258,4 @@ class Capturer:
         self._bg_capture_started = False
         self._hwnd = None
         self._zbl_logged = False
-        self._fb_logged = False
+        self._bg_unavailable_logged = False

@@ -1,6 +1,13 @@
 from unittest.mock import patch, MagicMock
+
+import pytest
 from PIL import Image
-from app.engine.capturer import Capturer
+
+from app.engine.capturer import (
+    BackgroundCaptureUnavailable,
+    Capturer,
+    TargetWindowClosed,
+)
 
 
 class TestFindEveWindow:
@@ -395,14 +402,29 @@ class TestBackgroundCaptureLifecycle:
         fake_capture = MagicMock()
         fake_capture.try_grab.side_effect = PanicException("wrong thread")
         mock_win32gui.IsWindow.return_value = True
-        mock_grab.grab.return_value = MagicMock(spec=Image.Image)
-
         capturer = Capturer()
         capturer._hwnd = 123
         capturer._bg_capture = fake_capture
         capturer._bg_capture_started = True
 
-        result = capturer.screenshot(1, 2, 3, 4)
+        with pytest.raises(BackgroundCaptureUnavailable):
+            capturer.screenshot(1, 2, 3, 4)
 
-        mock_grab.grab.assert_called_once_with(bbox=(1, 2, 4, 6), all_screens=True)
-        assert result is mock_grab.grab.return_value
+        mock_grab.grab.assert_not_called()
+
+    @patch("app.engine.capturer.ImageGrab")
+    @patch("app.engine.capturer.win32gui")
+    def test_closed_bound_window_does_not_capture_the_screen(
+        self,
+        mock_win32gui,
+        mock_grab,
+    ):
+        mock_win32gui.IsWindow.return_value = False
+
+        capturer = Capturer()
+        capturer._hwnd = 123
+
+        with pytest.raises(TargetWindowClosed):
+            capturer.screenshot(1, 2, 3, 4)
+
+        mock_grab.grab.assert_not_called()

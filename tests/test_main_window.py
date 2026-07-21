@@ -23,6 +23,48 @@ def qt_app():
     return _QT_APP
 
 
+def test_close_event_runs_full_shutdown_instead_of_hiding_to_tray():
+    calls = []
+
+    class FakeEvent:
+        def accept(self):
+            calls.append("accepted")
+
+    class FakeWindow:
+        def _quit_app(self):
+            calls.append("shutdown")
+
+    MainWindow.closeEvent(FakeWindow(), FakeEvent())
+
+    assert calls == ["shutdown", "accepted"]
+
+
+def test_quit_app_waits_for_ocr_workers_before_exiting(monkeypatch):
+    calls = []
+
+    class FakeNetworkTasks:
+        def shutdown(self):
+            calls.append("network")
+
+    class FakeTray:
+        def hide(self):
+            calls.append("tray")
+
+    class FakeWindow:
+        def __init__(self):
+            self._network_tasks = FakeNetworkTasks()
+            self._tray = FakeTray()
+
+        def _stop_monitor(self, *, wait_for_workers=False):
+            calls.append(("monitor", wait_for_workers))
+
+    monkeypatch.setattr(QApplication, "quit", lambda: calls.append("quit"))
+
+    MainWindow._quit_app(FakeWindow())
+
+    assert calls == [("monitor", True), "network", "tray", "quit"]
+
+
 def test_detector_client_has_no_local_threat_handler():
     assert not hasattr(MainWindow, "_on_threat_detected")
 
