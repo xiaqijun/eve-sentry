@@ -58,7 +58,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EVE Sentry")
-        self.setMinimumSize(860, 560)
+        self.setMinimumSize(800, 540)
         self.setStyleSheet(APP_QSS)
 
         self._region_prefs = RegionPreferences("region_prefs.json")
@@ -914,13 +914,15 @@ class MainWindow(QMainWindow):
         except TypeError:
             pass
 
-    def _stop_monitor(self) -> None:
+    def _stop_monitor(self, *, wait_for_workers: bool = False) -> None:
         self._uploads_enabled = False
         self._set_heartbeat_enabled(False)
         network_tasks = _instance_attr(self, "_network_tasks")
         if network_tasks is not None:
             network_tasks.cancel_latest()
-        self._stop_monitor_workers(timeout_ms=3000)
+        self._stop_monitor_workers(
+            timeout_ms=None if wait_for_workers else 3000,
+        )
         self._stop_channel_monitor()
 
         self._monitor_btn.setText("开始监控")
@@ -931,7 +933,7 @@ class MainWindow(QMainWindow):
         self._heartbeat_last_action = "monitor_stopped"
         self._refresh_status_cards()
 
-    def _stop_monitor_workers(self, timeout_ms: int) -> bool:
+    def _stop_monitor_workers(self, timeout_ms: int | None) -> bool:
         """Stop all detector workers and return whether they exited cleanly."""
         workers = list(getattr(self, "_workers", {}).values())
         legacy_worker = getattr(self, "_worker", None)
@@ -947,9 +949,14 @@ class MainWindow(QMainWindow):
         for worker in workers:
             worker.stop()
         for worker in workers:
-            if worker.isRunning() and not worker.wait(timeout_ms):
-                failed = True
-                logger.warning("Worker thread did not stop within %s ms timeout", timeout_ms)
+            if worker.isRunning():
+                stopped = worker.wait() if timeout_ms is None else worker.wait(timeout_ms)
+                if not stopped:
+                    failed = True
+                    logger.warning(
+                        "Worker thread did not stop within %s ms timeout",
+                        timeout_ms,
+                    )
             self._disconnect_worker_signals(worker)
 
         if failed:
@@ -1346,12 +1353,12 @@ class MainWindow(QMainWindow):
             self.raise_()
 
     def closeEvent(self, event):
-        """Minimize to tray instead of closing."""
-        event.ignore()
-        self.hide()
+        """Stop background monitoring before closing the application."""
+        self._quit_app()
+        event.accept()
 
     def _quit_app(self):
-        self._stop_monitor()
+        self._stop_monitor(wait_for_workers=True)
         network_tasks = _instance_attr(self, "_network_tasks")
         if network_tasks is not None:
             network_tasks.shutdown()

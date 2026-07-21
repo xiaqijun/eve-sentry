@@ -301,7 +301,7 @@ def test_monitor_ui_smoke_constructs_main_window_offscreen_without_side_effects(
     assert payload["ok"] is True
     assert payload["qt_platform"] == "offscreen"
     assert payload["window_title"] == "EVE Sentry"
-    assert payload["minimum_size"] == [860, 560]
+    assert payload["minimum_size"] == [800, 540]
     assert payload["main_window_created"] is True
     assert payload["intel_client_created"] is False
     assert payload["heartbeat_timer_active"] is False
@@ -355,8 +355,8 @@ def test_monitor_ui_smoke_constructs_main_window_offscreen_without_side_effects(
     assert payload["layout_checks"]["monitor_button_height"] >= 36
     assert payload["screenshot"]["captured"] is True
     assert payload["screenshot"]["path"] == str(screenshot_path)
-    assert payload["screenshot"]["width"] >= 860
-    assert payload["screenshot"]["height"] >= 560
+    assert payload["screenshot"]["width"] >= 800
+    assert payload["screenshot"]["height"] >= 540
     assert payload["screenshot"]["bytes"] > 1000
     assert screenshot_path.exists()
     assert screenshot_path.stat().st_size == payload["screenshot"]["bytes"]

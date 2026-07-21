@@ -198,7 +198,7 @@ def aggregate_alert_summaries(
     summaries: list[dict[str, Any]],
     max_rows: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Aggregate recent alert summaries by system for compact display."""
+    """Aggregate summaries by system while preserving discovery order."""
     by_system: OrderedDict[str, dict[str, Any]] = OrderedDict()
     for item in summaries:
         system = str(item.get("system_name") or "Unknown")
@@ -220,19 +220,9 @@ def aggregate_alert_summaries(
                     int(existing.get("active_hostile_count") or 0) + hostile_count
                 )
                 existing["active"] = True
-            created_at = str(item.get("created_at") or "")
-            if created_at >= str(existing.get("created_at") or ""):
-                existing["created_at"] = created_at
-            by_system.move_to_end(system)
+            if not existing.get("created_at"):
+                existing["created_at"] = str(item.get("created_at") or "")
     ordered = list(by_system.values())
-    ordered.sort(
-        key=lambda item: (
-            1 if item.get("active") else 0,
-            int(item.get("active_hostile_count") or item.get("hostile_count") or 0),
-            str(item.get("created_at") or ""),
-        ),
-        reverse=True,
-    )
     if max_rows is not None:
         return ordered[:max(1, max_rows)]
     return ordered
@@ -349,7 +339,7 @@ class AlertOverlay(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._rows: list[QLabel] = []
+        self._rows: list[tuple[QFrame, QLabel, QLabel, QLabel]] = []
         self._status = QLabel("连接中")
         self._status.setObjectName("statusLabel")
         self._title = QLabel("EVE SENTRY")
@@ -367,7 +357,7 @@ class AlertOverlay(QWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setMinimumWidth(260)
+        self.setMinimumWidth(330)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
         self.installEventFilter(self)
 
@@ -392,6 +382,25 @@ class AlertOverlay(QWidget):
         header.addWidget(self._status)
         layout.addLayout(header)
 
+        column_header = QWidget()
+        column_header.setObjectName("columnHeader")
+        column_header.installEventFilter(self)
+        column_layout = QHBoxLayout(column_header)
+        column_layout.setContentsMargins(9, 0, 9, 0)
+        column_layout.setSpacing(8)
+        for text, width, alignment in (
+            ("星系", 128, Qt.AlignmentFlag.AlignLeft),
+            ("敌", 44, Qt.AlignmentFlag.AlignCenter),
+            ("发现时间", 74, Qt.AlignmentFlag.AlignRight),
+        ):
+            label = QLabel(text)
+            label.setObjectName("columnLabel")
+            label.setFixedWidth(width)
+            label.setAlignment(alignment | Qt.AlignmentFlag.AlignVCenter)
+            label.installEventFilter(self)
+            column_layout.addWidget(label)
+        layout.addWidget(column_header)
+
         row_container = QWidget()
         row_container.setObjectName("rowContainer")
         row_container.installEventFilter(self)
@@ -406,7 +415,7 @@ class AlertOverlay(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setWidget(row_container)
-        scroll.setMaximumHeight((28 + 8) * MAX_OVERLAY_ROWS)
+        scroll.setMaximumHeight((32 + 8) * MAX_OVERLAY_ROWS)
         scroll.viewport().installEventFilter(self)
         layout.addWidget(scroll)
 
@@ -425,19 +434,34 @@ class AlertOverlay(QWidget):
                 color: #9fb7c3;
                 font-size: 11px;
             }
-            QLabel#alertRow {
-                color: #fff7ea;
+            QWidget#columnHeader {
+                background: rgba(16, 35, 46, 150);
+                border-radius: 4px;
+            }
+            QLabel#columnLabel {
+                color: #8da9b7;
+                font-size: 12px;
+                font-weight: 600;
+                padding: 3px 0;
+            }
+            QFrame#alertRow {
                 background: rgba(117, 29, 22, 145);
                 border: 1px solid rgba(255, 112, 88, 150);
                 border-radius: 5px;
-                padding: 4px 8px;
-                font-size: 18px;
+            }
+            QFrame#alertRow QLabel {
+                color: #fff7ea;
+                background: transparent;
+                border: 0;
+                font-size: 16px;
                 font-weight: 700;
             }
-            QLabel#alertRow[inactive="true"] {
-                color: rgba(190, 203, 209, 170);
+            QFrame#alertRow[inactive="true"] {
                 background: rgba(53, 64, 72, 110);
                 border: 1px solid rgba(118, 135, 145, 90);
+            }
+            QFrame#alertRow[inactive="true"] QLabel {
+                color: rgba(190, 203, 209, 170);
             }
             QScrollArea#alertScroll {
                 background: transparent;
@@ -514,14 +538,17 @@ class AlertOverlay(QWidget):
     def show_summaries(self, summaries: list[dict[str, Any]]) -> None:
         rows = aggregate_alert_summaries(summaries)
         self._ensure_row_count(len(rows))
-        for index, label in enumerate(self._rows):
+        for index, (frame, system_label, hostile_label, time_label) in enumerate(
+            self._rows
+        ):
             if index >= len(rows):
-                label.setVisible(False)
-                label.setText("")
+                frame.setVisible(False)
+                system_label.setText("")
+                hostile_label.setText("")
+                time_label.setText("")
                 continue
             item = rows[index]
             alert_time = format_alert_time(item.get("created_at"))
-            suffix = f"  {alert_time}" if alert_time else ""
             active = bool(item.get("active", True))
             hostile_count = int(
                 item.get("active_hostile_count")
@@ -529,13 +556,16 @@ class AlertOverlay(QWidget):
                 else item.get("hostile_count")
                 or 0
             )
-            label.setText(
-                f"{item['system_name']}  敌:{hostile_count}{suffix}"
-            )
-            label.setProperty("inactive", "false" if active else "true")
-            label.style().unpolish(label)
-            label.style().polish(label)
-            label.setVisible(True)
+            system_label.setText(str(item["system_name"]))
+            hostile_label.setText(str(hostile_count))
+            time_label.setText(alert_time or "-")
+            frame.setProperty("inactive", "false" if active else "true")
+            frame.style().unpolish(frame)
+            frame.style().polish(frame)
+            for label in (system_label, hostile_label, time_label):
+                label.style().unpolish(label)
+                label.style().polish(label)
+            frame.setVisible(True)
         self.adjustSize()
         if not self._user_positioned:
             self.move_to_default_position()
@@ -544,14 +574,32 @@ class AlertOverlay(QWidget):
         if self._row_layout is None:
             return
         while len(self._rows) < count:
-            label = QLabel("")
-            label.setObjectName("alertRow")
-            label.setVisible(False)
-            label.setMinimumHeight(28)
-            label.setProperty("inactive", "false")
-            label.installEventFilter(self)
-            self._row_layout.addWidget(label)
-            self._rows.append(label)
+            frame = QFrame()
+            frame.setObjectName("alertRow")
+            frame.setVisible(False)
+            frame.setMinimumHeight(32)
+            frame.setProperty("inactive", "false")
+            frame.installEventFilter(self)
+
+            row_layout = QHBoxLayout(frame)
+            row_layout.setContentsMargins(9, 3, 9, 3)
+            row_layout.setSpacing(8)
+            labels: list[QLabel] = []
+            for name, width, alignment in (
+                ("systemCell", 128, Qt.AlignmentFlag.AlignLeft),
+                ("hostileCell", 44, Qt.AlignmentFlag.AlignCenter),
+                ("timeCell", 74, Qt.AlignmentFlag.AlignRight),
+            ):
+                label = QLabel("")
+                label.setObjectName(name)
+                label.setFixedWidth(width)
+                label.setAlignment(alignment | Qt.AlignmentFlag.AlignVCenter)
+                label.installEventFilter(self)
+                row_layout.addWidget(label)
+                labels.append(label)
+
+            self._row_layout.addWidget(frame)
+            self._rows.append((frame, labels[0], labels[1], labels[2]))
 
     def move_to_default_position(self) -> None:
         screen = QApplication.primaryScreen()

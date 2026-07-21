@@ -832,6 +832,7 @@ def test_alert_client_aggregates_overlay_rows_by_system():
 
     assert rows[0]["system_name"] == "S-KSWL"
     assert rows[0]["hostile_count"] == 5
+    assert rows[0]["created_at"] == "1"
     assert rows[1]["system_name"] == "8-4GQM"
 
 
@@ -891,9 +892,17 @@ def test_alert_overlay_can_render_compact_enemy_rows(monkeypatch):
         )
         app.processEvents()
 
-        labels = [item.text() for item in overlay.findChildren(QLabel)]
+        labels = {
+            item.objectName(): item.text()
+            for item in overlay.findChildren(QLabel)
+            if item.objectName() in {"systemCell", "hostileCell", "timeCell"}
+        }
         expected_time = format_alert_time("2026-07-10T00:00:00Z")
-        assert f"S-KSWL  敌:9  {expected_time}" in labels
+        assert labels == {
+            "systemCell": "S-KSWL",
+            "hostileCell": "9",
+            "timeCell": expected_time,
+        }
         assert overlay.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     finally:
         overlay.close()
@@ -902,7 +911,7 @@ def test_alert_overlay_can_render_compact_enemy_rows(monkeypatch):
 def test_alert_overlay_keeps_more_than_four_rows_scrollable(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QApplication, QLabel, QScrollArea
+    from PyQt6.QtWidgets import QApplication, QFrame, QLabel, QScrollArea
 
     app = QApplication.instance() or QApplication([])
     overlay = AlertOverlay()
@@ -922,15 +931,21 @@ def test_alert_overlay_keeps_more_than_four_rows_scrollable(monkeypatch):
 
         rows = [
             item
-            for item in overlay.findChildren(QLabel)
+            for item in overlay.findChildren(QFrame)
             if item.objectName() == "alertRow"
         ]
         scroll = overlay.findChild(QScrollArea, "alertScroll")
         assert len(rows) == 6
-        assert rows[-1].property("inactive") == "true"
+        assert rows[4].property("inactive") == "true"
+        system_labels = [
+            item.text()
+            for item in overlay.findChildren(QLabel)
+            if item.objectName() == "systemCell"
+        ]
+        assert system_labels == [f"SYSTEM-{index}" for index in range(6)]
         assert scroll is not None
         assert scroll.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        assert scroll.maximumHeight() <= 144
+        assert scroll.maximumHeight() <= 160
     finally:
         overlay.close()
 
@@ -980,7 +995,7 @@ def test_alert_overlay_can_drag_from_child_rows(monkeypatch):
         row = next(
             item
             for item in overlay.findChildren(QLabel)
-            if item.objectName() == "alertRow"
+            if item.objectName() == "systemCell"
         )
 
         press = FakeMouseEvent(
