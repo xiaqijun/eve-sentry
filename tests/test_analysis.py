@@ -188,9 +188,14 @@ def test_probable_teammates_have_explainable_confidence_levels(now, identities, 
     assert candidates[3].relation_label == "固定队友"
     assert candidates[3].engagement_count == 3
     assert candidates[3].distinct_days == 3
+    assert candidates[3].score == 100.0
     assert candidates[4].relation_label == "经常同行"
+    assert candidates[4].score == 66.7
     assert candidates[5].relation_label == "固定队友"
     assert candidates[5].affiliation_label == "同军团"
+    assert report.pilot_ships[0].id == 1001
+    assert report.pilot_ships[0].kill_count == 3
+    assert report.pilot_ships[0].loss_count == 0
     assert analyzer.top_associate_ids(mails, {1}) == [3, 4, 5]
 
 
@@ -268,11 +273,69 @@ def test_latest_battle_skips_newer_loss_only_cluster(now, identities, ship_types
     )
 
     assert report.latest_engagement is not None
-    assert report.latest_engagement.outcome == "参与击杀"
-    assert report.latest_engagement.result_detail == "击毁 Logistics Cruiser"
+    assert report.latest_engagement.outcome == "参与击毁"
+    assert report.latest_engagement.result_detail == "主要目标 Logistics Cruiser"
     assert report.latest_engagement.total_value == 2_500_000_000
-    assert report.latest_engagement.composition_label == "观察到的进攻编队"
     assert report.latest_engagement.fleet_size == 1
+    assert report.recent_engagements[0].outcome == "舰船损失"
+    assert report.recent_engagements[0].lost_ships[0].id == 1001
+
+
+def test_recent_battles_merge_nearby_cross_system_reports(
+    now, identities, ship_types
+) -> None:
+    mails = [
+        _mail(
+            410,
+            now - timedelta(minutes=25),
+            [
+                Participant(character_id=90, ship_type_id=1002, is_victim=True),
+                Participant(character_id=1, ship_type_id=1001),
+            ],
+            system=30000142,
+            value=100_000_000,
+        ),
+        _mail(
+            411,
+            now - timedelta(minutes=5),
+            [
+                Participant(character_id=91, ship_type_id=1002, is_victim=True),
+                Participant(character_id=1, ship_type_id=1001),
+            ],
+            system=30000143,
+            value=200_000_000,
+        ),
+    ]
+    systems = {
+        30000142: SolarSystemInfo(
+            solar_system_id=30000142,
+            name="YMJG-4",
+            region_id=10000003,
+            region_name="静寂谷",
+        ),
+        30000143: SolarSystemInfo(
+            solar_system_id=30000143,
+            name="DAYP-G",
+            region_id=10000003,
+            region_name="静寂谷",
+        ),
+    }
+
+    report = FleetAnalyzer().analyze(
+        request_id="cross-system-battle",
+        requested_count=1,
+        identities=identities[:1],
+        invalid_names=[],
+        killmails=mails,
+        ship_types=ship_types,
+        covered_character_ids={1},
+        solar_systems=systems,
+        now=now,
+    )
+
+    assert len(report.recent_engagements) == 1
+    assert report.recent_engagements[0].system_name == "YMJG-4 / DAYP-G"
+    assert report.recent_engagements[0].destroyed_value == 300_000_000
 
 
 def test_latest_loss_keeps_combat_ship_instead_of_followup_capsule(

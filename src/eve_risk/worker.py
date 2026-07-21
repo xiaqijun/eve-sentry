@@ -11,11 +11,16 @@ from arq.connections import RedisSettings
 from eve_risk.admission import AdmissionController
 from eve_risk.analysis import FleetAnalyzer
 from eve_risk.clients.esi import ESIClient
+from eve_risk.clients.images import EveImageClient
 from eve_risk.clients.qq import QQOpenAPIClient
-from eve_risk.clients.zkill import ZKillClient, ZKillFetchResult
+from eve_risk.clients.zkill import (
+    ZKillClient,
+    ZKillFetchResult,
+    aggregate_character_stats,
+)
 from eve_risk.config import Settings, get_settings
-from eve_risk.domain import AnalysisRequest, Killmail
-from eve_risk.report import ReportRenderer, build_summary
+from eve_risk.domain import AnalysisRequest, CharacterIdentity, Killmail, ZKillStats
+from eve_risk.report import ReportAssets, ReportRenderer, build_summary
 from eve_risk.sde import SDELocalization
 from eve_risk.ship_roles import ShipRoleClassifier
 from eve_risk.storage import Repository, create_session_factory
@@ -50,6 +55,7 @@ async def startup(ctx: dict[str, object]) -> None:
         repository=Repository(sessions),
         sde=sde,
         esi=ESIClient(http, settings.esi_base_url, classifier, sde=sde),
+        images=EveImageClient(http, settings.eve_image_base_url),
         zkill=ZKillClient(
             http,
             redis,
@@ -102,6 +108,7 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
     request = AnalysisRequest.model_validate(request_payload)
     settings: Settings = ctx["settings"]
     esi: ESIClient = ctx["esi"]
+    images: EveImageClient = ctx["images"]
     zkill: ZKillClient = ctx["zkill"]
     qq: QQOpenAPIClient = ctx["qq"]
     analyzer: FleetAnalyzer = ctx["analyzer"]
@@ -132,8 +139,16 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
             )
             return
 
+        lifetime_stats_task = asyncio.create_task(
+            _fetch_lifetime_stats(zkill, identities)
+        )
         fetch_results, fetch_warnings = await _fetch_with_deadline(
             zkill, identities, request.fetch_deadline_at
+        )
+        lifetime_stats = await _with_timeout(
+            lifetime_stats_task,
+            request.fetch_deadline_at,
+            default=None,
         )
         covered_ids = {result.character_id for result in fetch_results}
         truncated_ids = {result.character_id for result in fetch_results if result.truncated}
@@ -173,6 +188,23 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
             solar_systems=solar_systems,
             warnings=fetch_warnings,
         )
+        if isinstance(lifetime_stats, ZKillStats):
+            report.lifetime_stats = lifetime_stats
+        related_engagements = await _with_timeout(
+            zkill.enrich_related_battles(report.recent_engagements, input_ids),
+            request.reply_deadline_at,
+            default=report.recent_engagements,
+        )
+        if isinstance(related_engagements, list):
+            report.recent_engagements = related_engagements
+            report.latest_engagement = next(
+                (
+                    item
+                    for item in related_engagements
+                    if item.destroyed_count > 0
+                ),
+                related_engagements[0] if related_engagements else None,
+            )
         data_events = report.data_events
 
         try:
@@ -197,7 +229,47 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
         except Exception:
             logger.exception("request_id=%s persistence_failed", request.request_id)
 
-        image = renderer.render(report)
+        portrait_ids = {
+            profile.character_id for profile in report.profiles[:4]
+        } | {associate.id for associate in report.common_associates[:5]}
+        ship_icon_ids = {
+            int(ship.id) for ship in report.top_ships[:5] if ship.id is not None
+        } | {ship.id for ship in report.pilot_ships[:5]}
+        ship_icon_ids.update(
+            int(ship.id)
+            for engagement in report.recent_engagements[:5]
+            for ship in engagement.destroyed_ships + engagement.lost_ships
+            if ship.id is not None
+        )
+        corporation_ids = {
+            profile.corporation_id
+            for profile in report.profiles[:4]
+            if profile.corporation_id is not None
+        }
+        alliance_ids = {
+            profile.alliance_id
+            for profile in report.profiles[:4]
+            if profile.alliance_id is not None
+        }
+        portrait_images, ship_icons, corporation_logos, alliance_logos = await _with_timeout(
+            images.fetch_report_assets(
+                portrait_ids,
+                ship_icon_ids,
+                corporation_ids,
+                alliance_ids,
+            ),
+            request.reply_deadline_at,
+            default=({}, {}, {}, {}),
+        )
+        image = renderer.render(
+            report,
+            ReportAssets(
+                character_portraits=portrait_images,
+                ship_icons=ship_icons,
+                corporation_logos=corporation_logos,
+                alliance_logos=alliance_logos,
+            ),
+        )
         remaining = max(1.0, (request.reply_deadline_at - datetime.now(UTC)).total_seconds())
         async with asyncio.timeout(remaining):
             await qq.send_text(
@@ -272,6 +344,19 @@ async def _fetch_with_deadline(
     if pending:
         warnings.append(f"达到抓取截止时间，跳过 {len(pending)} 个未完成请求")
     return results, warnings
+
+
+async def _fetch_lifetime_stats(
+    zkill: ZKillClient,
+    identities: list[CharacterIdentity],
+) -> ZKillStats | None:
+    results = await asyncio.gather(
+        *(zkill.fetch_character_stats(identity.character_id) for identity in identities),
+        return_exceptions=True,
+    )
+    return aggregate_character_stats(
+        [item for item in results if isinstance(item, ZKillStats)]
+    )
 
 
 async def _with_timeout(awaitable: object, deadline: datetime, default: object) -> object:

@@ -21,6 +21,8 @@ from eve_risk.domain import (
     LatestEngagement,
     NamedMetric,
     Participant,
+    PilotShipMetric,
+    RelatedBattleRef,
     ShipRole,
     ShipTypeInfo,
     SolarSystemInfo,
@@ -238,6 +240,23 @@ class FleetAnalyzer:
             associate_names,
             recent_start,
         )
+        associate_scores = _associate_event_scores(mails, input_ids)
+        common_associates = sorted(
+            [
+                item.model_copy(
+                    update={"score": associate_scores.get(item.id, 0.0)}
+                )
+                for item in common_associates
+            ],
+            key=lambda item: (
+                item.score,
+                item.engagement_count,
+                item.distinct_days,
+                item.last_seen,
+            ),
+            reverse=True,
+        )
+        pilot_ships = _pilot_ship_metrics(mails, input_ids, ship_types)
         core_members = [
             NamedMetric(
                 id=profile.character_id, name=profile.name, value=profile.cooccurrence_score
@@ -309,7 +328,10 @@ class FleetAnalyzer:
             self.friendly_corporation_ids,
             self.friendly_alliance_ids,
         )
-        latest_engagement = recent_engagements[0] if recent_engagements else None
+        latest_engagement = next(
+            (item for item in recent_engagements if item.destroyed_count > 0),
+            recent_engagements[0] if recent_engagements else None,
+        )
 
         return AnalysisReport(
             request_id=request_id,
@@ -351,6 +373,7 @@ class FleetAnalyzer:
             top_systems=top_systems,
             top_regions=top_regions,
             common_associates=common_associates,
+            pilot_ships=pilot_ships,
             core_members=core_members,
             engagement_patterns=self._engagement_patterns(mails, input_ids, ship_types),
             warnings=list(dict.fromkeys(warnings)),
@@ -406,8 +429,14 @@ class FleetAnalyzer:
                 CharacterProfile(
                     character_id=character_id,
                     name=identity.name,
+                    corporation_id=identity.corporation_id,
                     corporation_name=identity.corporation_name,
+                    corporation_ticker=identity.corporation_ticker,
+                    alliance_id=identity.alliance_id,
                     alliance_name=identity.alliance_name,
+                    alliance_ticker=identity.alliance_ticker,
+                    birthday=identity.birthday,
+                    security_status=identity.security_status,
                     event_count=event_count,
                     weighted_event_count=float(stats["weighted"]),
                     confidence=confidence,
@@ -687,6 +716,67 @@ def _is_friendly_participant(
     )
 
 
+def _associate_event_scores(
+    mails: list[Killmail],
+    input_ids: set[int],
+) -> dict[int, float]:
+    counts: Counter[int] = Counter()
+    for mail in mails:
+        attackers = {
+            participant.character_id
+            for participant in mail.participants
+            if not participant.is_victim and participant.character_id is not None
+        }
+        if not attackers.intersection(input_ids):
+            continue
+        counts.update(attackers - input_ids)
+    denominator = len(mails)
+    if denominator <= 0:
+        return {}
+    return {
+        character_id: round(count / denominator * 100, 1)
+        for character_id, count in counts.items()
+    }
+
+
+def _pilot_ship_metrics(
+    mails: list[Killmail],
+    input_ids: set[int],
+    ship_types: dict[int, ShipTypeInfo],
+    limit: int = 10,
+) -> list[PilotShipMetric]:
+    kills: Counter[int] = Counter()
+    losses: Counter[int] = Counter()
+    for mail in mails:
+        for participant in mail.participants:
+            if (
+                participant.character_id not in input_ids
+                or participant.ship_type_id is None
+            ):
+                continue
+            target = losses if participant.is_victim else kills
+            target[participant.ship_type_id] += 1
+    type_ids = set(kills) | set(losses)
+    metrics = [
+        PilotShipMetric(
+            id=type_id,
+            name=(
+                ship_types[type_id].name
+                if type_id in ship_types
+                else f"舰船 {type_id}"
+            ),
+            kill_count=kills[type_id],
+            loss_count=losses[type_id],
+        )
+        for type_id in type_ids
+    ]
+    return sorted(
+        metrics,
+        key=lambda item: (item.kill_count, item.loss_count, item.name),
+        reverse=True,
+    )[:limit]
+
+
 def _associate_candidates(
     engagements: list[FleetEngagementSample],
     input_ids: set[int],
@@ -763,45 +853,42 @@ def _recent_battles(
     friendly_character_ids: frozenset[int] | set[int],
     friendly_corporation_ids: frozenset[int] | set[int],
     friendly_alliance_ids: frozenset[int] | set[int],
-    limit: int = 3,
+    limit: int = 90,
 ) -> list[LatestEngagement]:
-    clusters: list[tuple[int, list[Killmail]]] = []
-    by_system: dict[int, list[Killmail]] = defaultdict(list)
-    for mail in mails:
-        if any(participant.character_id in input_ids for participant in mail.participants):
-            by_system[mail.solar_system_id].append(mail)
-    for system_id, system_mails in by_system.items():
-        system_mails.sort(key=lambda item: item.killmail_time)
-        cluster: list[Killmail] = []
-        for mail in system_mails:
-            if cluster and mail.killmail_time - cluster[-1].killmail_time > timedelta(minutes=20):
-                clusters.append((system_id, cluster))
-                cluster = []
-            cluster.append(mail)
-        if cluster:
-            clusters.append((system_id, cluster))
+    relevant = sorted(
+        (
+            mail
+            for mail in mails
+            if any(
+                participant.character_id in input_ids
+                for participant in mail.participants
+            )
+        ),
+        key=lambda item: item.killmail_time,
+    )
+    clusters: list[list[Killmail]] = []
+    cluster: list[Killmail] = []
+    for mail in relevant:
+        if (
+            cluster
+            and mail.killmail_time - cluster[-1].killmail_time
+            > timedelta(minutes=30)
+        ):
+            clusters.append(cluster)
+            cluster = []
+        cluster.append(mail)
+    if cluster:
+        clusters.append(cluster)
     if not clusters:
         return []
-    offensive_clusters = [
-        (system_id, cluster)
-        for system_id, cluster in clusters
-        if any(
-            participant.character_id in input_ids and not participant.is_victim
-            for mail in cluster
-            for participant in mail.participants
-        )
-    ]
-    if not offensive_clusters:
-        return []
     recent: list[LatestEngagement] = []
-    for system_id, cluster in sorted(
-        offensive_clusters,
-        key=lambda item: item[1][-1].killmail_time,
+    for cluster in sorted(
+        clusters,
+        key=lambda item: item[-1].killmail_time,
         reverse=True,
     )[:limit]:
         recent.append(
             _battle_from_cluster(
-                system_id,
                 cluster,
                 input_ids,
                 ship_types,
@@ -815,7 +902,6 @@ def _recent_battles(
 
 
 def _battle_from_cluster(
-    system_id: int,
     cluster: list[Killmail],
     input_ids: set[int],
     ship_types: dict[int, ShipTypeInfo],
@@ -948,15 +1034,39 @@ def _battle_from_cluster(
     elif has_offense:
         outcome = "参与击毁"
         result_detail = f"主要目标 {_top_ship_name(destroyed_targets, ship_types)}"
-    else:  # pragma: no cover - caller guarantees an attacker observation
-        raise ValueError("Battle cluster has no queried attacker")
-    system = solar_systems.get(system_id)
+    else:
+        outcome = "舰船损失"
+        result_detail = f"损失 {_top_ship_name(lost_ships, ship_types)}"
+    system_ids = list(dict.fromkeys(mail.solar_system_id for mail in cluster))
+    systems = [solar_systems.get(system_id) for system_id in system_ids]
+    system_names = [
+        system.name if system is not None else f"星系 {system_id}"
+        for system_id, system in zip(system_ids, systems, strict=True)
+    ]
+    display_systems = " / ".join(system_names[:2])
+    if len(system_names) > 2:
+        display_systems += f" / +{len(system_names) - 2}"
+    regions = list(
+        dict.fromkeys(
+            system.region_name for system in systems if system is not None
+        )
+    )
+    related_battle_refs = [
+        RelatedBattleRef(system_id=system_id, occurred_at=occurred_at)
+        for system_id, occurred_at in dict.fromkeys(
+            (
+                mail.solar_system_id,
+                mail.killmail_time.replace(minute=0, second=0, microsecond=0),
+            )
+            for mail in cluster
+        )
+    ]
     return LatestEngagement(
         started_at=cluster[0].killmail_time,
         last_seen=cluster[-1].killmail_time,
-        solar_system_id=system_id,
-        system_name=system.name if system else f"星系 {system_id}",
-        region_name=system.region_name if system else None,
+        solar_system_id=system_ids[-1],
+        system_name=display_systems,
+        region_name=regions[0] if len(regions) == 1 else None,
         fleet_size=len(ships_by_character),
         event_count=len(cluster),
         outcome=outcome,
@@ -974,7 +1084,10 @@ def _battle_from_cluster(
         composition_confidence=composition_confidence,
         composition_basis=composition_basis,
         composition_label=composition_label,
+        related_battle_refs=related_battle_refs,
         ships=ships,
+        destroyed_ships=_ship_items(destroyed_targets, ship_types),
+        lost_ships=_ship_items(lost_ships, ship_types),
         roles=roles,
     )
 
@@ -991,6 +1104,24 @@ def _top_ship_name(counts: Counter[int], ship_types: dict[int, ShipTypeInfo]) ->
     )
     type_id, _ = (non_capsules or counts).most_common(1)[0]
     return ship_types[type_id].name if type_id in ship_types else f"舰船 {type_id}"
+
+
+def _ship_items(
+    counts: Counter[int],
+    ship_types: dict[int, ShipTypeInfo],
+) -> list[FleetCompositionItem]:
+    items: list[FleetCompositionItem] = []
+    for type_id, count in counts.most_common(4):
+        info = ship_types.get(type_id)
+        items.append(
+            FleetCompositionItem(
+                id=type_id,
+                name=info.name if info else f"舰船 {type_id}",
+                role=(info.role if info else ShipRole.OTHER).value,
+                count=count,
+            )
+        )
+    return items
 
 
 def _is_capsule(type_id: int, ship_types: dict[int, ShipTypeInfo]) -> bool:

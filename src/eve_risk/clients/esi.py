@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
+from datetime import datetime
 
 import httpx
 
@@ -27,6 +28,8 @@ class ESIClient:
         self.semaphore = asyncio.Semaphore(concurrency)
         self._type_cache: dict[int, ShipTypeInfo] = {}
         self._group_cache: dict[int, tuple[str, int | None]] = {}
+        self._corporation_cache: dict[int, dict[str, object]] = {}
+        self._alliance_cache: dict[int, dict[str, object]] = {}
 
     async def resolve_characters(
         self, names: list[str]
@@ -70,24 +73,71 @@ class ESIClient:
             if detail.get("alliance_id"):
                 entity_ids.add(int(detail["alliance_id"]))
         entity_names = await self.resolve_entity_names(entity_ids)
+        corporation_ids = {int(detail["corporation_id"]) for _, _, detail in valid_details}
+        alliance_ids = {
+            int(detail["alliance_id"])
+            for _, _, detail in valid_details
+            if detail.get("alliance_id")
+        }
+        corporation_results, alliance_results = await asyncio.gather(
+            asyncio.gather(
+                *(self._corporation_detail(entity_id) for entity_id in corporation_ids),
+                return_exceptions=True,
+            ),
+            asyncio.gather(
+                *(self._alliance_detail(entity_id) for entity_id in alliance_ids),
+                return_exceptions=True,
+            ),
+        )
+        corporations = {
+            entity_id: result
+            for entity_id, result in zip(corporation_ids, corporation_results, strict=True)
+            if isinstance(result, dict)
+        }
+        alliances = {
+            entity_id: result
+            for entity_id, result in zip(alliance_ids, alliance_results, strict=True)
+            if isinstance(result, dict)
+        }
 
-        identities = [
-            CharacterIdentity(
-                character_id=character_id,
-                name=name,
-                corporation_id=int(detail["corporation_id"]),
-                corporation_name=entity_names.get(
-                    int(detail["corporation_id"]), f"军团 {detail['corporation_id']}"
-                ),
-                alliance_id=int(detail["alliance_id"]) if detail.get("alliance_id") else None,
-                alliance_name=(
-                    entity_names.get(int(detail["alliance_id"]))
-                    if detail.get("alliance_id")
-                    else None
-                ),
+        identities: list[CharacterIdentity] = []
+        for character_id, name, detail in valid_details:
+            corporation_id = int(detail["corporation_id"])
+            alliance_id = int(detail["alliance_id"]) if detail.get("alliance_id") else None
+            corporation = corporations.get(corporation_id, {})
+            alliance = alliances.get(alliance_id, {}) if alliance_id else {}
+            identities.append(
+                CharacterIdentity(
+                    character_id=character_id,
+                    name=name,
+                    corporation_id=corporation_id,
+                    corporation_name=str(
+                        corporation.get("name")
+                        or entity_names.get(corporation_id)
+                        or f"军团 {corporation_id}"
+                    ),
+                    corporation_ticker=str(corporation.get("ticker") or ""),
+                    alliance_id=alliance_id,
+                    alliance_name=(
+                        str(
+                            alliance.get("name")
+                            or entity_names.get(alliance_id)
+                            or f"联盟 {alliance_id}"
+                        )
+                        if alliance_id
+                        else None
+                    ),
+                    alliance_ticker=(
+                        str(alliance.get("ticker") or "") if alliance_id else None
+                    ),
+                    birthday=_optional_datetime(detail.get("birthday")),
+                    security_status=(
+                        float(detail["security_status"])
+                        if detail.get("security_status") is not None
+                        else None
+                    ),
+                )
             )
-            for character_id, name, detail in valid_details
-        ]
         return identities, invalid
 
     async def resolve_entity_names(self, ids: Iterable[int]) -> dict[int, str]:
@@ -131,6 +181,36 @@ class ESIClient:
                 params={"datasource": "tranquility"},
             )
             return response.json()
+
+    async def _corporation_detail(self, corporation_id: int) -> dict[str, object]:
+        cached = self._corporation_cache.get(corporation_id)
+        if cached is not None:
+            return cached
+        async with self.semaphore:
+            response = await request_with_retries(
+                self.http,
+                "GET",
+                f"{self.base_url}/corporations/{corporation_id}/",
+                params={"datasource": "tranquility"},
+            )
+            payload = response.json()
+        self._corporation_cache[corporation_id] = payload
+        return payload
+
+    async def _alliance_detail(self, alliance_id: int) -> dict[str, object]:
+        cached = self._alliance_cache.get(alliance_id)
+        if cached is not None:
+            return cached
+        async with self.semaphore:
+            response = await request_with_retries(
+                self.http,
+                "GET",
+                f"{self.base_url}/alliances/{alliance_id}/",
+                params={"datasource": "tranquility"},
+            )
+            payload = response.json()
+        self._alliance_cache[alliance_id] = payload
+        return payload
 
     async def _ship_type(self, type_id: int) -> ShipTypeInfo:
         localized = self.sde.type_info(type_id) if self.sde else None
@@ -186,6 +266,12 @@ class ESIClient:
         )
         self._group_cache[group_id] = result
         return result
+
+
+def _optional_datetime(value: object) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 
 
 __all__ = ["ESIClient", "ExternalServiceError"]

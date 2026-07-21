@@ -30,8 +30,12 @@ class CharacterIdentity(BaseModel):
     name: str
     corporation_id: int
     corporation_name: str = "未知军团"
+    corporation_ticker: str = ""
     alliance_id: int | None = None
     alliance_name: str | None = None
+    alliance_ticker: str | None = None
+    birthday: datetime | None = None
+    security_status: float | None = None
 
 
 class ShipTypeInfo(BaseModel):
@@ -97,6 +101,26 @@ class FleetCompositionItem(BaseModel):
     count: int
 
 
+class RelatedBattleRef(BaseModel):
+    system_id: int
+    occurred_at: datetime
+
+
+class RelatedBattleSide(BaseModel):
+    character_ids: set[int] = Field(default_factory=set)
+    loss_value: float = 0
+    ships_lost: int = 0
+    pilot_count: int = 0
+    lost_ships: list[FleetCompositionItem] = Field(default_factory=list)
+
+
+class RelatedBattleSummary(BaseModel):
+    system_id: int
+    occurred_at: datetime
+    team_a: RelatedBattleSide
+    team_b: RelatedBattleSide
+
+
 class LatestEngagement(BaseModel):
     started_at: datetime
     last_seen: datetime
@@ -118,7 +142,10 @@ class LatestEngagement(BaseModel):
     composition_confidence: Confidence = Confidence.LOW
     composition_basis: str = "同战报攻击方"
     composition_label: str = "观察编队"
+    related_battle_refs: list[RelatedBattleRef] = Field(default_factory=list)
     ships: list[FleetCompositionItem] = Field(default_factory=list)
+    destroyed_ships: list[FleetCompositionItem] = Field(default_factory=list)
+    lost_ships: list[FleetCompositionItem] = Field(default_factory=list)
     roles: list[NamedMetric] = Field(default_factory=list)
 
 
@@ -131,13 +158,27 @@ class AssociateCandidate(BaseModel):
     relation_label: str
     affiliation_label: str | None = None
     last_seen: datetime
+    score: float = 0
+
+
+class PilotShipMetric(BaseModel):
+    id: int
+    name: str
+    kill_count: int = 0
+    loss_count: int = 0
 
 
 class CharacterProfile(BaseModel):
     character_id: int
     name: str
+    corporation_id: int | None = None
     corporation_name: str
+    corporation_ticker: str = ""
+    alliance_id: int | None = None
     alliance_name: str | None = None
+    alliance_ticker: str | None = None
+    birthday: datetime | None = None
+    security_status: float | None = None
     event_count: int = 0
     weighted_event_count: float = 0
     confidence: Confidence = Confidence.LOW
@@ -172,6 +213,18 @@ class ThreatComponent(BaseModel):
     score: int
     maximum: int
     explanation: str
+
+
+class ZKillStats(BaseModel):
+    character_id: int = 0
+    ships_destroyed: int = 0
+    ships_lost: int = 0
+    points_destroyed: int = 0
+    isk_destroyed: float = 0
+    isk_lost: float = 0
+    solo_kills: int = 0
+    danger_ratio: float = 0
+    gang_ratio: float = 0
 
 
 class AnalysisReport(BaseModel):
@@ -210,10 +263,12 @@ class AnalysisReport(BaseModel):
     threat_level: str = "低"
     threat_components: list[ThreatComponent] = Field(default_factory=list)
     threat_reasons: list[str] = Field(default_factory=list)
+    lifetime_stats: ZKillStats | None = None
     doctrines: list[DoctrineMatch] = Field(default_factory=list)
     top_systems: list[NamedMetric] = Field(default_factory=list)
     top_regions: list[NamedMetric] = Field(default_factory=list)
     common_associates: list[AssociateCandidate] = Field(default_factory=list)
+    pilot_ships: list[PilotShipMetric] = Field(default_factory=list)
     core_members: list[NamedMetric] = Field(default_factory=list)
     engagement_patterns: list[EngagementPattern] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

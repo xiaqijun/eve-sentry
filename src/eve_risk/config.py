@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     friendly_alliance_ids: str = ""
 
     esi_base_url: str = "https://esi.evetech.net/latest"
+    eve_image_base_url: str = "https://images.evetech.net"
     sde_url: str = (
         "https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip"
     )
@@ -50,7 +51,7 @@ class Settings(BaseSettings):
     global_max_jobs: int = 3
     member_rate_limit_seconds: int = 60
     group_job_ttl_seconds: int = 330
-    report_width: int = 1440
+    report_width: int = 960
     report_max_height: int = 4096
     font_path: str | None = None
 

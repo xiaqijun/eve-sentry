@@ -1,825 +1,946 @@
 from __future__ import annotations
 
 import io
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from eve_risk.analysis import SHANGHAI
 from eve_risk.domain import (
     AnalysisReport,
     AssociateCandidate,
-    CharacterProfile,
     CompositionMetric,
-    Confidence,
     LatestEngagement,
     NamedMetric,
+    PilotShipMetric,
 )
 
-BG = "#07111f"
-PANEL = "#0e2035"
-PANEL_ALT = "#132942"
-TEXT = "#edf6ff"
-MUTED = "#8fa9bf"
-CYAN = "#49b6ff"
-GREEN = "#59d499"
-YELLOW = "#f4ca64"
-ORANGE = "#ff9f43"
-RED = "#ff5f6d"
-PURPLE = "#b084ff"
-GRID = "#26415c"
+DESIGN_WIDTH = 960
 
-ROLE_COLORS = {
-    "输出舰": RED,
-    "后勤": GREEN,
-    "电子战": PURPLE,
-    "抓人": ORANGE,
-    "拦截": YELLOW,
-    "指挥": CYAN,
-    "侦察": "#65d8d0",
-    "旗舰": "#d28cff",
-    "工业": MUTED,
-    "其他": MUTED,
-}
+BG = "#090b12"
+PANEL = "#151821"
+PANEL_ALT = "#1b1e28"
+CELL = "#1d2029"
+BORDER = "#303544"
+GRID = "#252a36"
+TEXT = "#eef2f8"
+MUTED = "#858da2"
+DIM = "#596174"
+CYAN = "#39c6ff"
+BLUE = "#2878db"
+GREEN = "#55e39b"
+YELLOW = "#f5c96a"
+ORANGE = "#f29b38"
+RED = "#ff6376"
+PURPLE = "#a980ff"
+
+
+@dataclass(slots=True)
+class ReportAssets:
+    character_portraits: dict[int, bytes] = field(default_factory=dict)
+    ship_icons: dict[int, bytes] = field(default_factory=dict)
+    corporation_logos: dict[int, bytes] = field(default_factory=dict)
+    alliance_logos: dict[int, bytes] = field(default_factory=dict)
 
 
 class ReportRenderer:
+    """Render a tall mobile-friendly EVE intelligence card for QQ."""
+
     def __init__(
-        self, width: int = 1440, max_height: int = 4096, font_path: str | None = None
+        self,
+        width: int = 960,
+        max_height: int = 4096,
+        font_path: str | None = None,
     ) -> None:
-        self.width = width
-        self.max_height = max_height
+        self.width = max(720, width)
+        self.max_height = max(1200, max_height)
         self.font_path = _find_font(font_path)
         self.fonts = {
-            "title": ImageFont.truetype(self.font_path, 52),
-            "score": ImageFont.truetype(self.font_path, 46),
-            "h2": ImageFont.truetype(self.font_path, 32),
-            "h3": ImageFont.truetype(self.font_path, 27),
-            "body": ImageFont.truetype(self.font_path, 24),
-            "small": ImageFont.truetype(self.font_path, 20),
-            "tiny": ImageFont.truetype(self.font_path, 17),
+            "hero": ImageFont.truetype(self.font_path, 42),
+            "title": ImageFont.truetype(self.font_path, 31),
+            "section": ImageFont.truetype(self.font_path, 27),
+            "value": ImageFont.truetype(self.font_path, 26),
+            "body": ImageFont.truetype(self.font_path, 22),
+            "small": ImageFont.truetype(self.font_path, 18),
+            "tiny": ImageFont.truetype(self.font_path, 15),
         }
 
-    def render(self, report: AnalysisReport) -> bytes:
-        profile_count = min(4, len(report.profiles))
-        height = self.max_height
-        image = Image.new("RGB", (self.width, height), BG)
+    def render(self, report: AnalysisReport, assets: ReportAssets | None = None) -> bytes:
+        assets = assets or ReportAssets()
+        design_height = 2460
+        image = Image.new("RGB", (DESIGN_WIDTH, design_height), BG)
         draw = ImageDraw.Draw(image)
-        margin = 64
-        content_width = self.width - margin * 2
-        y = 48
 
-        draw.text((margin, y), "EVE 敌对舰队情报", fill=TEXT, font=self.fonts["title"])
-        generated = report.generated_at.astimezone(SHANGHAI).strftime("%Y-%m-%d %H:%M CST")
+        margin = 26
+        gap = 22
+        y = 24
+
+        header = (margin, y, DESIGN_WIDTH - margin, y + 245)
+        self._panel(draw, header)
+        self._header(image, draw, header, report, assets)
+        y = header[3] + gap
+
+        stats = (margin, y, DESIGN_WIDTH - margin, y + 330)
+        self._panel(draw, stats)
+        self._stats(draw, stats, report)
+        y = stats[3] + gap
+
+        people_ships = (margin, y, DESIGN_WIDTH - margin, y + 445)
+        self._panel(draw, people_ships)
+        self._associates_and_ships(image, draw, people_ships, report, assets)
+        y = people_ships[3] + gap
+
+        activity = (margin, y, DESIGN_WIDTH - margin, y + 690)
+        self._panel(draw, activity)
+        self._activity(image, draw, activity, report, assets)
+        y = activity[3] + gap
+
+        regions = (margin, y, DESIGN_WIDTH - margin, y + 475)
+        self._panel(draw, regions)
+        self._regions(draw, regions, report.top_regions)
+        y = regions[3] + 20
+
+        footer = _footer_text(report)
         draw.text(
-            (self.width - margin, y + 8),
-            generated,
+            (DESIGN_WIDTH // 2, y + 8),
+            footer,
             fill=MUTED,
             font=self.fonts["small"],
-            anchor="ra",
+            anchor="ma",
         )
-        subtitle = (
-            f"有效角色 {report.resolved_count}/{report.requested_count}  ·  "
-            f"公开事件 {report.data_events} / 交战 {report.engagement_count}  ·  "
-            f"数据覆盖 {report.coverage_ratio:.0%}  ·  "
-            "Tranquility / 近90天"
-        )
-        draw.text((margin, y + 62), subtitle, fill=MUTED, font=self.fonts["small"])
-        y += 108
+        y += 52
 
-        y = self._kpis(draw, report, margin, y, content_width)
-        y = self._section_title(draw, y, "最近三场来犯")
-        previous_engagements = [
-            item for item in report.recent_engagements if item != report.latest_engagement
-        ][:2]
-        history_count = len(previous_engagements)
-        latest_base_height = 220 if report.common_associates else 160
-        latest_height = latest_base_height + (42 + history_count * 52 if history_count else 0)
-        latest_panel = (margin, y, self.width - margin, y + latest_height)
-        self._panel(draw, latest_panel)
-        self._latest_engagement(
-            draw,
-            latest_panel,
-            report.latest_engagement,
-            previous_engagements,
-            report.common_associates,
-            report.generated_at,
-        )
-        y += latest_height + 30
-
-        y = self._section_title(draw, y, "舰队模板与常用舰船")
-        gap = 24
-        left_width = 760
-        left = (margin, y, margin + left_width, y + 408)
-        right = (margin + left_width + gap, y, self.width - margin, y + 408)
-        self._panel(draw, left)
-        self._panel(draw, right)
-        self._doctrines(draw, left, report)
-        self._bars(
-            draw,
-            right,
-            report.top_ships[:5],
-            "常用舰船",
-            CYAN,
-            max_rows=5,
-        )
-        y += 438
-
-        y = self._section_title(draw, y, "典型舰队构成")
-        role_panel = (margin, y, self.width - margin, y + 250)
-        self._panel(draw, role_panel)
-        self._role_bars(draw, role_panel, report.role_distribution[:9])
-        y += 280
-
-        y = self._section_title(draw, y, "活跃热力图（北京时间）")
-        activity_panel = (margin, y, self.width - margin, y + 438)
-        self._panel(draw, activity_panel)
-        self._week_heatmap(draw, activity_panel, report.activity_week_hours, report.activity_hours)
-        y += 468
-
-        y = self._section_title(draw, y, "活动区域与威胁构成")
-        left = (margin, y, self.width // 2 - 12, y + 430)
-        right = (self.width // 2 + 12, y, self.width - margin, y + 430)
-        self._panel(draw, left)
-        self._panel(draw, right)
-        self._locations(draw, left, report)
-        self._threat_components(draw, right, report)
-        y += 460
-
-        if profile_count:
-            y = self._section_title(draw, y, "关键人物画像")
-            y = self._profile_cards(draw, margin, y, report.profiles[:4])
-
-        if y + 220 < height:
-            y = self._section_title(draw, y, "关键结论")
-            bottom = min(height - 36, y + 144)
-            draw.rounded_rectangle((margin, y, self.width - margin, bottom), 18, fill=PANEL)
-            self._evidence(draw, margin, y, report)
-            y = bottom + 36
-
-        # 报告内容数量会随角色数变化，输出前收紧画布，避免手机查看时出现大片空白。
-        image = image.crop((0, 0, self.width, min(height, max(720, y))))
+        image = image.crop((0, 0, DESIGN_WIDTH, y))
+        if self.width != DESIGN_WIDTH:
+            ratio = self.width / DESIGN_WIDTH
+            target_height = min(self.max_height, round(image.height * ratio))
+            target_width = round(image.width * target_height / image.height)
+            image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        elif image.height > self.max_height:
+            ratio = self.max_height / image.height
+            image = image.resize(
+                (round(image.width * ratio), self.max_height),
+                Image.Resampling.LANCZOS,
+            )
 
         output = io.BytesIO()
         image.save(output, format="PNG", optimize=True)
         return output.getvalue()
 
-    def _kpis(
+    def _header(
         self,
-        draw: ImageDraw.ImageDraw,
-        report: AnalysisReport,
-        margin: int,
-        y: int,
-        content_width: int,
-    ) -> int:
-        gap = 18
-        card_width = (content_width - gap * 3) // 4
-        threat_color = _threat_color(report.threat_score)
-        last = _relative_time(report.last_activity, report.generated_at)
-        isk_ratio = _format_isk_ratio(report.destroyed_value_30d, report.lost_value_30d)
-        isk_detail = (
-            f"摧毁 {_format_isk_short(report.destroyed_value_30d)} · "
-            f"损失 {_format_isk_short(report.lost_value_30d)}"
-        )
-        filled_stars = max(0, min(5, (report.threat_score + 9) // 20))
-        stars = "★" * filled_stars + "☆" * (5 - filled_stars)
-        cards = [
-            (
-                "敌对评级",
-                f"{stars} {report.threat_level}",
-                f"威胁指数 {report.threat_score} / 100",
-                threat_color,
-            ),
-            ("活跃时间", report.peak_activity, f"最近遭遇 {last}", ORANGE),
-            (
-                "常用舰队规模",
-                report.fleet_size_label,
-                (
-                    f"通常约 {report.median_gang_size:.0f} 人 · 大场约 {report.p75_gang_size:.0f} 人"
-                    if report.median_gang_size is not None and report.p75_gang_size is not None
-                    else "公开样本不足"
-                ),
-                PURPLE,
-            ),
-            (
-                "近30天 ISK战损",
-                isk_ratio,
-                isk_detail,
-                _isk_ratio_color(report),
-            ),
-        ]
-        for index, (label, value, detail, color) in enumerate(cards):
-            x = margin + index * (card_width + gap)
-            draw.rounded_rectangle((x, y, x + card_width, y + 176), 18, fill=PANEL)
-            draw.rectangle((x, y, x + 6, y + 176), fill=color)
-            draw.text((x + 24, y + 18), label, fill=MUTED, font=self.fonts["small"])
-            if index == 0:
-                draw.text((x + 24, y + 69), stars, fill=color, font=self.fonts["h3"])
-                draw.text(
-                    (x + card_width - 22, y + 56),
-                    report.threat_level,
-                    fill=color,
-                    font=self.fonts["score"],
-                    anchor="ra",
-                )
-            else:
-                value_font = self.fonts["score"]
-                if draw.textbbox((0, 0), value, font=value_font)[2] > card_width - 48:
-                    value_font = self.fonts["h3"]
-                draw.text(
-                    (x + 24, y + 56),
-                    _fit_text(draw, value, value_font, card_width - 48),
-                    fill=color,
-                    font=value_font,
-                )
-            draw.text((x + 24, y + 132), _clip(detail, 25), fill=TEXT, font=self.fonts["tiny"])
-        return y + 210
-
-    def _doctrines(
-        self, draw: ImageDraw.ImageDraw, bounds: tuple[int, int, int, int], report: AnalysisReport
-    ) -> None:
-        left, top, right, _ = bounds
-        draw.text((left + 26, top + 20), "舰队模板", fill=MUTED, font=self.fonts["small"])
-        if not report.doctrines:
-            draw.text((left + 26, top + 76), "未识别出稳定体系", fill=TEXT, font=self.fonts["h3"])
-            draw.text(
-                (left + 26, top + 120),
-                "暂未发现重复出现的固定组合",
-                fill=MUTED,
-                font=self.fonts["small"],
-            )
-            return
-        y = top + 62
-        for index, doctrine in enumerate(report.doctrines[:2]):
-            color = ORANGE if index == 0 else CYAN
-            draw.rounded_rectangle((left + 22, y, right - 22, y + 132), 12, fill=PANEL_ALT)
-            draw.text((left + 40, y + 14), doctrine.name, fill=TEXT, font=self.fonts["h3"])
-            draw.text(
-                (right - 40, y + 14),
-                f"{doctrine.confidence}%",
-                fill=color,
-                font=self.fonts["h3"],
-                anchor="ra",
-            )
-            draw.text(
-                (right - 40, y + 53),
-                f"{doctrine.encounter_count} / {doctrine.sample_count} 场",
-                fill=MUTED,
-                font=self.fonts["tiny"],
-                anchor="ra",
-            )
-            evidence = doctrine.evidence[:2] or ["舰船样本不足"]
-            line_y = y + 58
-            for item in evidence:
-                draw.ellipse((left + 40, line_y + 7, left + 48, line_y + 15), fill=color)
-                draw.text(
-                    (left + 58, line_y),
-                    _clip(item, 38),
-                    fill=TEXT,
-                    font=self.fonts["tiny"],
-                )
-                line_y += 31
-            y += 146
-
-    def _latest_engagement(
-        self,
+        image: Image.Image,
         draw: ImageDraw.ImageDraw,
         bounds: tuple[int, int, int, int],
-        engagement: LatestEngagement | None,
-        previous_engagements: list[LatestEngagement],
-        associates: list[AssociateCandidate],
-        generated_at: datetime,
+        report: AnalysisReport,
+        assets: ReportAssets,
     ) -> None:
-        left, top, right, _ = bounds
-        if engagement is None:
-            draw.text(
-                (left + 26, top + 30), "暂无可用进攻编队样本", fill=TEXT, font=self.fonts["h3"]
-            )
-            draw.text(
-                (left + 26, top + 76),
-                "公开战报未观察到完整舰队配置",
-                fill=MUTED,
-                font=self.fonts["small"],
-            )
-            return
+        left, top, right, bottom = bounds
+        profiles = report.profiles
+        primary = profiles[0] if profiles else None
+        single = report.resolved_count == 1 and primary is not None
+        title = primary.name if single else f"敌对编队 · {report.resolved_count} 人"
 
-        location = (
-            f"{engagement.system_name} · {engagement.region_name}"
-            if engagement.region_name
-            else engagement.system_name
-        )
-        draw.text((left + 26, top + 18), _clip(location, 30), fill=TEXT, font=self.fonts["h3"])
-        draw.text(
-            (right - 26, top + 23),
-            _engagement_time_label(engagement.last_seen, generated_at),
-            fill=MUTED,
-            font=self.fonts["small"],
-            anchor="ra",
-        )
+        avatar = (left + 30, top + 26, left + 170, top + 166)
+        initials = _initials(primary.name if primary else "EVE")
+        portrait = assets.character_portraits.get(primary.character_id) if primary else None
+        self._avatar(image, draw, avatar, initials, report.threat_score, portrait)
 
-        outcome_color = {
-            "参与击毁": GREEN,
-            "交火并有损失": ORANGE,
-        }.get(engagement.outcome, CYAN)
+        tx = avatar[2] + 28
         draw.text(
-            (left + 26, top + 57), engagement.outcome, fill=outcome_color, font=self.fonts["small"]
-        )
-        draw.text(
-            (left + 150, top + 59),
-            _clip(engagement.result_detail, 22),
+            (tx, top + 22),
+            _fit_text(draw, title, self.fonts["hero"], right - tx - 28),
             fill=TEXT,
-            font=self.fonts["tiny"],
-        )
-        value_text = _engagement_value_text(engagement)
-        if value_text:
-            value_text += f" · {engagement.destroyed_count} 艘"
-            draw.text(
-                (left + 430, top + 59),
-                value_text,
-                fill=YELLOW,
-                font=self.fonts["tiny"],
-            )
-        confidence_color = _confidence_color(engagement.composition_confidence)
-        draw.text(
-            (right - 26, top + 59),
-            _composition_status(engagement),
-            fill=confidence_color,
-            font=self.fonts["tiny"],
-            anchor="ra",
+            font=self.fonts["hero"],
         )
 
-        configuration_label = (
-            "同战报舰船"
-            if engagement.composition_confidence == Confidence.LOW
-            else "稳定配置"
+        badge_text = (
+            f"{primary.character_id} [{primary.candidate_label}]"
+            if single and primary
+            else f"已解析 {report.resolved_count}/{report.requested_count}"
         )
+        badge_width = max(
+            150,
+            draw.textbbox((0, 0), badge_text, font=self.fonts["tiny"])[2] + 28,
+        )
+        draw.rounded_rectangle((tx, top + 75, tx + badge_width, top + 107), 14, fill="#102a3c")
         draw.text(
-            (left + 26, top + 111),
-            configuration_label,
-            fill=MUTED,
+            (tx + badge_width / 2, top + 91),
+            badge_text,
+            fill=CYAN,
             font=self.fonts["tiny"],
+            anchor="mm",
         )
-        ships = engagement.ships[:5]
-        gap = 12
-        chip_left = left + 150
-        chip_right = right - 26
-        chip_width = (chip_right - chip_left - gap * 4) // 5
-        for index, ship in enumerate(ships):
-            x = chip_left + index * (chip_width + gap)
-            color = ROLE_COLORS.get(ship.role, CYAN)
-            draw.rounded_rectangle((x, top + 100, x + chip_width, top + 146), 11, fill=PANEL_ALT)
-            draw.rectangle((x, top + 100, x + 5, top + 146), fill=color)
+
+        if single and primary:
+            affiliation_x = tx + 47
+            alliance_logo = assets.alliance_logos.get(primary.alliance_id or 0)
+            alliance_bounds = (tx, top + 116, tx + 37, top + 153)
+            if not self._paste_asset(image, alliance_logo, alliance_bounds, radius=8):
+                draw.rounded_rectangle(alliance_bounds, 8, fill="#253043")
+                draw.text(
+                    (tx + 18, top + 134),
+                    "A",
+                    fill=TEXT,
+                    font=self.fonts["tiny"],
+                    anchor="mm",
+                )
+            draw.rounded_rectangle(alliance_bounds, 8, outline=BORDER, width=1)
             draw.text(
-                (x + 16, top + 111),
+                (affiliation_x, top + 120),
                 _fit_text(
                     draw,
-                    f"{ship.name} ×{ship.count}",
-                    self.fonts["tiny"],
-                    chip_width - 28,
+                    _affiliation_label(
+                        primary.alliance_ticker or "",
+                        primary.alliance_name or "无联盟",
+                    ),
+                    self.fonts["body"],
+                    right - affiliation_x - 28,
                 ),
-                fill=TEXT,
-                font=self.fonts["tiny"],
+                fill=MUTED if primary.alliance_name is None else TEXT,
+                font=self.fonts["body"],
             )
 
-        if associates:
-            draw.line((left + 26, top + 160, right - 26, top + 160), fill=GRID, width=1)
-            draw.text((left + 26, top + 179), "常见同行", fill=MUTED, font=self.fonts["tiny"])
-            teammate_x = left + 132
-            for associate in associates[:3]:
-                relation = "固定" if associate.relation_label == "固定队友" else "同行"
-                label = f"{_clip(associate.name, 16)} · {relation} · {associate.engagement_count}场"
-                text_width = draw.textbbox((0, 0), label, font=self.fonts["tiny"])[2]
-                chip_width = text_width + 28
-                if teammate_x + chip_width > right - 26:
-                    break
-                draw.rounded_rectangle(
-                    (teammate_x, top + 172, teammate_x + chip_width, top + 206),
-                    10,
-                    fill=PANEL_ALT,
-                )
-                color = GREEN if associate.relation_label == "固定队友" else CYAN
-                draw.text((teammate_x + 14, top + 178), label, fill=color, font=self.fonts["tiny"])
-                teammate_x += chip_width + 10
-
-        if previous_engagements:
-            history_top = top + (220 if associates else 160)
-            draw.line((left + 26, history_top, right - 26, history_top), fill=GRID, width=1)
-            draw.text(
-                (left + 26, history_top + 14),
-                "更早来犯",
-                fill=MUTED,
-                font=self.fonts["tiny"],
-            )
-            row_y = history_top + 42
-            for previous in previous_engagements[:2]:
+            corporation_logo = assets.corporation_logos.get(primary.corporation_id or 0)
+            corporation_bounds = (tx, top + 160, tx + 37, top + 197)
+            if not self._paste_asset(image, corporation_logo, corporation_bounds, radius=8):
+                draw.rounded_rectangle(corporation_bounds, 8, fill="#253043")
                 draw.text(
-                    (left + 26, row_y),
-                    _aware(previous.last_seen).astimezone(SHANGHAI).strftime("%m-%d %H:%M"),
-                    fill=MUTED,
-                    font=self.fonts["tiny"],
-                )
-                draw.text(
-                    (left + 190, row_y),
-                    _fit_text(draw, previous.system_name, self.fonts["tiny"], 190),
+                    (tx + 18, top + 178),
+                    "C",
                     fill=TEXT,
                     font=self.fonts["tiny"],
+                    anchor="mm",
                 )
-                draw.text(
-                    (left + 410, row_y),
-                    f"{previous.fleet_size}人",
-                    fill=CYAN,
-                    font=self.fonts["tiny"],
-                )
-                draw.text(
-                    (left + 500, row_y),
-                    _fit_text(draw, previous.result_detail, self.fonts["tiny"], 400),
-                    fill=TEXT,
-                    font=self.fonts["tiny"],
-                )
-                draw.text(
-                    (right - 220, row_y),
-                    _engagement_value_text(previous) or "价值未知",
-                    fill=YELLOW,
-                    font=self.fonts["tiny"],
-                    anchor="ra",
-                )
-                draw.text(
-                    (right - 26, row_y),
-                    f"{previous.composition_confidence.value}可信",
-                    fill=_confidence_color(previous.composition_confidence),
-                    font=self.fonts["tiny"],
-                    anchor="ra",
-                )
-                row_y += 52
-
-    def _role_bars(
-        self,
-        draw: ImageDraw.ImageDraw,
-        bounds: tuple[int, int, int, int],
-        metrics: list[CompositionMetric],
-    ) -> None:
-        left, top, right, _ = bounds
-        x = left + 28
-        y = top + 52
-        bar_left = x + 128
-        bar_right = right - 230
-        maximum = max((metric.p75 for metric in metrics), default=1) or 1
-        draw.text((right - 175, top + 18), "通常", fill=MUTED, font=self.fonts["tiny"])
-        draw.text((right - 76, top + 18), "大场", fill=MUTED, font=self.fonts["tiny"])
-        for metric in metrics[:5]:
-            color = ROLE_COLORS.get(metric.name, CYAN)
-            row_width = max(6, int((bar_right - bar_left) * metric.p75 / maximum))
-            draw.text((x, y), metric.name, fill=TEXT, font=self.fonts["small"])
-            draw.rounded_rectangle((bar_left, y + 4, bar_right, y + 24), 10, fill=GRID)
-            draw.rounded_rectangle((bar_left, y + 4, bar_left + row_width, y + 24), 10, fill=color)
+            draw.rounded_rectangle(corporation_bounds, 8, outline=BORDER, width=1)
             draw.text(
-                (right - 158, y),
-                f"{metric.median:.0f}艘",
+                (affiliation_x, top + 164),
+                _fit_text(
+                    draw,
+                    _affiliation_label(
+                        primary.corporation_ticker,
+                        primary.corporation_name or "未知军团",
+                    ),
+                    self.fonts["body"],
+                    right - affiliation_x - 28,
+                ),
                 fill=TEXT,
-                font=self.fonts["small"],
-                anchor="ra",
+                font=self.fonts["body"],
             )
+        elif profiles:
+            affiliation = _top_affiliation(report.affiliations)
             draw.text(
-                (right - 48, y),
-                f"{metric.p75:.0f}艘",
+                (tx, top + 124),
+                _fit_text(draw, affiliation, self.fonts["body"], right - tx - 28),
+                fill=TEXT,
+                font=self.fonts["body"],
+            )
+            members = " · ".join(item.name for item in profiles[:4])
+            if len(profiles) > 4:
+                members += f" · +{len(profiles) - 4}"
+            draw.text(
+                (tx, top + 163),
+                _fit_text(draw, members, self.fonts["small"], right - tx - 28),
                 fill=MUTED,
                 font=self.fonts["small"],
-                anchor="ra",
             )
-            y += 40
-        if not metrics:
-            draw.text((x, top + 84), "暂无进攻舰队构成样本", fill=MUTED, font=self.fonts["body"])
 
-    def _week_heatmap(
-        self,
-        draw: ImageDraw.ImageDraw,
-        bounds: tuple[int, int, int, int],
-        week_values: list[list[float]],
-        hour_values: list[float],
-    ) -> None:
-        left, top, right, _ = bounds
-        weekdays = "一二三四五六日"
-        x = left + 76
-        y = top + 46
-        width = right - x - 28
-        gap = 5
-        cell_width = (width - gap * 23) / 24
-        maximum = max((value for row in week_values for value in row), default=0) or 1
-        for day in range(7):
-            draw.text((left + 30, y + day * 34), weekdays[day], fill=MUTED, font=self.fonts["tiny"])
-            for hour in range(24):
-                value = week_values[day][hour]
-                color = _blend((20, 43, 65), (255, 95, 109), value / maximum)
-                cell_left = int(x + hour * (cell_width + gap))
-                draw.rounded_rectangle(
-                    (cell_left, y + day * 34, int(cell_left + cell_width), y + day * 34 + 24),
-                    5,
-                    fill=color,
-                )
-        label_y = y + 7 * 34 + 5
-        for hour in range(0, 24, 3):
-            label_x = int(x + hour * (cell_width + gap))
-            draw.text((label_x, label_y), f"{hour:02d}", fill=MUTED, font=self.fonts["tiny"])
-
-        bars_y = label_y + 42
-        hour_max = max(hour_values, default=0) or 1
-        bar_area_height = 78
-        for hour, value in enumerate(hour_values):
-            bar_left = int(x + hour * (cell_width + gap))
-            bar_height = int(bar_area_height * value / hour_max)
-            color = ORANGE if value / hour_max >= 0.7 else CYAN
-            draw.rounded_rectangle(
-                (
-                    bar_left,
-                    bars_y + bar_area_height - bar_height,
-                    int(bar_left + cell_width),
-                    bars_y + bar_area_height,
-                ),
-                4,
-                fill=color,
-            )
-        draw.text((left + 30, bars_y + 18), "小时", fill=MUTED, font=self.fonts["tiny"])
-
-    def _locations(
-        self, draw: ImageDraw.ImageDraw, bounds: tuple[int, int, int, int], report: AnalysisReport
-    ) -> None:
-        left, top, right, _ = bounds
-        draw.text((left + 26, top + 20), "活动区域", fill=MUTED, font=self.fonts["small"])
-        y = top + 62
-        draw.text((left + 26, y), "主要星域", fill=TEXT, font=self.fonts["h3"])
-        y += 44
-        region_total = sum(metric.value for metric in report.top_regions) or 1
-        region_percentages = [
-            NamedMetric(name=metric.name, value=metric.value / region_total * 100)
-            for metric in report.top_regions[:3]
-        ]
-        y = self._compact_bars(
-            draw,
-            left + 26,
-            y,
-            right - 26,
-            region_percentages,
-            PURPLE,
-            suffix="%",
-        )
-        y += 12
-        draw.text((left + 26, y), "最近常见星系", fill=TEXT, font=self.fonts["h3"])
-        y += 44
-        self._compact_bars(draw, left + 26, y, right - 26, report.top_systems[:4], ORANGE)
-
-    def _threat_components(
-        self, draw: ImageDraw.ImageDraw, bounds: tuple[int, int, int, int], report: AnalysisReport
-    ) -> None:
-        left, top, right, _ = bounds
-        color = _threat_color(report.threat_score)
-        draw.text((left + 26, top + 20), "敌对威胁指数", fill=MUTED, font=self.fonts["small"])
+        birthday = _birthday_text(primary.birthday if single and primary else None)
         draw.text(
-            (right - 26, top + 14),
-            f"{report.threat_score} / 100  {report.threat_level}",
-            fill=color,
-            font=self.fonts["h3"],
+            (left + 30, bottom - 38),
+            f"出生日期：{birthday}",
+            fill=MUTED,
+            font=self.fonts["small"],
+        )
+
+        security = primary.security_status if single and primary else None
+        security_text = f"{security:.2f}" if security is not None else "--"
+        draw.text(
+            (right - 30, bottom - 38),
+            f"安全等级：{security_text}",
+            fill=_security_color(security),
+            font=self.fonts["body"],
             anchor="ra",
         )
-        y = top + 66
-        for component in report.threat_components[:6]:
-            label_width = 116
-            draw.text((left + 26, y), component.name, fill=TEXT, font=self.fonts["tiny"])
-            bar_left = left + 26 + label_width
-            bar_right = right - 82
-            draw.rounded_rectangle((bar_left, y + 3, bar_right, y + 19), 7, fill=GRID)
-            width = int((bar_right - bar_left) * component.score / component.maximum)
-            if width:
-                draw.rounded_rectangle((bar_left, y + 3, bar_left + width, y + 19), 7, fill=color)
-            draw.text(
-                (right - 26, y - 1),
-                f"{component.score}/{component.maximum}",
-                fill=MUTED,
-                font=self.fonts["tiny"],
-                anchor="ra",
-            )
-            draw.text(
-                (bar_left, y + 25),
-                _clip(component.explanation, 34),
-                fill=MUTED,
-                font=self.fonts["tiny"],
-            )
-            y += 58
 
-    def _profile_cards(
+    def _stats(
         self,
         draw: ImageDraw.ImageDraw,
-        margin: int,
-        y: int,
-        profiles: list[CharacterProfile],
-    ) -> int:
-        gap = 22
-        card_width = (self.width - margin * 2 - gap) // 2
-        card_height = 190
-        for index, profile in enumerate(profiles):
-            column = index % 2
-            row = index // 2
-            x = margin + column * (card_width + gap)
-            top = y + row * (card_height + gap)
-            draw.rounded_rectangle((x, top, x + card_width, top + card_height), 18, fill=PANEL)
-            confidence_color = {"高": GREEN, "中": YELLOW, "低": RED}[profile.confidence.value]
-            draw.text((x + 24, top + 18), _clip(profile.name, 26), fill=TEXT, font=self.fonts["h3"])
+        bounds: tuple[int, int, int, int],
+        report: AnalysisReport,
+    ) -> None:
+        left, top, right, _ = bounds
+        self._section_header(draw, left + 28, top + 20, right - 28, "击杀统计")
+        lifetime = report.lifetime_stats
+        kills = (
+            lifetime.ships_destroyed
+            if lifetime is not None
+            else sum(profile.kill_count for profile in report.profiles)
+        )
+        losses = (
+            lifetime.ships_lost
+            if lifetime is not None
+            else sum(profile.loss_count for profile in report.profiles)
+        )
+        points = (
+            lifetime.points_destroyed
+            if lifetime is not None
+            else sum(profile.final_blow_count for profile in report.profiles)
+        )
+        destroyed_value = (
+            lifetime.isk_destroyed
+            if lifetime is not None
+            else report.destroyed_value_30d
+        )
+        lost_value = (
+            lifetime.isk_lost if lifetime is not None else report.lost_value_30d
+        )
+        ratio = (
+            f"{points / kills:.4f}"
+            if lifetime is not None and kills > 0
+            else _format_ratio(destroyed_value, lost_value)
+        )
+        solo = str(lifetime.solo_kills) if lifetime is not None else (
+            f"{(report.solo_ratio or 0) * 100:.0f}%"
+            if report.solo_ratio is not None
+            else "--"
+        )
+
+        cells = [
+            ("击毁舰船", str(kills), GREEN),
+            ("损失舰船", str(losses), RED),
+            ("SOLO", solo, TEXT),
+            ("击毁价值", _format_stat_isk(destroyed_value), TEXT),
+            ("损失价值", _format_stat_isk(lost_value), TEXT),
+            ("击杀点数", str(points), TEXT),
+        ]
+        inner_left = left + 26
+        inner_right = right - 26
+        cell_gap = 14
+        cell_width = (inner_right - inner_left - cell_gap * 2) / 3
+        for index, (label, value, color) in enumerate(cells):
+            row = index // 3
+            col = index % 3
+            x1 = round(inner_left + col * (cell_width + cell_gap))
+            y1 = top + 66 + row * 82
+            x2 = round(x1 + cell_width)
+            draw.rounded_rectangle((x1, y1, x2, y1 + 68), 10, fill=CELL)
+            draw.text((x1 + 15, y1 + 10), label, fill=MUTED, font=self.fonts["tiny"])
             draw.text(
-                (x + card_width - 24, top + 21),
-                f"置信度 {profile.confidence.value}",
-                fill=confidence_color,
+                (x1 + 15, y1 + 34),
+                _fit_text(draw, value, self.fonts["body"], x2 - x1 - 28),
+                fill=color,
+                font=self.fonts["body"],
+            )
+
+        bar_y = top + 241
+        third = (inner_right - inner_left - cell_gap * 2) / 3
+        danger = lifetime.danger_ratio if lifetime is not None else report.threat_score
+        gang = lifetime.gang_ratio if lifetime is not None else _team_score(report)
+        ratio_progress = (
+            min(1.0, (points / kills) / 5)
+            if lifetime is not None and kills > 0
+            else _ratio_score(destroyed_value, lost_value)
+        )
+        metrics = [
+            ("船分比", ratio, ratio_progress, YELLOW),
+            ("危险指数", f"{danger:.0f}%", danger / 100, RED),
+            ("团队指数", f"{gang:.0f}%", gang / 100, CYAN),
+        ]
+        for index, (label, value, progress, color) in enumerate(metrics):
+            x = round(inner_left + index * (third + cell_gap))
+            width = round(third)
+            draw.text((x, bar_y), label, fill=MUTED, font=self.fonts["tiny"])
+            draw.text((x + width, bar_y), value, fill=TEXT, font=self.fonts["small"], anchor="ra")
+            self._progress(draw, x, bar_y + 31, width, progress, color)
+
+    def _associates_and_ships(
+        self,
+        image: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        bounds: tuple[int, int, int, int],
+        report: AnalysisReport,
+        assets: ReportAssets,
+    ) -> None:
+        left, top, right, _ = bounds
+        center = (left + right) // 2
+        draw.line((center, top + 24, center, bounds[3] - 24), fill=BORDER, width=2)
+        self._section_header(draw, left + 28, top + 20, center - 24, "最佳队友")
+        self._section_header(draw, center + 24, top + 20, right - 28, "常用舰船")
+        self._associate_rows(
+            image,
+            draw,
+            left + 28,
+            top + 72,
+            center - 24,
+            report.common_associates[:5],
+            assets,
+        )
+        if report.pilot_ships:
+            self._pilot_ship_rows(
+                image,
+                draw,
+                center + 24,
+                top + 72,
+                right - 28,
+                report.pilot_ships[:5],
+                assets,
+            )
+        else:
+            self._ship_rows(
+                image,
+                draw,
+                center + 24,
+                top + 72,
+                right - 28,
+                report.top_ships[:5],
+                assets,
+            )
+
+    def _associate_rows(
+        self,
+        image: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        left: int,
+        top: int,
+        right: int,
+        associates: list[AssociateCandidate],
+        assets: ReportAssets,
+    ) -> None:
+        maximum = max(
+            (item.score or float(item.engagement_count) for item in associates),
+            default=1,
+        )
+        if not associates:
+            draw.text((left, top + 20), "暂无稳定同行样本", fill=MUTED, font=self.fonts["body"])
+            return
+        for index, item in enumerate(associates):
+            y = top + index * 69
+            self._mini_avatar(
+                image,
+                draw,
+                (left, y, left + 38, y + 38),
+                _initials(item.name),
+                assets.character_portraits.get(item.id),
+            )
+            draw.text(
+                (left + 48, y + 1),
+                _fit_text(draw, item.name, self.fonts["small"], right - left - 112),
+                fill=TEXT,
+                font=self.fonts["small"],
+            )
+            draw.text(
+                (right, y + 1),
+                f"{item.score:.1f}" if item.score else str(item.engagement_count),
+                fill=TEXT,
                 font=self.fonts["small"],
                 anchor="ra",
             )
-            affiliation = profile.alliance_name or profile.corporation_name
-            draw.text(
-                (x + 24, top + 59), _clip(affiliation, 34), fill=MUTED, font=self.fonts["small"]
+            self._progress(
+                draw,
+                left,
+                y + 48,
+                right - left,
+                (item.score or item.engagement_count) / maximum,
+                CYAN,
+                height=10,
             )
+
+    def _pilot_ship_rows(
+        self,
+        image: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        left: int,
+        top: int,
+        right: int,
+        ships: list[PilotShipMetric],
+        assets: ReportAssets,
+    ) -> None:
+        maximum_kills = max((item.kill_count for item in ships), default=1) or 1
+        maximum_losses = max((item.loss_count for item in ships), default=1) or 1
+        draw.text(
+            (right - 72, top - 31),
+            "← 被击毁",
+            fill=RED,
+            font=self.fonts["tiny"],
+            anchor="ra",
+        )
+        draw.text(
+            (right, top - 31),
+            "签名 →",
+            fill=GREEN,
+            font=self.fonts["tiny"],
+            anchor="ra",
+        )
+        for index, ship in enumerate(ships):
+            y = top + index * 69
+            icon_bounds = (left, y, left + 38, y + 38)
+            icon = assets.ship_icons.get(ship.id)
+            if not self._paste_asset(image, icon, icon_bounds, radius=8):
+                draw.rounded_rectangle(icon_bounds, 8, fill="#243043")
+                draw.text(
+                    (left + 19, y + 19),
+                    str(index + 1),
+                    fill=CYAN,
+                    font=self.fonts["tiny"],
+                    anchor="mm",
+                )
+            draw.rounded_rectangle(icon_bounds, 8, outline=BORDER, width=1)
             draw.text(
-                (x + 24, top + 84), profile.candidate_label, fill=ORANGE, font=self.fonts["small"]
-            )
-            ships = " / ".join(metric.name for metric in profile.top_ships[:3]) or "未知"
-            draw.text(
-                (x + 24, top + 116),
-                f"常用：{_clip(ships, 35)}",
+                (left + 48, y + 1),
+                _fit_text(draw, ship.name, self.fonts["small"], right - left - 145),
                 fill=TEXT,
                 font=self.fonts["small"],
             )
-            details = (
-                f"活跃 {profile.peak_activity}  ·  击杀 {profile.kill_count} / 损失 {profile.loss_count}  ·  "
-                f"同行交战 {profile.cooccurrence_score} 场"
-            )
-            draw.text((x + 24, top + 151), _clip(details, 48), fill=MUTED, font=self.fonts["tiny"])
-        rows = (len(profiles) + 1) // 2
-        return y + rows * (card_height + gap) + 18
-
-    def _evidence(
-        self, draw: ImageDraw.ImageDraw, margin: int, y: int, report: AnalysisReport
-    ) -> None:
-        reasons = report.threat_reasons[:3]
-        gap = 14
-        inner_left = margin + 24
-        inner_right = self.width - margin - 24
-        chip_width = (inner_right - inner_left - gap * 2) // 3
-        for index, reason in enumerate(reasons):
-            left = inner_left + index * (chip_width + gap)
-            draw.rounded_rectangle((left, y + 18, left + chip_width, y + 68), 12, fill=PANEL_ALT)
-            draw.ellipse((left + 16, y + 38, left + 24, y + 46), fill=ORANGE)
             draw.text(
-                (left + 34, y + 29),
-                _clip(reason, 21),
-                fill=TEXT,
-                font=self.fonts["tiny"],
+                (right - 72, y + 1),
+                str(ship.loss_count),
+                fill=RED,
+                font=self.fonts["small"],
+                anchor="ra",
+            )
+            draw.text(
+                (right, y + 1),
+                str(ship.kill_count),
+                fill=GREEN,
+                font=self.fonts["small"],
+                anchor="ra",
+            )
+            bar_width = right - left - 48
+            self._progress(
+                draw,
+                left + 48,
+                y + 47,
+                bar_width,
+                ship.loss_count / maximum_losses,
+                RED,
+                height=9,
+            )
+            self._progress(
+                draw,
+                left + 48,
+                y + 58,
+                bar_width,
+                ship.kill_count / maximum_kills,
+                GREEN,
+                height=9,
             )
 
-        warning = (
-            report.warnings[0]
-            if report.warnings
-            else "zKillboard 为不完整的第三方公开样本，结论仅供情报参考"
-        )
-        draw.text(
-            (inner_left, y + 94),
-            f"数据提示 · {_clip(warning, 64)}",
-            fill=YELLOW,
-            font=self.fonts["tiny"],
+    def _ship_rows(
+        self,
+        image: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        left: int,
+        top: int,
+        right: int,
+        ships: list[CompositionMetric],
+        assets: ReportAssets,
+    ) -> None:
+        maximum = max((item.p75 for item in ships), default=1)
+        if not ships:
+            draw.text((left, top + 20), "暂无舰船样本", fill=MUTED, font=self.fonts["body"])
+            return
+        draw.text((right - 72, top - 31), "常见", fill=RED, font=self.fonts["tiny"], anchor="ra")
+        draw.text((right, top - 31), "峰值", fill=GREEN, font=self.fonts["tiny"], anchor="ra")
+        for index, ship in enumerate(ships):
+            y = top + index * 69
+            icon_bounds = (left, y, left + 38, y + 38)
+            icon = assets.ship_icons.get(ship.id) if ship.id is not None else None
+            if not self._paste_asset(image, icon, icon_bounds, radius=8):
+                draw.rounded_rectangle(icon_bounds, 8, fill="#243043")
+                draw.text(
+                    (left + 19, y + 19),
+                    str(index + 1),
+                    fill=CYAN,
+                    font=self.fonts["tiny"],
+                    anchor="mm",
+                )
+            draw.rounded_rectangle(icon_bounds, 8, outline=BORDER, width=1)
+            draw.text(
+                (left + 48, y + 1),
+                _fit_text(draw, ship.name, self.fonts["small"], right - left - 145),
+                fill=TEXT,
+                font=self.fonts["small"],
+            )
+            draw.text((right - 72, y + 1), f"{ship.median:.0f}", fill=RED, font=self.fonts["small"], anchor="ra")
+            draw.text((right, y + 1), f"{ship.p75:.0f}", fill=GREEN, font=self.fonts["small"], anchor="ra")
+            bar_width = right - left - 48
+            self._progress(draw, left + 48, y + 47, bar_width, ship.median / maximum, RED, height=9)
+            peak_width = max(4, round(bar_width * ship.p75 / maximum))
+            draw.rounded_rectangle(
+                (left + 48, y + 58, left + 48 + peak_width, y + 65),
+                3,
+                fill=GREEN,
+            )
+
+    def _activity(
+        self,
+        image: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        bounds: tuple[int, int, int, int],
+        report: AnalysisReport,
+        assets: ReportAssets,
+    ) -> None:
+        left, top, right, _ = bounds
+        self._section_header(draw, left + 28, top + 20, right - 28, "近期活动")
+        draw.text((left + 28, top + 59), "活跃时间 · UTC", fill=TEXT, font=self.fonts["small"])
+
+        heat_left = left + 96
+        heat_right = right - 28
+        heat_width = heat_right - heat_left
+        heat_y = top + 92
+        self._heat_strip(draw, heat_left, heat_y, heat_width, report.activity_hours, ORANGE)
+        for hour in (0, 6, 12, 18, 24):
+            x = heat_left + round(heat_width * hour / 24)
+            draw.text((x, heat_y + 34), f"{hour:02d}", fill=DIM, font=self.fonts["tiny"], anchor="ma")
+        draw.text((left + 28, heat_y + 8), "24H", fill=MUTED, font=self.fonts["tiny"])
+
+        weekday_values = [sum(row) for row in report.activity_week_hours]
+        week_y = heat_y + 65
+        self._heat_strip(draw, heat_left, week_y, heat_width, weekday_values, GREEN)
+        for index, label in enumerate("一二三四五六日"):
+            x = heat_left + round(heat_width * (index + 0.5) / 7)
+            draw.text((x, week_y + 34), label, fill=DIM, font=self.fonts["tiny"], anchor="ma")
+        draw.text((left + 28, week_y + 8), "7D", fill=MUTED, font=self.fonts["tiny"])
+
+        timeline_y = week_y + 72
+        self._timeline(draw, heat_left, timeline_y, heat_width, report.recent_engagements, report.generated_at)
+        draw.text((left + 28, timeline_y + 8), "90D", fill=MUTED, font=self.fonts["tiny"])
+
+        table_y = timeline_y + 68
+        draw.text((left + 28, table_y), "最近战报", fill=TEXT, font=self.fonts["body"])
+        draw.text((left + 28, table_y + 34), "时间", fill=MUTED, font=self.fonts["tiny"])
+        draw.text((left + 160, table_y + 34), "星系", fill=MUTED, font=self.fonts["tiny"])
+        draw.text((right - 28, table_y + 34), "战损", fill=MUTED, font=self.fonts["tiny"], anchor="ra")
+        rows = report.recent_engagements[:5]
+        if not rows and report.latest_engagement:
+            rows = [report.latest_engagement]
+        if not rows:
+            draw.text((left + 28, table_y + 88), "暂无近期交战记录", fill=MUTED, font=self.fonts["body"])
+            return
+        for index, engagement in enumerate(rows):
+            row_y = table_y + 63 + index * 61
+            draw.rounded_rectangle((left + 24, row_y, right - 24, row_y + 51), 8, fill=CELL)
+            observed_at = engagement.last_seen.astimezone(UTC).strftime("%m-%d %H:%M")
+            draw.text((left + 36, row_y + 15), observed_at, fill=MUTED, font=self.fonts["tiny"])
+            location = engagement.system_name
+            draw.text(
+                (left + 168, row_y + 13),
+                _fit_text(draw, location, self.fonts["small"], 300),
+                fill=TEXT,
+                font=self.fonts["small"],
+            )
+            self._battle_ship_icons(
+                image,
+                draw,
+                right - 330,
+                row_y + 11,
+                engagement,
+                assets,
+            )
+            value = _battle_value_text(engagement)
+            draw.text(
+                (right - 36, row_y + 15),
+                value,
+                fill=_outcome_color(engagement),
+                font=self.fonts["tiny"],
+                anchor="ra",
+            )
+
+    def _battle_ship_icons(
+        self,
+        image: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        left: int,
+        top: int,
+        engagement: LatestEngagement,
+        assets: ReportAssets,
+    ) -> None:
+        x = left
+        for items, color in (
+            (engagement.lost_ships[:2], RED),
+            (engagement.destroyed_ships[:2], GREEN),
+        ):
+            if x > left:
+                draw.text(
+                    (x + 3, top + 13),
+                    "/",
+                    fill=MUTED,
+                    font=self.fonts["tiny"],
+                    anchor="lm",
+                )
+                x += 14
+            if not items:
+                draw.text(
+                    (x + 8, top + 13),
+                    "—",
+                    fill=DIM,
+                    font=self.fonts["tiny"],
+                    anchor="mm",
+                )
+                x += 20
+                continue
+            for item in items:
+                bounds = (x, top, x + 26, top + 26)
+                icon = assets.ship_icons.get(item.id) if item.id is not None else None
+                if not self._paste_asset(image, icon, bounds, radius=6):
+                    draw.rounded_rectangle(bounds, 6, fill="#243043")
+                draw.rounded_rectangle(bounds, 6, outline=color, width=1)
+                if item.count > 1:
+                    draw.text(
+                        (x + 25, top + 25),
+                        str(item.count),
+                        fill=TEXT,
+                        stroke_width=2,
+                        stroke_fill=BG,
+                        font=self.fonts["tiny"],
+                        anchor="rs",
+                    )
+                x += 30
+
+    def _regions(
+        self,
+        draw: ImageDraw.ImageDraw,
+        bounds: tuple[int, int, int, int],
+        regions: list[NamedMetric],
+    ) -> None:
+        left, top, right, bottom = bounds
+        self._section_header(draw, left + 28, top + 20, right - 28, "活跃星域")
+        area = (left + 28, top + 70, right - 28, bottom - 28)
+        if not regions:
+            draw.rounded_rectangle(area, 10, fill=CELL)
+            draw.text(
+                ((area[0] + area[2]) // 2, (area[1] + area[3]) // 2),
+                "暂无星域映射数据",
+                fill=MUTED,
+                font=self.fonts["body"],
+                anchor="mm",
+            )
+            return
+        self._treemap(draw, area, regions[:8])
+
+    def _treemap(
+        self,
+        draw: ImageDraw.ImageDraw,
+        bounds: tuple[int, int, int, int],
+        metrics: list[NamedMetric],
+    ) -> None:
+        total = sum(max(0, item.value) for item in metrics) or 1
+        first = metrics[0]
+        first_ratio = max(0.42, min(0.62, first.value / total))
+        left, top, right, bottom = bounds
+        split = round(left + (right - left) * first_ratio)
+        self._region_box(draw, (left, top, split - 3, bottom), first, 0)
+        remaining = metrics[1:]
+        if not remaining:
+            return
+        remaining_total = sum(max(0, item.value) for item in remaining) or 1
+        y = top
+        cumulative = 0.0
+        for index, metric in enumerate(remaining):
+            if index == len(remaining) - 1:
+                next_y = bottom
+            else:
+                cumulative += max(0, metric.value)
+                next_y = round(top + (bottom - top) * cumulative / remaining_total)
+            self._region_box(draw, (split + 3, y, right, max(y, next_y - 3)), metric, index + 1)
+            y = next_y
+
+    def _region_box(
+        self,
+        draw: ImageDraw.ImageDraw,
+        bounds: tuple[int, int, int, int],
+        metric: NamedMetric,
+        index: int,
+    ) -> None:
+        colors = ["#38bdf2", "#2862bd", "#2849a2", "#23418e", "#1f397d", "#1b336f", "#182e63", "#152957"]
+        color = colors[min(index, len(colors) - 1)]
+        draw.rectangle(bounds, fill=color, outline=BG, width=2)
+        width = bounds[2] - bounds[0]
+        height = bounds[3] - bounds[1]
+        if width < 90 or height < 38:
+            return
+        font = self.fonts["title"] if width > 240 and height > 130 else self.fonts["small"]
+        text = f"{metric.name}\n{metric.value:.0f}"
+        draw.multiline_text(
+            ((bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2),
+            text,
+            fill=TEXT,
+            font=font,
+            anchor="mm",
+            align="center",
+            spacing=6,
         )
 
-    def _compact_bars(
+    def _timeline(
         self,
         draw: ImageDraw.ImageDraw,
         left: int,
-        y: int,
-        right: int,
-        metrics: list[NamedMetric],
-        color: str,
-        suffix: str = "",
-    ) -> int:
-        maximum = max((metric.value for metric in metrics), default=1)
-        for metric in metrics:
-            draw.text((left, y), _clip(metric.name, 18), fill=TEXT, font=self.fonts["tiny"])
-            bar_left = left + 205
-            bar_right = right - 54
-            draw.rounded_rectangle((bar_left, y + 3, bar_right, y + 18), 7, fill=GRID)
-            width = int((bar_right - bar_left) * metric.value / maximum)
-            draw.rounded_rectangle((bar_left, y + 3, bar_left + width, y + 18), 7, fill=color)
-            draw.text(
-                (right, y - 2),
-                f"{metric.value:.0f}{suffix}",
-                fill=MUTED,
-                font=self.fonts["tiny"],
-                anchor="ra",
-            )
-            y += 32
-        if not metrics:
-            draw.text((left, y), "暂无区域映射数据", fill=MUTED, font=self.fonts["small"])
-            y += 34
-        return y
+        top: int,
+        width: int,
+        engagements: list[LatestEngagement],
+        generated_at: datetime,
+    ) -> None:
+        draw.rounded_rectangle((left, top, left + width, top + 27), 7, fill="#071012")
+        cutoff = _aware(generated_at) - timedelta(days=90)
+        for engagement in engagements[:30]:
+            value = _aware(engagement.last_seen)
+            ratio = (value - cutoff).total_seconds() / timedelta(days=90).total_seconds()
+            if ratio < 0 or ratio > 1:
+                continue
+            x = left + round(width * ratio)
+            draw.rectangle((x - 3, top, x + 3, top + 27), fill=CYAN)
+        draw.text((left, top + 36), cutoff.astimezone(UTC).strftime("%m-%d"), fill=DIM, font=self.fonts["tiny"])
+        draw.text((left + width, top + 36), generated_at.astimezone(UTC).strftime("%m-%d"), fill=DIM, font=self.fonts["tiny"], anchor="ra")
 
-    def _bars(
+    def _heat_strip(
         self,
         draw: ImageDraw.ImageDraw,
-        bounds: tuple[int, int, int, int],
-        metrics: list[CompositionMetric],
-        title: str,
-        color: str,
-        max_rows: int = 8,
+        left: int,
+        top: int,
+        width: int,
+        values: list[float],
+        accent: str,
     ) -> None:
-        left, top, right, _ = bounds
-        draw.text((left + 24, top + 18), title, fill=MUTED, font=self.fonts["small"])
-        for index, metric in enumerate(metrics[:max_rows]):
-            row_y = top + 58 + index * 64
-            role_color = ROLE_COLORS.get(metric.role or "", color)
-            draw.text(
-                (left + 24, row_y),
-                _fit_text(draw, metric.name, self.fonts["small"], 132),
-                fill=TEXT,
-                font=self.fonts["small"],
-            )
-            draw.text(
-                (left + 172, row_y + 2),
-                metric.role or "其他",
-                fill=role_color,
-                font=self.fonts["tiny"],
-            )
-            appeared = max(1, round(metric.occurrence_rate * metric.sample_count))
-            draw.text(
-                (right - 22, row_y - 1),
-                f"{appeared}/{metric.sample_count} 场",
-                fill=MUTED,
-                font=self.fonts["tiny"],
-                anchor="ra",
-            )
-            draw.text(
-                (left + 24, row_y + 29),
-                f"通常 {metric.median:.0f} 艘",
-                fill=TEXT,
-                font=self.fonts["tiny"],
-            )
-            draw.text(
-                (left + 112, row_y + 29),
-                f"大场 {metric.p75:.0f} 艘",
-                fill=MUTED,
-                font=self.fonts["tiny"],
-            )
-            bar_left = left + 218
-            bar_right = right - 24
-            width = int((bar_right - bar_left) * metric.occurrence_rate)
-            draw.rounded_rectangle((bar_left, row_y + 34, bar_right, row_y + 45), 5, fill=GRID)
-            if width:
-                draw.rounded_rectangle(
-                    (bar_left, row_y + 34, bar_left + width, row_y + 45),
-                    5,
-                    fill=role_color,
-                )
-        if not metrics:
-            draw.text((left + 24, top + 82), "暂无数据", fill=MUTED, font=self.fonts["body"])
+        count = max(1, len(values))
+        gap = 2
+        cell_width = (width - gap * (count - 1)) / count
+        maximum = max(values, default=0) or 1
+        start = _hex_to_rgb("#11151c")
+        end = _hex_to_rgb(accent)
+        for index, value in enumerate(values or [0]):
+            x1 = round(left + index * (cell_width + gap))
+            x2 = round(x1 + cell_width)
+            color = _blend(start, end, value / maximum)
+            draw.rectangle((x1, top, x2, top + 27), fill=color)
 
-    def _section_title(self, draw: ImageDraw.ImageDraw, y: int, title: str) -> int:
-        draw.text((64, y), title, fill=TEXT, font=self.fonts["h2"])
-        return y + 50
+    def _avatar(
+        self,
+        image: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        bounds: tuple[int, int, int, int],
+        initials: str,
+        threat_score: int,
+        portrait: bytes | None,
+    ) -> None:
+        del threat_score
+        draw.rounded_rectangle(bounds, 16, fill="#111722", outline=BORDER, width=2)
+        inner = (bounds[0] + 2, bounds[1] + 2, bounds[2] - 2, bounds[3] - 2)
+        if not self._paste_asset(image, portrait, inner, radius=14):
+            draw.rounded_rectangle(inner, 14, fill="#1a2535")
+            draw.text(
+                ((inner[0] + inner[2]) // 2, (inner[1] + inner[3]) // 2),
+                initials,
+                fill=TEXT,
+                font=self.fonts["title"],
+                anchor="mm",
+            )
+        draw.rounded_rectangle(inner, 14, outline=BORDER, width=1)
+
+    def _mini_avatar(
+        self,
+        image: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        bounds: tuple[int, int, int, int],
+        initials: str,
+        portrait: bytes | None,
+    ) -> None:
+        radius = (bounds[2] - bounds[0]) // 2
+        if not self._paste_asset(image, portrait, bounds, radius=radius):
+            draw.ellipse(bounds, fill="#263246")
+            draw.text(
+                ((bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2),
+                initials,
+                fill=TEXT,
+                font=self.fonts["tiny"],
+                anchor="mm",
+            )
+        draw.ellipse(bounds, outline=BORDER, width=1)
+
+    @staticmethod
+    def _paste_asset(
+        image: Image.Image,
+        data: bytes | None,
+        bounds: tuple[int, int, int, int],
+        *,
+        radius: int,
+    ) -> bool:
+        if not data:
+            return False
+        width = bounds[2] - bounds[0]
+        height = bounds[3] - bounds[1]
+        if width <= 0 or height <= 0:
+            return False
+        try:
+            source = Image.open(io.BytesIO(data)).convert("RGB")
+            fitted = ImageOps.fit(source, (width, height), method=Image.Resampling.LANCZOS)
+        except Exception:
+            return False
+        mask = Image.new("L", (width, height), 0)
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.rounded_rectangle((0, 0, width, height), radius, fill=255)
+        image.paste(fitted, (bounds[0], bounds[1]), mask)
+        return True
+
+    def _section_header(
+        self,
+        draw: ImageDraw.ImageDraw,
+        left: int,
+        top: int,
+        right: int,
+        title: str,
+    ) -> None:
+        draw.text((left, top), title, fill=CYAN, font=self.fonts["section"])
+        title_width = draw.textbbox((0, 0), title, font=self.fonts["section"])[2]
+        draw.line((left + title_width + 16, top + 18, right, top + 18), fill=BORDER, width=2)
 
     @staticmethod
     def _panel(draw: ImageDraw.ImageDraw, bounds: tuple[int, int, int, int]) -> None:
-        draw.rounded_rectangle(bounds, 18, fill=PANEL)
+        draw.rounded_rectangle(bounds, 20, fill=PANEL, outline=BORDER, width=2)
+
+    @staticmethod
+    def _progress(
+        draw: ImageDraw.ImageDraw,
+        left: int,
+        top: int,
+        width: int,
+        value: float,
+        color: str,
+        height: int = 12,
+    ) -> None:
+        value = max(0.0, min(1.0, value))
+        draw.rounded_rectangle((left, top, left + width, top + height), height // 2, fill=GRID)
+        filled = round(width * value)
+        if filled:
+            draw.rounded_rectangle((left, top, left + filled, top + height), height // 2, fill=color)
 
 
 def build_summary(report: AnalysisReport) -> str:
-    doctrine = report.doctrines[0].name if report.doctrines else "未识别稳定体系"
     location = (
         report.top_regions[0].name
         if report.top_regions
         else report.top_systems[0].name
         if report.top_systems
-        else "区域样本不足"
+        else "样本不足"
     )
     last = (
         report.last_activity.astimezone(SHANGHAI).strftime("%Y-%m-%d %H:%M")
         if report.last_activity
-        else "无"
+        else "无记录"
     )
     invalid = f"；未识别 {len(report.invalid_names)} 人" if report.invalid_names else ""
     warning = f"\n提示：{report.warnings[0]}" if report.warnings else ""
-    latest = report.latest_engagement
-    isk_ratio = _format_isk_ratio(report.destroyed_value_30d, report.lost_value_30d)
-    latest_line = (
-        f"\n最近来犯：{latest.system_name}，{latest.outcome}，{latest.result_detail}；"
-        f"观察到 {latest.fleet_size} 人编队"
-        f"{f'，{_engagement_value_text(latest)}' if _engagement_value_text(latest) else ''}"
-        if latest
-        else ""
-    )
     return (
         f"分析完成：有效 {report.resolved_count}/{report.requested_count} 人{invalid}，"
         f"覆盖 {report.coverage_ratio:.0%}\n"
         f"敌对威胁指数：{report.threat_score}/100（{report.threat_level}）\n"
-        f"舰队体系：{doctrine}；规模：{report.fleet_size_label}\n"
         f"活跃：{report.peak_activity}；主要区域：{location}\n"
-        f"近30天ISK战损 {isk_ratio}（摧毁 {_format_isk_short(report.destroyed_value_30d)} / "
-        f"损失 {_format_isk_short(report.lost_value_30d)}）；"
-        f"最后活动 {last}（北京时间）\n"
-        f"样本 {report.data_events} 条 / {report.engagement_count} 场交战，"
-        f"低置信度 {report.low_confidence_count} 人"
-        f"{latest_line}"
+        f"近30天战损：击毁 {_format_isk(report.destroyed_value_30d)} / "
+        f"损失 {_format_isk(report.lost_value_30d)}\n"
+        f"公开样本 {report.data_events} 条 / {report.engagement_count} 场交战；"
+        f"最后活动 {last}（北京时间）"
         f"{warning}"
     )
 
@@ -839,114 +960,147 @@ def _find_font(configured: str | None) -> str:
     raise RuntimeError("No usable font found; install fonts-noto-cjk or configure FONT_PATH")
 
 
-def _relative_time(value: datetime | None, now: datetime) -> str:
+def _top_affiliation(affiliations: list[NamedMetric]) -> str:
+    if not affiliations:
+        return "未知军团 / 联盟"
+    return " · ".join(item.name for item in affiliations[:2])
+
+
+def _affiliation_label(ticker: str, name: str) -> str:
+    normalized_ticker = str(ticker or "").strip()
+    normalized_name = str(name or "").strip()
+    if normalized_ticker:
+        return f"[{normalized_ticker}] {normalized_name}"
+    return normalized_name
+
+
+def _birthday_text(value: datetime | None) -> str:
     if value is None:
-        return "无记录"
-    seconds = max(0, int((_aware(now) - _aware(value)).total_seconds()))
-    if seconds < 3600:
-        return f"{max(1, seconds // 60)}分钟前"
-    if seconds < 86400:
-        return f"{seconds // 3600}小时前"
-    return f"{seconds // 86400}天前"
+        return "--"
+    return value.strftime("%Y-%m-%d")
 
 
-def _engagement_time_label(value: datetime, now: datetime) -> str:
-    local = _aware(value).astimezone(SHANGHAI).strftime("%m-%d %H:%M")
-    return f"{local} · {_relative_time(value, now)}"
+def _security_color(value: float | None) -> str:
+    if value is None:
+        return MUTED
+    if value < 0:
+        return RED
+    return GREEN
 
 
-def _engagement_value_text(engagement: LatestEngagement) -> str:
-    parts: list[str] = []
-    if engagement.destroyed_value > 0:
-        parts.append(f"摧毁 {_format_isk_short(engagement.destroyed_value)}")
-    if engagement.lost_value > 0:
-        parts.append(f"损失 {_format_isk_short(engagement.lost_value)}")
-    return " · ".join(parts)
+def _initials(value: str) -> str:
+    words = [item for item in value.replace("·", " ").split() if item]
+    if len(words) >= 2:
+        return (words[0][0] + words[1][0]).upper()
+    compact = "".join(char for char in value if char.isalnum())
+    return (compact[:2] or "EV").upper()
 
 
-def _composition_status(engagement: LatestEngagement) -> str:
-    confidence = f"{engagement.composition_confidence.value}可信"
-    if engagement.composition_basis == "单条战报攻击方":
-        observed = engagement.observed_attacker_count or engagement.fleet_size
-        return f"{confidence} · 同战报 {observed} 人"
-    if engagement.stable_pilot_count:
-        temporary = (
-            f" · 临时 {engagement.temporary_pilot_count} 人"
-            if engagement.temporary_pilot_count
-            else ""
-        )
-        return f"{confidence} · 稳定 {engagement.stable_pilot_count} 人{temporary}"
-    return f"{confidence} · 无重复同行"
+def _threat_level(score: int) -> float:
+    return max(0.0, min(5.0, score / 20))
 
 
-def _confidence_color(confidence: Confidence) -> str:
-    if confidence == Confidence.HIGH:
-        return GREEN
-    if confidence == Confidence.MEDIUM:
-        return YELLOW
-    return ORANGE
+def _team_score(report: AnalysisReport) -> float:
+    if report.solo_ratio is None:
+        return min(100.0, report.engagement_count * 8.0)
+    return max(0.0, min(100.0, (1 - report.solo_ratio) * 100))
+
+
+def _ratio_score(destroyed: float, lost: float) -> float:
+    if destroyed <= 0 and lost <= 0:
+        return 0
+    if lost <= 0:
+        return 1
+    return min(1.0, destroyed / lost / 5)
+
+
+def _format_ratio(destroyed: float, lost: float) -> str:
+    if destroyed <= 0 and lost <= 0:
+        return "--"
+    if lost <= 0:
+        return "∞"
+    return f"{destroyed / lost:.2f}"
 
 
 def _format_isk(value: float) -> str:
+    if value >= 1_000_000_000_000:
+        return f"{value / 1_000_000_000_000:.2f} T ISK"
     if value >= 1_000_000_000:
-        return f"{value / 1_000_000_000:.1f}B ISK"
+        return f"{value / 1_000_000_000:.2f} B ISK"
     if value >= 1_000_000:
-        return f"{value / 1_000_000:.0f}M ISK"
+        return f"{value / 1_000_000:.1f} M ISK"
     if value >= 1_000:
-        return f"{value / 1_000:.0f}K ISK"
+        return f"{value / 1_000:.0f} K ISK"
     return f"{value:.0f} ISK"
 
 
-def _format_isk_short(value: float) -> str:
+def _format_stat_isk(value: float) -> str:
+    if value >= 1_000_000_000_000:
+        return f"{value / 1_000_000_000_000:.3f} T ISK"
     if value >= 1_000_000_000:
-        return f"{value / 1_000_000_000:.1f}B"
+        return f"{value / 1_000_000_000:.3f} B ISK"
     if value >= 1_000_000:
-        return f"{value / 1_000_000:.0f}M"
+        return f"{value / 1_000_000:.3f} M ISK"
     if value >= 1_000:
-        return f"{value / 1_000:.0f}K"
-    return f"{value:.0f}"
+        return f"{value / 1_000:.3f} K ISK"
+    return f"{value:.0f} ISK"
 
 
-def _format_isk_ratio(destroyed: float, lost: float) -> str:
-    if destroyed <= 0 and lost <= 0:
-        return "无价值样本"
-    if lost <= 0:
-        return "暂无公开损失"
-    ratio = destroyed / lost
-    return f"{ratio:.1f} : 1"
+def _engagement_value(engagement: LatestEngagement) -> str:
+    if engagement.destroyed_value or engagement.lost_value:
+        return f"{_format_isk(engagement.destroyed_value)} / {_format_isk(engagement.lost_value)}"
+    return engagement.outcome
 
 
-def _isk_ratio_color(report: AnalysisReport) -> str:
-    if report.destroyed_value_30d <= 0 and report.lost_value_30d <= 0:
-        return MUTED
-    if report.lost_value_30d <= 0:
+def _battle_value_text(engagement: LatestEngagement) -> str:
+    return (
+        f"{_format_battle_isk(engagement.lost_value)} / "
+        f"{_format_battle_isk(engagement.destroyed_value)}"
+    )
+
+
+def _format_battle_isk(value: float) -> str:
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.3f} B"
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.3f} M"
+    if value >= 1_000:
+        return f"{value / 1_000:.3f} K"
+    return f"{value:.3f}"
+
+
+def _outcome_color(engagement: LatestEngagement) -> str:
+    if engagement.lost_value > engagement.destroyed_value:
+        return RED
+    if engagement.destroyed_value > 0:
         return GREEN
-    efficiency = report.isk_efficiency_30d or 0
-    if efficiency >= 0.6:
-        return GREEN
-    if efficiency >= 0.4:
-        return YELLOW
-    return RED
+    return CYAN
 
 
 def _threat_color(score: int) -> str:
-    if score >= 85:
+    if score >= 80:
         return PURPLE
-    if score >= 70:
+    if score >= 60:
         return RED
-    if score >= 50:
+    if score >= 40:
         return ORANGE
-    if score >= 25:
+    if score >= 20:
         return YELLOW
     return GREEN
 
 
-def _clip(value: str, length: int) -> str:
-    return value if len(value) <= length else value[: length - 1] + "…"
+def _footer_text(report: AnalysisReport) -> str:
+    return (
+        f"EVE RISK · Tranquility  ·  数据窗口 90D  ·  "
+        f"公开战报 {report.data_events} 条"
+    )
 
 
 def _fit_text(
-    draw: ImageDraw.ImageDraw, value: str, font: ImageFont.FreeTypeFont, max_width: int
+    draw: ImageDraw.ImageDraw,
+    value: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
 ) -> str:
     if draw.textbbox((0, 0), value, font=font)[2] <= max_width:
         return value
@@ -956,10 +1110,20 @@ def _fit_text(
     return shortened + "…" if shortened else "…"
 
 
-def _blend(start: tuple[int, int, int], end: tuple[int, int, int], ratio: float) -> str:
+def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+    value = value.lstrip("#")
+    return tuple(int(value[index : index + 2], 16) for index in (0, 2, 4))
+
+
+def _blend(
+    start: tuple[int, int, int],
+    end: tuple[int, int, int],
+    ratio: float,
+) -> str:
     ratio = max(0.0, min(1.0, ratio))
     values = tuple(
-        round(left + (right - left) * ratio) for left, right in zip(start, end, strict=True)
+        round(left + (right - left) * ratio)
+        for left, right in zip(start, end, strict=True)
     )
     return f"#{values[0]:02x}{values[1]:02x}{values[2]:02x}"
 

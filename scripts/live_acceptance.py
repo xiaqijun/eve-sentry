@@ -15,9 +15,10 @@ import eve_risk
 from eve_risk.analysis import FleetAnalyzer
 from eve_risk.clients.base import request_with_retries
 from eve_risk.clients.esi import ESIClient
-from eve_risk.clients.zkill import ZKillClient
+from eve_risk.clients.images import EveImageClient
+from eve_risk.clients.zkill import ZKillClient, aggregate_character_stats
 from eve_risk.config import get_settings
-from eve_risk.report import ReportRenderer
+from eve_risk.report import ReportAssets, ReportRenderer
 from eve_risk.sde import SDELocalization
 from eve_risk.ship_roles import ShipRoleClassifier
 
@@ -35,6 +36,7 @@ async def main(preselected: dict[str, list[int]] | None = None) -> None:
         Path(eve_risk.__file__).parent / "data/ship_role_overrides.json"
     )
     esi = ESIClient(http, settings.esi_base_url, classifier, sde=sde)
+    images = EveImageClient(http, settings.eve_image_base_url)
     zkill = ZKillClient(
         http,
         redis,
@@ -60,13 +62,15 @@ async def main(preselected: dict[str, list[int]] | None = None) -> None:
         all_ids = {character_id for ids in scenarios.values() for character_id in ids}
         names = await esi.resolve_entity_names(all_ids)
         fetches: dict[int, list[object]] = {}
+        lifetime_stats_by_id = {}
         for character_id in all_ids:
-            fetches[character_id] = list(
-                await asyncio.gather(
-                    zkill.fetch_character(character_id, "kills"),
-                    zkill.fetch_character(character_id, "losses"),
-                )
+            kills, losses, lifetime_stats = await asyncio.gather(
+                zkill.fetch_character(character_id, "kills"),
+                zkill.fetch_character(character_id, "losses"),
+                zkill.fetch_character_stats(character_id),
             )
+            fetches[character_id] = [kills, losses]
+            lifetime_stats_by_id[character_id] = lifetime_stats
 
         results: list[dict[str, object]] = []
         output_dir = AsyncPath("/tmp/eve-risk-live")
@@ -108,8 +112,63 @@ async def main(preselected: dict[str, list[int]] | None = None) -> None:
                 solar_systems=solar_systems,
                 now=now,
             )
+            report.lifetime_stats = aggregate_character_stats(
+                [lifetime_stats_by_id[character_id] for character_id in character_ids]
+            )
+            report.recent_engagements = await zkill.enrich_related_battles(
+                report.recent_engagements,
+                identity_ids,
+            )
+            report.latest_engagement = next(
+                (
+                    item
+                    for item in report.recent_engagements
+                    if item.destroyed_count > 0
+                ),
+                report.recent_engagements[0] if report.recent_engagements else None,
+            )
+            portrait_ids = {
+                profile.character_id for profile in report.profiles[:4]
+            } | {associate.id for associate in report.common_associates[:5]}
+            ship_icon_ids = {
+                int(ship.id) for ship in report.top_ships[:5] if ship.id is not None
+            } | {ship.id for ship in report.pilot_ships[:5]}
+            ship_icon_ids.update(
+                int(ship.id)
+                for engagement in report.recent_engagements[:5]
+                for ship in engagement.destroyed_ships + engagement.lost_ships
+                if ship.id is not None
+            )
+            corporation_ids = {
+                profile.corporation_id
+                for profile in report.profiles[:4]
+                if profile.corporation_id is not None
+            }
+            alliance_ids = {
+                profile.alliance_id
+                for profile in report.profiles[:4]
+                if profile.alliance_id is not None
+            }
+            portraits, ship_icons, corporation_logos, alliance_logos = (
+                await images.fetch_report_assets(
+                    portrait_ids,
+                    ship_icon_ids,
+                    corporation_ids,
+                    alliance_ids,
+                )
+            )
             output = output_dir / f"{key}.png"
-            await output.write_bytes(renderer.render(report))
+            await output.write_bytes(
+                renderer.render(
+                    report,
+                    ReportAssets(
+                        character_portraits=portraits,
+                        ship_icons=ship_icons,
+                        corporation_logos=corporation_logos,
+                        alliance_logos=alliance_logos,
+                    ),
+                )
+            )
             latest = report.latest_engagement
             results.append(
                 {
