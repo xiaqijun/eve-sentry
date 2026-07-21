@@ -71,16 +71,20 @@ def test_alert_subscription_commands_and_message_format() -> None:
         "http://sentry.test/",
     )
 
-    assert entered.splitlines()[0] == "### 🔴 敌对进入｜2 人"
+    assert entered.splitlines()[0] == "### 🔴 敌对进入｜当前敌对 2 人"
     assert "**位置**｜S-KSWL" in entered
     assert "**目标**｜Alice" in entered
-    assert "**势力**｜[FRT] Fraternity. / [G.N.V] Glory Navy" in entered
+    assert "**联盟**｜[FRT] Fraternity." in entered
+    assert "**军团**｜[G.N.V] Glory Navy" in entered
     assert "**威胁**｜高（评分 80）" in entered
-    assert "**来源**｜OCR 监控 · EVE - Hajimi6" in entered
+    assert "**来源**" not in entered
     assert "**进入时间**｜2026-07-21 00:20:24" in entered
     assert "状态" not in entered
     assert "态势图" not in entered
-    assert left.splitlines()[0] == "### 🟢 敌对离开｜0 人"
+    assert left.splitlines()[0] == "### 🟢 敌对离开｜当前敌对 0 人"
+    assert "**联盟**｜[FRT] Fraternity." in left
+    assert "**军团**｜[G.N.V] Glory Navy" in left
+    assert "**来源**" not in left
     assert "**离开时间**｜2026-07-21 00:22:29" in left
     assert "**停留**｜2 分 5 秒" in left
     assert "状态" not in left
@@ -186,15 +190,15 @@ async def test_relay_pushes_one_enter_and_one_leave_per_active_target() -> None:
         assert "敌对进入" in entered_message
         assert "敌对进入监控" not in entered_message
         assert "**目标**｜Alice、Bob" in entered_message
-        assert entered_message.startswith("### 🔴 敌对进入｜2 人")
+        assert entered_message.startswith("### 🔴 敌对进入｜当前敌对 2 人")
         assert "敌对离开" in partial_left_message
         assert "敌对离开监控" not in partial_left_message
         assert "**目标**｜Bob" in partial_left_message
-        assert partial_left_message.startswith("### 🟢 敌对离开｜1 人")
+        assert partial_left_message.startswith("### 🟢 敌对离开｜当前敌对 1 人")
         assert "**停留**｜1 分" in partial_left_message
         assert "敌对离开" in final_left_message
         assert "**目标**｜Alice" in final_left_message
-        assert final_left_message.startswith("### 🟢 敌对离开｜0 人")
+        assert final_left_message.startswith("### 🟢 敌对离开｜当前敌对 0 人")
         assert "**停留**｜2 分 5 秒" in final_left_message
         assert await redis.hlen(ACTIVE_INTEL_STATE_KEY) == 0
         assert await redis.get(ALERT_CURSOR_KEY) == b"2026-07-20T16:22:29+00:00"

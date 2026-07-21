@@ -62,22 +62,22 @@ def format_active_intel_message(
     title = "### 🔴 敌对进入" if entered else "### 🟢 敌对离开"
     remaining_count = item.get("_remaining_count")
     if isinstance(remaining_count, int) and remaining_count >= 0:
-        title = f"{title}｜{remaining_count} 人"
+        title = f"{title}｜当前敌对 {remaining_count} 人"
     lines = [
         title,
         f"**位置**｜{_system_label(item)}",
         f"**目标**｜{_target_label(item)}",
     ]
-    affiliation = _affiliation_label(item)
-    if affiliation:
-        lines.append(f"**势力**｜{affiliation}")
+    alliance = _affiliation_label(item, "alliance")
+    if alliance:
+        lines.append(f"**联盟**｜{alliance}")
+    corporation = _affiliation_label(item, "corporation")
+    if corporation:
+        lines.append(f"**军团**｜{corporation}")
     if entered:
         threat = _threat_label(item)
         if threat:
             lines.append(f"**威胁**｜{threat}")
-    source = _source_label(item)
-    if source:
-        lines.append(f"**来源**｜{source}")
     lines.append(
         f"**{'进入时间' if entered else '离开时间'}**｜{_format_alert_time(occurred_at)}"
     )
@@ -474,15 +474,11 @@ def _target_label(item: dict[str, Any]) -> str:
     return str(item.get("display_name") or "未知目标").strip() or "未知目标"
 
 
-def _affiliation_label(item: dict[str, Any]) -> str:
+def _affiliation_label(item: dict[str, Any], kind: str) -> str:
     metadata = _metadata(item)
-    alliance = _named_affiliation(
-        metadata.get("alliance_ticker"), metadata.get("alliance_name")
+    return _named_affiliation(
+        metadata.get(f"{kind}_ticker"), metadata.get(f"{kind}_name")
     )
-    corporation = _named_affiliation(
-        metadata.get("corporation_ticker"), metadata.get("corporation_name")
-    )
-    return " / ".join(value for value in (alliance, corporation) if value)
 
 
 def _named_affiliation(ticker: object, name: object) -> str:
