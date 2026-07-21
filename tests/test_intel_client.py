@@ -12,6 +12,7 @@ from app.alert_client import (
     build_heartbeat_details,
     format_alert_time,
     parse_args,
+    prune_inactive_alert_summaries,
     summarize_alert,
     sync_alert_summaries_from_bootstrap,
     update_alert_summaries_active,
@@ -837,7 +838,7 @@ def test_alert_client_aggregates_overlay_rows_by_system():
     assert rows[1]["system_name"] == "8-4GQM"
 
 
-def test_alert_client_syncs_current_counts_and_removes_departed_systems():
+def test_alert_client_syncs_current_counts_and_retires_departed_systems():
     rows = sync_alert_summaries_from_bootstrap(
         [
             {"system_name": "S-KSWL", "hostile_count": 9, "created_at": "1"},
@@ -864,12 +865,18 @@ def test_alert_client_syncs_current_counts_and_removes_departed_systems():
                 },
             ],
         },
+        now=100.0,
     )
 
-    assert [(item["system_name"], item["hostile_count"]) for item in rows] == [
-        ("S-KSWL", 3),
-        ("8-4GQM", 2),
+    assert [
+        (item["system_name"], item["hostile_count"], item["active"])
+        for item in rows
+    ] == [
+        ("S-KSWL", 3, True),
+        ("OLD", 4, False),
+        ("8-4GQM", 2, True),
     ]
+    assert rows[1]["inactive_since"] == 100.0
 
     rows = sync_alert_summaries_from_bootstrap(
         rows,
@@ -882,14 +889,22 @@ def test_alert_client_syncs_current_counts_and_removes_departed_systems():
             },
             "active_intel": [],
         },
+        now=110.0,
     )
 
-    assert [(item["system_name"], item["hostile_count"]) for item in rows] == [
-        ("S-KSWL", 1)
+    assert [(item["system_name"], item["active"]) for item in rows] == [
+        ("S-KSWL", True),
+        ("OLD", False),
+        ("8-4GQM", False),
     ]
+    assert rows[1]["inactive_since"] == 100.0
+    assert rows[2]["inactive_since"] == 110.0
+    assert len(prune_inactive_alert_summaries(rows, now=159.9)) == 3
+    rows = prune_inactive_alert_summaries(rows, now=170.0)
+    assert [item["system_name"] for item in rows] == ["S-KSWL"]
 
     rows = sync_alert_summaries_from_bootstrap(
-        rows,
+        [],
         {
             "map": {"systems": []},
             "alerts": [
@@ -913,6 +928,7 @@ def test_alert_client_syncs_current_counts_and_removes_departed_systems():
                 },
             ],
         },
+        now=200.0,
     )
 
     assert [(item["system_name"], item["hostile_count"]) for item in rows] == [
@@ -960,7 +976,7 @@ def test_alert_client_formats_alert_time_as_local_clock():
 def test_alert_overlay_can_render_compact_enemy_rows(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QApplication, QLabel
+    from PyQt6.QtWidgets import QApplication, QFrame, QLabel, QScrollArea
 
     app = QApplication.instance() or QApplication([])
     overlay = AlertOverlay()
@@ -988,9 +1004,16 @@ def test_alert_overlay_can_render_compact_enemy_rows(monkeypatch):
             "timeCell": expected_time,
         }
         system_cell = overlay.findChild(QLabel, "systemCell")
+        row = overlay.findChild(QFrame, "alertRow")
+        scroll = overlay.findChild(QScrollArea, "alertScroll")
         assert system_cell is not None
+        assert row is not None
+        assert scroll is not None
         assert system_cell.minimumWidth() == 96
         assert system_cell.maximumWidth() == 96
+        assert row.minimumHeight() == 24
+        assert row.maximumHeight() == 24
+        assert scroll.maximumHeight() == 112
         assert overlay.minimumWidth() == 300
         assert overlay.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     finally:
@@ -1024,7 +1047,7 @@ def test_alert_overlay_keeps_more_than_four_rows_scrollable(monkeypatch):
             if item.objectName() == "alertRow"
         ]
         scroll = overlay.findChild(QScrollArea, "alertScroll")
-        assert len(rows) == 5
+        assert len(rows) == 6
         system_labels = [
             item.text()
             for item in overlay.findChildren(QLabel)
@@ -1035,8 +1058,10 @@ def test_alert_overlay_keeps_more_than_four_rows_scrollable(monkeypatch):
             "SYSTEM-1",
             "SYSTEM-2",
             "SYSTEM-3",
+            "SYSTEM-4",
             "SYSTEM-5",
         ]
+        assert rows[4].property("inactive") == "true"
         assert scroll is not None
         assert scroll.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
         assert scroll.maximumHeight() <= 160
