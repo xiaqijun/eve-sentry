@@ -198,12 +198,18 @@ def aggregate_alert_summaries(
     summaries: list[dict[str, Any]],
     max_rows: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Aggregate summaries by system while preserving discovery order."""
+    """Keep one current row per active system in discovery order."""
     by_system: OrderedDict[str, dict[str, Any]] = OrderedDict()
     for item in summaries:
         system = str(item.get("system_name") or "Unknown")
-        hostile_count = int(item.get("hostile_count") or 1)
         active = bool(item.get("active", True))
+        raw_hostile_count = item.get("hostile_count")
+        try:
+            hostile_count = 1 if raw_hostile_count is None else int(raw_hostile_count)
+        except (TypeError, ValueError):
+            hostile_count = 0
+        if not active or hostile_count <= 0:
+            continue
         existing = by_system.get(system)
         if existing is None:
             by_system[system] = {
@@ -214,12 +220,9 @@ def aggregate_alert_summaries(
                 "active": active,
             }
         else:
-            existing["hostile_count"] = int(existing["hostile_count"]) + hostile_count
-            if active:
-                existing["active_hostile_count"] = (
-                    int(existing.get("active_hostile_count") or 0) + hostile_count
-                )
-                existing["active"] = True
+            existing["hostile_count"] = hostile_count
+            existing["active_hostile_count"] = hostile_count
+            existing["active"] = True
             if not existing.get("created_at"):
                 existing["created_at"] = str(item.get("created_at") or "")
     ordered = list(by_system.values())
@@ -277,6 +280,116 @@ def update_alert_summaries_active(
         item["active"] = bool(keys and keys.intersection(active_keys))
         updated.append(item)
     return updated
+
+
+def sync_alert_summaries_from_bootstrap(
+    summaries: list[dict[str, Any]],
+    bootstrap: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Replace historical rows with the server's current hostile counts."""
+    map_payload = bootstrap.get("map")
+    map_systems = map_payload.get("systems") if isinstance(map_payload, dict) else None
+    if not isinstance(map_systems, list):
+        active_keys = active_alert_keys_from_bootstrap(bootstrap)
+        return [
+            item
+            for item in update_alert_summaries_active(summaries, active_keys)
+            if item.get("active")
+        ]
+
+    previous_by_system = {
+        str(item.get("system_name") or "Unknown"): item for item in summaries
+    }
+    first_seen_by_system: dict[str, str] = {}
+    active_items = bootstrap.get("active_intel")
+    active_items = active_items if isinstance(active_items, list) else []
+    for item in active_items:
+        if not isinstance(item, dict) or not bool(item.get("active", True)):
+            continue
+        system = str(item.get("system_name") or "").strip()
+        first_seen = str(
+            item.get("first_seen_at") or item.get("last_seen_at") or ""
+        ).strip()
+        if not system or not first_seen:
+            continue
+        existing = first_seen_by_system.get(system)
+        if existing is None or first_seen < existing:
+            first_seen_by_system[system] = first_seen
+
+    current_by_system: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    for item in map_systems:
+        if not isinstance(item, dict):
+            continue
+        system = str(item.get("name") or item.get("system_name") or "").strip()
+        try:
+            hostile_count = int(item.get("hostile_count") or 0)
+        except (TypeError, ValueError):
+            hostile_count = 0
+        if not system or hostile_count <= 0:
+            continue
+        previous = previous_by_system.get(system, {})
+        current_by_system[system] = {
+            "system_name": system,
+            "hostile_count": hostile_count,
+            "active_hostile_count": hostile_count,
+            "created_at": first_seen_by_system.get(system)
+            or str(previous.get("created_at") or item.get("latest_seen") or ""),
+            "active": True,
+        }
+
+    mapped_systems = set(current_by_system)
+    hostile_active_ids = {
+        str(alert.get("active_intel_id") or "").strip()
+        for alert in bootstrap.get("alerts", [])
+        if isinstance(alert, dict) and alert.get("active_intel_id")
+    }
+    for item in active_items:
+        if not isinstance(item, dict) or not bool(item.get("active", True)):
+            continue
+        active_id = str(item.get("id") or "").strip()
+        system = str(item.get("system_name") or "").strip()
+        if not active_id or active_id not in hostile_active_ids or not system:
+            continue
+        if system in mapped_systems:
+            continue
+        metadata = (
+            item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        )
+        try:
+            hostile_count = int(metadata.get("hostile_count") or 1)
+        except (TypeError, ValueError):
+            hostile_count = 1
+        count = max(1, hostile_count)
+        existing = current_by_system.get(system)
+        if existing is not None:
+            existing["hostile_count"] = int(existing["hostile_count"]) + count
+            existing["active_hostile_count"] = int(
+                existing["active_hostile_count"]
+            ) + count
+            continue
+        previous = previous_by_system.get(system, {})
+        current_by_system[system] = {
+            "system_name": system,
+            "hostile_count": count,
+            "active_hostile_count": count,
+            "created_at": first_seen_by_system.get(system)
+            or str(previous.get("created_at") or item.get("last_seen_at") or ""),
+            "active": True,
+        }
+
+    ordered: list[dict[str, Any]] = []
+    for item in summaries:
+        system = str(item.get("system_name") or "Unknown")
+        current = current_by_system.pop(system, None)
+        if current is not None:
+            ordered.append(current)
+    ordered.extend(
+        sorted(
+            current_by_system.values(),
+            key=lambda item: str(item.get("created_at") or ""),
+        )
+    )
+    return ordered
 
 
 def build_heartbeat_details(
@@ -840,8 +953,13 @@ class AlertTrayController:
 
     def _on_alert(self, alert: dict[str, Any]) -> None:
         summary = summarize_alert(alert)
-        self._recent_summaries.append(summary)
-        self._recent_summaries = self._recent_summaries[-50:]
+        system = str(summary.get("system_name") or "Unknown")
+        if not any(
+            str(item.get("system_name") or "Unknown") == system
+            for item in self._recent_summaries
+        ):
+            self._recent_summaries.append(summary)
+            self._recent_summaries = self._recent_summaries[-50:]
         self.overlay.show_summaries(self._recent_summaries)
         self.overlay.set_status("新告警", "danger")
         play_alert_sound()
@@ -851,10 +969,9 @@ class AlertTrayController:
         )
 
     def _on_bootstrap(self, bootstrap: dict[str, Any]) -> None:
-        active_keys = active_alert_keys_from_bootstrap(bootstrap)
-        self._recent_summaries = update_alert_summaries_active(
+        self._recent_summaries = sync_alert_summaries_from_bootstrap(
             self._recent_summaries,
-            active_keys,
+            bootstrap,
         )
         self.overlay.show_summaries(self._recent_summaries)
 
