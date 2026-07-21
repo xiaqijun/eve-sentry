@@ -43,6 +43,7 @@ def test_alert_subscription_commands_and_message_format() -> None:
 
     item = {
         "id": "ocr:alice",
+        "_remaining_count": 2,
         "system_name": "S-KSWL",
         "name": "Alice",
         "source": "eve-sentry-detector",
@@ -64,13 +65,13 @@ def test_alert_subscription_commands_and_message_format() -> None:
         "http://sentry.test/",
     )
     left = format_active_intel_message(
-        item,
+        {**item, "_remaining_count": 0},
         "left",
         "2026-07-20T16:22:29+00:00",
         "http://sentry.test/",
     )
 
-    assert "### 🔴 敌对进入" in entered
+    assert entered.splitlines()[0] == "### 🔴 敌对进入｜2 人"
     assert "**位置**｜S-KSWL" in entered
     assert "**目标**｜Alice" in entered
     assert "**势力**｜[FRT] Fraternity. / [G.N.V] Glory Navy" in entered
@@ -79,7 +80,7 @@ def test_alert_subscription_commands_and_message_format() -> None:
     assert "**进入时间**｜2026-07-21 00:20:24" in entered
     assert "状态" not in entered
     assert "态势图" not in entered
-    assert "### 🟢 敌对离开" in left
+    assert left.splitlines()[0] == "### 🟢 敌对离开｜0 人"
     assert "**离开时间**｜2026-07-21 00:22:29" in left
     assert "**停留**｜2 分 5 秒" in left
     assert "状态" not in left
@@ -152,6 +153,19 @@ async def test_relay_pushes_one_enter_and_one_leave_per_active_target() -> None:
                 {**second_item, "last_seen_at": "2026-07-20T16:20:30+00:00"},
             ],
         }
+        partial_left_bootstrap = {
+            "generated_at": "2026-07-20T16:21:24+00:00",
+            "active_intel": [
+                {**item, "last_seen_at": "2026-07-20T16:21:24+00:00"},
+            ],
+            "alerts": [
+                {
+                    "active_intel_id": "ocr:alice",
+                    "level": "high",
+                    "score": 80,
+                },
+            ],
+        }
         left_bootstrap = {
             "generated_at": "2026-07-20T16:22:29+00:00",
             "active_intel": [],
@@ -160,20 +174,28 @@ async def test_relay_pushes_one_enter_and_one_leave_per_active_target() -> None:
 
         await relay.process_bootstrap(entered_bootstrap)
         await relay.process_bootstrap(refreshed_bootstrap)
+        await relay.process_bootstrap(partial_left_bootstrap)
         await relay.process_bootstrap(left_bootstrap)
         await relay.process_bootstrap(left_bootstrap)
 
-        assert qq.send_proactive_markdown.await_count == 2
+        assert qq.send_proactive_markdown.await_count == 3
         qq.send_proactive_text.assert_not_awaited()
         entered_message = qq.send_proactive_markdown.await_args_list[0].args[1]
-        left_message = qq.send_proactive_markdown.await_args_list[1].args[1]
+        partial_left_message = qq.send_proactive_markdown.await_args_list[1].args[1]
+        final_left_message = qq.send_proactive_markdown.await_args_list[2].args[1]
         assert "敌对进入" in entered_message
         assert "敌对进入监控" not in entered_message
         assert "**目标**｜Alice、Bob" in entered_message
-        assert "敌对离开" in left_message
-        assert "敌对离开监控" not in left_message
-        assert "**目标**｜Alice、Bob" in left_message
-        assert "**最长停留**｜2 分 5 秒" in left_message
+        assert entered_message.startswith("### 🔴 敌对进入｜2 人")
+        assert "敌对离开" in partial_left_message
+        assert "敌对离开监控" not in partial_left_message
+        assert "**目标**｜Bob" in partial_left_message
+        assert partial_left_message.startswith("### 🟢 敌对离开｜1 人")
+        assert "**停留**｜1 分" in partial_left_message
+        assert "敌对离开" in final_left_message
+        assert "**目标**｜Alice" in final_left_message
+        assert final_left_message.startswith("### 🟢 敌对离开｜0 人")
+        assert "**停留**｜2 分 5 秒" in final_left_message
         assert await redis.hlen(ACTIVE_INTEL_STATE_KEY) == 0
         assert await redis.get(ALERT_CURSOR_KEY) == b"2026-07-20T16:22:29+00:00"
 

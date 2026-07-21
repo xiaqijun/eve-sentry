@@ -59,8 +59,12 @@ def format_active_intel_message(
     public_url: str = "",
 ) -> str:
     entered = transition == "entered"
+    title = "### 🔴 敌对进入" if entered else "### 🟢 敌对离开"
+    remaining_count = item.get("_remaining_count")
+    if isinstance(remaining_count, int) and remaining_count >= 0:
+        title = f"{title}｜{remaining_count} 人"
     lines = [
-        "### 🔴 敌对进入" if entered else "### 🟢 敌对离开",
+        title,
         f"**位置**｜{_system_label(item)}",
         f"**目标**｜{_target_label(item)}",
     ]
@@ -250,11 +254,24 @@ class EveSentryAlertRelay:
             current[active_id]
             for active_id in sorted(current.keys() - previous.keys())
         ]
+        remaining_counts: dict[tuple[str, str, str], int] = {}
+        for item in current.values():
+            key = _transition_group_key(item)
+            remaining_counts[key] = remaining_counts.get(key, 0) + 1
+
         for item in _transition_groups(left_items):
-            await self.deliver(item, "left", generated_at)
+            message_item = dict(item)
+            message_item["_remaining_count"] = remaining_counts.get(
+                _transition_group_key(item), 0
+            )
+            await self.deliver(message_item, "left", generated_at)
         for item in _transition_groups(entered_items):
+            message_item = dict(item)
+            message_item["_remaining_count"] = remaining_counts.get(
+                _transition_group_key(item), 0
+            )
             entered_at = str(item.get("first_seen_at") or generated_at)
-            await self.deliver(item, "entered", entered_at)
+            await self.deliver(message_item, "entered", entered_at)
 
         await self._save_active_intel_state(current)
         await self.redis.set(ALERT_CURSOR_KEY, generated_at)
@@ -366,13 +383,16 @@ def _active_intel_map(
 def _transition_groups(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for item in items:
-        key = (
-            _system_label(item).casefold(),
-            str(item.get("source") or "").strip().casefold(),
-            str(item.get("source_instance") or "").strip().casefold(),
-        )
-        grouped.setdefault(key, []).append(item)
+        grouped.setdefault(_transition_group_key(item), []).append(item)
     return [_combine_transition_items(group) for group in grouped.values()]
+
+
+def _transition_group_key(item: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        _system_label(item).casefold(),
+        str(item.get("source") or "").strip().casefold(),
+        str(item.get("source_instance") or "").strip().casefold(),
+    )
 
 
 def _combine_transition_items(items: list[dict[str, Any]]) -> dict[str, Any]:
