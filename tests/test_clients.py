@@ -58,6 +58,7 @@ async def test_qq_client_reuses_token_and_sends_media() -> None:
             assert proactive_body == {"content": "alert", "msg_type": 0}
             markdown_body = json.loads(text.calls[2].request.content)
             assert markdown_body == {
+                "content": "",
                 "msg_type": 2,
                 "markdown": {"content": "**alert**"},
             }

@@ -60,6 +60,7 @@ class QQOpenAPIClient:
         return await self._post_message(
             group_openid,
             {
+                "content": "",
                 "msg_type": 2,
                 "markdown": {"content": content},
             },
