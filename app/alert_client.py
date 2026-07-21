@@ -470,7 +470,7 @@ class AlertOverlay(QWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setMinimumWidth(330)
+        self.setMinimumWidth(300)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
         self.installEventFilter(self)
 
@@ -502,7 +502,7 @@ class AlertOverlay(QWidget):
         column_layout.setContentsMargins(9, 0, 9, 0)
         column_layout.setSpacing(8)
         for text, width, alignment in (
-            ("星系", 128, Qt.AlignmentFlag.AlignLeft),
+            ("星系", 96, Qt.AlignmentFlag.AlignLeft),
             ("敌", 44, Qt.AlignmentFlag.AlignCenter),
             ("发现时间", 74, Qt.AlignmentFlag.AlignRight),
         ):
@@ -699,7 +699,7 @@ class AlertOverlay(QWidget):
             row_layout.setSpacing(8)
             labels: list[QLabel] = []
             for name, width, alignment in (
-                ("systemCell", 128, Qt.AlignmentFlag.AlignLeft),
+                ("systemCell", 96, Qt.AlignmentFlag.AlignLeft),
                 ("hostileCell", 44, Qt.AlignmentFlag.AlignCenter),
                 ("timeCell", 74, Qt.AlignmentFlag.AlignRight),
             ):

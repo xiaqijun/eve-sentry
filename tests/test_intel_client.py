@@ -987,6 +987,11 @@ def test_alert_overlay_can_render_compact_enemy_rows(monkeypatch):
             "hostileCell": "9",
             "timeCell": expected_time,
         }
+        system_cell = overlay.findChild(QLabel, "systemCell")
+        assert system_cell is not None
+        assert system_cell.minimumWidth() == 96
+        assert system_cell.maximumWidth() == 96
+        assert overlay.minimumWidth() == 300
         assert overlay.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     finally:
         overlay.close()
