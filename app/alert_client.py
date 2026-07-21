@@ -43,6 +43,7 @@ ALERT_CLIENT_LABEL = "Alert Client"
 DEFAULT_EVENT_TIMEOUT = 30.0
 DEFAULT_HEARTBEAT_INTERVAL = 10.0
 DEFAULT_RECONNECT_MAX_DELAY = 30.0
+INACTIVE_ALERT_RETENTION_SECONDS = 60.0
 MAX_OVERLAY_ROWS = 4
 
 
@@ -198,7 +199,7 @@ def aggregate_alert_summaries(
     summaries: list[dict[str, Any]],
     max_rows: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Keep one current row per active system in discovery order."""
+    """Keep one current row per system in discovery order."""
     by_system: OrderedDict[str, dict[str, Any]] = OrderedDict()
     for item in summaries:
         system = str(item.get("system_name") or "Unknown")
@@ -208,7 +209,7 @@ def aggregate_alert_summaries(
             hostile_count = 1 if raw_hostile_count is None else int(raw_hostile_count)
         except (TypeError, ValueError):
             hostile_count = 0
-        if not active or hostile_count <= 0:
+        if hostile_count <= 0:
             continue
         existing = by_system.get(system)
         if existing is None:
@@ -220,9 +221,11 @@ def aggregate_alert_summaries(
                 "active": active,
             }
         else:
+            if not active and bool(existing.get("active", True)):
+                continue
             existing["hostile_count"] = hostile_count
-            existing["active_hostile_count"] = hostile_count
-            existing["active"] = True
+            existing["active_hostile_count"] = hostile_count if active else 0
+            existing["active"] = active
             if not existing.get("created_at"):
                 existing["created_at"] = str(item.get("created_at") or "")
     ordered = list(by_system.values())
@@ -282,20 +285,53 @@ def update_alert_summaries_active(
     return updated
 
 
+def prune_inactive_alert_summaries(
+    summaries: list[dict[str, Any]],
+    *,
+    now: float | None = None,
+    retention_seconds: float = INACTIVE_ALERT_RETENTION_SECONDS,
+) -> list[dict[str, Any]]:
+    """Remove inactive summaries after their display grace period."""
+    current = time.monotonic() if now is None else float(now)
+    retention = max(0.0, float(retention_seconds))
+    kept: list[dict[str, Any]] = []
+    for summary in summaries:
+        item = dict(summary)
+        if bool(item.get("active", True)):
+            item.pop("inactive_since", None)
+            kept.append(item)
+            continue
+        try:
+            inactive_since = float(item.get("inactive_since"))
+        except (TypeError, ValueError):
+            inactive_since = current
+            item["inactive_since"] = inactive_since
+        if current - inactive_since < retention:
+            kept.append(item)
+    return kept
+
+
 def sync_alert_summaries_from_bootstrap(
     summaries: list[dict[str, Any]],
     bootstrap: dict[str, Any],
+    *,
+    now: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Replace historical rows with the server's current hostile counts."""
+    """Sync current counts while briefly retaining departed systems."""
+    current_time = time.monotonic() if now is None else float(now)
     map_payload = bootstrap.get("map")
     map_systems = map_payload.get("systems") if isinstance(map_payload, dict) else None
     if not isinstance(map_systems, list):
         active_keys = active_alert_keys_from_bootstrap(bootstrap)
-        return [
-            item
-            for item in update_alert_summaries_active(summaries, active_keys)
-            if item.get("active")
-        ]
+        updated = update_alert_summaries_active(summaries, active_keys)
+        for item in updated:
+            if item.get("active"):
+                item.pop("inactive_since", None)
+                item["active_hostile_count"] = item.get("hostile_count", 0)
+            else:
+                item["active_hostile_count"] = 0
+                item.setdefault("inactive_since", current_time)
+        return prune_inactive_alert_summaries(updated, now=current_time)
 
     previous_by_system = {
         str(item.get("system_name") or "Unknown"): item for item in summaries
@@ -383,13 +419,22 @@ def sync_alert_summaries_from_bootstrap(
         current = current_by_system.pop(system, None)
         if current is not None:
             ordered.append(current)
+            continue
+        inactive = dict(item)
+        inactive["active"] = False
+        inactive["active_hostile_count"] = 0
+        if bool(item.get("active", True)):
+            inactive["inactive_since"] = current_time
+        else:
+            inactive.setdefault("inactive_since", current_time)
+        ordered.append(inactive)
     ordered.extend(
         sorted(
             current_by_system.values(),
             key=lambda item: str(item.get("created_at") or ""),
         )
     )
-    return ordered
+    return prune_inactive_alert_summaries(ordered, now=current_time)
 
 
 def build_heartbeat_details(
@@ -519,7 +564,7 @@ class AlertOverlay(QWidget):
         row_container.installEventFilter(self)
         self._row_layout = QVBoxLayout(row_container)
         self._row_layout.setContentsMargins(0, 0, 0, 0)
-        self._row_layout.setSpacing(8)
+        self._row_layout.setSpacing(4)
 
         scroll = QScrollArea()
         scroll.setObjectName("alertScroll")
@@ -528,7 +573,7 @@ class AlertOverlay(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setWidget(row_container)
-        scroll.setMaximumHeight((32 + 8) * MAX_OVERLAY_ROWS)
+        scroll.setMaximumHeight((24 + 4) * MAX_OVERLAY_ROWS)
         scroll.viewport().installEventFilter(self)
         layout.addWidget(scroll)
 
@@ -690,12 +735,12 @@ class AlertOverlay(QWidget):
             frame = QFrame()
             frame.setObjectName("alertRow")
             frame.setVisible(False)
-            frame.setMinimumHeight(32)
+            frame.setFixedHeight(24)
             frame.setProperty("inactive", "false")
             frame.installEventFilter(self)
 
             row_layout = QHBoxLayout(frame)
-            row_layout.setContentsMargins(9, 3, 9, 3)
+            row_layout.setContentsMargins(9, 1, 9, 1)
             row_layout.setSpacing(8)
             labels: list[QLabel] = []
             for name, width, alignment in (
@@ -862,6 +907,10 @@ class AlertTrayController:
         self.overlay.show()
         self.overlay.move_to_default_position()
         self._recent_summaries: list[dict[str, Any]] = []
+        self._inactive_cleanup_timer = QTimer(self.overlay)
+        self._inactive_cleanup_timer.setInterval(1000)
+        self._inactive_cleanup_timer.timeout.connect(self._expire_inactive_summaries)
+        self._inactive_cleanup_timer.start()
         self._tray = QSystemTrayIcon(self.overlay)
         self._worker = AlertEventWorker(
             args.server,
@@ -973,6 +1022,14 @@ class AlertTrayController:
             self._recent_summaries,
             bootstrap,
         )
+        self.overlay.show_summaries(self._recent_summaries)
+
+    def _expire_inactive_summaries(self) -> None:
+        summaries = prune_inactive_alert_summaries(self._recent_summaries)
+        if len(summaries) == len(self._recent_summaries):
+            self._recent_summaries = summaries
+            return
+        self._recent_summaries = summaries
         self.overlay.show_summaries(self._recent_summaries)
 
 
