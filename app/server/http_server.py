@@ -1809,19 +1809,17 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
     def _event_stream_cursor(self, since: str) -> tuple[str, str, bool]:
         """Resolve explicit since or browser Last-Event-ID into a stream cursor."""
         since = str(since or "").strip()
+        last_event_id = str(self.headers.get("Last-Event-ID") or "").strip()
+        if last_event_id:
+            cursor = self._store().alert_cursor(last_event_id)
+            if cursor:
+                return cursor, last_event_id, True
+
+            if "T" in last_event_id and last_event_id[:1].isdigit():
+                return last_event_id, "", False
+
         if since:
             return since, "", False
-
-        last_event_id = str(self.headers.get("Last-Event-ID") or "").strip()
-        if not last_event_id:
-            return "", "", False
-
-        cursor = self._store().alert_cursor(last_event_id)
-        if cursor:
-            return cursor, last_event_id, True
-
-        if "T" in last_event_id and last_event_id[:1].isdigit():
-            return last_event_id, "", False
         return "", "", False
 
     def _stream_events(
@@ -1856,13 +1854,6 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         while True:
             try:
                 wrote_event = False
-                if active_only and include_bootstrap:
-                    bootstrap = self._bootstrap_payload()
-                    fingerprint = self._bootstrap_event_fingerprint(bootstrap)
-                    if fingerprint != last_bootstrap_fingerprint:
-                        self._write_sse("bootstrap", fingerprint, bootstrap)
-                        last_bootstrap_fingerprint = fingerprint
-                        wrote_event = True
                 current_include_since = bool(last_seen) and (
                     include_since or bool(sent_ids)
                 )
@@ -1888,6 +1879,24 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                     alerts,
                     key=lambda item: str(item.get("created_at") or ""),
                 )
+                if active_only and include_bootstrap:
+                    bootstrap = self._bootstrap_payload()
+                    fingerprint = self._bootstrap_event_fingerprint(bootstrap)
+                    if fingerprint != last_bootstrap_fingerprint:
+                        # Keep the browser's Last-Event-ID on a resumable alert
+                        # cursor even when bootstrap is the last event emitted.
+                        bootstrap_event_id = ""
+                        if ordered_alerts:
+                            bootstrap_event_id = str(
+                                ordered_alerts[-1].get("id") or ""
+                            ).strip()
+                        if not bootstrap_event_id:
+                            bootstrap_event_id = str(
+                                bootstrap.get("generated_at") or last_seen or ""
+                            ).strip()
+                        self._write_sse("bootstrap", bootstrap_event_id, bootstrap)
+                        last_bootstrap_fingerprint = fingerprint
+                        wrote_event = True
                 if resume_after_id and not any(
                     str(alert.get("id") or "") == resume_after_id
                     for alert in ordered_alerts

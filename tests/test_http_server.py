@@ -2180,6 +2180,95 @@ def test_events_stream_resumes_from_last_event_id(tmp_path):
         server.stop()
 
 
+def test_events_stream_prefers_last_event_id_over_stale_since(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        _, first_created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+            },
+        )
+        _, second_created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Bob"],
+                "source": "intel_channel",
+            },
+        )
+
+        query = urlencode(
+            {
+                "timeout": "0",
+                "limit": "5",
+                "since": "2020-01-01T00:00:00+00:00",
+            }
+        )
+        status, _, body = request_text(
+            f"{server.url}/api/events?{query}",
+            headers={"Last-Event-ID": first_created["alert"]["id"]},
+        )
+
+        assert status == 200
+        assert first_created["alert"]["id"] not in body
+        assert second_created["alert"]["id"] in body
+    finally:
+        server.stop()
+
+
+def test_v1_events_bootstrap_id_is_resumable_alert_cursor(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        _, first_created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+            },
+        )
+
+        query = urlencode({"timeout": "0", "limit": "5"})
+        status, _, body = request_text(f"{server.url}/api/v1/events?{query}")
+        assert status == 200
+        first_events = sse_events(body)
+        bootstrap_event = next(
+            event for event in first_events if event.get("event") == "bootstrap"
+        )
+        assert bootstrap_event["id"] == first_created["alert"]["id"]
+
+        resume_query = urlencode(
+            {
+                "timeout": "0",
+                "limit": "5",
+                "since": "2020-01-01T00:00:00+00:00",
+            }
+        )
+        status, _, resumed_body = request_text(
+            f"{server.url}/api/v1/events?{resume_query}",
+            headers={"Last-Event-ID": bootstrap_event["id"]},
+        )
+        assert status == 200
+        assert [
+            event for event in sse_events(resumed_body) if event.get("event") == "alert"
+        ] == []
+        assert first_created["alert"]["id"] not in {
+            event.get("id")
+            for event in sse_events(resumed_body)
+            if event.get("event") == "alert"
+        }
+    finally:
+        server.stop()
+
+
 def test_events_stream_since_parameter_remains_exclusive(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
