@@ -13,6 +13,7 @@ from app.alert_client import (
     format_alert_time,
     parse_args,
     summarize_alert,
+    sync_alert_summaries_from_bootstrap,
     update_alert_summaries_active,
 )
 from app.intel_client import AlertPoller, IntelApiClient, ReportPoller
@@ -831,9 +832,92 @@ def test_alert_client_aggregates_overlay_rows_by_system():
     )
 
     assert rows[0]["system_name"] == "S-KSWL"
-    assert rows[0]["hostile_count"] == 5
+    assert rows[0]["hostile_count"] == 3
     assert rows[0]["created_at"] == "1"
     assert rows[1]["system_name"] == "8-4GQM"
+
+
+def test_alert_client_syncs_current_counts_and_removes_departed_systems():
+    rows = sync_alert_summaries_from_bootstrap(
+        [
+            {"system_name": "S-KSWL", "hostile_count": 9, "created_at": "1"},
+            {"system_name": "OLD", "hostile_count": 4, "created_at": "2"},
+        ],
+        {
+            "map": {
+                "systems": [
+                    {"name": "8-4GQM", "hostile_count": 2},
+                    {"name": "OLD", "hostile_count": 0},
+                    {"name": "S-KSWL", "hostile_count": 3},
+                ]
+            },
+            "active_intel": [
+                {
+                    "system_name": "S-KSWL",
+                    "first_seen_at": "2026-07-22T10:00:00Z",
+                    "active": True,
+                },
+                {
+                    "system_name": "8-4GQM",
+                    "first_seen_at": "2026-07-22T10:05:00Z",
+                    "active": True,
+                },
+            ],
+        },
+    )
+
+    assert [(item["system_name"], item["hostile_count"]) for item in rows] == [
+        ("S-KSWL", 3),
+        ("8-4GQM", 2),
+    ]
+
+    rows = sync_alert_summaries_from_bootstrap(
+        rows,
+        {
+            "map": {
+                "systems": [
+                    {"name": "S-KSWL", "hostile_count": 1},
+                    {"name": "8-4GQM", "hostile_count": 0},
+                ]
+            },
+            "active_intel": [],
+        },
+    )
+
+    assert [(item["system_name"], item["hostile_count"]) for item in rows] == [
+        ("S-KSWL", 1)
+    ]
+
+    rows = sync_alert_summaries_from_bootstrap(
+        rows,
+        {
+            "map": {"systems": []},
+            "alerts": [
+                {"active_intel_id": "unmapped:1"},
+                {"active_intel_id": "unmapped:2"},
+            ],
+            "active_intel": [
+                {
+                    "id": "unmapped:1",
+                    "system_name": "UNMAPPED",
+                    "first_seen_at": "2026-07-22T10:10:00Z",
+                    "metadata": {"hostile_count": 2},
+                    "active": True,
+                },
+                {
+                    "id": "unmapped:2",
+                    "system_name": "UNMAPPED",
+                    "first_seen_at": "2026-07-22T10:11:00Z",
+                    "metadata": {},
+                    "active": True,
+                },
+            ],
+        },
+    )
+
+    assert [(item["system_name"], item["hostile_count"]) for item in rows] == [
+        ("UNMAPPED", 3)
+    ]
 
 
 def test_alert_client_marks_summaries_inactive_from_bootstrap():
@@ -935,14 +1019,19 @@ def test_alert_overlay_keeps_more_than_four_rows_scrollable(monkeypatch):
             if item.objectName() == "alertRow"
         ]
         scroll = overlay.findChild(QScrollArea, "alertScroll")
-        assert len(rows) == 6
-        assert rows[4].property("inactive") == "true"
+        assert len(rows) == 5
         system_labels = [
             item.text()
             for item in overlay.findChildren(QLabel)
             if item.objectName() == "systemCell"
         ]
-        assert system_labels == [f"SYSTEM-{index}" for index in range(6)]
+        assert system_labels == [
+            "SYSTEM-0",
+            "SYSTEM-1",
+            "SYSTEM-2",
+            "SYSTEM-3",
+            "SYSTEM-5",
+        ]
         assert scroll is not None
         assert scroll.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
         assert scroll.maximumHeight() <= 160
