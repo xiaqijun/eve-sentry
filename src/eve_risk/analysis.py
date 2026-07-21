@@ -76,10 +76,12 @@ class FleetAnalyzer:
         associate_names: dict[int, str] | None = None,
         solar_systems: dict[int, SolarSystemInfo] | None = None,
         warnings: list[str] | None = None,
+        window_days: int | None = None,
         now: datetime | None = None,
     ) -> AnalysisReport:
         now = _aware(now or datetime.now(UTC))
-        window_start = now - timedelta(days=self.window_days)
+        effective_window_days = max(1, window_days or self.window_days)
+        window_start = now - timedelta(days=effective_window_days)
         recent_start = now - timedelta(days=self.recent_days)
         seven_day_start = now - timedelta(days=7)
         associate_names = associate_names or {}
@@ -341,6 +343,7 @@ class FleetAnalyzer:
             coverage_ratio=coverage,
             data_events=len(mails),
             engagement_count=len(engagements),
+            data_window_days=effective_window_days,
             generated_at=now,
             last_activity=max((mail.killmail_time for mail in mails), default=None),
             latest_engagement=latest_engagement,

@@ -5,6 +5,7 @@ import fakeredis.aioredis
 import httpx
 import pytest
 
+from eve_risk.admission import AdmissionResult
 from eve_risk.bot import RiskBotClient
 
 
@@ -52,6 +53,36 @@ async def test_group_can_enable_and_disable_proactive_alerts() -> None:
         Message.content = "关闭预警"
         await client.on_group_at_message_create(Message())
         assert await client.alert_relay.is_subscribed("group-1") is False
+    finally:
+        await client.http_client.aclose()
+        await redis.aclose()
+        await original_redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_analysis_query_is_enqueued_without_intermediate_text_reply() -> None:
+    client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
+    original_redis = client.redis
+    redis = fakeredis.aioredis.FakeRedis()
+    client.redis = redis
+    client.admission.admit = AsyncMock(return_value=AdmissionResult.OK)
+    client.queue.enqueue = AsyncMock()
+    client.qq.send_text = AsyncMock(return_value={"id": "reply"})
+
+    class Author:
+        member_openid = "member-1"
+
+    class Message:
+        id = "analysis-message-1"
+        group_openid = "group-1"
+        content = "分析 MP5K"
+        author = Author()
+
+    try:
+        await client.on_group_at_message_create(Message())
+
+        client.queue.enqueue.assert_awaited_once()
+        client.qq.send_text.assert_not_awaited()
     finally:
         await client.http_client.aclose()
         await redis.aclose()

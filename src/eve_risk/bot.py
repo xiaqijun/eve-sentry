@@ -165,12 +165,6 @@ class RiskBotClient(botpy.Client):
             await self.qq.send_text(group_openid, msg_id, "任务创建失败，请稍后重试。", msg_seq=1)
             return
 
-        await self.qq.send_text(
-            group_openid,
-            msg_id,
-            f"已受理 {len(names)} 个角色，正在抓取近 90 天公开战报。",
-            msg_seq=1,
-        )
         logger.info("request_id=%s admitted characters=%d", request_id, len(names))
 
 

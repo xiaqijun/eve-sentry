@@ -466,6 +466,46 @@ def test_partial_coverage_adds_warning(now, identities, ship_types) -> None:
     assert report.low_confidence_count == 2
 
 
+def test_analysis_can_use_historical_window_when_recent_window_is_empty(
+    now, identities, ship_types
+) -> None:
+    historical = _mail(
+        990,
+        now - timedelta(days=400),
+        [
+            Participant(character_id=9, ship_type_id=1002, is_victim=True),
+            Participant(character_id=1, ship_type_id=1001),
+        ],
+    )
+
+    recent_only = FleetAnalyzer().analyze(
+        request_id="historical-default",
+        requested_count=1,
+        identities=identities[:1],
+        invalid_names=[],
+        killmails=[historical],
+        ship_types=ship_types,
+        covered_character_ids={1},
+        now=now,
+    )
+    historical_report = FleetAnalyzer().analyze(
+        request_id="historical-fallback",
+        requested_count=1,
+        identities=identities[:1],
+        invalid_names=[],
+        killmails=[historical],
+        ship_types=ship_types,
+        covered_character_ids={1},
+        window_days=401,
+        now=now,
+    )
+
+    assert recent_only.data_events == 0
+    assert historical_report.data_events == 1
+    assert historical_report.data_window_days == 401
+    assert historical_report.pilot_ships[0].id == 1001
+
+
 def test_threat_doctrine_location_and_heatmap_are_explainable(now) -> None:
     identity = CharacterIdentity(
         character_id=1,

@@ -4,7 +4,7 @@ from PIL import Image
 
 from eve_risk.analysis import FleetAnalyzer
 from eve_risk.domain import ZKillStats
-from eve_risk.report import ReportAssets, ReportRenderer, build_summary
+from eve_risk.report import ReportAssets, ReportRenderer, _footer_text, build_summary
 
 
 def test_renderer_produces_png(now, identities, ship_types) -> None:
@@ -73,3 +73,19 @@ def test_renderer_accepts_portrait_and_ship_assets(now, identities, ship_types) 
     )
 
     assert image.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_historical_report_labels_its_data_window(now, identities, ship_types) -> None:
+    report = FleetAnalyzer().analyze(
+        request_id="historical-report",
+        requested_count=1,
+        identities=identities[:1],
+        invalid_names=[],
+        killmails=[],
+        ship_types=ship_types,
+        covered_character_ids={1},
+        window_days=401,
+        now=now,
+    )
+
+    assert "数据窗口 历史样本" in _footer_text(report)

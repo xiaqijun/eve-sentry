@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import struct
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
-from arq.connections import RedisSettings
+from arq.connections import ArqRedis, RedisSettings
 
 from eve_risk.admission import AdmissionController
 from eve_risk.analysis import FleetAnalyzer
@@ -19,13 +22,23 @@ from eve_risk.clients.zkill import (
     aggregate_character_stats,
 )
 from eve_risk.config import Settings, get_settings
-from eve_risk.domain import AnalysisRequest, CharacterIdentity, Killmail, ZKillStats
-from eve_risk.report import ReportAssets, ReportRenderer, build_summary
+from eve_risk.domain import (
+    AnalysisRequest,
+    CharacterIdentity,
+    Killmail,
+    ShipTypeInfo,
+    ZKillStats,
+)
+from eve_risk.report import ReportAssets, ReportRenderer
 from eve_risk.sde import SDELocalization
 from eve_risk.ship_roles import ShipRoleClassifier
 from eve_risk.storage import Repository, create_session_factory
 
 logger = logging.getLogger(__name__)
+
+REPORT_CACHE_TTL_SECONDS = 600
+REPORT_CACHE_MAGIC = b"ERPT1"
+REPORT_CACHE_HEADER = struct.Struct("!II")
 
 
 async def startup(ctx: dict[str, object]) -> None:
@@ -106,7 +119,9 @@ async def shutdown(ctx: dict[str, object]) -> None:
 
 async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, object]) -> None:
     request = AnalysisRequest.model_validate(request_payload)
+    started_at = time.monotonic()
     settings: Settings = ctx["settings"]
+    redis: ArqRedis = ctx["redis"]
     esi: ESIClient = ctx["esi"]
     images: EveImageClient = ctx["images"]
     zkill: ZKillClient = ctx["zkill"]
@@ -117,9 +132,29 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
     repository: Repository = ctx["repository"]
     resolved_count = 0
     data_events = 0
+    persistence_task: asyncio.Task[None] | None = None
+    job_start_task = asyncio.create_task(_record_job_start(repository, request))
 
     try:
-        await _record_job_start(repository, request)
+        cached_report = await _get_cached_report(redis, request.character_names)
+        if cached_report is not None:
+            image, resolved_count, data_events = cached_report
+            await qq.send_image(request.group_openid, request.msg_id, image, msg_seq=1)
+            await job_start_task
+            await _record_job_finish(
+                repository,
+                request.request_id,
+                status="completed",
+                resolved_count=resolved_count,
+                data_events=data_events,
+            )
+            logger.info(
+                "request_id=%s completed elapsed=%.2fs cache_hit=true",
+                request.request_id,
+                time.monotonic() - started_at,
+            )
+            return
+
         identities, invalid_names = await esi.resolve_characters(request.character_names)
         resolved_count = len(identities)
         if not identities:
@@ -127,8 +162,9 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
                 request.group_openid,
                 request.msg_id,
                 "没有找到任何 Tranquility 角色，请检查名字拼写。",
-                2,
+                1,
             )
+            await job_start_task
             await _record_job_finish(
                 repository,
                 request.request_id,
@@ -139,9 +175,7 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
             )
             return
 
-        lifetime_stats_task = asyncio.create_task(
-            _fetch_lifetime_stats(zkill, identities)
-        )
+        lifetime_stats_task = asyncio.create_task(_fetch_lifetime_stats(zkill, identities))
         fetch_results, fetch_warnings = await _fetch_with_deadline(
             zkill, identities, request.fetch_deadline_at
         )
@@ -155,11 +189,16 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
         if truncated_ids:
             fetch_warnings.append(f"{len(truncated_ids)} 个角色达到上游单次返回上限，样本可能截断")
 
-        killmails = _filter_window(
+        now = datetime.now(UTC)
+        killmails, analysis_window_days = _select_analysis_window(
             _dedupe_killmails(fetch_results),
-            datetime.now(UTC),
+            now,
             settings.analysis_window_days,
         )
+        if analysis_window_days > settings.analysis_window_days:
+            fetch_warnings.append(
+                f"近 {settings.analysis_window_days} 天没有公开战报，已展示可获取的历史样本"
+            )
         input_ids = {identity.character_id for identity in identities}
         type_ids = {
             participant.ship_type_id
@@ -167,12 +206,14 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
             for participant in mail.participants
             if participant.ship_type_id is not None
         }
-        ship_types = await _with_timeout(
-            esi.fetch_ship_types(type_ids), request.fetch_deadline_at, default={}
-        )
         associate_ids = analyzer.top_associate_ids(killmails, input_ids)
-        associate_names = await _with_timeout(
-            esi.resolve_entity_names(associate_ids), request.fetch_deadline_at, default={}
+        ship_types, associate_names = await asyncio.gather(
+            _with_timeout(esi.fetch_ship_types(type_ids), request.fetch_deadline_at, default={}),
+            _with_timeout(
+                esi.resolve_entity_names(associate_ids),
+                request.fetch_deadline_at,
+                default={},
+            ),
         )
         solar_systems = ctx["sde"].solar_systems({mail.solar_system_id for mail in killmails})
 
@@ -187,55 +228,18 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
             associate_names=associate_names,
             solar_systems=solar_systems,
             warnings=fetch_warnings,
+            window_days=analysis_window_days,
         )
         if isinstance(lifetime_stats, ZKillStats):
             report.lifetime_stats = lifetime_stats
-        related_engagements = await _with_timeout(
-            zkill.enrich_related_battles(report.recent_engagements, input_ids),
-            request.reply_deadline_at,
-            default=report.recent_engagements,
-        )
-        if isinstance(related_engagements, list):
-            report.recent_engagements = related_engagements
-            report.latest_engagement = next(
-                (
-                    item
-                    for item in related_engagements
-                    if item.destroyed_count > 0
-                ),
-                related_engagements[0] if related_engagements else None,
-            )
-        data_events = report.data_events
 
-        try:
-            await asyncio.wait_for(
-                repository.save_analysis_data(
-                    identities,
-                    ship_types,
-                    killmails,
-                    report.generated_at,
-                    [
-                        (
-                            result.character_id,
-                            result.direction,
-                            len(result.killmails),
-                            result.truncated,
-                        )
-                        for result in fetch_results
-                    ],
-                ),
-                timeout=15,
-            )
-        except Exception:
-            logger.exception("request_id=%s persistence_failed", request.request_id)
-
-        portrait_ids = {
-            profile.character_id for profile in report.profiles[:4]
-        } | {associate.id for associate in report.common_associates[:5]}
-        ship_icon_ids = {
+        portrait_ids = {profile.character_id for profile in report.profiles[:4]} | {
+            associate.id for associate in report.common_associates[:5]
+        }
+        initial_ship_icon_ids = {
             int(ship.id) for ship in report.top_ships[:5] if ship.id is not None
         } | {ship.id for ship in report.pilot_ships[:5]}
-        ship_icon_ids.update(
+        initial_ship_icon_ids.update(
             int(ship.id)
             for engagement in report.recent_engagements[:5]
             for ship in engagement.destroyed_ships + engagement.lost_ships
@@ -251,16 +255,58 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
             for profile in report.profiles[:4]
             if profile.alliance_id is not None
         }
-        portrait_images, ship_icons, corporation_logos, alliance_logos = await _with_timeout(
+        assets_task = asyncio.create_task(
             images.fetch_report_assets(
                 portrait_ids,
-                ship_icon_ids,
+                initial_ship_icon_ids,
                 corporation_ids,
                 alliance_ids,
-            ),
+            )
+        )
+        persistence_task = asyncio.create_task(
+            _persist_analysis_data(
+                repository,
+                request,
+                identities,
+                ship_types,
+                killmails,
+                report.generated_at,
+                fetch_results,
+            )
+        )
+
+        related_engagements = await _with_timeout(
+            zkill.enrich_related_battles(report.recent_engagements, input_ids),
+            request.reply_deadline_at,
+            default=report.recent_engagements,
+        )
+        if isinstance(related_engagements, list):
+            report.recent_engagements = related_engagements
+            report.latest_engagement = next(
+                (item for item in related_engagements if item.destroyed_count > 0),
+                related_engagements[0] if related_engagements else None,
+            )
+        data_events = report.data_events
+
+        final_ship_icon_ids = set(initial_ship_icon_ids)
+        final_ship_icon_ids.update(
+            int(ship.id)
+            for engagement in report.recent_engagements[:5]
+            for ship in engagement.destroyed_ships + engagement.lost_ships
+            if ship.id is not None
+        )
+        portrait_images, ship_icons, corporation_logos, alliance_logos = await _with_timeout(
+            assets_task,
             request.reply_deadline_at,
             default=({}, {}, {}, {}),
         )
+        extra_ship_icons = await _with_timeout(
+            images.fetch_ship_icons(final_ship_icon_ids - initial_ship_icon_ids),
+            request.reply_deadline_at,
+            default={},
+        )
+        if isinstance(ship_icons, dict) and isinstance(extra_ship_icons, dict):
+            ship_icons.update(extra_ship_icons)
         image = renderer.render(
             report,
             ReportAssets(
@@ -272,19 +318,24 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
         )
         remaining = max(1.0, (request.reply_deadline_at - datetime.now(UTC)).total_seconds())
         async with asyncio.timeout(remaining):
-            await qq.send_text(
-                request.group_openid, request.msg_id, build_summary(report), msg_seq=2
-            )
             try:
-                await qq.send_image(request.group_openid, request.msg_id, image, msg_seq=3)
+                await qq.send_image(request.group_openid, request.msg_id, image, msg_seq=1)
+                await _set_cached_report(
+                    redis,
+                    request.character_names,
+                    image,
+                    resolved_count,
+                    data_events,
+                )
             except Exception:
                 logger.exception("request_id=%s image_send_failed", request.request_id)
                 await qq.send_text(
                     request.group_openid,
                     request.msg_id,
-                    "报告图片发送失败，以上文字摘要仍然有效。",
-                    msg_seq=3,
+                    "报告图片发送失败，请稍后重试。",
+                    msg_seq=1,
                 )
+        await job_start_task
         await _record_job_finish(
             repository,
             request.request_id,
@@ -292,8 +343,14 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
             resolved_count=resolved_count,
             data_events=data_events,
         )
+        logger.info(
+            "request_id=%s completed elapsed=%.2fs cache_hit=false",
+            request.request_id,
+            time.monotonic() - started_at,
+        )
     except TimeoutError:
         logger.warning("request_id=%s reply_deadline_exceeded", request.request_id)
+        await job_start_task
         await _record_job_finish(
             repository,
             request.request_id,
@@ -305,6 +362,7 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
         await _safe_error_reply(qq, request, "分析超过 QQ 回复时限，请稍后缩小名单重试。")
     except Exception:
         logger.exception("request_id=%s analysis_failed", request.request_id)
+        await job_start_task
         await _record_job_finish(
             repository,
             request.request_id,
@@ -315,6 +373,8 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
         )
         await _safe_error_reply(qq, request, "分析失败，上游服务可能暂时不可用，请稍后重试。")
     finally:
+        if persistence_task is not None:
+            await persistence_task
         await admission.release(request.request_id, request.group_openid)
 
 
@@ -354,9 +414,7 @@ async def _fetch_lifetime_stats(
         *(zkill.fetch_character_stats(identity.character_id) for identity in identities),
         return_exceptions=True,
     )
-    return aggregate_character_stats(
-        [item for item in results if isinstance(item, ZKillStats)]
-    )
+    return aggregate_character_stats([item for item in results if isinstance(item, ZKillStats)])
 
 
 async def _with_timeout(awaitable: object, deadline: datetime, default: object) -> object:
@@ -379,13 +437,103 @@ def _filter_window(killmails: list[Killmail], now: datetime, window_days: int) -
     return [mail for mail in killmails if start <= mail.killmail_time <= future_tolerance]
 
 
+def _select_analysis_window(
+    killmails: list[Killmail], now: datetime, default_window_days: int
+) -> tuple[list[Killmail], int]:
+    recent = _filter_window(killmails, now, default_window_days)
+    if recent or not killmails:
+        return recent, default_window_days
+
+    future_tolerance = now + timedelta(minutes=5)
+    historical = [mail for mail in killmails if mail.killmail_time <= future_tolerance]
+    if not historical:
+        return [], default_window_days
+    oldest = min(mail.killmail_time for mail in historical)
+    historical_window_days = max(default_window_days, (now - oldest).days + 1)
+    return historical, historical_window_days
+
+
 async def _safe_error_reply(qq: QQOpenAPIClient, request: AnalysisRequest, content: str) -> None:
     if datetime.now(UTC) >= request.reply_deadline_at:
         return
     try:
-        await qq.send_text(request.group_openid, request.msg_id, content, msg_seq=2)
+        await qq.send_text(request.group_openid, request.msg_id, content, msg_seq=1)
     except Exception:
         logger.exception("request_id=%s error_reply_failed", request.request_id)
+
+
+def _report_cache_key(character_names: list[str]) -> str:
+    normalized = "\0".join(name.strip().casefold() for name in character_names)
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return f"report:image:v2:{digest}"
+
+
+async def _get_cached_report(
+    redis: ArqRedis, character_names: list[str]
+) -> tuple[bytes, int, int] | None:
+    try:
+        cached = await redis.get(_report_cache_key(character_names))
+    except Exception:
+        logger.warning("report_cache_read_failed", exc_info=True)
+        return None
+    if not cached:
+        return None
+    payload = cached if isinstance(cached, bytes) else str(cached).encode("utf-8")
+    prefix_size = len(REPORT_CACHE_MAGIC) + REPORT_CACHE_HEADER.size
+    if len(payload) <= prefix_size or not payload.startswith(REPORT_CACHE_MAGIC):
+        return None
+    resolved_count, data_events = REPORT_CACHE_HEADER.unpack_from(payload, len(REPORT_CACHE_MAGIC))
+    return payload[prefix_size:], resolved_count, data_events
+
+
+async def _set_cached_report(
+    redis: ArqRedis,
+    character_names: list[str],
+    image: bytes,
+    resolved_count: int,
+    data_events: int,
+) -> None:
+    payload = REPORT_CACHE_MAGIC + REPORT_CACHE_HEADER.pack(resolved_count, data_events) + image
+    try:
+        await redis.set(
+            _report_cache_key(character_names),
+            payload,
+            ex=REPORT_CACHE_TTL_SECONDS,
+        )
+    except Exception:
+        logger.warning("report_cache_write_failed", exc_info=True)
+
+
+async def _persist_analysis_data(
+    repository: Repository,
+    request: AnalysisRequest,
+    identities: list[CharacterIdentity],
+    ship_types: dict[int, ShipTypeInfo],
+    killmails: list[Killmail],
+    generated_at: datetime,
+    fetch_results: list[ZKillFetchResult],
+) -> None:
+    try:
+        await asyncio.wait_for(
+            repository.save_analysis_data(
+                identities,
+                ship_types,
+                killmails,
+                generated_at,
+                [
+                    (
+                        result.character_id,
+                        result.direction,
+                        len(result.killmails),
+                        result.truncated,
+                    )
+                    for result in fetch_results
+                ],
+            ),
+            timeout=15,
+        )
+    except Exception:
+        logger.exception("request_id=%s persistence_failed", request.request_id)
 
 
 async def _record_job_start(repository: Repository, request: AnalysisRequest) -> None:

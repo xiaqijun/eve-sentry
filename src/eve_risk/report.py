@@ -606,8 +606,22 @@ class ReportRenderer:
         draw.text((left + 28, week_y + 8), "7D", fill=MUTED, font=self.fonts["tiny"])
 
         timeline_y = week_y + 72
-        self._timeline(draw, heat_left, timeline_y, heat_width, report.recent_engagements, report.generated_at)
-        draw.text((left + 28, timeline_y + 8), "90D", fill=MUTED, font=self.fonts["tiny"])
+        self._timeline(
+            draw,
+            heat_left,
+            timeline_y,
+            heat_width,
+            report.recent_engagements,
+            report.generated_at,
+            report.data_window_days,
+        )
+        timeline_label = "历史" if report.data_window_days > 90 else f"{report.data_window_days}D"
+        draw.text(
+            (left + 28, timeline_y + 8),
+            timeline_label,
+            fill=MUTED,
+            font=self.fonts["tiny"],
+        )
 
         table_y = timeline_y + 68
         draw.text((left + 28, table_y), "最近战报", fill=TEXT, font=self.fonts["body"])
@@ -782,18 +796,31 @@ class ReportRenderer:
         width: int,
         engagements: list[LatestEngagement],
         generated_at: datetime,
+        window_days: int,
     ) -> None:
         draw.rounded_rectangle((left, top, left + width, top + 27), 7, fill="#071012")
-        cutoff = _aware(generated_at) - timedelta(days=90)
+        window = timedelta(days=max(1, window_days))
+        cutoff = _aware(generated_at) - window
         for engagement in engagements[:30]:
             value = _aware(engagement.last_seen)
-            ratio = (value - cutoff).total_seconds() / timedelta(days=90).total_seconds()
+            ratio = (value - cutoff).total_seconds() / window.total_seconds()
             if ratio < 0 or ratio > 1:
                 continue
             x = left + round(width * ratio)
             draw.rectangle((x - 3, top, x + 3, top + 27), fill=CYAN)
-        draw.text((left, top + 36), cutoff.astimezone(UTC).strftime("%m-%d"), fill=DIM, font=self.fonts["tiny"])
-        draw.text((left + width, top + 36), generated_at.astimezone(UTC).strftime("%m-%d"), fill=DIM, font=self.fonts["tiny"], anchor="ra")
+        draw.text(
+            (left, top + 36),
+            cutoff.astimezone(UTC).strftime("%m-%d"),
+            fill=DIM,
+            font=self.fonts["tiny"],
+        )
+        draw.text(
+            (left + width, top + 36),
+            generated_at.astimezone(UTC).strftime("%m-%d"),
+            fill=DIM,
+            font=self.fonts["tiny"],
+            anchor="ra",
+        )
 
     def _heat_strip(
         self,
@@ -1090,9 +1117,9 @@ def _threat_color(score: int) -> str:
 
 
 def _footer_text(report: AnalysisReport) -> str:
+    window_label = "历史样本" if report.data_window_days > 90 else f"{report.data_window_days}D"
     return (
-        f"EVE RISK · Tranquility  ·  数据窗口 90D  ·  "
-        f"公开战报 {report.data_events} 条"
+        f"EVE RISK · Tranquility  ·  数据窗口 {window_label}  ·  公开战报 {report.data_events} 条"
     )
 
 

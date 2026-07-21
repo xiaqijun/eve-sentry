@@ -235,6 +235,7 @@ class AnalysisReport(BaseModel):
     coverage_ratio: float = 0
     data_events: int = 0
     engagement_count: int = 0
+    data_window_days: int = 90
     generated_at: datetime
     last_activity: datetime | None = None
     latest_engagement: LatestEngagement | None = None
