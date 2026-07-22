@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
@@ -47,6 +48,37 @@ class EsiClient:
     def get_alliance(self, alliance_id: int) -> dict[str, Any]:
         """Fetch public alliance information."""
         return self._request("GET", f"/alliances/{int(alliance_id)}/")
+
+    def search_characters(
+        self,
+        character_id: int,
+        access_token: str,
+        search: str,
+    ) -> list[int]:
+        """Search character ids through the authenticated ESI search route."""
+        query = urlencode(
+            {
+                "categories": "character",
+                "search": str(search or "").strip(),
+                "strict": "false",
+            }
+        )
+        payload = self._request(
+            "GET",
+            f"/characters/{int(character_id)}/search/?{query}",
+            access_token=access_token,
+        )
+        if not isinstance(payload, dict):
+            return []
+        result: list[int] = []
+        for value in payload.get("character", []) or []:
+            try:
+                entity_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if entity_id > 0 and entity_id not in result:
+                result.append(entity_id)
+        return result
 
     def get_system(self, system_id: int) -> dict[str, Any]:
         """Fetch public solar-system information."""

@@ -742,6 +742,92 @@ def test_record_ocr_snapshot_only_confuses_upper_i_with_lower_l(tmp_path):
     assert resolver.resolve_calls == [["Mira LName"]]
 
 
+def test_record_ocr_snapshot_uses_esi_completion_after_exact_lookup_misses(tmp_path):
+    events = []
+    full_name = "Kamamdzhava Tekerav Longname"
+
+    class EmptyResolver:
+        def resolve_names(self, names):
+            events.append(("exact", list(names)))
+            return []
+
+        def enrich_observation(self, observation):
+            return observation
+
+    class CompletingEnricher:
+        def complete_character_name(self, prefix):
+            events.append(("complete", prefix))
+            return full_name
+
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=EmptyResolver(),
+        enricher=CompletingEnricher(),
+    )
+
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector:test",
+            "system_name": "S-KSWL",
+            "names": ["Kamamdzhava Teker"],
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+    assert store.wait_for_esi_idle(timeout=1)
+
+    assert store.list_observations()[0]["names"] == [full_name]
+    assert events[:2] == [
+        ("exact", ["Kamamdzhava Teker"]),
+        ("complete", "Kamamdzhava Teker"),
+    ]
+
+
+def test_record_ocr_snapshot_skips_completion_after_exact_esi_match(tmp_path):
+    class ExactResolver:
+        def resolve_names(self, names):
+            return [
+                SimpleNamespace(
+                    name="Kamamdzhava Teker",
+                    category="character",
+                    entity_id=456,
+                )
+            ]
+
+        def character_profile(self, character_id):
+            return {"character_id": int(character_id), "name": "Kamamdzhava Teker"}
+
+        def enrich_observation(self, observation):
+            observation.character_ids = [456]
+            return observation
+
+    class FailingEnricher:
+        def complete_character_name(self, prefix):
+            raise AssertionError(f"completion must not run for exact match: {prefix}")
+
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=ExactResolver(),
+        enricher=FailingEnricher(),
+    )
+
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector:test",
+            "system_name": "S-KSWL",
+            "names": ["Kamamdzhava Teker"],
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+    assert store.wait_for_esi_idle(timeout=1)
+
+    assert store.list_observations()[0]["names"] == ["Kamamdzhava Teker"]
+    assert store.list_observations()[0]["character_ids"] == [456]
+
+
 def test_record_ocr_snapshot_filters_positive_esi_corporation_standing(tmp_path):
     class FriendlyResolver:
         def enrich_observation(self, observation):

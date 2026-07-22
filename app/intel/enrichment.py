@@ -108,6 +108,19 @@ class ThreatEnricher:
         self._contact_standings_until = now + self.standing_ttl_seconds
         return list(contacts)
 
+    def complete_character_name(self, prefix: str) -> str | None:
+        """Best-effort ESI completion for an OCR-clipped character name."""
+        if self.esi_session is None or not hasattr(
+            self.esi_session, "complete_character_name"
+        ):
+            return None
+        try:
+            name = self.esi_session.complete_character_name(prefix)
+        except Exception:
+            return None
+        text = str(name or "").strip()
+        return text or None
+
     def _public_character_profile(self, character_id: int) -> dict[str, Any] | None:
         if self.resolver is None or not hasattr(self.resolver, "character_profile"):
             return None

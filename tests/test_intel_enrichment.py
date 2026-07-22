@@ -188,3 +188,17 @@ def test_threat_enricher_exposes_system_profile_without_activity_lookup():
 
     assert profile == {"system_id": 30002813, "name": "Tama"}
     assert not hasattr(enricher, "system_kill_activity")
+
+
+def test_threat_enricher_delegates_character_name_completion():
+    class FakeSession:
+        def complete_character_name(self, prefix):
+            assert prefix == "Kamamdzhava Teker"
+            return "Kamamdzhava Tekerav Longname"
+
+    enricher = ThreatEnricher(esi_session=FakeSession())
+
+    assert (
+        enricher.complete_character_name("Kamamdzhava Teker")
+        == "Kamamdzhava Tekerav Longname"
+    )

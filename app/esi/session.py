@@ -12,6 +12,7 @@ from app.esi.sso import EsiSsoError, EsiTokenStore, EveSsoClient, TokenSet
 CHARACTER_CONTACT_SCOPE = "esi-characters.read_contacts.v1"
 CORPORATION_CONTACT_SCOPE = "esi-corporations.read_contacts.v1"
 ALLIANCE_CONTACT_SCOPE = "esi-alliances.read_contacts.v1"
+SEARCH_SCOPE = "esi-search.search_structures.v1"
 
 
 @dataclass(frozen=True)
@@ -169,6 +170,44 @@ class EsiAuthenticatedSession:
                     )
                 )
         return EsiSessionSnapshot(tokens=tokens, location=location, contacts=contacts)
+
+    def complete_character_name(self, prefix: str) -> str | None:
+        """Return one unique full character name matching a clipped prefix."""
+        text = str(prefix or "").strip()
+        if len(text) < 8:
+            return None
+
+        tokens = self.load_tokens()
+        character_id = tokens.character_id
+        if character_id is None or SEARCH_SCOPE not in set(tokens.scopes):
+            return None
+        if not hasattr(self.esi_client, "search_characters") or not hasattr(
+            self.esi_client, "resolve_names"
+        ):
+            return None
+
+        character_ids = self.esi_client.search_characters(
+            character_id,
+            tokens.access_token,
+            text,
+        )
+        if not character_ids:
+            return None
+        rows = self.esi_client.resolve_names(character_ids)
+        prefix_key = text.casefold()
+        matches: dict[str, str] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("category") or "").casefold() != "character":
+                continue
+            name = str(row.get("name") or "").strip()
+            name_key = name.casefold()
+            if len(name_key) > len(prefix_key) and name_key.startswith(prefix_key):
+                matches[name_key] = name
+        if len(matches) == 1:
+            return next(iter(matches.values()))
+        return None
 
     def _authenticated_character_profile(self, tokens: TokenSet) -> dict[str, Any]:
         scopes = set(tokens.scopes)

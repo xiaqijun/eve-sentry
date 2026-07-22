@@ -2829,7 +2829,7 @@ class IntelStore:
 
     def _canonicalize_ocr_name(self, name: str) -> str:
         text = str(name or "").strip()
-        if not text or self._resolver is None:
+        if not text:
             return text
         cache_key = text.casefold()
         cached = self._ocr_name_corrections.get(cache_key)
@@ -2837,9 +2837,41 @@ class IntelStore:
             return cached
 
         candidates = _ocr_i_l_candidates(text)
-        canonical = self._resolve_character_name_candidate(candidates) or text
+        canonical = (
+            self._resolve_character_name_candidate(candidates)
+            or self._resolve_truncated_esi_name(candidates)
+            or text
+        )
         self._ocr_name_corrections[cache_key] = canonical
         return canonical
+
+    def _resolve_truncated_esi_name(self, candidates: list[str]) -> str | None:
+        """Use authenticated ESI search after exact name resolution fails."""
+        if self._enricher is None or not hasattr(
+            self._enricher, "complete_character_name"
+        ):
+            return None
+
+        matches: dict[str, str] = {}
+        for candidate in candidates:
+            candidate_key = candidate.casefold()
+            if len(candidate_key) < 8:
+                continue
+            try:
+                completed = self._enricher.complete_character_name(candidate)
+            except Exception:
+                continue
+            completed = str(completed or "").strip()
+            completed_key = completed.casefold()
+            if (
+                len(completed_key) > len(candidate_key)
+                and completed_key.startswith(candidate_key)
+            ):
+                matches[completed_key] = completed
+
+        if len(matches) == 1:
+            return next(iter(matches.values()))
+        return None
 
     def _resolve_character_name_candidate(self, candidates: list[str]) -> str | None:
         if self._resolver is None or not hasattr(self._resolver, "resolve_names"):

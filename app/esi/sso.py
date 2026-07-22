@@ -32,6 +32,7 @@ DEFAULT_SCOPES = (
     "esi-characters.read_contacts.v1",
     "esi-corporations.read_contacts.v1",
     "esi-alliances.read_contacts.v1",
+    "esi-search.search_structures.v1",
 )
 
 

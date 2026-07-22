@@ -1,4 +1,5 @@
 import json
+from urllib.parse import parse_qs, urlparse
 
 from app.esi.client import EsiClient
 
@@ -50,3 +51,26 @@ def test_authenticated_esi_requests_send_bearer_token(monkeypatch):
     assert requests[1].full_url == "https://esi.test/latest/characters/123/contacts/"
     assert requests[2].full_url == "https://esi.test/latest/corporations/456/contacts/"
     assert requests[3].full_url == "https://esi.test/latest/alliances/789/contacts/"
+
+
+def test_authenticated_esi_character_search_returns_valid_ids(monkeypatch):
+    requests = []
+
+    def fake_urlopen(request, timeout):
+        requests.append(request)
+        return FakeResponse({"character": [123, "456", "bad", 123]})
+
+    monkeypatch.setattr("app.esi.client.urlopen", fake_urlopen)
+    client = EsiClient(base_url="https://esi.test/latest")
+
+    result = client.search_characters(99, "access-token", "Long Pilot")
+
+    assert result == [123, 456]
+    assert requests[0].get_header("Authorization") == "Bearer access-token"
+    parsed = urlparse(requests[0].full_url)
+    assert parsed.path == "/latest/characters/99/search/"
+    assert parse_qs(parsed.query) == {
+        "categories": ["character"],
+        "search": ["Long Pilot"],
+        "strict": ["false"],
+    }

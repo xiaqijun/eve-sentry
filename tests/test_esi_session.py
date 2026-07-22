@@ -6,6 +6,7 @@ import pytest
 from app.esi.session import (
     ContactStanding,
     EsiAuthenticatedSession,
+    SEARCH_SCOPE,
     apply_contact_standing,
     contact_standings_from_payload,
     matching_contact_standing,
@@ -250,3 +251,94 @@ def test_authenticated_session_requires_saved_tokens(tmp_path):
 
     with pytest.raises(EsiSsoError):
         session.load_tokens()
+
+
+def test_authenticated_session_completes_unique_character_prefix(tmp_path):
+    access = jwt(
+        {
+            "sub": "CHARACTER:EVE:123",
+            "scp": [SEARCH_SCOPE],
+        }
+    )
+    store = EsiTokenStore(tmp_path / "tokens.json")
+    store.save(
+        TokenSet.from_payload(
+            {
+                "access_token": access,
+                "expires_at": 2000,
+                "refresh_token": "refresh",
+            }
+        )
+    )
+
+    class FakeEsi:
+        def __init__(self):
+            self.calls = []
+
+        def search_characters(self, character_id, access_token, search):
+            self.calls.append(("search", character_id, access_token, search))
+            return [456, 789]
+
+        def resolve_names(self, character_ids):
+            self.calls.append(("names", list(character_ids)))
+            return [
+                {
+                    "id": 456,
+                    "name": "Kamamdzhava Tekerav Longname",
+                    "category": "character",
+                },
+                {
+                    "id": 789,
+                    "name": "Unrelated Pilot",
+                    "category": "character",
+                },
+            ]
+
+    esi = FakeEsi()
+    session = EsiAuthenticatedSession(
+        sso_client=object(),
+        esi_client=esi,
+        token_store=store,
+        now=lambda: 1000.0,
+    )
+
+    result = session.complete_character_name("Kamamdzhava Teker")
+
+    assert result == "Kamamdzhava Tekerav Longname"
+    assert esi.calls == [
+        ("search", 123, access, "Kamamdzhava Teker"),
+        ("names", [456, 789]),
+    ]
+
+
+def test_authenticated_session_rejects_ambiguous_character_prefix(tmp_path):
+    access = jwt({"sub": "CHARACTER:EVE:123", "scp": [SEARCH_SCOPE]})
+    store = EsiTokenStore(tmp_path / "tokens.json")
+    store.save(
+        TokenSet.from_payload(
+            {
+                "access_token": access,
+                "expires_at": 2000,
+                "refresh_token": "refresh",
+            }
+        )
+    )
+
+    class FakeEsi:
+        def search_characters(self, character_id, access_token, search):
+            return [456, 789]
+
+        def resolve_names(self, character_ids):
+            return [
+                {"name": "Kamamdzhava Tekerav One", "category": "character"},
+                {"name": "Kamamdzhava Tekerav Two", "category": "character"},
+            ]
+
+    session = EsiAuthenticatedSession(
+        sso_client=object(),
+        esi_client=FakeEsi(),
+        token_store=store,
+        now=lambda: 1000.0,
+    )
+
+    assert session.complete_character_name("Kamamdzhava Teker") is None
