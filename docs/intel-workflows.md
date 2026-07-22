@@ -68,9 +68,16 @@ sequenceDiagram
   S->>S: 规范化名字/去重
   S->>DB: 刷新 active_intel
   S->>DB: 记录 observation
-  S->>DB: 查询哪些角色从未做过 ESI 查询
-  S->>E: 仅查询未查询过 ESI 的角色
-  E-->>S: character/corp/alliance/standing 或失败状态
+  S->>E: 用 OCR 名字做 ESI 精确解析
+  alt 精确解析成功
+    E-->>S: character_id
+  else 精确解析查不到且名字至少 8 个字符
+    S->>E: authenticated ESI 搜索角色候选
+    E-->>S: candidate character_ids
+    S->>E: 反查候选完整名字
+    S->>S: 仅采用唯一的完整前缀匹配
+  end
+  S->>E: 查询 character/corp/alliance/standing
   S->>DB: 写入 ESI 查询缓存
   S->>S: 分类为 friendly / hostile / unknown
   S->>DB: hostile 首次出现时写 alert
@@ -78,6 +85,15 @@ sequenceDiagram
 ```
 
 OCR 只表示“当前本地可见”。服务端可以用它更新实时状态，但不能因为 OCR 本身生成敌对告警；只有 ESI 声望或配置规则确认敌对后才告警。
+
+成员列表可能在 EVE 界面内截断长角色名。服务端必须先执行现有的 ESI 精确名字解析；只有精确解析返回空结果时，才允许使用 authenticated ESI 搜索补全。补全候选必须满足以下条件：
+
+- OCR 文本至少 8 个字符，避免短前缀产生大量误匹配。
+- 反查后的完整角色名必须以 OCR 文本开头，且比 OCR 文本更长。
+- 只能有一个唯一候选；零个或多个候选时保留原 OCR 文本。
+- 精确解析已经命中的角色名不得再次进入补全流程。
+
+补全只恢复身份字符串，最终友好/敌对判断仍使用角色、军团、联盟和 contacts/standings 数据。
 
 ## 4. 预警频道工作流
 

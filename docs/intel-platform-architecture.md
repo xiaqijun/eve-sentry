@@ -422,6 +422,10 @@ ESI 是身份和宇宙数据的权威补全源。
   时会直接失败。
 - contacts 可转换成 `contact_standing` 注入角色 profile，供分类规则生成
   `hostile_standing` 或 `friendly_standing` reason。
+- 当 OCR 长角色名被 EVE 成员列表截断、公开 `/universe/ids/` 精确解析返回空结果时，
+  authenticated ESI 会话可调用 `/characters/{character_id}/search/` 搜索候选 ID，
+  再通过 `/universe/names/` 反查完整名字。只有唯一的完整前缀匹配会被采用；
+  精确命中、短于 8 个字符或存在歧义时不会补全。
 
 设计要求:
 
@@ -429,6 +433,9 @@ ESI 是身份和宇宙数据的权威补全源。
 - 所有 ESI 结果要本地缓存。
 - 服务端保存用户身份时不能只依赖 `character_id`，还要记录 `CharacterOwnerHash`，避免角色转让后身份串号。
 - 只申请需要的 scopes，后续按功能逐步增加。
+- 截断角色名搜索需要 `esi-search.search_structures.v1`。该 scope 名称由 ESI
+  接口定义决定，虽然名字包含 `search_structures`，同一个 authenticated search
+  route 也用于角色类别搜索。
 
 当前服务端公开数据补全通过启动参数启用:
 

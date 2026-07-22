@@ -233,6 +233,22 @@ EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain
 EVE_SENTRY_SERVER_ESI_SCOPES=esi-location.read_location.v1,esi-characters.read_contacts.v1,esi-corporations.read_contacts.v1,esi-alliances.read_contacts.v1,esi-search.search_structures.v1
 ```
 
+`esi-search.search_structures.v1` 用于 authenticated ESI search route。服务端仅在
+`/universe/ids/` 精确解析 OCR 名字失败后调用该 route，搜索角色候选并反查完整名字；
+精确解析成功、前缀少于 8 个字符或候选不唯一时不会补全。
+
+仅修改环境变量不会给已有 token 增加权限，refresh token 也不能扩展原授权范围。
+从旧版本升级后必须重新完成一次 EVE SSO 授权。授权完成后同时检查配置 scope 和
+token scope：
+
+```bash
+curl http://127.0.0.1:8765/api/v1/esi/status
+```
+
+响应中的 `config.scopes` 和顶层 `scopes` 都应包含
+`esi-search.search_structures.v1`；前者表示服务端将请求该权限，后者表示当前保存的
+token 已实际获得该权限。
+
 远端无浏览器环境推荐用 SSH 隧道完成 localhost 回调。先在本地终端打开隧道:
 
 ```bash
