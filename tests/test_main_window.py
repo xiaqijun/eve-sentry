@@ -3,15 +3,9 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QStyle, QStyleOptionSpinBox
 
-from app.ui.main_window import (
-    CHANNEL_ERROR_BACKOFF_MS,
-    CHANNEL_POLL_INTERVAL_MS,
-    MainWindow,
-)
+from app.ui.main_window import MainWindow
 from app.ui.settings import SettingsPanel
 from app.ui.theme import APP_QSS
 
@@ -225,39 +219,7 @@ def test_refresh_intel_location_falls_back_to_local_chatlog(monkeypatch):
     assert window._heartbeat_last_action == "local_system_sync"
 
 
-class FakeChannelTimer:
-    def __init__(self):
-        self.started = False
-        self.stopped = False
-        self._interval = None
-
-    def setInterval(self, value):
-        self._interval = value
-
-    def interval(self):
-        return self._interval
-
-    def start(self):
-        self.started = True
-
-    def stop(self):
-        self.stopped = True
-
-
-class FakeChannelSettings:
-    def __init__(self, channels, log_dir="C:/EVE/Chatlogs"):
-        self._channels = channels
-        self._log_dir = log_dir
-
-    def get_channel_names(self):
-        return list(self._channels)
-
-    def get_channel_log_dir(self):
-        return self._log_dir
-
-
-def test_settings_panel_loads_and_saves_channel_config(tmp_path, monkeypatch):
-    monkeypatch.delenv("EVE_SENTRY_CHANNEL", raising=False)
+def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
     monkeypatch.delenv("EVE_SENTRY_CHATLOG_DIR", raising=False)
     config_path = tmp_path / "channel_settings.json"
     config_path.write_text(
@@ -266,6 +228,9 @@ def test_settings_panel_loads_and_saves_channel_config(tmp_path, monkeypatch):
                 "enabled": True,
                 "channels": "wc.Venal+Br+Te, *Intel",
                 "chatlog_dir": "C:/EVE/Chatlogs",
+                "recent_days": 30,
+                "scan_interval": 2,
+                "window_keyword": "EVE -",
             }
         ),
         encoding="utf-8",
@@ -274,45 +239,37 @@ def test_settings_panel_loads_and_saves_channel_config(tmp_path, monkeypatch):
     qt_app()
     panel = SettingsPanel(config_path=config_path)
 
-    assert panel.get_channel_names() == ["wc.Venal+Br+Te", "*Intel"]
     assert panel.get_channel_log_dir() == "C:/EVE/Chatlogs"
+    assert not hasattr(panel, "get_channel_names")
+    assert not hasattr(panel, "channel_settings_changed")
+    assert not hasattr(panel, "_channel_enabled")
+    assert not hasattr(panel, "_channel_list")
 
-    panel._channel_enabled.setChecked(False)
-    panel._channel_edit.setText("Alliance Intel")
-    panel._channel_log_dir_edit.setText("D:/Logs/Chatlogs")
+    panel._interval_spin.setValue(5)
+    panel._keyword_edit.setText("EVE - Pilot")
     panel.save_channel_config()
 
-    saved = json.loads(config_path.read_text(encoding="utf-8"))
-    assert saved == {
-        "enabled": False,
-        "channels": "Alliance Intel",
-        "chatlog_dir": "D:/Logs/Chatlogs",
-        "recent_days": 30,
-        "scan_interval": 2,
-        "window_keyword": "EVE -",
+    assert json.loads(config_path.read_text(encoding="utf-8")) == {
+        "chatlog_dir": "C:/EVE/Chatlogs",
+        "scan_interval": 5,
+        "window_keyword": "EVE - Pilot",
     }
-    assert panel.get_channel_names() == []
 
 
-def test_settings_panel_environment_overrides_saved_channel_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("EVE_SENTRY_CHANNEL", "Env Intel")
+def test_settings_panel_environment_overrides_saved_chatlog_dir(
+    tmp_path,
+    monkeypatch,
+):
     monkeypatch.setenv("EVE_SENTRY_CHATLOG_DIR", "E:/Env/Chatlogs")
     config_path = tmp_path / "channel_settings.json"
     config_path.write_text(
-        json.dumps(
-            {
-                "enabled": False,
-                "channels": "Saved Intel",
-                "chatlog_dir": "C:/Saved/Chatlogs",
-            }
-        ),
+        json.dumps({"chatlog_dir": "C:/Saved/Chatlogs"}),
         encoding="utf-8",
     )
 
     qt_app()
     panel = SettingsPanel(config_path=config_path)
 
-    assert panel.get_channel_names() == ["Env Intel"]
     assert panel.get_channel_log_dir() == "E:/Env/Chatlogs"
 
 
@@ -324,38 +281,36 @@ def test_spinbox_buttons_match_visible_right_edge(tmp_path):
     panel.show()
     app.processEvents()
 
-    for spinbox in (panel._interval_spin, panel._channel_recent_days_spin):
-        option = QStyleOptionSpinBox()
-        spinbox.initStyleOption(option)
-        up_rect = spinbox.style().subControlRect(
-            QStyle.ComplexControl.CC_SpinBox,
-            option,
-            QStyle.SubControl.SC_SpinBoxUp,
-            spinbox,
-        )
-        down_rect = spinbox.style().subControlRect(
-            QStyle.ComplexControl.CC_SpinBox,
-            option,
-            QStyle.SubControl.SC_SpinBoxDown,
-            spinbox,
-        )
+    spinbox = panel._interval_spin
+    option = QStyleOptionSpinBox()
+    spinbox.initStyleOption(option)
+    up_rect = spinbox.style().subControlRect(
+        QStyle.ComplexControl.CC_SpinBox,
+        option,
+        QStyle.SubControl.SC_SpinBoxUp,
+        spinbox,
+    )
+    down_rect = spinbox.style().subControlRect(
+        QStyle.ComplexControl.CC_SpinBox,
+        option,
+        QStyle.SubControl.SC_SpinBoxDown,
+        spinbox,
+    )
 
-        assert up_rect.width() >= 26
-        assert down_rect.width() >= 26
-        assert up_rect.left() == down_rect.left()
-        assert up_rect.right() == spinbox.rect().right()
-        assert down_rect.right() == spinbox.rect().right()
-        assert up_rect.bottom() < down_rect.bottom()
+    assert up_rect.width() >= 26
+    assert down_rect.width() >= 26
+    assert up_rect.left() == down_rect.left()
+    assert up_rect.right() == spinbox.rect().right()
+    assert down_rect.right() == spinbox.rect().right()
+    assert up_rect.bottom() < down_rect.bottom()
 
     panel.close()
 
 
-def test_settings_panel_persists_and_emits_live_scan_and_alert_changes(
+def test_settings_panel_persists_and_emits_live_scan_changes(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.delenv("EVE_SENTRY_CHANNEL", raising=False)
-    monkeypatch.delenv("EVE_SENTRY_CHATLOG_DIR", raising=False)
     monkeypatch.delenv("EVE_SENTRY_SCAN_INTERVAL", raising=False)
     monkeypatch.delenv("EVE_SENTRY_WINDOW_KEYWORD", raising=False)
     config_path = tmp_path / "channel_settings.json"
@@ -363,336 +318,16 @@ def test_settings_panel_persists_and_emits_live_scan_and_alert_changes(
     qt_app()
     panel = SettingsPanel(config_path=config_path)
     scan_changes = []
-    alert_changes = []
     panel.scan_settings_changed.connect(lambda: scan_changes.append(True))
-    panel.channel_settings_changed.connect(lambda: alert_changes.append(True))
 
     panel._interval_spin.setValue(5)
     panel._keyword_edit.setText("EVE - Pilot")
     panel._keyword_edit.editingFinished.emit()
-    panel._channel_edit.setText("Alliance Intel")
-    panel._channel_enabled.setChecked(True)
 
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["scan_interval"] == 5
     assert saved["window_keyword"] == "EVE - Pilot"
-    assert saved["enabled"] is True
-    assert saved["channels"] == "Alliance Intel"
     assert len(scan_changes) == 2
-    assert alert_changes == [True]
-
-
-def test_settings_panel_discovers_channel_list_from_chatlogs(tmp_path, monkeypatch):
-    monkeypatch.delenv("EVE_SENTRY_CHANNEL", raising=False)
-    monkeypatch.delenv("EVE_SENTRY_CHATLOG_DIR", raising=False)
-    chatlogs = tmp_path / "Chatlogs"
-    chatlogs.mkdir()
-    (chatlogs / "Alliance Intel_20260630_120000.txt").write_text(
-        "[ 2026.06.30 12:01:12 ] Scout A > Tama +3 reds\n",
-        encoding="utf-8",
-    )
-    (chatlogs / "wc.Venal+Br+Te_20260702_121156_2124219939.txt").write_text(
-        "[ 2026.07.02 12:11:56 ] Scout B > S-KSWL clear\n",
-        encoding="utf-8",
-    )
-    config_path = tmp_path / "channel_settings.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "enabled": True,
-                "channels": "Alliance Intel",
-                "chatlog_dir": str(chatlogs),
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    qt_app()
-    panel = SettingsPanel(config_path=config_path)
-
-    assert [
-        panel._channel_list.item(index).text()
-        for index in range(panel._channel_list.count())
-    ] == ["Alliance Intel", "wc.Venal+Br+Te"]
-    assert panel.get_channel_names() == ["Alliance Intel"]
-
-    panel._channel_list.item(1).setCheckState(Qt.CheckState.Checked)
-    panel.save_channel_config()
-
-    assert panel.get_channel_names() == ["Alliance Intel", "wc.Venal+Br+Te"]
-    saved = json.loads(config_path.read_text(encoding="utf-8"))
-    assert saved["channels"] == "Alliance Intel, wc.Venal+Br+Te"
-
-
-def test_clicking_channel_name_toggles_it_on_and_off_without_accumulating(
-    tmp_path,
-    monkeypatch,
-):
-    monkeypatch.delenv("EVE_SENTRY_CHANNEL", raising=False)
-    monkeypatch.delenv("EVE_SENTRY_CHATLOG_DIR", raising=False)
-    chatlogs = tmp_path / "Chatlogs"
-    chatlogs.mkdir()
-    (chatlogs / "Alliance Intel_20260720_120000.txt").write_text(
-        "[ 2026.07.20 12:00:00 ] Scout > clear\n",
-        encoding="utf-8",
-    )
-    config_path = tmp_path / "channel_settings.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "enabled": True,
-                "channels": "Alliance Intel",
-                "chatlog_dir": str(chatlogs),
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    app = qt_app()
-    panel = SettingsPanel(config_path=config_path)
-    panel.show()
-    app.processEvents()
-    item = panel._channel_list.item(0)
-    row_center = panel._channel_list.visualItemRect(item).center()
-
-    QTest.mouseClick(
-        panel._channel_list.viewport(),
-        Qt.MouseButton.LeftButton,
-        pos=row_center,
-    )
-    assert item.checkState() == Qt.CheckState.Unchecked
-    assert panel.get_channel_names() == []
-    assert panel._channel_edit.text() == ""
-
-    QTest.mouseClick(
-        panel._channel_list.viewport(),
-        Qt.MouseButton.LeftButton,
-        pos=row_center,
-    )
-    assert item.checkState() == Qt.CheckState.Checked
-    assert panel.get_channel_names() == ["Alliance Intel"]
-    assert panel._channel_edit.text() == "Alliance Intel"
-    panel.close()
-
-
-def test_settings_panel_filters_historical_channel_files(tmp_path, monkeypatch):
-    monkeypatch.delenv("EVE_SENTRY_CHANNEL", raising=False)
-    monkeypatch.delenv("EVE_SENTRY_CHATLOG_DIR", raising=False)
-    chatlogs = tmp_path / "Chatlogs"
-    chatlogs.mkdir()
-    recent = chatlogs / "Current Intel_20260708_120000.txt"
-    old = chatlogs / "Old Intel_20240101_120000.txt"
-    recent.write_text("[ 2026.07.08 12:00:00 ] Scout > active\n", encoding="utf-8")
-    old.write_text("[ 2024.01.01 12:00:00 ] Scout > old\n", encoding="utf-8")
-    old_time = recent.stat().st_mtime - (60 * 24 * 60 * 60)
-    os.utime(old, (old_time, old_time))
-    config_path = tmp_path / "channel_settings.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "enabled": True,
-                "channels": "",
-                "chatlog_dir": str(chatlogs),
-                "recent_days": 30,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    qt_app()
-    panel = SettingsPanel(config_path=config_path)
-
-    assert [
-        panel._channel_list.item(index).text()
-        for index in range(panel._channel_list.count())
-    ] == ["Current Intel"]
-
-    panel._channel_recent_days_spin.setValue(0)
-
-    assert [
-        panel._channel_list.item(index).text()
-        for index in range(panel._channel_list.count())
-    ] == ["Current Intel", "Old Intel"]
-
-
-def make_channel_window(channels):
-    window = MainWindow.__new__(MainWindow)
-    window._settings = FakeChannelSettings(channels)
-    window._intel_client = object()
-    window._channel_timer = FakeChannelTimer()
-    window._channel_watcher = None
-    window._channel_state_path = "channel_offsets.json"
-    window._channel_error_backoff_ms = CHANNEL_ERROR_BACKOFF_MS
-    window._log_messages = []
-    window._log_message = lambda message: window._log_messages.append(message)
-    return window
-
-
-def test_channel_monitor_saves_config_before_start(monkeypatch):
-    class SaveableSettings(FakeChannelSettings):
-        def __init__(self):
-            super().__init__(["wc.Venal+Br+Te"])
-            self.saved = 0
-
-        def save_channel_config(self):
-            self.saved += 1
-
-    class FakeWatcher:
-        def __init__(self, log_dir, channels, state_path):
-            pass
-
-        def discover_files(self):
-            return [object()]
-
-        def seed_to_end(self):
-            pass
-
-    monkeypatch.setattr("app.ui.main_window.ChatLogWatcher", FakeWatcher)
-    window = make_channel_window([])
-    window._settings = SaveableSettings()
-
-    assert MainWindow._start_channel_monitor(window) is True
-    assert window._settings.saved == 1
-
-
-def test_channel_monitor_does_not_start_without_selected_channel():
-    window = make_channel_window([])
-
-    assert MainWindow._start_channel_monitor(window) is False
-    assert window._channel_watcher is None
-    assert window._channel_timer.started is False
-
-
-def test_channel_monitor_starts_only_for_selected_channels(monkeypatch):
-    created = {}
-
-    class FakeWatcher:
-        def __init__(self, log_dir, channels, state_path):
-            created["log_dir"] = log_dir
-            created["channels"] = channels
-            created["state_path"] = state_path
-            self.seeded = False
-
-        def discover_files(self):
-            return [object()]
-
-        def seed_to_end(self):
-            self.seeded = True
-
-    monkeypatch.setattr("app.ui.main_window.ChatLogWatcher", FakeWatcher)
-    window = make_channel_window(["wc.Venal+Br+Te"])
-
-    assert MainWindow._start_channel_monitor(window) is True
-
-    assert created == {
-        "log_dir": "C:/EVE/Chatlogs",
-        "channels": ["wc.Venal+Br+Te"],
-        "state_path": "channel_offsets.json",
-    }
-    assert window._channel_watcher.seeded is True
-    assert window._channel_timer.interval() == CHANNEL_POLL_INTERVAL_MS
-    assert window._channel_timer.started is True
-    assert window._log_messages == [
-        "频道日志监控已启动：wc.Venal+Br+Te（匹配 1 个日志文件）"
-    ]
-
-
-def test_channel_monitor_warns_when_no_channel_files_match(monkeypatch):
-    class FakeWatcher:
-        def __init__(self, log_dir, channels, state_path):
-            self.seeded = False
-
-        def discover_files(self):
-            return []
-
-        def seed_to_end(self):
-            self.seeded = True
-
-    monkeypatch.setattr("app.ui.main_window.ChatLogWatcher", FakeWatcher)
-    window = make_channel_window(["wc.Venal+Br+Te"])
-
-    assert MainWindow._start_channel_monitor(window) is True
-
-    assert window._channel_watcher.seeded is True
-    assert window._channel_timer.started is True
-    assert window._log_messages == [
-        "频道日志监控已启动，但暂未匹配到日志文件："
-        "wc.Venal+Br+Te。请使用完整频道名，或显式使用 * / ? 通配符。"
-    ]
-
-
-def test_channel_monitor_uploads_raw_records_to_server(monkeypatch):
-    calls = {}
-
-    def fake_process_once(watcher, api, **kwargs):
-        calls["watcher"] = watcher
-        calls["api"] = api
-        calls["kwargs"] = kwargs
-        kwargs["diagnostics"]["last_action"] = "server_parse:1"
-        kwargs["diagnostics"]["last_error"] = ""
-        kwargs["diagnostics"]["last_success_at"] = "2026-07-07T00:00:00Z"
-        return 1
-
-    monkeypatch.setattr("app.ui.main_window.process_once", fake_process_once)
-    window = make_channel_window(["wc.Venal+Br+Te"])
-    window._channel_watcher = object()
-    window._channel_names = ["wc.Venal+Br+Te"]
-    window._channel_last_error = ""
-    window._channel_last_success_at = ""
-    window._publish_heartbeat = lambda: None
-
-    MainWindow._poll_channel_monitor(window)
-
-    assert calls["watcher"] is window._channel_watcher
-    assert calls["api"] is window._intel_client
-    assert "server_parse" not in calls["kwargs"]
-    assert window._channel_last_action == "server_parse:1"
-    assert window._channel_timer.interval() == CHANNEL_POLL_INTERVAL_MS
-    assert window._log_messages == ["Channel observations uploaded: 1"]
-
-
-def test_channel_monitor_backs_off_after_upload_error(monkeypatch):
-    def fake_process_once(_watcher, _api, **_kwargs):
-        raise RuntimeError("timed out")
-
-    monkeypatch.setattr("app.ui.main_window.process_once", fake_process_once)
-    window = make_channel_window(["wc.Venal+Br+Te"])
-    window._channel_watcher = object()
-    window._channel_names = ["wc.Venal+Br+Te"]
-    window._channel_last_error = ""
-    window._channel_last_success_at = ""
-    heartbeat_calls = []
-    window._publish_heartbeat = lambda: heartbeat_calls.append(True)
-
-    MainWindow._poll_channel_monitor(window)
-
-    assert window._channel_last_action == "observation_error"
-    assert window._channel_last_error == "timed out"
-    assert window._channel_timer.interval() == CHANNEL_ERROR_BACKOFF_MS
-    assert window._log_messages == ["Channel log upload failed: timed out"]
-    assert heartbeat_calls == [True]
-
-
-def test_channel_monitor_restores_poll_interval_after_success(monkeypatch):
-    def fake_process_once(_watcher, _api, **kwargs):
-        kwargs["diagnostics"]["last_action"] = "server_parse_idle"
-        kwargs["diagnostics"]["last_error"] = ""
-        return 0
-
-    monkeypatch.setattr("app.ui.main_window.process_once", fake_process_once)
-    window = make_channel_window(["wc.Venal+Br+Te"])
-    window._channel_watcher = object()
-    window._channel_names = ["wc.Venal+Br+Te"]
-    window._channel_last_error = "timed out"
-    window._channel_last_success_at = ""
-    window._channel_timer.setInterval(CHANNEL_ERROR_BACKOFF_MS)
-    window._publish_heartbeat = lambda: None
-
-    MainWindow._poll_channel_monitor(window)
-
-    assert window._channel_last_action == "server_parse_idle"
-    assert window._channel_last_error == ""
-    assert window._channel_timer.interval() == CHANNEL_POLL_INTERVAL_MS
 
 
 def test_start_monitor_creates_worker_per_eve_window(monkeypatch):
@@ -776,7 +411,6 @@ def test_start_monitor_creates_worker_per_eve_window(monkeypatch):
         {
             "get_keyword": lambda self: "EVE -",
             "get_interval": lambda self: 2.0,
-            "get_channel_names": lambda self: [],
         },
     )()
     window._region_prefs = FakeRegionPrefs()
@@ -785,7 +419,6 @@ def test_start_monitor_creates_worker_per_eve_window(monkeypatch):
     window._worker_contexts = {}
     window._worker = None
     window._refresh_intel_location = lambda force=False: True
-    window._start_channel_monitor = lambda: False
     window._publish_heartbeat = lambda: None
     window._refresh_status_cards = lambda: None
     window._log_messages = []
@@ -1026,68 +659,28 @@ def test_update_window_status_records_last_action():
     ]
 
 
-def test_start_monitor_allows_channel_only_without_eve_windows():
+def test_start_monitor_rejects_missing_eve_windows(monkeypatch):
     class FakeButton:
         def __init__(self):
-            self.text = ""
-            self.style = ""
             self.checked = True
 
         def setChecked(self, value):
             self.checked = value
 
-        def setText(self, text):
-            self.text = text
-
-        def setStyleSheet(self, text):
-            self.style = text
-
-    class FakeLabel:
-        def __init__(self):
-            self.text = ""
-            self.style = ""
-
-        def setText(self, text):
-            self.text = text
-
-        def setStyleSheet(self, text):
-            self.style = text
-
+    messages = []
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.critical",
+        lambda _parent, _title, message: messages.append(message),
+    )
     window = MainWindow.__new__(MainWindow)
     window._build_monitor_targets = lambda: []
     window._detect_window = lambda: None
-    window._start_channel_monitor = lambda: True
-    window._publish_heartbeat_called = 0
-    window._publish_heartbeat = lambda: setattr(
-        window,
-        "_publish_heartbeat_called",
-        window._publish_heartbeat_called + 1,
-    )
-    window._refresh_status_cards_called = 0
-    window._refresh_status_cards = lambda: setattr(
-        window,
-        "_refresh_status_cards_called",
-        window._refresh_status_cards_called + 1,
-    )
-    window._refresh_intel_location = lambda force=False: True
     window._monitor_btn = FakeButton()
-    window._status_label = FakeLabel()
-    window._log_messages = []
-    window._log_message = lambda message: window._log_messages.append(message)
-    window._heartbeat_last_action = ""
-    window._heartbeat_last_error = "previous"
-    window._heartbeat_last_success_at = ""
 
     MainWindow._start_monitor(window)
 
-    assert window._monitor_btn.text == "停止监控"
-    assert window._status_label.text == "频道日志监控中"
-    assert window._log_messages == ["未发现 EVE 窗口，已仅启动频道日志监控"]
-    assert window._heartbeat_last_action == "channel_monitor_started"
-    assert window._heartbeat_last_error == ""
-    assert window._heartbeat_last_success_at
-    assert window._publish_heartbeat_called == 1
-    assert window._refresh_status_cards_called == 1
+    assert window._monitor_btn.checked is False
+    assert messages == ["当前没有可用的 EVE 窗口。"]
 
 
 def test_auto_start_monitor_checks_button_and_starts_once():
@@ -1132,51 +725,6 @@ def test_scan_interval_changes_apply_to_running_workers():
 
     assert worker.interval == 5.0
     assert window._log_messages == ["扫描间隔已实时更新为 5 秒"]
-
-
-def test_alert_channel_settings_can_start_while_scan_workers_are_stopped():
-    class FakeButton:
-        def setChecked(self, value):
-            self.checked = value
-
-        def setText(self, value):
-            self.text = value
-
-        def setStyleSheet(self, value):
-            self.style = value
-
-    class FakeLabel:
-        def setText(self, value):
-            self.text = value
-
-        def setStyleSheet(self, value):
-            self.style = value
-
-    window = MainWindow.__new__(MainWindow)
-    window._settings = type(
-        "Settings",
-        (),
-        {"get_channel_names": lambda self: ["Alliance Intel"]},
-    )()
-    window._monitor_btn = FakeButton()
-    window._status_label = FakeLabel()
-    window._channel_watcher = None
-    window._start_channel_monitor = lambda: True
-    window._is_monitoring = lambda: False
-    window._heartbeat_last_action = ""
-    window._heartbeat_last_error = ""
-    window._heartbeat_last_success_at = ""
-    heartbeats = []
-    window._publish_heartbeat = lambda: heartbeats.append(True)
-    window._refresh_status_cards = lambda: None
-
-    MainWindow._apply_channel_settings(window)
-
-    assert window._monitor_btn.checked is True
-    assert window._monitor_btn.text == "停止监控"
-    assert window._status_label.text == "频道日志监控中"
-    assert window._heartbeat_last_action == "channel_config_applied"
-    assert heartbeats == [True]
 
 
 def test_publish_heartbeat_includes_multi_window_targets():
@@ -1229,11 +777,6 @@ def test_publish_heartbeat_includes_multi_window_targets():
     window._intel_system_source = "esi"
     window._popup_alerts_enabled = False
     window._window_combo = FakeCombo()
-    window._channel_watcher = None
-    window._channel_names = []
-    window._channel_last_action = ""
-    window._channel_last_error = ""
-    window._channel_last_success_at = ""
     window._last_heartbeat_error = ""
     window._refresh_status_cards = lambda: None
 
@@ -1258,56 +801,6 @@ def test_publish_heartbeat_includes_multi_window_targets():
             "monitoring": True,
         },
     ]
-
-
-def test_publish_heartbeat_marks_channel_only_monitor_as_running():
-    class FakeClient:
-        def __init__(self):
-            self.payload = None
-
-        def post_heartbeat(self, **payload):
-            self.payload = payload
-            return {"client_id": payload["client_id"], "online": True}
-
-    class FakeCombo:
-        def currentText(self):
-            return ""
-
-    window = MainWindow.__new__(MainWindow)
-    window._intel_client = FakeClient()
-    window._workers = {}
-    window._worker = None
-    window._worker_contexts = {}
-    window._heartbeat_client_id = "detector-client:test"
-    window._heartbeat_interval = 15.0
-    window._heartbeat_runtime = {
-        "client_version": "test-version",
-        "host": "test-host",
-    }
-    window._heartbeat_last_action = "channel_monitor_started"
-    window._heartbeat_last_error = ""
-    window._heartbeat_last_success_at = "2026-07-07T00:00:00Z"
-    window._intel_system = "S-KSWL"
-    window._intel_system_source = "env"
-    window._popup_alerts_enabled = False
-    window._window_combo = FakeCombo()
-    window._channel_watcher = object()
-    window._channel_names = ["wc.Venal+Br+Te"]
-    window._channel_last_action = "server_parse_idle"
-    window._channel_last_error = ""
-    window._channel_last_success_at = ""
-    window._last_heartbeat_error = ""
-    window._refresh_status_cards = lambda: None
-
-    MainWindow._publish_heartbeat(window)
-
-    assert window._intel_client.payload["status"] == "running"
-    details = window._intel_client.payload["details"]
-    assert details["mode"] == "channel_monitoring"
-    assert details["monitoring"] is False
-    assert details["channel_monitoring"] is True
-    assert details["channels"] == ["wc.Venal+Br+Te"]
-    assert details["channel_last_action"] == "server_parse_idle"
 
 
 def test_stopped_monitor_does_not_publish_ocr_or_heartbeat():
@@ -1364,7 +857,6 @@ def test_stop_monitor_disables_timer_and_queues_without_uploading():
     window._heartbeat_timer = FakeTimer()
     window._network_tasks = FakeNetworkTasks()
     window._stop_monitor_workers = lambda timeout_ms: timeout_ms == 3000
-    window._stop_channel_monitor = lambda: None
     window._monitor_btn = FakeButton()
     window._status_label = FakeLabel()
     window._log_messages = []
