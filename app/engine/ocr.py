@@ -2,6 +2,8 @@
 
 import logging
 import os
+import sys
+from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
@@ -106,20 +108,43 @@ class OCREngine:
         use_gpu: bool,
     ) -> object:
         """Create PaddleOCR across 2.x/3.x constructor option changes."""
+        modern_options = {
+            "lang": self._lang,
+            "use_doc_orientation_classify": False,
+            "use_doc_unwarping": False,
+            "use_textline_orientation": False,
+            "device": device_arg,
+        }
+        modern_options.update(self._bundled_model_options())
         try:
-            return factory(
-                lang=self._lang,
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-                device=device_arg,
-            )
+            return factory(**modern_options)
         except TypeError:
             return factory(
                 lang=self._lang,
                 use_angle_cls=False,
                 use_gpu=use_gpu,
             )
+
+    def _bundled_model_options(self) -> dict[str, str]:
+        """Return packaged PaddleOCR model paths when both models are present."""
+        bundle_path = getattr(sys, "_MEIPASS", None)
+        if not bundle_path:
+            return {}
+
+        bundle_root = Path(bundle_path)
+        model_root = bundle_root / "models"
+        detection_dir = model_root / "PP-OCRv6_medium_det"
+        recognition_dir = model_root / "PP-OCRv6_medium_rec"
+        required_file = "inference.pdiparams"
+        if not (detection_dir / required_file).is_file() or not (
+            recognition_dir / required_file
+        ).is_file():
+            return {}
+
+        return {
+            "text_detection_model_dir": str(detection_dir),
+            "text_recognition_model_dir": str(recognition_dir),
+        }
 
     def recognize(
         self,

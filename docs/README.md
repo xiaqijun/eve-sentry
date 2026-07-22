@@ -12,6 +12,8 @@
   服务端分类/告警配置 API、SQLite/JSON 启动方式和 runtime 配置注意事项。
 - `docs/local-integration.md`
   本地联调启动顺序、健康检查、runtime data 和常见排查入口。
+- `docs/monitor-client-packaging.md`
+  Windows GPU 监控客户端的离线模型打包、压缩、分发和验收说明。
 - `docs/server-deployment.md`
   Linux 服务端部署、systemd 模板、环境变量入口和客户端对接说明。
 

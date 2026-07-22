@@ -1,9 +1,9 @@
 # EVE Sentry 本地联调指南
 
-> Current status (2026-07-09): local integration should not enable or validate
-> zKillboard/killboard enrichment. The detector client uploads OCR snapshots and
-> optional channel log lines only; the server resolves ESI identity/standing and
-> applies friendly/hostile filtering.
+> Current status (2026-07-22): local integration should not enable or validate
+> zKillboard/killboard enrichment. The detector client uploads OCR snapshots only;
+> the independent channel client uploads channel log lines, and the server resolves
+> ESI identity/standing and applies friendly/hostile filtering.
 
 > Current workflow baseline (2026-07-10): 联调不验证威胁评分。服务端只查询未查询过
 > ESI 的角色，并在角色被分类为敌对时触发一次性告警；中立、不良、糟糕声望统一归为敌对。
@@ -122,6 +122,10 @@ Chatlogs。需要匹配一组频道时，显式使用 `*` 或 `?` 通配符；�
 `/api/v1/channel-lines`，由服务端统一解析、ESI 补全、声望敌对分类和一次性告警。
 
 ### 4. 启动检测客户端
+
+直接使用包含 GPU OCR 模型的 Windows 发行包，或需要重新构建压缩包时，参见
+[`docs/monitor-client-packaging.md`](monitor-client-packaging.md)。发行包只包含监控客户端；
+独立频道客户端和预警客户端不在该压缩包内。
 
 ```powershell
 .\scripts\start_monitor_client.ps1 -Server http://127.0.0.1:8765
@@ -313,7 +317,7 @@ python scripts/live_acceptance_bundle.py --server http://127.0.0.1:8765 --output
 脚本会创建带时间戳的子目录，写入:
 
 - `baseline.json`: 服务端 health、clients、active intel、可选 ESI / map / SSE 基线。
-- `detector-channel.json`: 检测端在线、监控中、多窗口 target 数、频道监控状态。
+- `detector-channel.json`: 检测端在线、监控中、多窗口 target 数，以及独立频道客户端状态。
 - `alert-client.json`: 预警客户端在线、SSE 连通性，以及 heartbeat 中的
   events、overlay、popup 配置状态；有最近真实 alert 时还会读取
   `GET /api/v1/alerts/{id}` 详情。

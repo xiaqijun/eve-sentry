@@ -93,3 +93,24 @@ def test_constructor_falls_back_to_paddleocr_2_option_name():
         },
         {"lang": "en", "use_angle_cls": False, "use_gpu": True},
     ]
+
+
+def test_constructor_uses_bundled_models(monkeypatch, tmp_path):
+    detection_dir = tmp_path / "models" / "PP-OCRv6_medium_det"
+    recognition_dir = tmp_path / "models" / "PP-OCRv6_medium_rec"
+    detection_dir.mkdir(parents=True)
+    recognition_dir.mkdir(parents=True)
+    (detection_dir / "inference.pdiparams").write_bytes(b"det")
+    (recognition_dir / "inference.pdiparams").write_bytes(b"rec")
+    monkeypatch.setattr("app.engine.ocr.sys._MEIPASS", str(tmp_path), raising=False)
+    calls = []
+
+    def factory(**kwargs):
+        calls.append(kwargs)
+        return object()
+
+    engine = OCREngine()
+
+    assert engine._create_paddle_ocr(factory, device_arg="gpu:0", use_gpu=True)
+    assert calls[0]["text_detection_model_dir"] == str(detection_dir)
+    assert calls[0]["text_recognition_model_dir"] == str(recognition_dir)
