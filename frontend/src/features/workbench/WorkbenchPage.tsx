@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Activity,
+  BarChart3,
   Bell,
   Database,
   Filter,
@@ -499,6 +500,11 @@ export function WorkbenchPage() {
             <span>当前显示</span>
             <strong>{activeNavItem.status}</strong>
           </p>
+          <a className="report-nav-link" href="/reports">
+            <BarChart3 size={16} />
+            <span>来袭报表</span>
+            <strong>历史统计</strong>
+          </a>
         </nav>
 
         <section className="threat-status-panel">
