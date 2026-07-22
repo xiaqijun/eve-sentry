@@ -22,7 +22,7 @@
 
 | 模块 | 当前状态 | 主要待做 |
 | --- | --- | --- |
-| 检测客户端 | 已能后台截图、OCR 本地列表、多 EVE 窗口监控、可选监控指定预警频道日志、上报 observation 和 detector heartbeat，默认不弹本地预警 | 补区域选择排障细节和实机多开验收 |
+| 检测客户端 | 已能后台截图、OCR 本地列表、多 EVE 窗口监控、上报 OCR snapshot 和 detector heartbeat，默认不弹本地预警 | 补区域选择排障细节和实机多开验收 |
 | 预警客户端 | 已重做为托盘后台 + 半透明浮窗，只消费 `/api/v1/events` 的 alert 事件，本地去重且不 ack | 补更多运行诊断 |
 | 服务端模型/API | 已有 `Observation`、`ThreatEvent`、alert detail、实体情报查询、ack、配置 API、health、heartbeats、SQLite | 补更细客户端诊断 |
 | 预警频道解析 | 已有 chatlog watcher、parser、`POST /api/v1/channel-lines`、解析诊断和 ESI 辅助修正 | 扩更多真实频道格式 |
@@ -95,7 +95,7 @@ flowchart LR
 检测客户端只上报到服务端，不弹出本地预警窗口，也不播放本地告警声音。
 `EVE_SENTRY_SHOW_POPUPS` 不再影响检测客户端；正式联调由独立预警客户端消费服务端 alert。
 PowerShell 启动脚本会把 `-Server` 映射为 `EVE_SENTRY_INTEL_URL`，并可用
-`-Channel`、`-ChatlogDir`、`-System`、`-NoPublish` 等参数配置本地运行。
+`-ChatlogDir`、`-System`、`-NoPublish` 等参数配置本地运行。
 
 OCR 上报语义:
 
@@ -135,11 +135,11 @@ OCR 上报语义:
 - 可用 `EVE_SENTRY_USE_ESI_LOCATION=0` 关闭自动同步；可用
   `EVE_SENTRY_ESI_LOCATION_TTL=30` 调整当前位置刷新间隔。
 
-### 3.2 频道日志监控
+### 3.2 独立频道日志客户端
 
 职责:
 
-- 监控客户端内置监听 EVE chatlogs 目录。
+- `app.channel_client` 独立监听 EVE chatlogs 目录。
 - 解析联盟预警频道、军团频道、自定义情报频道。
 - 从文本中提取星系、角色名、跳数、方向、原始消息。
 - 上报 `Observation`，并保留原始文本作为证据。
@@ -150,7 +150,7 @@ OCR 上报语义:
 %USERPROFILE%\Documents\EVE\logs\Chatlogs
 ```
 
-独立 `app.channel_client` 仍保留为调试/批处理入口:
+频道采集与 OCR 监控客户端分离，`app.channel_client` 可作为长驻采集、调试或批处理入口:
 
 ```powershell
 # 只解析并打印，不连接服务端，适合先用样例 chatlog 验证规则

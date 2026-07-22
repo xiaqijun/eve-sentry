@@ -5,7 +5,8 @@
 
 ## 1. 第一版核心规则
 
-- 监控客户端只上传 OCR 当前名单和用户已选择频道的新增日志行。
+- 监控客户端只上传 OCR 当前名单。
+- 预警频道日志由独立频道客户端采集并上报。
 - 监控客户端不做 ESI 查询、不做声望过滤、不做敌对判断、不做评分。
 - 服务端负责 ESI 查询、缓存、声望分类、告警去重和 SSE 推送。
 - ESI 查询触发条件是“这个角色从未查询过 ESI”，不是“本次名单新增”。
@@ -22,7 +23,8 @@
 ```mermaid
 flowchart LR
   subgraph Local["本地客户端"]
-    Detector["监控客户端\nOCR名单上传\n频道新增行上传"]
+    Detector["监控客户端\nOCR名单上传"]
+    ChannelClient["频道客户端\n频道新增行上传"]
     AlertClient["预警客户端\n订阅SSE\n弹窗/声音"]
   end
 
@@ -41,6 +43,7 @@ flowchart LR
   end
 
   Detector --> API
+  ChannelClient --> API
   AlertClient --> API
   API --> Parser
   API --> ESI
@@ -55,7 +58,7 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-  participant C as 监控客户端
+  participant C as 频道客户端
   participant S as 服务端
   participant DB as PostgreSQL
   participant E as ESI
@@ -99,7 +102,7 @@ sequenceDiagram
 
 频道解析规则:
 
-- 没有选择频道时，客户端不上报频道日志。
+- 没有选择频道时，频道客户端不上报频道日志。
 - 客户端只读取新增行，不上传历史文件全量内容。
 - `stoneyflap: 8-4GQM Hector Audeles` 中 `stoneyflap` 是 sender，不是威胁目标。
 - `clr`、`clear`、`安全了` 等清除词进入 active intel 清除流程，不直接制造告警。

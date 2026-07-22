@@ -305,7 +305,6 @@ def test_monitor_ui_smoke_constructs_main_window_offscreen_without_side_effects(
     assert payload["main_window_created"] is True
     assert payload["intel_client_created"] is False
     assert payload["heartbeat_timer_active"] is False
-    assert payload["channel_timer_active"] is False
     assert payload["monitoring"] is False
     assert payload["worker_count"] == 0
     assert payload["window_combo_count"] == 0
@@ -318,7 +317,6 @@ def test_monitor_ui_smoke_constructs_main_window_offscreen_without_side_effects(
         "server",
         "esi",
         "ocr",
-        "channel",
         "window",
         "region",
     ]
@@ -368,10 +366,8 @@ def test_monitor_ui_smoke_constructs_main_window_offscreen_without_side_effects(
         "get_window_info_calls": 0,
         "heartbeat_posts": 0,
         "intel_client_created": 0,
-        "channel_line_posts": 0,
         "list_eve_windows_calls": 1,
         "network_requests": 0,
-        "observation_posts": 0,
         "ocr_created": 1,
         "ocr_snapshot_posts": 0,
         "ocr_recognize_calls": 0,
@@ -410,42 +406,6 @@ def test_monitor_ui_smoke_can_render_detected_window_offscreen():
     assert payload["side_effects"]["select_window_calls"] == 1
     assert payload["side_effects"]["screenshot_calls"] == 0
     assert payload["side_effects"]["network_requests"] == 0
-
-
-def test_monitor_ui_smoke_can_start_channel_only_without_eve_window():
-    result = subprocess.run(
-        [
-            sys.executable,
-            "scripts/monitor_ui_smoke.py",
-            "--json",
-            "--channel",
-            "wc.Venal+Br+Te",
-            "--start-monitor",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-
-    assert result.returncode == 0, result.stderr
-    payload = json.loads(result.stdout)
-    assert payload["ok"] is True
-    assert payload["window_combo_count"] == 0
-    assert payload["worker_count"] == 0
-    assert payload["monitoring"] is False
-    assert payload["channel_timer_active"] is True
-    assert payload["channel_names"] == ["wc.Venal+Br+Te"]
-    assert payload["monitor_button"] == "停止监控"
-    assert payload["status_card_values"]["channel"] == "1 个频道"
-    assert payload["status_card_values"]["ocr"] == "待启动"
-    assert payload["side_effects"]["intel_client_created"] == 1
-    assert payload["side_effects"]["heartbeat_posts"] == 1
-    assert payload["side_effects"]["network_requests"] == 0
-    assert payload["side_effects"]["channel_line_posts"] == 0
-    assert payload["side_effects"]["observation_posts"] == 0
-    assert payload["side_effects"]["ocr_snapshot_posts"] == 0
-    assert payload["runtime_files_created"] == []
 
 
 def test_monitor_ui_smoke_can_render_multiple_detected_windows_offscreen():
@@ -1719,7 +1679,6 @@ def test_start_monitor_client_powershell_script_wraps_detector_client():
     assert payload["args"] == ["-m", "app.detector_client"]
     assert payload["cwd"].endswith("eve-sentry")
     assert payload["env"]["EVE_SENTRY_INTEL_URL"] == "http://127.0.0.1:8765"
-    assert "EVE Sentry" in payload["env"]["EVE_SENTRY_CHANNEL_STATE"]
     assert payload["env"]["EVE_SENTRY_HEARTBEAT_INTERVAL"] == "15"
     assert payload["env"]["EVE_SENTRY_INTEL_TIMEOUT"] == "3"
 
@@ -1740,12 +1699,8 @@ def test_start_monitor_client_powershell_script_maps_runtime_options():
             "-PrintCommand",
             "-Server",
             "http://example.invalid",
-            "-Channel",
-            "wc.Venal+Br+Te",
             "-ChatlogDir",
             "C:\\EVE\\Chatlogs",
-            "-ChannelState",
-            "custom_offsets.json",
             "-System",
             "Tama",
             "-OcrDevice",
@@ -1767,9 +1722,7 @@ def test_start_monitor_client_powershell_script_maps_runtime_options():
     payload = json.loads(result.stdout)
     env = payload["env"]
     assert env["EVE_SENTRY_INTEL_URL"] == "http://example.invalid"
-    assert env["EVE_SENTRY_CHANNEL"] == "wc.Venal+Br+Te"
     assert env["EVE_SENTRY_CHATLOG_DIR"] == "C:\\EVE\\Chatlogs"
-    assert env["EVE_SENTRY_CHANNEL_STATE"] == "custom_offsets.json"
     assert env["EVE_SENTRY_SYSTEM"] == "Tama"
     assert env["EVE_SENTRY_OCR_DEVICE"] == "cpu"
     assert env["EVE_SENTRY_HEARTBEAT_INTERVAL"] == "20"
@@ -1799,12 +1752,8 @@ def test_start_monitor_client_powershell_script_prints_background_command():
             "-Background",
             "-Server",
             "http://example.invalid",
-            "-Channel",
-            "Alliance Intel Channel",
             "-ChatlogDir",
             "C:\\Users\\Test User\\Documents\\EVE\\logs\\Chatlogs",
-            "-ChannelState",
-            "C:\\EVE Sentry\\channel offsets.json",
             "-LogDir",
             "C:\\EVE Sentry\\logs",
         ],
@@ -1822,11 +1771,7 @@ def test_start_monitor_client_powershell_script_prints_background_command():
     assert payload["stdout"] == "C:\\EVE Sentry\\logs\\monitor-client.out.log"
     assert payload["stderr"] == "C:\\EVE Sentry\\logs\\monitor-client.err.log"
     assert env["EVE_SENTRY_INTEL_URL"] == "http://example.invalid"
-    assert env["EVE_SENTRY_CHANNEL"] == "Alliance Intel Channel"
     assert env["EVE_SENTRY_CHATLOG_DIR"] == "C:\\Users\\Test User\\Documents\\EVE\\logs\\Chatlogs"
-    assert env["EVE_SENTRY_CHANNEL_STATE"] == "C:\\EVE Sentry\\channel offsets.json"
-    assert "Set-Item -Path 'Env:EVE_SENTRY_CHANNEL'" in decoded
-    assert "'Alliance Intel Channel'" in decoded
     assert "'C:\\Users\\Test User\\Documents\\EVE\\logs\\Chatlogs'" in decoded
 
 

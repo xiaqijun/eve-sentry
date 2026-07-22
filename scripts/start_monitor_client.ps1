@@ -1,8 +1,6 @@
 param(
     [string]$Server = $(if ($env:EVE_SENTRY_MONITOR_SERVER) { $env:EVE_SENTRY_MONITOR_SERVER } elseif ($env:EVE_SENTRY_INTEL_URL) { $env:EVE_SENTRY_INTEL_URL } else { "http://127.0.0.1:8765" }),
-    [string]$Channel = $(if ($env:EVE_SENTRY_CHANNEL) { $env:EVE_SENTRY_CHANNEL } else { "" }),
     [string]$ChatlogDir = $(if ($env:EVE_SENTRY_CHATLOG_DIR) { $env:EVE_SENTRY_CHATLOG_DIR } else { "" }),
-    [string]$ChannelState = $(if ($env:EVE_SENTRY_CHANNEL_STATE) { $env:EVE_SENTRY_CHANNEL_STATE } else { Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "EVE Sentry\channel_offsets.json" }),
     [string]$System = $(if ($env:EVE_SENTRY_SYSTEM) { $env:EVE_SENTRY_SYSTEM } else { "" }),
     [string]$OcrDevice = $(if ($env:EVE_SENTRY_OCR_DEVICE) { $env:EVE_SENTRY_OCR_DEVICE } else { "" }),
     [double]$HeartbeatInterval = 15.0,
@@ -30,12 +28,10 @@ if (-not $Python) {
 
 $envUpdates = [ordered]@{
     EVE_SENTRY_INTEL_URL = $Server
-    EVE_SENTRY_CHANNEL_STATE = $ChannelState
     EVE_SENTRY_HEARTBEAT_INTERVAL = [string]$HeartbeatInterval
     EVE_SENTRY_INTEL_TIMEOUT = [string]$Timeout
 }
 
-if ($Channel) { $envUpdates["EVE_SENTRY_CHANNEL"] = $Channel }
 if ($ChatlogDir) { $envUpdates["EVE_SENTRY_CHATLOG_DIR"] = $ChatlogDir }
 if ($System) { $envUpdates["EVE_SENTRY_SYSTEM"] = $System }
 if ($OcrDevice) { $envUpdates["EVE_SENTRY_OCR_DEVICE"] = $OcrDevice }
@@ -166,7 +162,6 @@ if ($Background) {
         pid = $process.Id
         stdout = $stdout
         stderr = $stderr
-        channel_state = $ChannelState
     } | ConvertTo-Json -Depth 4
     exit 0
 }

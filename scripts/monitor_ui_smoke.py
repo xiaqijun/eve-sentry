@@ -38,15 +38,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="do not switch to an isolated temporary runtime directory",
     )
     parser.add_argument(
-        "--channel",
-        action="append",
-        default=[],
-        help="pre-fill one selected channel name; can be specified multiple times",
-    )
-    parser.add_argument(
         "--start-monitor",
         action="store_true",
-        help="click Start Monitor after rendering; use with --channel to exercise channel-only mode without network",
+        help="click Start Monitor after rendering",
     )
     parser.add_argument(
         "--screenshot",
@@ -70,8 +64,6 @@ class SmokeCounters:
         self.intel_client_created = 0
         self.network_requests = 0
         self.heartbeat_posts = 0
-        self.channel_line_posts = 0
-        self.observation_posts = 0
         self.ocr_snapshot_posts = 0
         self.tray_setup_patched = False
 
@@ -134,9 +126,6 @@ def run_smoke(args: argparse.Namespace) -> dict:
     os.environ.setdefault("EVE_SENTRY_OCR_DEVICE", "cpu")
     os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
     os.environ.setdefault("PADDLE_PDX_MODEL_SOURCE", "modelscope")
-    if args.channel:
-        os.environ["EVE_SENTRY_CHANNEL"] = ",".join(args.channel)
-
     fake_window_count = max(1 if args.fake_window else 0, args.fake_window_count)
     fake_windows = build_fake_windows(fake_window_count)
     counters = SmokeCounters()
@@ -233,36 +222,10 @@ def run_smoke(args: argparse.Namespace) -> dict:
                 self.heartbeats.append(payload)
                 return {"client_id": payload.get("client_id", ""), "online": True}
 
-            def post_channel_line(self, line, channel=""):
-                _ = line, channel
-                counters.channel_line_posts += 1
-                return {"ignored": True}
-
-            def post_observation(self, **payload):
-                _ = payload
-                counters.observation_posts += 1
-                return {"observation": {"id": "smoke"}}
-
             def post_ocr_snapshot(self, **payload):
                 _ = payload
                 counters.ocr_snapshot_posts += 1
                 return {"created": 0, "active": [], "inactive": []}
-
-        class FakeChatLogWatcher:
-            def __init__(self, log_dir, channels, state_path) -> None:
-                self.log_dir = Path(log_dir)
-                self.channels = list(channels)
-                self.state_path = Path(state_path)
-                self.seeded = False
-
-            def discover_files(self) -> list[Path]:
-                return []
-
-            def seed_to_end(self) -> None:
-                self.seeded = True
-
-            def poll_lines(self) -> list:
-                return []
 
         def fake_setup_tray(self) -> None:
             counters.tray_setup_patched = True
@@ -271,7 +234,6 @@ def run_smoke(args: argparse.Namespace) -> dict:
         main_window.Capturer = FakeCapturer
         main_window.OCREngine = FakeOCREngine
         main_window.IntelApiClient = SmokeIntelClient if args.start_monitor else ForbiddenIntelClient
-        main_window.ChatLogWatcher = FakeChatLogWatcher
         main_window.MainWindow._setup_tray = fake_setup_tray
 
         app = QApplication.instance() or QApplication(["monitor-ui-smoke"])
@@ -405,10 +367,8 @@ def run_smoke(args: argparse.Namespace) -> dict:
             "main_window_created": True,
             "intel_client_created": getattr(window, "_intel_client", None) is not None,
             "heartbeat_timer_active": window._heartbeat_timer.isActive(),
-            "channel_timer_active": window._channel_timer.isActive(),
             "monitoring": window._is_monitoring(),
             "worker_count": worker_count,
-            "channel_names": list(getattr(window, "_channel_names", [])),
             "window_combo_count": window._window_combo.count(),
             "window_combo_items": window_combo_items,
             "selected_window": window._window_combo.currentText(),
