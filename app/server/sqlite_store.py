@@ -174,24 +174,25 @@ class SQLiteIntelStore(IntelStore):
             str(payload.get("system_name") or payload.get("system") or "")
         )
         system_id = self._optional_int(payload.get("system_id"))
+        seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
         hostile_icon_count = max(
             0,
             self._optional_int(payload.get("hostile_icon_count")) or 0,
-        )
-        snapshot_metadata = (
-            {
-                "hostile_icon_detected": True,
-                "hostile_icon_count": hostile_icon_count,
-            }
-            if hostile_icon_count > 0
-            else {}
         )
         defer_esi = self._resolver is not None or self._enricher is not None
         names = self._normalize_ocr_names(
             payload.get("names"),
             resolve=not defer_esi,
         )
-        seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
+        snapshot_metadata = (
+            {
+                "hostile_icon_detected": hostile_icon_count > 0,
+                "hostile_icon_count": hostile_icon_count,
+                "hostile_icon_seen_at": seen_at,
+            }
+            if "hostile_icon_count" in payload or not names
+            else {}
+        )
         raw_text = ", ".join(names)
         result = ActiveIntelSnapshotResult()
         seen_name_keys = {name.casefold() for name in names}
@@ -311,6 +312,14 @@ class SQLiteIntelStore(IntelStore):
                     continue
                 if item.name.casefold() in seen_name_keys:
                     continue
+
+                for report in self._apply_hostile_icon_metadata(
+                    item,
+                    snapshot_metadata,
+                ):
+                    if report not in new_reports:
+                        new_reports.append(report)
+                changed_active_ids.add(item.active_id)
 
                 elapsed = self._seconds_between_iso(item.last_seen_at, seen_at)
                 if elapsed is None or elapsed <= DEFAULT_OCR_GRACE_SECONDS:

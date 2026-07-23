@@ -22,8 +22,8 @@
 
 | 模块 | 当前状态 | 主要待做 |
 | --- | --- | --- |
-| 检测客户端 | 已能后台截图、OCR 本地列表、多 EVE 窗口监控、上报 OCR snapshot 和 detector heartbeat，默认不弹本地预警 | 补区域选择排障细节和实机多开验收 |
-| 预警客户端 | 已重做为托盘后台 + 半透明浮窗，只消费 `/api/v1/events` 的 alert 事件，本地去重且不 ack | 补更多运行诊断 |
+| 监控客户端 | 已能绑定指定 EVE 窗口、后台截图、红图标检测、ONNX DirectML OCR、snapshot/heartbeat 上报，并以内置开关控制 SSE 浮窗预警 | 补区域选择排障细节和实机多开验收 |
+| 预警浮窗 | 已集成到监控客户端，消费 `/api/v1/events` 的 alert/safe 事件；关闭预警不影响 OCR 上报 | 补更多运行诊断 |
 | 服务端模型/API | 已有 `Observation`、`ThreatEvent`、alert detail、实体情报查询、ack、配置 API、health、heartbeats、SQLite | 补更细客户端诊断 |
 | 预警频道解析 | 已有 chatlog watcher、parser、`POST /api/v1/channel-lines`、解析诊断和 ESI 辅助修正 | 扩更多真实频道格式 |
 | ESI | 已有公开解析、缓存状态、SSO、session、当前位置、contacts/standings | 补 token 迁移策略和更细失败类型 |
@@ -40,7 +40,8 @@ EVE Sentry 后续不再只依赖本地频道 OCR。系统应同时接入本地 O
 - 检测端只负责采集和上报，不负责最终威胁判断。
 - 预警端只负责接收和通知，不直接依赖 OCR 或 ESI。
 - 服务端是唯一情报中心，负责身份解析、ESI 查询缓存、声望分类、告警去重和事件生成。
-- OCR 名单只表示“当前本地可见”，不是敌对证据；只有服务端把角色分类为敌对后才生成一次性告警。
+- OCR 名单只表示“当前本地可见”；红色声望图标是客户端提交的明确敌对证据。
+  服务端仍负责显式白名单抑制、状态持久化和最终告警事件生成。
 - 所有情报最终落到稳定 ID 上，例如 `character_id`、`corporation_id`、`alliance_id`、`solar_system_id`。
 - 所有告警必须带分类原因，能解释为什么报警。
 
@@ -73,15 +74,16 @@ flowchart LR
 职责:
 
 - 查找 EVE 窗口。
-- 为检测到的每个 EVE 窗口截取本地频道成员列表。
-- OCR 识别角色名。
+- 只绑定并监控下拉列表中选中的 EVE 窗口。
+- 从选中角色的本地 Chatlogs 获取当前星系。
+- 截取本地频道成员列表，先检测红色声望图标，再用 OCR 识别角色名。
 - 通过 `/api/v1/ocr/snapshot` 上报当前扫描到的角色名列表、星系、窗口和时间上下文。
-- 如果选择了预警频道，自动监控 EVE Chatlogs 中匹配频道的新日志并上报。
-- 如果没有选择频道，不提交任何频道日志情报。
+- 红图标与 OCR 行可靠对应时只上报敌对行，否则回退上报完整名单。
+- 可选启动内置 SSE 预警；本机红图标人数变化会立即更新右上角浮窗，上报服务端后也会通过 SSE 同步给其他预警节点。
 
 不负责:
 
-- 不做最终报警判断。
+- 不做 ESI 或公开资料分类；检测到红色声望图标时直接作为明确敌对证据触发本地预警。
 - 不判断敌对或友好声望。
 - 不直接查 ESI 或 zKillboard。
 - 不维护本地名单过滤。
@@ -89,17 +91,24 @@ flowchart LR
 当前入口建议:
 
 ```powershell
-.\scripts\start_monitor_client.ps1 -Server http://127.0.0.1:8765
+$env:EVE_SENTRY_OCR_BACKEND = "onnx"
+$env:EVE_SENTRY_ONNX_MODEL_DIR = "$PWD\.runtime\onnx-models"
+.\scripts\start_monitor_client.ps1 `
+  -Server http://127.0.0.1:8765 `
+  -OcrDevice dml
 ```
 
-检测客户端只上报到服务端，不弹出本地预警窗口，也不播放本地告警声音。
-`EVE_SENTRY_SHOW_POPUPS` 不再影响检测客户端；正式联调由独立预警客户端消费服务端 alert。
+`开始监控` 只控制截图和 OCR 上报；`开启预警` 单独控制 SSE、右上角浮窗和声音，
+不发送 Windows 右下角系统通知。关闭预警不会停止 OCR 上报。源码运行必须显式设置
+`EVE_SENTRY_OCR_BACKEND=onnx`，否则兼容默认值会启动 PaddleOCR；轻量 ONNX 发行包通过
+runtime hook 自动选择 ONNX。
 PowerShell 启动脚本会把 `-Server` 映射为 `EVE_SENTRY_INTEL_URL`，并可用
 `-ChatlogDir`、`-System`、`-NoPublish` 等参数配置本地运行。
 
 OCR 上报语义:
 
 - 每次扫描只提交当前可见名单，不提交“新增威胁”或“已过滤威胁”。
+- `hostile_icon_count` 表示客户端在当前帧检测到的红色声望图标数量。
 - 人名中 `I` / `l` 等易混字符由服务端结合 ESI 解析和缓存做规范化。
 - 客户端日志中的“无威胁”只表示本地没有生成弹窗或告警，不代表已经完成敌对判断。
 - 同一窗口、同一星系、同一角色的刷新、离开和过期都由服务端 `active_intel` 维护。
@@ -210,7 +219,7 @@ uv run python -m app.server --host 127.0.0.1 --port 8765
 
 - 订阅服务端 `/api/v1/events` SSE 中的 `alert` 事件。
 - 常驻托盘后台，并显示桌面半透明浮窗。
-- 播放声音，浮窗只显示核心态势: `星系名  敌:x`。
+- 播放声音；浮窗按在线监控节点所在星系显示固定方框，红色表示有敌对、绿色表示安全，并实时显示敌对人数。
 - 使用本地 state 去重，避免重启或重连后重复响。
 
 不负责:
@@ -364,7 +373,7 @@ ESI 查询缓存状态。服务端只对从未查询过 ESI 的角色发起查�
 
 ### 4.6 AlertDetail
 
-`GET /api/v1/alerts/{id}` 返回单条预警的完整解释包，供独立预警客户端和 Web 面板展示。
+`GET /api/v1/alerts/{id}` 返回单条预警的完整解释包，供内置预警浮窗和 Web 面板展示。
 
 ```json
 {
@@ -717,7 +726,7 @@ GET  /api/map/snapshot
 
 实时推送:
 
-- `/api/v1/events` 提供 SSE alert 事件流，并复用 `/api/v1/alerts` 的 `acknowledged`、
+- `/api/v1/events` 提供 SSE alert/safe 事件流，并复用 `/api/v1/alerts` 的 `acknowledged`、
   `classification` 和 `reason` 等过滤参数；旧 `min_score` / `min_level` 只作为兼容参数保留。
 - 客户端可用 `since=<created_at>` 续接；浏览器 `EventSource` 重连时发送的
   `Last-Event-ID` 会被服务端解析回对应 alert 的 `created_at` 游标。
@@ -725,8 +734,10 @@ GET  /api/map/snapshot
   `heartbeat=<seconds>` 调整，设为 `0` 可关闭。
 - Web 面板通过 `EventSource` 订阅 `/api/v1/events`，收到 alert 后先本地合并展示，
   再排队刷新完整快照；浏览器或网络不支持 SSE 时回退到短轮询。
-- 独立预警客户端默认订阅同一事件流；事件流失败时自动重连，不使用轮询兜底，
-  也不 ack 服务端告警。
+- 监控客户端点击 `开启预警` 后订阅同一事件流；事件流失败时自动重连，不使用轮询
+  兜底，也不 ack 服务端告警。alert 显示 `❗ 星系 来敌`；某星系最后一名敌对
+  离开后，safe 显示 `✅ 星系 清空`。预警星系方框不会在一分钟后移除，而是在本次
+  客户端运行期间保持绿色，后续再次来敌时原方框恢复红色并更新人数。
 - 兼容说明: 旧 `/api/alerts`、`/api/events` 路由仍由服务端保留，供旧客户端过渡使用；新客户端、React 工作台和后续文档默认使用 `/api/v1/alerts` 与 `/api/v1/events`。
 
 ## 10. 存储规划

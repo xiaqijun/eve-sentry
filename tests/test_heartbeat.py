@@ -2,9 +2,36 @@ from app.core.heartbeat import (
     build_alert_heartbeat_details,
     build_channel_heartbeat_details,
     build_detector_heartbeat_details,
+    monitored_system_names,
     resolve_runtime_identity,
     summarize_heartbeat_error,
 )
+
+
+def test_monitored_system_names_reads_online_detector_targets():
+    assert monitored_system_names(
+        {
+            "heartbeats": [
+                {
+                    "client_type": "detector_client",
+                    "online": True,
+                    "details": {
+                        "monitoring": True,
+                        "system": "S-KSWL",
+                        "targets": [
+                            {"system_name": "S-KSWL", "monitoring": True},
+                            {"system_name": "8-4GQM", "monitoring": True},
+                        ],
+                    },
+                },
+                {
+                    "client_type": "detector_client",
+                    "online": False,
+                    "details": {"monitoring": True, "system": "OLD"},
+                },
+            ]
+        }
+    ) == ["S-KSWL", "8-4GQM"]
 
 
 def test_build_detector_heartbeat_details_includes_runtime_fields():

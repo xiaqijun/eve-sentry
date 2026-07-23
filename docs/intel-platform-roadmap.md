@@ -18,11 +18,11 @@
 
 已经完成并有测试覆盖的主干能力:
 
-- 桌面检测客户端: EVE 窗口识别、区域截图、PaddleOCR 本地频道识别、后台截图、OCR snapshot 上报、检测端默认不弹窗。
-- 客户端拆分: 检测客户端只负责采集和上报，独立预警客户端只负责消费服务端 alert，敌对判断统一在服务端完成。
+- 桌面检测客户端: 指定 EVE 窗口绑定、后台截图、红色声望图标检测、ONNX Runtime DirectML OCR、OCR snapshot 上报；PaddleOCR 仅作为源码兼容后端。
+- 客户端开关: `开始监控` 控制采集上报，`开启预警` 独立控制内置 SSE、右上角浮窗和声音；不发送 Windows 右下角通知。
 - 统一情报模型: `Observation` 和 `ThreatEvent` 已作为服务端统一输入/输出模型。
 - 服务端 API: 已支持 observation 上报、旧 `/api/intel` 兼容、alert 查询、alert detail、实体情报查询、ack、地图快照、配置更新和 health。
-- 事件推送: `/api/v1/events` 已提供 SSE alert 事件流，支持过滤、游标续接、keepalive、并发订阅和轮询 fallback。
+- 事件推送: `/api/v1/events` 已提供即时 SSE alert/safe 事件，支持过滤、游标续接、keepalive、并发订阅和轮询 fallback；星系最后一名敌对离开后发送清空事件。
 - 预警频道采集: 已有 chatlog watcher、频道解析器和 `app.channel_client`，支持 UTF-16/UTF-8、断点续读、服务端解析上报。
 - ESI 公开补全: 已有 client/cache/resolver，支持名字解析、角色/星系公开资料、缓存、`not_found` negative cache 和失败降级。
 - ESI SSO: 已有 PKCE 登录、token 保存/刷新、`/api/v1/esi/status`、`/api/v1/esi/session`、当前位置和 contacts/standings 快照。
@@ -111,7 +111,7 @@ V1 暂不包含:
 验收:
 
 - 单条 alert 能展示“谁、在哪、为什么报、证据来自哪里、哪些候选被 ESI 抑制或修正”。
-- Web 面板读取服务端详情；预警客户端只显示 `星系名  敌:x` 并本地去重。
+- Web 面板读取服务端详情；预警浮窗按星系显示固定方框、实时敌对人数并本地去重。
 - ESI 未启用或临时失败时详情接口仍返回可用的降级解释。
 
 ### P1: 预警频道解析增强
@@ -228,19 +228,19 @@ V1 暂不包含:
 - 关闭 ESI 时 `degraded_sources` 能说明降级原因；killboard 不再是第一版降级源。
 - 新测试覆盖 ESI 修正、歧义候选、星系链抑制、ESI 查询失败四种场景。
 
-### INTEL-P0-02: 重做独立预警客户端
+### INTEL-P0-02: 集成预警浮窗
 
 优先级: P0
 
-状态: 已完成第一版。`app.alert_client` 已重做为托盘后台 + 桌面半透明浮窗，
-只消费 `/api/v1/events` 的 `alert` 事件，忽略 `bootstrap` / keepalive，
+状态: 已完成。`app.alert_client` 的 SSE、托盘和桌面半透明浮窗已集成到监控客户端，
+由 `开启预警` 独立控制。当前同时处理 `alert` 和 `safe`，忽略 keepalive，
 本地保存 seen alert id 去重，不调用服务端 ack。
 
 范围:
 
 - `app/alert_client.py` 的托盘、浮窗、SSE worker 和本地 state。
-- `scripts/start_alert_client.ps1` 的新参数模型。
-- `tests/test_intel_client.py`。
+- `app.ui.main_window` 的预警开关和通知桥接。
+- `tests/test_alert_client.py`、`tests/test_main_window.py`。
 
 待做:
 
@@ -250,8 +250,9 @@ V1 暂不包含:
 
 完成标准:
 
-- 预警客户端不再自行推断 ESI、分类解释或评分。
-- 服务端有真实 alert 时，本地浮窗显示 `星系名  敌:x`，且不会 ack 服务端告警。
+- 预警浮窗不自行推断 ESI、分类解释或评分。
+- 未开启预警时不显示浮窗或播放声音，但 OCR 上报继续运行。
+- 每个在线监控节点所在星系显示一个方框；有敌对为红色并实时更新人数，无敌对或全部清空后显示为绿色。
 
 ### INTEL-P0-03: 增加情报查询接口
 
@@ -532,7 +533,7 @@ storage/config/ESI/clients/events 状态；新增 `GET /api/v1/clients`
 - 默认 SQLite store。
 - JSON 兼容和导入脚本。
 - `/api/v1/events` SSE 事件流。
-- Web 面板和独立预警客户端都支持 SSE；独立预警客户端不保留轮询 fallback。
+- Web 面板和监控客户端内置预警都支持 SSE；内置预警不保留轮询 fallback。
 - 已覆盖并发订阅、重连续接、重启后恢复等测试。
 
 兼容说明: 旧 `/api/alerts`、`/api/events` 路由仍保留给旧客户端过渡；新前端和客户端默认使用 `/api/v1/alerts`、`/api/v1/events`。

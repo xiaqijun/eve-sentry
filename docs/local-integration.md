@@ -123,18 +123,28 @@ Chatlogs。需要匹配一组频道时，显式使用 `*` 或 `?` 通配符；�
 
 ### 4. 启动检测客户端
 
-直接使用包含 GPU OCR 模型的 Windows 发行包，或需要重新构建压缩包时，参见
-[`docs/monitor-client-packaging.md`](monitor-client-packaging.md)。发行包只包含监控客户端；
-独立频道客户端和预警客户端不在该压缩包内。
+正式监控端使用 ONNX Runtime + RapidOCR + DirectML GPU，模型和轻量发行包说明见
+[`docs/onnx-ocr-validation.md`](onnx-ocr-validation.md)。旧 PaddleOCR GPU 兼容包的
+构建方式仍保留在 [`docs/monitor-client-packaging.md`](monitor-client-packaging.md)。
 
 ```powershell
-.\scripts\start_monitor_client.ps1 -Server http://127.0.0.1:8765
+$env:EVE_SENTRY_OCR_BACKEND = "onnx"
+$env:EVE_SENTRY_ONNX_MODEL_DIR = "$PWD\.runtime\onnx-models"
+.\scripts\start_monitor_client.ps1 `
+  -Server http://127.0.0.1:8765 `
+  -OcrDevice dml
 ```
 
 需要由脚本后台拉起检测端，并把 stdout/stderr 写入日志目录时:
 
 ```powershell
-.\scripts\start_monitor_client.ps1 -Server http://127.0.0.1:8765 -Background -LogDir "$env:LOCALAPPDATA\EVE Sentry\logs"
+$env:EVE_SENTRY_OCR_BACKEND = "onnx"
+.\scripts\start_monitor_client.ps1 `
+  -Server http://127.0.0.1:8765 `
+  -OcrDevice dml `
+  -AutoStart `
+  -Background `
+  -LogDir "$env:LOCALAPPDATA\EVE Sentry\logs"
 ```
 
 后台启动只负责拉起检测端 GUI 并预填服务端和 Chatlogs 环境变量；真实 OCR
@@ -146,13 +156,20 @@ Chatlogs。需要匹配一组频道时，显式使用 `*` 或 `?` 通配符；�
 .\scripts\start_monitor_client.ps1 -PrintCommand -Background
 ```
 
-检测客户端负责截图 OCR 并通过 OCR snapshot 只上报检测到的名单，不再采集或上传预警频道日志。默认不弹本地预警窗口，正式联调由独立预警客户端消费服务端 alert。
-检测客户端不做敌对判断、不做声望过滤、不查 ESI，也不直接生成告警。OCR 名单只表示
-“当前本地可见”，服务端收到后再检查该角色是否从未查询过 ESI，随后套用声望、
-友好/敌对军团联盟配置和 standings 做分类。中立声望、不良声望、糟糕声望统一视为
-敌对；优秀声望、良好声望视为友好。只有分类为敌对时，服务端才生成一次性
-`ThreatEvent`。因此联调误报时优先检查服务端配置和 alert detail 的
-`classification` / `reason`，而不是检查客户端本地过滤。
+检测客户端只监控下拉列表中选中的 EVE 窗口。它从对应角色的本地 Chatlogs 获取当前
+星系，但不再采集或上传预警频道日志。成员列表截图先检测红色声望图标，再用 OCR
+识别人名；红图标和人名能可靠对应时只上传敌对行，否则回退上传完整 OCR 名单。
+
+同一个客户端提供两个独立开关：`开始监控` 控制截图、OCR 和 snapshot 上报；
+`开启预警` 控制 SSE 消费、右上角浮窗和声音。监控客户端不发送 Windows 右下角
+系统通知。未开启预警时红图标仍会
+正常上报服务器，但客户端不会显示本地告警。预警消息使用 `❗ 星系 来敌`；某星系
+最后一名敌对离开后使用 `✅ 星系 清空`。开启预警后，本机检测到红图标会立即更新
+当前星系方框；服务端收到带红图标证据的 snapshot 后也会立即向所有预警节点推送。
+
+客户端不查 ESI，也不做军团、联盟或 standings 查询。服务端负责持久化、显式白名单
+抑制和最终告警状态；红色声望图标作为明确敌对证据上报。联调误报时优先检查服务端
+配置和 alert detail 的 `classification` / `reason`，而不是在客户端增加临时名单过滤。
 检测客户端启动后会自动向服务端上报 heartbeat，Web 面板 `Client Status`
 和 `GET /api/v1/clients` 都能看到它的在线状态。旧 `GET /api/heartbeats`
 仅保留给旧客户端兼容；Python 服务端不再托管旧内嵌页面。
@@ -302,7 +319,9 @@ python scripts/integration_status_check.py --server http://127.0.0.1:8765 --expe
 .\scripts\start_alert_client.ps1 -PrintCommand -Server http://127.0.0.1:8765 -Hidden
 ```
 
-浮窗只显示核心态势，例如 `S-KSWL  敌:9`。没有真实告警时只显示连接状态，不构造展示数据。
+浮窗为每个在线监控节点所在星系显示一个固定方框：有敌对时为红色并实时显示人数，
+安全时显示绿色和 `敌 0`；节点上线、切换星系或离线后会通过 SSE bootstrap 实时同步。
+没有在线监控节点且没有真实告警时只显示连接状态，不构造展示数据。
 
 ### 一键生成现场证据包
 

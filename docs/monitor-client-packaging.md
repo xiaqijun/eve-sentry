@@ -1,5 +1,9 @@
 # 监控客户端打包与分发
 
+> 兼容方案：本文记录旧 PaddleOCR GPU 完整包。当前生产监控端使用体积更小的
+> ONNX Runtime DirectML 包，构建与验证方式见
+> [`docs/onnx-ocr-validation.md`](onnx-ocr-validation.md)。
+
 本文说明如何在 Windows 上构建包含 PaddleOCR GPU 运行环境和 OCR 模型的监控客户端压缩包。
 该发行包只负责 EVE 窗口截图、OCR 名单识别、OCR snapshot 和 heartbeat 上报，不包含
 独立频道客户端或预警客户端。

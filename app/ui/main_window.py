@@ -640,6 +640,23 @@ class MainWindow(QMainWindow):
         else:
             self._stop_alert()
 
+    def _monitoring_system_names(self) -> list[str]:
+        """Return unique systems belonging to currently running monitor workers."""
+        workers = getattr(self, "_workers", {})
+        contexts = getattr(self, "_worker_contexts", {})
+        names: list[str] = []
+        seen: set[str] = set()
+        for key, context in contexts.items():
+            if key not in workers:
+                continue
+            system = str(context.get("system_name") or "").strip()
+            normalized = system.casefold()
+            if not system or normalized == "unknown" or normalized in seen:
+                continue
+            seen.add(normalized)
+            names.append(system)
+        return names
+
     def _start_alert(self) -> None:
         """Start the server-side warning consumer inside the monitor client."""
         if self._alert_controller is not None:
@@ -673,8 +690,9 @@ class MainWindow(QMainWindow):
                 app,
                 args,
                 tray_enabled=False,
-                notification_callback=self._show_alert_notification,
+                notification_callback=None,
             )
+            controller.show_monitoring_systems(self._monitoring_system_names())
             controller.start()
         except Exception as exc:
             logger.exception("Failed to start embedded alert client")
@@ -896,6 +914,9 @@ class MainWindow(QMainWindow):
             self._update_window_status(target, "运行中", "监控线程已启动")
         self._uploads_enabled = True
         self._set_heartbeat_enabled(True)
+        controller = _instance_attr(self, "_alert_controller")
+        if controller is not None:
+            controller.show_monitoring_systems(self._monitoring_system_names())
 
         self._monitor_btn.setText("停止监控")
         self._monitor_btn.setStyleSheet(monitor_button_style(active=True))
@@ -930,21 +951,23 @@ class MainWindow(QMainWindow):
         self._update_window_status(context, status, text)
 
     def _on_hostile_icon_detected(self, count: int, context: dict) -> None:
-        """Notify locally as soon as red standing icons appear in a game frame."""
+        """Update the local system alert as soon as its red-icon count changes."""
         controller = _instance_attr(self, "_alert_controller")
         if controller is None:
             return
         window_title = str(context.get("window_title") or "EVE").strip() or "EVE"
         system_name = str(context.get("system_name") or "Unknown").strip()
+        hostile_count = max(0, int(count))
+        if hostile_count == 0:
+            message = f"✅ {system_name} 清空"
+            self._log_message(f"{window_title}: {message}")
+            self._update_window_status(context, "监控中", message)
+            controller.update_local_hostile_count(system_name, 0)
+            return
         message = f"❗ {system_name} 来敌"
         self._log_message(f"{window_title}: {message}")
         self._update_window_status(context, "敌对告警", message)
-        controller._on_alert(
-            {
-                "system_name": system_name,
-                "hostile_count": max(1, int(count)),
-            }
-        )
+        controller.update_local_hostile_count(system_name, hostile_count)
 
     def _disconnect_worker_signals(self, worker: MonitorWorker | None = None) -> None:
         """Safely disconnect all signals from the current worker."""

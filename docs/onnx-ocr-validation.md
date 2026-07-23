@@ -1,9 +1,12 @@
 # ONNX Runtime GPU OCR validation
 
-The lightweight monitor build keeps PaddleOCR as the default source-build backend
-and adds an opt-in `onnx` backend. On Windows the ONNX build uses DirectML, so it
-can use the NVIDIA GPU without bundling Paddle's roughly 796 MB `phi.dll` or a
-separate CUDA/cuDNN runtime.
+The production monitor configuration uses the lightweight `onnx` backend with
+RapidOCR and ONNX Runtime DirectML. This lets Windows use the NVIDIA GPU without
+bundling Paddle's roughly 796 MB `phi.dll` or a separate CUDA/cuDNN runtime.
+
+Source checkouts still default to `paddle` for compatibility. A source client must
+set `EVE_SENTRY_OCR_BACKEND=onnx` explicitly; the ONNX PyInstaller build sets it
+through `packaging/runtime_hooks/onnx_backend.py`.
 
 ## Reference result
 
@@ -62,6 +65,26 @@ $env:EVE_SENTRY_ONNX_MODEL_DIR = "$PWD\.runtime\onnx-models"
 python main.py
 ```
 
+The current monitor launch command is:
+
+```powershell
+$env:EVE_SENTRY_OCR_BACKEND = "onnx"
+$env:EVE_SENTRY_ONNX_MODEL_DIR = "$PWD\.runtime\onnx-models"
+.\scripts\start_monitor_client.ps1 `
+  -Server http://114.132.167.239:8765 `
+  -OcrDevice dml `
+  -AutoStart `
+  -Background
+```
+
+Successful startup includes these log messages:
+
+```text
+Initializing ONNX OCR engine...
+OCR engine ready on DirectML GPU
+ONNX OCR initialised (device=DirectML GPU)
+```
+
 The live probe accepts `--engine paddle` or `--engine onnx`:
 
 ```powershell
@@ -69,8 +92,9 @@ The live probe accepts `--engine paddle` or `--engine onnx`:
   --engine onnx --frames 8 --out .runtime\onnx-directml-benchmark
 ```
 
-`EVE_SENTRY_OCR_DEVICE=cpu` forces CPU. `auto` prefers DirectML on Windows and
-falls back to CUDA or CPU when another provider is the only available runtime.
+`EVE_SENTRY_OCR_DEVICE=cpu` forces CPU. `dml` explicitly selects DirectML.
+`auto` or `gpu` prefers DirectML on Windows and falls back to CUDA or CPU when
+another provider is the only available runtime.
 
 ## Build the lightweight client
 

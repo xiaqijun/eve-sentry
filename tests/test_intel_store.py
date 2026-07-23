@@ -505,6 +505,62 @@ def test_record_ocr_snapshot_does_not_wait_for_esi_resolution(tmp_path):
     assert active["metadata"]["identity_status"] == "unresolved"
 
 
+def test_delayed_esi_result_does_not_restore_stale_hostile_count(tmp_path):
+    class BlockingResolver:
+        def __init__(self):
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def resolve_names(self, names):
+            self.started.set()
+            self.release.wait(timeout=2)
+            return []
+
+        def enrich_observation(self, observation):
+            return observation
+
+    resolver = BlockingResolver()
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=resolver,
+    )
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-24T09:09:16+00:00",
+            "names": ["Shisen Hanomaa"],
+            "hostile_icon_count": 1,
+        }
+    )
+    assert resolver.started.wait(timeout=1)
+
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-24T09:09:18+00:00",
+            "names": [],
+        }
+    )
+    resolver.release.set()
+    assert store.wait_for_esi_idle(timeout=2)
+
+    active = store.list_active_intel(source="eve-sentry-detector")[0]
+    assert active["metadata"]["hostile_icon_detected"] is False
+    assert active["metadata"]["hostile_icon_count"] == 0
+    assert active["metadata"]["hostile_icon_seen_at"] == (
+        "2026-07-24T09:09:18+00:00"
+    )
+    system = next(
+        item for item in store.snapshot()["systems"]
+        if item["name"] == "S-KSWL"
+    )
+    assert system["hostile_count"] == 0
+
+
 def test_record_ocr_snapshot_skips_identity_refresh_for_active_duplicates(tmp_path):
     class IdentityResolver:
         def __init__(self):

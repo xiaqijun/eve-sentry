@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from app.channels.parser import parse_chat_line
+from app.core.heartbeat import monitored_system_names
 from app.esi.sso import EsiSsoError
 from app.server.intel_store import IntelStore, utc_now_iso
 
@@ -48,11 +49,27 @@ def _wait_for_event_stream_change(generation: int, timeout: float) -> None:
 def _active_hostile_counts(alerts: list[dict[str, Any]]) -> dict[str, int]:
     """Count active hostile alerts by solar system."""
     counts: dict[str, int] = {}
+    detector_counts: dict[str, dict[str, int]] = {}
     for alert in alerts:
         system_name = str(
             alert.get("system_name") or alert.get("system") or "Unknown"
         ).strip() or "Unknown"
+        detector_client_id = str(alert.get("detector_client_id") or "").strip()
+        if detector_client_id:
+            try:
+                hostile_count = max(0, int(alert.get("hostile_count") or 0))
+            except (TypeError, ValueError):
+                hostile_count = 0
+            detector_counts.setdefault(system_name, {})[
+                detector_client_id
+            ] = hostile_count
+            continue
         counts[system_name] = counts.get(system_name, 0) + 1
+    for system_name, node_counts in detector_counts.items():
+        if node_counts:
+            counts[system_name] = counts.get(system_name, 0) + max(
+                node_counts.values()
+            )
     return counts
 
 
@@ -1184,6 +1201,29 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 continue
             data = dict(alert)
             data["active_intel_id"] = active_item.get("id")
+            metadata = (
+                active_item.get("metadata")
+                if isinstance(active_item.get("metadata"), dict)
+                else {}
+            )
+            if str(active_item.get("source") or "").strip().casefold() == (
+                "eve-sentry-detector"
+            ) and "hostile_icon_count" in metadata:
+                data["detector_client_id"] = str(
+                    metadata.get("client_id")
+                    or active_item.get("source_instance")
+                    or "unknown"
+                )
+                try:
+                    data["hostile_count"] = max(
+                        0,
+                        int(metadata.get("hostile_icon_count") or 0),
+                    )
+                except (TypeError, ValueError):
+                    data["hostile_count"] = 0
+                data["hostile_icon_seen_at"] = str(
+                    metadata.get("hostile_icon_seen_at") or ""
+                )
             alerts.append(data)
 
         alerts.sort(key=lambda alert: alert["created_at"], reverse=True)
@@ -1196,6 +1236,18 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         alert: dict[str, Any],
         active_item: dict[str, Any],
     ) -> bool:
+        metadata = (
+            active_item.get("metadata")
+            if isinstance(active_item.get("metadata"), dict)
+            else {}
+        )
+        source = str(active_item.get("source") or "").strip().casefold()
+        if source == "eve-sentry-detector" and "hostile_icon_count" in metadata:
+            try:
+                return int(metadata.get("hostile_icon_count") or 0) > 0
+            except (TypeError, ValueError):
+                return False
+
         classification = str(alert.get("classification") or "").strip().casefold()
         if classification == "white":
             return False
@@ -1214,16 +1266,10 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             if any(item.startswith("hostile_") for item in evidence_types):
                 return True
 
-        metadata = (
-            active_item.get("metadata")
-            if isinstance(active_item.get("metadata"), dict)
-            else {}
-        )
         hostile_count = metadata.get("hostile_count")
         if isinstance(hostile_count, int) and hostile_count > 0:
             return True
 
-        source = str(active_item.get("source") or "").strip().casefold()
         return source in {"channel", "intel_channel", "intel_channel_report"}
 
     def _map_snapshot_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -2016,6 +2062,9 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             {
                 "active_intel": payload.get("active_intel"),
                 "alerts": payload.get("alerts"),
+                "monitoring_systems": monitored_system_names(
+                    payload.get("clients")
+                ),
             }
         )
         encoded = json.dumps(

@@ -170,7 +170,7 @@ def test_monitor_worker_discards_ocr_names_when_no_red_icon_exists():
     assert alerts == []
 
 
-def test_monitor_worker_falls_back_to_full_ocr_when_red_rows_do_not_match():
+def test_monitor_worker_falls_back_after_two_consecutive_red_row_mismatches():
     frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
     draw = ImageDraw.Draw(frame)
     draw.rectangle((6, 20, 16, 30), fill=(146, 3, 3))
@@ -182,7 +182,7 @@ def test_monitor_worker_falls_back_to_full_ocr_when_red_rows_do_not_match():
 
         def screenshot(self, _x, _y, _w, _h):
             self.calls += 1
-            if self.calls == 1:
+            if self.calls <= 2:
                 return frame
             raise TargetWindowClosed("done")
 
@@ -193,7 +193,7 @@ def test_monitor_worker_falls_back_to_full_ocr_when_red_rows_do_not_match():
         def recognize(self, image, progress=None):
             _ = progress
             self.images.append(image)
-            if len(self.images) == 1:
+            if len(self.images) <= 2:
                 return [("Only One Red Name", 0.99)]
             return [("Friendly Pilot", 0.99), ("Enemy Pilot", 0.99)]
 
@@ -208,18 +208,62 @@ def test_monitor_worker_falls_back_to_full_ocr_when_red_rows_do_not_match():
     worker.run()
 
     assert snapshots == [(["Friendly Pilot", "Enemy Pilot"], 0)]
-    assert len(ocr.images) == 2
+    assert len(ocr.images) == 3
     assert ocr.images[0].height < frame.height
-    assert ocr.images[1].size == frame.size
+    assert ocr.images[1].height < frame.height
+    assert ocr.images[2].size == frame.size
 
 
-def test_monitor_worker_hostile_alert_is_edge_triggered_and_resets_after_clear(
+def test_monitor_worker_resets_fallback_after_a_matching_red_row_frame():
+    frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
+    draw = ImageDraw.Draw(frame)
+    draw.rectangle((6, 20, 16, 30), fill=(146, 3, 3))
+    draw.rectangle((6, 50, 16, 60), fill=(149, 8, 9))
+
+    class FrameCapturer:
+        def __init__(self):
+            self.calls = 0
+
+        def screenshot(self, _x, _y, _w, _h):
+            self.calls += 1
+            if self.calls <= 3:
+                return frame
+            raise TargetWindowClosed("done")
+
+    class RecoveringOcr:
+        def __init__(self):
+            self.calls = 0
+
+        def recognize(self, _image, progress=None):
+            _ = progress
+            self.calls += 1
+            if self.calls == 2:
+                return [("First Red", 0.99), ("Second Red", 0.99)]
+            return [("Only One Red Name", 0.99)]
+
+    ocr = RecoveringOcr()
+    worker = MonitorWorker(FrameCapturer(), ocr)
+    worker.set_region(0, 0, frame.width, frame.height)
+    snapshots = []
+    worker.ocr_snapshot.connect(
+        lambda names, hostile_count: snapshots.append((names, hostile_count))
+    )
+
+    worker.run()
+
+    assert snapshots == [(["First Red", "Second Red"], 2)]
+    assert ocr.calls == 3
+
+
+def test_monitor_worker_publishes_each_hostile_count_change_including_clear(
     monkeypatch,
 ):
     clear = Image.new("RGB", (180, 100), color=(12, 13, 13))
     hostile = clear.copy()
     ImageDraw.Draw(hostile).rectangle((6, 20, 16, 30), fill=(146, 3, 3))
-    frames = [hostile, hostile, clear, hostile]
+    two_hostiles = hostile.copy()
+    ImageDraw.Draw(two_hostiles).rectangle((6, 50, 16, 60), fill=(149, 8, 9))
+    frames = [two_hostiles, hostile, hostile, clear, hostile]
 
     class FrameCapturer:
         def screenshot(self, _x, _y, _w, _h):
@@ -240,7 +284,7 @@ def test_monitor_worker_hostile_alert_is_edge_triggered_and_resets_after_clear(
 
     worker.run()
 
-    assert alerts == [1, 1]
+    assert alerts == [2, 1, 0, 1]
 
 
 def test_monitor_worker_stops_when_the_game_window_closes():

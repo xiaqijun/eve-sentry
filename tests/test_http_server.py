@@ -312,6 +312,86 @@ def test_v1_ocr_snapshot_endpoint_updates_active_intel(tmp_path):
         server.stop()
 
 
+def test_remote_alert_count_uses_latest_detector_snapshot_total(tmp_path):
+    store = SQLiteIntelStore(
+        tmp_path / "intel.sqlite3",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+
+    def post_snapshot(names, seen_at, hostile_icon_count):
+        return request_json(
+            f"{server.url}/api/v1/ocr/snapshot",
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "source_instance": "EVE - Hajimi6",
+                "system_name": "S-KSWL",
+                "seen_at": seen_at,
+                "names": names,
+                "hostile_icon_count": hostile_icon_count,
+            },
+        )
+
+    try:
+        first_status, first = post_snapshot(
+            ["Shisen Hanomaa"],
+            "2026-07-24T09:09:16+00:00",
+            1,
+        )
+        second_status, second = post_snapshot(
+            ["Shisen Hanomaa", "AddisonW"],
+            "2026-07-24T09:09:30+00:00",
+            2,
+        )
+
+        assert first_status == 201
+        assert first["created"] == 1
+        assert second_status == 201
+        assert second["created"] == 1
+        assert second["refreshed"] == 1
+
+        status, payload = request_json(f"{server.url}/api/v1/bootstrap")
+        assert status == 200
+        bootstrap = payload["bootstrap"]
+        system = next(
+            item for item in bootstrap["map"]["systems"]
+            if item["name"] == "S-KSWL"
+        )
+        assert system["hostile_count"] == 2
+        assert {item["name"] for item in bootstrap["active_intel"]} == {
+            "Shisen Hanomaa",
+            "AddisonW",
+        }
+        assert len(bootstrap["alerts"]) == 2
+        assert {item["hostile_count"] for item in bootstrap["alerts"]} == {2}
+
+        status, _, body = request_text(
+            f"{server.url}/api/v1/events?"
+            f"{urlencode({'timeout': '0', 'limit': '10', 'bootstrap': '1'})}"
+        )
+        assert status == 200
+        events = sse_events(body)
+        remote_bootstrap = next(
+            item["data"] for item in events if item.get("event") == "bootstrap"
+        )
+        remote_system = next(
+            item for item in remote_bootstrap["map"]["systems"]
+            if item["name"] == "S-KSWL"
+        )
+        assert remote_system["hostile_count"] == 2
+        assert {
+            item["data"]["hostile_count"]
+            for item in events
+            if item.get("event") == "alert"
+        } == {2}
+    finally:
+        server.stop()
+
+
 def test_v1_alerts_do_not_fabricate_alerts_from_ocr_active_intel(tmp_path):
     server = IntelHTTPServer(
         IntelStore(
@@ -419,6 +499,32 @@ def test_bootstrap_event_fingerprint_ignores_volatile_refresh_fields():
 
     assert handler._bootstrap_event_fingerprint(payload) == (
         handler._bootstrap_event_fingerprint(refreshed)
+    )
+
+
+def test_bootstrap_event_fingerprint_changes_with_monitoring_systems():
+    handler = object.__new__(IntelRequestHandler)
+
+    def payload(system_name):
+        return {
+            "active_intel": [],
+            "alerts": [],
+            "clients": {
+                "heartbeats": [
+                    {
+                        "client_type": "detector_client",
+                        "online": True,
+                        "details": {
+                            "monitoring": True,
+                            "system": system_name,
+                        },
+                    }
+                ]
+            },
+        }
+
+    assert handler._bootstrap_event_fingerprint(payload("S-KSWL")) != (
+        handler._bootstrap_event_fingerprint(payload("8-4GQM"))
     )
 
 

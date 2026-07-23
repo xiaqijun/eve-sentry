@@ -85,10 +85,20 @@ def test_alert_toggle_starts_and_stops_embedded_controller(monkeypatch):
 
     class FakeController:
         def __init__(self, app, args, **kwargs):
-            calls.append(("init", args.server, kwargs["tray_enabled"]))
+            calls.append(
+                (
+                    "init",
+                    args.server,
+                    kwargs["tray_enabled"],
+                    kwargs["notification_callback"],
+                )
+            )
 
         def start(self):
             calls.append("start")
+
+        def show_monitoring_systems(self, systems):
+            calls.append(("systems", list(systems)))
 
         def stop(self, *, wait_for_worker=True):
             calls.append(("stop", wait_for_worker))
@@ -99,8 +109,11 @@ def test_alert_toggle_starts_and_stops_embedded_controller(monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window._intel_url = "http://intel.example"
     window._alert_controller = None
+    window._workers = {"eve-hajimi6": object()}
+    window._worker_contexts = {
+        "eve-hajimi6": {"system_name": "S-KSWL"},
+    }
     window._alert_btn = FakeButton()
-    window._show_alert_notification = lambda title, message: None
     window._log_message = lambda message: calls.append(("log", message))
 
     monkeypatch.setattr("app.ui.main_window.AlertTrayController", FakeController)
@@ -111,8 +124,9 @@ def test_alert_toggle_starts_and_stops_embedded_controller(monkeypatch):
 
     MainWindow._start_alert(window)
 
-    assert calls[:2] == [
-        ("init", "http://intel.example", False),
+    assert calls[:3] == [
+        ("init", "http://intel.example", False, None),
+        ("systems", ["S-KSWL"]),
         "start",
     ]
     assert window._alert_controller is not None
@@ -176,10 +190,10 @@ def test_publish_ocr_snapshot_posts_only_detected_names():
 def test_hostile_icon_detection_notifies_immediately():
     class FakeAlertController:
         def __init__(self):
-            self.alerts = []
+            self.counts = []
 
-        def _on_alert(self, alert):
-            self.alerts.append(alert)
+        def update_local_hostile_count(self, system_name, count):
+            self.counts.append((system_name, count))
 
     window = MainWindow.__new__(MainWindow)
     window._alert_controller = FakeAlertController()
@@ -191,12 +205,15 @@ def test_hostile_icon_detection_notifies_immediately():
 
     MainWindow._on_hostile_icon_detected(window, 2, context)
 
-    assert window._alert_controller.alerts == [
-        {"system_name": "S-KSWL", "hostile_count": 2}
-    ]
+    assert window._alert_controller.counts == [("S-KSWL", 2)]
     assert window._updates == [
         (context, "敌对告警", "❗ S-KSWL 来敌")
     ]
+
+    MainWindow._on_hostile_icon_detected(window, 0, context)
+
+    assert window._alert_controller.counts[-1] == ("S-KSWL", 0)
+    assert window._updates[-1] == (context, "监控中", "✅ S-KSWL 清空")
 
 
 def test_hostile_icon_detection_is_silent_when_alerts_are_disabled():

@@ -17,10 +17,6 @@ def test_alert_controller_stop_can_skip_worker_wait():
         def wait(self, timeout):
             calls.append(("worker_wait", timeout))
 
-    class FakeTimer:
-        def stop(self):
-            calls.append("timer_stop")
-
     class FakeOverlay:
         def hide(self):
             calls.append("overlay_hide")
@@ -28,13 +24,12 @@ def test_alert_controller_stop_can_skip_worker_wait():
     controller = AlertTrayController.__new__(AlertTrayController)
     controller.args = Namespace(timeout=30.0)
     controller._worker = FakeWorker()
-    controller._inactive_cleanup_timer = FakeTimer()
     controller.overlay = FakeOverlay()
     controller._tray = None
 
     controller.stop(wait_for_worker=False)
 
-    assert calls == ["worker_stop", "timer_stop", "overlay_hide"]
+    assert calls == ["worker_stop", "overlay_hide"]
 
 
 def test_alert_controller_stop_waits_during_application_shutdown():
@@ -50,10 +45,6 @@ def test_alert_controller_stop_waits_during_application_shutdown():
         def wait(self, timeout):
             calls.append(("worker_wait", timeout))
 
-    class FakeTimer:
-        def stop(self):
-            calls.append("timer_stop")
-
     class FakeOverlay:
         def hide(self):
             calls.append("overlay_hide")
@@ -61,7 +52,6 @@ def test_alert_controller_stop_waits_during_application_shutdown():
     controller = AlertTrayController.__new__(AlertTrayController)
     controller.args = Namespace(timeout=30.0)
     controller._worker = FakeWorker()
-    controller._inactive_cleanup_timer = FakeTimer()
     controller.overlay = FakeOverlay()
     controller._tray = None
 
@@ -69,7 +59,6 @@ def test_alert_controller_stop_waits_during_application_shutdown():
 
     assert calls == [
         "worker_stop",
-        "timer_stop",
         "overlay_hide",
         ("worker_wait", 34000),
     ]
@@ -81,10 +70,12 @@ def test_alert_controller_uses_compact_hostile_and_safe_messages(monkeypatch):
     class FakeOverlay:
         def __init__(self):
             self.summaries = []
+            self.history = []
             self.statuses = []
 
         def show_summaries(self, summaries):
             self.summaries = [dict(item) for item in summaries]
+            self.history.append(self.summaries)
 
         def set_status(self, text, tone):
             self.statuses.append((text, tone))
@@ -113,6 +104,10 @@ def test_alert_controller_uses_compact_hostile_and_safe_messages(monkeypatch):
             "message": "✅ S-KSWL 清空",
         }
     )
+    assert controller._recent_summaries[0]["hostile_count"] == 0
+    assert controller._recent_summaries[0]["active_hostile_count"] == 0
+    assert controller._recent_summaries[0]["active"] is False
+    assert controller.overlay.history[-1][0]["system_name"] == "S-KSWL"
     controller._on_alert(
         {
             "id": "evt-2",
@@ -139,3 +134,77 @@ def test_alert_controller_uses_compact_hostile_and_safe_messages(monkeypatch):
             "active_hostile_count": 1,
         }
     ]
+
+
+def test_alert_controller_draws_existing_monitoring_systems_without_notification():
+    notifications = []
+
+    class FakeOverlay:
+        def __init__(self):
+            self.summaries = []
+
+        def show_summaries(self, summaries):
+            self.summaries = [dict(item) for item in summaries]
+
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller._recent_summaries = []
+    controller.overlay = FakeOverlay()
+    controller._notification_callback = lambda *args: notifications.append(args)
+    controller._tray = None
+
+    controller.show_monitoring_systems(["S-KSWL", "S-KSWL", "Unknown"])
+
+    assert controller.overlay.summaries == [
+        {
+            "system_name": "S-KSWL",
+            "hostile_count": 0,
+            "active_hostile_count": 0,
+            "created_at": "",
+            "active": False,
+        }
+    ]
+    assert notifications == []
+
+
+def test_local_visual_count_overrides_lower_server_bootstrap(monkeypatch):
+    class FakeOverlay:
+        def __init__(self):
+            self.summaries = []
+
+        def show_summaries(self, summaries):
+            self.summaries = [dict(item) for item in summaries]
+
+        def set_status(self, *_args):
+            pass
+
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller._recent_summaries = []
+    controller._local_hostile_counts = {}
+    controller.overlay = FakeOverlay()
+    controller._notification_callback = None
+    controller._tray = None
+    monkeypatch.setattr("app.alert_client.play_alert_sound", lambda: None)
+
+    controller.update_local_hostile_count("S-KSWL", 2)
+    controller._on_bootstrap(
+        {
+            "map": {
+                "systems": [
+                    {"name": "S-KSWL", "hostile_count": 1},
+                ]
+            },
+            "active_intel": [],
+        }
+    )
+
+    assert controller.overlay.summaries[0]["hostile_count"] == 2
+    assert controller.overlay.summaries[0]["active_hostile_count"] == 2
+    assert controller.overlay.summaries[0]["active"] is True
+
+    controller._on_safe({"system_name": "S-KSWL", "hostile_count": 0})
+    assert controller.overlay.summaries[0]["active_hostile_count"] == 2
+
+    controller.update_local_hostile_count("S-KSWL", 0)
+    assert controller.overlay.summaries[0]["hostile_count"] == 0
+    assert controller.overlay.summaries[0]["active_hostile_count"] == 0
+    assert controller.overlay.summaries[0]["active"] is False

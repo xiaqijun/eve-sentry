@@ -591,12 +591,36 @@ class IntelStore:
                     if observation.character_ids
                     else None
                 )
-                item.metadata = self._active_ocr_metadata(
+                current_icon_metadata = {
+                    key: item.metadata[key]
+                    for key in (
+                        "hostile_icon_detected",
+                        "hostile_icon_count",
+                        "hostile_icon_seen_at",
+                    )
+                    if key in item.metadata
+                }
+                enriched_metadata = self._active_ocr_metadata(
                     task.client_id,
                     observation,
                     checked_at=checked_at,
                     character_profiles=character_profiles,
                 )
+                current_icon_seen_at = str(
+                    current_icon_metadata.get("hostile_icon_seen_at") or ""
+                )
+                enriched_icon_seen_at = str(
+                    enriched_metadata.get("hostile_icon_seen_at") or ""
+                )
+                if current_icon_seen_at and (
+                    not enriched_icon_seen_at
+                    or not self._channel_seen_after(
+                        enriched_icon_seen_at,
+                        current_icon_seen_at,
+                    )
+                ):
+                    enriched_metadata.update(current_icon_metadata)
+                item.metadata = enriched_metadata
                 item.metadata["identity_status"] = observation.metadata[
                     "identity_status"
                 ]
@@ -615,10 +639,21 @@ class IntelStore:
         item: ActiveIntelItem,
         metadata: dict[str, Any],
     ) -> list[IntelReport]:
-        """Promote an existing OCR sighting when a later frame verifies a red icon."""
-        if not metadata or item.metadata.get("hostile_icon_detected"):
+        """Refresh detector count state and promote newly verified red sightings."""
+        if not metadata:
             return []
+        current_seen_at = str(item.metadata.get("hostile_icon_seen_at") or "")
+        next_seen_at = str(metadata.get("hostile_icon_seen_at") or "")
+        if (
+            current_seen_at
+            and next_seen_at
+            and self._channel_seen_after(current_seen_at, next_seen_at)
+        ):
+            return []
+        was_detected = bool(item.metadata.get("hostile_icon_detected"))
         item.metadata.update(metadata)
+        if was_detected or not metadata.get("hostile_icon_detected"):
+            return []
         changed: list[IntelReport] = []
         report_ids = set(item.source_observation_ids)
         for report in self._reports:
@@ -969,24 +1004,25 @@ class IntelStore:
             str(payload.get("system_name") or payload.get("system") or "")
         )
         system_id = self._optional_int(payload.get("system_id"))
+        seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
         hostile_icon_count = max(
             0,
             self._optional_int(payload.get("hostile_icon_count")) or 0,
-        )
-        snapshot_metadata = (
-            {
-                "hostile_icon_detected": True,
-                "hostile_icon_count": hostile_icon_count,
-            }
-            if hostile_icon_count > 0
-            else {}
         )
         defer_esi = self._resolver is not None or self._enricher is not None
         names = self._normalize_ocr_names(
             payload.get("names"),
             resolve=not defer_esi,
         )
-        seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
+        snapshot_metadata = (
+            {
+                "hostile_icon_detected": hostile_icon_count > 0,
+                "hostile_icon_count": hostile_icon_count,
+                "hostile_icon_seen_at": seen_at,
+            }
+            if "hostile_icon_count" in payload or not names
+            else {}
+        )
         raw_text = ", ".join(names)
         result = ActiveIntelSnapshotResult()
         seen_name_keys = {name.casefold() for name in names}
@@ -1102,6 +1138,9 @@ class IntelStore:
                     continue
                 if item.name.casefold() in seen_name_keys:
                     continue
+
+                if self._apply_hostile_icon_metadata(item, snapshot_metadata):
+                    changed_reports = True
 
                 elapsed = self._seconds_between_iso(item.last_seen_at, seen_at)
                 missing_count = self._ocr_missing_counts.get(item.active_id, 0) + 1
@@ -2567,7 +2606,11 @@ class IntelStore:
         character_profiles: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         metadata: dict[str, Any] = {"client_id": client_id}
-        for key in ("hostile_icon_detected", "hostile_icon_count"):
+        for key in (
+            "hostile_icon_detected",
+            "hostile_icon_count",
+            "hostile_icon_seen_at",
+        ):
             value = observation.metadata.get(key)
             if value not in {None, "", False, 0}:
                 metadata[key] = value
@@ -3187,6 +3230,7 @@ class IntelStore:
         active_items: list[dict[str, Any]],
     ) -> dict[str, dict[str, Any]]:
         intel: dict[str, dict[str, Any]] = {}
+        detector_counts: dict[str, dict[str, tuple[str, int]]] = {}
         for item in active_items:
             system = str(item.get("system_name") or "").strip()
             if not system:
@@ -3196,22 +3240,59 @@ class IntelStore:
             raw_text = str(item.get("raw_text") or "").strip()
             label = name or raw_text
             is_hostile = self._active_item_is_hostile(item)
-            if label and is_hostile:
-                entry["hostiles"].add(label)
             entry["latest_seen"] = max(
                 entry["latest_seen"] or item["last_seen_at"],
                 item["last_seen_at"],
             )
-            if is_hostile:
-                entry["report_count"] += max(1, int(item.get("seen_count") or 1))
             metadata = (
                 item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
             )
+            source = str(item.get("source") or "").strip().casefold()
+            if source == "eve-sentry-detector" and "hostile_icon_count" in metadata:
+                snapshot_seen_at = str(
+                    metadata.get("hostile_icon_seen_at")
+                    or item.get("last_seen_at")
+                    or ""
+                )
+                if (
+                    label
+                    and is_hostile
+                    and snapshot_seen_at == str(item.get("last_seen_at") or "")
+                ):
+                    entry["hostiles"].add(label)
+                    entry["report_count"] += max(
+                        1,
+                        int(item.get("seen_count") or 1),
+                    )
+                client_id = str(
+                    metadata.get("client_id")
+                    or item.get("source_instance")
+                    or "unknown"
+                ).strip() or "unknown"
+                try:
+                    icon_count = max(0, int(metadata.get("hostile_icon_count") or 0))
+                except (TypeError, ValueError):
+                    icon_count = 0
+                node_counts = detector_counts.setdefault(system, {})
+                previous = node_counts.get(client_id)
+                if previous is None or snapshot_seen_at >= previous[0]:
+                    node_counts[client_id] = (snapshot_seen_at, icon_count)
+                continue
+            if label and is_hostile:
+                entry["hostiles"].add(label)
+            if is_hostile:
+                entry["report_count"] += max(1, int(item.get("seen_count") or 1))
             hostile_count = metadata.get("hostile_count")
             if is_hostile and isinstance(hostile_count, int) and hostile_count > 0:
                 entry["hostile_count"] += hostile_count
             elif is_hostile and label:
                 entry["hostile_count"] += 1
+
+        for system, node_counts in detector_counts.items():
+            if node_counts:
+                intel[system]["hostile_count"] += max(
+                    count for _, count in node_counts.values()
+                )
 
         for entry in intel.values():
             entry["hostiles"] = sorted(entry["hostiles"])
@@ -3219,11 +3300,16 @@ class IntelStore:
 
     def _active_item_is_hostile(self, item: dict[str, Any]) -> bool:
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        source = str(item.get("source") or "").strip().casefold()
+        if source == "eve-sentry-detector" and "hostile_icon_count" in metadata:
+            try:
+                return int(metadata.get("hostile_icon_count") or 0) > 0
+            except (TypeError, ValueError):
+                return False
         hostile_count = metadata.get("hostile_count")
         if isinstance(hostile_count, int) and hostile_count > 0:
             return True
 
-        source = str(item.get("source") or "").strip().casefold()
         if source not in {"local_ocr", "ocr", "eve-sentry-detector"}:
             return False
 
