@@ -2053,7 +2053,7 @@ def test_v1_events_stream_returns_alert_sse(tmp_path):
         server.stop()
 
 
-def test_v1_events_resumed_bootstrap_does_not_emit_initial_snapshot(tmp_path):
+def test_v1_events_resumed_bootstrap_emits_current_snapshot(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
     try:
@@ -2080,7 +2080,8 @@ def test_v1_events_resumed_bootstrap_does_not_emit_initial_snapshot(tmp_path):
 
         assert status == 200
         assert headers["Content-Type"].startswith("text/event-stream")
-        assert "event: bootstrap" not in body
+        assert "event: bootstrap" in body
+        assert "Alice" in body
         assert "event: alert" not in body
     finally:
         server.stop()

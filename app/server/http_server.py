@@ -1846,13 +1846,6 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         resume_after_id = resume_after_id.strip()
         sent_ids: set[str] = set()
         last_bootstrap_fingerprint = ""
-        if active_only and include_bootstrap and last_seen:
-            try:
-                last_bootstrap_fingerprint = self._bootstrap_event_fingerprint(
-                    self._bootstrap_payload()
-                )
-            except Exception:
-                last_bootstrap_fingerprint = ""
         deadline = time.monotonic() + max(0.0, timeout_seconds)
         heartbeat_interval = max(0.0, heartbeat_seconds)
         next_heartbeat_at = (

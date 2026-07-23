@@ -26,6 +26,7 @@ from app.core.active_intel import (
     ActiveIntelItem,
     ActiveIntelSnapshotResult,
     DEFAULT_OCR_GRACE_SECONDS,
+    OCR_MISSING_CONFIRMATIONS,
     channel_ttl_seconds,
     contains_clear_signal,
 )
@@ -231,6 +232,7 @@ class IntelStore:
         self._heartbeats: dict[str, dict[str, Any]] = {}
         self._stale_heartbeat_cleanup_after = 0.0
         self._active_intel: dict[str, ActiveIntelItem] = {}
+        self._ocr_missing_counts: dict[str, int] = {}
         self._ocr_name_corrections: dict[str, str] = {}
         self._character_profile_cache: dict[int, dict[str, Any]] = {}
         self._reports: list[IntelReport] = self._load_reports()
@@ -1045,6 +1047,7 @@ class IntelStore:
                     item.raw_text = raw_text
                 item.active = True
                 item.left_at = ""
+                self._ocr_missing_counts.pop(item.active_id, None)
                 result.refreshed += 1
 
             for item in self._active_intel.values():
@@ -1060,12 +1063,19 @@ class IntelStore:
                     continue
 
                 elapsed = self._seconds_between_iso(item.last_seen_at, seen_at)
-                if elapsed is None or elapsed <= DEFAULT_OCR_GRACE_SECONDS:
+                missing_count = self._ocr_missing_counts.get(item.active_id, 0) + 1
+                self._ocr_missing_counts[item.active_id] = missing_count
+                if (
+                    elapsed is None
+                    or elapsed <= DEFAULT_OCR_GRACE_SECONDS
+                    or missing_count < OCR_MISSING_CONFIRMATIONS
+                ):
                     result.missing += 1
                     continue
 
                 item.active = False
                 item.left_at = seen_at
+                self._ocr_missing_counts.pop(item.active_id, None)
                 self._reset_ocr_alert_cooldown(item)
                 result.expired += 1
 
@@ -1581,6 +1591,7 @@ class IntelStore:
                 ).isoformat()
             item.active = False
             item.left_at = stale_seen_at
+            self._ocr_missing_counts.pop(item.active_id, None)
             self._reset_ocr_alert_cooldown(item)
             expired += 1
         return expired

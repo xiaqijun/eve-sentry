@@ -1306,17 +1306,54 @@ def test_record_ocr_snapshot_expires_missing_names_after_grace_period(tmp_path):
     still_active = store.record_ocr_snapshot(
         {**payload, "seen_at": "2026-07-03T10:00:04+00:00", "names": []}
     )
-    expired = store.record_ocr_snapshot(
+    still_confirming = store.record_ocr_snapshot(
         {**payload, "seen_at": "2026-07-03T10:00:08+00:00", "names": []}
+    )
+    expired = store.record_ocr_snapshot(
+        {**payload, "seen_at": "2026-07-03T10:00:12+00:00", "names": []}
     )
 
     assert still_active["missing"] == 1
     assert still_active["expired"] == 0
+    assert still_confirming["missing"] == 1
+    assert still_confirming["expired"] == 0
     assert expired["expired"] == 1
     assert store.list_active_intel() == []
     assert store.list_active_intel(active=False)[0]["left_at"] == (
-        "2026-07-03T10:00:08+00:00"
+        "2026-07-03T10:00:12+00:00"
     )
+
+
+def test_record_ocr_snapshot_resets_missing_confirmation_when_name_returns(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    payload = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Hajimi6",
+        "system_name": "S-KSWL",
+    }
+    store.record_ocr_snapshot(
+        {
+            **payload,
+            "seen_at": "2026-07-03T10:00:00+00:00",
+            "names": ["Alice", "Bob"],
+        }
+    )
+    store.record_ocr_snapshot(
+        {**payload, "seen_at": "2026-07-03T10:00:08+00:00", "names": ["Alice"]}
+    )
+    store.record_ocr_snapshot(
+        {**payload, "seen_at": "2026-07-03T10:00:16+00:00", "names": ["Alice", "Bob"]}
+    )
+    store.record_ocr_snapshot(
+        {**payload, "seen_at": "2026-07-03T10:00:24+00:00", "names": ["Alice"]}
+    )
+    second_missing = store.record_ocr_snapshot(
+        {**payload, "seen_at": "2026-07-03T10:00:32+00:00", "names": ["Alice"]}
+    )
+
+    assert second_missing["missing"] == 1
+    assert second_missing["expired"] == 0
+    assert {item["name"] for item in store.list_active_intel()} == {"Alice", "Bob"}
 
 
 def test_confirmed_ocr_departure_resets_alert_cooldown_for_reentry(tmp_path):
@@ -1355,7 +1392,21 @@ def test_confirmed_ocr_departure_resets_alert_cooldown_for_reentry(tmp_path):
     store.record_ocr_snapshot(
         {
             **payload,
-            "seen_at": "2026-07-03T10:00:09+00:00",
+            "seen_at": "2026-07-03T10:00:16+00:00",
+            "names": [],
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            **payload,
+            "seen_at": "2026-07-03T10:00:24+00:00",
+            "names": [],
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            **payload,
+            "seen_at": "2026-07-03T10:00:25+00:00",
             "names": ["Alice"],
         }
     )
@@ -1391,12 +1442,30 @@ def test_record_ocr_snapshot_isolates_missing_names_by_client_id(tmp_path):
             "seen_at": "2026-07-03T10:00:00+00:00",
         }
     )
-    expired = store.record_ocr_snapshot(
+    store.record_ocr_snapshot(
         {
             "client_id": "detector-client:test:eve-pilot-a",
             "source_instance": "EVE - Pilot A",
             "system_name": "S-KSWL",
             "seen_at": "2026-07-03T10:00:08+00:00",
+            "names": [],
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test:eve-pilot-a",
+            "source_instance": "EVE - Pilot A",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-03T10:00:16+00:00",
+            "names": [],
+        }
+    )
+    expired = store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test:eve-pilot-a",
+            "source_instance": "EVE - Pilot A",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-03T10:00:24+00:00",
             "names": [],
         }
     )

@@ -9,6 +9,7 @@ from typing import Any
 
 OCR_SOURCES = {"local_ocr", "ocr", "eve-sentry-detector"}
 DEFAULT_OCR_GRACE_SECONDS = 6
+OCR_MISSING_CONFIRMATIONS = 3
 
 CLEAR_WORDS = (
     "clr",
