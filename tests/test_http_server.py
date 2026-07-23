@@ -15,7 +15,7 @@ from app.intel.classification import CLASSIFICATION_VERSION
 from app.intel.enrichment import ThreatEnricher
 from app.intel.config import IntelConfigStore
 from app.intel.scoring import ScoringEngine, Watchlist
-from app.server.http_server import IntelHTTPServer
+from app.server.http_server import IntelHTTPServer, IntelRequestHandler
 from app.server.intel_store import IntelStore, StarSystem
 from app.server.map_config import MapConfigStore
 from app.server.sqlite_store import SQLiteIntelStore
@@ -365,6 +365,43 @@ def test_v1_bootstrap_includes_active_intel(tmp_path):
         assert payload["bootstrap"]["active_intel"][0]["name"] == "Alice"
     finally:
         server.stop()
+
+
+def test_bootstrap_event_fingerprint_ignores_volatile_refresh_fields():
+    handler = object.__new__(IntelRequestHandler)
+    payload = {
+        "schema_version": "intel_bootstrap.v1",
+        "generated_at": "2026-07-23T01:00:00+00:00",
+        "active_intel": [
+            {
+                "id": "ocr:alice",
+                "name": "Alice",
+                "last_seen_at": "2026-07-23T01:00:00+00:00",
+                "metadata": {
+                    "identity_checked_at": "2026-07-23T01:00:00+00:00",
+                    "alliance_name": "Example Alliance",
+                },
+            }
+        ],
+    }
+    refreshed = {
+        **payload,
+        "generated_at": "2026-07-23T01:00:05+00:00",
+        "active_intel": [
+            {
+                **payload["active_intel"][0],
+                "last_seen_at": "2026-07-23T01:00:05+00:00",
+                "metadata": {
+                    **payload["active_intel"][0]["metadata"],
+                    "identity_checked_at": "2026-07-23T01:00:05+00:00",
+                },
+            }
+        ],
+    }
+
+    assert handler._bootstrap_event_fingerprint(payload) == (
+        handler._bootstrap_event_fingerprint(refreshed)
+    )
 
 
 def test_heartbeat_routes_and_health_summary(tmp_path):

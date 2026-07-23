@@ -1954,7 +1954,12 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             return {
                 key: self._without_generated_at(item)
                 for key, item in value.items()
-                if key != "generated_at"
+                if key
+                not in {
+                    "generated_at",
+                    "identity_checked_at",
+                    "last_seen_at",
+                }
             }
         if isinstance(value, list):
             return [self._without_generated_at(item) for item in value]
