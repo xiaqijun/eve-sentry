@@ -2053,6 +2053,39 @@ def test_v1_events_stream_returns_alert_sse(tmp_path):
         server.stop()
 
 
+def test_v1_events_resumed_bootstrap_does_not_emit_initial_snapshot(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        status, _ = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Alice"],
+                "source": "intel_channel",
+            },
+        )
+        assert status == 201
+
+        query = urlencode(
+            {
+                "timeout": "0",
+                "limit": "5",
+                "bootstrap": "1",
+                "since": "9999-01-01T00:00:00+00:00",
+            }
+        )
+        status, headers, body = request_text(f"{server.url}/api/v1/events?{query}")
+
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/event-stream")
+        assert "event: bootstrap" not in body
+        assert "event: alert" not in body
+    finally:
+        server.stop()
+
+
 def test_v1_active_alerts_exclude_friendly_classifications(tmp_path):
     class FriendlyScorer:
         def score(self, observation, **kwargs):
