@@ -49,8 +49,8 @@ def test_quit_app_waits_for_ocr_workers_before_exiting(monkeypatch):
             self._network_tasks = FakeNetworkTasks()
             self._tray = FakeTray()
 
-        def _stop_alert(self):
-            calls.append("alert")
+        def _stop_alert(self, *, wait_for_worker=False):
+            calls.append(("alert", wait_for_worker))
 
         def _stop_monitor(self, *, wait_for_workers=False):
             calls.append(("monitor", wait_for_workers))
@@ -59,7 +59,13 @@ def test_quit_app_waits_for_ocr_workers_before_exiting(monkeypatch):
 
     MainWindow._quit_app(FakeWindow())
 
-    assert calls == ["alert", ("monitor", True), "network", "tray", "quit"]
+    assert calls == [
+        ("alert", True),
+        ("monitor", True),
+        "network",
+        "tray",
+        "quit",
+    ]
 
 
 def test_alert_toggle_starts_and_stops_embedded_controller(monkeypatch):
@@ -83,8 +89,11 @@ def test_alert_toggle_starts_and_stops_embedded_controller(monkeypatch):
         def start(self):
             calls.append("start")
 
-        def stop(self):
-            calls.append("stop")
+        def stop(self, *, wait_for_worker=True):
+            calls.append(("stop", wait_for_worker))
+
+        def is_running(self):
+            return False
 
     window = MainWindow.__new__(MainWindow)
     window._intel_url = "http://intel.example"
@@ -94,6 +103,10 @@ def test_alert_toggle_starts_and_stops_embedded_controller(monkeypatch):
     window._log_message = lambda message: calls.append(("log", message))
 
     monkeypatch.setattr("app.ui.main_window.AlertTrayController", FakeController)
+    monkeypatch.setattr(
+        "app.ui.main_window.QTimer.singleShot",
+        lambda _delay, callback: callback(),
+    )
 
     MainWindow._start_alert(window)
 
@@ -106,8 +119,9 @@ def test_alert_toggle_starts_and_stops_embedded_controller(monkeypatch):
 
     MainWindow._stop_alert(window)
 
-    assert "stop" in calls
+    assert ("stop", False) in calls
     assert window._alert_controller is None
+    assert window._stopping_alert_controllers == set()
     assert ("text", "开启预警") in calls
 
 

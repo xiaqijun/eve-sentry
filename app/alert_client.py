@@ -936,13 +936,19 @@ class AlertTrayController:
             self._tray.show()
         self._worker.start()
 
-    def stop(self) -> None:
-        """Stop the worker and hide the tray icon."""
+    def stop(self, *, wait_for_worker: bool = True) -> None:
+        """Request shutdown, optionally waiting for the SSE worker to exit."""
         self._worker.stop()
-        self._worker.wait(int((self.args.timeout + 4.0) * 1000))
+        self._inactive_cleanup_timer.stop()
         self.overlay.hide()
         if self._tray is not None:
             self._tray.hide()
+        if wait_for_worker and self._worker.isRunning():
+            self._worker.wait(int((self.args.timeout + 4.0) * 1000))
+
+    def is_running(self) -> bool:
+        """Return whether the SSE worker is still unwinding."""
+        return self._worker.isRunning()
 
     def _setup_tray(self) -> None:
         icon = self.overlay.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)

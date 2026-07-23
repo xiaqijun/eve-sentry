@@ -682,15 +682,41 @@ class MainWindow(QMainWindow):
         self._alert_btn.setStyleSheet(monitor_button_style(active=True))
         self._log_message("预警已开启")
 
-    def _stop_alert(self) -> None:
-        """Stop the embedded warning consumer and hide its overlay."""
+    def _stop_alert(self, *, wait_for_worker: bool = False) -> None:
+        """Stop embedded warning consumers without blocking routine UI toggles."""
         controller = self._alert_controller
         self._alert_controller = None
         if controller is not None:
-            controller.stop()
+            if wait_for_worker:
+                controller.stop(wait_for_worker=True)
+            else:
+                stopping = _instance_attr(
+                    self,
+                    "_stopping_alert_controllers",
+                    set(),
+                )
+                stopping.add(controller)
+                self._stopping_alert_controllers = stopping
+                controller.stop(wait_for_worker=False)
+                QTimer.singleShot(100, self._reap_stopping_alert_controllers)
+
+        if wait_for_worker:
+            stopping = _instance_attr(self, "_stopping_alert_controllers", set())
+            self._stopping_alert_controllers = set()
+            for stopping_controller in stopping:
+                stopping_controller.stop(wait_for_worker=True)
         self._alert_btn.setText("开启预警")
         self._alert_btn.setStyleSheet(monitor_button_style(active=False))
         self._log_message("预警已关闭")
+
+    def _reap_stopping_alert_controllers(self) -> None:
+        """Release asynchronously stopped alert controllers after their workers exit."""
+        stopping = _instance_attr(self, "_stopping_alert_controllers", set())
+        self._stopping_alert_controllers = {
+            controller for controller in stopping if controller.is_running()
+        }
+        if self._stopping_alert_controllers:
+            QTimer.singleShot(100, self._reap_stopping_alert_controllers)
 
     def _show_alert_notification(self, title: str, message: str) -> None:
         self._tray.showMessage(title, message)
@@ -1207,7 +1233,7 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def _quit_app(self):
-        self._stop_alert()
+        self._stop_alert(wait_for_worker=True)
         self._stop_monitor(wait_for_workers=True)
         network_tasks = _instance_attr(self, "_network_tasks")
         if network_tasks is not None:

@@ -2865,6 +2865,8 @@ class IntelStore:
         seen: set[str] = set()
         result: list[str] = []
         for name in self._normalize_names(names):
+            if "".join(name.split()).isnumeric():
+                continue
             if resolve:
                 name = self._canonicalize_ocr_name(name)
             else:
