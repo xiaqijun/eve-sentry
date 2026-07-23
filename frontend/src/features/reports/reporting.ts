@@ -100,6 +100,9 @@ function cleanVerifiedCharacters(alert: AlertItem): VerifiedCharacter[] {
 }
 
 function verifiedAlert(alert: AlertItem): AlertItem | null {
+  if (alert.classification !== "red") {
+    return null;
+  }
   const characters = cleanVerifiedCharacters(alert);
   if (characters.length === 0) {
     return null;

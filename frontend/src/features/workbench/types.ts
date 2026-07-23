@@ -96,6 +96,7 @@ export interface AlertItem {
   verified_characters?: VerifiedCharacter[];
   level?: Level;
   score?: number;
+  classification?: "red" | "white";
   created_at?: string;
   acknowledged?: boolean;
   [key: string]: unknown;

@@ -16,6 +16,7 @@ const alerts: AlertItem[] = [
       { character_id: 102, name: "Bob" },
     ],
     level: "high",
+    classification: "red",
     created_at: "2026-07-22T11:00:00Z",
   },
   {
@@ -25,6 +26,7 @@ const alerts: AlertItem[] = [
     character_ids: [101],
     verified_characters: [{ character_id: 101, name: "Alice" }],
     level: "low",
+    classification: "red",
     created_at: "2026-07-21T09:00:00Z",
   },
   {
@@ -34,6 +36,7 @@ const alerts: AlertItem[] = [
     character_ids: [103],
     verified_characters: [{ character_id: 103, name: "Carol" }],
     level: "critical",
+    classification: "red",
     created_at: "2026-07-10T09:00:00Z",
   },
   {
@@ -42,7 +45,19 @@ const alerts: AlertItem[] = [
     names: ["Rifter"],
     character_ids: [999],
     level: "critical",
+    classification: "red",
     created_at: "2026-07-22T10:00:00Z",
+  },
+  {
+    id: "alert-friendly",
+    system_name: "S-KSWL",
+    names: ["Friendly Pilot"],
+    character_ids: [104],
+    verified_characters: [{ character_id: 104, name: "Friendly Pilot" }],
+    level: "low",
+    score: 1,
+    classification: "white",
+    created_at: "2026-07-22T11:30:00Z",
   },
 ];
 
@@ -66,6 +81,7 @@ describe("hostile reporting", () => {
     expect(report.trend.reduce((sum, item) => sum + item.count, 0)).toBe(2);
     expect(report.recent[0].names).toEqual(["Alice", "Bob"]);
     expect(report.recent.some((item) => item.id === "alert-unverified")).toBe(false);
+    expect(report.recent.some((item) => item.id === "alert-friendly")).toBe(false);
   });
 
   it("includes the complete alert history for the all-time range", () => {
