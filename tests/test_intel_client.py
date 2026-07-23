@@ -6,6 +6,7 @@ from app.alert_client import (
     AlertClientState,
     AlertEventConsumer,
     AlertOverlay,
+    AlertTrayController,
     active_alert_keys_from_bootstrap,
     aggregate_alert_summaries,
     alert_hostile_count,
@@ -1185,6 +1186,39 @@ def test_alert_client_parse_args_supports_sse_overlay_mode():
     assert args.heartbeat_interval == 15
     assert args.reconnect_max_delay == 20
     assert args.hidden is True
+
+
+def test_embedded_alert_controller_uses_host_notification_without_second_tray(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+
+    notifications = []
+    args = SimpleNamespace(
+        server="http://example.invalid",
+        state=str(tmp_path / "alerts.json"),
+        timeout=1.0,
+        heartbeat_interval=5.0,
+        reconnect_max_delay=1.0,
+    )
+    app = QApplication.instance() or QApplication([])
+    controller = AlertTrayController(
+        app,
+        args,
+        tray_enabled=False,
+        notification_callback=lambda title, message: notifications.append(
+            (title, message)
+        ),
+    )
+    try:
+        controller._notify("EVE Sentry Alert", "S-KSWL 敌:2")
+
+        assert controller._tray is None
+        assert notifications == [("EVE Sentry Alert", "S-KSWL 敌:2")]
+    finally:
+        controller.overlay.close()
 
 
 def test_alert_client_heartbeat_details_are_events_overlay_only():
