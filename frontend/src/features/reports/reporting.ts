@@ -1,4 +1,4 @@
-import type { AlertItem, Level } from "../workbench/types";
+import type { AlertItem, Level, VerifiedCharacter } from "../workbench/types";
 
 export type ReportRange = "24h" | "7d" | "30d" | "all";
 
@@ -17,6 +17,7 @@ export interface SystemReportRow {
 }
 
 export interface TargetReportRow {
+  characterId: number;
   name: string;
   incidentCount: number;
   systems: string[];
@@ -81,6 +82,34 @@ function cleanNames(alert: AlertItem): string[] {
       .map((name) => String(name).trim())
       .filter(Boolean),
   )];
+}
+
+function cleanVerifiedCharacters(alert: AlertItem): VerifiedCharacter[] {
+  const seen = new Set<number>();
+  const characters: VerifiedCharacter[] = [];
+  (alert.verified_characters || []).forEach((item) => {
+    const characterId = Number(item?.character_id);
+    const name = String(item?.name || "").trim();
+    if (!Number.isInteger(characterId) || characterId <= 0 || !name || seen.has(characterId)) {
+      return;
+    }
+    seen.add(characterId);
+    characters.push({ character_id: characterId, name });
+  });
+  return characters;
+}
+
+function verifiedAlert(alert: AlertItem): AlertItem | null {
+  const characters = cleanVerifiedCharacters(alert);
+  if (characters.length === 0) {
+    return null;
+  }
+  return {
+    ...alert,
+    names: characters.map((item) => item.name),
+    character_ids: characters.map((item) => item.character_id),
+    verified_characters: characters,
+  };
 }
 
 function cleanSystem(alert: AlertItem): string {
@@ -215,6 +244,8 @@ export function buildHostileReport(
 ): HostileReport {
   const startMs = reportRangeStart(range, nowMs);
   const alerts = sourceAlerts
+    .map(verifiedAlert)
+    .filter((alert): alert is AlertItem => alert !== null)
     .filter((alert) => {
       if (startMs === null) {
         return true;
@@ -226,14 +257,15 @@ export function buildHostileReport(
       (parsedTime(right.created_at) || 0) - (parsedTime(left.created_at) || 0)
     ));
 
-  const uniqueTargets = new Set<string>();
+  const uniqueTargets = new Set<number>();
   const systemMap = new Map<string, {
     incidents: number;
     sightings: number;
-    targets: Set<string>;
+    targets: Set<number>;
     lastSeen?: string;
   }>();
-  const targetMap = new Map<string, {
+  const targetMap = new Map<number, {
+    name: string;
     incidents: number;
     systems: Set<string>;
     lastSeen?: string;
@@ -248,6 +280,7 @@ export function buildHostileReport(
   let targetSightings = 0;
 
   alerts.forEach((alert) => {
+    const characters = cleanVerifiedCharacters(alert);
     const names = cleanNames(alert);
     const system = cleanSystem(alert);
     const level = ["critical", "high", "medium", "low"].includes(String(alert.level))
@@ -259,7 +292,7 @@ export function buildHostileReport(
     const systemStats = systemMap.get(system) || {
       incidents: 0,
       sightings: 0,
-      targets: new Set<string>(),
+      targets: new Set<number>(),
       lastSeen: undefined,
     };
     systemStats.incidents += 1;
@@ -267,10 +300,11 @@ export function buildHostileReport(
     if (!systemStats.lastSeen) {
       systemStats.lastSeen = alert.created_at;
     }
-    names.forEach((name) => {
-      uniqueTargets.add(name);
-      systemStats.targets.add(name);
-      const targetStats = targetMap.get(name) || {
+    characters.forEach((character) => {
+      uniqueTargets.add(character.character_id);
+      systemStats.targets.add(character.character_id);
+      const targetStats = targetMap.get(character.character_id) || {
+        name: character.name,
         incidents: 0,
         systems: new Set<string>(),
         lastSeen: undefined,
@@ -280,7 +314,7 @@ export function buildHostileReport(
       if (!targetStats.lastSeen) {
         targetStats.lastSeen = alert.created_at;
       }
-      targetMap.set(name, targetStats);
+      targetMap.set(character.character_id, targetStats);
     });
     systemMap.set(system, systemStats);
   });
@@ -299,8 +333,9 @@ export function buildHostileReport(
       || left.name.localeCompare(right.name)
     ));
   const targets = [...targetMap.entries()]
-    .map(([name, item]) => ({
-      name,
+    .map(([characterId, item]) => ({
+      characterId,
+      name: item.name,
       incidentCount: item.incidents,
       systems: [...item.systems].sort(),
       lastSeen: item.lastSeen,

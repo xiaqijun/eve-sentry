@@ -348,6 +348,46 @@ def test_record_ocr_snapshot_stores_esi_identity_metadata(tmp_path):
     assert metadata["character_profiles"][0]["name"] == "Alice"
 
 
+def test_alerts_expose_only_esi_verified_characters(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.add_observation(
+        {
+            "source": "ocr",
+            "system_name": "S-KSWL",
+            "names": ["Alice", "Rifter"],
+            "character_ids": [123],
+            "metadata": {
+                "esi_resolution": {
+                    "attempted": True,
+                    "resolved_character_names": ["Alice"],
+                    "unresolved_character_names": ["Rifter"],
+                }
+            },
+        }
+    )
+    store.add_observation(
+        {
+            "source": "ocr",
+            "system_name": "S-KSWL",
+            "names": ["OCR noise"],
+            "character_ids": [456],
+            "metadata": {
+                "esi_resolution": {
+                    "attempted": True,
+                    "unresolved_character_names": ["OCR noise"],
+                }
+            },
+        }
+    )
+
+    alerts = {item["names"][0]: item for item in store.list_alerts()}
+
+    assert alerts["Alice"]["verified_characters"] == [
+        {"character_id": 123, "name": "Alice"}
+    ]
+    assert alerts["OCR noise"]["verified_characters"] == []
+
+
 def test_record_ocr_snapshot_does_not_wait_for_esi_resolution(tmp_path):
     class BlockingResolver:
         def __init__(self):

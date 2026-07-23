@@ -104,7 +104,7 @@ export function HostileReportPage() {
           <div>
             <p className="eyebrow">EVE 哨兵 · 敌对情报</p>
             <h1>敌对来袭报表</h1>
-            <span>统计服务端已生成的真实敌对告警，不包含单纯 OCR 可见名单。</span>
+            <span>所有统计仅包含 ESI 已确认存在的角色，OCR 噪声与未验证目标不计入。</span>
           </div>
         </div>
         <div className="report-header-actions">
@@ -151,7 +151,7 @@ export function HostileReportPage() {
         <article className="report-metric-card">
           <span><Users size={15} />目标人次</span>
           <strong>{report.targetSightings}</strong>
-          <small>每批目标数量之和</small>
+          <small>ESI 已确认角色人次</small>
         </article>
         <article className="report-metric-card">
           <span><Skull size={15} />独立敌对</span>

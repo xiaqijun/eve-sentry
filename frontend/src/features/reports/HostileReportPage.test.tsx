@@ -32,6 +32,11 @@ describe("HostileReportPage", () => {
           id: "alert-1",
           system_name: "S-KSWL",
           names: ["Alice", "Bob"],
+          character_ids: [101, 102],
+          verified_characters: [
+            { character_id: 101, name: "Alice" },
+            { character_id: 102, name: "Bob" },
+          ],
           level: "high",
           created_at: new Date(now - 10 * 60 * 1000).toISOString(),
           acknowledged: false,
@@ -40,6 +45,8 @@ describe("HostileReportPage", () => {
           id: "alert-2",
           system_name: "S-KSWL",
           names: ["Alice"],
+          character_ids: [101],
+          verified_characters: [{ character_id: 101, name: "Alice" }],
           level: "low",
           created_at: new Date(now - 60 * 60 * 1000).toISOString(),
           acknowledged: true,
@@ -69,6 +76,7 @@ describe("HostileReportPage", () => {
     });
 
     expect(container).toHaveTextContent("敌对来袭报表");
+    expect(container).toHaveTextContent("所有统计仅包含 ESI 已确认存在的角色");
     expect(container).toHaveTextContent("来袭批次");
     expect(container).toHaveTextContent("目标人次");
     expect(container).toHaveTextContent("独立敌对");

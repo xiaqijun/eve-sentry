@@ -1799,11 +1799,33 @@ class IntelStore:
         alert: ThreatEvent,
     ) -> dict[str, Any]:
         data = alert.to_dict()
+        data["verified_characters"] = self._verified_characters_for_report(report)
         data["acknowledged"] = bool(report.acknowledged_at)
         data["acknowledged_at"] = report.acknowledged_at
         data["acknowledged_by"] = report.acknowledged_by
         data["acknowledgement_note"] = report.acknowledgement_note
         return data
+
+    def _verified_characters_for_report(
+        self,
+        report: IntelReport,
+    ) -> list[dict[str, Any]]:
+        """Return only character ids paired with names confirmed by ESI."""
+        resolution = report.metadata.get("esi_resolution")
+        if not isinstance(resolution, dict):
+            return []
+
+        character_ids = self._normalize_ints(report.character_ids)
+        resolved_names = self._normalize_names(
+            resolution.get("resolved_character_names")
+        )
+        if not character_ids or len(character_ids) != len(resolved_names):
+            return []
+
+        return [
+            {"character_id": character_id, "name": name}
+            for character_id, name in zip(character_ids, resolved_names)
+        ]
 
     def _alert_matches(
         self,

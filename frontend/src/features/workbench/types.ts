@@ -82,11 +82,18 @@ export interface ActiveIntelItem {
   [key: string]: unknown;
 }
 
+export interface VerifiedCharacter {
+  character_id: number;
+  name: string;
+}
+
 export interface AlertItem {
   id: string;
   system_name?: string;
   system_id?: number;
   names?: string[];
+  character_ids?: number[];
+  verified_characters?: VerifiedCharacter[];
   level?: Level;
   score?: number;
   created_at?: string;
