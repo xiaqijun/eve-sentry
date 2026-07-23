@@ -24,6 +24,8 @@ def test_ocr_candidate_names_split_comma_rows_and_deduplicate_case():
 def test_ocr_candidate_names_ignore_member_count_numbers():
     results = [
         ("3", 1.0),
+        ("二8", 0.98),
+        ("二 6", 0.97),
         ("Hajimi6", 0.95),
     ]
 
