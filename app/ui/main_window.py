@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+from argparse import Namespace
 from concurrent.futures import Future
 from datetime import datetime
 
@@ -28,6 +29,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from app.alert_client import (
+    DEFAULT_EVENT_TIMEOUT,
+    DEFAULT_HEARTBEAT_INTERVAL,
+    DEFAULT_RECONNECT_MAX_DELAY,
+    AlertTrayController,
+    default_state_path,
+)
 from app.channels.local_system import find_latest_local_system
 from app.engine.capturer import Capturer
 from app.core.heartbeat import (
@@ -103,6 +111,7 @@ class MainWindow(QMainWindow):
         self._heartbeat_timer.timeout.connect(self._publish_heartbeat)
         self._network_tasks = BackgroundTaskRunner(max_workers=2, parent=self)
         self._network_tasks.completed.connect(self._on_network_task_completed)
+        self._alert_controller: AlertTrayController | None = None
 
         self._popup_alerts_enabled = False
         self._manual_region: dict | None = None
@@ -123,12 +132,23 @@ class MainWindow(QMainWindow):
         right = QVBoxLayout()
         right.setSpacing(6)
 
+        action_row = QHBoxLayout()
+        action_row.setSpacing(6)
+
         self._monitor_btn = QPushButton("开始监控")
         self._monitor_btn.setMinimumHeight(40)
         self._monitor_btn.setStyleSheet(monitor_button_style(active=False))
         self._monitor_btn.setCheckable(True)
         self._monitor_btn.clicked.connect(self._toggle_monitor)
-        right.addWidget(self._monitor_btn)
+        action_row.addWidget(self._monitor_btn, 1)
+
+        self._alert_btn = QPushButton("开启预警")
+        self._alert_btn.setMinimumHeight(40)
+        self._alert_btn.setStyleSheet(monitor_button_style(active=False))
+        self._alert_btn.setCheckable(True)
+        self._alert_btn.clicked.connect(self._toggle_alert)
+        action_row.addWidget(self._alert_btn, 1)
+        right.addLayout(action_row)
 
         self._window_combo = QComboBox()
         self._window_combo.currentIndexChanged.connect(self._on_window_selected)
@@ -609,6 +629,71 @@ class MainWindow(QMainWindow):
             self._start_monitor()
         else:
             self._stop_monitor()
+
+    def _toggle_alert(self, checked: bool) -> None:
+        if checked:
+            self._start_alert()
+        else:
+            self._stop_alert()
+
+    def _start_alert(self) -> None:
+        """Start the server-side warning consumer inside the monitor client."""
+        if self._alert_controller is not None:
+            return
+        app = QApplication.instance()
+        if app is None:
+            self._alert_btn.setChecked(False)
+            return
+        args = Namespace(
+            server=self._intel_url,
+            state=default_state_path(),
+            timeout=_env_float(
+                "EVE_SENTRY_ALERT_TIMEOUT",
+                default=DEFAULT_EVENT_TIMEOUT,
+                minimum=1.0,
+            ),
+            heartbeat_interval=_env_float(
+                "EVE_SENTRY_ALERT_HEARTBEAT_INTERVAL",
+                default=DEFAULT_HEARTBEAT_INTERVAL,
+                minimum=5.0,
+            ),
+            reconnect_max_delay=_env_float(
+                "EVE_SENTRY_ALERT_RECONNECT_MAX_DELAY",
+                default=DEFAULT_RECONNECT_MAX_DELAY,
+                minimum=1.0,
+            ),
+            hidden=False,
+        )
+        try:
+            controller = AlertTrayController(
+                app,
+                args,
+                tray_enabled=False,
+                notification_callback=self._show_alert_notification,
+            )
+            controller.start()
+        except Exception as exc:
+            logger.exception("Failed to start embedded alert client")
+            self._alert_btn.setChecked(False)
+            QMessageBox.critical(self, "预警启动失败", str(exc))
+            return
+        self._alert_controller = controller
+        self._alert_btn.setText("关闭预警")
+        self._alert_btn.setStyleSheet(monitor_button_style(active=True))
+        self._log_message("预警已开启")
+
+    def _stop_alert(self) -> None:
+        """Stop the embedded warning consumer and hide its overlay."""
+        controller = self._alert_controller
+        self._alert_controller = None
+        if controller is not None:
+            controller.stop()
+        self._alert_btn.setText("开启预警")
+        self._alert_btn.setStyleSheet(monitor_button_style(active=False))
+        self._log_message("预警已关闭")
+
+    def _show_alert_notification(self, title: str, message: str) -> None:
+        self._tray.showMessage(title, message)
 
     def _apply_scan_settings(self) -> None:
         """Apply the current scan interval without restarting active workers."""
@@ -1122,6 +1207,7 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def _quit_app(self):
+        self._stop_alert()
         self._stop_monitor(wait_for_workers=True)
         network_tasks = _instance_attr(self, "_network_tasks")
         if network_tasks is not None:

@@ -896,12 +896,16 @@ class AlertTrayController:
         args: argparse.Namespace,
         *,
         api_factory: Callable[..., IntelApiClient] = IntelApiClient,
+        tray_enabled: bool = True,
+        notification_callback: Callable[[str, str], None] | None = None,
     ) -> None:
         self.app = app
         self.args = args
         self.state = AlertClientState(args.state)
         self.state.load_seen_ids()
         self.api_factory = api_factory
+        self._tray_enabled = bool(tray_enabled)
+        self._notification_callback = notification_callback
         self.overlay = AlertOverlay()
         self.overlay.set_status("连接中", "warn")
         self.overlay.show()
@@ -911,7 +915,7 @@ class AlertTrayController:
         self._inactive_cleanup_timer.setInterval(1000)
         self._inactive_cleanup_timer.timeout.connect(self._expire_inactive_summaries)
         self._inactive_cleanup_timer.start()
-        self._tray = QSystemTrayIcon(self.overlay)
+        self._tray: QSystemTrayIcon | None = None
         self._worker = AlertEventWorker(
             args.server,
             self.state,
@@ -920,28 +924,33 @@ class AlertTrayController:
             reconnect_max_delay=args.reconnect_max_delay,
             api_factory=api_factory,
         )
-        self._setup_tray()
+        if self._tray_enabled:
+            self._setup_tray()
         self._worker.alert_received.connect(self._on_alert)
         self._worker.bootstrap_received.connect(self._on_bootstrap)
         self._worker.status_changed.connect(self._on_status)
 
     def start(self) -> None:
         """Start the tray icon and SSE worker."""
-        self._tray.show()
+        if self._tray is not None:
+            self._tray.show()
         self._worker.start()
 
     def stop(self) -> None:
         """Stop the worker and hide the tray icon."""
         self._worker.stop()
         self._worker.wait(int((self.args.timeout + 4.0) * 1000))
-        self._tray.hide()
+        self.overlay.hide()
+        if self._tray is not None:
+            self._tray.hide()
 
     def _setup_tray(self) -> None:
         icon = self.overlay.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
         self.overlay.setWindowIcon(icon)
-        self._tray.setIcon(icon)
-        self._tray.setToolTip("EVE Sentry Alert")
-        self._tray.activated.connect(self._on_tray_activated)
+        tray = QSystemTrayIcon(self.overlay)
+        tray.setIcon(icon)
+        tray.setToolTip("EVE Sentry Alert")
+        tray.activated.connect(self._on_tray_activated)
 
         menu = QMenu()
         toggle_action = QAction("Show / Hide Overlay")
@@ -957,7 +966,16 @@ class AlertTrayController:
         quit_action = QAction("Quit")
         quit_action.triggered.connect(self.app.quit)
         menu.addAction(quit_action)
-        self._tray.setContextMenu(menu)
+        tray.setContextMenu(menu)
+        self._tray = tray
+
+    def _notify(self, title: str, message: str) -> None:
+        """Deliver a notification through the host or standalone tray."""
+        if self._notification_callback is not None:
+            self._notification_callback(title, message)
+            return
+        if self._tray is not None:
+            self._tray.showMessage(title, message)
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
@@ -996,7 +1014,7 @@ class AlertTrayController:
         elif status == "error":
             self.overlay.set_status("连接异常", "danger")
             if message:
-                self._tray.showMessage("EVE Sentry Alert", message)
+                self._notify("EVE Sentry Alert", message)
         else:
             self.overlay.set_status(status, "idle")
 
@@ -1012,7 +1030,7 @@ class AlertTrayController:
         self.overlay.show_summaries(self._recent_summaries)
         self.overlay.set_status("新告警", "danger")
         play_alert_sound()
-        self._tray.showMessage(
+        self._notify(
             "EVE Sentry Alert",
             f"{summary['system_name']}  敌:{summary['hostile_count']}",
         )

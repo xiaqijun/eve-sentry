@@ -49,6 +49,9 @@ def test_quit_app_waits_for_ocr_workers_before_exiting(monkeypatch):
             self._network_tasks = FakeNetworkTasks()
             self._tray = FakeTray()
 
+        def _stop_alert(self):
+            calls.append("alert")
+
         def _stop_monitor(self, *, wait_for_workers=False):
             calls.append(("monitor", wait_for_workers))
 
@@ -56,7 +59,56 @@ def test_quit_app_waits_for_ocr_workers_before_exiting(monkeypatch):
 
     MainWindow._quit_app(FakeWindow())
 
-    assert calls == [("monitor", True), "network", "tray", "quit"]
+    assert calls == ["alert", ("monitor", True), "network", "tray", "quit"]
+
+
+def test_alert_toggle_starts_and_stops_embedded_controller(monkeypatch):
+    calls = []
+    qt_app()
+
+    class FakeButton:
+        def setChecked(self, value):
+            calls.append(("checked", value))
+
+        def setText(self, value):
+            calls.append(("text", value))
+
+        def setStyleSheet(self, value):
+            calls.append(("style", bool(value)))
+
+    class FakeController:
+        def __init__(self, app, args, **kwargs):
+            calls.append(("init", args.server, kwargs["tray_enabled"]))
+
+        def start(self):
+            calls.append("start")
+
+        def stop(self):
+            calls.append("stop")
+
+    window = MainWindow.__new__(MainWindow)
+    window._intel_url = "http://intel.example"
+    window._alert_controller = None
+    window._alert_btn = FakeButton()
+    window._show_alert_notification = lambda title, message: None
+    window._log_message = lambda message: calls.append(("log", message))
+
+    monkeypatch.setattr("app.ui.main_window.AlertTrayController", FakeController)
+
+    MainWindow._start_alert(window)
+
+    assert calls[:2] == [
+        ("init", "http://intel.example", False),
+        "start",
+    ]
+    assert window._alert_controller is not None
+    assert ("text", "关闭预警") in calls
+
+    MainWindow._stop_alert(window)
+
+    assert "stop" in calls
+    assert window._alert_controller is None
+    assert ("text", "开启预警") in calls
 
 
 def test_detector_client_has_no_local_threat_handler():
