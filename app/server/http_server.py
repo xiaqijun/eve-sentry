@@ -1940,7 +1940,12 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             time.sleep(sleep_for)
 
     def _bootstrap_event_fingerprint(self, payload: dict[str, Any]) -> str:
-        stable_payload = self._without_generated_at(payload)
+        stable_payload = self._without_generated_at(
+            {
+                "active_intel": payload.get("active_intel"),
+                "alerts": payload.get("alerts"),
+            }
+        )
         encoded = json.dumps(
             stable_payload,
             ensure_ascii=False,

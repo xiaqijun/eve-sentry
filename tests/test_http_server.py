@@ -383,6 +383,15 @@ def test_bootstrap_event_fingerprint_ignores_volatile_refresh_fields():
                 },
             }
         ],
+        "clients": {
+            "heartbeats": [
+                {
+                    "client_id": "detector-client:test",
+                    "seen_at": "2026-07-23T01:00:00+00:00",
+                    "age_seconds": 1.0,
+                }
+            ]
+        },
     }
     refreshed = {
         **payload,
@@ -397,6 +406,15 @@ def test_bootstrap_event_fingerprint_ignores_volatile_refresh_fields():
                 },
             }
         ],
+        "clients": {
+            "heartbeats": [
+                {
+                    "client_id": "detector-client:test",
+                    "seen_at": "2026-07-23T01:00:05+00:00",
+                    "age_seconds": 6.0,
+                }
+            ]
+        },
     }
 
     assert handler._bootstrap_event_fingerprint(payload) == (
