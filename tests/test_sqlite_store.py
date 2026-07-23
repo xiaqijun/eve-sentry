@@ -551,6 +551,92 @@ def test_sqlite_store_persists_heartbeats_across_reload(tmp_path):
     assert payload["heartbeats"][0]["details"]["system"] == "Tama"
 
 
+def test_sqlite_store_restart_grace_retains_active_ocr_for_stale_client(tmp_path):
+    db_path = tmp_path / "intel.sqlite3"
+    store = SQLiteIntelStore(db_path, systems={}, links=[])
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "names": ["Derpbronc", "Brent McBride", "Seabronc"],
+            "seen_at": "2026-01-01T00:00:00+00:00",
+        }
+    )
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": "2026-01-01T00:00:01+00:00",
+            "heartbeat_interval_seconds": 5,
+            "details": {"monitoring": True},
+        }
+    )
+
+    reloaded = SQLiteIntelStore(db_path, systems={}, links=[])
+
+    active = reloaded.list_active_intel(source="eve-sentry-detector")
+    assert {item["name"] for item in active} == {
+        "Derpbronc",
+        "Brent McBride",
+        "Seabronc",
+    }
+
+    reloaded._stale_heartbeat_cleanup_after = 0.0
+    assert reloaded.list_active_intel(source="eve-sentry-detector") == []
+
+
+def test_sqlite_store_restart_grace_allows_detector_to_refresh_without_leave(tmp_path):
+    db_path = tmp_path / "intel.sqlite3"
+    store = SQLiteIntelStore(db_path, systems={}, links=[])
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "names": ["Seabronc"],
+            "seen_at": "2026-01-01T00:00:00+00:00",
+        }
+    )
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": "2026-01-01T00:00:01+00:00",
+            "heartbeat_interval_seconds": 5,
+            "details": {"monitoring": True},
+        }
+    )
+
+    reloaded = SQLiteIntelStore(db_path, systems={}, links=[])
+    refreshed_at = "2099-01-01T00:00:00+00:00"
+    reloaded.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": refreshed_at,
+            "heartbeat_interval_seconds": 5,
+            "details": {"monitoring": True},
+        }
+    )
+    reloaded.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "names": ["Seabronc"],
+            "seen_at": refreshed_at,
+        }
+    )
+    reloaded._stale_heartbeat_cleanup_after = 0.0
+
+    active = reloaded.list_active_intel(source="eve-sentry-detector")
+    assert [item["name"] for item in active] == ["Seabronc"]
+
+
 def test_sqlite_store_updates_existing_heartbeat_by_client_id(tmp_path):
     db_path = tmp_path / "intel.sqlite3"
     store = SQLiteIntelStore(db_path, systems={}, links=[])

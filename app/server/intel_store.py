@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,6 +42,7 @@ ALERT_LEVEL_RANKS = {
     "high": 3,
     "critical": 4,
 }
+STALE_HEARTBEAT_STARTUP_GRACE_SECONDS = 45.0
 
 
 def utc_now_iso() -> str:
@@ -227,6 +229,7 @@ class IntelStore:
         self._lock = threading.RLock()
         self._alert_cache: dict[str, ThreatEvent | None] = {}
         self._heartbeats: dict[str, dict[str, Any]] = {}
+        self._stale_heartbeat_cleanup_after = 0.0
         self._active_intel: dict[str, ActiveIntelItem] = {}
         self._ocr_name_corrections: dict[str, str] = {}
         self._character_profile_cache: dict[int, dict[str, Any]] = {}
@@ -1531,6 +1534,8 @@ class IntelStore:
         }
 
     def _expire_stale_detector_ocr_active_intel(self, left_at: str) -> int:
+        if time.monotonic() < self._stale_heartbeat_cleanup_after:
+            return 0
         now_at = self._parse_timestamp(left_at)
         if now_at is None:
             return 0

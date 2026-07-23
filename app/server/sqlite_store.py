@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from app.core.models import Observation
 from app.server.intel_store import (
     IntelReport,
     IntelStore,
+    STALE_HEARTBEAT_STARTUP_GRACE_SECONDS,
     StarSystem,
     _OcrEsiTask,
     utc_now_iso,
@@ -59,6 +61,10 @@ class SQLiteIntelStore(IntelStore):
         )
         self._active_intel = self._read_active_intel()
         self._heartbeats = self._read_heartbeats()
+        if self._heartbeats:
+            self._stale_heartbeat_cleanup_after = (
+                time.monotonic() + STALE_HEARTBEAT_STARTUP_GRACE_SECONDS
+            )
 
     def _load_reports(self) -> list[IntelReport]:
         self._migrate()
