@@ -53,8 +53,23 @@ class TestFindEveWindow:
             mock_client_to_screen,
         )
 
+    def allow_exefile_processes(self, mock_win32process, mock_psutil, names=None):
+        names = names or {}
+        mock_win32process.GetWindowThreadProcessId.side_effect = lambda hwnd: (0, hwnd)
+
+        def mock_process(pid):
+            process = MagicMock()
+            process.name.return_value = names.get(pid, "exefile.exe")
+            return process
+
+        mock_psutil.Process.side_effect = mock_process
+
     @patch("app.engine.capturer.win32gui")
-    def test_find_by_title_keyword(self, mock_win32gui):
+    @patch("app.engine.capturer.win32process")
+    @patch("app.engine.capturer.psutil")
+    def test_find_by_title_keyword(
+        self, mock_psutil, mock_win32process, mock_win32gui
+    ):
         windows = [
             (1, "Chrome", (0, 0, 500, 400)),
             (2, "EVE - MyCharacter", (100, 200, 900, 800)),
@@ -66,6 +81,7 @@ class TestFindEveWindow:
         mock_win32gui.GetWindowRect = gwr
         mock_win32gui.GetClientRect = gcr
         mock_win32gui.ClientToScreen = cts
+        self.allow_exefile_processes(mock_win32process, mock_psutil)
 
         c = Capturer()
         result = c.find_eve_window()
@@ -77,8 +93,9 @@ class TestFindEveWindow:
 
     @patch("app.engine.capturer.win32gui")
     @patch("app.engine.capturer.win32process")
+    @patch("app.engine.capturer.psutil")
     def test_list_eve_windows_returns_all_matching_windows_sorted(
-        self, mock_win32process, mock_win32gui
+        self, mock_psutil, mock_win32process, mock_win32gui
     ):
         windows = [
             (1, "EVE - Pilot Small", (0, 0, 640, 480)),
@@ -91,6 +108,11 @@ class TestFindEveWindow:
         mock_win32gui.GetWindowText = gwt
         mock_win32gui.GetClientRect = gcr
         mock_win32gui.ClientToScreen = cts
+        self.allow_exefile_processes(
+            mock_win32process,
+            mock_psutil,
+            names={3: "notepad.exe"},
+        )
 
         c = Capturer()
         result = c.list_eve_windows()
@@ -102,7 +124,7 @@ class TestFindEveWindow:
         assert [item["hwnd"] for item in result] == [2, 1]
         assert result[0]["w"] == 1280
         assert result[0]["h"] == 720
-        assert mock_win32process.GetWindowThreadProcessId.call_count == 4
+        assert mock_win32process.GetWindowThreadProcessId.call_count == 7
 
     @patch("app.engine.capturer.win32gui")
     @patch("app.engine.capturer.win32process")
@@ -130,7 +152,9 @@ class TestFindEveWindow:
         assert result is None
 
     @patch("app.engine.capturer.win32gui")
-    def test_custom_keyword(self, mock_win32gui):
+    @patch("app.engine.capturer.win32process")
+    @patch("app.engine.capturer.psutil")
+    def test_custom_keyword(self, mock_psutil, mock_win32process, mock_win32gui):
         windows = [
             (1, "My App - Game", (0, 0, 600, 500)),
         ]
@@ -140,11 +164,43 @@ class TestFindEveWindow:
         mock_win32gui.GetWindowRect = gwr
         mock_win32gui.GetClientRect = gcr
         mock_win32gui.ClientToScreen = cts
+        self.allow_exefile_processes(mock_win32process, mock_psutil)
 
         c = Capturer()
         result = c.find_eve_window(keyword="My App")
         assert result is not None
         assert result["title"] == "My App - Game"
+
+    @patch("app.engine.capturer.win32gui")
+    @patch("app.engine.capturer.win32process")
+    @patch("app.engine.capturer.psutil")
+    def test_title_match_from_multibox_preview_is_ignored(
+        self, mock_psutil, mock_win32process, mock_win32gui
+    ):
+        windows = [
+            (1, "EVE - Hajimi6", (0, 0, 1920, 1009)),
+            (2, "EVE - Hajimi6", (100, 100, 292, 208)),
+        ]
+        em, gwt, _gwr, gcr, cts = self.make_windows(windows)
+        mock_win32gui.EnumWindows = em
+        mock_win32gui.GetWindowText = gwt
+        mock_win32gui.GetClientRect = gcr
+        mock_win32gui.ClientToScreen = cts
+        mock_win32process.GetWindowThreadProcessId.side_effect = lambda hwnd: (0, hwnd)
+
+        def mock_process(pid):
+            process = MagicMock()
+            process.name.return_value = (
+                "exefile.exe" if pid == 1 else "EVE多开管理器.exe"
+            )
+            return process
+
+        mock_psutil.Process.side_effect = mock_process
+
+        c = Capturer()
+        result = c.list_eve_windows(keyword="EVE -")
+
+        assert [item["hwnd"] for item in result] == [1]
 
     @patch("app.engine.capturer.win32gui")
     def test_get_window_info_uses_selected_hwnd(self, mock_win32gui):

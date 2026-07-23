@@ -1965,6 +1965,16 @@ def test_v1_events_stream_returns_alert_sse(tmp_path):
 
         assert status == 200
         assert headers["Content-Type"].startswith("text/event-stream")
+        assert "event: bootstrap" not in body
+        assert "event: alert" in body
+
+        status, headers, body = request_text(
+            f"{server.url}/api/v1/events?"
+            f"{urlencode({'timeout': '0', 'limit': '5', 'bootstrap': '1'})}"
+        )
+
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/event-stream")
         assert "event: bootstrap" in body
         assert "event: alert" in body
         events = sse_events(body)
@@ -2236,7 +2246,7 @@ def test_v1_events_bootstrap_id_is_resumable_alert_cursor(tmp_path):
             },
         )
 
-        query = urlencode({"timeout": "0", "limit": "5"})
+        query = urlencode({"timeout": "0", "limit": "5", "bootstrap": "1"})
         status, _, body = request_text(f"{server.url}/api/v1/events?{query}")
         assert status == 200
         first_events = sse_events(body)

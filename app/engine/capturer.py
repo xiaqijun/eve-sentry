@@ -42,6 +42,15 @@ class Capturer:
         """Return client-area screen coordinates for a valid, non-minimized hwnd."""
         return self._build_window_info(hwnd)
 
+    def _is_eve_client_window(self, hwnd: int) -> bool:
+        """Return True when hwnd belongs to the real EVE game client."""
+        try:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            process_name = psutil.Process(pid).name().casefold()
+        except Exception:
+            return False
+        return process_name == "exefile.exe"
+
     def list_eve_windows(self, keyword: str = "EVE -") -> list[dict]:
         """Return ALL EVE windows, sorted by title (most recently active first).
 
@@ -51,7 +60,7 @@ class Capturer:
 
         def title_callback(hwnd, _):
             title = win32gui.GetWindowText(hwnd)
-            if title.lower().startswith(keyword.lower()):
+            if title.lower().startswith(keyword.lower()) and self._is_eve_client_window(hwnd):
                 info = self._build_window_info(hwnd)
                 if info is not None and not any(item["hwnd"] == hwnd for item in results):
                     results.append(info)
@@ -60,14 +69,10 @@ class Capturer:
         win32gui.EnumWindows(title_callback, None)
 
         def process_callback(hwnd, _):
-            try:
-                _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                if "exefile" in psutil.Process(pid).name().lower():
-                    info = self._build_window_info(hwnd)
-                    if info is not None and not any(item["hwnd"] == hwnd for item in results):
-                        results.append(info)
-            except Exception:
-                pass
+            if self._is_eve_client_window(hwnd):
+                info = self._build_window_info(hwnd)
+                if info is not None and not any(item["hwnd"] == hwnd for item in results):
+                    results.append(info)
             return True
 
         win32gui.EnumWindows(process_callback, None)

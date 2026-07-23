@@ -816,7 +816,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 )
                 include_bootstrap = self._parse_optional_bool_default(
                     query.get("bootstrap", [""])[0],
-                    True,
+                    False,
                     "bootstrap",
                 )
                 filters = self._parse_alert_filters(query)

@@ -88,6 +88,7 @@ export function connectAlerts(
   onBootstrap?: (bootstrap: BootstrapPayload) => void,
 ): EventSource {
   const query = new URLSearchParams({
+    bootstrap: "0",
     limit: "50",
     timeout: "30",
   });
