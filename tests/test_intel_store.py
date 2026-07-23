@@ -1279,6 +1279,55 @@ def test_record_ocr_snapshot_expires_missing_names_after_grace_period(tmp_path):
     )
 
 
+def test_confirmed_ocr_departure_resets_alert_cooldown_for_reentry(tmp_path):
+    clock = [1000.0]
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(
+            watchlist=Watchlist(blacklist={"Alice"}),
+            cooldown_seconds=60,
+            now=lambda: clock[0],
+        ),
+    )
+    payload = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Hajimi6",
+        "system_name": "S-KSWL",
+    }
+
+    store.record_ocr_snapshot(
+        {
+            **payload,
+            "seen_at": "2026-07-03T10:00:00+00:00",
+            "names": ["Alice"],
+        }
+    )
+    first_alerts = store.list_alerts()
+    store.record_ocr_snapshot(
+        {
+            **payload,
+            "seen_at": "2026-07-03T10:00:08+00:00",
+            "names": [],
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            **payload,
+            "seen_at": "2026-07-03T10:00:09+00:00",
+            "names": ["Alice"],
+        }
+    )
+    reentry_alerts = store.list_alerts()
+
+    assert len(first_alerts) == 1
+    assert len(reentry_alerts) == 2
+    assert {
+        alert["source_observation_id"] for alert in reentry_alerts
+    } != {first_alerts[0]["source_observation_id"]}
+
+
 def test_record_ocr_snapshot_isolates_missing_names_by_client_id(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
     base = {

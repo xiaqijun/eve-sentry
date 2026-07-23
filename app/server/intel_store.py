@@ -1063,6 +1063,7 @@ class IntelStore:
 
                 item.active = False
                 item.left_at = seen_at
+                self._reset_ocr_alert_cooldown(item)
                 result.expired += 1
 
             result.active = self.list_active_intel(source=source)
@@ -1119,6 +1120,7 @@ class IntelStore:
                     continue
                 item.active = False
                 item.left_at = left_at
+                self._reset_ocr_alert_cooldown(item)
                 expired += 1
             expired += self._expire_stale_detector_ocr_active_intel(left_at)
         return expired
@@ -1574,8 +1576,17 @@ class IntelStore:
                 ).isoformat()
             item.active = False
             item.left_at = stale_seen_at
+            self._reset_ocr_alert_cooldown(item)
             expired += 1
         return expired
+
+    def _reset_ocr_alert_cooldown(self, item: ActiveIntelItem) -> None:
+        """Allow a confirmed departed OCR target to alert on its next entry."""
+        if item.source != "eve-sentry-detector" or item.target_type != "character":
+            return
+        reset = getattr(self._scorer, "reset_cooldown", None)
+        if callable(reset):
+            reset(item.system_name, [item.name])
 
     def _detector_heartbeat_stale_left_at(
         self,

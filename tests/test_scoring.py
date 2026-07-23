@@ -457,6 +457,16 @@ def test_cooldown_suppresses_repeat_alerts_for_same_system_and_names():
     assert engine.score(item) is not None
 
 
+def test_reset_cooldown_allows_immediate_reentry_alert():
+    engine = ScoringEngine(cooldown_seconds=60, now=lambda: 1000.0)
+    item = observation(source="intel_channel")
+
+    assert engine.score(item) is not None
+    assert engine.score(item) is None
+    assert engine.reset_cooldown(item.system_name, item.names) is True
+    assert engine.score(item) is not None
+
+
 def test_scoring_replay_records_version_and_predictable_rule_ids():
     base = observation(source="intel_channel")
     default_event = ScoringEngine(cooldown_seconds=0).score(base)

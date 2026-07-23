@@ -104,6 +104,20 @@ class ScoringEngine:
             scoring_version=self.scoring_version,
         )
 
+    def reset_cooldown(self, system_name: str, names: list[str]) -> bool:
+        """Clear one target's cooldown after a confirmed departure."""
+        normalized_names = [
+            str(name).strip()
+            for name in names
+            if str(name).strip()
+        ]
+        if not normalized_names:
+            return False
+        key = f"{str(system_name).strip().casefold()}:" + ",".join(
+            sorted(name.casefold() for name in normalized_names)
+        )
+        return self._last_alert_at.pop(key, None) is not None
+
     def _source_evidence(
         self,
         observation: Observation,
