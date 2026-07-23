@@ -1,4 +1,4 @@
-"""OCR wrapper using PaddleOCR."""
+"""OCR wrapper with PaddleOCR and optional ONNX Runtime backends."""
 
 import logging
 import os
@@ -20,14 +20,26 @@ class OCREngine:
         lang: str = "en",
         confidence_threshold: float = 0.7,
         device: str | None = None,
+        backend: str | None = None,
+        model_dir: str | Path | None = None,
     ) -> None:
         self._confidence_threshold = confidence_threshold
         self._ocr: Optional[object] = None
         self._lang = lang
         self._device = device or os.environ.get("EVE_SENTRY_OCR_DEVICE", "auto")
+        self._backend = (
+            backend or os.environ.get("EVE_SENTRY_OCR_BACKEND", "paddle")
+        ).strip().lower()
+        if self._backend not in {"paddle", "onnx"}:
+            logger.warning(
+                "Unknown OCR backend '%s'; falling back to PaddleOCR",
+                self._backend,
+            )
+            self._backend = "paddle"
+        self._model_dir = model_dir
 
     def _init_ocr(self, progress: Callable[[str], None] | None = None) -> None:
-        """Lazy-init the PaddleOCR instance."""
+        """Lazy-init the configured OCR backend."""
 
         def _report(message: str) -> None:
             logger.info(message)
@@ -35,6 +47,20 @@ class OCREngine:
                 progress(message)
 
         try:
+            if self._backend == "onnx":
+                from app.engine.onnx_ocr import RapidOCROnnxAdapter
+
+                _report("Initializing ONNX OCR engine...")
+                self._ocr = RapidOCROnnxAdapter(
+                    confidence_threshold=self._confidence_threshold,
+                    device=self._device,
+                    model_dir=self._model_dir,
+                )
+                provider_label = self._ocr.provider_label
+                _report(f"OCR engine ready on {provider_label}")
+                logger.info("ONNX OCR initialised (device=%s)", provider_label)
+                return
+
             import paddle
             from paddleocr import PaddleOCR
 

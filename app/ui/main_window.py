@@ -69,10 +69,8 @@ class MainWindow(QMainWindow):
         self._worker: MonitorWorker | None = None
         self._workers: dict[str, MonitorWorker] = {}
         self._worker_contexts: dict[str, dict] = {}
-        self._intel_url = os.environ.get(
-            "EVE_SENTRY_INTEL_URL",
-            "http://127.0.0.1:8765",
-        ).strip()
+        self._settings = SettingsPanel()
+        self._intel_url = self._settings.get_server_url()
         configured_system = os.environ.get("EVE_SENTRY_SYSTEM", "").strip()
         self._intel_system = configured_system or "Unknown"
         self._intel_system_id: int | None = None
@@ -81,17 +79,12 @@ class MainWindow(QMainWindow):
             "EVE_SENTRY_USE_LOCAL_SYSTEM_LOG",
             default=not bool(configured_system),
         )
-        self._use_esi_location = _env_flag(
-            "EVE_SENTRY_USE_ESI_LOCATION",
-            default=not bool(configured_system),
-        )
-        self._esi_location_ttl = _env_float(
-            "EVE_SENTRY_ESI_LOCATION_TTL",
-            default=30.0,
+        self._location_refresh_ttl = _env_float(
+            "EVE_SENTRY_LOCAL_SYSTEM_TTL",
+            default=5.0,
             minimum=1.0,
         )
-        self._esi_location_next_check = 0.0
-        self._last_esi_location_error = ""
+        self._location_next_check = 0.0
         self._last_local_system_error = ""
         self._heartbeat_interval = _env_float(
             "EVE_SENTRY_HEARTBEAT_INTERVAL",
@@ -109,6 +102,9 @@ class MainWindow(QMainWindow):
         self._heartbeat_timer = QTimer(self)
         self._heartbeat_timer.setInterval(int(self._heartbeat_interval * 1000))
         self._heartbeat_timer.timeout.connect(self._publish_heartbeat)
+        self._window_refresh_timer = QTimer(self)
+        self._window_refresh_timer.setInterval(3000)
+        self._window_refresh_timer.timeout.connect(self._refresh_detected_windows)
         self._network_tasks = BackgroundTaskRunner(max_workers=2, parent=self)
         self._network_tasks.completed.connect(self._on_network_task_completed)
         self._alert_controller: AlertTrayController | None = None
@@ -124,9 +120,9 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
-        self._settings = SettingsPanel()
         self._settings.setFixedWidth(240)
         self._settings.scan_settings_changed.connect(self._apply_scan_settings)
+        self._settings.server_url_changed.connect(self._apply_server_url)
         root.addWidget(self._settings)
 
         right = QVBoxLayout()
@@ -207,6 +203,7 @@ class MainWindow(QMainWindow):
 
         self._setup_tray()
         self._detect_window()
+        self._window_refresh_timer.start()
         self._refresh_window_status_table()
         self._refresh_status_cards()
         if _env_flag("EVE_SENTRY_AUTO_START_MONITOR", default=False):
@@ -223,7 +220,7 @@ class MainWindow(QMainWindow):
         """Build a compact status card for the desktop HUD."""
         titles = {
             "server": "服务端",
-            "esi": "ESI 星系",
+            "esi": "当前星系",
             "ocr": "OCR 上报",
             "window": "EVE 窗口",
             "region": "监控区域",
@@ -421,46 +418,38 @@ class MainWindow(QMainWindow):
         return f"{self._heartbeat_client_id}:{slug or 'window'}"
 
     def _build_monitor_targets(self) -> list[dict]:
-        """Build monitor targets for every currently detected EVE window."""
-        keyword = self._settings.get_keyword()
-        windows = self._capturer.list_eve_windows(keyword)
-        if not windows:
-            current = self._current_window_info()
-            windows = [current] if current is not None else []
+        """Build one monitor target for the selected EVE window."""
+        window = self._current_window_info()
+        if window is None:
+            return []
 
-        title_counts: dict[str, int] = {}
-        for window in windows:
-            if window is None:
-                continue
-            title = str(window.get("title") or "").casefold()
-            title_counts[title] = title_counts.get(title, 0) + 1
-        title_indexes: dict[str, int] = {}
-        targets: list[dict] = []
-        for window in windows:
-            if window is None:
-                continue
-            region = self._region_prefs.resolve_region(window)
-            if region is None:
-                region = self._capturer.get_member_list_region(window)
-            key = self._window_monitor_key(window)
-            title = str(window.get("title") or "").casefold()
-            title_indexes[title] = title_indexes.get(title, 0) + 1
-            source_instance = self._window_combo_label(
-                window,
-                duplicate_index=title_indexes[title],
-                duplicate_count=title_counts.get(title, 1),
-            )
-            targets.append(
-                {
-                    "key": key,
-                    "client_id": self._window_client_id(window),
-                    "window": dict(window),
-                    "window_title": str(window.get("title") or key),
-                    "source_instance": source_instance,
-                    "region": dict(region),
-                }
-            )
-        return targets
+        region = self._region_prefs.resolve_region(window)
+        if region is None:
+            region = self._capturer.get_member_list_region(window)
+        key = self._window_monitor_key(window)
+        window_title = str(window.get("title") or key)
+        configured_system = (
+            _instance_attr(self, "_intel_system", "Unknown")
+            if _instance_attr(self, "_intel_system_source", "default") == "env"
+            else "Unknown"
+        )
+        return [
+            {
+                "key": key,
+                "client_id": self._window_client_id(window),
+                "window": dict(window),
+                "window_title": window_title,
+                "character_name": _character_name_from_window_title(window_title),
+                "source_instance": self._window_combo_label(window),
+                "region": dict(region),
+                "system_name": configured_system,
+                "system_id": None,
+                "system_source": (
+                    "env" if configured_system != "Unknown" else "default"
+                ),
+                "_location_next_check": 0.0,
+            }
+        ]
 
     def _window_combo_label(
         self,
@@ -482,19 +471,23 @@ class MainWindow(QMainWindow):
             details.append(f"{width}x{height}")
         return " · ".join(details)
 
-    def _detect_window(self) -> None:
+    def _detect_window(self, windows: list[dict] | None = None) -> None:
         """Find all EVE windows and populate the window selector."""
-        keyword = self._settings.get_keyword()
-        windows = self._capturer.list_eve_windows(keyword)
+        previous_hwnd = self._window_combo.currentData()
+        if windows is None:
+            keyword = self._settings.get_keyword()
+            windows = self._capturer.list_eve_windows(keyword)
+        self._window_signature = _window_list_signature(windows)
         self._window_combo.blockSignals(True)
         self._window_combo.clear()
+        selected_index = 0
         if windows:
             title_counts: dict[str, int] = {}
             for window in windows:
                 title = str(window.get("title") or "").casefold()
                 title_counts[title] = title_counts.get(title, 0) + 1
             title_indexes: dict[str, int] = {}
-            for window in windows:
+            for index, window in enumerate(windows):
                 title = str(window.get("title") or "").casefold()
                 title_indexes[title] = title_indexes.get(title, 0) + 1
                 self._window_combo.addItem(
@@ -505,11 +498,13 @@ class MainWindow(QMainWindow):
                     ),
                     window["hwnd"],
                 )
+                if window["hwnd"] == previous_hwnd:
+                    selected_index = index
         self._window_combo.blockSignals(False)
 
         if windows:
-            self._window_combo.setCurrentIndex(0)
-            self._on_window_selected(0)
+            self._window_combo.setCurrentIndex(selected_index)
+            self._on_window_selected(selected_index)
             self._log_message(f"已发现 {len(windows)} 个 EVE 窗口")
         else:
             self._detected_region = None
@@ -517,6 +512,15 @@ class MainWindow(QMainWindow):
             self._window_label.setText("窗口：未找到")
         self._refresh_status_cards()
         self._refresh_window_status_table()
+
+    def _refresh_detected_windows(self) -> None:
+        """Refresh the selector when the set of EVE windows changes."""
+        keyword = self._settings.get_keyword()
+        windows = self._capturer.list_eve_windows(keyword)
+        signature = _window_list_signature(windows)
+        if signature == _instance_attr(self, "_window_signature", ()):
+            return
+        self._detect_window(windows=windows)
 
     def _current_window_info(self) -> dict | None:
         """Return the currently selected EVE window info."""
@@ -731,6 +735,27 @@ class MainWindow(QMainWindow):
             self._log_message(f"扫描间隔已实时更新为 {interval:g} 秒")
         self._refresh_status_cards()
 
+    def _apply_server_url(self, server_url: str) -> None:
+        """Rebuild server-backed clients after the saved URL changes."""
+        server_url = str(server_url or "").strip().rstrip("/")
+        if not server_url or server_url == self._intel_url:
+            return
+
+        restart_alert = self._alert_controller is not None
+        self._intel_url = server_url
+        self._intel_client = self._create_intel_client()
+        self._last_heartbeat_error = ""
+        self._heartbeat_last_error = ""
+        self._log_message(f"服务端地址已更新：{server_url}")
+
+        if restart_alert:
+            self._stop_alert()
+            self._start_alert()
+        if self._uploads_enabled:
+            self._refresh_intel_location(force=True)
+            self._publish_heartbeat()
+        self._refresh_status_cards()
+
     def _set_heartbeat_enabled(self, enabled: bool) -> None:
         timer = _instance_attr(self, "_heartbeat_timer")
         if timer is None:
@@ -751,7 +776,7 @@ class MainWindow(QMainWindow):
         metadata = context if isinstance(context, dict) else {}
         kind = str(metadata.get("kind") or "")
         try:
-            result = future.result()
+            future.result()
         except Exception as exc:
             if kind == "ocr":
                 self._handle_ocr_publish_error(exc, metadata)
@@ -808,7 +833,14 @@ class MainWindow(QMainWindow):
             self._monitor_btn.setChecked(False)
             return
 
-        self._refresh_intel_location(force=True)
+        for target in targets:
+            self._refresh_intel_location(force=True, context=target)
+        primary_target = targets[0]
+        self._intel_system = str(primary_target.get("system_name") or "Unknown")
+        self._intel_system_id = primary_target.get("system_id")
+        self._intel_system_source = str(
+            primary_target.get("system_source") or "default"
+        )
 
         if not self._stop_monitor_workers(timeout_ms=5000):
             self._monitor_btn.setChecked(False)
@@ -833,8 +865,16 @@ class MainWindow(QMainWindow):
             worker.set_region(region["x"], region["y"], region["w"], region["h"])
             worker.set_interval(interval)
             worker.ocr_snapshot.connect(
-                lambda names, context=target: self._publish_ocr_snapshot(
-                    names, context=context
+                lambda names, hostile_icon_count, context=target: self._publish_ocr_snapshot(
+                    names,
+                    context=context,
+                    hostile_icon_count=hostile_icon_count,
+                )
+            )
+            worker.hostile_detected.connect(
+                lambda count, context=target: self._on_hostile_icon_detected(
+                    count,
+                    context,
                 )
             )
             worker.status_update.connect(
@@ -889,6 +929,23 @@ class MainWindow(QMainWindow):
             status = "扫描中"
         self._update_window_status(context, status, text)
 
+    def _on_hostile_icon_detected(self, count: int, context: dict) -> None:
+        """Notify locally as soon as red standing icons appear in a game frame."""
+        controller = _instance_attr(self, "_alert_controller")
+        if controller is None:
+            return
+        window_title = str(context.get("window_title") or "EVE").strip() or "EVE"
+        system_name = str(context.get("system_name") or "Unknown").strip()
+        message = f"❗ {system_name} 来敌"
+        self._log_message(f"{window_title}: {message}")
+        self._update_window_status(context, "敌对告警", message)
+        controller._on_alert(
+            {
+                "system_name": system_name,
+                "hostile_count": max(1, int(count)),
+            }
+        )
+
     def _disconnect_worker_signals(self, worker: MonitorWorker | None = None) -> None:
         """Safely disconnect all signals from the current worker."""
         worker = worker or self._worker
@@ -896,6 +953,10 @@ class MainWindow(QMainWindow):
             return
         try:
             worker.ocr_snapshot.disconnect()
+        except TypeError:
+            pass
+        try:
+            worker.hostile_detected.disconnect()
         except TypeError:
             pass
         try:
@@ -966,17 +1027,18 @@ class MainWindow(QMainWindow):
         )
         if not enabled or not self._intel_url:
             return None
-        timeout_raw = os.environ.get("EVE_SENTRY_INTEL_TIMEOUT", "3.0")
+        timeout_raw = os.environ.get("EVE_SENTRY_INTEL_TIMEOUT", "10.0")
         try:
             timeout = max(0.1, float(timeout_raw))
         except ValueError:
-            timeout = 1.0
+            timeout = 10.0
         return IntelApiClient(self._intel_url, timeout=timeout)
 
     def _publish_ocr_snapshot(
         self,
         names: list[str],
         context: dict | None = None,
+        hostile_icon_count: int = 0,
     ) -> None:
         if (
             self._intel_client is None
@@ -993,14 +1055,25 @@ class MainWindow(QMainWindow):
                 or context.get("window_title")
                 or source_instance
             )
-        self._refresh_intel_location()
+        if context is None:
+            self._refresh_intel_location()
+        else:
+            self._refresh_intel_location(context=context)
+        if context is None:
+            system_name = self._intel_system
+            system_id = self._intel_system_id
+        else:
+            system_name = str(context.get("system_name") or "Unknown")
+            system_id = context.get("system_id")
         payload = {
             "client_id": client_id,
             "source_instance": source_instance,
-            "system_name": self._intel_system or "Unknown",
-            "system_id": self._intel_system_id,
+            "system_name": system_name or "Unknown",
+            "system_id": system_id,
             "names": list(names),
         }
+        if hostile_icon_count > 0:
+            payload["hostile_icon_count"] = int(hostile_icon_count)
         runner = _instance_attr(self, "_network_tasks")
         if runner is not None:
             client = self._intel_client
@@ -1058,6 +1131,10 @@ class MainWindow(QMainWindow):
                         "source_instance",
                         context["window_title"],
                     ),
+                    "character_name": context.get("character_name", ""),
+                    "system_name": context.get("system_name", "Unknown"),
+                    "system_id": context.get("system_id"),
+                    "system_source": context.get("system_source", "default"),
                     "region": context["region"],
                     "monitoring": context["key"] in getattr(self, "_workers", {}),
                 }
@@ -1091,81 +1168,55 @@ class MainWindow(QMainWindow):
                 self._log_message(f"Heartbeat update failed: {message}")
         self._refresh_status_cards()
 
-    def _refresh_intel_location(self, force: bool = False) -> bool:
+    def _refresh_intel_location(
+        self,
+        force: bool = False,
+        context: dict | None = None,
+    ) -> bool:
         now = time.monotonic()
-        if not force and now < self._esi_location_next_check:
-            return bool(
-                self._intel_system_id
-                or (
-                    self._intel_system_source in {"esi", "env", "chatlog"}
-                    and self._intel_system
-                    and self._intel_system != "Unknown"
-                )
-            )
-        self._esi_location_next_check = now + self._esi_location_ttl
+        if context is None:
+            system_source = self._intel_system_source
+            system_name = self._intel_system
+            next_check = self._location_next_check
+        else:
+            system_source = str(context.get("system_source") or "default")
+            system_name = str(context.get("system_name") or "Unknown")
+            next_check = float(context.get("_location_next_check") or 0.0)
+        has_cached_location = bool(
+            system_source in {"env", "chatlog"}
+            and system_name
+            and system_name != "Unknown"
+        )
+        if not force and now < next_check:
+            return has_cached_location
+        next_check = now + self._location_refresh_ttl
+        if context is None:
+            self._location_next_check = next_check
+        else:
+            context["_location_next_check"] = next_check
 
-        if self._use_esi_location and self._intel_client is not None:
-            try:
-                system = self._intel_client.current_esi_system()
-            except IntelApiError as exc:
-                message = str(exc)
-                if message != self._last_esi_location_error:
-                    self._last_esi_location_error = message
-                    self._heartbeat_last_action = "esi_error"
-                    self._heartbeat_last_error = message
-                    self._log_message(f"ESI current-system sync unavailable: {message}")
-                    self._refresh_status_cards()
-            else:
-                if self._apply_esi_system(system):
-                    return True
+        return (
+            self._refresh_local_system_from_chatlog(context=context)
+            or has_cached_location
+        )
 
-                message = "location did not include a solar system"
-                if message != self._last_esi_location_error:
-                    self._last_esi_location_error = message
-                    self._heartbeat_last_action = "esi_error"
-                    self._heartbeat_last_error = message
-                    self._log_message(f"ESI current-system sync unavailable: {message}")
-                    self._refresh_status_cards()
-
-        return self._refresh_local_system_from_chatlog()
-
-    def _apply_esi_system(self, system: dict | None) -> bool:
-        if not system:
-            return False
-
-        system_id = _positive_int(system.get("system_id"))
-        system_name = str(system.get("system_name") or system.get("name") or "").strip()
-        if system_id is None and not system_name:
-            return False
-
-        previous = (self._intel_system_id, self._intel_system)
-        self._intel_system_id = system_id
-        if system_name:
-            self._intel_system = system_name
-        self._intel_system_source = "esi"
-        self._last_esi_location_error = ""
-        self._heartbeat_last_error = ""
-
-        current = (self._intel_system_id, self._intel_system)
-        if current != previous:
-            label = self._intel_system
-            if self._intel_system_id is not None:
-                label = f"{label} ({self._intel_system_id})"
-            self._heartbeat_last_action = "esi_sync"
-            self._heartbeat_last_success_at = heartbeat_now_iso()
-            self._log_message(f"Current system from ESI: {label}")
-        self._refresh_status_cards()
-        return True
-
-    def _refresh_local_system_from_chatlog(self) -> bool:
+    def _refresh_local_system_from_chatlog(self, context: dict | None = None) -> bool:
         if not getattr(self, "_use_local_system_log", False):
             return False
         settings = getattr(self, "_settings", None)
         if settings is None:
             return False
 
+        character_name = ""
+        if context is not None:
+            character_name = str(context.get("character_name") or "").strip()
+            if not character_name:
+                return False
         try:
-            detection = find_latest_local_system(settings.get_channel_log_dir())
+            detection = find_latest_local_system(
+                settings.get_channel_log_dir(),
+                character_name=character_name,
+            )
         except Exception as exc:
             message = str(exc)
             if message != self._last_local_system_error:
@@ -1175,17 +1226,25 @@ class MainWindow(QMainWindow):
         if detection is None:
             return False
 
-        previous = self._intel_system
-        self._intel_system = detection.system_name
-        self._intel_system_id = None
-        self._intel_system_source = "chatlog"
+        if context is None:
+            previous = self._intel_system
+            self._intel_system = detection.system_name
+            self._intel_system_id = None
+            self._intel_system_source = "chatlog"
+        else:
+            previous = str(context.get("system_name") or "Unknown")
+            context["system_name"] = detection.system_name
+            context["system_id"] = None
+            context["system_source"] = "chatlog"
         self._last_local_system_error = ""
         self._heartbeat_last_error = ""
         if detection.system_name != previous:
             self._heartbeat_last_action = "local_system_sync"
             self._heartbeat_last_success_at = heartbeat_now_iso()
+            character_label = f" for {character_name}" if character_name else ""
             self._log_message(
-                f"Current system from local chatlog: {detection.system_name}"
+                "Current system from local chatlog"
+                f"{character_label}: {detection.system_name}"
             )
         self._refresh_status_cards()
         return True
@@ -1265,11 +1324,24 @@ def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
     return max(minimum, value)
 
 
-def _positive_int(value) -> int | None:
-    if value in {None, ""}:
-        return None
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return None
-    return number if number > 0 else None
+def _character_name_from_window_title(title: str) -> str:
+    """Return the EVE character name embedded in a game window title."""
+    prefix, separator, character_name = str(title or "").partition(" - ")
+    if not separator or prefix.strip().casefold() != "eve":
+        return ""
+    return character_name.strip()
+
+
+def _window_list_signature(windows: list[dict]) -> tuple[tuple, ...]:
+    """Return stable identity and geometry data for detected EVE windows."""
+    return tuple(
+        (
+            window.get("hwnd"),
+            str(window.get("title") or ""),
+            int(window.get("x") or 0),
+            int(window.get("y") or 0),
+            int(window.get("w") or 0),
+            int(window.get("h") or 0),
+        )
+        for window in windows
+    )

@@ -114,3 +114,43 @@ def test_constructor_uses_bundled_models(monkeypatch, tmp_path):
     assert engine._create_paddle_ocr(factory, device_arg="gpu:0", use_gpu=True)
     assert calls[0]["text_detection_model_dir"] == str(detection_dir)
     assert calls[0]["text_recognition_model_dir"] == str(recognition_dir)
+
+
+def test_default_backend_remains_paddle(monkeypatch):
+    monkeypatch.delenv("EVE_SENTRY_OCR_BACKEND", raising=False)
+
+    engine = OCREngine()
+
+    assert engine._backend == "paddle"
+
+
+def test_onnx_backend_uses_adapter_without_changing_result_shape(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeAdapter:
+        provider_label = "DirectML GPU"
+
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+        def predict(self, _img_array):
+            return [{"rec_texts": [" Alice ", "Low"], "rec_scores": [0.98, 0.2]}]
+
+    monkeypatch.setattr("app.engine.onnx_ocr.RapidOCROnnxAdapter", FakeAdapter)
+    progress = []
+    engine = OCREngine(backend="onnx", model_dir=tmp_path)
+
+    results = engine.recognize(Image.new("RGB", (8, 6)), progress=progress.append)
+
+    assert results == [("Alice", 0.98)]
+    assert calls == [
+        {
+            "confidence_threshold": 0.7,
+            "device": "auto",
+            "model_dir": tmp_path,
+        }
+    ]
+    assert progress == [
+        "Initializing ONNX OCR engine...",
+        "OCR engine ready on DirectML GPU",
+    ]

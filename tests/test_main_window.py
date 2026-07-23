@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QApplication, QStyle, QStyleOptionSpinBox
 
 from app.ui.main_window import MainWindow
 from app.ui.settings import SettingsPanel
+from app.ui.settings import DEFAULT_INTEL_URL
 from app.ui.theme import APP_QSS
 
 _QT_APP = None
@@ -148,7 +149,7 @@ def test_publish_ocr_snapshot_posts_only_detected_names():
     window._window_combo = FakeCombo()
     window._intel_system = "S-KSWL"
     window._intel_system_id = 30000142
-    window._refresh_intel_location = lambda: True
+    window._refresh_intel_location = lambda force=False, context=None: True
 
     MainWindow._publish_ocr_snapshot(window, ["Alice"])
 
@@ -162,6 +163,66 @@ def test_publish_ocr_snapshot_posts_only_detected_names():
     assert "raw_text" not in window._intel_client.payload
     assert "active" not in window._intel_client.payload
     assert "inactive" not in window._intel_client.payload
+
+    MainWindow._publish_ocr_snapshot(
+        window,
+        ["Alice"],
+        hostile_icon_count=1,
+    )
+
+    assert window._intel_client.payload["hostile_icon_count"] == 1
+
+
+def test_hostile_icon_detection_notifies_immediately():
+    class FakeAlertController:
+        def __init__(self):
+            self.alerts = []
+
+        def _on_alert(self, alert):
+            self.alerts.append(alert)
+
+    window = MainWindow.__new__(MainWindow)
+    window._alert_controller = FakeAlertController()
+    window._messages = []
+    window._updates = []
+    window._log_message = window._messages.append
+    window._update_window_status = lambda *args: window._updates.append(args)
+    context = {"window_title": "EVE - Hajimi6", "system_name": "S-KSWL"}
+
+    MainWindow._on_hostile_icon_detected(window, 2, context)
+
+    assert window._alert_controller.alerts == [
+        {"system_name": "S-KSWL", "hostile_count": 2}
+    ]
+    assert window._updates == [
+        (context, "敌对告警", "❗ S-KSWL 来敌")
+    ]
+
+
+def test_hostile_icon_detection_is_silent_when_alerts_are_disabled():
+    class FakeTray:
+        def __init__(self):
+            self.messages = []
+
+        def showMessage(self, title, message):
+            self.messages.append((title, message))
+
+    window = MainWindow.__new__(MainWindow)
+    window._alert_controller = None
+    window._tray = FakeTray()
+    window._messages = []
+    window._updates = []
+    window._log_message = window._messages.append
+    window._update_window_status = lambda *args: window._updates.append(args)
+    MainWindow._on_hostile_icon_detected(
+        window,
+        2,
+        {"window_title": "EVE - Hajimi6", "system_name": "S-KSWL"},
+    )
+
+    assert window._tray.messages == []
+    assert window._messages == []
+    assert window._updates == []
 
 
 def test_publish_ocr_snapshot_uses_window_context_client_id():
@@ -183,7 +244,7 @@ def test_publish_ocr_snapshot_uses_window_context_client_id():
     window._window_combo = FakeCombo()
     window._intel_system = "S-KSWL"
     window._intel_system_id = 30000142
-    window._refresh_intel_location = lambda: True
+    window._refresh_intel_location = lambda force=False, context=None: True
 
     MainWindow._publish_ocr_snapshot(
         window,
@@ -193,16 +254,62 @@ def test_publish_ocr_snapshot_uses_window_context_client_id():
             "key": "eve - pilot a",
             "source_instance": "EVE - Pilot A #1 · hwnd 1 · 800x600",
             "window_title": "EVE - Pilot A",
+            "character_name": "Pilot A",
+            "system_name": "HB-FSO",
+            "system_id": 30000242,
+            "system_source": "chatlog",
         },
     )
 
     assert window._intel_client.payload == {
         "client_id": "detector-client:test:eve-pilot-a",
         "source_instance": "EVE - Pilot A #1 · hwnd 1 · 800x600",
-        "system_name": "S-KSWL",
-        "system_id": 30000142,
+        "system_name": "HB-FSO",
+        "system_id": 30000242,
         "names": ["Alice"],
     }
+
+
+def test_publish_ocr_snapshot_uses_each_window_system_context():
+    class FakeClient:
+        def __init__(self):
+            self.payloads = []
+
+        def post_ocr_snapshot(self, **payload):
+            self.payloads.append(payload)
+            return {"created": 1}
+
+    class FakeCombo:
+        def currentText(self):
+            return "EVE - Hajimi6"
+
+    window = MainWindow.__new__(MainWindow)
+    window._intel_client = FakeClient()
+    window._heartbeat_client_id = "detector-client:test"
+    window._window_combo = FakeCombo()
+    window._refresh_intel_location = lambda force=False, context=None: True
+    contexts = [
+        {
+            "client_id": "detector-client:test:hajimi6",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "system_id": None,
+        },
+        {
+            "client_id": "detector-client:test:hajimi5",
+            "source_instance": "EVE - Hajimi5",
+            "system_name": "HB-FSO",
+            "system_id": None,
+        },
+    ]
+
+    MainWindow._publish_ocr_snapshot(window, ["Alice"], context=contexts[0])
+    MainWindow._publish_ocr_snapshot(window, ["Bob"], context=contexts[1])
+
+    assert [payload["system_name"] for payload in window._intel_client.payloads] == [
+        "S-KSWL",
+        "HB-FSO",
+    ]
 
 
 def test_publish_ocr_snapshot_dispatches_network_work_off_the_ui_thread():
@@ -232,7 +339,7 @@ def test_publish_ocr_snapshot_dispatches_network_work_off_the_ui_thread():
     window._window_combo = FakeCombo()
     window._intel_system = "S-KSWL"
     window._intel_system_id = 30000142
-    window._refresh_intel_location = lambda: True
+    window._refresh_intel_location = lambda force=False, context=None: True
 
     MainWindow._publish_ocr_snapshot(window, ["Alice"])
 
@@ -243,32 +350,39 @@ def test_publish_ocr_snapshot_dispatches_network_work_off_the_ui_thread():
     assert window._intel_client.payload["names"] == ["Alice"]
 
 
-def test_refresh_intel_location_falls_back_to_local_chatlog(monkeypatch):
+def test_refresh_intel_location_uses_only_local_chatlog(monkeypatch):
     class FakeSettings:
         def get_channel_log_dir(self):
             return "C:/EVE/Chatlogs"
 
     class FakeClient:
+        calls = 0
+
         def current_esi_system(self):
-            raise RuntimeError("should not call ESI when disabled")
+            self.calls += 1
+            raise RuntimeError("monitor client must not call ESI")
 
     class Detection:
         system_name = "S-KSWL"
 
     monkeypatch.setattr(
         "app.ui.main_window.find_latest_local_system",
-        lambda log_dir: Detection() if log_dir == "C:/EVE/Chatlogs" else None,
+        lambda log_dir, character_name="": (
+            Detection()
+            if log_dir == "C:/EVE/Chatlogs" and character_name == ""
+            else None
+        ),
     )
     window = MainWindow.__new__(MainWindow)
-    window._use_esi_location = False
     window._use_local_system_log = True
-    window._intel_client = FakeClient()
+    client = FakeClient()
+    window._intel_client = client
     window._settings = FakeSettings()
     window._intel_system = "Unknown"
     window._intel_system_id = None
     window._intel_system_source = "default"
-    window._esi_location_next_check = 0.0
-    window._esi_location_ttl = 30.0
+    window._location_next_check = 0.0
+    window._location_refresh_ttl = 5.0
     window._last_local_system_error = ""
     window._heartbeat_last_action = ""
     window._heartbeat_last_success_at = ""
@@ -283,10 +397,16 @@ def test_refresh_intel_location_falls_back_to_local_chatlog(monkeypatch):
     assert window._intel_system_id is None
     assert window._intel_system_source == "chatlog"
     assert window._heartbeat_last_action == "local_system_sync"
+    assert client.calls == 0
 
 
 def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
     monkeypatch.delenv("EVE_SENTRY_CHATLOG_DIR", raising=False)
+    monkeypatch.delenv("EVE_SENTRY_INTEL_URL", raising=False)
+    monkeypatch.setattr(
+        "app.ui.settings.resolve_chatlog_dir",
+        lambda preferred=None: preferred or DEFAULT_CHATLOG_DIR,
+    )
     config_path = tmp_path / "channel_settings.json"
     config_path.write_text(
         json.dumps(
@@ -319,6 +439,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
         "chatlog_dir": "C:/EVE/Chatlogs",
         "scan_interval": 5,
         "window_keyword": "EVE - Pilot",
+        "server_url": DEFAULT_INTEL_URL,
     }
 
 
@@ -337,6 +458,66 @@ def test_settings_panel_environment_overrides_saved_chatlog_dir(
     panel = SettingsPanel(config_path=config_path)
 
     assert panel.get_channel_log_dir() == "E:/Env/Chatlogs"
+
+
+def test_settings_panel_persists_normalized_server_url(tmp_path, monkeypatch):
+    monkeypatch.delenv("EVE_SENTRY_INTEL_URL", raising=False)
+    config_path = tmp_path / "channel_settings.json"
+    qt_app()
+    panel = SettingsPanel(config_path=config_path)
+    changes = []
+    panel.server_url_changed.connect(changes.append)
+
+    panel._server_url_edit.setText("intel.example:8765/")
+    panel._server_url_edit.editingFinished.emit()
+
+    assert panel.get_server_url() == "http://intel.example:8765"
+    assert changes == ["http://intel.example:8765"]
+    assert json.loads(config_path.read_text(encoding="utf-8"))["server_url"] == (
+        "http://intel.example:8765"
+    )
+
+    reloaded = SettingsPanel(config_path=config_path)
+    assert reloaded.get_server_url() == "http://intel.example:8765"
+
+
+def test_settings_panel_environment_overrides_saved_server_url(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("EVE_SENTRY_INTEL_URL", "https://env.example/")
+    config_path = tmp_path / "channel_settings.json"
+    config_path.write_text(
+        json.dumps({"server_url": "http://saved.example"}),
+        encoding="utf-8",
+    )
+
+    qt_app()
+    panel = SettingsPanel(config_path=config_path)
+
+    assert panel.get_server_url() == "https://env.example"
+
+
+def test_apply_server_url_rebuilds_intel_client():
+    replacement_client = object()
+    window = MainWindow.__new__(MainWindow)
+    window._intel_url = "http://old.example"
+    window._intel_client = object()
+    window._alert_controller = None
+    window._uploads_enabled = False
+    window._create_intel_client = lambda: replacement_client
+    window._last_heartbeat_error = "old"
+    window._heartbeat_last_error = "old"
+    window._log_messages = []
+    window._log_message = lambda message: window._log_messages.append(message)
+    window._refresh_status_cards = lambda: None
+
+    MainWindow._apply_server_url(window, "http://new.example/")
+
+    assert window._intel_url == "http://new.example"
+    assert window._intel_client is replacement_client
+    assert window._last_heartbeat_error == ""
+    assert window._heartbeat_last_error == ""
 
 
 def test_spinbox_buttons_match_visible_right_edge(tmp_path):
@@ -396,7 +577,7 @@ def test_settings_panel_persists_and_emits_live_scan_changes(
     assert len(scan_changes) == 2
 
 
-def test_start_monitor_creates_worker_per_eve_window(monkeypatch):
+def test_start_monitor_creates_worker_only_for_selected_eve_window(monkeypatch):
     created_workers = []
 
     class FakeSignal:
@@ -414,6 +595,7 @@ def test_start_monitor_creates_worker_per_eve_window(monkeypatch):
             self.capturer = capturer
             self.ocr = ocr
             self.ocr_snapshot = FakeSignal()
+            self.hostile_detected = FakeSignal()
             self.status_update = FakeSignal()
             self.scan_complete = FakeSignal()
             self.window = None
@@ -444,13 +626,6 @@ def test_start_monitor_creates_worker_per_eve_window(monkeypatch):
             return True
 
     class FakeCapturer:
-        def list_eve_windows(self, keyword):
-            assert keyword == "EVE -"
-            return [
-                {"hwnd": 1, "title": "EVE - Pilot A", "x": 0, "y": 0, "w": 800, "h": 600},
-                {"hwnd": 2, "title": "EVE - Pilot B", "x": 20, "y": 30, "w": 1000, "h": 800},
-            ]
-
         def get_member_list_region(self, window):
             return {
                 "x": window["x"] + window["w"] - 200,
@@ -481,10 +656,30 @@ def test_start_monitor_creates_worker_per_eve_window(monkeypatch):
     )()
     window._region_prefs = FakeRegionPrefs()
     window._heartbeat_client_id = "detector-client:test"
+    window._current_window_info = lambda: {
+        "hwnd": 2,
+        "title": "EVE - Pilot B",
+        "x": 20,
+        "y": 30,
+        "w": 1000,
+        "h": 800,
+    }
     window._workers = {}
     window._worker_contexts = {}
     window._worker = None
-    window._refresh_intel_location = lambda force=False: True
+    resolved_characters = []
+
+    def refresh_location(force=False, context=None):
+        assert force is True
+        resolved_characters.append(context["character_name"])
+        context["system_name"] = {
+            "Pilot A": "S-KSWL",
+            "Pilot B": "HB-FSO",
+        }[context["character_name"]]
+        context["system_source"] = "chatlog"
+        return True
+
+    window._refresh_intel_location = refresh_location
     window._publish_heartbeat = lambda: None
     window._refresh_status_cards = lambda: None
     window._log_messages = []
@@ -494,41 +689,22 @@ def test_start_monitor_creates_worker_per_eve_window(monkeypatch):
 
     MainWindow._start_monitor(window)
 
-    assert len(created_workers) == 2
-    assert {worker.window["title"] for worker in created_workers} == {
-        "EVE - Pilot A",
-        "EVE - Pilot B",
-    }
-    assert created_workers[0].region == {"x": 600, "y": 0, "w": 200, "h": 600}
-    assert created_workers[1].region == {"x": 760, "y": 190, "w": 220, "h": 420}
+    assert len(created_workers) == 1
+    assert created_workers[0].window["title"] == "EVE - Pilot B"
+    assert created_workers[0].region == {"x": 760, "y": 190, "w": 220, "h": 420}
     assert all(worker.interval == 2.0 for worker in created_workers)
-    assert set(window._workers) == {
-        "hwnd:1:eve - pilot a",
-        "hwnd:2:eve - pilot b",
-    }
+    assert set(window._workers) == {"hwnd:2:eve - pilot b"}
     assert {
         context["client_id"] for context in window._worker_contexts.values()
-    } == {
-        "detector-client:test:hwnd-1-eve-pilot-a",
-        "detector-client:test:hwnd-2-eve-pilot-b",
-    }
+    } == {"detector-client:test:hwnd-2-eve-pilot-b"}
     assert {
         context["source_instance"] for context in window._worker_contexts.values()
-    } == {
-        "EVE - Pilot A",
-        "EVE - Pilot B",
-    }
+    } == {"EVE - Pilot B"}
+    assert resolved_characters == ["Pilot B"]
 
 
-def test_build_monitor_targets_keeps_duplicate_window_titles_distinct():
+def test_build_monitor_targets_uses_only_selected_window():
     class FakeCapturer:
-        def list_eve_windows(self, keyword):
-            assert keyword == "EVE -"
-            return [
-                {"hwnd": 1, "title": "EVE - Pilot", "x": 0, "y": 0, "w": 800, "h": 600},
-                {"hwnd": 2, "title": "EVE - Pilot", "x": 20, "y": 30, "w": 1000, "h": 800},
-            ]
-
         def get_member_list_region(self, window):
             return {
                 "x": window["x"] + window["w"] - 200,
@@ -552,21 +728,23 @@ def test_build_monitor_targets_keeps_duplicate_window_titles_distinct():
     )()
     window._region_prefs = FakeRegionPrefs()
     window._heartbeat_client_id = "detector-client:test"
+    window._current_window_info = lambda: {
+        "hwnd": 2,
+        "title": "EVE - Pilot B",
+        "x": 20,
+        "y": 30,
+        "w": 1000,
+        "h": 800,
+    }
 
     targets = MainWindow._build_monitor_targets(window)
 
-    assert [target["key"] for target in targets] == [
-        "hwnd:1:eve - pilot",
-        "hwnd:2:eve - pilot",
-    ]
+    assert [target["key"] for target in targets] == ["hwnd:2:eve - pilot b"]
     assert [target["client_id"] for target in targets] == [
-        "detector-client:test:hwnd-1-eve-pilot",
-        "detector-client:test:hwnd-2-eve-pilot",
+        "detector-client:test:hwnd-2-eve-pilot-b"
     ]
-    assert [target["source_instance"] for target in targets] == [
-        "EVE - Pilot #1 · hwnd 1 · 800x600",
-        "EVE - Pilot #2 · hwnd 2 · 1000x800",
-    ]
+    assert [target["source_instance"] for target in targets] == ["EVE - Pilot B"]
+    assert [target["character_name"] for target in targets] == ["Pilot B"]
 
 
 def test_detect_window_labels_duplicate_titles_with_hwnd_and_size():
@@ -649,6 +827,81 @@ def test_detect_window_labels_duplicate_titles_with_hwnd_and_size():
     assert window._window_label.text == (
         "窗口：EVE - Pilot #1 · hwnd 1 · 800x600 -> 成员列表 200x600"
     )
+
+
+def test_refresh_detected_windows_adds_new_window_and_keeps_selection():
+    class FakeCombo:
+        def __init__(self):
+            self.items = []
+            self.current_index = -1
+
+        def blockSignals(self, value):
+            self.blocked = value
+
+        def clear(self):
+            self.items.clear()
+            self.current_index = -1
+
+        def addItem(self, label, data):
+            self.items.append((label, data))
+
+        def setCurrentIndex(self, index):
+            self.current_index = index
+
+        def currentData(self):
+            if self.current_index < 0:
+                return None
+            return self.items[self.current_index][1]
+
+        def currentText(self):
+            if self.current_index < 0:
+                return ""
+            return self.items[self.current_index][0]
+
+    class FakeCapturer:
+        def __init__(self):
+            self.windows = [
+                {"hwnd": 1, "title": "EVE - Pilot A", "x": 0, "y": 0, "w": 800, "h": 600},
+                {"hwnd": 2, "title": "EVE - Pilot B", "x": 20, "y": 30, "w": 1000, "h": 800},
+            ]
+
+        def list_eve_windows(self, keyword):
+            assert keyword == "EVE -"
+            return list(self.windows)
+
+        def get_window_info(self, hwnd):
+            return next(window for window in self.windows if window["hwnd"] == hwnd)
+
+        def select_window(self, *args, **kwargs):
+            self.selected = (args, kwargs)
+
+        def get_member_list_region(self, window):
+            return {"x": window["x"], "y": window["y"], "w": 200, "h": window["h"]}
+
+    class FakeLabel:
+        def setText(self, text):
+            self.text = text
+
+    window = MainWindow.__new__(MainWindow)
+    window._settings = type("Settings", (), {"get_keyword": lambda self: "EVE -"})()
+    window._capturer = FakeCapturer()
+    window._window_combo = FakeCombo()
+    window._window_label = FakeLabel()
+    window._region_prefs = type("Prefs", (), {"resolve_region": lambda self, item: None})()
+    window._refresh_status_cards = lambda: None
+    window._refresh_window_status_table = lambda: None
+    window._log_message = lambda message: None
+
+    MainWindow._detect_window(window)
+    window._window_combo.setCurrentIndex(1)
+    window._capturer.windows.append(
+        {"hwnd": 3, "title": "EVE - Pilot C", "x": 40, "y": 50, "w": 1200, "h": 900}
+    )
+
+    MainWindow._refresh_detected_windows(window)
+
+    assert [data for _label, data in window._window_combo.items] == [1, 2, 3]
+    assert window._window_combo.currentData() == 2
 
 
 class FakeStatusTable:
@@ -820,6 +1073,10 @@ def test_publish_heartbeat_includes_multi_window_targets():
             "client_id": "detector-client:test:eve-pilot-a",
             "source_instance": "EVE - Pilot A",
             "window_title": "EVE - Pilot A",
+            "character_name": "Pilot A",
+            "system_name": "S-KSWL",
+            "system_id": None,
+            "system_source": "chatlog",
             "region": {"x": 600, "y": 0, "w": 200, "h": 600},
         },
         "eve - pilot b": {
@@ -827,6 +1084,10 @@ def test_publish_heartbeat_includes_multi_window_targets():
             "client_id": "detector-client:test:eve-pilot-b",
             "source_instance": "EVE - Pilot B",
             "window_title": "EVE - Pilot B",
+            "character_name": "Pilot B",
+            "system_name": "HB-FSO",
+            "system_id": None,
+            "system_source": "chatlog",
             "region": {"x": 760, "y": 190, "w": 220, "h": 420},
         },
     }
@@ -856,6 +1117,10 @@ def test_publish_heartbeat_includes_multi_window_targets():
             "client_id": "detector-client:test:eve-pilot-a",
             "window_title": "EVE - Pilot A",
             "source_instance": "EVE - Pilot A",
+            "character_name": "Pilot A",
+            "system_name": "S-KSWL",
+            "system_id": None,
+            "system_source": "chatlog",
             "region": {"x": 600, "y": 0, "w": 200, "h": 600},
             "monitoring": True,
         },
@@ -863,6 +1128,10 @@ def test_publish_heartbeat_includes_multi_window_targets():
             "client_id": "detector-client:test:eve-pilot-b",
             "window_title": "EVE - Pilot B",
             "source_instance": "EVE - Pilot B",
+            "character_name": "Pilot B",
+            "system_name": "HB-FSO",
+            "system_id": None,
+            "system_source": "chatlog",
             "region": {"x": 760, "y": 190, "w": 220, "h": 420},
             "monitoring": True,
         },
@@ -958,6 +1227,7 @@ def test_stop_monitor_workers_stops_all_workers_and_clears_context():
     class FakeWorker:
         def __init__(self):
             self.ocr_snapshot = FakeSignal()
+            self.hostile_detected = FakeSignal()
             self.status_update = FakeSignal()
             self.scan_complete = FakeSignal()
             self.running = True
@@ -991,6 +1261,7 @@ def test_stop_monitor_workers_stops_all_workers_and_clears_context():
     assert first.waits == [1234]
     assert second.waits == [1234]
     assert first.ocr_snapshot.disconnects == 1
+    assert first.hostile_detected.disconnects == 1
     assert first.status_update.disconnects == 1
     assert first.scan_complete.disconnects == 1
     assert window._workers == {}

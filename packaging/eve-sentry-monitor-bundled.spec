@@ -94,8 +94,10 @@ excludes = [
     "jupyter",
     "matplotlib",
     "notebook",
+    "onnxruntime",
     "pandas",
     "pytest",
+    "rapidocr",
     "scipy",
     "tensorflow",
     "torch",
@@ -125,6 +127,7 @@ excludes = [
     "modelscope.server",
     "modelscope.tools",
     "modelscope.outputs",
+    "app.engine.onnx_ocr",
 ]
 
 a = Analysis(
@@ -137,6 +140,7 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=excludes,
+    module_collection_mode={"paddle": "py"},
     noarchive=False,
     optimize=0,
 )

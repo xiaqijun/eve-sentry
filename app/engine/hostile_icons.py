@@ -1,0 +1,114 @@
+"""Detect hostile standing icons and isolate their member-list rows."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+from PIL import Image
+
+
+@dataclass(frozen=True)
+class HostileIcon:
+    """Bounding box for one red hostile icon."""
+
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+    @property
+    def width(self) -> int:
+        return self.right - self.left
+
+    @property
+    def height(self) -> int:
+        return self.bottom - self.top
+
+    @property
+    def center_y(self) -> float:
+        return (self.top + self.bottom - 1) / 2
+
+
+def find_hostile_icons(image: Image.Image) -> list[HostileIcon]:
+    """Return red square standing icons near the left edge of a member list."""
+    pixels = np.asarray(image.convert("RGB"), dtype=np.int16)
+    if pixels.size == 0:
+        return []
+
+    red = pixels[:, :, 0]
+    green = pixels[:, :, 1]
+    blue = pixels[:, :, 2]
+    red_mask = (red >= 100) & ((red - green) >= 60) & ((red - blue) >= 60)
+
+    _height, width = red_mask.shape
+    search_width = min(width, max(24, int(round(width * 0.35))))
+    left_mask = red_mask[:, :search_width]
+    active_rows = left_mask.sum(axis=1) >= 3
+
+    icons: list[HostileIcon] = []
+    for top, bottom in _true_runs(active_rows):
+        _ys, xs = np.nonzero(left_mask[top:bottom])
+        if not len(xs):
+            continue
+        left = int(xs.min())
+        right = int(xs.max()) + 1
+        box_height = bottom - top
+        box_width = right - left
+        if not (7 <= box_width <= 18 and 7 <= box_height <= 18):
+            continue
+        if not 0.65 <= box_width / box_height <= 1.35:
+            continue
+        red_pixels = int(left_mask[top:bottom, left:right].sum())
+        if red_pixels < max(20, int(box_width * box_height * 0.35)):
+            continue
+        icons.append(HostileIcon(left, top, right, bottom))
+    return icons
+
+
+def extract_hostile_name_rows(image: Image.Image) -> Image.Image | None:
+    """Stack only red-icon rows into a compact image suitable for OCR."""
+    icons = find_hostile_icons(image)
+    if not icons:
+        return None
+
+    source = image.convert("RGB")
+    name_left = min(source.width, max(icon.right for icon in icons) + 2)
+    output_width = source.width - name_left
+    if output_width <= 0:
+        return None
+
+    row_height = max(16, max(icon.height for icon in icons) + 5)
+    padding = 6
+    separator = 4
+    output_height = padding * 2 + len(icons) * row_height
+    output_height += max(0, len(icons) - 1) * separator
+    output = Image.new("RGB", (output_width, output_height), color=(0, 0, 0))
+
+    for index, icon in enumerate(icons):
+        requested_top = int(round(icon.center_y - row_height / 2))
+        requested_bottom = requested_top + row_height
+        source_top = max(0, requested_top)
+        source_bottom = min(source.height, requested_bottom)
+        if source_bottom <= source_top:
+            continue
+        row = source.crop((name_left, source_top, source.width, source_bottom))
+        output_y = padding + index * (row_height + separator)
+        output_y += source_top - requested_top
+        output.paste(row, (0, output_y))
+    return output
+
+
+def _true_runs(values: np.ndarray) -> list[tuple[int, int]]:
+    """Return half-open ranges for contiguous true values."""
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, enabled in enumerate(values.tolist()):
+        if enabled and start is None:
+            start = index
+        elif not enabled and start is not None:
+            runs.append((start, index))
+            start = None
+    if start is not None:
+        runs.append((start, len(values)))
+    return runs

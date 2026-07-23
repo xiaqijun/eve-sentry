@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -10,7 +11,89 @@ from pathlib import Path
 from typing import Iterable
 
 
-DEFAULT_CHATLOG_DIR = Path.home() / "Documents" / "EVE" / "logs" / "Chatlogs"
+def _windows_documents_dir() -> Path | None:
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "Personal")
+    except (ImportError, OSError):
+        return None
+    expanded = os.path.expandvars(str(value)).strip()
+    return Path(expanded) if expanded else None
+
+
+def _default_chatlog_candidates() -> list[Path]:
+    documents_dirs: list[Path] = []
+    windows_documents = _windows_documents_dir()
+    if windows_documents is not None:
+        documents_dirs.append(windows_documents)
+    documents_dirs.append(Path.home() / "Documents")
+
+    user_profile = os.environ.get("USERPROFILE", "").strip()
+    if user_profile:
+        documents_dirs.append(Path(user_profile) / "Documents")
+    for name in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        root = os.environ.get(name, "").strip()
+        if root:
+            documents_dirs.append(Path(root) / "Documents")
+
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for documents_dir in documents_dirs:
+        candidate = documents_dir / "EVE" / "logs" / "Chatlogs"
+        marker = os.path.normcase(str(candidate))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        candidates.append(candidate)
+    return candidates
+
+
+def resolve_chatlog_dir(preferred: str | Path | None = None) -> Path:
+    """Return the active EVE Chatlogs directory from Windows path candidates."""
+    candidates: list[Path] = []
+    if preferred is not None and str(preferred).strip():
+        candidates.append(Path(os.path.expandvars(str(preferred))).expanduser())
+    candidates.extend(_default_chatlog_candidates())
+
+    unique_candidates: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        marker = os.path.normcase(str(candidate))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        unique_candidates.append(candidate)
+
+    active_candidates: list[tuple[float, Path]] = []
+    for candidate in unique_candidates:
+        try:
+            latest_mtime = max(
+                (path.stat().st_mtime for path in candidate.glob("*.txt") if path.is_file()),
+                default=None,
+            )
+        except OSError:
+            continue
+        if latest_mtime is not None:
+            active_candidates.append((latest_mtime, candidate))
+    if active_candidates:
+        return max(active_candidates, key=lambda item: item[0])[1]
+
+    for candidate in unique_candidates:
+        if candidate.is_dir():
+            return candidate
+    if unique_candidates:
+        return unique_candidates[0]
+    return Path.home() / "Documents" / "EVE" / "logs" / "Chatlogs"
+
+
+DEFAULT_CHATLOG_DIR = resolve_chatlog_dir()
 CHANNEL_SUFFIX_RE = re.compile(r"(?:[_-]\d{8})?(?:[_-]\d{6})(?:[_-]\d+)?$")
 WILDCARD_CHARS = frozenset("*?")
 

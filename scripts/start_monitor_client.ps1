@@ -4,11 +4,10 @@ param(
     [string]$System = $(if ($env:EVE_SENTRY_SYSTEM) { $env:EVE_SENTRY_SYSTEM } else { "" }),
     [string]$OcrDevice = $(if ($env:EVE_SENTRY_OCR_DEVICE) { $env:EVE_SENTRY_OCR_DEVICE } else { "" }),
     [double]$HeartbeatInterval = 15.0,
-    [double]$Timeout = $(if ($env:EVE_SENTRY_INTEL_TIMEOUT) { [double]$env:EVE_SENTRY_INTEL_TIMEOUT } else { 3.0 }),
+    [double]$Timeout = $(if ($env:EVE_SENTRY_INTEL_TIMEOUT) { [double]$env:EVE_SENTRY_INTEL_TIMEOUT } else { 10.0 }),
     [string]$Python = "",
     [string]$LogDir = $(if ($env:EVE_SENTRY_MONITOR_LOG_DIR) { $env:EVE_SENTRY_MONITOR_LOG_DIR } else { Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "EVE Sentry\logs" }),
     [switch]$NoPublish,
-    [switch]$NoEsiLocation,
     [switch]$AutoStart,
     [switch]$Background,
     [switch]$PrintCommand
@@ -36,7 +35,6 @@ if ($ChatlogDir) { $envUpdates["EVE_SENTRY_CHATLOG_DIR"] = $ChatlogDir }
 if ($System) { $envUpdates["EVE_SENTRY_SYSTEM"] = $System }
 if ($OcrDevice) { $envUpdates["EVE_SENTRY_OCR_DEVICE"] = $OcrDevice }
 if ($NoPublish) { $envUpdates["EVE_SENTRY_PUBLISH_INTEL"] = "0" }
-if ($NoEsiLocation) { $envUpdates["EVE_SENTRY_USE_ESI_LOCATION"] = "0" }
 if ($AutoStart) { $envUpdates["EVE_SENTRY_AUTO_START_MONITOR"] = "1" }
 
 $clientArgs = @("-m", "app.detector_client")
