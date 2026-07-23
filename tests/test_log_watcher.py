@@ -5,8 +5,13 @@ from app.channels.log_watcher import (
     OffsetStore,
     channel_name_from_path,
     detect_encoding,
+    resolve_chatlog_dir,
 )
-from app.channels.local_system import find_latest_local_system, parse_local_system_line
+from app.channels.local_system import (
+    find_latest_local_system,
+    parse_listener_line,
+    parse_local_system_line,
+)
 
 
 def test_channel_name_strips_timestamp_suffix(tmp_path):
@@ -26,6 +31,43 @@ def test_detect_encoding_for_utf8_and_utf16():
     assert detect_encoding("hello".encode("utf-16")) == "utf-16"
 
 
+def test_resolve_chatlog_dir_selects_candidate_with_newest_logs(
+    tmp_path,
+    monkeypatch,
+):
+    older = tmp_path / "Documents" / "EVE" / "logs" / "Chatlogs"
+    newer = tmp_path / "OneDrive" / "Documents" / "EVE" / "logs" / "Chatlogs"
+    older.mkdir(parents=True)
+    newer.mkdir(parents=True)
+    old_log = older / "Local_20260722_120000.txt"
+    new_log = newer / "Local_20260723_120000.txt"
+    old_log.write_text("old", encoding="utf-8")
+    new_log.write_text("new", encoding="utf-8")
+    os.utime(old_log, (1, 1))
+    os.utime(new_log, (2, 2))
+    monkeypatch.setattr(
+        "app.channels.log_watcher._default_chatlog_candidates",
+        lambda: [older, newer],
+    )
+
+    assert resolve_chatlog_dir() == newer
+
+
+def test_resolve_chatlog_dir_falls_back_from_missing_saved_path(
+    tmp_path,
+    monkeypatch,
+):
+    active = tmp_path / "Documents" / "EVE" / "logs" / "Chatlogs"
+    active.mkdir(parents=True)
+    (active / "Local_20260723_120000.txt").write_text("active", encoding="utf-8")
+    monkeypatch.setattr(
+        "app.channels.log_watcher._default_chatlog_candidates",
+        lambda: [active],
+    )
+
+    assert resolve_chatlog_dir(tmp_path / "missing") == active
+
+
 def test_parse_local_system_line_from_chinese_channel_switch():
     line = "[ 2026.07.09 17:16:04 ] EVE 系统 > 频道更换为本地：S-KSWL*"
 
@@ -36,6 +78,10 @@ def test_parse_local_system_line_from_english_channel_switch():
     line = "[ 2026.07.09 17:16:04 ] EVE System > Channel changed to Local : 5-O8B1*"
 
     assert parse_local_system_line(line) == "5-O8B1"
+
+
+def test_parse_listener_line_from_english_header():
+    assert parse_listener_line("  Listener:        Hajimi6") == "Hajimi6"
 
 
 def test_find_latest_local_system_reads_recent_local_chatlog(tmp_path):
@@ -59,6 +105,35 @@ def test_find_latest_local_system_reads_recent_local_chatlog(tmp_path):
     assert detection is not None
     assert detection.system_name == "S-KSWL"
     assert detection.path == newer
+
+
+def test_find_latest_local_system_filters_by_character_listener(tmp_path):
+    log_dir = tmp_path / "Chatlogs"
+    log_dir.mkdir()
+    hajimi6 = log_dir / "Local_20260722_135954.txt"
+    hajimi5 = log_dir / "Local_20260723_135954.txt"
+    hajimi6.write_text(
+        "Listener:        Hajimi6\n"
+        "[ 2026.07.22 13:59:54 ] EVE System > "
+        "Channel changed to Local : S-KSWL*\n",
+        encoding="utf-16",
+    )
+    hajimi5.write_text(
+        "Listener:        Hajimi5\n"
+        "[ 2026.07.23 13:59:54 ] EVE System > "
+        "Channel changed to Local : HB-FSO*\n",
+        encoding="utf-16",
+    )
+    os.utime(hajimi6, (1, 1))
+    os.utime(hajimi5, (2, 2))
+
+    detection = find_latest_local_system(log_dir, character_name="hAjImI6")
+
+    assert detection is not None
+    assert detection.system_name == "S-KSWL"
+    assert detection.character_name == "Hajimi6"
+    assert detection.path == hajimi6
+    assert find_latest_local_system(log_dir, character_name="Unknown Pilot") is None
 
 
 def test_offset_store_saves_with_atomic_replace(tmp_path):

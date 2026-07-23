@@ -774,6 +774,7 @@ class AlertEventWorker(QThread):
     """Background SSE consumer for server-side alert events."""
 
     alert_received = pyqtSignal(dict)
+    safe_received = pyqtSignal(dict)
     bootstrap_received = pyqtSignal(dict)
     status_changed = pyqtSignal(str, str)
 
@@ -825,6 +826,10 @@ class AlertEventWorker(QThread):
                     if event_name == "bootstrap" and isinstance(data, dict):
                         self.bootstrap_received.emit(data)
                         self._post_heartbeat(api, "connected")
+                        continue
+                    if event_name == "safe" and isinstance(data, dict):
+                        self.safe_received.emit(data)
+                        self._post_heartbeat(api, "safe:1", force=True)
                         continue
                     if event_name != "alert" or not isinstance(data, dict):
                         self._post_heartbeat(api, "connected")
@@ -927,6 +932,7 @@ class AlertTrayController:
         if self._tray_enabled:
             self._setup_tray()
         self._worker.alert_received.connect(self._on_alert)
+        self._worker.safe_received.connect(self._on_safe)
         self._worker.bootstrap_received.connect(self._on_bootstrap)
         self._worker.status_changed.connect(self._on_status)
 
@@ -1008,6 +1014,7 @@ class AlertTrayController:
             api_factory=self.api_factory,
         )
         self._worker.alert_received.connect(self._on_alert)
+        self._worker.safe_received.connect(self._on_safe)
         self._worker.bootstrap_received.connect(self._on_bootstrap)
         self._worker.status_changed.connect(self._on_status)
         self._worker.start()
@@ -1026,20 +1033,48 @@ class AlertTrayController:
 
     def _on_alert(self, alert: dict[str, Any]) -> None:
         summary = summarize_alert(alert)
+        summary["active_hostile_count"] = summary["hostile_count"]
         system = str(summary.get("system_name") or "Unknown")
-        if not any(
-            str(item.get("system_name") or "Unknown") == system
-            for item in self._recent_summaries
-        ):
+        existing = next(
+            (
+                item
+                for item in self._recent_summaries
+                if str(item.get("system_name") or "Unknown") == system
+            ),
+            None,
+        )
+        if existing is None:
             self._recent_summaries.append(summary)
             self._recent_summaries = self._recent_summaries[-50:]
+        else:
+            existing.update(summary)
+            existing.pop("inactive_since", None)
         self.overlay.show_summaries(self._recent_summaries)
         self.overlay.set_status("新告警", "danger")
         play_alert_sound()
         self._notify(
-            "EVE Sentry Alert",
-            f"{summary['system_name']}  敌:{summary['hostile_count']}",
+            "敌对告警",
+            f"❗ {summary['system_name']} 来敌",
         )
+
+    def _on_safe(self, event: dict[str, Any]) -> None:
+        """Notify once after the final hostile leaves a solar system."""
+        system_name = str(
+            event.get("system_name") or event.get("system") or "Unknown"
+        ).strip() or "Unknown"
+        current_time = time.monotonic()
+        for item in self._recent_summaries:
+            if str(item.get("system_name") or "Unknown") != system_name:
+                continue
+            item["active"] = False
+            item["active_hostile_count"] = 0
+            item.setdefault("inactive_since", current_time)
+        self.overlay.show_summaries(self._recent_summaries)
+        self.overlay.set_status("星系安全", "ok")
+        message = str(event.get("message") or "").strip()
+        if not message:
+            message = f"✅ {system_name} 清空"
+        self._notify("星系安全", message)
 
     def _on_bootstrap(self, bootstrap: dict[str, Any]) -> None:
         self._recent_summaries = sync_alert_summaries_from_bootstrap(

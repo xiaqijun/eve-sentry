@@ -2,6 +2,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from app.alert_client import (
     AlertClientState,
     AlertEventConsumer,
@@ -18,7 +20,7 @@ from app.alert_client import (
     sync_alert_summaries_from_bootstrap,
     update_alert_summaries_active,
 )
-from app.intel_client import AlertPoller, IntelApiClient, ReportPoller
+from app.intel_client import AlertPoller, IntelApiClient, IntelApiError, ReportPoller
 from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore
 
@@ -399,6 +401,83 @@ def test_intel_api_client_posts_ocr_snapshot(tmp_path):
         assert api.get_active_intel()["count"] == 1
     finally:
         server.stop()
+
+
+def test_intel_api_client_retries_transient_ocr_snapshot_failure():
+    class FlakyClient(IntelApiClient):
+        def __init__(self):
+            super().__init__("http://example.invalid")
+            self.attempts = 0
+
+        def _request(self, method, path, payload=None, params=None):
+            _ = method, path, payload, params
+            self.attempts += 1
+            if self.attempts == 1:
+                try:
+                    raise TimeoutError("timed out")
+                except TimeoutError as exc:
+                    raise IntelApiError("timed out") from exc
+            return {"refreshed": 1}
+
+    api = FlakyClient()
+
+    result = api.post_ocr_snapshot(
+        client_id="detector-client:test",
+        source_instance="EVE - Hajimi6",
+        system_name="S-KSWL",
+        names=["Alice"],
+    )
+
+    assert result == {"refreshed": 1}
+    assert api.attempts == 2
+
+
+def test_intel_api_client_posts_hostile_icon_count():
+    class RecordingClient(IntelApiClient):
+        def __init__(self):
+            super().__init__("http://example.invalid")
+            self.payload = None
+
+        def _request(self, method, path, payload=None, params=None):
+            _ = method, path, params
+            self.payload = payload
+            return {"created": 1}
+
+    api = RecordingClient()
+
+    api.post_ocr_snapshot(
+        client_id="detector-client:test",
+        source_instance="EVE - Hajimi6",
+        system_name="S-KSWL",
+        names=["Alice"],
+        hostile_icon_count=1,
+    )
+
+    assert api.payload["hostile_icon_count"] == 1
+
+
+def test_intel_api_client_does_not_retry_non_transport_ocr_snapshot_failure():
+    class RejectingClient(IntelApiClient):
+        def __init__(self):
+            super().__init__("http://example.invalid")
+            self.attempts = 0
+
+        def _request(self, method, path, payload=None, params=None):
+            _ = method, path, payload, params
+            self.attempts += 1
+            raise IntelApiError("client_id is required")
+
+    api = RejectingClient()
+
+    with pytest.raises(IntelApiError, match="client_id is required"):
+        api.post_ocr_snapshot(
+            client_id="",
+            source_instance="EVE - Hajimi6",
+            system_name="S-KSWL",
+            names=[],
+        )
+
+    assert api.attempts == 1
 
 
 def test_intel_api_client_posts_and_lists_heartbeats(tmp_path):

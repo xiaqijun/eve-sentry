@@ -210,7 +210,7 @@ uv run python scripts/integration_status_check.py --server http://127.0.0.1:8765
 - PowerShell 启动脚本会把 `-Server`、`-ChatlogDir`、`-System`
   等参数转换成对应环境变量，再启动 `app.detector_client`。
 - `EVE_SENTRY_SYSTEM=Tama`: 手工指定当前星系。
-- `EVE_SENTRY_USE_ESI_LOCATION=0`: 关闭从服务端 ESI session 同步当前位置。
+- `EVE_SENTRY_LOCAL_SYSTEM_TTL=5`: 调整从本地 Chatlogs 刷新当前星系的间隔，最小 1 秒。
 - `EVE_SENTRY_HEARTBEAT_INTERVAL=15`: 调整检测端 heartbeat 上报间隔，最小 5 秒。
 - `EVE_SENTRY_CHATLOG_DIR=%USERPROFILE%\Documents\EVE\logs\Chatlogs`: 指定 EVE Chatlogs 目录。
 - 检测端固定为 report-only，不再读取 `EVE_SENTRY_SHOW_POPUPS`；弹窗和声音由预警客户端负责。
@@ -238,7 +238,7 @@ fake window 或手写 POST 情报来填写“真实”结果；这些受控输�
 
 - 服务端地址: `http://127.0.0.1:8765` 或公网地址。
 - 检测端启动命令: 记录 `-Server`、`-ChatlogDir`、`-System`
-  和是否启用 ESI 当前星系。
+  和本地 Chatlogs 星系刷新间隔。
 - 真实 Chatlogs: 记录频道名、实际文件名、编码如果可见、`channel_offsets.json`
   或自定义 offset state 路径。
 - 真实 EVE 窗口: 记录实际窗口数、窗口标题、成员列表区域截图。

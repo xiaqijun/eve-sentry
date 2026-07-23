@@ -1,14 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
-r"""Slim PyInstaller build for the local monitor client.
+r"""PyInstaller build for the lightweight DirectML ONNX monitor client."""
 
-Build from the repository root with:
-    .\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean packaging\eve-sentry-monitor-slim.spec
-
-For the smallest package, build from a CPU-only virtualenv that installs
-``paddlepaddle`` instead of ``paddlepaddle-gpu``. A GPU Paddle environment
-will still bundle CUDA/MKL Paddle DLLs and produce a much larger directory.
-"""
-
+import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import (
@@ -20,54 +13,71 @@ from PyInstaller.utils.hooks import (
 
 
 ROOT = Path(SPECPATH).parent
+MODEL_CACHE = Path(
+    os.environ.get(
+        "EVE_SENTRY_ONNX_MODEL_CACHE",
+        ROOT / ".runtime" / "onnx-models",
+    )
+)
+MODEL_NAMES = ("PP-OCRv6_medium_det", "PP-OCRv6_medium_rec")
+MODEL_FILENAME = "model.onnx"
 
 
-def keep_paddleocr_module(name: str) -> bool:
+def keep_rapidocr_module(name: str) -> bool:
     excluded_prefixes = (
-        "paddleocr.__main__",
-        "paddleocr._cli",
-        "paddleocr._doc2md",
+        "rapidocr.inference_engine.mnn",
+        "rapidocr.inference_engine.openvino",
+        "rapidocr.inference_engine.paddle",
+        "rapidocr.inference_engine.pytorch",
+        "rapidocr.inference_engine.tensorrt",
     )
     return not name.startswith(excluded_prefixes)
 
 
-def copy_first_metadata(*package_names: str):
-    for package_name in package_names:
-        try:
-            return copy_metadata(package_name)
-        except Exception:
-            continue
-    return []
+def collect_model_files():
+    files = []
+    for model_name in MODEL_NAMES:
+        model_path = MODEL_CACHE / model_name / MODEL_FILENAME
+        if not model_path.is_file():
+            raise FileNotFoundError(f"OCR model is missing: {model_path}")
+        files.append((str(model_path), f"models/{model_name}"))
+    return files
 
 
 hiddenimports = [
+    "antlr4",
     "win32timezone",
     "cv2",
     "numpy",
+    "omegaconf.grammar.gen.OmegaConfGrammarLexer",
+    "omegaconf.grammar.gen.OmegaConfGrammarParser",
+    "omegaconf.grammar.gen.OmegaConfGrammarParserListener",
+    "omegaconf.grammar.gen.OmegaConfGrammarParserVisitor",
     "pyclipper",
     "shapely",
 ]
-hiddenimports += collect_submodules("paddleocr", filter=keep_paddleocr_module)
+hiddenimports += collect_submodules("rapidocr", filter=keep_rapidocr_module)
 
 datas = [
     (str(ROOT / "resources" / "alert.wav"), "resources"),
     (str(ROOT / "resources" / "spin-up.svg"), "resources"),
     (str(ROOT / "resources" / "spin-down.svg"), "resources"),
 ]
+datas += collect_model_files()
 datas += collect_data_files(
-    "paddleocr",
+    "rapidocr",
     excludes=[
         "**/__pycache__/**",
-        "**/_doc2md/**",
-        "**/tests/**",
+        "**/inference_engine/pytorch/**",
+        "**/models/PP-OCRv6_det_small.onnx",
+        "**/models/PP-OCRv6_rec_small.onnx",
     ],
 )
-datas += copy_metadata("paddleocr")
-datas += copy_first_metadata("paddlepaddle", "paddlepaddle-gpu")
-datas += copy_metadata("pypdfium2")
+datas += copy_metadata("rapidocr")
+datas += copy_metadata("onnxruntime-directml")
 
 binaries = []
-binaries += collect_dynamic_libs("paddle")
+binaries += collect_dynamic_libs("onnxruntime")
 binaries += collect_dynamic_libs("cv2")
 binaries += collect_dynamic_libs("shapely")
 
@@ -76,37 +86,21 @@ excludes = [
     "jupyter",
     "matplotlib",
     "notebook",
+    "paddle",
+    "paddleocr",
     "pandas",
     "pytest",
     "scipy",
     "tensorflow",
     "torch",
     "torchvision",
-    "hf_xet",
-    "huggingface_hub.inference",
-    "PIL.AvifImagePlugin",
-    "PIL._avif",
-    "pypdfium2_raw",
     "PyQt6.QtPdf",
     "PyQt6.QtPdfWidgets",
-    "paddle.distributed",
-    "paddle.incubate.distributed",
-    "paddle.tensorrt",
-    "paddle.audio",
-    "paddle.dataset",
-    "paddle.text",
-    "paddle.vision",
-    "paddleocr._doc2md",
-    "shapely.tests",
-    "modelscope.models",
-    "modelscope.msdatasets",
-    "modelscope.pipelines",
-    "modelscope.preprocessors",
-    "modelscope.trainers",
-    "modelscope.exporters",
-    "modelscope.server",
-    "modelscope.tools",
-    "modelscope.outputs",
+    "rapidocr.inference_engine.mnn",
+    "rapidocr.inference_engine.openvino",
+    "rapidocr.inference_engine.paddle",
+    "rapidocr.inference_engine.pytorch",
+    "rapidocr.inference_engine.tensorrt",
 ]
 
 a = Analysis(
@@ -117,20 +111,14 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(ROOT / "packaging" / "runtime_hooks" / "onnx_backend.py")],
     excludes=excludes,
     noarchive=False,
     optimize=0,
 )
 
-# The desktop monitor only passes in-memory screenshots to OCR.  PyInstaller's
-# generic hooks otherwise add video decoding, PDF/AVIF support, an optional
-# HuggingFace Xet accelerator, and every Qt translation catalog.
 unused_binary_fragments = (
     "opencv_videoio_ffmpeg",
-    "pypdfium2_raw\\pdfium.dll",
-    "hf_xet\\hf_xet",
-    "pil\\_avif",
     "pyqt6\\qtpdf",
     "pyqt6\\qt6\\bin\\qt6pdf.dll",
 )
@@ -144,6 +132,7 @@ a.datas = [
     for entry in a.datas
     if not entry[0].lower().startswith("pyqt6\\qt6\\translations\\")
 ]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -151,7 +140,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="eve-sentry-monitor-slim",
+    name="EVE-Sentry-Monitor",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -171,5 +160,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="eve-sentry-monitor-slim",
+    name="EVE-Sentry-Monitor-ONNX",
 )

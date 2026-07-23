@@ -19,6 +19,41 @@ from app.server.intel_store import IntelStore, utc_now_iso
 
 logger = logging.getLogger(__name__)
 API_V1_PREFIX = "/api/v1"
+_EVENT_STREAM_CONDITION = threading.Condition()
+_EVENT_STREAM_GENERATION = 0
+
+
+def _notify_event_streams() -> None:
+    """Wake connected SSE clients after alert-producing state changes."""
+    global _EVENT_STREAM_GENERATION
+    with _EVENT_STREAM_CONDITION:
+        _EVENT_STREAM_GENERATION += 1
+        _EVENT_STREAM_CONDITION.notify_all()
+
+
+def _event_stream_generation() -> int:
+    with _EVENT_STREAM_CONDITION:
+        return _EVENT_STREAM_GENERATION
+
+
+def _wait_for_event_stream_change(generation: int, timeout: float) -> None:
+    """Wait until ingestion changes alert state or the fallback timeout expires."""
+    if timeout <= 0:
+        return
+    with _EVENT_STREAM_CONDITION:
+        if _EVENT_STREAM_GENERATION == generation:
+            _EVENT_STREAM_CONDITION.wait(timeout=timeout)
+
+
+def _active_hostile_counts(alerts: list[dict[str, Any]]) -> dict[str, int]:
+    """Count active hostile alerts by solar system."""
+    counts: dict[str, int] = {}
+    for alert in alerts:
+        system_name = str(
+            alert.get("system_name") or alert.get("system") or "Unknown"
+        ).strip() or "Unknown"
+        counts[system_name] = counts.get(system_name, 0) + 1
+    return counts
 
 
 class IntelHTTPServer:
@@ -424,6 +459,8 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
+            if not result.get("ignored"):
+                _notify_event_streams()
             self._send_json(
                 result,
                 HTTPStatus.OK if result.get("ignored") else HTTPStatus.CREATED,
@@ -481,6 +518,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             payload = self._read_json()
             if path == "/api/observations":
                 observation = self._store().add_observation(payload)
+                _notify_event_streams()
                 self._send_json(
                     {
                         "ok": True,
@@ -501,6 +539,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 note=str(payload.get("note", "")),
                 seen_at=payload.get("seen_at"),
             )
+            _notify_event_streams()
         except (ValueError, json.JSONDecodeError) as exc:
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -895,6 +934,8 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
+            if not result.get("ignored"):
+                _notify_event_streams()
             self._send_json(
                 result,
                 HTTPStatus.OK if result.get("ignored") else HTTPStatus.CREATED,
@@ -906,6 +947,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
+            _notify_event_streams()
             status = HTTPStatus.CREATED if result.get("created") else HTTPStatus.OK
             self._send_json(result, status)
             return
@@ -944,6 +986,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             payload = self._read_json()
             if path.endswith("/observations"):
                 observation = self._store().add_observation(payload)
+                _notify_event_streams()
                 self._send_json(
                     {
                         "ok": True,
@@ -963,6 +1006,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                 note=str(payload.get("note", "")),
                 seen_at=payload.get("seen_at"),
             )
+            _notify_event_streams()
         except (ValueError, json.JSONDecodeError) as exc:
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -1846,6 +1890,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         resume_after_id = resume_after_id.strip()
         sent_ids: set[str] = set()
         last_bootstrap_fingerprint = ""
+        active_hostile_counts: dict[str, int] | None = None
         deadline = time.monotonic() + max(0.0, timeout_seconds)
         heartbeat_interval = max(0.0, heartbeat_seconds)
         next_heartbeat_at = (
@@ -1853,6 +1898,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
         )
         while True:
             try:
+                event_generation = _event_stream_generation()
                 wrote_event = False
                 current_include_since = bool(last_seen) and (
                     include_since or bool(sent_ids)
@@ -1879,6 +1925,32 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                     alerts,
                     key=lambda item: str(item.get("created_at") or ""),
                 )
+                if active_only:
+                    current_hostile_counts = _active_hostile_counts(
+                        self._active_alert_list(
+                            since="",
+                            limit=None,
+                        )
+                    )
+                    if active_hostile_counts is not None:
+                        for system_name in sorted(
+                            set(active_hostile_counts) - set(current_hostile_counts)
+                        ):
+                            safe_at = utc_now_iso()
+                            self._write_sse(
+                                "safe",
+                                safe_at,
+                                {
+                                    "system_name": system_name,
+                                    "system": system_name,
+                                    "hostile_count": 0,
+                                    "active": False,
+                                    "created_at": safe_at,
+                                    "message": f"✅ {system_name} 清空",
+                                },
+                            )
+                            wrote_event = True
+                    active_hostile_counts = current_hostile_counts
                 if active_only and include_bootstrap:
                     bootstrap = self._bootstrap_payload()
                     fingerprint = self._bootstrap_event_fingerprint(bootstrap)
@@ -1937,7 +2009,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             sleep_for = min(1.0, remaining)
             if heartbeat_interval:
                 sleep_for = min(sleep_for, max(0.0, next_heartbeat_at - now))
-            time.sleep(sleep_for)
+            _wait_for_event_stream_change(event_generation, sleep_for)
 
     def _bootstrap_event_fingerprint(self, payload: dict[str, Any]) -> str:
         stable_payload = self._without_generated_at(

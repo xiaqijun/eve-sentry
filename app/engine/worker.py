@@ -10,6 +10,7 @@ from app.engine.capturer import (
     Capturer,
     TargetWindowClosed,
 )
+from app.engine.hostile_icons import extract_hostile_name_rows, find_hostile_icons
 from app.engine.ocr import OCREngine
 from app.engine.ocr_names import ocr_candidate_names
 
@@ -37,7 +38,8 @@ class MonitorWorker(QThread):
 
     status_update = pyqtSignal(str)       # human-readable status message
     scan_complete = pyqtSignal(int)       # total scan count
-    ocr_snapshot = pyqtSignal(list)       # list[str] -- current OCR names
+    ocr_snapshot = pyqtSignal(list, int)  # names, verified hostile-icon count
+    hostile_detected = pyqtSignal(int)    # emitted when the visible count increases
 
     def __init__(
         self,
@@ -92,6 +94,7 @@ class MonitorWorker(QThread):
         self._running = True
         scan_count = 0
         ocr_ready = False  # track whether OCR has been lazy-initialised
+        previous_hostile_count = 0
         capturer = self._capturer
         owns_capturer = False
 
@@ -125,28 +128,64 @@ class MonitorWorker(QThread):
                     if self._stop_requested():
                         break
 
-                    # 2. OCR (first call triggers model init with progress)
-                    if ocr_ready:
-                        ocr_results = self._ocr.recognize(img)
+                    # 2. Detect hostile icons before OCR and alert on the visual edge.
+                    hostile_icons = find_hostile_icons(img)
+                    hostile_count = len(hostile_icons)
+                    if hostile_count > previous_hostile_count:
+                        self.hostile_detected.emit(hostile_count)
+                    previous_hostile_count = hostile_count
+
+                    hostile_rows = (
+                        extract_hostile_name_rows(img) if hostile_icons else None
+                    )
+                    if hostile_rows is None:
+                        if not ocr_ready:
+                            # Warm the model once, but keep a no-hostile snapshot empty.
+                            self._ocr.recognize(
+                                img, progress=self.status_update.emit
+                            )
+                        ocr_results = []
+                        names = []
+                        verified_hostile_count = 0
                     else:
-                        ocr_results = self._ocr.recognize(
-                            img, progress=self.status_update.emit
+                        progress = None if ocr_ready else self.status_update.emit
+                        hostile_ocr_results = self._ocr.recognize(
+                            hostile_rows,
+                            progress=progress,
                         )
+                        hostile_names = build_ocr_snapshot_names(hostile_ocr_results)
+                        if len(hostile_names) == hostile_count:
+                            ocr_results = hostile_ocr_results
+                            names = hostile_names
+                            verified_hostile_count = hostile_count
+                        else:
+                            # Do not assign a red marker to the wrong pilot. Fall back
+                            # to the complete list and let server-side identity rules
+                            # classify it normally.
+                            ocr_results = self._ocr.recognize(img)
+                            names = build_ocr_snapshot_names(ocr_results)
+                            verified_hostile_count = 0
+                    if not ocr_ready:
                         ocr_ready = True
                     if self._stop_requested():
                         break
 
-                    # 3. Publish the raw OCR snapshot; server owns filtering/scoring.
-                    names = build_ocr_snapshot_names(ocr_results)
-                    self.ocr_snapshot.emit(names)
+                    # 3. Publish names and independent visual-hostility evidence.
+                    self.ocr_snapshot.emit(names, verified_hostile_count)
                     scan_count += 1
                     self.scan_complete.emit(scan_count)
                     self.status_update.emit(build_scan_status(ocr_results))
 
-                    if names:
-                        self.status_update.emit(f"名单已上报: {len(names)} 个")
+                    if verified_hostile_count:
+                        self.status_update.emit(f"敌对名单已上报: {len(names)} 个")
+                    elif names and hostile_rows is not None:
+                        self.status_update.emit(
+                            f"红框姓名定位不可靠，已回退完整名单: {len(names)} 个"
+                        )
+                    elif hostile_rows is None:
+                        self.status_update.emit("未检测到敌对图标")
                     else:
-                        self.status_update.emit("未识别到名单")
+                        self.status_update.emit("敌对图标行未识别到姓名")
 
                 except TargetWindowClosed:
                     logger.info("Target EVE window closed; stopping monitor worker")

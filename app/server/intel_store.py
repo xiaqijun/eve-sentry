@@ -464,8 +464,11 @@ class IntelStore:
         client_id: str,
         name: str,
         seen_at: str,
+        metadata: dict[str, Any] | None = None,
         enrich: bool = True,
     ) -> tuple[IntelReport, Observation]:
+        observation_metadata = {"client_id": client_id}
+        observation_metadata.update(metadata or {})
         observation = Observation.from_payload(
             {
                 "source": source,
@@ -474,7 +477,7 @@ class IntelStore:
                 "system_id": system_id,
                 "names": [name],
                 "raw_text": name,
-                "metadata": {"client_id": client_id},
+                "metadata": observation_metadata,
                 "seen_at": seen_at,
             }
         )
@@ -606,6 +609,25 @@ class IntelStore:
                 item,
                 previous_active_id=previous_active_id,
             )
+
+    def _apply_hostile_icon_metadata(
+        self,
+        item: ActiveIntelItem,
+        metadata: dict[str, Any],
+    ) -> list[IntelReport]:
+        """Promote an existing OCR sighting when a later frame verifies a red icon."""
+        if not metadata or item.metadata.get("hostile_icon_detected"):
+            return []
+        item.metadata.update(metadata)
+        changed: list[IntelReport] = []
+        report_ids = set(item.source_observation_ids)
+        for report in self._reports:
+            if report.report_id not in report_ids:
+                continue
+            report.metadata.update(metadata)
+            self._alert_cache.pop(report.report_id, None)
+            changed.append(report)
+        return changed
 
     def _persist_ocr_esi_result(
         self,
@@ -947,6 +969,18 @@ class IntelStore:
             str(payload.get("system_name") or payload.get("system") or "")
         )
         system_id = self._optional_int(payload.get("system_id"))
+        hostile_icon_count = max(
+            0,
+            self._optional_int(payload.get("hostile_icon_count")) or 0,
+        )
+        snapshot_metadata = (
+            {
+                "hostile_icon_detected": True,
+                "hostile_icon_count": hostile_icon_count,
+            }
+            if hostile_icon_count > 0
+            else {}
+        )
         defer_esi = self._resolver is not None or self._enricher is not None
         names = self._normalize_ocr_names(
             payload.get("names"),
@@ -975,6 +1009,7 @@ class IntelStore:
                         client_id=client_id,
                         name=name,
                         seen_at=seen_at,
+                        metadata=snapshot_metadata,
                         enrich=not defer_esi,
                     )
                     duplicate = self._find_duplicate_observation(report)
@@ -1014,7 +1049,11 @@ class IntelStore:
                         name=name,
                         raw_text=raw_text,
                         metadata=(
-                            {"client_id": client_id, "identity_status": "pending"}
+                            {
+                                "client_id": client_id,
+                                "identity_status": "pending",
+                                **snapshot_metadata,
+                            }
                             if defer_esi
                             else self._active_ocr_metadata(
                                 client_id,
@@ -1047,6 +1086,8 @@ class IntelStore:
                     item.raw_text = raw_text
                 item.active = True
                 item.left_at = ""
+                if self._apply_hostile_icon_metadata(item, snapshot_metadata):
+                    changed_reports = True
                 self._ocr_missing_counts.pop(item.active_id, None)
                 result.refreshed += 1
 
@@ -2526,6 +2567,10 @@ class IntelStore:
         character_profiles: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         metadata: dict[str, Any] = {"client_id": client_id}
+        for key in ("hostile_icon_detected", "hostile_icon_count"):
+            value = observation.metadata.get(key)
+            if value not in {None, "", False, 0}:
+                metadata[key] = value
         if checked_at:
             metadata["identity_checked_at"] = checked_at
         resolution = observation.metadata.get("esi_resolution")

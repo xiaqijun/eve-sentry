@@ -1680,7 +1680,7 @@ def test_start_monitor_client_powershell_script_wraps_detector_client():
     assert payload["cwd"].endswith("eve-sentry")
     assert payload["env"]["EVE_SENTRY_INTEL_URL"] == "http://127.0.0.1:8765"
     assert payload["env"]["EVE_SENTRY_HEARTBEAT_INTERVAL"] == "15"
-    assert payload["env"]["EVE_SENTRY_INTEL_TIMEOUT"] == "3"
+    assert payload["env"]["EVE_SENTRY_INTEL_TIMEOUT"] == "10"
 
 
 def test_start_monitor_client_powershell_script_maps_runtime_options():
@@ -1710,7 +1710,6 @@ def test_start_monitor_client_powershell_script_maps_runtime_options():
             "-Timeout",
             "4.5",
             "-NoPublish",
-            "-NoEsiLocation",
             "-AutoStart",
         ],
         check=False,
@@ -1728,7 +1727,6 @@ def test_start_monitor_client_powershell_script_maps_runtime_options():
     assert env["EVE_SENTRY_HEARTBEAT_INTERVAL"] == "20"
     assert env["EVE_SENTRY_INTEL_TIMEOUT"] == "4.5"
     assert env["EVE_SENTRY_PUBLISH_INTEL"] == "0"
-    assert env["EVE_SENTRY_USE_ESI_LOCATION"] == "0"
     assert env["EVE_SENTRY_AUTO_START_MONITOR"] == "1"
     assert payload["background"] is False
     assert payload["stdout"].endswith("monitor-client.out.log")

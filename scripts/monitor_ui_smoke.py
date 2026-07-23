@@ -121,7 +121,6 @@ def run_smoke(args: argparse.Namespace) -> dict:
         os.environ["EVE_SENTRY_AUTO_START_MONITOR"] = "1"
     else:
         os.environ.setdefault("EVE_SENTRY_PUBLISH_INTEL", "0")
-    os.environ.setdefault("EVE_SENTRY_USE_ESI_LOCATION", "0")
     os.environ.setdefault("EVE_SENTRY_SYSTEM", "Smoke")
     os.environ.setdefault("EVE_SENTRY_OCR_DEVICE", "cpu")
     os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")

@@ -130,13 +130,28 @@ class ScoringEngine:
         if weight <= 0:
             return []
         if source in {"local_ocr", "ocr", "eve-sentry-detector"}:
-            return [
+            evidence = [
                 make_evidence(
                     "local_ocr_seen",
                     weight,
                     f"Local OCR saw {label} in {observation.system_name}",
                 )
             ]
+            hostile_icon_count = _optional_int(
+                observation.metadata.get("hostile_icon_count")
+            )
+            if hostile_icon_count is not None and hostile_icon_count > 0:
+                evidence.append(
+                    make_evidence(
+                        "hostile_icon",
+                        60,
+                        (
+                            f"Client detected {hostile_icon_count} red standing "
+                            f"icon(s) in {observation.system_name}"
+                        ),
+                    )
+                )
+            return evidence
         if source == "intel_channel":
             return [
                 make_evidence(
@@ -223,6 +238,7 @@ class ScoringEngine:
             "blacklist_match",
             "hostile_corporation",
             "hostile_alliance",
+            "hostile_icon",
             "hostile_standing",
         }
         return any(item.evidence_type in hostile_types for item in evidence)
@@ -405,6 +421,8 @@ class ScoringEngine:
         event_names = self._event_names(observation) if names is None else list(names)
         if self._all_names_whitelisted(event_names):
             return True
+        if _optional_int(observation.metadata.get("hostile_icon_count")):
+            return False
         return self._all_targets_have_friendly_profiles(
             observation,
             character_profiles or [],

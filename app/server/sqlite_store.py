@@ -174,6 +174,18 @@ class SQLiteIntelStore(IntelStore):
             str(payload.get("system_name") or payload.get("system") or "")
         )
         system_id = self._optional_int(payload.get("system_id"))
+        hostile_icon_count = max(
+            0,
+            self._optional_int(payload.get("hostile_icon_count")) or 0,
+        )
+        snapshot_metadata = (
+            {
+                "hostile_icon_detected": True,
+                "hostile_icon_count": hostile_icon_count,
+            }
+            if hostile_icon_count > 0
+            else {}
+        )
         defer_esi = self._resolver is not None or self._enricher is not None
         names = self._normalize_ocr_names(
             payload.get("names"),
@@ -200,6 +212,7 @@ class SQLiteIntelStore(IntelStore):
                         client_id=client_id,
                         name=name,
                         seen_at=seen_at,
+                        metadata=snapshot_metadata,
                         enrich=not defer_esi,
                     )
                     duplicate = self._find_duplicate_observation(report)
@@ -240,7 +253,11 @@ class SQLiteIntelStore(IntelStore):
                         name=name,
                         raw_text=raw_text,
                         metadata=(
-                            {"client_id": client_id, "identity_status": "pending"}
+                            {
+                                "client_id": client_id,
+                                "identity_status": "pending",
+                                **snapshot_metadata,
+                            }
                             if defer_esi
                             else self._active_ocr_metadata(
                                 client_id,
@@ -274,6 +291,12 @@ class SQLiteIntelStore(IntelStore):
                     item.raw_text = raw_text
                 item.active = True
                 item.left_at = ""
+                for report in self._apply_hostile_icon_metadata(
+                    item,
+                    snapshot_metadata,
+                ):
+                    if report not in new_reports:
+                        new_reports.append(report)
                 changed_active_ids.add(active_id)
                 result.refreshed += 1
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -43,6 +44,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--keyword", default="EVE -")
     parser.add_argument("--window", type=int, default=0, help="0-based window index")
     parser.add_argument("--frames", type=int, default=3, help="number of OCR samples")
+    parser.add_argument(
+        "--engine",
+        choices=("paddle", "onnx"),
+        default=os.environ.get("EVE_SENTRY_OCR_BACKEND", "paddle"),
+        help="OCR backend to benchmark",
+    )
     parser.add_argument(
         "--out",
         default="_live_ocr_probe",
@@ -223,7 +230,11 @@ def main(argv: list[str] | None = None) -> int:
     _write_stdout("Probe region:")
     _write_json(region)
 
-    engine = OCREngine(lang="en", confidence_threshold=0.7)
+    engine = OCREngine(
+        lang="en",
+        confidence_threshold=0.7,
+        backend=args.engine,
+    )
     prefix = Path(args.out)
     all_results: list[dict] = []
 
@@ -263,6 +274,7 @@ def main(argv: list[str] | None = None) -> int:
     json_path.write_text(
         json.dumps(
             {
+                "engine": args.engine,
                 "window": window,
                 "region": region,
                 "frames": all_results,

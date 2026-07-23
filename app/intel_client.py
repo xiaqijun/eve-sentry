@@ -13,6 +13,12 @@ class IntelApiError(RuntimeError):
     """Raised when the intel server cannot satisfy an API request."""
 
 
+def _is_transient_transport_error(exc: IntelApiError) -> bool:
+    """Return whether a failed request is safe to retry at the transport layer."""
+    cause = exc.__cause__
+    return isinstance(cause, (URLError, OSError)) and not isinstance(cause, HTTPError)
+
+
 class IntelApiClient:
     """Small JSON client for the EVE Sentry intel HTTP API."""
 
@@ -102,6 +108,7 @@ class IntelApiClient:
         seen_at: str = "",
         system_id: int | None = None,
         confidence: float | None = None,
+        hostile_icon_count: int = 0,
     ) -> dict[str, Any]:
         """Publish the current OCR-detected pilot-name snapshot."""
         payload: dict[str, Any] = {
@@ -116,7 +123,15 @@ class IntelApiClient:
             payload["system_id"] = system_id
         if confidence is not None:
             payload["confidence"] = confidence
-        return self._request("POST", self._v1_path("/ocr/snapshot"), payload=payload)
+        if hostile_icon_count > 0:
+            payload["hostile_icon_count"] = int(hostile_icon_count)
+        path = self._v1_path("/ocr/snapshot")
+        try:
+            return self._request("POST", path, payload=payload)
+        except IntelApiError as exc:
+            if not _is_transient_transport_error(exc):
+                raise
+        return self._request("POST", path, payload=payload)
 
     def get_active_intel(self, **params: Any) -> dict[str, Any]:
         """Fetch realtime active intel rows from the server."""

@@ -287,6 +287,74 @@ def test_record_ocr_snapshot_creates_and_refreshes_active_intel(tmp_path):
     assert len(store.list_observations()) == 2
 
 
+def test_record_ocr_snapshot_red_icon_is_persisted_as_direct_alert_evidence(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+
+    result = store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-03T10:00:00+00:00",
+            "names": ["Alice"],
+            "hostile_icon_count": 1,
+        }
+    )
+
+    active = store.list_active_intel(source="eve-sentry-detector")[0]
+    observation = store.list_observations(include_suppressed=True)[0]
+    alerts = store.list_alerts()
+
+    assert result["created"] == 1
+    assert active["metadata"]["hostile_icon_detected"] is True
+    assert active["metadata"]["hostile_icon_count"] == 1
+    assert observation["metadata"]["hostile_icon_count"] == 1
+    assert alerts[0]["score"] == 100
+    assert [item["type"] for item in alerts[0]["evidence"]] == [
+        "local_ocr_seen",
+        "hostile_icon",
+    ]
+
+
+def test_later_red_icon_promotes_an_existing_ocr_sighting_to_alert(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    base_payload = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Hajimi6",
+        "system_name": "S-KSWL",
+        "names": ["Alice"],
+    }
+
+    store.record_ocr_snapshot(
+        {
+            **base_payload,
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+    assert store.list_alerts() == []
+
+    store.record_ocr_snapshot(
+        {
+            **base_payload,
+            "seen_at": "2026-07-03T10:00:02+00:00",
+            "hostile_icon_count": 1,
+        }
+    )
+
+    assert len(store.list_alerts()) == 1
+    assert store.list_alerts()[0]["score"] == 100
+
+
 def test_record_ocr_snapshot_stores_esi_identity_metadata(tmp_path):
     class IdentityResolver:
         def enrich_observation(self, observation):
@@ -328,6 +396,7 @@ def test_record_ocr_snapshot_stores_esi_identity_metadata(tmp_path):
             "system_name": "S-KSWL",
             "seen_at": "2026-07-03T10:00:00+00:00",
             "names": ["Alice"],
+            "hostile_icon_count": 1,
         }
     )
     assert store.wait_for_esi_idle(timeout=1)
@@ -344,6 +413,8 @@ def test_record_ocr_snapshot_stores_esi_identity_metadata(tmp_path):
     assert metadata["alliance_name"] == "Alice Alliance"
     assert metadata["contact_standing"] == 0.0
     assert metadata["standing_source"] == "character"
+    assert metadata["hostile_icon_detected"] is True
+    assert metadata["hostile_icon_count"] == 1
     assert metadata["esi_resolution"]["resolved_character_names"] == ["Alice"]
     assert metadata["character_profiles"][0]["name"] == "Alice"
 

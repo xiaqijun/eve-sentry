@@ -35,6 +35,43 @@ def test_local_ocr_without_hostile_evidence_does_not_alert():
     assert event is None
 
 
+def test_local_ocr_with_red_icon_evidence_alerts_immediately():
+    item = observation()
+    item.metadata = {
+        "hostile_icon_detected": True,
+        "hostile_icon_count": 1,
+    }
+
+    event = ScoringEngine(cooldown_seconds=0).score(item)
+
+    assert event is not None
+    assert event.score == 100
+    assert event.level == "critical"
+    assert evidence_types(event) == ["local_ocr_seen", "hostile_icon"]
+
+
+def test_red_icon_evidence_overrides_friendly_profile_but_not_whitelist():
+    item = observation()
+    item.metadata = {
+        "hostile_icon_detected": True,
+        "hostile_icon_count": 1,
+    }
+    friendly_profile = {"corporation_id": 42}
+    friendly_engine = ScoringEngine(
+        watchlist=Watchlist(friendly_corporation_ids={42}),
+        cooldown_seconds=0,
+    )
+
+    event = friendly_engine.score(item, character_profile=friendly_profile)
+
+    assert event is not None
+    whitelisted_engine = ScoringEngine(
+        watchlist=Watchlist(whitelist={"Alice"}),
+        cooldown_seconds=0,
+    )
+    assert whitelisted_engine.score(item) is None
+
+
 def test_medium_confidence_local_ocr_with_hostile_evidence_is_downweighted():
     engine = ScoringEngine(
         watchlist=Watchlist(blacklist={"alice"}),

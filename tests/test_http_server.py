@@ -2053,6 +2053,93 @@ def test_v1_events_stream_returns_alert_sse(tmp_path):
         server.stop()
 
 
+def test_v1_events_wake_immediately_and_emit_safe_only_after_last_hostile(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    stream_ready = threading.Event()
+    safe_received = threading.Event()
+    received = {}
+
+    def post_snapshot(names, seen_at, hostile_icon_count=0):
+        payload = {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "seen_at": seen_at,
+            "names": names,
+        }
+        if hostile_icon_count:
+            payload["hostile_icon_count"] = hostile_icon_count
+        return request_json(
+            f"{server.url}/api/v1/ocr/snapshot",
+            method="POST",
+            payload=payload,
+        )
+
+    def read_until_safe():
+        query = urlencode({"timeout": "3", "heartbeat": "0", "limit": "20"})
+        request = Request(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Accept": "text/event-stream"},
+        )
+        with urlopen(request, timeout=4) as response:
+            stream_ready.set()
+            event_name = ""
+            for raw_line in response:
+                line = raw_line.decode("utf-8").strip()
+                if line.startswith("event:"):
+                    event_name = line[len("event:"):].strip()
+                elif line.startswith("data:") and event_name == "safe":
+                    received.update(json.loads(line[len("data:"):].strip()))
+                elif not line and event_name == "safe":
+                    safe_received.set()
+                    return
+
+    try:
+        status, _ = post_snapshot(
+            ["Alice", "Bob"],
+            "2026-07-23T14:00:00+00:00",
+            hostile_icon_count=2,
+        )
+        assert status == 201
+
+        stream_thread = threading.Thread(target=read_until_safe, daemon=True)
+        stream_thread.start()
+        assert stream_ready.wait(timeout=1)
+
+        for second in (10, 11, 12):
+            post_snapshot(
+                ["Alice"],
+                f"2026-07-23T14:00:{second:02d}+00:00",
+                hostile_icon_count=1,
+            )
+        assert safe_received.wait(timeout=0.2) is False
+
+        started_at = time.monotonic()
+        for second in (20, 21, 22):
+            post_snapshot([], f"2026-07-23T14:00:{second:02d}+00:00")
+
+        assert safe_received.wait(timeout=0.75)
+        assert time.monotonic() - started_at < 0.75
+        assert received == {
+            "system_name": "S-KSWL",
+            "system": "S-KSWL",
+            "hostile_count": 0,
+            "active": False,
+            "created_at": received["created_at"],
+            "message": "✅ S-KSWL 清空",
+        }
+        stream_thread.join(timeout=1)
+    finally:
+        server.stop()
+
+
 def test_v1_events_resumed_bootstrap_emits_current_snapshot(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()

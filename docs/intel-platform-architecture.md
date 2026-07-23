@@ -129,11 +129,9 @@ OCR 上报语义:
 当前星系来源:
 
 - 设置 `EVE_SENTRY_SYSTEM=Tama` 时，检测客户端使用该手工星系名上报。
-- 未设置 `EVE_SENTRY_SYSTEM` 时，检测客户端会默认尝试从服务端
-  `/api/v1/esi/session?location=true&contacts=false` 同步当前 ESI 位置，并在
-  observation 中带上 `system_name` 和 `system_id`。
-- 可用 `EVE_SENTRY_USE_ESI_LOCATION=0` 关闭自动同步；可用
-  `EVE_SENTRY_ESI_LOCATION_TTL=30` 调整当前位置刷新间隔。
+- 未设置 `EVE_SENTRY_SYSTEM` 时，检测客户端只读取本地 EVE Chatlogs 获取
+  当前星系，不请求服务端 ESI session。默认每 5 秒检查一次，可用
+  `EVE_SENTRY_LOCAL_SYSTEM_TTL=5` 调整，最小 1 秒。
 
 ### 3.2 独立频道日志客户端
 
@@ -477,7 +475,7 @@ ESI 缓存；ESI 查询失败时保留原 observation，不阻塞上报链路。
 authenticated ESI 会话，服务端会把 contacts/standings 缓存注入角色 profile，
 用于 `red` / `white` 分类。`/api/v1/esi/session` 返回
 当前位置时，服务端会尽力用 ESI resolver 补充 `solar_system_name` 和星系
-profile，供检测客户端自动填充当前星系。
+profile，供服务端和 Web 工作台查询；检测客户端的当前星系只读取本地 Chatlogs。
 
 ESI profile 会携带缓存状态，当前字段包括 `cache_status`、`fetched_at` 和
 `expires_at`。alert detail 的解释链会展示 profile cache 状态，便于区分新查询、

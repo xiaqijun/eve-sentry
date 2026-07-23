@@ -112,6 +112,30 @@ def test_sqlite_store_persists_active_intel(tmp_path):
     assert active[0]["seen_count"] == 1
 
 
+def test_sqlite_store_persists_hostile_icon_metadata(tmp_path):
+    db_path = tmp_path / "intel.sqlite3"
+    store = SQLiteIntelStore(db_path, systems={}, links=[])
+
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-03T10:00:00+00:00",
+            "names": ["Alice"],
+            "hostile_icon_count": 1,
+        }
+    )
+
+    reloaded = SQLiteIntelStore(db_path, systems={}, links=[])
+    active = reloaded.list_active_intel(source="eve-sentry-detector")[0]
+    observation = reloaded.list_observations(include_suppressed=True)[0]
+
+    assert active["metadata"]["hostile_icon_detected"] is True
+    assert active["metadata"]["hostile_icon_count"] == 1
+    assert observation["metadata"]["hostile_icon_count"] == 1
+
+
 def test_sqlite_store_persists_async_ocr_esi_enrichment(tmp_path):
     class IdentityResolver:
         def enrich_observation(self, observation):
