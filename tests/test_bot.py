@@ -87,3 +87,40 @@ async def test_analysis_query_is_enqueued_without_intermediate_text_reply() -> N
         await client.http_client.aclose()
         await redis.aclose()
         await original_redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sentry_status_query_replies_without_analysis_queue() -> None:
+    client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
+    original_redis = client.redis
+    redis = fakeredis.aioredis.FakeRedis()
+    client.redis = redis
+    client.queue.enqueue = AsyncMock()
+    client.qq.send_text = AsyncMock(return_value={"id": "reply"})
+    client.sentry_status.query = AsyncMock(
+        return_value="预警节点｜在线 1｜敌对 0 人\n🟢 S-KSWL｜敌 0｜Hajimi6"
+    )
+
+    class Author:
+        member_openid = "member-1"
+
+    class Message:
+        id = "status-message-1"
+        group_openid = "group-1"
+        content = "查询预警"
+        author = Author()
+
+    try:
+        await client.on_group_at_message_create(Message())
+
+        client.queue.enqueue.assert_not_awaited()
+        client.qq.send_text.assert_awaited_once_with(
+            "group-1",
+            "status-message-1",
+            "预警节点｜在线 1｜敌对 0 人\n🟢 S-KSWL｜敌 0｜Hajimi6",
+            msg_seq=1,
+        )
+    finally:
+        await client.http_client.aclose()
+        await redis.aclose()
+        await original_redis.aclose()

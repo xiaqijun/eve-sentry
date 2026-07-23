@@ -19,6 +19,11 @@ from eve_risk.domain import AnalysisRequest
 from eve_risk.health import app as health_app
 from eve_risk.parser import RosterParseError, is_help_command, parse_roster
 from eve_risk.queueing import AnalysisQueue
+from eve_risk.sentry_status import (
+    EveSentryStatusClient,
+    SentryStatusError,
+    is_sentry_status_command,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +31,8 @@ HELP_TEXT = (
     "EVE 敌对舰队分析（Tranquility）\n"
     "用法：@机器人 分析，然后每行一个角色名；也支持逗号或分号分隔。\n"
     "一次最多 30 人，默认分析近 90 天公开战报。\n"
-    "预警：@机器人 开启预警 / 关闭预警 / 预警状态。"
+    "预警：@机器人 开启预警 / 关闭预警 / 预警状态。\n"
+    "节点敌对：@机器人 查询预警。"
 )
 
 ADMISSION_MESSAGES = {
@@ -59,6 +65,10 @@ class RiskBotClient(botpy.Client):
             max_jobs=settings.global_max_jobs,
         )
         self.queue = AnalysisQueue(settings.redis_url)
+        self.sentry_status = EveSentryStatusClient(
+            self.http_client,
+            settings.eve_sentry_events_url,
+        )
         self.alert_relay = EveSentryAlertRelay(
             self.http_client,
             self.redis,
@@ -122,6 +132,13 @@ class RiskBotClient(botpy.Client):
 
         if is_help_command(content):
             await self.qq.send_text(group_openid, msg_id, HELP_TEXT, msg_seq=1)
+            return
+        if is_sentry_status_command(content):
+            try:
+                reply = await self.sentry_status.query()
+            except SentryStatusError as exc:
+                reply = str(exc)
+            await self.qq.send_text(group_openid, msg_id, reply, msg_seq=1)
             return
         try:
             names = parse_roster(content, self.settings.max_characters)
