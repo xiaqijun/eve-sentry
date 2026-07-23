@@ -19,6 +19,7 @@ from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -31,6 +32,7 @@ from PyQt6.QtWidgets import (
 
 from app.core.heartbeat import (
     heartbeat_now_iso,
+    monitored_system_names,
     resolve_runtime_identity,
     summarize_heartbeat_error,
 )
@@ -43,8 +45,10 @@ ALERT_CLIENT_LABEL = "Alert Client"
 DEFAULT_EVENT_TIMEOUT = 30.0
 DEFAULT_HEARTBEAT_INTERVAL = 10.0
 DEFAULT_RECONNECT_MAX_DELAY = 30.0
-INACTIVE_ALERT_RETENTION_SECONDS = 60.0
 MAX_OVERLAY_ROWS = 4
+OVERLAY_TILE_COLUMNS = 2
+OVERLAY_TILE_WIDTH = 128
+OVERLAY_TILE_HEIGHT = 62
 
 
 def default_state_path() -> str:
@@ -209,21 +213,19 @@ def aggregate_alert_summaries(
             hostile_count = 1 if raw_hostile_count is None else int(raw_hostile_count)
         except (TypeError, ValueError):
             hostile_count = 0
-        if hostile_count <= 0:
-            continue
+        hostile_count = max(0, hostile_count)
+        active = active and hostile_count > 0
         existing = by_system.get(system)
         if existing is None:
             by_system[system] = {
                 "system_name": system,
-                "hostile_count": hostile_count,
+                "hostile_count": hostile_count if active else 0,
                 "active_hostile_count": hostile_count if active else 0,
                 "created_at": str(item.get("created_at") or ""),
                 "active": active,
             }
         else:
-            if not active and bool(existing.get("active", True)):
-                continue
-            existing["hostile_count"] = hostile_count
+            existing["hostile_count"] = hostile_count if active else 0
             existing["active_hostile_count"] = hostile_count if active else 0
             existing["active"] = active
             if not existing.get("created_at"):
@@ -289,26 +291,11 @@ def prune_inactive_alert_summaries(
     summaries: list[dict[str, Any]],
     *,
     now: float | None = None,
-    retention_seconds: float = INACTIVE_ALERT_RETENTION_SECONDS,
+    retention_seconds: float = 0.0,
 ) -> list[dict[str, Any]]:
-    """Remove inactive summaries after their display grace period."""
-    current = time.monotonic() if now is None else float(now)
-    retention = max(0.0, float(retention_seconds))
-    kept: list[dict[str, Any]] = []
-    for summary in summaries:
-        item = dict(summary)
-        if bool(item.get("active", True)):
-            item.pop("inactive_since", None)
-            kept.append(item)
-            continue
-        try:
-            inactive_since = float(item.get("inactive_since"))
-        except (TypeError, ValueError):
-            inactive_since = current
-            item["inactive_since"] = inactive_since
-        if current - inactive_since < retention:
-            kept.append(item)
-    return kept
+    """Keep all known alert systems for the current client session."""
+    _ = now, retention_seconds
+    return [dict(summary) for summary in summaries]
 
 
 def sync_alert_summaries_from_bootstrap(
@@ -317,8 +304,8 @@ def sync_alert_summaries_from_bootstrap(
     *,
     now: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Sync current counts while briefly retaining departed systems."""
-    current_time = time.monotonic() if now is None else float(now)
+    """Sync live counts while retaining cleared systems as green tiles."""
+    _ = now
     map_payload = bootstrap.get("map")
     map_systems = map_payload.get("systems") if isinstance(map_payload, dict) else None
     if not isinstance(map_systems, list):
@@ -326,12 +313,27 @@ def sync_alert_summaries_from_bootstrap(
         updated = update_alert_summaries_active(summaries, active_keys)
         for item in updated:
             if item.get("active"):
-                item.pop("inactive_since", None)
                 item["active_hostile_count"] = item.get("hostile_count", 0)
             else:
+                item["hostile_count"] = 0
                 item["active_hostile_count"] = 0
-                item.setdefault("inactive_since", current_time)
-        return prune_inactive_alert_summaries(updated, now=current_time)
+        known_systems = {
+            str(item.get("system_name") or "Unknown").casefold()
+            for item in updated
+        }
+        for system in monitored_system_names(bootstrap.get("clients")):
+            if system.casefold() in known_systems:
+                continue
+            updated.append(
+                {
+                    "system_name": system,
+                    "hostile_count": 0,
+                    "active_hostile_count": 0,
+                    "created_at": "",
+                    "active": False,
+                }
+            )
+        return updated
 
     previous_by_system = {
         str(item.get("system_name") or "Unknown"): item for item in summaries
@@ -413,6 +415,18 @@ def sync_alert_summaries_from_bootstrap(
             "active": True,
         }
 
+    for system in monitored_system_names(bootstrap.get("clients")):
+        if system in current_by_system:
+            continue
+        previous = previous_by_system.get(system, {})
+        current_by_system[system] = {
+            "system_name": system,
+            "hostile_count": 0,
+            "active_hostile_count": 0,
+            "created_at": str(previous.get("created_at") or ""),
+            "active": False,
+        }
+
     ordered: list[dict[str, Any]] = []
     for item in summaries:
         system = str(item.get("system_name") or "Unknown")
@@ -422,11 +436,8 @@ def sync_alert_summaries_from_bootstrap(
             continue
         inactive = dict(item)
         inactive["active"] = False
+        inactive["hostile_count"] = 0
         inactive["active_hostile_count"] = 0
-        if bool(item.get("active", True)):
-            inactive["inactive_since"] = current_time
-        else:
-            inactive.setdefault("inactive_since", current_time)
         ordered.append(inactive)
     ordered.extend(
         sorted(
@@ -434,7 +445,7 @@ def sync_alert_summaries_from_bootstrap(
             key=lambda item: str(item.get("created_at") or ""),
         )
     )
-    return prune_inactive_alert_summaries(ordered, now=current_time)
+    return ordered
 
 
 def build_heartbeat_details(
@@ -502,7 +513,8 @@ class AlertOverlay(QWidget):
         self._status.setObjectName("statusLabel")
         self._title = QLabel("EVE SENTRY")
         self._title.setObjectName("titleLabel")
-        self._row_layout: QVBoxLayout | None = None
+        self._row_layout: QGridLayout | None = None
+        self._scroll: QScrollArea | None = None
         self._drag_position: QPoint | None = None
         self._user_positioned = False
         self._setup_ui()
@@ -540,31 +552,16 @@ class AlertOverlay(QWidget):
         header.addWidget(self._status)
         layout.addLayout(header)
 
-        column_header = QWidget()
-        column_header.setObjectName("columnHeader")
-        column_header.installEventFilter(self)
-        column_layout = QHBoxLayout(column_header)
-        column_layout.setContentsMargins(9, 0, 9, 0)
-        column_layout.setSpacing(8)
-        for text, width, alignment in (
-            ("星系", 96, Qt.AlignmentFlag.AlignLeft),
-            ("敌", 44, Qt.AlignmentFlag.AlignCenter),
-            ("发现时间", 74, Qt.AlignmentFlag.AlignRight),
-        ):
-            label = QLabel(text)
-            label.setObjectName("columnLabel")
-            label.setFixedWidth(width)
-            label.setAlignment(alignment | Qt.AlignmentFlag.AlignVCenter)
-            label.installEventFilter(self)
-            column_layout.addWidget(label)
-        layout.addWidget(column_header)
-
         row_container = QWidget()
         row_container.setObjectName("rowContainer")
         row_container.installEventFilter(self)
-        self._row_layout = QVBoxLayout(row_container)
+        self._row_layout = QGridLayout(row_container)
         self._row_layout.setContentsMargins(0, 0, 0, 0)
-        self._row_layout.setSpacing(4)
+        self._row_layout.setHorizontalSpacing(6)
+        self._row_layout.setVerticalSpacing(6)
+        self._row_layout.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
 
         scroll = QScrollArea()
         scroll.setObjectName("alertScroll")
@@ -573,9 +570,15 @@ class AlertOverlay(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setWidget(row_container)
-        scroll.setMaximumHeight((24 + 4) * MAX_OVERLAY_ROWS)
+        scroll.setVisible(False)
+        visible_tile_rows = max(1, MAX_OVERLAY_ROWS // OVERLAY_TILE_COLUMNS)
+        scroll.setMaximumHeight(
+            OVERLAY_TILE_HEIGHT * visible_tile_rows
+            + 6 * max(0, visible_tile_rows - 1)
+        )
         scroll.viewport().installEventFilter(self)
         layout.addWidget(scroll)
+        self._scroll = scroll
 
         self.setStyleSheet(
             """
@@ -592,34 +595,30 @@ class AlertOverlay(QWidget):
                 color: #9fb7c3;
                 font-size: 11px;
             }
-            QWidget#columnHeader {
-                background: rgba(16, 35, 46, 150);
-                border-radius: 4px;
-            }
-            QLabel#columnLabel {
-                color: #8da9b7;
-                font-size: 12px;
-                font-weight: 600;
-                padding: 3px 0;
-            }
             QFrame#alertRow {
-                background: rgba(117, 29, 22, 145);
-                border: 1px solid rgba(255, 112, 88, 150);
-                border-radius: 5px;
+                background: rgba(111, 25, 22, 190);
+                border: 1px solid #ff6b5f;
+                border-radius: 4px;
             }
             QFrame#alertRow QLabel {
                 color: #fff7ea;
                 background: transparent;
                 border: 0;
-                font-size: 16px;
+            }
+            QFrame#alertRow[hostile="false"] {
+                background: rgba(16, 91, 61, 185);
+                border: 1px solid #4fd19a;
+            }
+            QFrame#alertRow[hostile="false"] QLabel {
+                color: #d9fff0;
+            }
+            QLabel#systemCell {
+                font-size: 15px;
                 font-weight: 700;
             }
-            QFrame#alertRow[inactive="true"] {
-                background: rgba(53, 64, 72, 110);
-                border: 1px solid rgba(118, 135, 145, 90);
-            }
-            QFrame#alertRow[inactive="true"] QLabel {
-                color: rgba(190, 203, 209, 170);
+            QLabel#hostileCell, QLabel#stateCell {
+                font-size: 12px;
+                font-weight: 600;
             }
             QScrollArea#alertScroll {
                 background: transparent;
@@ -696,34 +695,43 @@ class AlertOverlay(QWidget):
     def show_summaries(self, summaries: list[dict[str, Any]]) -> None:
         rows = aggregate_alert_summaries(summaries)
         self._ensure_row_count(len(rows))
-        for index, (frame, system_label, hostile_label, time_label) in enumerate(
+        for index, (frame, system_label, hostile_label, state_label) in enumerate(
             self._rows
         ):
             if index >= len(rows):
                 frame.setVisible(False)
                 system_label.setText("")
                 hostile_label.setText("")
-                time_label.setText("")
+                state_label.setText("")
                 continue
             item = rows[index]
-            alert_time = format_alert_time(item.get("created_at"))
             active = bool(item.get("active", True))
-            hostile_count = int(
-                item.get("active_hostile_count")
-                if active and item.get("active_hostile_count")
-                else item.get("hostile_count")
-                or 0
+            hostile_count = max(
+                0,
+                int(item.get("active_hostile_count") or 0) if active else 0,
             )
             system_label.setText(str(item["system_name"]))
-            hostile_label.setText(str(hostile_count))
-            time_label.setText(alert_time or "-")
-            frame.setProperty("inactive", "false" if active else "true")
+            hostile_label.setText(f"敌 {hostile_count}")
+            state_label.setText("来敌" if hostile_count > 0 else "安全")
+            frame.setProperty("hostile", "true" if hostile_count > 0 else "false")
             frame.style().unpolish(frame)
             frame.style().polish(frame)
-            for label in (system_label, hostile_label, time_label):
+            for label in (system_label, hostile_label, state_label):
                 label.style().unpolish(label)
                 label.style().polish(label)
             frame.setVisible(True)
+        if self._scroll is not None:
+            tile_rows = min(
+                max(1, (len(rows) + OVERLAY_TILE_COLUMNS - 1) // OVERLAY_TILE_COLUMNS),
+                max(1, MAX_OVERLAY_ROWS // OVERLAY_TILE_COLUMNS),
+            )
+            content_height = (
+                OVERLAY_TILE_HEIGHT * tile_rows + 6 * max(0, tile_rows - 1)
+            )
+            self._scroll.setFixedHeight(content_height)
+            self._scroll.setVisible(bool(rows))
+        if self.layout() is not None:
+            self.layout().activate()
         self.adjustSize()
         if not self._user_positioned:
             self.move_to_default_position()
@@ -735,29 +743,48 @@ class AlertOverlay(QWidget):
             frame = QFrame()
             frame.setObjectName("alertRow")
             frame.setVisible(False)
-            frame.setFixedHeight(24)
-            frame.setProperty("inactive", "false")
+            frame.setFixedSize(OVERLAY_TILE_WIDTH, OVERLAY_TILE_HEIGHT)
+            frame.setProperty("hostile", "true")
             frame.installEventFilter(self)
 
-            row_layout = QHBoxLayout(frame)
-            row_layout.setContentsMargins(9, 1, 9, 1)
-            row_layout.setSpacing(8)
-            labels: list[QLabel] = []
-            for name, width, alignment in (
-                ("systemCell", 96, Qt.AlignmentFlag.AlignLeft),
-                ("hostileCell", 44, Qt.AlignmentFlag.AlignCenter),
-                ("timeCell", 74, Qt.AlignmentFlag.AlignRight),
-            ):
-                label = QLabel("")
-                label.setObjectName(name)
-                label.setFixedWidth(width)
-                label.setAlignment(alignment | Qt.AlignmentFlag.AlignVCenter)
-                label.installEventFilter(self)
-                row_layout.addWidget(label)
-                labels.append(label)
+            tile_layout = QVBoxLayout(frame)
+            tile_layout.setContentsMargins(9, 7, 9, 7)
+            tile_layout.setSpacing(2)
+            system_label = QLabel("")
+            system_label.setObjectName("systemCell")
+            system_label.setFixedWidth(OVERLAY_TILE_WIDTH - 18)
+            system_label.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+            system_label.installEventFilter(self)
+            tile_layout.addWidget(system_label)
 
-            self._row_layout.addWidget(frame)
-            self._rows.append((frame, labels[0], labels[1], labels[2]))
+            detail_layout = QHBoxLayout()
+            detail_layout.setContentsMargins(0, 0, 0, 0)
+            detail_layout.setSpacing(4)
+            hostile_label = QLabel("")
+            hostile_label.setObjectName("hostileCell")
+            hostile_label.installEventFilter(self)
+            state_label = QLabel("")
+            state_label.setObjectName("stateCell")
+            state_label.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            state_label.installEventFilter(self)
+            detail_layout.addWidget(hostile_label)
+            detail_layout.addStretch(1)
+            detail_layout.addWidget(state_label)
+            tile_layout.addLayout(detail_layout)
+
+            tile_index = len(self._rows)
+            self._row_layout.addWidget(
+                frame,
+                tile_index // OVERLAY_TILE_COLUMNS,
+                tile_index % OVERLAY_TILE_COLUMNS,
+            )
+            self._rows.append(
+                (frame, system_label, hostile_label, state_label)
+            )
 
     def move_to_default_position(self) -> None:
         screen = QApplication.primaryScreen()
@@ -916,10 +943,7 @@ class AlertTrayController:
         self.overlay.show()
         self.overlay.move_to_default_position()
         self._recent_summaries: list[dict[str, Any]] = []
-        self._inactive_cleanup_timer = QTimer(self.overlay)
-        self._inactive_cleanup_timer.setInterval(1000)
-        self._inactive_cleanup_timer.timeout.connect(self._expire_inactive_summaries)
-        self._inactive_cleanup_timer.start()
+        self._local_hostile_counts: dict[str, tuple[str, int]] = {}
         self._tray: QSystemTrayIcon | None = None
         self._worker = AlertEventWorker(
             args.server,
@@ -945,7 +969,6 @@ class AlertTrayController:
     def stop(self, *, wait_for_worker: bool = True) -> None:
         """Request shutdown, optionally waiting for the SSE worker to exit."""
         self._worker.stop()
-        self._inactive_cleanup_timer.stop()
         self.overlay.hide()
         if self._tray is not None:
             self._tray.hide()
@@ -955,6 +978,82 @@ class AlertTrayController:
     def is_running(self) -> bool:
         """Return whether the SSE worker is still unwinding."""
         return self._worker.isRunning()
+
+    def show_monitoring_systems(self, system_names: list[str]) -> None:
+        """Ensure monitored systems are visible before the first SSE refresh."""
+        known_systems = {
+            str(item.get("system_name") or "Unknown").casefold()
+            for item in self._recent_summaries
+        }
+        for value in system_names:
+            system = str(value or "").strip()
+            key = system.casefold()
+            if not system or key == "unknown" or key in known_systems:
+                continue
+            known_systems.add(key)
+            self._recent_summaries.append(
+                {
+                    "system_name": system,
+                    "hostile_count": 0,
+                    "active_hostile_count": 0,
+                    "created_at": "",
+                    "active": False,
+                }
+            )
+        self.overlay.show_summaries(self._recent_summaries)
+
+    def update_local_hostile_count(self, system_name: str, count: int) -> None:
+        """Apply authoritative red-icon evidence from this monitor process."""
+        system = str(system_name or "Unknown").strip() or "Unknown"
+        key = system.casefold()
+        hostile_count = max(0, int(count))
+        local_counts = getattr(self, "_local_hostile_counts", {})
+        self._local_hostile_counts = local_counts
+        if hostile_count > 0:
+            local_counts[key] = (system, hostile_count)
+            self._on_alert(
+                {
+                    "system_name": system,
+                    "hostile_count": hostile_count,
+                }
+            )
+            return
+        local_counts.pop(key, None)
+        self._on_safe(
+            {
+                "system_name": system,
+                "hostile_count": 0,
+                "message": f"✅ {system} 清空",
+            }
+        )
+
+    def _apply_local_hostile_counts(self) -> None:
+        """Keep local visual counts from being reduced by delayed server state."""
+        for system, hostile_count in getattr(
+            self, "_local_hostile_counts", {}
+        ).values():
+            existing = next(
+                (
+                    item
+                    for item in self._recent_summaries
+                    if str(item.get("system_name") or "Unknown").casefold()
+                    == system.casefold()
+                ),
+                None,
+            )
+            if existing is None:
+                existing = {
+                    "system_name": system,
+                    "created_at": "",
+                }
+                self._recent_summaries.append(existing)
+            existing.update(
+                {
+                    "hostile_count": hostile_count,
+                    "active_hostile_count": hostile_count,
+                    "active": True,
+                }
+            )
 
     def _setup_tray(self) -> None:
         icon = self.overlay.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
@@ -1048,7 +1147,7 @@ class AlertTrayController:
             self._recent_summaries = self._recent_summaries[-50:]
         else:
             existing.update(summary)
-            existing.pop("inactive_since", None)
+        self._apply_local_hostile_counts()
         self.overlay.show_summaries(self._recent_summaries)
         self.overlay.set_status("新告警", "danger")
         play_alert_sound()
@@ -1062,13 +1161,14 @@ class AlertTrayController:
         system_name = str(
             event.get("system_name") or event.get("system") or "Unknown"
         ).strip() or "Unknown"
-        current_time = time.monotonic()
+        if system_name.casefold() in getattr(self, "_local_hostile_counts", {}):
+            return
         for item in self._recent_summaries:
             if str(item.get("system_name") or "Unknown") != system_name:
                 continue
             item["active"] = False
+            item["hostile_count"] = 0
             item["active_hostile_count"] = 0
-            item.setdefault("inactive_since", current_time)
         self.overlay.show_summaries(self._recent_summaries)
         self.overlay.set_status("星系安全", "ok")
         message = str(event.get("message") or "").strip()
@@ -1081,16 +1181,8 @@ class AlertTrayController:
             self._recent_summaries,
             bootstrap,
         )
+        self._apply_local_hostile_counts()
         self.overlay.show_summaries(self._recent_summaries)
-
-    def _expire_inactive_summaries(self) -> None:
-        summaries = prune_inactive_alert_summaries(self._recent_summaries)
-        if len(summaries) == len(self._recent_summaries):
-            self._recent_summaries = summaries
-            return
-        self._recent_summaries = summaries
-        self.overlay.show_summaries(self._recent_summaries)
-
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)

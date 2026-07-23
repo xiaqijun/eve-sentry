@@ -39,7 +39,7 @@ class MonitorWorker(QThread):
     status_update = pyqtSignal(str)       # human-readable status message
     scan_complete = pyqtSignal(int)       # total scan count
     ocr_snapshot = pyqtSignal(list, int)  # names, verified hostile-icon count
-    hostile_detected = pyqtSignal(int)    # emitted when the visible count increases
+    hostile_detected = pyqtSignal(int)    # emitted when the visible count changes
 
     def __init__(
         self,
@@ -95,6 +95,7 @@ class MonitorWorker(QThread):
         scan_count = 0
         ocr_ready = False  # track whether OCR has been lazy-initialised
         previous_hostile_count = 0
+        red_row_mismatch_count = 0
         capturer = self._capturer
         owns_capturer = False
 
@@ -128,17 +129,20 @@ class MonitorWorker(QThread):
                     if self._stop_requested():
                         break
 
-                    # 2. Detect hostile icons before OCR and alert on the visual edge.
+                    # 2. Detect hostile icons before OCR and publish count changes.
                     hostile_icons = find_hostile_icons(img)
                     hostile_count = len(hostile_icons)
-                    if hostile_count > previous_hostile_count:
+                    if hostile_count != previous_hostile_count:
                         self.hostile_detected.emit(hostile_count)
                     previous_hostile_count = hostile_count
 
                     hostile_rows = (
                         extract_hostile_name_rows(img) if hostile_icons else None
                     )
+                    publish_snapshot = True
+                    fallback_deferred = False
                     if hostile_rows is None:
+                        red_row_mismatch_count = 0
                         if not ocr_ready:
                             # Warm the model once, but keep a no-hostile snapshot empty.
                             self._ocr.recognize(
@@ -155,28 +159,43 @@ class MonitorWorker(QThread):
                         )
                         hostile_names = build_ocr_snapshot_names(hostile_ocr_results)
                         if len(hostile_names) == hostile_count:
+                            red_row_mismatch_count = 0
                             ocr_results = hostile_ocr_results
                             names = hostile_names
                             verified_hostile_count = hostile_count
                         else:
-                            # Do not assign a red marker to the wrong pilot. Fall back
-                            # to the complete list and let server-side identity rules
-                            # classify it normally.
-                            ocr_results = self._ocr.recognize(img)
-                            names = build_ocr_snapshot_names(ocr_results)
-                            verified_hostile_count = 0
+                            red_row_mismatch_count += 1
+                            if red_row_mismatch_count < 2:
+                                # A contact-menu overlay or list repaint can corrupt
+                                # one frame. Keep the last server state until confirmed.
+                                ocr_results = hostile_ocr_results
+                                names = []
+                                verified_hostile_count = 0
+                                publish_snapshot = False
+                                fallback_deferred = True
+                            else:
+                                # Do not assign a red marker to the wrong pilot. Fall
+                                # back to the complete list after a confirmed mismatch.
+                                ocr_results = self._ocr.recognize(img)
+                                names = build_ocr_snapshot_names(ocr_results)
+                                verified_hostile_count = 0
                     if not ocr_ready:
                         ocr_ready = True
                     if self._stop_requested():
                         break
 
                     # 3. Publish names and independent visual-hostility evidence.
-                    self.ocr_snapshot.emit(names, verified_hostile_count)
+                    if publish_snapshot:
+                        self.ocr_snapshot.emit(names, verified_hostile_count)
                     scan_count += 1
                     self.scan_complete.emit(scan_count)
                     self.status_update.emit(build_scan_status(ocr_results))
 
-                    if verified_hostile_count:
+                    if fallback_deferred:
+                        self.status_update.emit(
+                            "红框姓名定位失败 1/2，等待下一帧确认"
+                        )
+                    elif verified_hostile_count:
                         self.status_update.emit(f"敌对名单已上报: {len(names)} 个")
                     elif names and hostile_rows is not None:
                         self.status_update.emit(
