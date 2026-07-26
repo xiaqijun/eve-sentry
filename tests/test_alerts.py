@@ -8,10 +8,13 @@ import pytest
 from eve_risk.alerts import (
     ACTIVE_INTEL_STATE_KEY,
     ALERT_CURSOR_KEY,
+    SYSTEM_ALERT_STATE_KEY,
+    SYSTEM_ALERT_STATE_READY_KEY,
     EveSentryAlertRelay,
     alert_subscription_action,
     format_active_intel_message,
     format_alert_message,
+    format_system_alert_message,
     iter_sse_events,
 )
 
@@ -90,10 +93,12 @@ def test_alert_subscription_commands_and_message_format() -> None:
     assert "状态" not in left
     assert "态势图" not in left
     assert "敌对进入" in format_alert_message(item)
+    assert format_system_alert_message("S-KSWL", "alert") == "❗ S-KSWL 来敌"
+    assert format_system_alert_message("S-KSWL", "safe") == "✅ S-KSWL 清空"
 
 
 @pytest.mark.asyncio
-async def test_relay_pushes_one_enter_and_one_leave_per_active_target() -> None:
+async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     qq = SimpleNamespace(
         send_proactive_markdown=AsyncMock(return_value={"id": "m1"}),
@@ -125,16 +130,46 @@ async def test_relay_pushes_one_enter_and_one_leave_per_active_target() -> None:
             "id": "ocr:bob",
             "name": "Bob",
         }
-        entered_bootstrap = {
+        existing_bootstrap = {
             "generated_at": "2026-07-20T16:20:24+00:00",
             "active_intel": [
                 item,
-                second_item,
                 {
                     **item,
                     "id": "ocr:friendly",
                     "name": "Friendly Pilot",
                 },
+            ],
+            "alerts": [
+                {
+                    "active_intel_id": "ocr:alice",
+                    "level": "high",
+                    "score": 80,
+                },
+            ],
+        }
+        cleared_bootstrap = {
+            "generated_at": "2026-07-20T16:21:00+00:00",
+            "active_intel": [],
+            "alerts": [],
+        }
+        entered_bootstrap = {
+            "generated_at": "2026-07-20T16:22:00+00:00",
+            "active_intel": [item],
+            "alerts": [
+                {
+                    "active_intel_id": "ocr:alice",
+                    "level": "high",
+                    "score": 80,
+                },
+            ],
+        }
+        count_increased_bootstrap = {
+            **entered_bootstrap,
+            "generated_at": "2026-07-20T16:22:30+00:00",
+            "active_intel": [
+                {**item, "last_seen_at": "2026-07-20T16:20:30+00:00"},
+                {**second_item, "last_seen_at": "2026-07-20T16:20:30+00:00"},
             ],
             "alerts": [
                 {
@@ -149,62 +184,93 @@ async def test_relay_pushes_one_enter_and_one_leave_per_active_target() -> None:
                 },
             ],
         }
-        refreshed_bootstrap = {
-            **entered_bootstrap,
-            "generated_at": "2026-07-20T16:20:30+00:00",
-            "active_intel": [
-                {**item, "last_seen_at": "2026-07-20T16:20:30+00:00"},
-                {**second_item, "last_seen_at": "2026-07-20T16:20:30+00:00"},
-            ],
-        }
         partial_left_bootstrap = {
-            "generated_at": "2026-07-20T16:21:24+00:00",
+            "generated_at": "2026-07-20T16:23:00+00:00",
             "active_intel": [
-                {**item, "last_seen_at": "2026-07-20T16:21:24+00:00"},
+                {**second_item, "last_seen_at": "2026-07-20T16:23:00+00:00"},
             ],
             "alerts": [
                 {
-                    "active_intel_id": "ocr:alice",
-                    "level": "high",
-                    "score": 80,
+                    "active_intel_id": "ocr:bob",
+                    "level": "medium",
+                    "score": 55,
                 },
             ],
         }
         left_bootstrap = {
-            "generated_at": "2026-07-20T16:22:29+00:00",
+            "generated_at": "2026-07-20T16:24:00+00:00",
             "active_intel": [],
             "alerts": [],
         }
 
+        # The first bootstrap establishes a baseline and never replays history.
+        await relay.process_bootstrap(existing_bootstrap)
+        qq.send_proactive_text.assert_not_awaited()
+
+        await relay.process_bootstrap(cleared_bootstrap)
         await relay.process_bootstrap(entered_bootstrap)
-        await relay.process_bootstrap(refreshed_bootstrap)
+        await relay.process_bootstrap(count_increased_bootstrap)
         await relay.process_bootstrap(partial_left_bootstrap)
         await relay.process_bootstrap(left_bootstrap)
         await relay.process_bootstrap(left_bootstrap)
 
-        assert qq.send_proactive_markdown.await_count == 3
-        qq.send_proactive_text.assert_not_awaited()
-        entered_message = qq.send_proactive_markdown.await_args_list[0].args[1]
-        partial_left_message = qq.send_proactive_markdown.await_args_list[1].args[1]
-        final_left_message = qq.send_proactive_markdown.await_args_list[2].args[1]
-        assert "敌对进入" in entered_message
-        assert "敌对进入监控" not in entered_message
-        assert "**目标**｜Alice、Bob" in entered_message
-        assert entered_message.startswith("### 🔴 敌对进入｜当前敌对 2 人")
-        assert "敌对离开" in partial_left_message
-        assert "敌对离开监控" not in partial_left_message
-        assert "**目标**｜Bob" in partial_left_message
-        assert partial_left_message.startswith("### 🟢 敌对离开｜当前敌对 1 人")
-        assert "**停留**｜1 分" in partial_left_message
-        assert "敌对离开" in final_left_message
-        assert "**目标**｜Alice" in final_left_message
-        assert final_left_message.startswith("### 🟢 敌对离开｜当前敌对 0 人")
-        assert "**停留**｜2 分 5 秒" in final_left_message
+        assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
+            "✅ S-KSWL 清空",
+            "❗ S-KSWL 来敌",
+            "✅ S-KSWL 清空",
+        ]
+        qq.send_proactive_markdown.assert_not_awaited()
         assert await redis.hlen(ACTIVE_INTEL_STATE_KEY) == 0
-        assert await redis.get(ALERT_CURSOR_KEY) == b"2026-07-20T16:22:29+00:00"
+        assert await redis.hlen(SYSTEM_ALERT_STATE_KEY) == 0
+        assert await redis.get(SYSTEM_ALERT_STATE_READY_KEY) == b"1"
+        assert await redis.get(ALERT_CURSOR_KEY) == b"2026-07-20T16:24:00+00:00"
 
         await relay.unsubscribe("group-1")
         assert await relay.is_subscribed("group-1") is False
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_system_transition_retries_before_advancing_state() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_text=AsyncMock(
+            side_effect=[RuntimeError("temporary failure"), {"id": "m1"}]
+        ),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {
+                "generated_at": "2026-07-20T16:20:00+00:00",
+                "active_intel": [],
+                "alerts": [],
+            }
+        )
+        hostile_bootstrap = {
+            "generated_at": "2026-07-20T16:21:00+00:00",
+            "active_intel": [
+                {
+                    "id": "ocr:alice",
+                    "active": True,
+                    "system_name": "S-KSWL",
+                    "name": "Alice",
+                }
+            ],
+            "alerts": [{"active_intel_id": "ocr:alice", "level": "high"}],
+        }
+
+        await relay.process_bootstrap(hostile_bootstrap)
+        assert await redis.hlen(SYSTEM_ALERT_STATE_KEY) == 0
+        assert await redis.get(ALERT_CURSOR_KEY) == b"2026-07-20T16:20:00+00:00"
+
+        await relay.process_bootstrap(hostile_bootstrap)
+
+        assert qq.send_proactive_text.await_count == 2
+        assert await redis.hlen(SYSTEM_ALERT_STATE_KEY) == 1
+        assert await redis.get(ALERT_CURSOR_KEY) == b"2026-07-20T16:21:00+00:00"
 
     await redis.aclose()
 

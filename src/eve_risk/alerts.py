@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
@@ -20,6 +20,8 @@ ALERT_GROUPS_KEY = "qq:eve-sentry:alert-groups"
 ALERT_CURSOR_KEY = "qq:eve-sentry:alert-cursor"
 ALERT_DELIVERED_PREFIX = "qq:eve-sentry:alert-delivered"
 ACTIVE_INTEL_STATE_KEY = "qq:eve-sentry:active-intel-state"
+SYSTEM_ALERT_STATE_KEY = "qq:eve-sentry:system-alert-state"
+SYSTEM_ALERT_STATE_READY_KEY = "qq:eve-sentry:system-alert-state-ready"
 ALERT_DEDUPE_SECONDS = 7 * 24 * 60 * 60
 
 _ENABLE_COMMANDS = {"开启预警", "订阅预警", "打开预警"}
@@ -95,6 +97,13 @@ def format_alert_message(alert: dict[str, Any], public_url: str = "") -> str:
         alert.get("first_seen_at") or alert.get("created_at") or datetime.now(UTC).isoformat()
     )
     return format_active_intel_message(alert, "entered", occurred_at, public_url)
+
+
+def format_system_alert_message(system_name: str, transition: str) -> str:
+    system_name = str(system_name or "").strip() or "未知星系"
+    if transition == "safe":
+        return f"✅ {system_name} 清空"
+    return f"❗ {system_name} 来敌"
 
 
 async def iter_sse_events(
@@ -230,6 +239,44 @@ class EveSentryAlertRelay:
             delivered,
         )
 
+    async def deliver_system_transition(
+        self,
+        state: dict[str, Any],
+        transition: str,
+    ) -> bool:
+        system_name = _system_label(state)
+        episode_id = str(state.get("episode_id") or "").strip()
+        if not episode_id:
+            logger.warning("Ignored malformed EVE Sentry system transition")
+            return True
+
+        raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
+        groups = sorted(_decode(value) for value in raw_groups if _decode(value))
+        message = format_system_alert_message(system_name, transition)
+        event_id = f"system:{transition}:{system_name.casefold()}:{episode_id}"
+        delivered = 0
+        failed = 0
+        for group_openid in groups:
+            delivered_key = _delivered_key(event_id, group_openid)
+            if await self.redis.exists(delivered_key):
+                continue
+            try:
+                await self.qq.send_proactive_text(group_openid, message)
+            except Exception:
+                failed += 1
+                logger.exception("QQ proactive system alert delivery failed")
+                continue
+            await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
+            delivered += 1
+
+        logger.info(
+            "EVE Sentry system transition processed transition=%s deliveries=%d failures=%d",
+            transition,
+            delivered,
+            failed,
+        )
+        return failed == 0
+
     async def process_bootstrap(self, payload: dict[str, Any]) -> None:
         active_intel = payload.get("active_intel")
         if not isinstance(active_intel, list):
@@ -237,50 +284,80 @@ class EveSentryAlertRelay:
             return
 
         generated_at = str(payload.get("generated_at") or datetime.now(UTC).isoformat())
-        current = {
+        active_items = {
             active_id: item
             for active_id, item in _active_intel_map(
                 active_intel, payload.get("alerts")
             ).items()
             if self._allows_transition(item)
         }
-        previous = await self._load_active_intel_state()
+        current = _active_system_state(active_items.values(), generated_at)
+        previous, initialized = await self._load_system_alert_state()
 
-        left_items = [
-            previous[active_id]
-            for active_id in sorted(previous.keys() - current.keys())
-        ]
-        entered_items = [
-            current[active_id]
-            for active_id in sorted(current.keys() - previous.keys())
-        ]
-        remaining_counts: dict[tuple[str, str, str], int] = {}
-        for item in current.values():
-            key = _transition_group_key(item)
-            remaining_counts[key] = remaining_counts.get(key, 0) + 1
+        for system_key in current.keys() & previous.keys():
+            current[system_key]["episode_id"] = previous[system_key]["episode_id"]
 
-        for item in _transition_groups(left_items):
-            message_item = dict(item)
-            message_item["_remaining_count"] = remaining_counts.get(
-                _transition_group_key(item), 0
-            )
-            await self.deliver(message_item, "left", generated_at)
-        for item in _transition_groups(entered_items):
-            message_item = dict(item)
-            message_item["_remaining_count"] = remaining_counts.get(
-                _transition_group_key(item), 0
-            )
-            entered_at = str(item.get("first_seen_at") or generated_at)
-            await self.deliver(message_item, "entered", entered_at)
+        transitions_succeeded = True
+        if initialized:
+            for system_key in sorted(previous.keys() - current.keys()):
+                transitions_succeeded = (
+                    await self.deliver_system_transition(previous[system_key], "safe")
+                    and transitions_succeeded
+                )
+            for system_key in sorted(current.keys() - previous.keys()):
+                transitions_succeeded = (
+                    await self.deliver_system_transition(current[system_key], "alert")
+                    and transitions_succeeded
+                )
 
-        await self._save_active_intel_state(current)
+        if not transitions_succeeded:
+            logger.warning("EVE Sentry system state update deferred after delivery failure")
+            return
+
+        await self._save_system_alert_state(current)
         await self.redis.set(ALERT_CURSOR_KEY, generated_at)
         logger.info(
-            "EVE Sentry active intel synchronized active=%d entered=%d left=%d",
+            "EVE Sentry system alerts synchronized systems=%d hostiles=%d initialized=%s",
             len(current),
-            len(entered_items),
-            len(left_items),
+            len(active_items),
+            initialized,
         )
+
+    async def _load_system_alert_state(
+        self,
+    ) -> tuple[dict[str, dict[str, Any]], bool]:
+        ready, raw_items = await asyncio.gather(
+            self.redis.exists(SYSTEM_ALERT_STATE_READY_KEY),
+            self.redis.hgetall(SYSTEM_ALERT_STATE_KEY),
+        )
+        result: dict[str, dict[str, Any]] = {}
+        for raw_key, raw_payload in raw_items.items():
+            system_key = _decode(raw_key)
+            try:
+                item = json.loads(_decode(raw_payload))
+            except json.JSONDecodeError:
+                continue
+            if system_key and isinstance(item, dict):
+                result[system_key] = item
+        return result, bool(ready)
+
+    async def _save_system_alert_state(
+        self, items: dict[str, dict[str, Any]]
+    ) -> None:
+        pipeline = self.redis.pipeline()
+        pipeline.delete(SYSTEM_ALERT_STATE_KEY)
+        if items:
+            pipeline.hset(
+                SYSTEM_ALERT_STATE_KEY,
+                mapping={
+                    system_key: json.dumps(
+                        item, ensure_ascii=False, separators=(",", ":")
+                    )
+                    for system_key, item in items.items()
+                },
+            )
+        pipeline.set(SYSTEM_ALERT_STATE_READY_KEY, "1")
+        await pipeline.execute()
 
     async def _load_active_intel_state(self) -> dict[str, dict[str, Any]]:
         raw_items = await self.redis.hgetall(ACTIVE_INTEL_STATE_KEY)
@@ -378,6 +455,25 @@ def _active_intel_map(
                 item[key] = alert[key]
         result[active_id] = item
     return result
+
+
+def _active_system_state(
+    items: Iterable[dict[str, Any]], fallback_episode_id: str
+) -> dict[str, dict[str, Any]]:
+    systems: dict[str, dict[str, Any]] = {}
+    for item in items:
+        system_name = _system_label(item)
+        system_key = system_name.casefold()
+        state = systems.setdefault(
+            system_key,
+            {
+                "system_name": system_name,
+                "hostile_count": 0,
+                "episode_id": fallback_episode_id,
+            },
+        )
+        state["hostile_count"] += 1
+    return systems
 
 
 def _transition_groups(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
