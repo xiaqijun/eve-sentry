@@ -919,7 +919,7 @@ def test_alert_client_aggregates_overlay_rows_by_system():
     assert rows[1]["system_name"] == "8-4GQM"
 
 
-def test_alert_client_syncs_counts_and_keeps_departed_systems_safe():
+def test_alert_client_syncs_counts_and_drops_unmonitored_safe_systems():
     rows = sync_alert_summaries_from_bootstrap(
         [
             {"system_name": "S-KSWL", "hostile_count": 9, "created_at": "1"},
@@ -954,11 +954,8 @@ def test_alert_client_syncs_counts_and_keeps_departed_systems_safe():
         for item in rows
     ] == [
         ("S-KSWL", 3, True),
-        ("OLD", 0, False),
         ("8-4GQM", 2, True),
     ]
-    assert rows[1]["hostile_count"] == 0
-    assert rows[1]["active_hostile_count"] == 0
 
     rows = sync_alert_summaries_from_bootstrap(
         rows,
@@ -976,18 +973,10 @@ def test_alert_client_syncs_counts_and_keeps_departed_systems_safe():
 
     assert [(item["system_name"], item["active"]) for item in rows] == [
         ("S-KSWL", True),
-        ("OLD", False),
-        ("8-4GQM", False),
     ]
-    assert rows[1]["hostile_count"] == 0
-    assert rows[2]["hostile_count"] == 0
-    assert len(prune_inactive_alert_summaries(rows, now=159.9)) == 3
+    assert len(prune_inactive_alert_summaries(rows, now=159.9)) == 1
     rows = prune_inactive_alert_summaries(rows, now=170.0)
-    assert [item["system_name"] for item in rows] == [
-        "S-KSWL",
-        "OLD",
-        "8-4GQM",
-    ]
+    assert [item["system_name"] for item in rows] == ["S-KSWL"]
 
     rows = sync_alert_summaries_from_bootstrap(
         [],
@@ -1058,6 +1047,38 @@ def test_alert_client_adds_green_tiles_for_online_monitoring_nodes():
             "active": False,
         }
     ]
+
+
+def test_alert_client_removes_green_tile_when_monitoring_node_stops():
+    rows = sync_alert_summaries_from_bootstrap(
+        [
+            {
+                "system_name": "S-KSWL",
+                "hostile_count": 0,
+                "active_hostile_count": 0,
+                "created_at": "",
+                "active": False,
+            }
+        ],
+        {
+            "map": {"systems": []},
+            "active_intel": [],
+            "clients": {
+                "heartbeats": [
+                    {
+                        "client_type": "detector_client",
+                        "online": True,
+                        "details": {
+                            "monitoring": False,
+                            "system": "S-KSWL",
+                        },
+                    }
+                ]
+            },
+        },
+    )
+
+    assert rows == []
 
 
 def test_alert_client_marks_summaries_inactive_from_bootstrap():
@@ -1141,16 +1162,19 @@ def test_alert_overlay_renders_hostile_system_tile(monkeypatch):
         assert row.property("hostile") == "true"
         assert scroll.minimumHeight() == overlay._tile_height
         assert scroll.maximumHeight() == overlay._tile_height
-        assert overlay.minimumWidth() == 300
+        assert overlay.minimumWidth() == max(
+            256,
+            overlay._tile_width * 2 + 40,
+        )
         assert overlay.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     finally:
         overlay.close()
 
 
 def test_overlay_tile_dimensions_follow_available_screen_size():
-    assert overlay_tile_dimensions(1366, 768) == (120, 58)
-    assert overlay_tile_dimensions(1920, 1080) == (128, 62)
-    assert overlay_tile_dimensions(3840, 2160) == (160, 74)
+    assert overlay_tile_dimensions(1366, 768) == (108, 58)
+    assert overlay_tile_dimensions(1920, 1080) == (116, 62)
+    assert overlay_tile_dimensions(3840, 2160) == (148, 74)
 
 
 def test_alert_overlay_stays_on_a_left_hand_monitor(monkeypatch):
@@ -1205,6 +1229,30 @@ def test_alert_overlay_expands_when_first_tile_arrives_after_show(monkeypatch):
         assert scroll.isVisible()
         assert scroll.height() == overlay._tile_height
         assert overlay.height() > empty_height
+    finally:
+        overlay.close()
+
+
+def test_alert_overlay_shrinks_title_after_last_tile_disappears(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    try:
+        overlay.show()
+        overlay.show_summaries(
+            [{"system_name": "S-KSWL", "hostile_count": 1}]
+        )
+        app.processEvents()
+        populated_height = overlay.height()
+
+        overlay.show_summaries([])
+        app.processEvents()
+
+        assert overlay.height() < populated_height
+        assert overlay.height() == overlay.sizeHint().height()
+        assert overlay._title.height() == overlay._title.sizeHint().height()
     finally:
         overlay.close()
 

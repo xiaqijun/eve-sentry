@@ -166,6 +166,49 @@ def test_alert_controller_draws_existing_monitoring_systems_without_notification
     assert notifications == []
 
 
+def test_alert_controller_forgets_stopped_local_monitoring_system_without_notice():
+    notifications = []
+
+    class FakeOverlay:
+        def __init__(self):
+            self.summaries = []
+
+        def show_summaries(self, summaries):
+            self.summaries = [dict(item) for item in summaries]
+
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller._recent_summaries = [
+        {
+            "system_name": "S-KSWL",
+            "hostile_count": 2,
+            "active_hostile_count": 2,
+            "active": True,
+        },
+        {
+            "system_name": "8-4GQM",
+            "hostile_count": 0,
+            "active_hostile_count": 0,
+            "active": False,
+        },
+    ]
+    controller._local_hostile_counts = {"s-kswl": ("S-KSWL", 2)}
+    controller.overlay = FakeOverlay()
+    controller._notification_callback = lambda *args: notifications.append(args)
+
+    controller.forget_local_monitoring_systems(["S-KSWL"])
+
+    assert controller._local_hostile_counts == {}
+    assert controller.overlay.summaries == [
+        {
+            "system_name": "8-4GQM",
+            "hostile_count": 0,
+            "active_hostile_count": 0,
+            "active": False,
+        }
+    ]
+    assert notifications == []
+
+
 def test_local_visual_count_overrides_lower_server_bootstrap(monkeypatch):
     class FakeOverlay:
         def __init__(self):
