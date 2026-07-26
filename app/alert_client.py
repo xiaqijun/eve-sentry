@@ -49,6 +49,20 @@ MAX_OVERLAY_ROWS = 4
 OVERLAY_TILE_COLUMNS = 2
 OVERLAY_TILE_WIDTH = 128
 OVERLAY_TILE_HEIGHT = 62
+OVERLAY_TILE_MIN_WIDTH = 120
+OVERLAY_TILE_MAX_WIDTH = 160
+OVERLAY_TILE_MIN_HEIGHT = 58
+OVERLAY_TILE_MAX_HEIGHT = 74
+
+
+def overlay_tile_dimensions(screen_width: int, screen_height: int) -> tuple[int, int]:
+    """Return compact tile dimensions for one screen's logical geometry."""
+    width = int(round(max(1, screen_width) * OVERLAY_TILE_WIDTH / 1920))
+    height = int(round(max(1, screen_height) * OVERLAY_TILE_HEIGHT / 1080))
+    return (
+        max(OVERLAY_TILE_MIN_WIDTH, min(OVERLAY_TILE_MAX_WIDTH, width)),
+        max(OVERLAY_TILE_MIN_HEIGHT, min(OVERLAY_TILE_MAX_HEIGHT, height)),
+    )
 
 
 def default_state_path() -> str:
@@ -515,6 +529,9 @@ class AlertOverlay(QWidget):
         self._title.setObjectName("titleLabel")
         self._row_layout: QGridLayout | None = None
         self._scroll: QScrollArea | None = None
+        self._anchor_rect: dict[str, Any] | None = None
+        self._tile_width = OVERLAY_TILE_WIDTH
+        self._tile_height = OVERLAY_TILE_HEIGHT
         self._drag_position: QPoint | None = None
         self._user_positioned = False
         self._setup_ui()
@@ -573,7 +590,7 @@ class AlertOverlay(QWidget):
         scroll.setVisible(False)
         visible_tile_rows = max(1, MAX_OVERLAY_ROWS // OVERLAY_TILE_COLUMNS)
         scroll.setMaximumHeight(
-            OVERLAY_TILE_HEIGHT * visible_tile_rows
+            self._tile_height * visible_tile_rows
             + 6 * max(0, visible_tile_rows - 1)
         )
         scroll.viewport().installEventFilter(self)
@@ -693,6 +710,9 @@ class AlertOverlay(QWidget):
         return False
 
     def show_summaries(self, summaries: list[dict[str, Any]]) -> None:
+        screen = self._screen_for_anchor()
+        if screen is not None:
+            self._apply_screen_metrics(screen)
         rows = aggregate_alert_summaries(summaries)
         self._ensure_row_count(len(rows))
         for index, (frame, system_label, hostile_label, state_label) in enumerate(
@@ -726,7 +746,7 @@ class AlertOverlay(QWidget):
                 max(1, MAX_OVERLAY_ROWS // OVERLAY_TILE_COLUMNS),
             )
             content_height = (
-                OVERLAY_TILE_HEIGHT * tile_rows + 6 * max(0, tile_rows - 1)
+                self._tile_height * tile_rows + 6 * max(0, tile_rows - 1)
             )
             self._scroll.setFixedHeight(content_height)
             self._scroll.setVisible(bool(rows))
@@ -743,7 +763,7 @@ class AlertOverlay(QWidget):
             frame = QFrame()
             frame.setObjectName("alertRow")
             frame.setVisible(False)
-            frame.setFixedSize(OVERLAY_TILE_WIDTH, OVERLAY_TILE_HEIGHT)
+            frame.setFixedSize(self._tile_width, self._tile_height)
             frame.setProperty("hostile", "true")
             frame.installEventFilter(self)
 
@@ -752,7 +772,7 @@ class AlertOverlay(QWidget):
             tile_layout.setSpacing(2)
             system_label = QLabel("")
             system_label.setObjectName("systemCell")
-            system_label.setFixedWidth(OVERLAY_TILE_WIDTH - 18)
+            system_label.setFixedWidth(self._tile_width - 18)
             system_label.setAlignment(
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
@@ -786,15 +806,83 @@ class AlertOverlay(QWidget):
                 (frame, system_label, hostile_label, state_label)
             )
 
+    def set_anchor_rect(self, rect: dict[str, Any] | None) -> None:
+        """Anchor automatic placement to the display hosting an EVE window."""
+        self._anchor_rect = dict(rect) if rect else None
+        screen = self._screen_for_anchor()
+        if screen is not None:
+            self._apply_screen_metrics(screen)
+        if not self._user_positioned:
+            self.move_to_default_position()
+
+    def _screen_for_anchor(self):
+        anchor = self._anchor_rect or {}
+        monitor_name = str(anchor.get("monitor") or "").strip().casefold()
+        if monitor_name:
+            for screen in QApplication.screens():
+                if str(screen.name() or "").strip().casefold() == monitor_name:
+                    return screen
+        if anchor:
+            center = QPoint(
+                int(anchor.get("x") or 0) + int(anchor.get("w") or 0) // 2,
+                int(anchor.get("y") or 0) + int(anchor.get("h") or 0) // 2,
+            )
+            screen = QApplication.screenAt(center)
+            if screen is not None:
+                return screen
+        return QApplication.primaryScreen()
+
+    def _apply_screen_metrics(self, screen) -> None:
+        geometry = screen.availableGeometry()
+        self._tile_width, self._tile_height = overlay_tile_dimensions(
+            geometry.width(),
+            geometry.height(),
+        )
+        self.setMinimumWidth(
+            max(300, self._tile_width * OVERLAY_TILE_COLUMNS + 40)
+        )
+        for frame, system_label, _hostile_label, _state_label in self._rows:
+            frame.setFixedSize(self._tile_width, self._tile_height)
+            system_label.setFixedWidth(self._tile_width - 18)
+        if self._scroll is not None:
+            visible_tile_rows = max(1, MAX_OVERLAY_ROWS // OVERLAY_TILE_COLUMNS)
+            if not self._scroll.isHidden():
+                visible_count = sum(
+                    1 for frame, *_labels in self._rows if not frame.isHidden()
+                )
+                visible_tile_rows = min(
+                    max(
+                        1,
+                        (visible_count + OVERLAY_TILE_COLUMNS - 1)
+                        // OVERLAY_TILE_COLUMNS,
+                    ),
+                    visible_tile_rows,
+                )
+                self._scroll.setFixedHeight(
+                    self._tile_height * visible_tile_rows
+                    + 6 * max(0, visible_tile_rows - 1)
+                )
+            else:
+                self._scroll.setMaximumHeight(
+                    self._tile_height * visible_tile_rows
+                    + 6 * max(0, visible_tile_rows - 1)
+                )
+
     def move_to_default_position(self) -> None:
-        screen = QApplication.primaryScreen()
+        screen = self._screen_for_anchor()
         if screen is None:
             return
+        self._apply_screen_metrics(screen)
         geometry = screen.availableGeometry()
         self.adjustSize()
         x = geometry.right() - self.width() - 28
         y = geometry.top() + 88
-        self.move(max(0, x), max(0, y))
+        max_x = geometry.right() - self.width() + 1
+        max_y = geometry.bottom() - self.height() + 1
+        self.move(
+            max(geometry.left(), min(x, max_x)),
+            max(geometry.top(), min(y, max_y)),
+        )
 
 
 class AlertEventWorker(QThread):
@@ -1001,6 +1089,10 @@ class AlertTrayController:
                 }
             )
         self.overlay.show_summaries(self._recent_summaries)
+
+    def set_anchor_window(self, window: dict[str, Any] | None) -> None:
+        """Place the embedded overlay on the EVE window's display."""
+        self.overlay.set_anchor_rect(window)
 
     def update_local_hostile_count(self, system_name: str, count: int) -> None:
         """Apply authoritative red-icon evidence from this monitor process."""

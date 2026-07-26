@@ -15,6 +15,7 @@ from app.alert_client import (
     build_heartbeat_details,
     format_alert_time,
     parse_args,
+    overlay_tile_dimensions,
     prune_inactive_alert_summaries,
     summarize_alert,
     sync_alert_summaries_from_bootstrap,
@@ -1131,17 +1132,47 @@ def test_alert_overlay_renders_hostile_system_tile(monkeypatch):
         assert system_cell is not None
         assert row is not None
         assert scroll is not None
-        assert system_cell.minimumWidth() == 110
-        assert system_cell.maximumWidth() == 110
-        assert row.minimumWidth() == 128
-        assert row.maximumWidth() == 128
-        assert row.minimumHeight() == 62
-        assert row.maximumHeight() == 62
+        assert system_cell.minimumWidth() == overlay._tile_width - 18
+        assert system_cell.maximumWidth() == overlay._tile_width - 18
+        assert row.minimumWidth() == overlay._tile_width
+        assert row.maximumWidth() == overlay._tile_width
+        assert row.minimumHeight() == overlay._tile_height
+        assert row.maximumHeight() == overlay._tile_height
         assert row.property("hostile") == "true"
-        assert scroll.minimumHeight() == 62
-        assert scroll.maximumHeight() == 62
+        assert scroll.minimumHeight() == overlay._tile_height
+        assert scroll.maximumHeight() == overlay._tile_height
         assert overlay.minimumWidth() == 300
         assert overlay.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    finally:
+        overlay.close()
+
+
+def test_overlay_tile_dimensions_follow_available_screen_size():
+    assert overlay_tile_dimensions(1366, 768) == (120, 58)
+    assert overlay_tile_dimensions(1920, 1080) == (128, 62)
+    assert overlay_tile_dimensions(3840, 2160) == (160, 74)
+
+
+def test_alert_overlay_stays_on_a_left_hand_monitor(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtCore import QRect
+    from PyQt6.QtWidgets import QApplication
+
+    class FakeScreen:
+        def availableGeometry(self):
+            return QRect(-1920, 0, 1920, 1080)
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    overlay._screen_for_anchor = lambda: FakeScreen()
+    try:
+        overlay.show_summaries(
+            [{"system_name": "S-KSWL", "hostile_count": 1}]
+        )
+        app.processEvents()
+
+        assert -1920 <= overlay.x() < 0
+        assert overlay.y() >= 0
     finally:
         overlay.close()
 
@@ -1172,7 +1203,7 @@ def test_alert_overlay_expands_when_first_tile_arrives_after_show(monkeypatch):
         scroll = overlay.findChild(QScrollArea, "alertScroll")
         assert scroll is not None
         assert scroll.isVisible()
-        assert scroll.height() == 62
+        assert scroll.height() == overlay._tile_height
         assert overlay.height() > empty_height
     finally:
         overlay.close()

@@ -42,6 +42,9 @@ def find_hostile_icons(image: Image.Image) -> list[HostileIcon]:
     red_mask = (red >= 100) & ((red - green) >= 60) & ((red - blue) >= 60)
 
     _height, width = red_mask.shape
+    scale = _member_list_scale(width)
+    minimum_icon_size = 6
+    maximum_icon_size = max(18, int(round(18 * scale)))
     search_width = min(width, max(24, int(round(width * 0.35))))
     left_mask = red_mask[:, :search_width]
     active_rows = left_mask.sum(axis=1) >= 3
@@ -55,7 +58,10 @@ def find_hostile_icons(image: Image.Image) -> list[HostileIcon]:
         right = int(xs.max()) + 1
         box_height = bottom - top
         box_width = right - left
-        if not (7 <= box_width <= 18 and 7 <= box_height <= 18):
+        if not (
+            minimum_icon_size <= box_width <= maximum_icon_size
+            and minimum_icon_size <= box_height <= maximum_icon_size
+        ):
             continue
         if not 0.65 <= box_width / box_height <= 1.35:
             continue
@@ -73,14 +79,21 @@ def extract_hostile_name_rows(image: Image.Image) -> Image.Image | None:
         return None
 
     source = image.convert("RGB")
-    name_left = min(source.width, max(icon.right for icon in icons) + 2)
+    scale = _member_list_scale(source.width)
+    name_left = min(
+        source.width,
+        max(icon.right for icon in icons) + max(2, int(round(2 * scale))),
+    )
     output_width = source.width - name_left
     if output_width <= 0:
         return None
 
-    row_height = max(16, max(icon.height for icon in icons) + 5)
-    padding = 6
-    separator = 4
+    row_height = max(
+        int(round(16 * scale)),
+        max(icon.height for icon in icons) + int(round(5 * scale)),
+    )
+    padding = max(6, int(round(6 * scale)))
+    separator = max(4, int(round(4 * scale)))
     output_height = padding * 2 + len(icons) * row_height
     output_height += max(0, len(icons) - 1) * separator
     output = Image.new("RGB", (output_width, output_height), color=(0, 0, 0))
@@ -97,6 +110,11 @@ def extract_hostile_name_rows(image: Image.Image) -> Image.Image | None:
         output_y += source_top - requested_top
         output.paste(row, (0, output_y))
     return output
+
+
+def _member_list_scale(width: int) -> float:
+    """Estimate EVE UI scaling from the physical member-list width."""
+    return max(1.0, min(2.5, float(width) / 180.0))
 
 
 def _true_runs(values: np.ndarray) -> list[tuple[int, int]]:
