@@ -47,10 +47,11 @@ DEFAULT_HEARTBEAT_INTERVAL = 10.0
 DEFAULT_RECONNECT_MAX_DELAY = 30.0
 MAX_OVERLAY_ROWS = 4
 OVERLAY_TILE_COLUMNS = 2
-OVERLAY_TILE_WIDTH = 128
+OVERLAY_MIN_WIDTH = 256
+OVERLAY_TILE_WIDTH = 116
 OVERLAY_TILE_HEIGHT = 62
-OVERLAY_TILE_MIN_WIDTH = 120
-OVERLAY_TILE_MAX_WIDTH = 160
+OVERLAY_TILE_MIN_WIDTH = 108
+OVERLAY_TILE_MAX_WIDTH = 148
 OVERLAY_TILE_MIN_HEIGHT = 58
 OVERLAY_TILE_MAX_HEIGHT = 74
 
@@ -318,8 +319,10 @@ def sync_alert_summaries_from_bootstrap(
     *,
     now: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Sync live counts while retaining cleared systems as green tiles."""
+    """Sync live counts and retain green tiles only for monitored systems."""
     _ = now
+    monitoring_systems = monitored_system_names(bootstrap.get("clients"))
+    monitoring_keys = {system.casefold() for system in monitoring_systems}
     map_payload = bootstrap.get("map")
     map_systems = map_payload.get("systems") if isinstance(map_payload, dict) else None
     if not isinstance(map_systems, list):
@@ -331,11 +334,18 @@ def sync_alert_summaries_from_bootstrap(
             else:
                 item["hostile_count"] = 0
                 item["active_hostile_count"] = 0
+        updated = [
+            item
+            for item in updated
+            if bool(item.get("active"))
+            or str(item.get("system_name") or "Unknown").casefold()
+            in monitoring_keys
+        ]
         known_systems = {
             str(item.get("system_name") or "Unknown").casefold()
             for item in updated
         }
-        for system in monitored_system_names(bootstrap.get("clients")):
+        for system in monitoring_systems:
             if system.casefold() in known_systems:
                 continue
             updated.append(
@@ -429,7 +439,7 @@ def sync_alert_summaries_from_bootstrap(
             "active": True,
         }
 
-    for system in monitored_system_names(bootstrap.get("clients")):
+    for system in monitoring_systems:
         if system in current_by_system:
             continue
         previous = previous_by_system.get(system, {})
@@ -447,12 +457,6 @@ def sync_alert_summaries_from_bootstrap(
         current = current_by_system.pop(system, None)
         if current is not None:
             ordered.append(current)
-            continue
-        inactive = dict(item)
-        inactive["active"] = False
-        inactive["hostile_count"] = 0
-        inactive["active_hostile_count"] = 0
-        ordered.append(inactive)
     ordered.extend(
         sorted(
             current_by_system.values(),
@@ -527,6 +531,7 @@ class AlertOverlay(QWidget):
         self._status.setObjectName("statusLabel")
         self._title = QLabel("EVE SENTRY")
         self._title.setObjectName("titleLabel")
+        self._content_layout: QVBoxLayout | None = None
         self._row_layout: QGridLayout | None = None
         self._scroll: QScrollArea | None = None
         self._anchor_rect: dict[str, Any] | None = None
@@ -544,7 +549,7 @@ class AlertOverlay(QWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(OVERLAY_MIN_WIDTH)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
         self.installEventFilter(self)
 
@@ -556,6 +561,7 @@ class AlertOverlay(QWidget):
         root.addWidget(frame)
 
         layout = QVBoxLayout(frame)
+        self._content_layout = layout
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
 
@@ -750,11 +756,23 @@ class AlertOverlay(QWidget):
             )
             self._scroll.setFixedHeight(content_height)
             self._scroll.setVisible(bool(rows))
-        if self.layout() is not None:
-            self.layout().activate()
-        self.adjustSize()
+        self._resize_to_content()
         if not self._user_positioned:
             self.move_to_default_position()
+
+    def _resize_to_content(self) -> None:
+        """Resize both larger and smaller when the visible tile count changes."""
+        if self._content_layout is not None:
+            self._content_layout.invalidate()
+            self._content_layout.activate()
+        if self.layout() is not None:
+            self.layout().invalidate()
+            self.layout().activate()
+        hint = self.sizeHint()
+        self.resize(
+            max(self.minimumWidth(), hint.width()),
+            max(self.minimumHeight(), hint.height()),
+        )
 
     def _ensure_row_count(self, count: int) -> None:
         if self._row_layout is None:
@@ -839,7 +857,10 @@ class AlertOverlay(QWidget):
             geometry.height(),
         )
         self.setMinimumWidth(
-            max(300, self._tile_width * OVERLAY_TILE_COLUMNS + 40)
+            max(
+                OVERLAY_MIN_WIDTH,
+                self._tile_width * OVERLAY_TILE_COLUMNS + 40,
+            )
         )
         for frame, system_label, _hostile_label, _state_label in self._rows:
             frame.setFixedSize(self._tile_width, self._tile_height)
@@ -874,7 +895,7 @@ class AlertOverlay(QWidget):
             return
         self._apply_screen_metrics(screen)
         geometry = screen.availableGeometry()
-        self.adjustSize()
+        self._resize_to_content()
         x = geometry.right() - self.width() - 28
         y = geometry.top() + 88
         max_x = geometry.right() - self.width() + 1
@@ -1088,6 +1109,26 @@ class AlertTrayController:
                     "active": False,
                 }
             )
+        self.overlay.show_summaries(self._recent_summaries)
+
+    def forget_local_monitoring_systems(self, system_names: list[str]) -> None:
+        """Remove local node state without emitting a hostile-safe notification."""
+        system_keys = {
+            str(system or "").strip().casefold()
+            for system in system_names
+            if str(system or "").strip()
+        }
+        if not system_keys:
+            return
+        local_counts = getattr(self, "_local_hostile_counts", {})
+        for key in system_keys:
+            local_counts.pop(key, None)
+        self._recent_summaries = [
+            item
+            for item in self._recent_summaries
+            if str(item.get("system_name") or "Unknown").casefold()
+            not in system_keys
+        ]
         self.overlay.show_summaries(self._recent_summaries)
 
     def set_anchor_window(self, window: dict[str, Any] | None) -> None:

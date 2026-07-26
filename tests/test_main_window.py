@@ -1288,11 +1288,22 @@ def test_stop_monitor_disables_timer_and_queues_without_uploading():
     class FakeLabel(FakeButton):
         pass
 
+    class FakeAlertController:
+        def __init__(self):
+            self.forgotten = []
+
+        def forget_local_monitoring_systems(self, systems):
+            self.forgotten.append(list(systems))
+
     window = MainWindow.__new__(MainWindow)
     window._uploads_enabled = True
     window._heartbeat_timer = FakeTimer()
     window._network_tasks = FakeNetworkTasks()
-    window._stop_monitor_workers = lambda timeout_ms: timeout_ms == 3000
+    window._workers = {"eve-hajimi6": object()}
+    window._worker_contexts = {
+        "eve-hajimi6": {"system_name": "S-KSWL"},
+    }
+    window._alert_controller = FakeAlertController()
     window._monitor_btn = FakeButton()
     window._status_label = FakeLabel()
     window._log_messages = []
@@ -1301,7 +1312,11 @@ def test_stop_monitor_disables_timer_and_queues_without_uploading():
     window._heartbeat_last_success_at = "previous-success"
     window._refresh_status_cards = lambda: None
     heartbeat_calls = []
+    stop_worker_timeouts = []
     window._publish_heartbeat = lambda **kwargs: heartbeat_calls.append(kwargs)
+    window._stop_monitor_workers = (
+        lambda timeout_ms: stop_worker_timeouts.append(timeout_ms) or True
+    )
 
     MainWindow._stop_monitor(window)
 
@@ -1309,10 +1324,12 @@ def test_stop_monitor_disables_timer_and_queues_without_uploading():
     assert window._heartbeat_timer.active is False
     assert window._heartbeat_timer.stop_calls == 1
     assert window._network_tasks.cancel_calls == 1
+    assert window._alert_controller.forgotten == [["S-KSWL"]]
     assert window._monitor_btn.text == "开始监控"
     assert window._status_label.text == "已停止"
     assert window._heartbeat_last_action == "monitor_stopped"
     assert window._heartbeat_last_success_at == "previous-success"
+    assert stop_worker_timeouts == [0]
     assert heartbeat_calls == [
         {
             "monitoring_override": False,
@@ -1373,6 +1390,75 @@ def test_stop_monitor_workers_stops_all_workers_and_clears_context():
     assert window._workers == {}
     assert window._worker_contexts == {}
     assert window._worker is None
+
+
+def test_stop_monitor_workers_returns_without_waiting_for_async_cleanup(monkeypatch):
+    callbacks = []
+
+    class FakeSignal:
+        def __init__(self):
+            self.disconnects = 0
+
+        def disconnect(self):
+            self.disconnects += 1
+
+    class FakeWorker:
+        def __init__(self):
+            self.ocr_snapshot = FakeSignal()
+            self.hostile_detected = FakeSignal()
+            self.status_update = FakeSignal()
+            self.scan_complete = FakeSignal()
+            self.running = True
+            self.stop_calls = 0
+            self.wait_calls = 0
+
+        def isRunning(self):
+            return self.running
+
+        def stop(self):
+            self.stop_calls += 1
+
+        def wait(self, *_args):
+            self.wait_calls += 1
+            raise AssertionError("async monitor stop waited on the UI thread")
+
+    class FakeButton:
+        def __init__(self):
+            self.enabled = []
+
+        def setEnabled(self, enabled):
+            self.enabled.append(enabled)
+
+    worker = FakeWorker()
+    window = MainWindow.__new__(MainWindow)
+    window._workers = {"first": worker}
+    window._worker = worker
+    window._worker_contexts = {"first": {"window_title": "A"}}
+    window._stopping_monitor_workers = set()
+    window._monitor_btn = FakeButton()
+    window._log_message = lambda _message: None
+    window._refresh_window_status_table = lambda: None
+    monkeypatch.setattr(
+        "app.ui.main_window.QTimer.singleShot",
+        lambda delay, callback: callbacks.append((delay, callback)),
+    )
+
+    assert MainWindow._stop_monitor_workers(window, timeout_ms=0) is True
+
+    assert worker.stop_calls == 1
+    assert worker.wait_calls == 0
+    assert window._workers == {}
+    assert window._worker_contexts == {}
+    assert window._worker is None
+    assert window._stopping_monitor_workers == {worker}
+    assert window._monitor_btn.enabled == [False]
+    assert callbacks[0][0] == 50
+
+    worker.running = False
+    callbacks.pop(0)[1]()
+
+    assert window._stopping_monitor_workers == set()
+    assert window._monitor_btn.enabled == [False, True]
 
 
 def test_switching_selected_window_clears_stale_manual_region():

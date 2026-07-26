@@ -108,6 +108,7 @@ class MainWindow(QMainWindow):
         self._network_tasks = BackgroundTaskRunner(max_workers=2, parent=self)
         self._network_tasks.completed.connect(self._on_network_task_completed)
         self._alert_controller: AlertTrayController | None = None
+        self._stopping_monitor_workers: set[MonitorWorker] = set()
 
         self._popup_alerts_enabled = False
         self._manual_region: dict | None = None
@@ -1031,6 +1032,11 @@ class MainWindow(QMainWindow):
             pass
 
     def _stop_monitor(self, *, wait_for_workers: bool = False) -> None:
+        monitoring_systems = self._monitoring_system_names()
+        controller = _instance_attr(self, "_alert_controller")
+        forget_systems = getattr(controller, "forget_local_monitoring_systems", None)
+        if callable(forget_systems):
+            forget_systems(monitoring_systems)
         network_tasks = _instance_attr(self, "_network_tasks")
         if network_tasks is not None:
             network_tasks.cancel_latest()
@@ -1043,7 +1049,7 @@ class MainWindow(QMainWindow):
         self._uploads_enabled = False
         self._set_heartbeat_enabled(False)
         self._stop_monitor_workers(
-            timeout_ms=None if wait_for_workers else 3000,
+            timeout_ms=None if wait_for_workers else 0,
         )
         self._monitor_btn.setText("开始监控")
         self._monitor_btn.setStyleSheet(monitor_button_style(active=False))
@@ -1058,6 +1064,9 @@ class MainWindow(QMainWindow):
         legacy_worker = getattr(self, "_worker", None)
         if legacy_worker is not None and legacy_worker not in workers:
             workers.append(legacy_worker)
+        for worker in _instance_attr(self, "_stopping_monitor_workers", set()):
+            if worker not in workers:
+                workers.append(worker)
         if not workers:
             return True
 
@@ -1067,9 +1076,26 @@ class MainWindow(QMainWindow):
             self._log_message(f"正在停止 {len(running_workers)} 个监控线程...")
         for worker in workers:
             worker.stop()
+
+        if timeout_ms == 0:
+            for worker in workers:
+                self._disconnect_worker_signals(worker)
+            self._stopping_monitor_workers = set(workers)
+            self._workers = {}
+            self._worker_contexts = {}
+            self._worker = None
+            self._monitor_btn.setEnabled(False)
+            self._refresh_window_status_table()
+            QTimer.singleShot(50, self._reap_stopping_monitor_workers)
+            return True
+
         for worker in workers:
             if worker.isRunning():
-                stopped = worker.wait() if timeout_ms is None else worker.wait(timeout_ms)
+                stopped = (
+                    worker.wait()
+                    if timeout_ms is None
+                    else worker.wait(timeout_ms)
+                )
                 if not stopped:
                     failed = True
                     logger.warning(
@@ -1078,6 +1104,7 @@ class MainWindow(QMainWindow):
                     )
             self._disconnect_worker_signals(worker)
 
+        self._stopping_monitor_workers = set()
         if failed:
             self._capturer = Capturer()
             self._ocr = OCREngine(lang="en", confidence_threshold=0.7)
@@ -1086,6 +1113,17 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._refresh_window_status_table()
         return not failed
+
+    def _reap_stopping_monitor_workers(self) -> None:
+        """Release stopped monitor threads without blocking the Qt event loop."""
+        stopping = _instance_attr(self, "_stopping_monitor_workers", set())
+        self._stopping_monitor_workers = {
+            worker for worker in stopping if worker.isRunning()
+        }
+        if self._stopping_monitor_workers:
+            QTimer.singleShot(50, self._reap_stopping_monitor_workers)
+            return
+        self._monitor_btn.setEnabled(True)
 
     def _create_intel_client(self) -> IntelApiClient | None:
         enabled = (

@@ -102,6 +102,8 @@ $env:EVE_SENTRY_ONNX_MODEL_DIR = "$PWD\.runtime\onnx-models"
 不发送 Windows 右下角系统通知。关闭预警不会停止 OCR 上报。源码运行必须显式设置
 `EVE_SENTRY_OCR_BACKEND=onnx`，否则兼容默认值会启动 PaddleOCR；轻量 ONNX 发行包通过
 runtime hook 自动选择 ONNX。
+停止监控采用异步线程回收：界面立即停止上报和移除本地节点方框，旧 OCR 工作线程
+退出前禁止再次启动监控，避免阻塞 Qt 主线程或重复采集。
 PowerShell 启动脚本会把 `-Server` 映射为 `EVE_SENTRY_INTEL_URL`，并可用
 `-ChatlogDir`、`-System`、`-NoPublish` 等参数配置本地运行。
 
@@ -736,8 +738,9 @@ GET  /api/map/snapshot
   再排队刷新完整快照；浏览器或网络不支持 SSE 时回退到短轮询。
 - 监控客户端点击 `开启预警` 后订阅同一事件流；事件流失败时自动重连，不使用轮询
   兜底，也不 ack 服务端告警。alert 显示 `❗ 星系 来敌`；某星系最后一名敌对
-  离开后，safe 显示 `✅ 星系 清空`。预警星系方框不会在一分钟后移除，而是在本次
-  客户端运行期间保持绿色，后续再次来敌时原方框恢复红色并更新人数。
+  离开后，safe 显示 `✅ 星系 清空`。浮窗只保留仍在监控的节点：安全节点显示绿色，
+  停止监控或离线后立即移除；没有节点时浮窗收缩到标题和连接状态高度。节点方框采用
+  响应式紧凑宽度，在不同屏幕分辨率下重新计算尺寸并实时更新人数。
 - 兼容说明: 旧 `/api/alerts`、`/api/events` 路由仍由服务端保留，供旧客户端过渡使用；新客户端、React 工作台和后续文档默认使用 `/api/v1/alerts` 与 `/api/v1/events`。
 
 ## 10. 存储规划
