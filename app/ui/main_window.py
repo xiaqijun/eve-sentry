@@ -517,10 +517,38 @@ class MainWindow(QMainWindow):
         """Refresh the selector when the set of EVE windows changes."""
         keyword = self._settings.get_keyword()
         windows = self._capturer.list_eve_windows(keyword)
+        self._sync_monitor_target_geometry(windows)
         signature = _window_list_signature(windows)
         if signature == _instance_attr(self, "_window_signature", ()):
             return
         self._detect_window(windows=windows)
+
+    def _sync_monitor_target_geometry(self, windows: list[dict]) -> None:
+        """Remap active capture regions when an EVE window moves or resizes."""
+        current_by_hwnd = {window.get("hwnd"): window for window in windows}
+        workers = _instance_attr(self, "_workers", {})
+        contexts = _instance_attr(self, "_worker_contexts", {})
+        for key, context in contexts.items():
+            worker = workers.get(key)
+            previous_window = context.get("window") or {}
+            current_window = current_by_hwnd.get(previous_window.get("hwnd"))
+            if worker is None or current_window is None:
+                continue
+            previous_geometry = _window_geometry_signature(previous_window)
+            current_geometry = _window_geometry_signature(current_window)
+            if previous_geometry == current_geometry:
+                continue
+            region = self._region_prefs.resolve_region(current_window)
+            if region is None:
+                region = self._capturer.get_member_list_region(current_window)
+            worker.set_region(region["x"], region["y"], region["w"], region["h"])
+            context["window"] = dict(current_window)
+            context["region"] = dict(region)
+
+        selected_hwnd = self._window_combo.currentData()
+        selected_window = current_by_hwnd.get(selected_hwnd)
+        if selected_window is not None:
+            self._set_alert_anchor(selected_window)
 
     def _current_window_info(self) -> dict | None:
         """Return the currently selected EVE window info."""
@@ -558,11 +586,19 @@ class MainWindow(QMainWindow):
         if member is None:
             member = self._capturer.get_member_list_region(info)
         self._detected_region = member
+        self._set_alert_anchor(info)
         self._window_label.setText(
             f"窗口：{self._window_combo.currentText()} -> 成员列表 {member['w']}x{member['h']}"
         )
         self._refresh_status_cards()
         self._refresh_window_status_table()
+
+    def _set_alert_anchor(self, window: dict | None) -> None:
+        """Keep the embedded alert overlay on the selected EVE display."""
+        controller = _instance_attr(self, "_alert_controller")
+        setter = getattr(controller, "set_anchor_window", None)
+        if callable(setter):
+            setter(window)
 
     def _select_region(self) -> None:
         """Show overlay on top of EVE window for drag-to-select region."""
@@ -692,6 +728,9 @@ class MainWindow(QMainWindow):
                 tray_enabled=False,
                 notification_callback=None,
             )
+            anchor_setter = getattr(controller, "set_anchor_window", None)
+            if callable(anchor_setter):
+                anchor_setter(self._current_window_info())
             controller.show_monitoring_systems(self._monitoring_system_names())
             controller.start()
         except Exception as exc:
@@ -1367,4 +1406,15 @@ def _window_list_signature(windows: list[dict]) -> tuple[tuple, ...]:
             int(window.get("h") or 0),
         )
         for window in windows
+    )
+
+
+def _window_geometry_signature(window: dict) -> tuple:
+    """Return the geometry fields that require a live capture-region remap."""
+    return (
+        int(window.get("x") or 0),
+        int(window.get("y") or 0),
+        int(window.get("w") or 0),
+        int(window.get("h") or 0),
+        str(window.get("monitor") or ""),
     )

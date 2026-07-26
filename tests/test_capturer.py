@@ -202,8 +202,13 @@ class TestFindEveWindow:
 
         assert [item["hwnd"] for item in result] == [1]
 
+    @patch("app.engine.capturer.win32api")
     @patch("app.engine.capturer.win32gui")
-    def test_get_window_info_uses_selected_hwnd(self, mock_win32gui):
+    def test_get_window_info_uses_selected_hwnd(
+        self,
+        mock_win32gui,
+        mock_win32api,
+    ):
         windows = [
             (7, "EVE - Selected", (20, 30, 820, 630)),
         ]
@@ -212,6 +217,8 @@ class TestFindEveWindow:
         mock_win32gui.GetWindowText = gwt
         mock_win32gui.GetClientRect = gcr
         mock_win32gui.ClientToScreen = cts
+        mock_win32api.MonitorFromWindow.return_value = 42
+        mock_win32api.GetMonitorInfo.return_value = {"Device": r"\\.\DISPLAY2"}
 
         c = Capturer()
         result = c.get_window_info(7)
@@ -223,6 +230,7 @@ class TestFindEveWindow:
             "y": 30,
             "w": 800,
             "h": 600,
+            "monitor": r"\\.\DISPLAY2",
         }
 
     @patch("app.engine.capturer.win32gui")

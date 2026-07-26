@@ -921,6 +921,80 @@ def test_refresh_detected_windows_adds_new_window_and_keeps_selection():
     assert window._window_combo.currentData() == 2
 
 
+def test_refresh_remaps_running_worker_after_window_move_and_resize():
+    previous_window = {
+        "hwnd": 7,
+        "title": "EVE - Pilot",
+        "x": 0,
+        "y": 0,
+        "w": 1000,
+        "h": 800,
+        "monitor": r"\\.\DISPLAY1",
+    }
+    current_window = {
+        "hwnd": 7,
+        "title": "EVE - Pilot",
+        "x": 2100,
+        "y": 100,
+        "w": 2000,
+        "h": 1600,
+        "monitor": r"\\.\DISPLAY2",
+    }
+
+    class FakeWorker:
+        def __init__(self):
+            self.region = None
+
+        def set_region(self, x, y, w, h):
+            self.region = (x, y, w, h)
+
+    class FakePrefs:
+        def resolve_region(self, window):
+            assert window == current_window
+            return {"x": 3600, "y": 260, "w": 400, "h": 1200}
+
+    class FakeCombo:
+        def currentData(self):
+            return 7
+
+    class FakeController:
+        def __init__(self):
+            self.anchor = None
+
+        def set_anchor_window(self, window):
+            self.anchor = dict(window)
+
+    worker = FakeWorker()
+    controller = FakeController()
+    context = {
+        "window": dict(previous_window),
+        "region": {"x": 750, "y": 80, "w": 200, "h": 600},
+    }
+    window = MainWindow.__new__(MainWindow)
+    window._workers = {"target": worker}
+    window._worker_contexts = {"target": context}
+    window._region_prefs = FakePrefs()
+    window._capturer = type(
+        "Capturer",
+        (),
+        {"get_member_list_region": lambda self, item: None},
+    )()
+    window._window_combo = FakeCombo()
+    window._alert_controller = controller
+
+    MainWindow._sync_monitor_target_geometry(window, [current_window])
+
+    assert worker.region == (3600, 260, 400, 1200)
+    assert context["window"] == current_window
+    assert context["region"] == {
+        "x": 3600,
+        "y": 260,
+        "w": 400,
+        "h": 1200,
+    }
+    assert controller.anchor == current_window
+
+
 class FakeStatusTable:
     def __init__(self, columns=4):
         self._columns = columns

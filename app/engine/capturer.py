@@ -9,6 +9,7 @@ import threading
 from typing import Optional
 
 import psutil
+import win32api
 import win32con
 import win32gui
 import win32process
@@ -99,7 +100,7 @@ class Capturer:
             return None
 
         pt = win32gui.ClientToScreen(hwnd, (0, 0))
-        return {
+        result = {
             "title": title,
             "hwnd": hwnd,
             "x": pt[0],
@@ -107,6 +108,22 @@ class Capturer:
             "w": width,
             "h": height,
         }
+        monitor_name = self._monitor_name(hwnd)
+        if monitor_name:
+            result["monitor"] = monitor_name
+        return result
+
+    def _monitor_name(self, hwnd: int) -> str:
+        """Return the Windows display device hosting the target window."""
+        try:
+            monitor = win32api.MonitorFromWindow(
+                hwnd,
+                win32con.MONITOR_DEFAULTTONEAREST,
+            )
+            info = win32api.GetMonitorInfo(monitor)
+        except Exception:
+            return ""
+        return str(info.get("Device") or "").strip()
 
     def activate_window(self, hwnd: int) -> bool:
         """Restore and raise a window so the region overlay shows the target."""

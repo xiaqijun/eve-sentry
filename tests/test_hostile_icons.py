@@ -46,3 +46,15 @@ def test_extract_hostile_name_rows_returns_none_without_red_icons():
     image = Image.new("RGB", (180, 100), color=(12, 13, 13))
 
     assert extract_hostile_name_rows(image) is None
+
+
+def test_hostile_icons_and_rows_scale_with_a_4k_style_member_list():
+    image = member_list_fixture().resize((360, 200), Image.Resampling.NEAREST)
+
+    icons = find_hostile_icons(image)
+    rows = extract_hostile_name_rows(image)
+
+    assert len(icons) == 2
+    assert [(icon.width, icon.height) for icon in icons] == [(22, 22), (22, 22)]
+    assert rows is not None
+    assert rows.size == (322, 96)
