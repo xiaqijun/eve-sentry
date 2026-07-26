@@ -46,6 +46,33 @@ def _wait_for_event_stream_change(generation: int, timeout: float) -> None:
             _EVENT_STREAM_CONDITION.wait(timeout=timeout)
 
 
+def _next_monitoring_heartbeat_stale_in(client_snapshot: Any) -> float | None:
+    """Return seconds until the next online monitoring node becomes stale."""
+    if not isinstance(client_snapshot, dict):
+        return None
+    heartbeats = client_snapshot.get("heartbeats")
+    if not isinstance(heartbeats, list):
+        return None
+
+    remaining: list[float] = []
+    for heartbeat in heartbeats:
+        if not isinstance(heartbeat, dict) or not heartbeat.get("online"):
+            continue
+        if not monitored_system_names({"heartbeats": [heartbeat]}):
+            continue
+        try:
+            age_seconds = float(heartbeat.get("age_seconds", 0.0))
+            stale_after_seconds = float(heartbeat["stale_after_seconds"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        remaining.append(max(0.0, stale_after_seconds - age_seconds))
+
+    if not remaining:
+        return None
+    # The online check includes the exact deadline, so cross it before refreshing.
+    return min(remaining) + 0.01
+
+
 def _active_hostile_counts(alerts: list[dict[str, Any]]) -> dict[str, int]:
     """Count active hostile alerts by solar system."""
     counts: dict[str, int] = {}
@@ -489,6 +516,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
+            _notify_event_streams()
             self._send_json({"ok": True, "heartbeat": heartbeat}, HTTPStatus.CREATED)
             return
         if path == "/api/map/refresh":
@@ -974,6 +1002,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
+            _notify_event_streams()
             self._send_json({"ok": True, "heartbeat": heartbeat}, HTTPStatus.CREATED)
             return
         if path in {f"{API_V1_PREFIX}/reports", f"{API_V1_PREFIX}/observations"}:
@@ -1943,6 +1972,7 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             time.monotonic() + heartbeat_interval if heartbeat_interval else 0.0
         )
         while True:
+            next_client_stale_in: float | None = None
             try:
                 event_generation = _event_stream_generation()
                 wrote_event = False
@@ -1999,6 +2029,9 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
                     active_hostile_counts = current_hostile_counts
                 if active_only and include_bootstrap:
                     bootstrap = self._bootstrap_payload()
+                    next_client_stale_in = _next_monitoring_heartbeat_stale_in(
+                        bootstrap.get("clients")
+                    )
                     fingerprint = self._bootstrap_event_fingerprint(bootstrap)
                     if fingerprint != last_bootstrap_fingerprint:
                         # Keep the browser's Last-Event-ID on a resumable alert
@@ -2055,6 +2088,8 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             sleep_for = min(1.0, remaining)
             if heartbeat_interval:
                 sleep_for = min(sleep_for, max(0.0, next_heartbeat_at - now))
+            if next_client_stale_in is not None:
+                sleep_for = min(sleep_for, next_client_stale_in)
             _wait_for_event_stream_change(event_generation, sleep_for)
 
     def _bootstrap_event_fingerprint(self, payload: dict[str, Any]) -> str:

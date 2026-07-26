@@ -61,8 +61,8 @@ def test_quit_app_waits_for_ocr_workers_before_exiting(monkeypatch):
     MainWindow._quit_app(FakeWindow())
 
     assert calls == [
-        ("alert", True),
         ("monitor", True),
+        ("alert", True),
         "network",
         "tray",
         "quit",
@@ -1228,6 +1228,16 @@ def test_publish_heartbeat_includes_multi_window_targets():
         },
     ]
 
+    MainWindow._publish_heartbeat(window, monitoring_override=False)
+
+    offline_payload = window._intel_client.payload
+    assert offline_payload["status"] == "idle"
+    assert offline_payload["details"]["monitoring"] is False
+    assert all(
+        target["monitoring"] is False
+        for target in offline_payload["details"]["targets"]
+    )
+
 
 def test_stopped_monitor_does_not_publish_ocr_or_heartbeat():
     class FailingClient:
@@ -1291,7 +1301,7 @@ def test_stop_monitor_disables_timer_and_queues_without_uploading():
     window._heartbeat_last_success_at = "previous-success"
     window._refresh_status_cards = lambda: None
     heartbeat_calls = []
-    window._publish_heartbeat = lambda: heartbeat_calls.append(True)
+    window._publish_heartbeat = lambda **kwargs: heartbeat_calls.append(kwargs)
 
     MainWindow._stop_monitor(window)
 
@@ -1303,7 +1313,12 @@ def test_stop_monitor_disables_timer_and_queues_without_uploading():
     assert window._status_label.text == "已停止"
     assert window._heartbeat_last_action == "monitor_stopped"
     assert window._heartbeat_last_success_at == "previous-success"
-    assert heartbeat_calls == []
+    assert heartbeat_calls == [
+        {
+            "monitoring_override": False,
+            "task_key": "heartbeat:offline",
+        }
+    ]
     assert window._log_messages == ["监控已停止"]
 
 

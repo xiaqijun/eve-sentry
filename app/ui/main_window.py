@@ -1031,11 +1031,17 @@ class MainWindow(QMainWindow):
             pass
 
     def _stop_monitor(self, *, wait_for_workers: bool = False) -> None:
-        self._uploads_enabled = False
-        self._set_heartbeat_enabled(False)
         network_tasks = _instance_attr(self, "_network_tasks")
         if network_tasks is not None:
             network_tasks.cancel_latest()
+        self._heartbeat_last_action = "monitor_stopped"
+        if _instance_attr(self, "_uploads_enabled", False):
+            self._publish_heartbeat(
+                monitoring_override=False,
+                task_key="heartbeat:offline",
+            )
+        self._uploads_enabled = False
+        self._set_heartbeat_enabled(False)
         self._stop_monitor_workers(
             timeout_ms=None if wait_for_workers else 3000,
         )
@@ -1044,7 +1050,6 @@ class MainWindow(QMainWindow):
         self._status_label.setText("已停止")
         self._status_label.setStyleSheet("color: #888;")
         self._log_message("监控已停止")
-        self._heartbeat_last_action = "monitor_stopped"
         self._refresh_status_cards()
 
     def _stop_monitor_workers(self, timeout_ms: int | None) -> bool:
@@ -1164,13 +1169,22 @@ class MainWindow(QMainWindow):
         self._update_window_status(context, "运行中", f"OCR 名单 {len(names)}")
         self._refresh_status_cards()
 
-    def _publish_heartbeat(self) -> None:
+    def _publish_heartbeat(
+        self,
+        *,
+        monitoring_override: bool | None = None,
+        task_key: str = "heartbeat",
+    ) -> None:
         if (
             self._intel_client is None
             or not _instance_attr(self, "_uploads_enabled", True)
         ):
             return
-        monitoring = self._is_monitoring()
+        monitoring = (
+            self._is_monitoring()
+            if monitoring_override is None
+            else bool(monitoring_override)
+        )
         details = build_detector_heartbeat_details(
             monitoring=monitoring,
             system_name=self._intel_system,
@@ -1198,7 +1212,8 @@ class MainWindow(QMainWindow):
                     "system_id": context.get("system_id"),
                     "system_source": context.get("system_source", "default"),
                     "region": context["region"],
-                    "monitoring": context["key"] in getattr(self, "_workers", {}),
+                    "monitoring": monitoring
+                    and context["key"] in getattr(self, "_workers", {}),
                 }
                 for context in contexts
             ]
@@ -1215,7 +1230,7 @@ class MainWindow(QMainWindow):
         if runner is not None:
             client = self._intel_client
             runner.submit_latest(
-                "heartbeat",
+                task_key,
                 lambda: client.post_heartbeat(**payload),
                 {"kind": "heartbeat"},
             )
@@ -1354,8 +1369,8 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def _quit_app(self):
-        self._stop_alert(wait_for_worker=True)
         self._stop_monitor(wait_for_workers=True)
+        self._stop_alert(wait_for_worker=True)
         network_tasks = _instance_attr(self, "_network_tasks")
         if network_tasks is not None:
             network_tasks.shutdown()

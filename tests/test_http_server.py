@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from app.core.models import Evidence, ThreatEvent
+from app.core.heartbeat import monitored_system_names
 from app.esi.cache import EsiCache
 from app.esi.resolver import EsiResolver
 from app.esi.session import ContactStanding
@@ -2241,6 +2242,163 @@ def test_v1_events_wake_immediately_and_emit_safe_only_after_last_hostile(tmp_pa
             "created_at": received["created_at"],
             "message": "✅ S-KSWL 清空",
         }
+        stream_thread.join(timeout=1)
+    finally:
+        server.stop()
+
+
+def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    stream_ready = threading.Event()
+    node_received = threading.Event()
+    node_removed = threading.Event()
+    snapshots = []
+
+    def read_bootstraps():
+        query = urlencode(
+            {
+                "timeout": "2",
+                "heartbeat": "0",
+                "bootstrap": "1",
+                "since": "9999-01-01T00:00:00+00:00",
+            }
+        )
+        request = Request(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Accept": "text/event-stream"},
+        )
+        with urlopen(request, timeout=3) as response:
+            event_name = ""
+            for raw_line in response:
+                line = raw_line.decode("utf-8").strip()
+                if line.startswith("event:"):
+                    event_name = line[len("event:"):].strip()
+                elif line.startswith("data:") and event_name == "bootstrap":
+                    payload = json.loads(line[len("data:"):].strip())
+                    systems = monitored_system_names(payload.get("clients"))
+                    snapshots.append(systems)
+                    if len(snapshots) == 1:
+                        stream_ready.set()
+                    if systems == ["S-KSWL"]:
+                        node_received.set()
+                    elif len(snapshots) > 1 and not systems:
+                        node_removed.set()
+                        return
+
+    stream_thread = threading.Thread(target=read_bootstraps, daemon=True)
+    try:
+        stream_thread.start()
+        assert stream_ready.wait(timeout=1)
+        assert snapshots == [[]]
+
+        started_at = time.monotonic()
+        status, _ = request_json(
+            f"{server.url}/api/v1/clients/heartbeats",
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "client_type": "detector_client",
+                "heartbeat_interval_seconds": 15,
+                "details": {"monitoring": True, "system_name": "S-KSWL"},
+            },
+        )
+
+        assert status == 201
+        assert node_received.wait(timeout=0.75)
+        assert time.monotonic() - started_at < 0.75
+
+        started_at = time.monotonic()
+        status, _ = request_json(
+            f"{server.url}/api/v1/clients/heartbeats",
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "client_type": "detector_client",
+                "status": "idle",
+                "heartbeat_interval_seconds": 15,
+                "details": {"monitoring": False, "system_name": "S-KSWL"},
+            },
+        )
+
+        assert status == 201
+        assert node_removed.wait(timeout=0.75)
+        assert time.monotonic() - started_at < 0.75
+        assert snapshots == [[], ["S-KSWL"], []]
+        stream_thread.join(timeout=1)
+    finally:
+        server.stop()
+
+
+def test_v1_events_push_monitoring_node_offline_at_stale_deadline(tmp_path):
+    class ExpiringHeartbeatStore(IntelStore):
+        def __init__(self, filepath):
+            super().__init__(filepath)
+            self.first_snapshot_at = None
+
+        def heartbeat_snapshot(self):
+            now = time.monotonic()
+            if self.first_snapshot_at is None:
+                self.first_snapshot_at = now
+            age_seconds = now - self.first_snapshot_at
+            heartbeat = {
+                "client_id": "detector-client:expiring",
+                "client_type": "detector_client",
+                "online": age_seconds <= 0.25,
+                "age_seconds": age_seconds,
+                "stale_after_seconds": 0.25,
+                "details": {"monitoring": True, "system_name": "S-KSWL"},
+            }
+            return {"heartbeats": [heartbeat], "summary": {"count": 1}}
+
+    server = IntelHTTPServer(
+        ExpiringHeartbeatStore(tmp_path / "intel.json"),
+        port=0,
+    )
+    server.start()
+    stream_ready = threading.Event()
+    node_removed = threading.Event()
+    snapshots = []
+
+    def read_bootstraps():
+        query = urlencode(
+            {
+                "timeout": "1.5",
+                "heartbeat": "0",
+                "bootstrap": "1",
+                "since": "9999-01-01T00:00:00+00:00",
+            }
+        )
+        request = Request(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Accept": "text/event-stream"},
+        )
+        with urlopen(request, timeout=2) as response:
+            event_name = ""
+            for raw_line in response:
+                line = raw_line.decode("utf-8").strip()
+                if line.startswith("event:"):
+                    event_name = line[len("event:"):].strip()
+                elif line.startswith("data:") and event_name == "bootstrap":
+                    payload = json.loads(line[len("data:"):].strip())
+                    systems = monitored_system_names(payload.get("clients"))
+                    snapshots.append(systems)
+                    if len(snapshots) == 1:
+                        stream_ready.set()
+                    elif not systems:
+                        node_removed.set()
+                        return
+
+    stream_thread = threading.Thread(target=read_bootstraps, daemon=True)
+    try:
+        started_at = time.monotonic()
+        stream_thread.start()
+        assert stream_ready.wait(timeout=1)
+        assert snapshots == [["S-KSWL"]]
+
+        assert node_removed.wait(timeout=0.75)
+        assert time.monotonic() - started_at < 0.75
+        assert snapshots == [["S-KSWL"], []]
         stream_thread.join(timeout=1)
     finally:
         server.stop()
