@@ -191,6 +191,26 @@ class AuthRepository:
             )
         return self.user_by_id(user_id)
 
+    def delete_user_and_dependencies(
+        self,
+        user_id: str,
+        audit: dict[str, Any],
+    ) -> None:
+        """Delete one user and owned credentials while preserving the audit trail."""
+        with self._connect() as connection:
+            for table in (
+                "auth_sessions",
+                "auth_api_keys",
+                "auth_character_whitelist",
+                "auth_verified_characters",
+            ):
+                connection.execute(
+                    f"DELETE FROM {table} WHERE user_id = ?",
+                    (user_id,),
+                )
+            connection.execute("DELETE FROM auth_users WHERE user_id = ?", (user_id,))
+            self._insert_audit(connection, audit)
+
     def create_api_key(self, record: dict[str, Any]) -> dict[str, Any]:
         with self._connect() as connection:
             connection.execute(

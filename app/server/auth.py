@@ -553,6 +553,44 @@ class AuthService:
             self._audit(actor_user_id, user_id, "user.enabled", {})
         return _public_user(self.repository.user_by_id(user_id))
 
+    def delete_user(self, user_id: str, actor_user_id: str) -> None:
+        """Delete a user and all owned authentication and EVE identity records."""
+        user = self.repository.user_by_id(user_id)
+        if user is None:
+            raise AuthError("user not found", 404, "user_not_found")
+        if user_id == actor_user_id:
+            raise AuthError(
+                "the current administrator cannot be deleted",
+                409,
+                "cannot_delete_self",
+            )
+        if str(user.get("role")) == "admin":
+            admin_count = sum(
+                1
+                for item in self.repository.list_users()
+                if str(item.get("role")) == "admin"
+            )
+            if admin_count <= 1:
+                raise AuthError(
+                    "the last administrator cannot be deleted",
+                    409,
+                    "cannot_delete_last_admin",
+                )
+        now = _now_iso()
+        self.repository.delete_user_and_dependencies(
+            user_id,
+            self._audit_record(
+                actor_user_id,
+                user_id,
+                "user.deleted",
+                {
+                    "username": str(user.get("username") or ""),
+                    "role": str(user.get("role") or ""),
+                },
+                now=now,
+            ),
+        )
+
     def reset_password(
         self,
         user_id: str,

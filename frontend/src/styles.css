@@ -3438,6 +3438,12 @@ button {
   background: #fff8e9;
 }
 
+.admin-actions-row .danger-action {
+  border-color: #e0b9b6;
+  color: #a33c37;
+  background: #fff1f0;
+}
+
 .admin-detail-sections {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

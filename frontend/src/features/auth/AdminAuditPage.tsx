@@ -18,6 +18,7 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   "session.login": "用户登录",
   "session.logout": "用户退出",
   "user.created": "创建用户",
+  "user.deleted": "删除用户",
   "user.disabled": "禁用用户",
   "user.enabled": "启用用户",
 };

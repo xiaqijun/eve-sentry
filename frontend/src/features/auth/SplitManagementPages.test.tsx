@@ -16,6 +16,7 @@ const apiMocks = vi.hoisted(() => ({
   createMyKey: vi.fn(),
   createServiceKey: vi.fn(),
   createUser: vi.fn(),
+  deleteUser: vi.fn(),
   listAdminUsers: vi.fn(),
   listAudit: vi.fn(),
   listCorporations: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock("./AuthContext", () => ({
       display_name: "舰队管理员",
       role: "admin",
       status: "active",
+      user_id: "user-1",
       username: "admin",
     },
   }),
@@ -88,6 +90,29 @@ describe("split management pages", () => {
     expect(container).toHaveTextContent("有效密钥");
     expect(container).not.toHaveTextContent("允许军团");
     expect(container).not.toHaveTextContent("审计记录");
+  });
+
+  it("offers deletion for another user but not the current administrator", async () => {
+    apiMocks.listAdminUsers.mockResolvedValue([
+      user,
+      { ...user, display_name: "侦察员", role: "member", user_id: "user-2", username: "scout" },
+    ]);
+    await render(<AdminUsersPage />);
+
+    const buttons = Array.from(container.querySelectorAll("button"));
+    const viewScout = buttons.find((button) => button.getAttribute("aria-label") === "查看 侦察员");
+    expect(viewScout).toBeDefined();
+    await act(async () => viewScout?.click());
+
+    expect(container).toHaveTextContent("删除用户");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const deleteButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("删除用户"));
+    await act(async () => {
+      deleteButton?.click();
+      await Promise.resolve();
+    });
+    expect(apiMocks.deleteUser).toHaveBeenCalledWith("user-2");
   });
 
   it("keeps EVE authorization on the identity page", async () => {

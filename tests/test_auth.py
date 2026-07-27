@@ -94,6 +94,43 @@ def test_member_password_login_requires_eve_sso(auth):
     assert exc_info.value.code == "eve_sso_required"
 
 
+def test_administrator_deletes_user_and_owned_authentication_records(auth):
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    member = _member(auth)
+    auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
+    auth.add_whitelist_character(member["user_id"], 101, "main", admin["user_id"])
+    auth.repository.upsert_verified_character({
+        "user_id": member["user_id"],
+        "character_id": 101,
+        "character_name": "Alice",
+        "corporation_id": 9001,
+        "corporation_name": "Blue Corp",
+        "first_seen_at": "2026-07-28T00:00:00+00:00",
+        "last_seen_at": "2026-07-28T00:00:00+00:00",
+    })
+
+    auth.delete_user(member["user_id"], admin["user_id"])
+
+    assert auth.repository.user_by_id(member["user_id"]) is None
+    assert auth.repository.list_api_keys(member["user_id"]) == []
+    assert auth.repository.list_whitelist(member["user_id"]) == []
+    assert auth.repository.list_verified_characters(member["user_id"]) == []
+    assert auth.repository.list_audit()[0]["action"] == "user.deleted"
+
+
+def test_administrator_cannot_delete_current_account_or_last_admin(auth):
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+
+    with pytest.raises(AuthError) as self_error:
+        auth.delete_user(admin["user_id"], admin["user_id"])
+    assert self_error.value.code == "cannot_delete_self"
+
+    member = _member(auth)
+    with pytest.raises(AuthError) as last_admin_error:
+        auth.delete_user(admin["user_id"], member["user_id"])
+    assert last_admin_error.value.code == "cannot_delete_last_admin"
+
+
 def test_eve_sso_logs_in_exactly_assigned_active_member(auth):
     user = _member(auth)
     auth.add_allowed_corporation(9001, user["user_id"])

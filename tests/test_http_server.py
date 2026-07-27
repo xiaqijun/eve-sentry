@@ -2727,6 +2727,39 @@ def test_browser_session_requires_csrf_and_service_key_is_read_only(tmp_path):
         server.stop()
 
 
+def test_administrator_can_delete_another_user_over_http(tmp_path):
+    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    member = auth.create_user("pilot", "pilot-password-123", role="member")
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    try:
+        status, response_headers, payload = authenticated_request(
+            f"{server.url}/api/v1/auth/login",
+            method="POST",
+            payload={"username": "admin", "password": "admin-password-123"},
+        )
+        assert status == 200
+        headers = {
+            "Cookie": response_headers["Set-Cookie"].split(";", 1)[0],
+            "X-CSRF-Token": payload["csrf_token"],
+        }
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/users/{member['user_id']}",
+            method="DELETE",
+            headers=headers,
+        )
+
+        assert status == 200
+        assert payload == {"ok": True}
+        assert auth.repository.user_by_id(member["user_id"]) is None
+        assert auth.repository.user_by_id(admin["user_id"]) is not None
+    finally:
+        server.stop()
+
+
 def test_member_session_cannot_access_administrator_routes(tmp_path):
     store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())

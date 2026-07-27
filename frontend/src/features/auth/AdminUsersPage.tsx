@@ -15,16 +15,19 @@ import {
 import {
   createServiceKey,
   createUser,
+  deleteUser,
   listAdminUsers,
   resetUserPassword,
   revokeKey,
   setUserActive,
 } from "./api";
+import { useAuth } from "./AuthContext";
 import type { AdminUser, ApiKeyRecord } from "./types";
 
 type UserStatusFilter = "all" | "active" | "disabled";
 
 export function AdminUsersPage() {
+  const { user: currentUser } = useAuth();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [selectedUserId, setSelectedUserId] = useState("");
   const [search, setSearch] = useState("");
@@ -106,6 +109,22 @@ export function AdminUsersPage() {
   const openUser = (userId: string) => {
     setSelectedUserId(userId);
     setServiceSecret("");
+  };
+
+  const deleteSelectedUser = async () => {
+    if (!selectedUser || selectedUser.user_id === currentUser?.user_id) return;
+    const name = selectedUser.display_name || selectedUser.username;
+    if (!window.confirm(`确定删除用户“${name}”吗？该用户的密钥和角色记录也会删除。`)) {
+      return;
+    }
+    setError("");
+    try {
+      await deleteUser(selectedUser.user_id);
+      setSelectedUserId("");
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "删除用户失败");
+    }
   };
 
   return (
@@ -196,6 +215,7 @@ export function AdminUsersPage() {
                 <button type="button" onClick={() => void run(() => setUserActive(selectedUser.user_id, selectedUser.status !== "active", "管理员操作"))}>{selectedUser.status === "active" ? "禁用用户" : "解禁用户"}</button>
                 {selectedUser.role === "admin" ? <button type="button" onClick={() => { const password = window.prompt("输入至少 12 位的新密码"); if (password) void run(() => resetUserPassword(selectedUser.user_id, password)); }}>重置密码</button> : null}
                 <button type="button" onClick={() => void createReadonlyKey()}><KeyRound size={14} />创建只读密钥</button>
+                {selectedUser.user_id !== currentUser?.user_id ? <button className="danger-action" type="button" onClick={() => void deleteSelectedUser()}><Trash2 size={14} />删除用户</button> : null}
               </div>
               {serviceSecret ? <div className="secret-once"><strong>服务密钥只显示这一次</strong><code>{serviceSecret}</code></div> : null}
               <section className="management-drawer-section">

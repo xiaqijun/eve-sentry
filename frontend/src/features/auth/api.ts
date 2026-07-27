@@ -128,6 +128,12 @@ export async function setUserActive(userId: string, active: boolean, reason = ""
   });
 }
 
+export async function deleteUser(userId: string): Promise<void> {
+  await apiRequest(`/api/v1/admin/users/${encodeURIComponent(userId)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function resetUserPassword(userId: string, password: string): Promise<void> {
   await apiRequest(`/api/v1/admin/users/${encodeURIComponent(userId)}/reset-password`, {
     method: "POST",

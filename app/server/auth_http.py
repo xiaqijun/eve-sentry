@@ -317,6 +317,12 @@ class AuthHttpMixin:
                 )
                 self._send_json({"ok": True})
                 return True
+            if path.startswith(users_prefix):
+                user_id = unquote(path[len(users_prefix):]).strip("/")
+                if user_id and "/" not in user_id:
+                    service.delete_user(user_id, principal.user_id)
+                    self._send_json({"ok": True})
+                    return True
         except (AuthError, ValueError) as exc:
             self._send_auth_exception(exc)
             return True
