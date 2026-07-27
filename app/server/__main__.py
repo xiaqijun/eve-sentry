@@ -291,8 +291,8 @@ def _build_esi_sso_client(args: argparse.Namespace) -> Any:
 
 
 def _build_auth_esi_sso_client(args: argparse.Namespace) -> Any | None:
-    client_id = str(args.auth_esi_client_id or args.esi_client_id or "").strip()
-    redirect_uri = str(args.auth_esi_redirect_uri or "").strip()
+    client_id = str(args.esi_client_id or "").strip()
+    redirect_uri = str(args.esi_redirect_uri or "").strip()
     if not client_id or not redirect_uri:
         return None
     from app.esi.sso import EveSsoClient

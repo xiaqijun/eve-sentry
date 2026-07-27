@@ -257,6 +257,27 @@ def test_server_cli_accepts_member_web_esi_login_options():
     assert args.auth_esi_redirect_uri == "http://sentry.test/api/v1/auth/esi/callback"
 
 
+def test_member_web_login_uses_shared_esi_application_and_callback():
+    args = build_arg_parser().parse_args(
+        [
+            "--esi-client-id",
+            "shared-client-id",
+            "--esi-redirect-uri",
+            "http://sentry.test/api/v1/auth/esi/callback",
+            "--auth-esi-client-id",
+            "ignored-member-client-id",
+            "--auth-esi-redirect-uri",
+            "http://ignored.test/callback",
+        ]
+    )
+
+    client = server_main._build_auth_esi_sso_client(args)
+
+    assert client.client_id == "shared-client-id"
+    assert client.redirect_uri == "http://sentry.test/api/v1/auth/esi/callback"
+    assert client.scopes == []
+
+
 def test_server_cli_builds_esi_config_summary(tmp_path):
     token_file = tmp_path / "esi_tokens.json"
     token_file.write_text("{}", encoding="utf-8")

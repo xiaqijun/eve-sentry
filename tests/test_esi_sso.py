@@ -245,23 +245,8 @@ def test_local_callback_server_keeps_loopback_redirect_local():
 
 
 def test_esi_login_manager_starts_api_flow_and_saves_tokens():
-    class FakeServer:
-        def __init__(self) -> None:
-            self.started = False
-            self.stopped = False
-
-        def start(self) -> None:
-            self.started = True
-
-        def wait_for_callback(self, timeout_seconds):
-            assert timeout_seconds == 10
-            return "http://127.0.0.1:8766/callback?code=abc&state=fixed-state"
-
-        def stop(self) -> None:
-            self.stopped = True
-
     class FakeClient:
-        redirect_uri = "http://127.0.0.1:8766/callback"
+        redirect_uri = "http://sentry.test/api/v1/auth/esi/callback"
 
         def create_authorization_session(self):
             return AuthorizationSession(
@@ -295,30 +280,35 @@ def test_esi_login_manager_starts_api_flow_and_saves_tokens():
         def save(self, tokens) -> None:
             self.saved.append(tokens)
 
-    server = FakeServer()
     store = FakeStore()
+    current_time = [2000.0]
     manager = EsiLoginManager(
         client=FakeClient(),
         token_store=store,
         timeout_seconds=10,
-        callback_server_factory=lambda redirect_uri: server,
-        now=lambda: 2000.0,
+        now=lambda: current_time[0],
     )
 
     login = manager.start()
-    snapshot = manager.snapshot()
-    for _ in range(20):
-        if snapshot["status"] != "pending":
-            break
-        thread = getattr(manager, "_thread", None)
-        if thread is not None:
-            thread.join(timeout=0.05)
-        snapshot = manager.snapshot()
+    callback = "/api/v1/auth/esi/callback?code=abc&state=fixed-state"
 
-    assert server.started is True
-    assert server.stopped is True
     assert login["status"] == "pending"
     assert login["authorization_url"] == "https://login.test/authorize"
+    assert manager.owns_callback(callback) is True
+    assert manager.owns_callback(
+        "/api/v1/auth/esi/callback?code=abc&state=other-state"
+    ) is False
+
+    snapshot = manager.complete_callback(callback)
+
     assert snapshot["status"] == "authenticated"
     assert snapshot["character_id"] == 123
     assert store.saved[0].refresh_token == "refresh-token"
+
+    manager.start()
+    current_time[0] = 2011.0
+    expired_callback = "/api/v1/auth/esi/callback?code=late&state=fixed-state"
+    assert manager.owns_callback(expired_callback) is True
+    with pytest.raises(EsiSsoError, match="expired"):
+        manager.complete_callback(expired_callback)
+    assert manager.snapshot()["status"] == "error"

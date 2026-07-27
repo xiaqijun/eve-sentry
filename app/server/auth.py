@@ -280,6 +280,15 @@ class AuthService:
         login["return_to"] = str(pending["return_to"])
         return login
 
+    def owns_esi_login_callback(self, callback_url: str) -> bool:
+        """Return whether a callback state belongs to a pending member login."""
+        query = parse_qs(urlparse(callback_url).query)
+        state = str((query.get("state") or [""])[0])
+        if not state:
+            return False
+        with self._esi_login_lock:
+            return _secret_hash(state) in self._esi_login_states
+
     def _create_browser_session(
         self,
         user: dict[str, Any],

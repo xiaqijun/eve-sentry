@@ -8,6 +8,7 @@ from http.cookies import SimpleCookie
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
+from app.esi.sso import EsiSsoError
 from app.server.auth import AuthError, AuthPrincipal, AuthService, SESSION_COOKIE_NAME
 
 
@@ -93,6 +94,31 @@ class AuthHttpMixin:
 
     def _handle_auth_get(self, path: str) -> bool:
         service = self._auth_service()
+        if path == "/api/v1/auth/esi/callback":
+            esi_login = self._esi_login()
+            owns_callback = getattr(esi_login, "owns_callback", None)
+            if callable(owns_callback) and owns_callback(self.path):
+                try:
+                    esi_login.complete_callback(self.path)
+                except EsiSsoError:
+                    self._send_auth_redirect("/?esi_login=error")
+                    return True
+                self._send_auth_redirect("/?esi_login=authenticated")
+                return True
+            if service is None:
+                return False
+            try:
+                login = service.complete_esi_login(self.path)
+            except AuthError as exc:
+                self._send_auth_redirect(
+                    f"/login?{urlencode({'esi_error': exc.code})}"
+                )
+                return True
+            self._send_auth_redirect(
+                str(login["return_to"]),
+                cookie=self._session_cookie_header(str(login["session_token"])),
+            )
+            return True
         if service is None:
             return False
         if path == "/api/v1/auth/esi/start":
@@ -107,19 +133,6 @@ class AuthHttpMixin:
                 )
                 return True
             self._send_auth_redirect(authorization_url)
-            return True
-        if path == "/api/v1/auth/esi/callback":
-            try:
-                login = service.complete_esi_login(self.path)
-            except AuthError as exc:
-                self._send_auth_redirect(
-                    f"/login?{urlencode({'esi_error': exc.code})}"
-                )
-                return True
-            self._send_auth_redirect(
-                str(login["return_to"]),
-                cookie=self._session_cookie_header(str(login["session_token"])),
-            )
             return True
         auth_paths = {
             "/api/v1/auth/me",

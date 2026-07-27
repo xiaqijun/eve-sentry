@@ -101,6 +101,12 @@ def test_eve_sso_logs_in_exactly_assigned_active_member(auth):
     auth.esi_sso_client = FakeSsoClient(101)
 
     assert auth.begin_esi_login("/account/keys").startswith("https://login.eve.test/")
+    assert auth.owns_esi_login_callback(
+        "/api/v1/auth/esi/callback?state=state-1&code=code-1"
+    ) is True
+    assert auth.owns_esi_login_callback(
+        "/api/v1/auth/esi/callback?state=another-state&code=code-1"
+    ) is False
     login = auth.complete_esi_login(
         "/api/v1/auth/esi/callback?state=state-1&code=code-1"
     )

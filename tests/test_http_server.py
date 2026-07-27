@@ -2583,6 +2583,83 @@ def test_eve_sso_http_flow_sets_member_session_cookie(tmp_path):
         server.stop()
 
 
+def test_shared_esi_callback_routes_tactical_authorization_by_state(tmp_path):
+    class TacticalLogin:
+        def __init__(self):
+            self.callbacks = []
+
+        def owns_callback(self, callback_url):
+            return "state=tactical-state" in callback_url
+
+        def complete_callback(self, callback_url):
+            self.callbacks.append(callback_url)
+            return {"status": "authenticated"}
+
+    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    auth = AuthService(
+        AuthRepository(store._connect),
+        AuthTestResolver(),
+        esi_sso_client=AuthTestSsoClient(),
+    )
+    tactical_login = TacticalLogin()
+    server = IntelHTTPServer(
+        store,
+        port=0,
+        auth_service=auth,
+        esi_login=tactical_login,
+    )
+    server.start()
+    parsed = urlparse(server.url)
+    connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3)
+    try:
+        connection.request(
+            "GET",
+            "/api/v1/auth/esi/callback?state=tactical-state&code=tactical-code",
+        )
+        callback = connection.getresponse()
+        callback.read()
+
+        assert callback.status == 302
+        assert callback.getheader("Location") == "/?esi_login=authenticated"
+        assert tactical_login.callbacks == [
+            "/api/v1/auth/esi/callback?state=tactical-state&code=tactical-code"
+        ]
+    finally:
+        connection.close()
+        server.stop()
+
+
+def test_shared_esi_callback_completes_tactical_flow_without_auth_service(tmp_path):
+    class TacticalLogin:
+        def owns_callback(self, callback_url):
+            return "state=tactical-state" in callback_url
+
+        def complete_callback(self, callback_url):
+            return {"status": "authenticated"}
+
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json"),
+        port=0,
+        esi_login=TacticalLogin(),
+    )
+    server.start()
+    parsed = urlparse(server.url)
+    connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3)
+    try:
+        connection.request(
+            "GET",
+            "/api/v1/auth/esi/callback?state=tactical-state&code=tactical-code",
+        )
+        callback = connection.getresponse()
+        callback.read()
+
+        assert callback.status == 302
+        assert callback.getheader("Location") == "/?esi_login=authenticated"
+    finally:
+        connection.close()
+        server.stop()
+
+
 def test_browser_session_requires_csrf_and_service_key_is_read_only(tmp_path):
     store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
