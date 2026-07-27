@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 API_V1_PREFIX = "/api/v1"
 _EVENT_STREAM_CONDITION = threading.Condition()
 _EVENT_STREAM_GENERATION = 0
+SSE_AUTH_RECHECK_SECONDS = 30.0
 
 
 def _notify_event_streams() -> None:
@@ -127,6 +128,13 @@ class IntelHTTPServer:
         self.map_config_store = map_config_store
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        add_auth_listener = getattr(
+            self.auth_service,
+            "add_authorization_change_listener",
+            None,
+        )
+        if callable(add_auth_listener):
+            add_auth_listener(_notify_event_streams)
 
     @property
     def url(self) -> str:
@@ -1493,9 +1501,11 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         min_score: int | None = None,
         min_level: str | None = None,
         include_since: bool = False,
+        active_items: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         store = self._store()
-        active_items = self._visible_active_items(store, store.list_active_intel())
+        if active_items is None:
+            active_items = self._visible_active_items(store, store.list_active_intel())
         alerts = self._active_alerts_from_reports(
             store,
             [],
@@ -1992,9 +2002,26 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         next_heartbeat_at = (
             time.monotonic() + heartbeat_interval if heartbeat_interval else 0.0
         )
+        auth_service = self._auth_service()
+        last_auth_generation: int | None = None
+        next_auth_check_at = 0.0
         while True:
-            if not self._stream_principal_active():
-                return
+            now = time.monotonic()
+            auth_generation = (
+                int(auth_service.authorization_generation)
+                if auth_service is not None
+                and hasattr(auth_service, "authorization_generation")
+                else 0
+            )
+            if (
+                last_auth_generation is None
+                or auth_generation != last_auth_generation
+                or now >= next_auth_check_at
+            ):
+                if not self._stream_principal_active():
+                    return
+                last_auth_generation = auth_generation
+                next_auth_check_at = now + SSE_AUTH_RECHECK_SECONDS
             next_client_stale_in: float | None = None
             try:
                 event_generation = _event_stream_generation()
@@ -2002,7 +2029,13 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 current_include_since = bool(last_seen) and (
                     include_since or bool(sent_ids)
                 )
+                active_items: list[dict[str, Any]] | None = None
                 if active_only:
+                    store = self._store()
+                    active_items = self._visible_active_items(
+                        store,
+                        store.list_active_intel(),
+                    )
                     alerts = self._active_alert_list(
                         since=last_seen,
                         limit=limit,
@@ -2010,6 +2043,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         acknowledged=acknowledged,
                         min_score=min_score,
                         min_level=min_level,
+                        active_items=active_items,
                     )
                 else:
                     alerts = self._store().list_alerts(
@@ -2029,6 +2063,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         self._active_alert_list(
                             since="",
                             limit=None,
+                            active_items=active_items,
                         )
                     )
                     if active_hostile_counts is not None:

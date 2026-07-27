@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from app.esi.sso import EsiSsoError
@@ -21,6 +22,8 @@ SESSION_HOURS = 12
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_FAILURE_LIMIT = 5
 ESI_LOGIN_STATE_SECONDS = 5 * 60
+
+logger = logging.getLogger(__name__)
 
 
 class AuthError(RuntimeError):
@@ -93,6 +96,30 @@ class AuthService:
         self._login_lock = threading.Lock()
         self._esi_login_states: dict[str, dict[str, Any]] = {}
         self._esi_login_lock = threading.Lock()
+        self._authorization_generation = 0
+        self._authorization_change_lock = threading.Lock()
+        self._authorization_change_listeners: set[Callable[[], None]] = set()
+
+    @property
+    def authorization_generation(self) -> int:
+        """Return the current in-process authorization revision."""
+        with self._authorization_change_lock:
+            return self._authorization_generation
+
+    def add_authorization_change_listener(self, listener: Callable[[], None]) -> None:
+        """Register an idempotent callback for principal-invalidating changes."""
+        with self._authorization_change_lock:
+            self._authorization_change_listeners.add(listener)
+
+    def _notify_authorization_changed(self) -> None:
+        with self._authorization_change_lock:
+            self._authorization_generation += 1
+            listeners = tuple(self._authorization_change_listeners)
+        for listener in listeners:
+            try:
+                listener()
+            except Exception:
+                logger.exception("Authorization change listener failed")
 
     def ensure_bootstrap_admin(self, username: str, password: str) -> dict[str, Any]:
         """Create the first administrator only while the user table is empty."""
@@ -324,6 +351,7 @@ class AuthService:
         if principal.session_hash:
             self.repository.delete_session(principal.session_hash)
             self._audit(principal.user_id, principal.user_id, "session.logout", {})
+            self._notify_authorization_changed()
 
     def authenticate_session(self, token: str) -> AuthPrincipal:
         token_hash = _secret_hash(token)
@@ -463,6 +491,7 @@ class AuthService:
         )
         self.repository.revoke_api_key(key_id, _now_iso(), reason)
         self._audit(principal.user_id, str(key["user_id"]), "api_key.revoked", {"key_id": key_id})
+        self._notify_authorization_changed()
 
     def enable_api_key(self, key_id: str, principal: AuthPrincipal) -> None:
         key = self.repository.api_key_by_id(key_id)
@@ -488,6 +517,7 @@ class AuthService:
             raise AuthError("user is disabled", 403, "user_disabled")
         self.repository.enable_api_key(key_id)
         self._audit(principal.user_id, str(key["user_id"]), "api_key.enabled", {"key_id": key_id})
+        self._notify_authorization_changed()
 
     def delete_api_key(self, key_id: str, principal: AuthPrincipal) -> None:
         key = self.repository.api_key_by_id(key_id)
@@ -540,6 +570,7 @@ class AuthService:
                     now=now,
                 ),
             )
+            self._notify_authorization_changed()
             raise AuthError(reason, 403, "unauthorized_eve_character")
         now = _now_iso()
         existing = {
@@ -598,7 +629,9 @@ class AuthService:
                 "status": "active", "disabled_reason": "", "updated_at": now,
             })
             self._audit(actor_user_id, user_id, "user.enabled", {})
-        return _public_user(self.repository.user_by_id(user_id))
+        updated = _public_user(self.repository.user_by_id(user_id))
+        self._notify_authorization_changed()
+        return updated
 
     def delete_user(self, user_id: str, actor_user_id: str) -> None:
         """Delete a user and all owned authentication and EVE identity records."""
@@ -637,6 +670,7 @@ class AuthService:
                 now=now,
             ),
         )
+        self._notify_authorization_changed()
 
     def reset_password(
         self,
@@ -653,6 +687,7 @@ class AuthService:
         })
         self.repository.delete_user_sessions(user_id)
         self._audit(actor_user_id, user_id, "password.reset", {})
+        self._notify_authorization_changed()
         return _public_user(updated)
 
     def add_allowed_corporation(
@@ -738,6 +773,7 @@ class AuthService:
                 actor_user_id, user_id, "identity.user_disabled", {"characters": unauthorized}, now=now,
             ),
         )
+        self._notify_authorization_changed()
 
     def _resolve_character(self, name: str) -> dict[str, Any]:
         try:

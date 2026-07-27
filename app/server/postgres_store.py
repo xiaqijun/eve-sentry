@@ -11,6 +11,11 @@ from app.server.intel_store import IntelStore, StarSystem
 from app.server.sqlite_store import SQLiteIntelStore
 
 
+POSTGRES_POOL_MIN_SIZE = 2
+POSTGRES_POOL_MAX_SIZE = 8
+POSTGRES_POOL_TIMEOUT_SECONDS = 5.0
+
+
 class PostgreSQLIntelStore(SQLiteIntelStore):
     """Persist intel reports in PostgreSQL while keeping the IntelStore API."""
 
@@ -29,16 +34,28 @@ class PostgreSQLIntelStore(SQLiteIntelStore):
         if not self._postgres_dsn:
             raise ValueError("postgres dsn is required")
         self._postgres_safe_dsn = _redact_dsn(self._postgres_dsn)
-        super().__init__(
-            db_path="postgresql",
-            import_json_path=import_json_path,
-            systems=systems,
-            links=links,
-            resolver=resolver,
-            scorer=scorer,
-            enricher=enricher,
-            allow_unmapped_systems=allow_unmapped_systems,
-        )
+        self._postgres_pool = _create_connection_pool(self._postgres_dsn)
+        try:
+            super().__init__(
+                db_path="postgresql",
+                import_json_path=import_json_path,
+                systems=systems,
+                links=links,
+                resolver=resolver,
+                scorer=scorer,
+                enricher=enricher,
+                allow_unmapped_systems=allow_unmapped_systems,
+            )
+        except Exception:
+            self._postgres_pool.close()
+            raise
+
+    def close(self, *, wait: bool = True) -> None:
+        """Stop background work and close reusable PostgreSQL connections."""
+        try:
+            super().close(wait=wait)
+        finally:
+            self._postgres_pool.close()
 
     def _migrate(self) -> None:
         with self._connect() as connection:
@@ -189,15 +206,7 @@ class PostgreSQLIntelStore(SQLiteIntelStore):
             migrate_auth_schema(connection)
 
     def _connect(self) -> "_PostgresConnection":
-        try:
-            import psycopg
-            from psycopg.rows import dict_row
-        except ImportError as exc:
-            raise RuntimeError(
-                "PostgreSQL storage requires the psycopg package"
-            ) from exc
-        connection = psycopg.connect(self._postgres_dsn, row_factory=dict_row)
-        return _PostgresConnection(connection)
+        return _PostgresConnection(self._postgres_pool.connection())
 
     def _ensure_column(
         self,
@@ -224,22 +233,50 @@ class PostgreSQLIntelStore(SQLiteIntelStore):
 class _PostgresConnection:
     """Small compatibility wrapper for SQLite-style store methods."""
 
-    def __init__(self, connection: Any) -> None:
-        self._connection = connection
+    def __init__(self, connection_context: Any) -> None:
+        self._connection_context = connection_context
+        self._connection: Any | None = None
 
     def __enter__(self) -> "_PostgresConnection":
-        self._connection.__enter__()
+        self._connection = self._connection_context.__enter__()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> bool:
-        return bool(self._connection.__exit__(exc_type, exc_value, traceback))
+        try:
+            return bool(
+                self._connection_context.__exit__(exc_type, exc_value, traceback)
+            )
+        finally:
+            self._connection = None
 
     def execute(self, query: str, params: tuple[Any, ...] | None = None) -> Any:
+        if self._connection is None:
+            raise RuntimeError("PostgreSQL connection is not active")
         return self._connection.execute(_convert_placeholders(query), params)
 
     def executemany(self, query: str, params_seq: list[tuple[Any, ...]]) -> None:
+        if self._connection is None:
+            raise RuntimeError("PostgreSQL connection is not active")
         with self._connection.cursor() as cursor:
             cursor.executemany(_convert_placeholders(query), params_seq)
+
+
+def _create_connection_pool(dsn: str) -> Any:
+    try:
+        from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
+    except ImportError as exc:
+        raise RuntimeError(
+            "PostgreSQL storage requires psycopg with pool support"
+        ) from exc
+    return ConnectionPool(
+        conninfo=dsn,
+        min_size=POSTGRES_POOL_MIN_SIZE,
+        max_size=POSTGRES_POOL_MAX_SIZE,
+        timeout=POSTGRES_POOL_TIMEOUT_SECONDS,
+        kwargs={"row_factory": dict_row},
+        open=True,
+    )
 
 
 def _convert_placeholders(query: str) -> str:

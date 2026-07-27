@@ -2872,6 +2872,39 @@ def test_sse_disconnects_after_service_key_owner_is_disabled(tmp_path):
         server.stop()
 
 
+def test_sse_does_not_revalidate_unchanged_service_key_every_second(
+    tmp_path,
+    monkeypatch,
+):
+    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    service_key = auth.create_api_key(
+        admin["user_id"], "QQ bot", admin["user_id"], key_type="service_readonly"
+    )
+    active_checks = 0
+    original_check = auth.is_principal_active
+
+    def counted_check(principal):
+        nonlocal active_checks
+        active_checks += 1
+        return original_check(principal)
+
+    monkeypatch.setattr(auth, "is_principal_active", counted_check)
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    request = Request(
+        f"{server.url}/api/v1/events?timeout=1.2&heartbeat=0&bootstrap=0",
+        headers={"Authorization": f"Bearer {service_key['secret']}"},
+    )
+    try:
+        with urlopen(request, timeout=4) as response:
+            assert response.read() == b""
+        assert active_checks == 1
+    finally:
+        server.stop()
+
+
 def test_v1_events_resumed_bootstrap_emits_current_snapshot(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
@@ -3004,6 +3037,30 @@ def test_events_stream_sends_keepalive_comments_when_idle(tmp_path):
         assert headers["Content-Type"].startswith("text/event-stream")
         assert ": keepalive" in body
         assert "event: alert" not in body
+    finally:
+        server.stop()
+
+
+def test_v1_events_reads_active_intel_once_per_refresh(tmp_path):
+    class CountingStore(IntelStore):
+        def __init__(self, filepath):
+            super().__init__(filepath)
+            self.active_reads = 0
+
+        def list_active_intel(self, *args, **kwargs):
+            self.active_reads += 1
+            return super().list_active_intel(*args, **kwargs)
+
+    store = CountingStore(tmp_path / "intel.json")
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, _, _ = request_text(
+            f"{server.url}/api/v1/events?timeout=0&heartbeat=0&bootstrap=0"
+        )
+
+        assert status == 200
+        assert store.active_reads == 1
     finally:
         server.stop()
 
