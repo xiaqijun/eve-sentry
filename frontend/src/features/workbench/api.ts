@@ -6,30 +6,10 @@ import type {
   EsiLoginPayload,
   MapSnapshotPayload,
 } from "./types";
-
-const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(
-  /\/$/,
-  "",
-) || "";
-
-function apiPath(path: string): string {
-  return `${API_BASE}${path}`;
-}
+import { apiPath, apiRequest } from "../auth/api";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(apiPath(path), {
-    cache: "no-store",
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers || {}),
-    },
-  });
-  const payload = (await response.json()) as T & { error?: string };
-  if (!response.ok) {
-    throw new Error(payload.error || "Request failed");
-  }
-  return payload;
+  return apiRequest<T>(path, init);
 }
 
 export async function fetchBootstrap(): Promise<BootstrapPayload> {
@@ -95,7 +75,10 @@ export function connectAlerts(
   if (since) {
     query.set("since", since);
   }
-  const stream = new EventSource(apiPath(`/api/v1/events?${query.toString()}`));
+  const stream = new EventSource(
+    apiPath(`/api/v1/events?${query.toString()}`),
+    { withCredentials: true },
+  );
   stream.addEventListener("alert", (event) => {
     onAlert(JSON.parse(event.data) as AlertItem);
   });

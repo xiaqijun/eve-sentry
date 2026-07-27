@@ -1,10 +1,6 @@
 import type { AlertItem } from "../workbench/types";
 import { reportRangeStart, type ReportRange } from "./reporting";
-
-const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(
-  /\/$/,
-  "",
-) || "";
+import { apiRequest } from "../auth/api";
 
 export interface HostileAlertHistory {
   alerts: AlertItem[];
@@ -21,18 +17,11 @@ export async function fetchHostileAlertHistory(
     query.set("since", new Date(startMs).toISOString());
   }
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
-  const response = await fetch(`${API_BASE}/api/alerts${suffix}`, {
-    cache: "no-store",
-    headers: { "Content-Type": "application/json" },
-  });
-  const payload = await response.json() as {
+  const payload = await apiRequest<{
     alerts?: AlertItem[];
     count?: number;
     error?: string;
-  };
-  if (!response.ok) {
-    throw new Error(payload.error || "来袭历史加载失败");
-  }
+  }>(`/api/alerts${suffix}`);
   const alerts = Array.isArray(payload.alerts) ? payload.alerts : [];
   return {
     alerts,

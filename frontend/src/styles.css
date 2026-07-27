@@ -1708,3 +1708,359 @@ button {
     padding: 9px 14px;
   }
 }
+
+.auth-page,
+.auth-loading {
+  min-height: 100vh;
+  background: #071015;
+  color: #d9e7eb;
+}
+
+.auth-page {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.auth-loading {
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  color: #78919b;
+}
+
+.auth-login-panel {
+  width: min(100%, 360px);
+  padding: 28px;
+  border: 1px solid #22363e;
+  border-radius: 6px;
+  background: #0d181d;
+  box-shadow: 0 18px 60px rgb(0 0 0 / 35%);
+}
+
+.auth-login-panel .auth-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  margin-bottom: 18px;
+  place-items: center;
+  border: 1px solid #397b67;
+  color: #65d6ad;
+}
+
+.auth-login-panel h1 {
+  margin: 4px 0 22px;
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.auth-login-panel label,
+.stack-form label {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 14px;
+  color: #8fa7b0;
+  font-size: 12px;
+}
+
+.auth-login-panel input,
+.account-shell input,
+.account-shell select,
+.admin-shell input,
+.admin-shell select {
+  min-width: 0;
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid #294049;
+  border-radius: 4px;
+  outline: none;
+  background: #081217;
+  color: #dce9ed;
+}
+
+.auth-login-panel input:focus,
+.account-shell input:focus,
+.admin-shell input:focus,
+.admin-shell select:focus {
+  border-color: #4c9d83;
+}
+
+.auth-login-panel button,
+.account-shell button,
+.admin-shell button,
+.button-link,
+.report-account-link {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid #31544e;
+  border-radius: 4px;
+  background: #15322d;
+  color: #c8eee1;
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.auth-login-panel > button {
+  width: 100%;
+  margin-top: 5px;
+}
+
+.auth-error,
+.auth-banner.error {
+  color: #ff8d8d;
+}
+
+.account-shell,
+.admin-shell {
+  min-height: 100vh;
+  padding: 24px;
+  background: #071015;
+  color: #d9e7eb;
+}
+
+.account-header {
+  display: flex;
+  max-width: 1440px;
+  min-height: 86px;
+  margin: 0 auto 18px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.account-header h1 {
+  margin: 3px 0;
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.account-header > div > a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #7da499;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.account-header span {
+  color: #78909a;
+  font-size: 12px;
+}
+
+.account-actions,
+.admin-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.account-grid,
+.admin-grid {
+  display: grid;
+  max-width: 1440px;
+  margin: 0 auto;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: 14px;
+}
+
+.admin-grid {
+  grid-template-columns: 340px minmax(0, 1fr);
+  align-items: start;
+}
+
+.account-panel {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid #20353d;
+  border-radius: 6px;
+  background: #0b171c;
+}
+
+.account-panel-title {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  color: #89ceb8;
+}
+
+.account-panel h2,
+.account-panel h3 {
+  margin: 0;
+  color: #d7e5e9;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.account-panel h3 {
+  margin: 18px 0 8px;
+  color: #8fa8b1;
+  font-size: 12px;
+}
+
+.inline-form,
+.admin-create-user {
+  display: grid;
+  margin: 12px 0;
+  grid-template-columns: minmax(140px, 1fr) auto;
+  gap: 8px;
+}
+
+.admin-create-user {
+  grid-template-columns: 1fr 1fr;
+}
+
+.admin-create-user button {
+  grid-column: span 2;
+}
+
+.stack-form {
+  margin-top: 12px;
+}
+
+.secret-once {
+  display: grid;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid #806d36;
+  background: #231f12;
+  gap: 8px;
+}
+
+.secret-once code {
+  overflow-wrap: anywhere;
+  color: #f3d37a;
+  user-select: all;
+}
+
+.key-list,
+.compact-list,
+.audit-list,
+.admin-user-list {
+  display: grid;
+  gap: 6px;
+}
+
+.key-row,
+.compact-list > div,
+.audit-list > div {
+  display: grid;
+  min-height: 52px;
+  padding: 9px 10px;
+  align-items: center;
+  border: 1px solid #192b32;
+  background: #081318;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+}
+
+.key-row > div,
+.key-row > div > span,
+.key-row > div > small {
+  display: block;
+}
+
+.key-row span,
+.key-row small,
+.compact-list small,
+.audit-list span,
+.audit-list time {
+  color: #748d97;
+  font-size: 11px;
+}
+
+.key-row em,
+.admin-user-list em {
+  font-style: normal;
+  color: #7fd7b8;
+  font-size: 11px;
+}
+
+.key-row em.revoked,
+.admin-user-list em.disabled {
+  color: #e47b7b;
+}
+
+.icon-button {
+  width: 32px;
+  min-height: 32px !important;
+  padding: 0 !important;
+  background: transparent !important;
+}
+
+.auth-banner {
+  max-width: 1440px;
+  margin: 0 auto 12px;
+  padding: 10px 12px;
+  border: 1px solid #31544e;
+  background: #10241f;
+  font-size: 12px;
+}
+
+.admin-user-list > button {
+  min-height: 52px;
+  justify-content: space-between;
+  background: #081318;
+}
+
+.admin-user-list > button.active {
+  border-color: #4c9d83;
+  background: #102720;
+}
+
+.admin-user-list span,
+.admin-user-list strong,
+.admin-user-list small {
+  display: block;
+  text-align: left;
+}
+
+.admin-user-list small {
+  color: #748d97;
+  font-size: 10px;
+}
+
+.admin-detail-panel {
+  min-height: 420px;
+}
+
+.audit-panel {
+  grid-column: span 2;
+}
+
+.audit-list > div {
+  min-height: 38px;
+  grid-template-columns: 170px minmax(160px, 1fr) minmax(120px, 1fr);
+}
+
+.account-nav-link {
+  margin-top: 6px;
+}
+
+.report-account-link {
+  min-height: 32px;
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .account-header,
+  .account-grid,
+  .admin-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .audit-panel {
+    grid-column: auto;
+  }
+
+  .audit-list > div {
+    grid-template-columns: 1fr;
+  }
+}

@@ -74,6 +74,7 @@ sudo chmod 640 /etc/eve-sentry/eve-sentry.env
 - `EVE_SENTRY_SERVER_MAP_SDE_PATH`
 - `EVE_SENTRY_SERVER_MAP_REGION_IDS`
 - `EVE_SENTRY_SERVER_ENABLE_ESI`
+- `EVE_SENTRY_SERVER_AUTH_MODE`
 
 生产环境推荐:
 
@@ -83,7 +84,9 @@ EVE_SENTRY_SERVER_POSTGRES_DSN=postgresql://eve_sentry:<password>@127.0.0.1:5432
 ```
 
 `EVE_SENTRY_SERVER_DB` 仍保留给 SQLite 本地联调和回退使用。
-健康检查会返回脱敏后的 PostgreSQL DSN，不会暴露密码。
+健康检查会返回脱敏后的 PostgreSQL DSN，不会暴露密码。认证首次上线时先保持
+`EVE_SENTRY_SERVER_AUTH_MODE=setup`，完整的管理员创建、客户端密钥和启用顺序见
+[用户认证与 EVE 身份校验](authentication.md)。
 
 如果地图使用官方 SDE，先在服务器上同步一次 YAML 地图表，再启动服务:
 
@@ -116,11 +119,12 @@ sudo -u eve-sentry env $(grep -v '^#' /etc/eve-sentry/eve-sentry.env | xargs) \
   .venv-server/bin/python scripts/run_server.py
 ```
 
-健康检查:
+健康检查（认证启用后仍公开）:
 
 ```bash
 curl http://127.0.0.1:8765/api/health
-curl http://127.0.0.1:8765/api/v1/clients
+curl -H "Authorization: Bearer $EVE_SENTRY_API_KEY" \
+  http://127.0.0.1:8765/api/v1/clients
 ```
 
 `http://127.0.0.1:8765/` 不再返回页面；根路径由 OpenResty/Nginx 托管
@@ -146,10 +150,14 @@ sudo systemctl restart eve-sentry
 
 ## 5. 配置 OpenResty/Nginx 统一入口
 
-生产环境推荐由 OpenResty 或 Nginx 统一对外暴露 React 工作台和 Python API：
+生产环境必须由 OpenResty 或 Nginx 通过 HTTPS 统一对外暴露 React 工作台和 Python API：
 
 - `/` -> `frontend/dist`
 - `/api/` -> `http://127.0.0.1:8765`
+
+先把 `deploy/linux/eve-sentry.nginx.conf` 中的 `sentry.example.com` 和证书路径
+替换成真实值。模板将 80 端口全部跳转到 HTTPS，并在 443 端口启用 HSTS；
+证书未验证前不要开启强制认证。
 
 推荐从 Windows 开发机使用固化的部署脚本。脚本会依次执行锁定依赖安装、
 前端测试、生产构建、压缩上传、服务器端备份、`rsync --delete` 原位同步、
@@ -160,7 +168,7 @@ SHA256 对比以及内外网健康检查。远端同步或健康检查失败时�
 .\scripts\deploy_frontend.ps1 `
   -Target root@YOUR_SERVER `
   -IdentityFile "$HOME\.ssh\eve_server_key" `
-  -PublicUrl http://YOUR_SERVER
+  -PublicUrl https://YOUR_DOMAIN
 ```
 
 也可以通过环境变量保存当前终端的部署目标，避免每次重复输入：
@@ -168,7 +176,7 @@ SHA256 对比以及内外网健康检查。远端同步或健康检查失败时�
 ```powershell
 $env:EVE_SENTRY_DEPLOY_TARGET = "root@YOUR_SERVER"
 $env:EVE_SENTRY_DEPLOY_IDENTITY_FILE = "$HOME\.ssh\eve_server_key"
-.\scripts\deploy_frontend.ps1 -PublicUrl http://YOUR_SERVER
+.\scripts\deploy_frontend.ps1 -PublicUrl https://YOUR_DOMAIN
 ```
 
 默认静态目录是当前 1Panel/OpenResty 生产约定的
@@ -286,9 +294,9 @@ curl http://127.0.0.1:8765/api/v1/esi/status
 服务端可访问后，把本地客户端指向 OpenResty/Nginx 统一入口:
 
 ```text
-检测客户端: EVE_SENTRY_INTEL_URL=http://YOUR_SERVER
-频道客户端: --server http://YOUR_SERVER
-预警客户端: --server http://YOUR_SERVER
+检测客户端: EVE_SENTRY_INTEL_URL=https://YOUR_DOMAIN
+频道客户端: --server https://YOUR_DOMAIN
+预警客户端: --server https://YOUR_DOMAIN
 ```
 
 只有在服务器本机调试或明确放通内网访问时，才直连 `http://127.0.0.1:8765`。

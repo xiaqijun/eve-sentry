@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app.channels.log_watcher import DEFAULT_CHATLOG_DIR, resolve_chatlog_dir
+from app.channels.identity_logs import ClientAuthStateStore
 
 
 DEFAULT_INTEL_URL = "http://114.132.167.239:8765"
@@ -45,6 +46,7 @@ class SettingsPanel(QWidget):
 
     scan_settings_changed = pyqtSignal()
     server_url_changed = pyqtSignal(str)
+    api_key_changed = pyqtSignal(str)
 
     def __init__(self, parent=None, config_path: str | Path | None = None):
         super().__init__(parent)
@@ -53,6 +55,7 @@ class SettingsPanel(QWidget):
         )
         config = self._load_channel_config()
         self._chatlog_dir = str(config["chatlog_dir"])
+        self._auth_state_store = ClientAuthStateStore()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -64,6 +67,14 @@ class SettingsPanel(QWidget):
         self._server_url_edit = QLineEdit(str(config["server_url"]))
         self._server_url_edit.setPlaceholderText(DEFAULT_INTEL_URL)
         server_layout.addWidget(self._server_url_edit)
+        server_layout.addWidget(QLabel("客户端认证密钥"))
+        self._api_key_edit = QLineEdit(self._auth_state_store.api_key())
+        self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_key_edit.setPlaceholderText("eve_...")
+        server_layout.addWidget(self._api_key_edit)
+        self._auth_status_label = QLabel("未配置认证密钥")
+        self._auth_status_label.setWordWrap(True)
+        server_layout.addWidget(self._auth_status_label)
         layout.addWidget(server_group)
 
         scan_group = QGroupBox("扫描设置")
@@ -95,6 +106,7 @@ class SettingsPanel(QWidget):
         self._interval_spin.valueChanged.connect(self._on_scan_settings_changed)
         self._keyword_edit.editingFinished.connect(self._on_scan_settings_changed)
         self._server_url_edit.editingFinished.connect(self._on_server_url_changed)
+        self._api_key_edit.editingFinished.connect(self._on_api_key_changed)
 
     def get_interval(self) -> float:
         return float(self._interval_spin.value())
@@ -108,6 +120,17 @@ class SettingsPanel(QWidget):
     def get_channel_log_dir(self) -> str:
         """Return the chatlog directory used only for local-system detection."""
         return self._chatlog_dir or str(DEFAULT_CHATLOG_DIR)
+
+    def get_api_key(self) -> str:
+        return self._api_key_edit.text().strip()
+
+    def auth_state_store(self) -> ClientAuthStateStore:
+        return self._auth_state_store
+
+    def set_auth_status(self, message: str, error: bool = False) -> None:
+        color = "#ff6b73" if error else "#37d6b0"
+        self._auth_status_label.setStyleSheet(f"color: {color};")
+        self._auth_status_label.setText(str(message or ""))
 
     def save_channel_config(self) -> None:
         """Persist local monitor settings using the existing settings file."""
@@ -126,6 +149,13 @@ class SettingsPanel(QWidget):
         self._server_url_edit.setText(server_url)
         self.save_channel_config()
         self.server_url_changed.emit(server_url)
+
+    def _on_api_key_changed(self) -> None:
+        api_key = self.get_api_key()
+        changed = self._auth_state_store.set_api_key(api_key)
+        self.set_auth_status("等待身份校验" if api_key else "未配置认证密钥")
+        if changed:
+            self.api_key_changed.emit(api_key)
 
     def _load_channel_config(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}

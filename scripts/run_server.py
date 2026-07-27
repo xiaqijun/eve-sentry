@@ -29,6 +29,17 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
         "--postgres-dsn",
         values.get("EVE_SENTRY_SERVER_POSTGRES_DSN", ""),
     )
+    _append_option(argv, "--auth-mode", values.get("EVE_SENTRY_SERVER_AUTH_MODE", ""))
+    _append_option(
+        argv,
+        "--auth-bootstrap-admin",
+        values.get("EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_ADMIN", ""),
+    )
+    _append_option(
+        argv,
+        "--auth-bootstrap-password-file",
+        values.get("EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_PASSWORD_FILE", ""),
+    )
     _append_option(argv, "--config", values.get("EVE_SENTRY_SERVER_CONFIG", ""))
     _append_option(
         argv,

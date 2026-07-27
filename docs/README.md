@@ -45,6 +45,11 @@ $env:EVE_SENTRY_ONNX_MODEL_DIR = "$PWD\.runtime\onnx-models"
 
 发行包已经包含 Python 运行时、DirectML、ONNX Runtime 和 OCR 模型，目标电脑无需另外安装 Python 或模型。必须保留完整的 `_internal` 目录，不能只复制 EXE。
 
+启用服务端认证后，先在网页账号页创建桌面密钥，再把密钥填入客户端设置区。
+Windows 客户端会用 DPAPI 保存密钥、已处理日志文件名和累计角色身份；远程服务
+地址必须使用 HTTPS。首次启动会异步扫描全部历史 EVE Chatlogs，后续每 10 秒只
+处理新增文件和仍在等待完整 `Listener` 的新文件，不会周期性续签身份。
+
 ## 构建客户端
 
 确认 `.runtime/onnx-models` 中存在检测与识别模型后执行：
@@ -76,6 +81,7 @@ OCR、红框定位、敌对人数、告警冷却、事件游标和文件状态�
 - [ONNX OCR 验证与构建](onnx-ocr-validation.md)：DirectML 性能、模型转换、客户端构建和验收。
 - [旧版客户端打包](monitor-client-packaging.md)：PaddleOCR GPU 兼容包的构建与分发。
 - [服务端部署](server-deployment.md)：Linux 部署、systemd、环境变量和客户端对接。
+- [用户认证](authentication.md)：账号、设备密钥、EVE 日志身份校验、机器人密钥和安全上线顺序。
 - [地图数据](map-data.md)：星图数据结构与生成方式。
 
 ## 历史文档

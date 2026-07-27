@@ -17,9 +17,31 @@ from app.intel.enrichment import ThreatEnricher
 from app.intel.config import IntelConfigStore
 from app.intel.scoring import ScoringEngine, Watchlist
 from app.server.http_server import IntelHTTPServer, IntelRequestHandler
+from app.server.auth import AuthService
+from app.server.auth_store import AuthRepository
 from app.server.intel_store import IntelStore, StarSystem
 from app.server.map_config import MapConfigStore
 from app.server.sqlite_store import SQLiteIntelStore
+
+
+class AuthTestResolver:
+    def resolve_names(self, names):
+        return [
+            SimpleNamespace(name=name, category="character", entity_id=101)
+            for name in names
+            if name == "Alice"
+        ]
+
+    def character_profile(self, character_id):
+        return {
+            "character_id": int(character_id),
+            "name": "Alice",
+            "corporation_id": 9001,
+            "corporation_name": "Blue Corp",
+        }
+
+    def corporation_profile(self, corporation_id):
+        return {"corporation_id": int(corporation_id), "name": "Blue Corp"}
 
 
 def request_json(url, method="GET", payload=None):
@@ -56,6 +78,22 @@ def sse_events(body):
         if event:
             events.append(event)
     return events
+
+
+def authenticated_request(url, method="GET", payload=None, headers=None):
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request_headers = dict(headers or {})
+    if data is not None:
+        request_headers["Content-Type"] = "application/json"
+    request = Request(url, data=data, headers=request_headers, method=method)
+    try:
+        response = urlopen(request, timeout=3)
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8")
+        return exc.code, exc.headers, json.loads(body) if body else {}
+    with response:
+        body = response.read().decode("utf-8")
+        return response.status, response.headers, json.loads(body) if body else {}
 
 
 def write_sde_fixture(root):
@@ -2400,6 +2438,190 @@ def test_v1_events_push_monitoring_node_offline_at_stale_deadline(tmp_path):
         assert time.monotonic() - started_at < 0.75
         assert snapshots == [["S-KSWL"], []]
         stream_thread.join(timeout=1)
+    finally:
+        server.stop()
+
+
+def test_auth_enforcement_protects_api_and_accepts_permanently_verified_key(tmp_path):
+    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    auth.add_allowed_corporation(9001, admin["user_id"])
+    member = auth.create_user("pilot", "pilot-password-123", role="member")
+    key = auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    try:
+        status, _, payload = authenticated_request(f"{server.url}/api/health")
+        assert status == 200
+        assert payload["health"]["ok"] is True
+
+        status, _, payload = authenticated_request(f"{server.url}/api/v1/bootstrap")
+        assert status == 401
+        assert payload["code"] == "authentication_required"
+
+        headers = {"Authorization": f"Bearer {key['secret']}"}
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/bootstrap", headers=headers
+        )
+        assert status == 428
+        assert payload["code"] == "identity_validation_required"
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/client/identity-check",
+            method="POST",
+            payload={"characters": ["Alice"]},
+            headers=headers,
+        )
+        assert status == 200
+        assert payload["identity"]["permanent"] is True
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/bootstrap", headers=headers
+        )
+        assert status == 200
+        assert "bootstrap" in payload
+    finally:
+        server.stop()
+
+
+def test_browser_session_requires_csrf_and_service_key_is_read_only(tmp_path):
+    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    service_key = auth.create_api_key(
+        admin["user_id"], "QQ bot", admin["user_id"], key_type="service_readonly"
+    )
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    try:
+        status, response_headers, payload = authenticated_request(
+            f"{server.url}/api/v1/auth/login",
+            method="POST",
+            payload={"username": "admin", "password": "admin-password-123"},
+        )
+        assert status == 200
+        set_cookie = response_headers["Set-Cookie"]
+        assert "HttpOnly" in set_cookie
+        assert "Secure" in set_cookie
+        assert "SameSite=Strict" in set_cookie
+        cookie = set_cookie.split(";", 1)[0]
+        csrf = payload["csrf_token"]
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/users",
+            method="POST",
+            payload={"username": "member", "password": "member-password-123"},
+            headers={"Cookie": cookie},
+        )
+        assert status == 403
+        assert payload["code"] == "invalid_csrf_token"
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/users",
+            method="POST",
+            payload={"username": "member", "password": "member-password-123"},
+            headers={"Cookie": cookie, "X-CSRF-Token": csrf},
+        )
+        assert status == 201
+        assert payload["user"]["username"] == "member"
+
+        service_headers = {"Authorization": f"Bearer {service_key['secret']}"}
+        status, _, _ = authenticated_request(
+            f"{server.url}/api/v1/bootstrap", headers=service_headers
+        )
+        assert status == 200
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/clients/heartbeats",
+            method="POST",
+            payload={"client_id": "bot", "client_type": "bot"},
+            headers=service_headers,
+        )
+        assert status == 403
+        assert payload["code"] == "read_only_key"
+    finally:
+        server.stop()
+
+
+def test_member_session_cannot_access_administrator_routes(tmp_path):
+    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    auth.create_user("pilot", "pilot-password-123", role="member")
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    try:
+        status, response_headers, payload = authenticated_request(
+            f"{server.url}/api/v1/auth/login",
+            method="POST",
+            payload={"username": "pilot", "password": "pilot-password-123"},
+        )
+        assert status == 200
+        cookie = response_headers["Set-Cookie"].split(";", 1)[0]
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/users",
+            headers={"Cookie": cookie},
+        )
+        assert status == 403
+        assert payload["code"] == "forbidden"
+    finally:
+        server.stop()
+
+
+def test_service_key_is_scoped_to_bootstrap_and_sse(tmp_path):
+    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    service_key = auth.create_api_key(
+        admin["user_id"], "QQ bot", admin["user_id"], key_type="service_readonly"
+    )
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    headers = {"Authorization": f"Bearer {service_key['secret']}"}
+    try:
+        status, _, _ = authenticated_request(
+            f"{server.url}/api/v1/bootstrap", headers=headers
+        )
+        assert status == 200
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/users", headers=headers
+        )
+        assert status == 403
+        assert payload["code"] == "service_key_scope_denied"
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/alerts", headers=headers
+        )
+        assert status == 403
+        assert payload["code"] == "service_key_scope_denied"
+    finally:
+        server.stop()
+
+
+def test_sse_disconnects_after_service_key_owner_is_disabled(tmp_path):
+    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    service_key = auth.create_api_key(
+        admin["user_id"], "QQ bot", admin["user_id"], key_type="service_readonly"
+    )
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    request = Request(
+        f"{server.url}/api/v1/events?timeout=10&heartbeat=0&bootstrap=1",
+        headers={"Authorization": f"Bearer {service_key['secret']}"},
+    )
+    try:
+        with urlopen(request, timeout=4) as response:
+            while response.readline() not in {b"\n", b"\r\n", b""}:
+                pass
+            started = time.monotonic()
+            auth.set_user_status(
+                admin["user_id"], False, admin["user_id"], "test revocation"
+            )
+            assert response.read() == b""
+            assert time.monotonic() - started < 2.5
     finally:
         server.stop()
 

@@ -12,6 +12,7 @@ import {
   Map,
   Radar,
   Skull,
+  UserRound,
 } from "lucide-react";
 
 import {
@@ -504,6 +505,11 @@ export function WorkbenchPage() {
             <BarChart3 size={16} />
             <span>来袭报表</span>
             <strong>历史统计</strong>
+          </a>
+          <a className="report-nav-link account-nav-link" href="/account">
+            <UserRound size={16} />
+            <span>账号与密钥</span>
+            <strong>访问控制</strong>
           </a>
         </nav>
 

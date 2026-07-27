@@ -1654,3 +1654,48 @@ def test_alert_client_heartbeat_details_are_events_overlay_only():
     assert details["client_version"] == "test-version"
     assert details["host"] == "test-host"
     assert details["last_success_at"] == "2026-07-10T00:00:00Z"
+
+
+def test_intel_api_client_sends_api_key_for_json_and_identity_requests(monkeypatch):
+    requests = []
+    responses = iter(
+        [
+            {"identity": {"verified": True, "permanent": True}},
+            {"clients": {"heartbeats": [], "summary": {}}},
+        ]
+    )
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        requests.append(request)
+        return Response(next(responses))
+
+    monkeypatch.setattr("app.intel_client.urlopen", fake_urlopen)
+    client = IntelApiClient("https://sentry.test", api_key="eve_secret")
+
+    assert client.verify_eve_characters(["Alice"])["permanent"] is True
+    assert client.client_status()["heartbeats"] == []
+    assert [request.get_header("Authorization") for request in requests] == [
+        "Bearer eve_secret",
+        "Bearer eve_secret",
+    ]
+
+
+def test_intel_api_client_rejects_api_key_over_remote_plain_http():
+    with pytest.raises(IntelApiError, match="require HTTPS"):
+        IntelApiClient("http://114.132.167.239:8765", api_key="eve_secret")
+
+    client = IntelApiClient("http://127.0.0.1:8765", api_key="eve_secret")
+    assert client.api_key == "eve_secret"

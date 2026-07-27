@@ -11,6 +11,7 @@ import {
   ShieldAlert,
   Skull,
   Users,
+  UserRound,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
@@ -108,6 +109,7 @@ export function HostileReportPage() {
           </div>
         </div>
         <div className="report-header-actions">
+          <Link className="report-account-link" to="/account"><UserRound size={15} />账号</Link>
           <div className="report-range-tabs" aria-label="报表统计范围">
             {RANGE_OPTIONS.map((item) => (
               <button

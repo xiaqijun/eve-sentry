@@ -24,6 +24,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--db", default="intel.sqlite3")
     parser.add_argument("--postgres-dsn", default="")
+    parser.add_argument(
+        "--auth-mode",
+        choices=["off", "setup", "enforce"],
+        default="off",
+    )
+    parser.add_argument("--auth-bootstrap-admin", default="")
+    parser.add_argument("--auth-bootstrap-password-file", default="")
     parser.add_argument("--config", default="intel_config.json")
     parser.add_argument("--map-config", default="intel_map.json")
     parser.add_argument(
@@ -139,16 +146,19 @@ def main(argv: list[str] | None = None) -> int:
         scorer=scorer,
         enricher=enricher,
     )
-    server = IntelHTTPServer(
-        store,
-        host=args.host,
-        port=args.port,
-        config_store=config_store,
-        esi_session=esi_session,
-        esi_config=_build_esi_config(args),
-        esi_login=esi_login,
-        map_config_store=map_config_store,
-    )
+    auth_service = _build_auth_service(args, store, resolver)
+    server_options = {
+        "host": args.host,
+        "port": args.port,
+        "config_store": config_store,
+        "esi_session": esi_session,
+        "esi_config": _build_esi_config(args),
+        "esi_login": esi_login,
+        "map_config_store": map_config_store,
+    }
+    if auth_service is not None:
+        server_options["auth_service"] = auth_service
+    server = IntelHTTPServer(store, **server_options)
     server.start()
     print(f"Intel map: {server.url}")
     try:
@@ -212,10 +222,59 @@ def _validate_args(
         parser.error("--esi-client-id is required when using ESI login")
     if args.storage == "postgres" and not str(args.postgres_dsn or "").strip():
         parser.error("--postgres-dsn is required when using PostgreSQL storage")
+    if args.auth_mode != "off" and args.storage == "json":
+        parser.error("authentication requires SQLite or PostgreSQL storage")
+    if args.auth_bootstrap_admin and not args.auth_bootstrap_password_file:
+        parser.error(
+            "--auth-bootstrap-password-file is required with --auth-bootstrap-admin"
+        )
 
 
 def _should_enable_esi(args: argparse.Namespace) -> bool:
-    return bool(args.enable_esi or (args.esi_login and not args.esi_login_only))
+    return bool(
+        args.enable_esi
+        or args.auth_mode != "off"
+        or (args.esi_login and not args.esi_login_only)
+    )
+
+
+def _build_auth_service(
+    args: argparse.Namespace,
+    store: IntelStore,
+    resolver: Any | None,
+) -> Any | None:
+    if args.auth_mode == "off":
+        return None
+    connect = getattr(store, "_connect", None)
+    if not callable(connect):
+        raise RuntimeError("authentication requires a SQL-backed store")
+    if resolver is None:
+        raise RuntimeError("authentication requires public ESI")
+
+    from app.server.auth import AuthService
+    from app.server.auth_store import AuthRepository
+
+    service = AuthService(
+        AuthRepository(connect),
+        resolver,
+        enforce_requests=args.auth_mode == "enforce",
+    )
+    username = str(args.auth_bootstrap_admin or "").strip()
+    if username:
+        password_path = Path(args.auth_bootstrap_password_file)
+        try:
+            password = password_path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise RuntimeError(
+                f"could not read bootstrap admin password file: {password_path}"
+            ) from exc
+        service.ensure_bootstrap_admin(username, password)
+    if service.repository.count_users() == 0:
+        raise RuntimeError(
+            "authentication has no users; configure --auth-bootstrap-admin and "
+            "--auth-bootstrap-password-file for the first start"
+        )
+    return service
 
 
 def _build_esi_sso_client(args: argparse.Namespace) -> Any:

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from app.server.auth_store import migrate_auth_schema
 from app.server.intel_store import IntelStore, StarSystem
 from app.server.sqlite_store import SQLiteIntelStore
 
@@ -185,6 +186,7 @@ class PostgreSQLIntelStore(SQLiteIntelStore):
                 ON client_heartbeats(seen_at)
                 """
             )
+            migrate_auth_schema(connection)
 
     def _connect(self) -> "_PostgresConnection":
         try:

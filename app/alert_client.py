@@ -1066,6 +1066,7 @@ class AlertEventWorker(QThread):
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
         reconnect_max_delay: float = DEFAULT_RECONNECT_MAX_DELAY,
         client_id: str = "",
+        api_key: str = "",
         api_factory: Callable[..., IntelApiClient] = IntelApiClient,
     ) -> None:
         super().__init__()
@@ -1075,6 +1076,7 @@ class AlertEventWorker(QThread):
         self.heartbeat_interval = max(5.0, float(heartbeat_interval))
         self.reconnect_max_delay = max(1.0, float(reconnect_max_delay))
         self.client_id = client_id or f"alert-client:{os.getpid()}"
+        self.api_key = str(api_key or "").strip()
         self.api_factory = api_factory
         self.consumer = AlertEventConsumer(state)
         self._stop_requested = False
@@ -1087,7 +1089,11 @@ class AlertEventWorker(QThread):
         self._stop_requested = True
 
     def run(self) -> None:
-        api = self.api_factory(self.server, timeout=min(3.0, self.timeout))
+        api = self.api_factory(
+            self.server,
+            timeout=min(3.0, self.timeout),
+            api_key=self.api_key,
+        )
         backoff = 1.0
         self._post_heartbeat(api, "starting")
         while not self._stop_requested:
@@ -1207,6 +1213,7 @@ class AlertTrayController:
             timeout=args.timeout,
             heartbeat_interval=args.heartbeat_interval,
             reconnect_max_delay=args.reconnect_max_delay,
+            api_key=str(getattr(args, "api_key", "") or ""),
             api_factory=api_factory,
         )
         if self._tray_enabled:

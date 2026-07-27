@@ -14,6 +14,7 @@ from app.core.active_intel import (
     DEFAULT_OCR_GRACE_SECONDS,
 )
 from app.core.models import Observation
+from app.server.auth_store import migrate_auth_schema
 from app.server.intel_store import (
     IntelReport,
     IntelStore,
@@ -724,6 +725,7 @@ class SQLiteIntelStore(IntelStore):
                 ON client_heartbeats(seen_at)
                 """
             )
+            migrate_auth_schema(connection)
 
     def _read_reports(self) -> list[IntelReport]:
         with self._connect() as connection:

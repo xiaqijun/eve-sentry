@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from app.channels.parser import parse_chat_line
 from app.core.heartbeat import monitored_system_names
 from app.esi.sso import EsiSsoError
+from app.server.auth_http import AuthHttpMixin
 from app.server.intel_store import IntelStore, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,7 @@ class IntelHTTPServer:
         esi_config: dict[str, Any] | None = None,
         map_config_store: Any | None = None,
         esi_login: Any | None = None,
+        auth_service: Any | None = None,
     ) -> None:
         self.store = store
         self.host = host
@@ -121,6 +123,7 @@ class IntelHTTPServer:
         self.esi_session = esi_session
         self.esi_config = dict(esi_config or {})
         self.esi_login = esi_login
+        self.auth_service = auth_service
         self.map_config_store = map_config_store
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -166,10 +169,11 @@ class IntelHTTPServer:
         class Handler(IntelRequestHandler):
             pass
 
+        Handler.auth_service = self.auth_service
         return Handler
 
 
-class IntelRequestHandler(BaseHTTPRequestHandler):
+class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
     """Request handler for the local intel service."""
 
     server_version = "EveSentryIntel/1.0"
@@ -177,6 +181,10 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+        if not self._authorize_request("GET", path):
+            return
+        if self._handle_auth_get(path):
+            return
         if path.startswith(API_V1_PREFIX):
             self._handle_v1_get(parsed)
             return
@@ -466,6 +474,10 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if not self._authorize_request("POST", path):
+            return
+        if self._handle_auth_post(path):
+            return
         if path.startswith(API_V1_PREFIX):
             self._handle_v1_post(path)
             return
@@ -601,6 +613,8 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if not self._authorize_request("PUT", path):
+            return
         if path.startswith(API_V1_PREFIX):
             self._handle_v1_put(path)
             return
@@ -655,6 +669,10 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if not self._authorize_request("DELETE", path):
+            return
+        if self._handle_auth_delete(path):
+            return
         if path.startswith(f"{API_V1_PREFIX}/reports/"):
             report_id = unquote(path[len(f"{API_V1_PREFIX}/reports/"):]).strip()
             if not self._store().delete_report(report_id):
@@ -680,7 +698,10 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             "Access-Control-Allow-Methods",
             "GET, POST, PUT, DELETE, OPTIONS",
         )
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, X-CSRF-Token",
+        )
         self.end_headers()
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -1972,6 +1993,8 @@ class IntelRequestHandler(BaseHTTPRequestHandler):
             time.monotonic() + heartbeat_interval if heartbeat_interval else 0.0
         )
         while True:
+            if not self._stream_principal_active():
+                return
             next_client_stale_in: float | None = None
             try:
                 event_generation = _event_stream_generation()
