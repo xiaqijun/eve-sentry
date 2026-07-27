@@ -125,6 +125,18 @@ class AuthHttpMixin:
         service = self._auth_service()
         if service is None:
             return False
+        auth_paths = {
+            "/api/v1/auth/login",
+            "/api/v1/auth/logout",
+            "/api/v1/auth/password",
+            "/api/v1/me/keys",
+            "/api/v1/client/identity-check",
+            "/api/v1/admin/users",
+            "/api/v1/admin/corporations",
+        }
+        user_action = self._admin_user_action(path)
+        if path not in auth_paths and user_action is None:
+            return False
         try:
             if path == "/api/v1/auth/login":
                 payload = self._read_json()
@@ -192,7 +204,6 @@ class AuthHttpMixin:
                 self._send_json({"ok": True, "corporation": corporation}, HTTPStatus.CREATED)
                 return True
 
-            user_action = self._admin_user_action(path)
             if user_action is None:
                 return False
             user_id, action = user_action

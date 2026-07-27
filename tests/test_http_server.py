@@ -2485,6 +2485,46 @@ def test_auth_enforcement_protects_api_and_accepts_permanently_verified_key(tmp_
         server.stop()
 
 
+def test_authenticated_business_posts_preserve_their_request_body(tmp_path):
+    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    member = auth.create_user("pilot", "pilot-password-123", role="member")
+    key = auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
+    auth.repository.mark_api_key_verified(key["key_id"])
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    headers = {"Authorization": f"Bearer {key['secret']}"}
+    try:
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/clients/heartbeats",
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "client_type": "detector_client",
+                "status": "running",
+            },
+            headers=headers,
+        )
+        assert status == 201
+        assert payload["heartbeat"]["client_id"] == "detector-client:test"
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/ocr/snapshot",
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "source_instance": "EVE - Hajimi6",
+                "system_name": "S-KSWL",
+                "names": [],
+            },
+            headers=headers,
+        )
+        assert status == 200
+        assert payload["created"] == 0
+    finally:
+        server.stop()
+
+
 def test_browser_session_requires_csrf_and_service_key_is_read_only(tmp_path):
     store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
