@@ -478,7 +478,7 @@ class EveSsoClient:
         self.redirect_uri = redirect_uri.strip()
         if not self.redirect_uri:
             raise ValueError("redirect_uri must be non-empty")
-        self.scopes = _normalize_scopes(scopes or DEFAULT_SCOPES)
+        self.scopes = _normalize_scopes(DEFAULT_SCOPES if scopes is None else scopes)
         self.metadata = metadata or SsoMetadata()
         self.metadata_url = metadata_url
         self.timeout = timeout
@@ -631,27 +631,22 @@ def run_local_sso_login(
 
 
 class EsiLoginManager:
-    """Manage one browser-started EVE SSO login flow for the API server."""
+    """Manage one browser-started EVE SSO flow completed by the API server."""
 
     def __init__(
         self,
         client: EveSsoClient,
         token_store: EsiTokenStore,
         timeout_seconds: float = 300.0,
-        callback_server_factory: Callable[[str], LocalCallbackServer] | None = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self.client = client
         self.token_store = token_store
         self.timeout_seconds = max(1.0, float(timeout_seconds))
-        self._callback_server_factory = (
-            callback_server_factory or LocalCallbackServer.from_redirect_uri
-        )
         self._now = now or time
         self._lock = threading.Lock()
-        self._server: LocalCallbackServer | None = None
         self._session: AuthorizationSession | None = None
-        self._thread: threading.Thread | None = None
+        self._callback_in_progress = False
         self._status = "idle"
         self._authorization_url = ""
         self._started_at = 0.0
@@ -664,80 +659,86 @@ class EsiLoginManager:
         with self._lock:
             if self._is_pending_locked():
                 return self._snapshot_locked()
-
-            server = self._callback_server_factory(self.client.redirect_uri)
             try:
-                server.start()
-            except OSError as exc:
+                session = self.client.create_authorization_session()
+            except Exception as exc:
                 self._status = "error"
                 self._error = str(exc)
-                raise EsiSsoError(f"cannot start SSO callback server: {exc}") from exc
-
-            session = self.client.create_authorization_session()
+                self._session = None
+                self._callback_in_progress = False
+                raise EsiSsoError(f"cannot start SSO authorization: {exc}") from exc
             now = self._now()
-            self._server = server
             self._session = session
+            self._callback_in_progress = False
             self._status = "pending"
             self._authorization_url = session.authorization_url
             self._started_at = now
             self._expires_at = now + self.timeout_seconds
             self._error = ""
             self._character_id = None
-            thread = threading.Thread(
-                target=self._complete_login,
-                args=(server, session),
-                name="eve-sentry-esi-login",
-                daemon=True,
-            )
-            self._thread = thread
-            thread.start()
             return self._snapshot_locked()
 
     def snapshot(self) -> dict[str, Any]:
         """Return the current login flow status without token secrets."""
         with self._lock:
+            self._expire_pending_locked()
             return self._snapshot_locked()
 
-    def _complete_login(
-        self,
-        server: LocalCallbackServer,
-        session: AuthorizationSession,
-    ) -> None:
-        status = "authenticated"
-        error = ""
-        character_id: int | None = None
+    def owns_callback(self, callback_url: str) -> bool:
+        """Return whether a callback belongs to the current pending flow."""
+        state = str((parse_qs(urlparse(callback_url).query).get("state") or [""])[0])
+        with self._lock:
+            return bool(
+                state
+                and self._session is not None
+                and secrets.compare_digest(state, self._session.state)
+            )
+
+    def complete_callback(self, callback_url: str) -> dict[str, Any]:
+        """Exchange one matching callback and persist the authenticated token."""
+        with self._lock:
+            if not self._is_pending_locked() or self._session is None:
+                raise EsiSsoError("ESI login is not pending or has expired")
+            if self._callback_in_progress:
+                raise EsiSsoError("ESI login callback is already being processed")
+            session = self._session
+            self._callback_in_progress = True
         try:
-            callback_url = server.wait_for_callback(self.timeout_seconds)
             code = self.client.parse_callback_url(session, callback_url)
             tokens = self.client.exchange_code(code, session)
             self.token_store.save(tokens)
-            character_id = tokens.character_id
-        except EsiSsoError as exc:
-            status = "error"
-            error = str(exc)
         except Exception as exc:
-            status = "error"
-            error = str(exc)
-        finally:
-            server.stop()
+            with self._lock:
+                if self._session == session:
+                    self._status = "error"
+                    self._error = str(exc)
+                    self._callback_in_progress = False
+            if isinstance(exc, EsiSsoError):
+                raise
+            raise EsiSsoError(str(exc)) from exc
 
         with self._lock:
             if self._session != session:
-                return
-            self._status = status
-            self._error = error
-            self._character_id = character_id
-            self._server = None
-            self._thread = None
+                raise EsiSsoError("ESI login state changed before completion")
+            self._status = "authenticated"
+            self._error = ""
+            self._character_id = tokens.character_id
+            self._callback_in_progress = False
+            return self._snapshot_locked()
 
     def _is_pending_locked(self) -> bool:
-        thread = self._thread
-        return (
-            self._status == "pending"
-            and thread is not None
-            and thread.is_alive()
-            and self._now() < self._expires_at
-        )
+        self._expire_pending_locked()
+        return self._status == "pending" and self._session is not None
+
+    def _expire_pending_locked(self) -> None:
+        if (
+            self._status != "pending"
+            or self._callback_in_progress
+            or self._now() < self._expires_at
+        ):
+            return
+        self._status = "error"
+        self._error = "ESI login callback timed out"
 
     def _snapshot_locked(self) -> dict[str, Any]:
         return {
