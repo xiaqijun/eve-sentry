@@ -96,6 +96,7 @@ def test_member_password_login_requires_eve_sso(auth):
 
 def test_eve_sso_logs_in_exactly_assigned_active_member(auth):
     user = _member(auth)
+    auth.add_allowed_corporation(9001, user["user_id"])
     auth.add_whitelist_character(user["user_id"], 101, "main", user["user_id"])
     auth.esi_sso_client = FakeSsoClient(101)
 
@@ -111,6 +112,7 @@ def test_eve_sso_logs_in_exactly_assigned_active_member(auth):
 
 def test_eve_sso_rejects_unknown_ambiguous_and_replayed_characters(auth):
     first = _member(auth)
+    auth.add_allowed_corporation(9001, first["user_id"])
     second = auth.create_user("pilot-two", "another-password", role="member")
     auth.add_whitelist_character(first["user_id"], 101, "main", first["user_id"])
     auth.add_whitelist_character(second["user_id"], 101, "alt", first["user_id"])
@@ -125,11 +127,42 @@ def test_eve_sso_rejects_unknown_ambiguous_and_replayed_characters(auth):
         auth.complete_esi_login("/callback?state=state-1&code=code-1")
     assert replay_info.value.code == "invalid_esi_state"
 
-    auth.esi_sso_client = FakeSsoClient(999)
+    auth.esi_sso_client = FakeSsoClient(202)
     auth.begin_esi_login()
     with pytest.raises(AuthError) as unknown_info:
         auth.complete_esi_login("/callback?state=state-1&code=code-2")
-    assert unknown_info.value.code == "eve_character_not_assigned"
+    assert unknown_info.value.code == "eve_corporation_not_allowed"
+
+
+def test_eve_sso_auto_creates_and_reuses_member_for_allowed_corporation(auth):
+    auth.add_allowed_corporation(9001, "bootstrap")
+    auth.esi_sso_client = FakeSsoClient(101)
+
+    auth.begin_esi_login()
+    first_login = auth.complete_esi_login("/callback?state=state-1&code=code-1")
+    auth.begin_esi_login()
+    second_login = auth.complete_esi_login("/callback?state=state-1&code=code-2")
+
+    assert first_login["user"]["role"] == "member"
+    assert first_login["user"]["display_name"] == "Alice"
+    assert second_login["user"]["user_id"] == first_login["user"]["user_id"]
+    assert len(auth.repository.list_users()) == 1
+    assert auth.repository.list_verified_characters(first_login["user"]["user_id"])[0][
+        "character_id"
+    ] == 101
+
+
+def test_eve_sso_rejects_assigned_member_outside_allowed_corporations(auth):
+    user = _member(auth)
+    auth.add_whitelist_character(user["user_id"], 202, "alt", user["user_id"])
+    auth.esi_sso_client = FakeSsoClient(202)
+    auth.begin_esi_login()
+
+    with pytest.raises(AuthError) as exc_info:
+        auth.complete_esi_login("/callback?state=state-1&code=code-1")
+
+    assert exc_info.value.code == "eve_corporation_not_allowed"
+    assert auth.repository.list_verified_characters(user["user_id"]) == []
 
 
 def test_eve_sso_network_failure_does_not_create_session(auth):

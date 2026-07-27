@@ -2551,6 +2551,7 @@ def test_eve_sso_http_flow_sets_member_session_cookie(tmp_path):
         esi_sso_client=AuthTestSsoClient(),
     )
     member = auth.create_user("pilot", "", role="member")
+    auth.add_allowed_corporation(9001, member["user_id"])
     auth.add_whitelist_character(member["user_id"], 101, "main", member["user_id"])
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()

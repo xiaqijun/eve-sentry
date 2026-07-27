@@ -6,6 +6,7 @@ import { apiPath } from "./api";
 import { useAuth } from "./AuthContext";
 
 const ESI_ERRORS: Record<string, string> = {
+  eve_corporation_not_allowed: "该 EVE 角色不在允许登录的军团中",
   esi_login_unavailable: "EVE 登录尚未配置",
   eve_character_not_assigned: "该 EVE 角色尚未绑定平台账号",
   eve_character_ambiguous: "该 EVE 角色绑定了多个平台账号，请联系管理员",

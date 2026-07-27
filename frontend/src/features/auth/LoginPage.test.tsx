@@ -48,4 +48,16 @@ describe("login page", () => {
     expect(container).toHaveTextContent("管理员登录");
     expect(container.querySelector('input[autocomplete="username"]')).toBeInTheDocument();
   });
+
+  it("explains when the EVE character corporation is not allowed", async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/login?esi_error=eve_corporation_not_allowed"]}>
+          <LoginPage />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container).toHaveTextContent("该 EVE 角色不在允许登录的军团中");
+  });
 });

@@ -216,26 +216,59 @@ class AuthService:
                 403,
                 "eve_character_missing",
             )
-        matches = self.repository.users_for_character_id(int(character_id))
-        if not matches:
-            raise AuthError(
-                "this EVE character is not assigned to a platform user",
-                403,
-                "eve_character_not_assigned",
-            )
-        if len(matches) != 1:
-            raise AuthError(
-                "this EVE character is assigned to multiple platform users",
-                409,
-                "eve_character_ambiguous",
-            )
-        user = matches[0]
-        if str(user.get("status")) != "active":
-            raise AuthError("user is disabled", 403, "user_disabled")
         try:
             profile = self.resolver.character_profile(int(character_id))
         except Exception as exc:
             raise IdentityUnavailableError(f"EVE identity lookup failed: {exc}") from exc
+        corporation_id = profile.get("corporation_id")
+        if corporation_id in {None, ""}:
+            raise IdentityUnavailableError("EVE character corporation could not be resolved")
+        corporation_id = int(corporation_id)
+        if corporation_id not in self.repository.allowed_corporation_ids():
+            raise AuthError(
+                "this EVE character is not in an allowed corporation",
+                403,
+                "eve_corporation_not_allowed",
+            )
+        matches = self.repository.users_for_character_id(int(character_id))
+        if len(matches) != 1:
+            if matches:
+                raise AuthError(
+                    "this EVE character is assigned to multiple platform users",
+                    409,
+                    "eve_character_ambiguous",
+                )
+            username = f"eve-{int(character_id)}"
+            existing = self.repository.user_by_username(_username_key(username))
+            if existing is not None and str(existing.get("role")) != "member":
+                username = f"eve-member-{int(character_id)}"
+                existing = self.repository.user_by_username(_username_key(username))
+            user = existing or self.create_user(
+                username=username,
+                password="",
+                display_name=str(profile.get("name") or username),
+                role="member",
+                must_change_password=False,
+                actor_user_id="eve_sso",
+            )
+        else:
+            user = matches[0]
+        if str(user.get("status")) != "active":
+            raise AuthError("user is disabled", 403, "user_disabled")
+        now = _now_iso()
+        previous = {
+            int(item["character_id"]): item
+            for item in self.repository.list_verified_characters(str(user["user_id"]))
+        }.get(int(character_id))
+        self.repository.upsert_verified_character({
+            "user_id": str(user["user_id"]),
+            "character_id": int(character_id),
+            "character_name": str(profile.get("name") or f"EVE {int(character_id)}"),
+            "corporation_id": corporation_id,
+            "corporation_name": str(profile.get("corporation_name") or ""),
+            "first_seen_at": str(previous.get("first_seen_at") if previous else now),
+            "last_seen_at": now,
+        })
         login = self._create_browser_session(
             user,
             "eve_sso",
