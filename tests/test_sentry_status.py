@@ -95,7 +95,11 @@ def test_status_command_aliases_and_empty_snapshot() -> None:
 @pytest.mark.asyncio
 async def test_status_client_derives_bootstrap_endpoint() -> None:
     async with httpx.AsyncClient() as http:
-        client = EveSentryStatusClient(http, "http://sentry.test/api/v1/events")
+        client = EveSentryStatusClient(
+            http,
+            "http://sentry.test/api/v1/events",
+            "eve_service_secret",
+        )
         with respx.mock(assert_all_called=True) as router:
             route = router.get("http://sentry.test/api/v1/bootstrap").mock(
                 return_value=httpx.Response(200, json={"bootstrap": _bootstrap()})
@@ -103,6 +107,7 @@ async def test_status_client_derives_bootstrap_endpoint() -> None:
             result = await client.query()
 
     assert route.called
+    assert route.calls[0].request.headers["Authorization"] == "Bearer eve_service_secret"
     assert "敌对 1 人" in result
 
 

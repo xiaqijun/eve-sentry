@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     zkill_cache_ttl_seconds: int = 1800
     qq_context_ttl_seconds: int = 600
     eve_sentry_events_url: str = ""
+    eve_sentry_api_key: str = ""
     eve_sentry_public_url: str = ""
     eve_sentry_alert_min_level: str = ""
     friendly_character_ids: str = ""

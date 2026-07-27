@@ -34,9 +34,15 @@ class AlertNode:
 
 
 class EveSentryStatusClient:
-    def __init__(self, http: httpx.AsyncClient, events_url: str) -> None:
+    def __init__(
+        self,
+        http: httpx.AsyncClient,
+        events_url: str,
+        api_key: str = "",
+    ) -> None:
         self.http = http
         self.bootstrap_url = _bootstrap_url(events_url)
+        self.api_key = api_key.strip()
 
     @property
     def enabled(self) -> bool:
@@ -46,7 +52,11 @@ class EveSentryStatusClient:
         if not self.enabled:
             raise SentryStatusError("预警服务尚未配置，请联系机器人管理员。")
         try:
-            response = await self.http.get(self.bootstrap_url, timeout=10.0)
+            response = await self.http.get(
+                self.bootstrap_url,
+                headers=_sentry_headers(self.api_key),
+                timeout=10.0,
+            )
             response.raise_for_status()
             payload = response.json()
         except Exception:
@@ -306,3 +316,10 @@ def _bootstrap_url(events_url: str) -> str:
     if path == parsed.path:
         return ""
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _sentry_headers(api_key: str, accept: str = "application/json") -> dict[str, str]:
+    headers = {"Accept": accept}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers

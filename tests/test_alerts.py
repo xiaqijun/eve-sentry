@@ -110,8 +110,10 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
             redis,
             qq,
             "http://sentry.test/api/v1/events",
+            api_key="eve_service_secret",
             public_url="http://sentry.test",
         )
+        assert relay.api_key == "eve_service_secret"
         await relay.subscribe("group-1")
         assert await relay.is_subscribed("group-1") is True
 

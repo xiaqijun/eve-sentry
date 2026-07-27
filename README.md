@@ -74,11 +74,14 @@ Character Three
 
    ```dotenv
    EVE_SENTRY_EVENTS_URL=http://host.docker.internal:8765/api/v1/events
+   EVE_SENTRY_API_KEY=eve_请填写管理员签发的只读服务密钥
    EVE_SENTRY_PUBLIC_URL=http://YOUR_EVE_SENTRY_HOST
    EVE_SENTRY_ALERT_MIN_LEVEL=
    ```
 
-   `EVE_SENTRY_ALERT_MIN_LEVEL` 留空表示推送所有等级，也可设置为 `low`、`medium`、`high` 或 `critical`。
+   `EVE_SENTRY_API_KEY` 必须使用 EVE Sentry 管理员页面签发的只读服务密钥，
+   仅用于 Bootstrap 和 SSE。`EVE_SENTRY_ALERT_MIN_LEVEL` 留空表示推送所有等级，
+   也可设置为 `low`、`medium`、`high` 或 `critical`。
 4. 启动服务：
 
    ```bash

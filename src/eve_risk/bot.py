@@ -68,12 +68,14 @@ class RiskBotClient(botpy.Client):
         self.sentry_status = EveSentryStatusClient(
             self.http_client,
             settings.eve_sentry_events_url,
+            settings.eve_sentry_api_key,
         )
         self.alert_relay = EveSentryAlertRelay(
             self.http_client,
             self.redis,
             self.qq,
             settings.eve_sentry_events_url,
+            api_key=settings.eve_sentry_api_key,
             min_level=settings.eve_sentry_alert_min_level,
             public_url=settings.eve_sentry_public_url,
         )

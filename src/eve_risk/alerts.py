@@ -144,6 +144,7 @@ class EveSentryAlertRelay:
         qq: QQOpenAPIClient,
         events_url: str,
         *,
+        api_key: str = "",
         min_level: str = "",
         public_url: str = "",
         reconnect_delay_seconds: float = 3.0,
@@ -152,6 +153,7 @@ class EveSentryAlertRelay:
         self.redis = redis
         self.qq = qq
         self.events_url = events_url.strip()
+        self.api_key = api_key.strip()
         self.min_level = min_level.strip().casefold()
         self.public_url = public_url.strip()
         self.reconnect_delay_seconds = max(0.1, float(reconnect_delay_seconds))
@@ -411,7 +413,14 @@ class EveSentryAlertRelay:
             "GET",
             self.events_url,
             params=params,
-            headers={"Accept": "text/event-stream"},
+            headers={
+                "Accept": "text/event-stream",
+                **(
+                    {"Authorization": f"Bearer {self.api_key}"}
+                    if self.api_key
+                    else {}
+                ),
+            },
             timeout=timeout,
         ) as response:
             response.raise_for_status()
