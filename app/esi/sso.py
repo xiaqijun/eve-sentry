@@ -509,18 +509,19 @@ class EveSsoClient:
         scopes: list[str] | tuple[str, ...] | None = None,
         state: str | None = None,
     ) -> AuthorizationSession:
-        scope_values = _normalize_scopes(scopes or self.scopes)
+        scope_values = _normalize_scopes(self.scopes if scopes is None else scopes)
         state_value = state or secrets.token_urlsafe(32)
         pkce = create_pkce_challenge()
         query = {
             "response_type": "code",
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
-            "scope": " ".join(scope_values),
             "state": state_value,
             "code_challenge": pkce.challenge,
             "code_challenge_method": pkce.method,
         }
+        if scope_values:
+            query["scope"] = " ".join(scope_values)
         return AuthorizationSession(
             authorization_url=(
                 f"{self.metadata.authorization_endpoint}?{urlencode(query)}"
