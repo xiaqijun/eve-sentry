@@ -1,92 +1,66 @@
 # EVE Sentry 文档
 
-EVE Sentry 是面向 EVE Online 本地成员列表的实时情报系统。Windows 客户端负责窗口截图、红色声望图标检测、OCR 人名识别和现场预警；服务端负责情报持久化、角色校验、敌我分类、事件分发、态势图、来袭报表和 QQ 机器人推送。
+这里保存 EVE Sentry 当前有效的开发、运行和部署文档。历史设计稿、阶段性路线图和已经
+被当前实现替代的说明不再保留；功能行为以源码、测试和本目录文档为准。
 
-## 当前实现
+## 阅读顺序
 
-- 监控与预警已经集成到同一个 Windows 客户端，通过“开始监控”和“开启预警”两个独立开关控制。
-- 监控只处理下拉列表中选中的 EVE 窗口，并从对应角色的本地 Chatlogs 获取当前星系。
-- 成员列表先检测红色声望图标，再识别对应人名；连续两帧无法可靠定位时回退上传完整 OCR 名单。
-- 本机检测到敌对后立即更新浮窗；服务器收到上报后向所有已开启预警的客户端推送实时人数。
-- 浮窗为每个在线监控星系显示一个状态方框：安全为绿色，存在敌对为红色，并实时显示敌对人数。
-- 频道日志由独立频道客户端采集，不由监控客户端上传。
-- 生产 OCR 使用 RapidOCR、ONNX Runtime DirectML 和 PP-OCRv6 medium 模型，无需打包 PaddleOCR、CUDA 或约 796 MB 的 `phi.dll`。
+1. [系统架构](architecture.md)：了解客户端、服务端、Web、ESI、SDE 和事件流边界。
+2. [监控客户端](client.md)：安装 ONNX/DirectML 环境、选择 EVE 窗口、配置密钥和打包。
+3. [认证与 EVE 身份校验](authentication.md)：管理员、EVE SSO、设备密钥和 Listener 校验。
+4. [Web 管理系统](web-console.md)：态势图、来袭报表、账号和管理员页面。
+5. [API 参考](api-reference.md)：当前主要 HTTP 接口、SSE 和认证方式。
+6. [服务端部署](server-deployment.md)：PostgreSQL、systemd、OpenResty/Nginx 和上线验证。
 
-## 快速启动
+项目介绍和本地快速启动见仓库根目录 [README](../README.md)。
 
-创建 Python 环境并安装依赖：
+## 常用命令
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-启动本地服务端：
-
-```powershell
-.\.venv\Scripts\python.exe -m app.server --host 127.0.0.1 --port 8765
-```
-
-使用 ONNX Runtime DirectML 启动监控客户端：
+监控客户端：
 
 ```powershell
 $env:EVE_SENTRY_OCR_BACKEND = "onnx"
-$env:EVE_SENTRY_ONNX_MODEL_DIR = "$PWD\.runtime\onnx-models"
-.\scripts\start_monitor_client.ps1 `
-  -Server http://127.0.0.1:8765 `
-  -OcrDevice dml
+$env:EVE_SENTRY_OCR_DEVICE = "dml"
+.\scripts\start_monitor_client.ps1 -Server http://127.0.0.1:8765
 ```
 
-也可以直接运行已经解压的发行包：
+本地服务端：
 
 ```powershell
-.\EVE-Sentry-Monitor-ONNX\EVE-Sentry-Monitor.exe
+python -m app.server --host 127.0.0.1 --port 8765
 ```
 
-发行包已经包含 Python 运行时、DirectML、ONNX Runtime 和 OCR 模型，目标电脑无需另外安装 Python 或模型。必须保留完整的 `_internal` 目录，不能只复制 EXE。
-
-启用服务端认证后，先在网页账号页创建桌面密钥，再把密钥填入客户端设置区。
-Windows 客户端会用 DPAPI 保存密钥、已处理日志文件名和累计角色身份；服务地址
-可使用 HTTP 或 HTTPS，公网 HTTP 会明文传输密钥，建议仅在可信网络使用。首次启动会异步扫描全部历史 EVE Chatlogs，后续每 10 秒只
-处理新增文件和仍在等待完整 `Listener` 的新文件，不会周期性续签身份。
-
-## 构建客户端
-
-确认 `.runtime/onnx-models` 中存在检测与识别模型后执行：
+前端：
 
 ```powershell
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean `
-  packaging\eve-sentry-monitor-onnx.spec
+cd frontend
+npm ci
+npm run dev
 ```
 
-构建产物位于 `dist/EVE-Sentry-Monitor-ONNX/`。完整构建、压缩、模型校验和性能数据见 [ONNX OCR 验证与构建](onnx-ocr-validation.md)。旧 PaddleOCR GPU 兼容包仅用于回溯，说明见 [旧版客户端打包](monitor-client-packaging.md)。
-
-## 测试
-
-运行完整测试：
+测试：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest
+pytest
+cd frontend
+npm test
+npm run build
 ```
 
-OCR、红框定位、敌对人数、告警冷却、事件游标和文件状态相关改动应同时添加对应的回归测试。
+## 当前约定
 
-## 文档索引
+- 生产 OCR 使用 RapidOCR、ONNX Runtime DirectML 和 PP-OCRv6 medium 模型。
+- 监控客户端只采集下拉框当前选中的 EVE 窗口。
+- 监控和预警是独立开关，预警统一显示在客户端顶部浮窗。
+- 普通用户使用 EVE SSO，管理员使用密码，桌面客户端使用设备密钥。
+- 生产服务端使用 PostgreSQL；SQLite 仅用于本地开发和兼容。
+- Web 由 React SPA 提供，Python 服务只提供 JSON API 和 SSE。
+- zKillboard 不在当前生产链路，统计和界面不得构造不存在的数据。
 
-- [情报平台架构](intel-platform-architecture.md)：客户端、服务端、ESI、分类、告警、API 和存储设计。
-- [情报工作流](intel-workflows.md)：OCR、频道情报、角色校验、敌我分类和告警流程。
-- [实现路线图](intel-platform-roadmap.md)：当前完成度、边界和后续开发顺序。
-- [配置 API](intel-config-api.md)：服务端分类、告警配置和运行时配置。
-- [本地联调](local-integration.md)：启动顺序、健康检查、客户端状态和故障排查。
-- [ONNX OCR 验证与构建](onnx-ocr-validation.md)：DirectML 性能、模型转换、客户端构建和验收。
-- [旧版客户端打包](monitor-client-packaging.md)：PaddleOCR GPU 兼容包的构建与分发。
-- [服务端部署](server-deployment.md)：Linux 部署、systemd、环境变量和客户端对接。
-- [用户认证](authentication.md)：账号、设备密钥、EVE 日志身份校验、机器人密钥和安全上线顺序。
-- [地图数据](map-data.md)：星图数据结构与生成方式。
+## 文档维护
 
-## 历史文档
-
-- `docs/superpowers/specs/2026-06-24-eve-sentry-design.md`
-- `docs/superpowers/plans/2026-06-24-eve-sentry-plan.md`
-
-以上两份文件记录早期单机 OCR 方案。当前行为以架构、工作流、联调和部署文档为准。
+- 功能上线时直接更新对应主题文档，不新增同主题日期版计划文件。
+- 接口变化同时更新 `api-reference.md` 和受影响的客户端或 Web 文档。
+- 部署变量以 `deploy/linux/eve-sentry.env.example` 为准。
+- 文档中的命令应能在当前仓库执行，过期兼容行为必须明确标注。
+- 运行时数据库、token、设备密钥、日志、截图和模型缓存不写入文档目录。

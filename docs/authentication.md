@@ -1,24 +1,43 @@
-# 用户认证与 EVE 身份校验
+# 认证与 EVE 身份校验
 
-## 权限模型
+## 登录与密钥
 
-- `admin`：管理用户、密码、状态、允许军团、用户角色白名单、密钥和审计记录。
-- `member`：修改自己的密码，创建和吊销自己的桌面客户端密钥。
-- `desktop` 密钥：首次完成 EVE 日志身份校验后可长期使用服务端 API。
-- `service_readonly` 密钥：仅允许读取 `/api/v1/bootstrap` 和 `/api/v1/events`，用于 QQ 机器人。
+| 身份 | 登录方式 | 权限 |
+| --- | --- | --- |
+| 管理员 | 用户名和密码 | 全部管理页面、账号安全和业务接口 |
+| 普通用户 | EVE SSO | 态势页、报表和自己的设备密钥 |
+| 桌面设备密钥 | `Authorization: Bearer <key>` | 身份验证通过后的客户端 API |
+| 只读服务密钥 | `Authorization: Bearer <key>` | 仅 `GET /api/v1/bootstrap` 和 `GET /api/v1/events` |
 
-密码使用 Argon2id。网页登录会话和 API 密钥只在数据库保存 SHA-256 哈希；完整密钥仅在创建时显示一次。解禁用户不会恢复旧密钥，必须重新签发桌面密钥并重新完成首次身份校验。
+普通用户只有在 EVE SSO 角色属于管理员配置的允许军团时才能登录。管理员账号不使用
+EVE SSO。EVE SSO 登录和态势页 ESI 授权共用一个应用和回调：
 
-## 创建初始管理员
+```text
+/api/v1/auth/esi/callback
+```
 
-先创建只允许服务用户读取的密码文件：
+密码使用 Argon2id。会话和 API 密钥只保存哈希，完整密钥只在创建时显示一次。设备
+密钥可吊销、重新启用或删除记录；已被用户禁用流程吊销的旧密钥不会因解禁自动恢复。
+
+## 认证模式
+
+- `off`：认证服务关闭，旧业务接口保持开放。
+- `setup`：认证和管理接口受保护，现有业务接口暂不强制认证，供上线迁移使用。
+- `enforce`：除 `/api/health`、管理员登录和 EVE SSO 起止接口外均要求认证。
+
+HTTP 可以启用认证，但密码、Cookie 和 API 密钥会明文经过网络。可信内网可按实际环境
+使用 HTTP，公网入口建议使用 HTTPS。
+
+## 初始管理员
+
+创建权限受限的密码文件：
 
 ```bash
 sudo install -o eve-sentry -g eve-sentry -m 600 /dev/null /etc/eve-sentry/admin-password
 sudo sh -c 'printf "%s" "请替换为至少12位随机密码" > /etc/eve-sentry/admin-password'
 ```
 
-在 `/etc/eve-sentry/eve-sentry.env` 中配置：
+配置：
 
 ```dotenv
 EVE_SENTRY_SERVER_AUTH_MODE=setup
@@ -26,43 +45,49 @@ EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_ADMIN=admin
 EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_PASSWORD_FILE=/etc/eve-sentry/admin-password
 ```
 
-服务启动时只在管理员不存在时创建账号，不会使用文件内容反复重置现有密码。首次成功创建后可从环境文件移除两个 Bootstrap 变量，并安全删除密码文件。
+服务只在管理员不存在时创建账号，不会重复重置密码。创建完成后移除两个 Bootstrap
+变量并删除密码文件。
 
-## 桌面客户端校验
+## 桌面身份验证
 
-1. 管理员先配置一个或多个允许军团 ID，或给具体服务用户添加角色 ID 白名单。
-2. 用户在账号页创建桌面密钥，完整密钥只显示一次。
-3. 客户端使用 Windows DPAPI 保存密钥和本地日志索引。
-4. 新密钥或本地索引缺失时，客户端扫描 EVE Chatlogs 中全部历史文件的 `Listener`。
-5. 首次成功后认证永久有效。每 10 秒只枚举新增日志文件，并提交新增角色。
-6. 新文件尚未写出完整 `Listener` 时保持待处理；ESI 超时或无法确认时暂停监控、预警和上报并重试。
-7. 服务端确认任一角色既不属于允许军团、也不在该用户白名单时，会在同一事务禁用用户并吊销全部会话和密钥。
+1. 用户创建桌面设备密钥。
+2. 新密钥只能调用 `/api/v1/client/identity-check`。
+3. 客户端扫描全部历史 EVE 日志中的 `Listener` 并提交角色名。
+4. 服务端通过 ESI 解析角色 ID、军团和联盟。
+5. 角色属于任一允许军团，或角色 ID 位于该用户白名单时，密钥验证通过。
+6. 验证长期有效；后续只有新增角色、规则变化或管理员操作会重新判定。
 
-管理员移除允许军团或角色白名单时，服务端会立即根据已保存的验证角色重新计算权限，不依赖客户端续签。
+客户端每 10 秒只查找新增日志文件，不重复扫描已处理文件的内容。新文件尚未写出
+`Listener` 时不会标记完成。新角色遇到 ESI 超时或无法解析时，客户端暂停监控、预警
+和上报并重试，不禁用用户。
 
-## QQ 机器人密钥
+确认任一角色既不属于允许军团、也不在该用户白名单时，服务端在同一事务内：
 
-在管理员页选中机器人所属服务用户，创建“只读服务密钥”，然后配置机器人：
+- 禁用整个用户。
+- 吊销该用户全部会话和密钥。
+- 保存角色、军团和判定原因到审计记录。
+- 断开 SSE，并使客户端停止监控与预警。
+
+管理员修改允许军团或角色白名单时，服务端根据已保存的验证角色立即重新计算授权。
+管理员解禁后必须签发新密钥，并重新完成首次日志校验。
+
+## 服务密钥
+
+QQ 机器人使用管理员为服务账号创建的 `service_readonly` 密钥：
 
 ```dotenv
-EVE_SENTRY_EVENTS_URL=https://sentry.example.com/api/v1/events
+EVE_SENTRY_EVENTS_URL=http://YOUR_SERVER/api/v1/events
 EVE_SENTRY_API_KEY=eve_创建时显示的完整密钥
-EVE_SENTRY_PUBLIC_URL=https://sentry.example.com
+EVE_SENTRY_PUBLIC_URL=http://YOUR_SERVER
 ```
 
-该密钥不能读取用户、报表或其他 API，也不能写入数据。轮换时先创建新密钥并更新机器人，确认 SSE 已重连后再吊销旧密钥。
+轮换时先创建新密钥并更新机器人，确认 SSE 已重连后再吊销旧密钥。
 
-## 安全上线顺序
+## 安全控制
 
-1. 备份 PostgreSQL 或 SQLite 数据库。
-2. 升级代码并设置 `EVE_SENTRY_SERVER_AUTH_MODE=setup`，创建认证表和管理员；此时认证管理端点受保护，现有数据、OCR 和 SSE 接口暂不强制认证。
-3. 创建初始管理员，配置允许军团和必要的用户角色白名单。
-4. 确认统一入口可访问。可直接使用 HTTP；公网环境仍建议后续配置 TLS。
-5. 创建 QQ 机器人只读服务密钥，升级机器人并确认 Bootstrap/SSE 正常。
-6. 升级桌面客户端，为用户创建账号并完成首次历史日志校验。
-7. 将 `EVE_SENTRY_SERVER_AUTH_MODE=enforce`，重启服务并验证健康检查、网页登录、OCR、心跳和 SSE。
-
-服务端与客户端均支持通过 HTTP 使用网页登录和 API 密钥。HTTP 会以明文传输密码、
-会话 Cookie 和 API 密钥，公网链路存在被窃听或篡改的风险；如网络环境允许，仍建议
-使用 HTTPS。经反向代理访问 HTTPS 时，应传递 `X-Forwarded-Proto: https`，服务端会
-自动为会话 Cookie 增加 `Secure` 属性。
+- 网页会话 Cookie 为 `HttpOnly; SameSite=Strict`；HTTPS 请求额外设置 `Secure`。
+- 网页非只读请求必须携带 `X-CSRF-Token`。
+- 登录接口有失败限流。
+- 普通用户不能访问 `/api/v1/admin/*`。
+- 只读服务密钥不能写入数据，也不能读取其授权范围外的接口。
+- SSE 每 30 秒检查一次主体状态，认证变更会主动唤醒检查。

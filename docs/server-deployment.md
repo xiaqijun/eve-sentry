@@ -1,313 +1,185 @@
-# EVE Sentry 服务端部署指南
+# 服务端部署
 
-> Current status (2026-07-10): Python intel server is API/SSE only. The old
-> embedded HTML page has been removed; production UI is the React SPA under
-> `frontend/dist`, served by OpenResty/Nginx with `/api/` proxied to Python.
-
-> Current status (2026-07-09): zKillboard/killboard enrichment is disabled and
-> should not be configured on the server. Remove old zKill cache files from the
-> runtime directory during deployment to avoid loading stale large JSON caches.
-
-> 日期: 2026-07-01
-
-这份文档只覆盖情报服务端部署。桌面 OCR 检测端、频道采集器和预警客户端仍然运行在本地机器上，通过 HTTP 连接远端服务端。
-
-## 部署内容
-
-- `app.server`: HTTP JSON API、SSE 事件流
-- `frontend/dist`: React 情报工作台静态资源
-- OpenResty/Nginx 统一入口: `/` 托管 React，`/api/` 反向代理 Python
-- PostgreSQL 存储、SQLite 兼容存储和运行期数据文件
-- 可选 ESI 补全
-- 可选 zKillboard 补全
-
-当前服务端路径不依赖 `requirements.txt` 里的 GUI、OCR 和 Windows 抓图依赖，服务器上使用 `requirements-server.txt` 即可。
-
-## 推荐目录布局
+当前生产结构：
 
 ```text
-/opt/eve-sentry/                  仓库目录
-/opt/eve-sentry/.venv-server/     服务端虚拟环境
-/etc/eve-sentry/eve-sentry.env    服务端环境变量
-/var/lib/eve-sentry/              runtime data、ESI token/cache、SDE 数据
+OpenResty/Nginx :80/:443
+  -> frontend/dist
+  -> /api/ -> Python 127.0.0.1:8765
+Python app.server
+  -> PostgreSQL
+  -> ESI / SDE
 ```
 
-## 1. 准备主机
+## 目录
 
-安装 Python 3.11+，并准备运行目录:
+```text
+/opt/eve-sentry/                       仓库和服务端虚拟环境
+/etc/eve-sentry/eve-sentry.env         环境配置
+/var/lib/eve-sentry/                   运行数据、SDE、ESI token/cache
+/opt/1panel/www/eve-sentry/            当前 1Panel/OpenResty 静态目录
+```
+
+## 安装
 
 ```bash
 sudo useradd --system --home /opt/eve-sentry --shell /usr/sbin/nologin eve-sentry
 sudo mkdir -p /opt/eve-sentry /etc/eve-sentry /var/lib/eve-sentry
 sudo chown -R eve-sentry:eve-sentry /opt/eve-sentry /var/lib/eve-sentry
-```
 
-拉代码并创建服务端虚拟环境:
-
-```bash
-sudo -u eve-sentry git clone <your-repo-url> /opt/eve-sentry
+sudo -u eve-sentry git clone YOUR_REPOSITORY /opt/eve-sentry
 cd /opt/eve-sentry
 sudo -u eve-sentry python3 -m venv .venv-server
 sudo -u eve-sentry .venv-server/bin/python -m pip install --upgrade pip
 sudo -u eve-sentry .venv-server/bin/python -m pip install -r requirements-server.txt
 ```
 
-## 2. 配置环境变量
+服务端依赖不包含 PyQt、截图和 OCR。PostgreSQL 驱动使用
+`psycopg[binary,pool]>=3.2.0`。
 
-复制模板并按实际路径修改:
+## PostgreSQL
 
 ```bash
-sudo cp deploy/linux/eve-sentry.env.example /etc/eve-sentry/eve-sentry.env
-sudo chown root:root /etc/eve-sentry/eve-sentry.env
-sudo chmod 640 /etc/eve-sentry/eve-sentry.env
+sudo -u postgres createuser --pwprompt eve_sentry
+sudo -u postgres createdb --owner eve_sentry eve_sentry
 ```
 
-至少检查这些字段:
-
-- `EVE_SENTRY_SERVER_HOST`
-- `EVE_SENTRY_SERVER_PORT`
-- `EVE_SENTRY_SERVER_STORAGE`
-- `EVE_SENTRY_SERVER_POSTGRES_DSN`
-- `EVE_SENTRY_SERVER_DB`
-- `EVE_SENTRY_SERVER_CONFIG`
-- `EVE_SENTRY_SERVER_MAP_SOURCE`
-- `EVE_SENTRY_SERVER_MAP_SDE_PATH`
-- `EVE_SENTRY_SERVER_MAP_REGION_IDS`
-- `EVE_SENTRY_SERVER_ENABLE_ESI`
-- `EVE_SENTRY_SERVER_AUTH_MODE`
-
-生产环境推荐:
+生产配置：
 
 ```dotenv
 EVE_SENTRY_SERVER_STORAGE=postgres
-EVE_SENTRY_SERVER_POSTGRES_DSN=postgresql://eve_sentry:<password>@127.0.0.1:5432/eve_sentry
+EVE_SENTRY_SERVER_POSTGRES_DSN=postgresql://eve_sentry:CHANGE_ME@127.0.0.1:5432/eve_sentry
 ```
 
-`EVE_SENTRY_SERVER_DB` 仍保留给 SQLite 本地联调和回退使用。
-健康检查会返回脱敏后的 PostgreSQL DSN，不会暴露密码。认证首次上线时先保持
-`EVE_SENTRY_SERVER_AUTH_MODE=setup`，完整的管理员创建、客户端密钥和启用顺序见
-[用户认证与 EVE 身份校验](authentication.md)。
+服务端启动时自动创建和迁移表。升级前仍应备份数据库：
 
-如果地图使用官方 SDE，先在服务器上同步一次 YAML 地图表，再启动服务:
+```bash
+sudo -u postgres pg_dump -Fc eve_sentry > /var/lib/eve-sentry/eve_sentry.dump
+```
+
+连接池默认最小 2、最大 8 个连接。不要为每个 SSE 心跳重新创建 PostgreSQL 连接。
+
+## 环境配置
+
+```bash
+sudo cp deploy/linux/eve-sentry.env.example /etc/eve-sentry/eve-sentry.env
+sudo chown root:eve-sentry /etc/eve-sentry/eve-sentry.env
+sudo chmod 640 /etc/eve-sentry/eve-sentry.env
+```
+
+重点字段：
+
+```dotenv
+EVE_SENTRY_SERVER_HOST=127.0.0.1
+EVE_SENTRY_SERVER_PORT=8765
+EVE_SENTRY_SERVER_STORAGE=postgres
+EVE_SENTRY_SERVER_POSTGRES_DSN=postgresql://eve_sentry:CHANGE_ME@127.0.0.1:5432/eve_sentry
+EVE_SENTRY_SERVER_CONFIG=/var/lib/eve-sentry/intel_config.json
+EVE_SENTRY_SERVER_AUTH_MODE=setup
+EVE_SENTRY_SERVER_MAP_SOURCE=sde
+EVE_SENTRY_SERVER_MAP_SDE_PATH=/var/lib/eve-sentry/sde/BUILD_NUMBER
+EVE_SENTRY_SERVER_MAP_REGION_IDS=10000045
+EVE_SENTRY_SERVER_ESI_CLIENT_ID=YOUR_EVE_APP_CLIENT_ID
+EVE_SENTRY_SERVER_ESI_REDIRECT_URI=http://YOUR_SERVER/api/v1/auth/esi/callback
+EVE_SENTRY_SERVER_ESI_TOKEN_FILE=/var/lib/eve-sentry/esi_tokens.json
+EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain
+```
+
+认证不依赖 HTTPS 才能启用。HTTP 仅适合可信网络；公网建议配置 TLS，并把回调地址、
+客户端地址和机器人地址统一切换为 HTTPS。
+
+## SDE 地图
 
 ```bash
 cd /opt/eve-sentry
 sudo -u eve-sentry .venv-server/bin/python scripts/sync_sde.py \
-  --build 3417089 \
   --target /var/lib/eve-sentry/sde
 ```
 
-`Tenal` 的官方 region id 是 `10000045`，可直接写到
-`EVE_SENTRY_SERVER_MAP_REGION_IDS=10000045`。
-服务端按这个配置启动后，星图拓扑会固定在配置区域内；其他星系的
-预警/OCR 情报会继续入库和出现在情报列表里，但不会自动新增成星图节点。
+`EVE_SENTRY_SERVER_MAP_SDE_PATH` 指向解压后的 SDE 根目录。Tenal 的 region ID 为
+`10000045`。配置区域外的情报仍会存储，但不会自动扩展当前星图拓扑。
 
-如果启用 authenticated ESI，Linux 上建议:
+## EVE SSO
 
-- `EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain`
-- `EVE_SENTRY_SERVER_ESI_TOKEN_FILE=/var/lib/eve-sentry/esi_tokens.json`
+普通用户登录和态势页 ESI 授权共用一个 EVE 应用及回调：
 
-然后用文件权限保护 token 文件，而不是依赖 Windows DPAPI。
-
-## 3. 先前台启动一次
-
-在启用 systemd 之前，先用同一个入口手工启动:
-
-```bash
-cd /opt/eve-sentry
-sudo -u eve-sentry env $(grep -v '^#' /etc/eve-sentry/eve-sentry.env | xargs) \
-  .venv-server/bin/python scripts/run_server.py
+```dotenv
+EVE_SENTRY_SERVER_ESI_REDIRECT_URI=http://YOUR_SERVER/api/v1/auth/esi/callback
+EVE_SENTRY_SERVER_ESI_SCOPES=esi-location.read_location.v1,esi-characters.read_contacts.v1,esi-corporations.read_contacts.v1,esi-alliances.read_contacts.v1,esi-search.search_structures.v1
 ```
 
-健康检查（认证启用后仍公开）:
+普通用户登录只接受允许军团中的角色。态势页授权需要的 scopes 由同一回调根据 OAuth
+state 区分。不要提交 `esi_tokens.json`。
 
-```bash
-curl http://127.0.0.1:8765/api/health
-curl -H "Authorization: Bearer $EVE_SENTRY_API_KEY" \
-  http://127.0.0.1:8765/api/v1/clients
-```
-
-`http://127.0.0.1:8765/` 不再返回页面；根路径由 OpenResty/Nginx 托管
-React SPA，Python 根路径返回 API 404。
-
-## 4. 启用 systemd
-
-安装服务文件:
+## systemd
 
 ```bash
 sudo cp deploy/linux/eve-sentry.service /etc/systemd/system/eve-sentry.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now eve-sentry
+sudo systemctl status eve-sentry
 ```
 
-常用命令:
+服务实际入口：
+
+```text
+/opt/eve-sentry/.venv-server/bin/python /opt/eve-sentry/scripts/run_server.py
+```
+
+日志和重启：
 
 ```bash
-sudo systemctl status eve-sentry
 sudo journalctl -u eve-sentry -f
 sudo systemctl restart eve-sentry
 ```
 
-## 5. 配置 OpenResty/Nginx 统一入口
+## 前端与反向代理
 
-生产环境建议由 OpenResty 或 Nginx 统一对外暴露 React 工作台和 Python API：
+```bash
+cd /opt/eve-sentry/frontend
+npm ci
+npm test
+npm run build
+```
 
-- `/` -> `frontend/dist`
-- `/api/` -> `http://127.0.0.1:8765`
+将 `frontend/dist/` 同步到站点静态目录。Nginx/OpenResty 需要：
 
-仓库模板默认使用 HTTPS。没有证书时也可以沿用现有 HTTP 入口并开启认证，服务端会
-签发不带 `Secure` 的 `HttpOnly; SameSite=Strict` 会话 Cookie。HTTP 会明文传输密码、
-Cookie 和 API 密钥，建议仅在可信网络中使用；后续切换 HTTPS 时应让代理传递
-`X-Forwarded-Proto: https`。
+- `/assets/` 使用带 immutable 的长期缓存。
+- `/api/` 反向代理到 `http://127.0.0.1:8765`。
+- `/api/v1/events` 和 `/api/events` 关闭 buffering 和 cache。
+- 其他路径使用 `try_files ... /index.html` 支持 React Router。
+- HTTPS 代理传递 `X-Forwarded-Proto`，使会话 Cookie 获得 `Secure` 属性。
 
-推荐从 Windows 开发机使用固化的部署脚本。脚本会依次执行锁定依赖安装、
-前端测试、生产构建、压缩上传、服务器端备份、`rsync --delete` 原位同步、
-SHA256 对比以及内外网健康检查。远端同步或健康检查失败时，会自动恢复刚刚
-创建的备份：
+仓库提供 `deploy/linux/eve-sentry.nginx.conf`。Windows 开发机可执行完整部署脚本：
 
 ```powershell
 .\scripts\deploy_frontend.ps1 `
   -Target root@YOUR_SERVER `
   -IdentityFile "$HOME\.ssh\eve_server_key" `
-  -PublicUrl https://YOUR_DOMAIN
+  -PublicUrl http://YOUR_SERVER
 ```
 
-也可以通过环境变量保存当前终端的部署目标，避免每次重复输入：
+脚本会安装依赖、测试、构建、上传、备份、同步并执行健康检查；失败时恢复本轮备份。
 
-```powershell
-$env:EVE_SENTRY_DEPLOY_TARGET = "root@YOUR_SERVER"
-$env:EVE_SENTRY_DEPLOY_IDENTITY_FILE = "$HOME\.ssh\eve_server_key"
-.\scripts\deploy_frontend.ps1 -PublicUrl https://YOUR_DOMAIN
-```
+## 上线顺序
 
-默认静态目录是当前 1Panel/OpenResty 生产约定的
-`/opt/1panel/www/eve-sentry`。其他环境可通过 `-RemoteRoot` 覆盖。仅在本地
-依赖已经由 `npm ci` 安装且本轮测试已经独立通过时，才使用 `-SkipInstall`
-或 `-SkipTests`。每次部署的旧版本保存在静态目录旁的
-`eve-sentry-backups/<时间戳>/` 中。
+1. 备份 PostgreSQL 和运行配置。
+2. 更新代码并安装 `requirements-server.txt`。
+3. 使用 `setup` 模式创建初始管理员。
+4. 配置允许军团和必要的用户角色白名单。
+5. 配置 EVE SSO 和 QQ 机器人只读服务密钥。
+6. 升级桌面客户端并完成身份校验。
+7. 切换到 `enforce`，重启服务并验证健康、登录、OCR、心跳和 SSE。
 
-需要手工部署或在非 Windows 环境联调时，先在本地构建前端：
+## 验证
 
 ```bash
-cd frontend
-npm install
-npm run build
-```
-
-然后把构建产物同步到服务器，例如：
-
-```bash
-sudo mkdir -p /var/www/eve-sentry/frontend
-sudo rsync -av --delete frontend/dist/ /var/www/eve-sentry/frontend/
-```
-
-如果使用系统 Nginx，安装并启用：
-
-```bash
-sudo apt-get update
-sudo apt-get install -y nginx
-sudo cp deploy/linux/eve-sentry.nginx.conf /etc/nginx/sites-available/eve-sentry
-sudo ln -sf /etc/nginx/sites-available/eve-sentry /etc/nginx/sites-enabled/eve-sentry
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t
-sudo systemctl enable --now nginx
-sudo systemctl reload nginx
-```
-
-如果服务器使用 1Panel/OpenResty，可把同等 `server` 配置放到站点
-`conf.d` 中，并把静态目录挂载到 OpenResty 容器内。当前生产约定为：
-
-- React 静态目录: `/opt/1panel/www/eve-sentry`
-- 站点配置: `/opt/1panel/www/conf.d/eve-sentry.conf`
-- 后端 API: `http://127.0.0.1:8765`
-
-`deploy/linux/eve-sentry.nginx.conf` 默认会把：
-
-- `root` 指向 `/var/www/eve-sentry/frontend`
-- `/api/v1/events` 关闭 buffering，保证 SSE 实时推送；旧 `/api/events` 仅用于兼容旧客户端
-- 其他 `/api/` 请求反代到本地 intel server
-- 其余路径回退到 `index.html`，支持 React Router SPA 路由
-
-如果服务已经直接对外暴露 `8765`，切换完成后建议在安全组或防火墙层收口，只保留 OpenResty/Nginx 对外入口。
-
-## 6. authenticated ESI 登录
-
-普通用户登录和态势页 authenticated ESI 授权共用一个 EVE 应用与一个 callback。
-EVE 开发者后台只登记下面这个 callback，并确保与环境变量完全一致：
-
-```bash
-EVE_SENTRY_SERVER_ESI_CLIENT_ID=YOUR_EVE_APP_CLIENT_ID
-EVE_SENTRY_SERVER_ESI_REDIRECT_URI=http://YOUR_SERVER/api/v1/auth/esi/callback
-EVE_SENTRY_SERVER_ESI_TOKEN_FILE=/var/lib/eve-sentry/esi_tokens.json
-EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain
-EVE_SENTRY_SERVER_ESI_SCOPES=esi-location.read_location.v1,esi-characters.read_contacts.v1,esi-corporations.read_contacts.v1,esi-alliances.read_contacts.v1,esi-search.search_structures.v1
-```
-
-服务端根据 OAuth `state` 区分两种用途：普通用户登录只申请身份认证；态势页授权
-申请上述 scopes，并把令牌保存到 `EVE_SENTRY_SERVER_ESI_TOKEN_FILE`。普通用户通过
-允许军团和已验证角色匹配平台账号，管理员仍使用用户名和密码登录。
-
-`esi-search.search_structures.v1` 用于 authenticated ESI search route。服务端仅在
-`/universe/ids/` 精确解析 OCR 名字失败后调用该 route，搜索角色候选并反查完整名字；
-精确解析成功、前缀少于 8 个字符或候选不唯一时不会补全。
-
-仅修改环境变量不会给已有 token 增加权限，refresh token 也不能扩展原授权范围。
-从旧版本升级后必须重新完成一次 EVE SSO 授权。授权完成后同时检查配置 scope 和
-token scope：
-
-```bash
+curl http://127.0.0.1:8765/api/health
 curl -H "Authorization: Bearer $EVE_SENTRY_API_KEY" \
-  http://127.0.0.1:8765/api/v1/esi/status
+  http://127.0.0.1:8765/api/v1/clients
+curl -N -H "Authorization: Bearer $EVE_SENTRY_API_KEY" \
+  'http://127.0.0.1:8765/api/v1/events?timeout=10&heartbeat=5'
 ```
 
-响应中的 `config.scopes` 和顶层 `scopes` 都应包含
-`esi-search.search_structures.v1`；前者表示服务端将请求该权限，后者表示当前保存的
-token 已实际获得该权限。
-
-登录管理系统后，在态势页发起 ESI 授权。EVE SSO 会通过统一入口回调到主服务，
-不再启动临时回调监听器，也不需要开放 `8766/tcp` 或建立 SSH 隧道。授权完成后检查：
-
-```bash
-curl -H "Authorization: Bearer $EVE_SENTRY_API_KEY" \
-  http://127.0.0.1:8765/api/v1/esi/status
-```
-
-`authenticated` 为 `true` 后，`GET /api/v1/esi/session?location=true&contacts=true`
-会返回当前位置和 contacts/standings 快照。不要提交 `esi_tokens.json`。
-
-## 7. 客户端对接
-
-服务端可访问后，把本地客户端指向 OpenResty/Nginx 统一入口:
-
-```text
-检测客户端: EVE_SENTRY_INTEL_URL=http://YOUR_SERVER
-频道客户端: --server http://YOUR_SERVER
-预警客户端: --server http://YOUR_SERVER
-```
-
-无论使用 HTTP 还是 HTTPS，公网部署都应收口到 OpenResty/Nginx，不要直接把
-`8765` 对全网开放。HTTP 认证适合可信网络；公网建议配置 HTTPS。
-
-职责边界:
-
-- 检测客户端只上传 OCR snapshot，不查询 ESI、不做声望/敌对过滤、不生成告警。
-- 频道日志由独立频道客户端上传到 `/api/v1/channel-lines`。
-- 服务端必须启用并配置好 ESI、友好/敌对军团联盟配置和 standing 阈值，才能完成最终敌对判断；默认中立、不良、糟糕声望都归为敌对。
-- OCR active intel 代表“本地当前可见名单”，不是告警；只有服务端评分产生的 `ThreatEvent` 才会进入 `/api/v1/alerts` 和 SSE。
-- 如果公网联调出现“非敌对也告警”，先看 `GET /api/v1/alerts/{id}` 的 evidence 和 `GET /api/v1/config`，不要在客户端加过滤。
-
-## Runtime Data
-
-常见服务端运行期文件:
-
-- `intel.sqlite3`
-- `intel_config.json`
-- `esi_cache.json`
-- `esi_tokens.json`
-- 可选 `intel_reports.json`，用于历史 JSON 导入或迁移
-
-## 补充说明
-
-- `scripts/run_server.py` 会把 `EVE_SENTRY_SERVER_*` 环境变量转换成现有 `python -m app.server` 的启动参数。
-- 命令行参数仍然可用，而且会覆盖环境变量拼出来的默认值。
-- 服务器侧不需要安装桌面端 OCR 依赖。
+`scripts/integration_status_check.py` 可用于认证关闭或 `setup` 迁移期的只读现场检查；
+当前脚本不接收 API 密钥，`enforce` 模式应以上述带 Bearer 的 `curl` 检查为准。
