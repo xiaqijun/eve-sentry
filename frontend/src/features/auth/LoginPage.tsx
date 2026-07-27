@@ -5,7 +5,7 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 
 export function LoginPage() {
-  const { loading, login, user } = useAuth();
+  const { authEnabled, loading, login, user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [username, setUsername] = useState("");
@@ -13,7 +13,7 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  if (!loading && user) {
+  if (!loading && (!authEnabled || user)) {
     return <Navigate replace to="/" />;
   }
 

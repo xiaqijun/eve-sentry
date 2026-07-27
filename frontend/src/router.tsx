@@ -10,11 +10,11 @@ import { ProtectedRoute } from "./features/auth/RouteGuards";
 export const router = createBrowserRouter([
   {
     path: "/",
-    element: <ProtectedRoute><WorkbenchPage /></ProtectedRoute>,
+    element: <ProtectedRoute allowWhenAuthDisabled><WorkbenchPage /></ProtectedRoute>,
   },
   {
     path: "/reports",
-    element: <ProtectedRoute><HostileReportPage /></ProtectedRoute>,
+    element: <ProtectedRoute allowWhenAuthDisabled><HostileReportPage /></ProtectedRoute>,
   },
   {
     path: "/login",

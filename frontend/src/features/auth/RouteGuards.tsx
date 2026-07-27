@@ -5,14 +5,21 @@ import { useAuth } from "./AuthContext";
 export function ProtectedRoute({
   children,
   admin = false,
+  allowWhenAuthDisabled = false,
 }: {
   children: React.ReactNode;
   admin?: boolean;
+  allowWhenAuthDisabled?: boolean;
 }) {
-  const { loading, user } = useAuth();
+  const { authEnabled, loading, user } = useAuth();
   const location = useLocation();
   if (loading) {
     return <main className="auth-loading">正在验证会话...</main>;
+  }
+  if (!authEnabled) {
+    return allowWhenAuthDisabled
+      ? <>{children}</>
+      : <Navigate replace to="/" />;
   }
   if (!user) {
     return <Navigate replace state={{ from: location }} to="/login" />;
