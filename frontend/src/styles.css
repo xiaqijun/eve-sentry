@@ -3107,7 +3107,7 @@ button {
 
 .account-grid-single {
   grid-template-columns: minmax(0, 1fr);
-  max-width: 1040px;
+  max-width: none;
 }
 
 .account-key-form {
@@ -3116,7 +3116,7 @@ button {
 
 .security-grid {
   display: grid;
-  max-width: 1040px;
+  max-width: none;
   grid-template-columns: minmax(260px, 0.8fr) minmax(360px, 1.2fr);
   gap: 16px;
 }
@@ -3558,8 +3558,8 @@ button {
 }
 
 .management-table-panel {
-  max-width: 1440px;
-  margin: 0 auto 16px;
+  max-width: none;
+  margin: 0 0 16px;
   overflow: hidden;
   border: 1px solid #d9dee1;
   border-radius: 6px;
