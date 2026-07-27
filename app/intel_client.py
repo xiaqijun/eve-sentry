@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
@@ -33,10 +33,6 @@ class IntelApiClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.api_key = str(api_key or "").strip()
-        if self.api_key and not _allows_api_key_transport(self.base_url):
-            raise IntelApiError(
-                "API keys require HTTPS for non-local server addresses"
-            )
 
     def post_report(
         self,
@@ -668,18 +664,6 @@ class IntelApiClient:
 
 def _bool_param(value: bool) -> str:
     return "true" if value else "false"
-
-
-def _allows_api_key_transport(base_url: str) -> bool:
-    parsed = urlparse(str(base_url or ""))
-    if parsed.scheme.casefold() == "https":
-        return True
-    host = str(parsed.hostname or "").casefold()
-    return parsed.scheme.casefold() == "http" and host in {
-        "127.0.0.1",
-        "localhost",
-        "::1",
-    }
 
 
 def _optional_positive_int(value: Any) -> int | None:

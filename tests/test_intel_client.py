@@ -1693,9 +1693,6 @@ def test_intel_api_client_sends_api_key_for_json_and_identity_requests(monkeypat
     ]
 
 
-def test_intel_api_client_rejects_api_key_over_remote_plain_http():
-    with pytest.raises(IntelApiError, match="require HTTPS"):
-        IntelApiClient("http://114.132.167.239:8765", api_key="eve_secret")
-
-    client = IntelApiClient("http://127.0.0.1:8765", api_key="eve_secret")
+def test_intel_api_client_allows_api_key_over_configured_http_server():
+    client = IntelApiClient("http://114.132.167.239:8765", api_key="eve_secret")
     assert client.api_key == "eve_secret"
