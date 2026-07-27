@@ -301,7 +301,7 @@ def test_monitor_ui_smoke_constructs_main_window_offscreen_without_side_effects(
     assert payload["ok"] is True
     assert payload["qt_platform"] == "offscreen"
     assert payload["window_title"] == "EVE Sentry"
-    assert payload["minimum_size"] == [800, 540]
+    assert payload["minimum_size"] == [900, 620]
     assert payload["main_window_created"] is True
     assert payload["intel_client_created"] is False
     assert payload["heartbeat_timer_active"] is False
@@ -333,8 +333,8 @@ def test_monitor_ui_smoke_constructs_main_window_offscreen_without_side_effects(
     }
     assert payload["monitor_button_style"] == {
         "inactive_applied": True,
-        "inactive_contains": ["#0d5f75", "#23b7d8", "font-size: 16px"],
-        "active_contains": ["#b52b28", "#ff5b50", "font-size: 16px"],
+        "inactive_contains": ["#0d5f75", "#23b7d8", "font-size: 13px"],
+        "active_contains": ["#8f2f2d", "#d95752", "font-size: 13px"],
     }
     for key, detail in payload["status_card_details"].items():
         assert detail["object_name"] == f"status-card-{key}"

@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFrame,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -25,6 +26,7 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -61,7 +63,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EVE Sentry")
-        self.setMinimumSize(800, 540)
+        self.setMinimumSize(900, 620)
+        self.resize(980, 680)
         self.setStyleSheet(APP_QSS)
 
         self._region_prefs = RegionPreferences("region_prefs.json")
@@ -128,10 +131,11 @@ class MainWindow(QMainWindow):
         self._status_cards: dict[str, tuple[QFrame, QLabel, QLabel]] = {}
 
         central = QWidget()
+        central.setObjectName("appRoot")
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(8)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
         self._settings.setFixedWidth(240)
         self._settings.scan_settings_changed.connect(self._apply_scan_settings)
@@ -139,78 +143,152 @@ class MainWindow(QMainWindow):
         self._settings.api_key_changed.connect(self._apply_api_key)
         root.addWidget(self._settings)
 
-        right = QVBoxLayout()
-        right.setSpacing(6)
+        workspace = QWidget()
+        workspace.setObjectName("workspace")
+        right = QVBoxLayout(workspace)
+        right.setContentsMargins(20, 16, 20, 14)
+        right.setSpacing(10)
 
-        action_row = QHBoxLayout()
-        action_row.setSpacing(6)
+        header_row = QHBoxLayout()
+        header_row.setSpacing(8)
+
+        page_title = QLabel("监控中心")
+        page_title.setObjectName("pageTitle")
+        header_row.addWidget(page_title)
+        header_row.addStretch()
 
         self._monitor_btn = QPushButton("开始监控")
-        self._monitor_btn.setMinimumHeight(40)
+        self._monitor_btn.setObjectName("primaryAction")
+        self._monitor_btn.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+        )
+        self._monitor_btn.setMinimumSize(132, 38)
         self._monitor_btn.setStyleSheet(monitor_button_style(active=False))
         self._monitor_btn.setCheckable(True)
         self._monitor_btn.clicked.connect(self._toggle_monitor)
-        action_row.addWidget(self._monitor_btn, 1)
+        header_row.addWidget(self._monitor_btn)
 
         self._alert_btn = QPushButton("开启预警")
-        self._alert_btn.setMinimumHeight(40)
+        self._alert_btn.setObjectName("alertAction")
+        self._alert_btn.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
+        )
+        self._alert_btn.setMinimumSize(120, 38)
         self._alert_btn.setStyleSheet(monitor_button_style(active=False))
         self._alert_btn.setCheckable(True)
         self._alert_btn.clicked.connect(self._toggle_alert)
-        action_row.addWidget(self._alert_btn, 1)
-        right.addLayout(action_row)
+        header_row.addWidget(self._alert_btn)
+        right.addLayout(header_row)
+
+        target_panel = QFrame()
+        target_panel.setObjectName("targetBar")
+        target_layout = QVBoxLayout(target_panel)
+        target_layout.setContentsMargins(12, 9, 12, 9)
+        target_layout.setSpacing(5)
+
+        target_row = QHBoxLayout()
+        target_row.setSpacing(8)
+        target_label = QLabel("目标窗口")
+        target_label.setObjectName("fieldTitle")
+        target_row.addWidget(target_label)
 
         self._window_combo = QComboBox()
+        self._window_combo.setMinimumHeight(34)
         self._window_combo.currentIndexChanged.connect(self._on_window_selected)
-        right.addWidget(self._window_combo)
+        target_row.addWidget(self._window_combo, 1)
+
+        refresh_btn = QToolButton()
+        refresh_btn.setObjectName("iconButton")
+        refresh_btn.setFixedSize(34, 34)
+        refresh_btn.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        )
+        refresh_btn.setToolTip("刷新窗口")
+        refresh_btn.clicked.connect(self._detect_window)
+        target_row.addWidget(refresh_btn)
+
+        select_btn = QPushButton("选择区域")
+        select_btn.setObjectName("secondaryAction")
+        select_btn.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DesktopIcon)
+        )
+        select_btn.clicked.connect(self._select_region)
+        target_row.addWidget(select_btn)
+        target_layout.addLayout(target_row)
 
         self._window_label = QLabel("窗口：未检测")
-        right.addWidget(self._window_label)
+        self._window_label.setObjectName("targetMeta")
+        target_layout.addWidget(self._window_label)
+        right.addWidget(target_panel)
 
-        right.addWidget(QLabel("窗口状态"))
+        status_title = QLabel("运行状态")
+        status_title.setObjectName("sectionTitle")
+        right.addWidget(status_title)
+
+        status_grid = QGridLayout()
+        status_grid.setSpacing(7)
+        status_positions = {
+            "server": (0, 0, 1, 1),
+            "esi": (0, 1, 1, 1),
+            "ocr": (0, 2, 1, 1),
+            "window": (1, 0, 1, 2),
+            "region": (1, 2, 1, 1),
+        }
+        for key, position in status_positions.items():
+            status_grid.addWidget(self._make_status_card(key), *position)
+        for column in range(3):
+            status_grid.setColumnStretch(column, 1)
+        right.addLayout(status_grid)
+
+        table_title = QLabel("窗口状态")
+        table_title.setObjectName("sectionTitle")
+        right.addWidget(table_title)
         self._window_status_table = QTableWidget(0, 4)
         self._window_status_table.setHorizontalHeaderLabels(
             ["窗口", "区域", "状态", "最近动作"]
         )
-        self._window_status_table.setMinimumHeight(96)
+        self._window_status_table.setMinimumHeight(112)
+        self._window_status_table.setMaximumHeight(148)
         self._window_status_table.verticalHeader().setVisible(False)
+        self._window_status_table.verticalHeader().setDefaultSectionSize(30)
         self._window_status_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._window_status_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._window_status_table.setColumnWidth(0, 180)
-        self._window_status_table.setColumnWidth(1, 125)
-        self._window_status_table.setColumnWidth(2, 90)
-        self._window_status_table.horizontalHeader().setStretchLastSection(True)
+        self._window_status_table.setAlternatingRowColors(True)
+        self._window_status_table.setShowGrid(False)
+        table_header = self._window_status_table.horizontalHeader()
+        table_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        table_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        table_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         right.addWidget(self._window_status_table)
 
-        status_grid = QGridLayout()
-        status_grid.setSpacing(6)
-        for index, key in enumerate(["server", "esi", "ocr", "window", "region"]):
-            card = self._make_status_card(key)
-            status_grid.addWidget(card, index // 3, index % 3)
-        right.addLayout(status_grid)
+        log_header = QHBoxLayout()
+        log_header.setSpacing(6)
+        log_title = QLabel("运行日志")
+        log_title.setObjectName("sectionTitle")
+        log_header.addWidget(log_title)
+        log_header.addStretch()
 
-        right.addWidget(QLabel("运行日志"))
+        clear_btn = QToolButton()
+        clear_btn.setObjectName("iconButton")
+        clear_btn.setFixedSize(30, 30)
+        clear_btn.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogDiscardButton)
+        )
+        clear_btn.setToolTip("清空日志")
+        log_header.addWidget(clear_btn)
+        right.addLayout(log_header)
 
         self._log = QTextEdit()
+        clear_btn.clicked.connect(self._log.clear)
         self._log.setReadOnly(True)
-        self._log.setStyleSheet("font-family: Consolas, 'Cascadia Mono', monospace;")
+        self._log.setObjectName("runtimeLog")
         right.addWidget(self._log)
 
-        btn_row = QHBoxLayout()
-        clear_btn = QPushButton("清空日志")
-        clear_btn.clicked.connect(self._log.clear)
-        btn_row.addWidget(clear_btn)
-
-        select_btn = QPushButton("选择成员列表区域")
-        select_btn.clicked.connect(self._select_region)
-        btn_row.addWidget(select_btn)
-
-        btn_row.addStretch()
-        right.addLayout(btn_row)
-
-        root.addLayout(right, 1)
+        root.addWidget(workspace, 1)
 
         self._status = QStatusBar()
+        self._status.setObjectName("appStatusBar")
         self.setStatusBar(self._status)
         self._status_label = QLabel("待机")
         self._status.addWidget(self._status_label)
@@ -243,12 +321,12 @@ class MainWindow(QMainWindow):
         frame.setObjectName(f"status-card-{key}")
         frame.setMinimumHeight(58)
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(10, 7, 10, 7)
+        layout.setContentsMargins(11, 7, 10, 7)
         layout.setSpacing(2)
         title = QLabel(titles[key])
-        title.setStyleSheet("color: #79c6dc; font-size: 11px; font-weight: 600;")
+        title.setObjectName("statusCardTitle")
         value = QLabel("未就绪")
-        value.setStyleSheet("color: #f2fbff; font-size: 13px; font-weight: 700;")
+        value.setObjectName("statusCardValue")
         value.setWordWrap(True)
         layout.addWidget(title)
         layout.addWidget(value)

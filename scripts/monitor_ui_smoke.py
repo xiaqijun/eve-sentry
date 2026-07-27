@@ -96,6 +96,17 @@ def widget_geometry(widget) -> dict[str, int]:
     }
 
 
+def widget_geometry_in_window(widget, window) -> dict[str, int]:
+    """Return widget geometry mapped into the main-window coordinate space."""
+    point = widget.mapTo(window, widget.rect().topLeft())
+    return {
+        "x": point.x(),
+        "y": point.y(),
+        "width": widget.width(),
+        "height": widget.height(),
+    }
+
+
 def rects_overlap(left: dict[str, int], right: dict[str, int]) -> bool:
     return not (
         left["x"] + left["width"] <= right["x"]
@@ -270,12 +281,15 @@ def run_smoke(args: argparse.Namespace) -> dict:
                 "width": window.width(),
                 "height": window.height(),
             },
-            "settings": widget_geometry(window._settings),
-            "monitor_button": widget_geometry(window._monitor_btn),
-            "window_combo": widget_geometry(window._window_combo),
-            "window_label": widget_geometry(window._window_label),
-            "window_status_table": widget_geometry(window._window_status_table),
-            "log": widget_geometry(window._log),
+            "settings": widget_geometry_in_window(window._settings, window),
+            "monitor_button": widget_geometry_in_window(window._monitor_btn, window),
+            "window_combo": widget_geometry_in_window(window._window_combo, window),
+            "window_label": widget_geometry_in_window(window._window_label, window),
+            "window_status_table": widget_geometry_in_window(
+                window._window_status_table,
+                window,
+            ),
+            "log": widget_geometry_in_window(window._log, window),
         }
         right_controls = [
             layout_rects["monitor_button"],
@@ -326,18 +340,18 @@ def run_smoke(args: argparse.Namespace) -> dict:
         theme_checks = {
             "app_qss_has_shell_colors": contains_all(
                 window.styleSheet(),
-                ["#061017", "#040c12", "QStatusBar", "QPushButton"],
+                ["#090c10", "#0e1218", "QStatusBar", "QToolButton#iconButton"],
             ),
             "inactive_button_style_applied": (
                 monitor_button_stylesheet == inactive_button_style
             ),
             "inactive_button_style_has_accent": contains_all(
                 inactive_button_style,
-                ["#0d5f75", "#23b7d8", "font-size: 16px"],
+                ["#0d5f75", "#23b7d8", "font-size: 13px"],
             ),
             "active_button_style_has_danger": contains_all(
                 active_button_style,
-                ["#b52b28", "#ff5b50", "font-size: 16px"],
+                ["#8f2f2d", "#d95752", "font-size: 13px"],
             ),
             "all_status_cards_named": all(
                 detail["object_name"] == f"status-card-{key}"
@@ -380,8 +394,8 @@ def run_smoke(args: argparse.Namespace) -> dict:
             "theme_checks": theme_checks,
             "monitor_button_style": {
                 "inactive_applied": theme_checks["inactive_button_style_applied"],
-                "inactive_contains": ["#0d5f75", "#23b7d8", "font-size: 16px"],
-                "active_contains": ["#b52b28", "#ff5b50", "font-size: 16px"],
+                "inactive_contains": ["#0d5f75", "#23b7d8", "font-size: 13px"],
+                "active_contains": ["#8f2f2d", "#d95752", "font-size: 13px"],
             },
             "status_card_details": status_card_details,
             "layout": layout_rects,

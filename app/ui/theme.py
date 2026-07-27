@@ -13,38 +13,103 @@ _SPIN_UP_ICON = _resource_path("spin-up.svg")
 _SPIN_DOWN_ICON = _resource_path("spin-down.svg")
 
 APP_QSS = """
-QMainWindow, QWidget {
-    background: #061017;
-    color: #d8e8ef;
+QMainWindow {
+    background: #090c10;
+}
+QWidget {
+    background: transparent;
+    color: #d9dde4;
     font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
     font-size: 12px;
 }
+QWidget#appRoot {
+    background: #090c10;
+}
+QWidget#workspace {
+    background: #0b0f14;
+}
+QWidget#settingsPanel {
+    background: #0e1218;
+    border-right: 1px solid #252b34;
+}
+QLabel#brandTitle {
+    color: #f4f7fa;
+    font-size: 17px;
+    font-weight: 700;
+}
+QLabel#brandMeta {
+    color: #747d89;
+    font-size: 11px;
+}
+QLabel#pageTitle {
+    color: #f5f7fa;
+    font-size: 19px;
+    font-weight: 700;
+}
+QLabel#sectionTitle {
+    color: #c7ccd4;
+    font-size: 12px;
+    font-weight: 600;
+}
+QLabel#fieldTitle {
+    color: #8e97a4;
+    font-weight: 600;
+}
+QLabel#fieldLabel {
+    color: #858e9b;
+    font-size: 11px;
+}
+QLabel#targetMeta {
+    color: #707987;
+    font-size: 11px;
+}
+QLabel#statusCardTitle {
+    color: #7e8793;
+    font-size: 10px;
+    font-weight: 600;
+}
+QLabel#statusCardValue {
+    color: #f1f4f7;
+    font-size: 13px;
+    font-weight: 700;
+}
+QFrame#targetBar {
+    border: 1px solid #252c35;
+    border-radius: 5px;
+    background: #11161d;
+}
 QGroupBox {
-    border: 1px solid #163848;
-    border-radius: 6px;
-    margin-top: 12px;
-    padding: 10px 8px 8px 8px;
-    background: #081720;
-    color: #e9f6fb;
+    border: none;
+    border-top: 1px solid #252b34;
+    border-radius: 0;
+    margin-top: 20px;
+    padding: 0;
+    background: transparent;
+    color: #c7ccd4;
     font-weight: 600;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
-    left: 10px;
-    padding: 0 4px;
-    color: #8bdaf1;
+    left: 0;
+    top: 2px;
+    padding: 0 8px 0 0;
+    background: #0e1218;
+    color: #a8afb9;
 }
 QLabel {
-    color: #bdd0d8;
+    color: #b7bdc6;
 }
 QLineEdit, QComboBox, QSpinBox {
-    min-height: 26px;
-    border: 1px solid #1c4254;
+    min-height: 28px;
+    border: 1px solid #303844;
     border-radius: 4px;
-    padding: 3px 8px;
-    background: #071b26;
-    color: #edf8fc;
-    selection-background-color: #0d88a8;
+    padding: 3px 9px;
+    background: #151a22;
+    color: #edf0f4;
+    selection-background-color: #0d7188;
+}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
+    border-color: #23b7d8;
 }
 QSpinBox {
     min-height: 32px;
@@ -55,22 +120,22 @@ QSpinBox::up-button {
     subcontrol-position: top right;
     width: 26px;
     border: none;
-    border-left: 1px solid #1c4254;
-    border-bottom: 1px solid #1c4254;
+    border-left: 1px solid #303844;
+    border-bottom: 1px solid #303844;
     border-top-right-radius: 4px;
-    background: #092331;
+    background: #1b212a;
 }
 QSpinBox::down-button {
     subcontrol-origin: border;
     subcontrol-position: bottom right;
     width: 26px;
     border: none;
-    border-left: 1px solid #1c4254;
+    border-left: 1px solid #303844;
     border-bottom-right-radius: 4px;
-    background: #092331;
+    background: #1b212a;
 }
 QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-    background: #0d3142;
+    background: #242c36;
 }
 QSpinBox::up-arrow {
     image: url("__SPIN_UP_ICON__");
@@ -87,11 +152,12 @@ QComboBox::drop-down {
     width: 22px;
 }
 QListWidget, QTableWidget, QTextEdit {
-    border: 1px solid #153849;
-    border-radius: 6px;
-    background: #041018;
-    color: #d5e9ef;
-    selection-background-color: #0f6076;
+    border: 1px solid #252c35;
+    border-radius: 5px;
+    background: #0d1117;
+    color: #d8dde4;
+    selection-background-color: #164d59;
+    alternate-background-color: #11161d;
 }
 QListWidget::item {
     min-height: 28px;
@@ -108,35 +174,55 @@ QCheckBox {
 }
 QHeaderView::section {
     border: none;
-    border-bottom: 1px solid #1c4254;
-    padding: 4px 6px;
-    background: #092331;
-    color: #8bdaf1;
+    border-bottom: 1px solid #2b323c;
+    padding: 6px 8px;
+    background: #151a21;
+    color: #89929e;
     font-weight: 600;
 }
 QTableWidget::item {
-    padding: 3px 5px;
+    padding: 4px 7px;
 }
 QPushButton {
     min-height: 32px;
-    border: 1px solid #24576b;
+    border: 1px solid #343d48;
     border-radius: 4px;
-    padding: 5px 12px;
-    background: #092331;
-    color: #e5f6fb;
+    padding: 5px 11px;
+    background: #181e26;
+    color: #e7eaee;
     font-weight: 600;
 }
 QPushButton:hover {
-    border-color: #2ba7c7;
-    background: #0d3142;
+    border-color: #4c5967;
+    background: #202731;
 }
 QPushButton:pressed {
-    background: #123d4d;
+    background: #272f3a;
+}
+QToolButton#iconButton {
+    border: 1px solid #303844;
+    border-radius: 4px;
+    background: #181e26;
+}
+QToolButton#iconButton:hover {
+    border-color: #4c5967;
+    background: #222a34;
+}
+QTextEdit#runtimeLog {
+    padding: 8px;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 11px;
 }
 QStatusBar {
     background: #040c12;
-    border-top: 1px solid #153544;
-    color: #9bb8c3;
+    border-top: 1px solid #252b34;
+    color: #7f8895;
+}
+QToolTip {
+    border: 1px solid #3a434f;
+    background: #171c23;
+    color: #edf0f4;
+    padding: 4px 6px;
 }
 """
 APP_QSS = APP_QSS.replace("__SPIN_UP_ICON__", _SPIN_UP_ICON).replace(
@@ -146,20 +232,22 @@ APP_QSS = APP_QSS.replace("__SPIN_UP_ICON__", _SPIN_UP_ICON).replace(
 STATUS_CARD_BASE_QSS = """
 QFrame {
     border: 1px solid %(border)s;
-    border-radius: 6px;
+    border-left: 3px solid %(border)s;
+    border-radius: 5px;
     background: %(background)s;
 }
 QLabel {
+    border: none;
     background: transparent;
 }
 """
 
 STATUS_TONES = {
-    "idle": ("#1b3f4d", "#071923"),
-    "ok": ("#159a7e", "#071e1f"),
-    "warn": ("#c18521", "#201807"),
-    "danger": ("#ba332c", "#220b0b"),
-    "active": ("#1e8fb0", "#061d29"),
+    "idle": ("#3a434f", "#12171e"),
+    "ok": ("#2ca889", "#12171e"),
+    "warn": ("#c38a32", "#17171a"),
+    "danger": ("#d3504a", "#191619"),
+    "active": ("#2e9fbd", "#12171e"),
 }
 
 
@@ -167,16 +255,16 @@ def monitor_button_style(active: bool) -> str:
     """Return the prominent start/stop button style."""
     if active:
         return (
-            "QPushButton { background: #b52b28; color: #fff3ef; "
-            "border: 1px solid #ff5b50; border-radius: 5px; "
-            "font-size: 16px; font-weight: bold; }"
-            "QPushButton:hover { background: #ce332f; }"
+            "QPushButton { background: #8f2f2d; color: #fff5f3; "
+            "border: 1px solid #d95752; border-radius: 4px; "
+            "padding: 5px 14px; font-size: 13px; font-weight: 700; }"
+            "QPushButton:hover { background: #a83a36; border-color: #ee6a65; }"
         )
     return (
-        "QPushButton { background: #0d5f75; color: #edfbff; "
-        "border: 1px solid #23b7d8; border-radius: 5px; "
-        "font-size: 16px; font-weight: bold; }"
-        "QPushButton:hover { background: #11718a; }"
+        "QPushButton { background: #0d5f75; color: #f0fbfd; "
+        "border: 1px solid #23b7d8; border-radius: 4px; "
+        "padding: 5px 14px; font-size: 13px; font-weight: 700; }"
+        "QPushButton:hover { background: #11718a; border-color: #51c8e2; }"
     )
 
 
