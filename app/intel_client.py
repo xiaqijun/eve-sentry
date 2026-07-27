@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -470,12 +470,16 @@ class IntelApiClient:
         last_event_id: str = "",
         limit: int = 50,
         timeout: float = 30.0,
+        heartbeat: float | None = None,
+        should_stop: Callable[[], bool] | None = None,
         acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str = "",
     ):
         """Yield raw server-sent events from the v1 event stream."""
         params = {"limit": str(limit), "timeout": str(timeout)}
+        if heartbeat is not None:
+            params["heartbeat"] = str(max(0.0, float(heartbeat)))
         if since:
             params["since"] = since
         if acknowledged is not None:
@@ -493,9 +497,11 @@ class IntelApiClient:
             headers=headers,
             method="GET",
         )
+        if should_stop is not None and should_stop():
+            return
         try:
             with urlopen(request, timeout=self.timeout + max(0.0, timeout)) as response:
-                yield from self._iter_events(response)
+                yield from self._iter_events(response, should_stop=should_stop)
         except HTTPError as exc:
             message = self._read_error_message(exc)
             raise IntelApiError(message) from exc
@@ -569,10 +575,19 @@ class IntelApiClient:
             if event.get("event") == "alert":
                 yield event["data"]
 
-    def _iter_events(self, response):
+    def _iter_events(
+        self,
+        response,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ):
         block_lines: list[str] = []
         while True:
+            if should_stop is not None and should_stop():
+                return
             raw_line = response.readline()
+            if should_stop is not None and should_stop():
+                return
             if raw_line == b"" or raw_line == "":
                 if block_lines:
                     event = self._parse_event_block(block_lines)

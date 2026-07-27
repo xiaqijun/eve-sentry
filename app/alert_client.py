@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from PyQt6.QtCore import QEvent, QPoint, QTimer, Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtCore import QEvent, QPoint, QRect, QTimer, Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QFont
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import (
@@ -47,13 +47,21 @@ DEFAULT_HEARTBEAT_INTERVAL = 10.0
 DEFAULT_RECONNECT_MAX_DELAY = 30.0
 MAX_OVERLAY_ROWS = 4
 OVERLAY_TILE_COLUMNS = 2
-OVERLAY_MIN_WIDTH = 256
-OVERLAY_TILE_WIDTH = 116
+OVERLAY_MIN_WIDTH = 140
+OVERLAY_MIN_HEIGHT = 52
+OVERLAY_TILE_WIDTH = 92
 OVERLAY_TILE_HEIGHT = 62
-OVERLAY_TILE_MIN_WIDTH = 108
-OVERLAY_TILE_MAX_WIDTH = 148
+OVERLAY_TILE_MIN_WIDTH = 88
+OVERLAY_TILE_MAX_WIDTH = 120
 OVERLAY_TILE_MIN_HEIGHT = 58
 OVERLAY_TILE_MAX_HEIGHT = 74
+OVERLAY_HOSTILE_COUNT_WIDTH = 38
+OVERLAY_GRID_SPACING = 6
+OVERLAY_RESIZE_MARGIN = 6
+RESIZE_LEFT = 1
+RESIZE_RIGHT = 2
+RESIZE_TOP = 4
+RESIZE_BOTTOM = 8
 
 
 def overlay_tile_dimensions(screen_width: int, screen_height: int) -> tuple[int, int]:
@@ -538,7 +546,11 @@ class AlertOverlay(QWidget):
         self._tile_width = OVERLAY_TILE_WIDTH
         self._tile_height = OVERLAY_TILE_HEIGHT
         self._drag_position: QPoint | None = None
+        self._resize_edges = 0
+        self._resize_start_geometry: QRect | None = None
+        self._resize_start_position: QPoint | None = None
         self._user_positioned = False
+        self._user_resized = False
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -549,12 +561,14 @@ class AlertOverlay(QWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setMinimumWidth(OVERLAY_MIN_WIDTH)
+        self.setMinimumSize(OVERLAY_MIN_WIDTH, OVERLAY_MIN_HEIGHT)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setMouseTracking(True)
         self.installEventFilter(self)
 
         frame = QFrame()
         frame.setObjectName("overlayFrame")
+        frame.setMouseTracking(True)
         frame.installEventFilter(self)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -568,6 +582,8 @@ class AlertOverlay(QWidget):
         header = QHBoxLayout()
         self._title.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         self._status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._title.setMouseTracking(True)
+        self._status.setMouseTracking(True)
         self._title.installEventFilter(self)
         self._status.installEventFilter(self)
         header.addWidget(self._title)
@@ -577,11 +593,12 @@ class AlertOverlay(QWidget):
 
         row_container = QWidget()
         row_container.setObjectName("rowContainer")
+        row_container.setMouseTracking(True)
         row_container.installEventFilter(self)
         self._row_layout = QGridLayout(row_container)
         self._row_layout.setContentsMargins(0, 0, 0, 0)
-        self._row_layout.setHorizontalSpacing(6)
-        self._row_layout.setVerticalSpacing(6)
+        self._row_layout.setHorizontalSpacing(OVERLAY_GRID_SPACING)
+        self._row_layout.setVerticalSpacing(OVERLAY_GRID_SPACING)
         self._row_layout.setAlignment(
             Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
         )
@@ -594,11 +611,13 @@ class AlertOverlay(QWidget):
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setWidget(row_container)
         scroll.setVisible(False)
+        scroll.setMouseTracking(True)
         visible_tile_rows = max(1, MAX_OVERLAY_ROWS // OVERLAY_TILE_COLUMNS)
         scroll.setMaximumHeight(
             self._tile_height * visible_tile_rows
-            + 6 * max(0, visible_tile_rows - 1)
+            + OVERLAY_GRID_SPACING * max(0, visible_tile_rows - 1)
         )
+        scroll.viewport().setMouseTracking(True)
         scroll.viewport().installEventFilter(self)
         layout.addWidget(scroll)
         self._scroll = scroll
@@ -689,31 +708,137 @@ class AlertOverlay(QWidget):
         return False
 
     def _handle_drag_event(self, event) -> bool:
+        global_position = event.globalPosition().toPoint()
         if event.type() == QEvent.Type.MouseButtonPress:
             if event.button() != Qt.MouseButton.LeftButton:
                 return False
+            resize_edges = self._resize_edges_at(global_position)
+            if resize_edges:
+                self._resize_edges = resize_edges
+                self._resize_start_geometry = QRect(self.geometry())
+                self._resize_start_position = global_position
+                self._drag_position = None
+                self._user_resized = True
+                self._user_positioned = True
+                self._title.setAlignment(
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                )
+                self._status.setAlignment(
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
+                )
+                event.accept()
+                return True
             self._drag_position = (
-                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                global_position - self.frameGeometry().topLeft()
             )
             event.accept()
             return True
         if event.type() == QEvent.Type.MouseMove:
+            if self._resize_edges and (
+                event.buttons() & Qt.MouseButton.LeftButton
+            ):
+                self._resize_from_pointer(global_position)
+                event.accept()
+                return True
             if self._drag_position is None or not (
                 event.buttons() & Qt.MouseButton.LeftButton
             ):
-                return False
-            self.move(event.globalPosition().toPoint() - self._drag_position)
+                edges = self._resize_edges_at(global_position)
+                self.setCursor(self._cursor_for_resize_edges(edges))
+                return bool(edges)
+            self.move(global_position - self._drag_position)
             event.accept()
             return True
         if event.type() == QEvent.Type.MouseButtonRelease:
             if event.button() != Qt.MouseButton.LeftButton:
                 return False
+            if self._resize_edges:
+                self._resize_edges = 0
+                self._resize_start_geometry = None
+                self._resize_start_position = None
+                self.setCursor(
+                    self._cursor_for_resize_edges(
+                        self._resize_edges_at(global_position)
+                    )
+                )
+                event.accept()
+                return True
             if self._drag_position is not None:
                 self._user_positioned = True
             self._drag_position = None
             event.accept()
             return True
         return False
+
+    def _resize_edges_at(self, global_position: QPoint) -> int:
+        geometry = self.frameGeometry()
+        margin = OVERLAY_RESIZE_MARGIN
+        edges = 0
+        if abs(global_position.x() - geometry.left()) <= margin:
+            edges |= RESIZE_LEFT
+        elif abs(global_position.x() - geometry.right()) <= margin:
+            edges |= RESIZE_RIGHT
+        if abs(global_position.y() - geometry.top()) <= margin:
+            edges |= RESIZE_TOP
+        elif abs(global_position.y() - geometry.bottom()) <= margin:
+            edges |= RESIZE_BOTTOM
+        return edges
+
+    @staticmethod
+    def _cursor_for_resize_edges(edges: int) -> Qt.CursorShape:
+        if edges in {RESIZE_LEFT | RESIZE_TOP, RESIZE_RIGHT | RESIZE_BOTTOM}:
+            return Qt.CursorShape.SizeFDiagCursor
+        if edges in {RESIZE_RIGHT | RESIZE_TOP, RESIZE_LEFT | RESIZE_BOTTOM}:
+            return Qt.CursorShape.SizeBDiagCursor
+        if edges & (RESIZE_LEFT | RESIZE_RIGHT):
+            return Qt.CursorShape.SizeHorCursor
+        if edges & (RESIZE_TOP | RESIZE_BOTTOM):
+            return Qt.CursorShape.SizeVerCursor
+        return Qt.CursorShape.SizeAllCursor
+
+    def _resize_from_pointer(self, global_position: QPoint) -> None:
+        start_geometry = self._resize_start_geometry
+        start_position = self._resize_start_position
+        if start_geometry is None or start_position is None:
+            return
+        delta = global_position - start_position
+        geometry = QRect(start_geometry)
+        minimum_width = self.minimumWidth()
+        minimum_height = self.minimumHeight()
+        if self._resize_edges & RESIZE_LEFT:
+            geometry.setLeft(
+                min(
+                    start_geometry.left() + delta.x(),
+                    start_geometry.right() - minimum_width + 1,
+                )
+            )
+        elif self._resize_edges & RESIZE_RIGHT:
+            geometry.setRight(
+                max(
+                    start_geometry.right() + delta.x(),
+                    start_geometry.left() + minimum_width - 1,
+                )
+            )
+        if self._resize_edges & RESIZE_TOP:
+            geometry.setTop(
+                min(
+                    start_geometry.top() + delta.y(),
+                    start_geometry.bottom() - minimum_height + 1,
+                )
+            )
+        elif self._resize_edges & RESIZE_BOTTOM:
+            geometry.setBottom(
+                max(
+                    start_geometry.bottom() + delta.y(),
+                    start_geometry.top() + minimum_height - 1,
+                )
+            )
+        self.setGeometry(geometry)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._user_resized:
+            self._layout_rows_for_size()
 
     def show_summaries(self, summaries: list[dict[str, Any]]) -> None:
         screen = self._screen_for_anchor()
@@ -746,22 +871,15 @@ class AlertOverlay(QWidget):
                 label.style().unpolish(label)
                 label.style().polish(label)
             frame.setVisible(True)
-        if self._scroll is not None:
-            tile_rows = min(
-                max(1, (len(rows) + OVERLAY_TILE_COLUMNS - 1) // OVERLAY_TILE_COLUMNS),
-                max(1, MAX_OVERLAY_ROWS // OVERLAY_TILE_COLUMNS),
-            )
-            content_height = (
-                self._tile_height * tile_rows + 6 * max(0, tile_rows - 1)
-            )
-            self._scroll.setFixedHeight(content_height)
-            self._scroll.setVisible(bool(rows))
+        self._layout_rows_for_size()
         self._resize_to_content()
         if not self._user_positioned:
             self.move_to_default_position()
 
     def _resize_to_content(self) -> None:
         """Resize both larger and smaller when the visible tile count changes."""
+        if self._user_resized:
+            return
         if self._content_layout is not None:
             self._content_layout.invalidate()
             self._content_layout.activate()
@@ -783,6 +901,7 @@ class AlertOverlay(QWidget):
             frame.setVisible(False)
             frame.setFixedSize(self._tile_width, self._tile_height)
             frame.setProperty("hostile", "true")
+            frame.setMouseTracking(True)
             frame.installEventFilter(self)
 
             tile_layout = QVBoxLayout(frame)
@@ -794,6 +913,7 @@ class AlertOverlay(QWidget):
             system_label.setAlignment(
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
+            system_label.setMouseTracking(True)
             system_label.installEventFilter(self)
             tile_layout.addWidget(system_label)
 
@@ -802,16 +922,20 @@ class AlertOverlay(QWidget):
             detail_layout.setSpacing(4)
             hostile_label = QLabel("")
             hostile_label.setObjectName("hostileCell")
+            hostile_label.setFixedWidth(OVERLAY_HOSTILE_COUNT_WIDTH)
+            hostile_label.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+            hostile_label.setMouseTracking(True)
             hostile_label.installEventFilter(self)
             state_label = QLabel("")
             state_label.setObjectName("stateCell")
-            state_label.setAlignment(
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-            )
+            state_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+            state_label.setMouseTracking(True)
             state_label.installEventFilter(self)
             detail_layout.addWidget(hostile_label)
-            detail_layout.addStretch(1)
             detail_layout.addWidget(state_label)
+            detail_layout.addStretch(1)
             tile_layout.addLayout(detail_layout)
 
             tile_index = len(self._rows)
@@ -823,6 +947,52 @@ class AlertOverlay(QWidget):
             self._rows.append(
                 (frame, system_label, hostile_label, state_label)
             )
+
+    def _layout_rows_for_size(self) -> None:
+        if self._row_layout is None or self._scroll is None:
+            return
+        visible_rows = [row for row in self._rows if not row[0].isHidden()]
+        for frame, *_labels in self._rows:
+            self._row_layout.removeWidget(frame)
+        if not visible_rows:
+            self._scroll.setVisible(False)
+            self._scroll.setMinimumHeight(0)
+            self._scroll.setMaximumHeight(16777215)
+            return
+
+        if self._user_resized:
+            available_width = max(1, self.width() - 28)
+            columns = max(
+                1,
+                min(
+                    len(visible_rows),
+                    (available_width + OVERLAY_GRID_SPACING)
+                    // (self._tile_width + OVERLAY_GRID_SPACING),
+                ),
+            )
+        else:
+            columns = max(1, min(OVERLAY_TILE_COLUMNS, len(visible_rows)))
+
+        for index, (frame, *_labels) in enumerate(visible_rows):
+            self._row_layout.addWidget(
+                frame,
+                index // columns,
+                index % columns,
+            )
+        row_count = max(1, (len(visible_rows) + columns - 1) // columns)
+        self._scroll.setVisible(True)
+        if self._user_resized:
+            self._scroll.setMinimumHeight(0)
+            self._scroll.setMaximumHeight(16777215)
+        else:
+            visible_row_limit = max(1, (MAX_OVERLAY_ROWS + columns - 1) // columns)
+            visible_row_count = min(row_count, visible_row_limit)
+            content_height = (
+                self._tile_height * visible_row_count
+                + OVERLAY_GRID_SPACING * max(0, visible_row_count - 1)
+            )
+            self._scroll.setFixedHeight(content_height)
+        self._row_layout.invalidate()
 
     def set_anchor_rect(self, rect: dict[str, Any] | None) -> None:
         """Anchor automatic placement to the display hosting an EVE window."""
@@ -856,38 +1026,11 @@ class AlertOverlay(QWidget):
             geometry.width(),
             geometry.height(),
         )
-        self.setMinimumWidth(
-            max(
-                OVERLAY_MIN_WIDTH,
-                self._tile_width * OVERLAY_TILE_COLUMNS + 40,
-            )
-        )
+        self.setMinimumSize(OVERLAY_MIN_WIDTH, OVERLAY_MIN_HEIGHT)
         for frame, system_label, _hostile_label, _state_label in self._rows:
             frame.setFixedSize(self._tile_width, self._tile_height)
             system_label.setFixedWidth(self._tile_width - 18)
-        if self._scroll is not None:
-            visible_tile_rows = max(1, MAX_OVERLAY_ROWS // OVERLAY_TILE_COLUMNS)
-            if not self._scroll.isHidden():
-                visible_count = sum(
-                    1 for frame, *_labels in self._rows if not frame.isHidden()
-                )
-                visible_tile_rows = min(
-                    max(
-                        1,
-                        (visible_count + OVERLAY_TILE_COLUMNS - 1)
-                        // OVERLAY_TILE_COLUMNS,
-                    ),
-                    visible_tile_rows,
-                )
-                self._scroll.setFixedHeight(
-                    self._tile_height * visible_tile_rows
-                    + 6 * max(0, visible_tile_rows - 1)
-                )
-            else:
-                self._scroll.setMaximumHeight(
-                    self._tile_height * visible_tile_rows
-                    + 6 * max(0, visible_tile_rows - 1)
-                )
+        self._layout_rows_for_size()
 
     def move_to_default_position(self) -> None:
         screen = self._screen_for_anchor()
@@ -951,7 +1094,11 @@ class AlertEventWorker(QThread):
             try:
                 self.status_changed.emit("connected", "")
                 self._post_heartbeat(api, "connected", force=True)
-                for event in api.iter_events(timeout=self.timeout):
+                for event in api.iter_events(
+                    timeout=self.timeout,
+                    heartbeat=1.0,
+                    should_stop=lambda: self._stop_requested,
+                ):
                     if self._stop_requested:
                         break
                     if not isinstance(event, dict):
