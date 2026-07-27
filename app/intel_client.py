@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -24,9 +24,19 @@ class IntelApiClient:
 
     API_V1_PREFIX = "/api/v1"
 
-    def __init__(self, base_url: str = "http://127.0.0.1:8765", timeout: float = 3.0):
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:8765",
+        timeout: float = 3.0,
+        api_key: str = "",
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.api_key = str(api_key or "").strip()
+        if self.api_key and not _allows_api_key_transport(self.base_url):
+            raise IntelApiError(
+                "API keys require HTTPS for non-local server addresses"
+            )
 
     def post_report(
         self,
@@ -166,6 +176,18 @@ class IntelApiClient:
         if not isinstance(heartbeat, dict):
             raise IntelApiError("server returned an invalid heartbeat payload")
         return heartbeat
+
+    def verify_eve_characters(self, names: list[str]) -> dict[str, Any]:
+        """Permanently authorize the API key against detected EVE Listeners."""
+        payload = self._request(
+            "POST",
+            self._v1_path("/client/identity-check"),
+            payload={"characters": list(names)},
+        )
+        identity = payload.get("identity")
+        if not isinstance(identity, dict):
+            raise IntelApiError("server returned an invalid identity payload")
+        return identity
 
     def list_heartbeats(self) -> list[dict[str, Any]]:
         """Fetch recent runtime heartbeats from the intel server."""
@@ -489,7 +511,7 @@ class IntelApiClient:
         if min_level:
             params["min_level"] = min_level
         url = f"{self.base_url}{self._v1_path('/events')}?{urlencode(params)}"
-        headers = {"Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream", **self._authorization_headers()}
         if last_event_id:
             headers["Last-Event-ID"] = last_event_id
         request = Request(
@@ -522,7 +544,7 @@ class IntelApiClient:
             url = f"{url}?{urlencode(params)}"
 
         data = None
-        headers = {}
+        headers = self._authorization_headers()
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -548,6 +570,11 @@ class IntelApiClient:
         if not isinstance(data_obj, dict):
             raise IntelApiError("server returned a non-object JSON payload")
         return data_obj
+
+    def _authorization_headers(self) -> dict[str, str]:
+        if not self.api_key:
+            return {}
+        return {"Authorization": f"Bearer {self.api_key}"}
 
     def _v1_path(self, suffix: str) -> str:
         return f"{self.API_V1_PREFIX}{suffix}"
@@ -641,6 +668,18 @@ class IntelApiClient:
 
 def _bool_param(value: bool) -> str:
     return "true" if value else "false"
+
+
+def _allows_api_key_transport(base_url: str) -> bool:
+    parsed = urlparse(str(base_url or ""))
+    if parsed.scheme.casefold() == "https":
+        return True
+    host = str(parsed.hostname or "").casefold()
+    return parsed.scheme.casefold() == "http" and host in {
+        "127.0.0.1",
+        "localhost",
+        "::1",
+    }
 
 
 def _optional_positive_int(value: Any) -> int | None:

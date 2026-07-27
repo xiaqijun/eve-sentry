@@ -36,6 +36,7 @@ from app.alert_client import (
     AlertTrayController,
     default_state_path,
 )
+from app.channels.identity_logs import EveIdentityLogScanner
 from app.channels.local_system import find_latest_local_system
 from app.engine.capturer import Capturer
 from app.core.heartbeat import (
@@ -70,6 +71,13 @@ class MainWindow(QMainWindow):
         self._workers: dict[str, MonitorWorker] = {}
         self._worker_contexts: dict[str, dict] = {}
         self._settings = SettingsPanel()
+        self._identity_scanner = EveIdentityLogScanner(
+            self._settings.get_channel_log_dir(),
+            self._settings.auth_state_store(),
+        )
+        self._identity_check_running = False
+        self._identity_wants_monitor = False
+        self._identity_wants_alert = False
         self._intel_url = self._settings.get_server_url()
         configured_system = os.environ.get("EVE_SENTRY_SYSTEM", "").strip()
         self._intel_system = configured_system or "Unknown"
@@ -107,6 +115,10 @@ class MainWindow(QMainWindow):
         self._window_refresh_timer.timeout.connect(self._refresh_detected_windows)
         self._network_tasks = BackgroundTaskRunner(max_workers=2, parent=self)
         self._network_tasks.completed.connect(self._on_network_task_completed)
+        self._identity_timer = QTimer(self)
+        self._identity_timer.setInterval(10000)
+        self._identity_timer.timeout.connect(self._poll_identity_logs)
+        self._identity_timer.start()
         self._alert_controller: AlertTrayController | None = None
         self._stopping_monitor_workers: set[MonitorWorker] = set()
 
@@ -124,6 +136,7 @@ class MainWindow(QMainWindow):
         self._settings.setFixedWidth(240)
         self._settings.scan_settings_changed.connect(self._apply_scan_settings)
         self._settings.server_url_changed.connect(self._apply_server_url)
+        self._settings.api_key_changed.connect(self._apply_api_key)
         root.addWidget(self._settings)
 
         right = QVBoxLayout()
@@ -694,9 +707,12 @@ class MainWindow(QMainWindow):
             names.append(system)
         return names
 
-    def _start_alert(self) -> None:
+    def _start_alert(self, *, identity_checked: bool = False) -> None:
         """Start the server-side warning consumer inside the monitor client."""
         if self._alert_controller is not None:
+            return
+        if not identity_checked:
+            self._begin_identity_check("alert")
             return
         app = QApplication.instance()
         if app is None:
@@ -721,6 +737,11 @@ class MainWindow(QMainWindow):
                 minimum=1.0,
             ),
             hidden=False,
+            api_key=(
+                _instance_attr(self, "_settings").get_api_key()
+                if _instance_attr(self, "_settings") is not None
+                else ""
+            ),
         )
         try:
             controller = AlertTrayController(
@@ -814,6 +835,148 @@ class MainWindow(QMainWindow):
             self._publish_heartbeat()
         self._refresh_status_cards()
 
+    def _apply_api_key(self, _api_key: str) -> None:
+        """Reset network clients and local runtime state after a key change."""
+        was_monitoring = self._is_monitoring()
+        was_alerting = self._alert_controller is not None
+        if was_monitoring:
+            self._stop_monitor()
+            self._monitor_btn.setChecked(False)
+        if was_alerting:
+            self._stop_alert()
+            self._alert_btn.setChecked(False)
+        self._intel_client = self._create_intel_client()
+        self._identity_wants_monitor = False
+        self._identity_wants_alert = False
+        self._settings.set_auth_status(
+            "等待身份校验" if self._settings.get_api_key() else "未配置认证密钥"
+        )
+
+    def _begin_identity_check(self, action: str = "runtime") -> None:
+        """Scan Listener history and validate only identities not yet accepted."""
+        if _instance_attr(self, "_identity_scanner") is None:
+            if action == "monitor":
+                self._start_monitor(identity_checked=True)
+            elif action == "alert":
+                self._start_alert(identity_checked=True)
+            return
+        if action == "monitor":
+            self._identity_wants_monitor = True
+        elif action == "alert":
+            self._identity_wants_alert = True
+        if self._identity_check_running:
+            return
+
+        api_key = self._settings.get_api_key()
+        if not api_key:
+            self._settings.set_auth_status("请先填写客户端认证密钥", error=True)
+            if action == "monitor":
+                self._monitor_btn.setChecked(False)
+            elif action == "alert":
+                self._alert_btn.setChecked(False)
+            return
+        if self._intel_client is None:
+            self._settings.set_auth_status("认证客户端不可用，请检查 HTTPS 地址", error=True)
+            if action == "monitor":
+                self._monitor_btn.setChecked(False)
+            elif action == "alert":
+                self._alert_btn.setChecked(False)
+            return
+
+        self._identity_check_running = True
+        self._settings.set_auth_status("正在检查 EVE 登录角色")
+        if action == "monitor":
+            self._monitor_btn.setEnabled(False)
+        elif action == "alert":
+            self._alert_btn.setEnabled(False)
+        client = self._intel_client
+        self._network_tasks.submit_latest(
+            "identity",
+            lambda: self._scan_and_validate_identities(client, api_key),
+            {"kind": "identity", "action": action},
+        )
+
+    def _scan_and_validate_identities(
+        self,
+        client: IntelApiClient,
+        api_key: str,
+    ) -> dict:
+        scan = self._identity_scanner.scan(api_key)
+        pending_names = list(scan.pending_characters)
+        if pending_names:
+            identity = client.verify_eve_characters(pending_names)
+            self._identity_scanner.mark_verified(pending_names)
+        else:
+            identity = {"verified": scan.identity_verified, "permanent": True}
+        state = self._settings.auth_state_store().load()
+        if not state.get("identity_verified"):
+            if scan.pending_files:
+                raise IntelApiError("等待新日志文件写入 Listener")
+            raise IntelApiError("EVE 日志中没有可验证的 Listener")
+        return {
+            "identity": identity,
+            "characters": list(state.get("characters") or []),
+            "processed_count": scan.processed_count,
+            "pending_files": list(scan.pending_files),
+        }
+
+    def _poll_identity_logs(self) -> None:
+        """Check only files not recorded by the prior successful scans."""
+        if not self._settings.get_api_key() or self._identity_check_running:
+            return
+        self._begin_identity_check("runtime")
+
+    def _handle_identity_check_success(self, result: object, metadata: dict) -> None:
+        self._identity_check_running = False
+        self._monitor_btn.setEnabled(True)
+        self._alert_btn.setEnabled(True)
+        payload = result if isinstance(result, dict) else {}
+        characters = list(payload.get("characters") or [])
+        self._settings.set_auth_status(f"身份已验证 · {len(characters)} 个角色")
+        processed_count = int(payload.get("processed_count") or 0)
+        if processed_count:
+            self._log_message(f"已检查 {processed_count} 个新增 EVE 日志文件")
+
+        action = str(metadata.get("action") or "runtime")
+        resume_monitor = self._identity_wants_monitor or action == "monitor"
+        resume_alert = self._identity_wants_alert or action == "alert"
+        self._identity_wants_monitor = False
+        self._identity_wants_alert = False
+        if resume_monitor and not self._is_monitoring():
+            self._monitor_btn.setChecked(True)
+            self._start_monitor(identity_checked=True)
+        if resume_alert and self._alert_controller is None:
+            self._alert_btn.setChecked(True)
+            self._start_alert(identity_checked=True)
+
+    def _handle_identity_check_error(self, exc: Exception, metadata: dict) -> None:
+        self._identity_check_running = False
+        self._monitor_btn.setEnabled(True)
+        self._alert_btn.setEnabled(True)
+        message = str(exc)
+        action = str(metadata.get("action") or "runtime")
+        fatal = any(
+            token in message.casefold()
+            for token in ("unauthorized", "revoked", "disabled", "invalid api key")
+        )
+        if action == "monitor":
+            self._identity_wants_monitor = not fatal
+        if action == "alert":
+            self._identity_wants_alert = not fatal
+        if self._is_monitoring():
+            self._identity_wants_monitor = not fatal
+            self._stop_monitor()
+        if self._alert_controller is not None:
+            self._identity_wants_alert = not fatal
+            self._stop_alert()
+        self._monitor_btn.setChecked(False)
+        self._alert_btn.setChecked(False)
+        if fatal:
+            self._identity_wants_monitor = False
+            self._identity_wants_alert = False
+        self._settings.set_auth_status(message, error=True)
+        self._log_message(f"客户端身份校验失败：{message}")
+
     def _set_heartbeat_enabled(self, enabled: bool) -> None:
         timer = _instance_attr(self, "_heartbeat_timer")
         if timer is None:
@@ -834,18 +997,22 @@ class MainWindow(QMainWindow):
         metadata = context if isinstance(context, dict) else {}
         kind = str(metadata.get("kind") or "")
         try:
-            future.result()
+            result = future.result()
         except Exception as exc:
             if kind == "ocr":
                 self._handle_ocr_publish_error(exc, metadata)
             elif kind == "heartbeat":
                 self._handle_heartbeat_publish_error(exc)
+            elif kind == "identity":
+                self._handle_identity_check_error(exc, metadata)
         else:
             if kind == "ocr":
                 self._handle_ocr_publish_success(metadata)
             elif kind == "heartbeat":
                 self._last_heartbeat_error = ""
                 self._refresh_status_cards()
+            elif kind == "identity":
+                self._handle_identity_check_success(result, metadata)
         finally:
             runner = _instance_attr(self, "_network_tasks")
             if runner is not None:
@@ -876,7 +1043,10 @@ class MainWindow(QMainWindow):
             self._log_message(f"Heartbeat update failed: {message}")
         self._refresh_status_cards()
 
-    def _start_monitor(self) -> None:
+    def _start_monitor(self, *, identity_checked: bool = False) -> None:
+        if not identity_checked:
+            self._begin_identity_check("monitor")
+            return
         targets = self._build_monitor_targets()
         if not targets:
             self._detect_window()
@@ -1137,7 +1307,16 @@ class MainWindow(QMainWindow):
             timeout = max(0.1, float(timeout_raw))
         except ValueError:
             timeout = 10.0
-        return IntelApiClient(self._intel_url, timeout=timeout)
+        try:
+            return IntelApiClient(
+                self._intel_url,
+                timeout=timeout,
+                api_key=self._settings.get_api_key(),
+            )
+        except IntelApiError as exc:
+            self._settings.set_auth_status(str(exc), error=True)
+            logger.warning("Could not create authenticated intel client: %s", exc)
+            return None
 
     def _publish_ocr_snapshot(
         self,
