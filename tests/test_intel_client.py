@@ -9,6 +9,11 @@ from app.alert_client import (
     AlertEventConsumer,
     AlertOverlay,
     AlertTrayController,
+    OVERLAY_HOSTILE_COUNT_WIDTH,
+    OVERLAY_GRID_SPACING,
+    OVERLAY_MIN_WIDTH,
+    RESIZE_BOTTOM,
+    RESIZE_RIGHT,
     active_alert_keys_from_bootstrap,
     aggregate_alert_summaries,
     alert_hostile_count,
@@ -323,6 +328,52 @@ def test_intel_api_client_iterates_bootstrap_and_alert_events(monkeypatch):
         {"id": "boot-1", "event": "bootstrap", "data": {"alerts": []}},
         {"id": "evt-1", "event": "alert", "data": {"id": "evt-1"}},
     ]
+
+
+def test_intel_api_client_stops_sse_after_keepalive(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self):
+            self.readline_calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def readline(self):
+            self.readline_calls += 1
+            return b": keepalive\n"
+
+    response = FakeResponse()
+
+    def fake_urlopen(request, timeout=0):
+        captured["url"] = request.full_url
+        return response
+
+    stop_checks = 0
+
+    def should_stop():
+        nonlocal stop_checks
+        stop_checks += 1
+        return stop_checks >= 4
+
+    monkeypatch.setattr("app.intel_client.urlopen", fake_urlopen)
+    api = IntelApiClient("http://example.invalid", timeout=3.0)
+
+    events = list(
+        api.iter_events(
+            timeout=30,
+            heartbeat=1.0,
+            should_stop=should_stop,
+        )
+    )
+
+    assert events == []
+    assert "heartbeat=1.0" in captured["url"]
+    assert response.readline_calls == 1
 
 
 def test_intel_api_client_posts_and_lists_reports(tmp_path):
@@ -1130,7 +1181,7 @@ def test_alert_overlay_renders_hostile_system_tile(monkeypatch):
             [
                 {
                     "system_name": "S-KSWL",
-                    "hostile_count": 9,
+                    "hostile_count": 99,
                     "created_at": "2026-07-10T00:00:00Z",
                 }
             ]
@@ -1144,17 +1195,25 @@ def test_alert_overlay_renders_hostile_system_tile(monkeypatch):
         }
         assert labels == {
             "systemCell": "S-KSWL",
-            "hostileCell": "敌 9",
+            "hostileCell": "敌 99",
             "stateCell": "来敌",
         }
         system_cell = overlay.findChild(QLabel, "systemCell")
+        hostile_cell = overlay.findChild(QLabel, "hostileCell")
+        state_cell = overlay.findChild(QLabel, "stateCell")
         row = overlay.findChild(QFrame, "alertRow")
         scroll = overlay.findChild(QScrollArea, "alertScroll")
         assert system_cell is not None
+        assert hostile_cell is not None
+        assert state_cell is not None
         assert row is not None
         assert scroll is not None
         assert system_cell.minimumWidth() == overlay._tile_width - 18
         assert system_cell.maximumWidth() == overlay._tile_width - 18
+        assert hostile_cell.width() == OVERLAY_HOSTILE_COUNT_WIDTH
+        assert state_cell.x() == hostile_cell.x() + hostile_cell.width() + 4
+        assert state_cell.x() <= row.width() * 3 // 5
+        assert row.width() - (state_cell.x() + state_cell.width()) <= 20
         assert row.minimumWidth() == overlay._tile_width
         assert row.maximumWidth() == overlay._tile_width
         assert row.minimumHeight() == overlay._tile_height
@@ -1162,19 +1221,128 @@ def test_alert_overlay_renders_hostile_system_tile(monkeypatch):
         assert row.property("hostile") == "true"
         assert scroll.minimumHeight() == overlay._tile_height
         assert scroll.maximumHeight() == overlay._tile_height
-        assert overlay.minimumWidth() == max(
-            256,
-            overlay._tile_width * 2 + 40,
-        )
+        assert overlay.minimumWidth() == OVERLAY_MIN_WIDTH
         assert overlay.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     finally:
         overlay.close()
 
 
 def test_overlay_tile_dimensions_follow_available_screen_size():
-    assert overlay_tile_dimensions(1366, 768) == (108, 58)
-    assert overlay_tile_dimensions(1920, 1080) == (116, 62)
-    assert overlay_tile_dimensions(3840, 2160) == (148, 74)
+    assert overlay_tile_dimensions(1366, 768) == (88, 58)
+    assert overlay_tile_dimensions(1920, 1080) == (92, 62)
+    assert overlay_tile_dimensions(3840, 2160) == (120, 74)
+
+
+def test_alert_overlay_reflows_nodes_and_preserves_manual_size(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication, QFrame
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    summaries = [
+        {"system_name": f"SYSTEM-{index}", "hostile_count": index}
+        for index in range(6)
+    ]
+    try:
+        overlay.show_summaries(summaries)
+        overlay.show()
+        overlay._user_resized = True
+        overlay.resize(overlay.minimumWidth(), 250)
+        app.processEvents()
+
+        rows = [
+            item
+            for item in overlay.findChildren(QFrame)
+            if item.objectName() == "alertRow" and item.isVisible()
+        ]
+        assert len({row.x() for row in rows}) == 1
+        manual_size = overlay.size()
+
+        overlay.show_summaries(summaries)
+        app.processEvents()
+        assert overlay.size() == manual_size
+
+        three_column_width = (
+            overlay._tile_width * 3 + OVERLAY_GRID_SPACING * 2 + 28
+        )
+        overlay.resize(three_column_width, 250)
+        app.processEvents()
+
+        assert len({row.x() for row in rows}) == 3
+    finally:
+        overlay.close()
+
+
+def test_alert_overlay_resizes_from_bottom_right_corner(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtCore import QPoint, QRect
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    try:
+        overlay.show()
+        overlay.move(100, 100)
+        overlay.resize(220, 120)
+        app.processEvents()
+        start_geometry = QRect(overlay.geometry())
+        start_position = overlay.frameGeometry().bottomRight()
+        edges = overlay._resize_edges_at(start_position)
+
+        assert edges == RESIZE_RIGHT | RESIZE_BOTTOM
+
+        overlay._resize_edges = edges
+        overlay._resize_start_geometry = start_geometry
+        overlay._resize_start_position = start_position
+        overlay._user_resized = True
+        overlay._resize_from_pointer(start_position + QPoint(40, 30))
+        app.processEvents()
+
+        assert overlay.width() == start_geometry.width() + 40
+        assert overlay.height() == start_geometry.height() + 30
+    finally:
+        overlay.close()
+
+
+def test_alert_overlay_manual_resize_keeps_header_at_top(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtCore import QEvent, QPointF, Qt
+    from PyQt6.QtWidgets import QApplication
+
+    class FakeResizePress:
+        def __init__(self, global_x: int, global_y: int) -> None:
+            self._position = QPointF(global_x, global_y)
+            self.accepted = False
+
+        def type(self):
+            return QEvent.Type.MouseButtonPress
+
+        def globalPosition(self):
+            return self._position
+
+        def button(self):
+            return Qt.MouseButton.LeftButton
+
+        def accept(self) -> None:
+            self.accepted = True
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    try:
+        overlay.show()
+        overlay.move(100, 100)
+        app.processEvents()
+        press = FakeResizePress(
+            overlay.frameGeometry().right(),
+            overlay.frameGeometry().bottom(),
+        )
+
+        assert overlay._handle_drag_event(press) is True
+        assert press.accepted is True
+        assert overlay._title.alignment() & Qt.AlignmentFlag.AlignTop
+        assert overlay._status.alignment() & Qt.AlignmentFlag.AlignTop
+    finally:
+        overlay.close()
 
 
 def test_alert_overlay_stays_on_a_left_hand_monitor(monkeypatch):
@@ -1251,8 +1419,14 @@ def test_alert_overlay_shrinks_title_after_last_tile_disappears(monkeypatch):
         app.processEvents()
 
         assert overlay.height() < populated_height
-        assert overlay.height() == overlay.sizeHint().height()
-        assert overlay._title.height() == overlay._title.sizeHint().height()
+        assert overlay.height() == max(
+            overlay.minimumHeight(),
+            overlay.sizeHint().height(),
+        )
+        assert abs(
+            overlay._title.geometry().center().y()
+            - overlay.rect().center().y()
+        ) <= 1
     finally:
         overlay.close()
 

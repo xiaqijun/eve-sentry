@@ -1402,17 +1402,44 @@ class MainWindow(QMainWindow):
             self.raise_()
 
     def closeEvent(self, event):
-        """Stop background monitoring before closing the application."""
+        """Hide immediately while background workers unwind asynchronously."""
         self._quit_app()
-        event.accept()
+        event.ignore()
 
     def _quit_app(self):
-        self._stop_monitor(wait_for_workers=True)
-        self._stop_alert(wait_for_worker=True)
+        if _instance_attr(self, "_shutdown_in_progress", False):
+            return
+        self._shutdown_in_progress = True
+        self.hide()
+        tray = _instance_attr(self, "_tray")
+        if tray is not None:
+            tray.hide()
+        self._stop_monitor(wait_for_workers=False)
+        self._stop_alert(wait_for_worker=False)
         network_tasks = _instance_attr(self, "_network_tasks")
         if network_tasks is not None:
             network_tasks.shutdown()
-        self._tray.hide()
+        QTimer.singleShot(0, self._finish_quit_when_workers_stop)
+
+    def _finish_quit_when_workers_stop(self) -> None:
+        """Quit after Qt workers finish without blocking the event loop."""
+        monitor_workers = _instance_attr(
+            self,
+            "_stopping_monitor_workers",
+            set(),
+        )
+        alert_controllers = _instance_attr(
+            self,
+            "_stopping_alert_controllers",
+            set(),
+        )
+        monitor_running = any(worker.isRunning() for worker in monitor_workers)
+        alert_running = any(
+            controller.is_running() for controller in alert_controllers
+        )
+        if monitor_running or alert_running:
+            QTimer.singleShot(50, self._finish_quit_when_workers_stop)
+            return
         QApplication.quit()
 
 

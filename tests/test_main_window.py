@@ -18,12 +18,12 @@ def qt_app():
     return _QT_APP
 
 
-def test_close_event_runs_full_shutdown_instead_of_hiding_to_tray():
+def test_close_event_starts_shutdown_without_accepting_a_blocking_close():
     calls = []
 
     class FakeEvent:
-        def accept(self):
-            calls.append("accepted")
+        def ignore(self):
+            calls.append("ignored")
 
     class FakeWindow:
         def _quit_app(self):
@@ -31,10 +31,10 @@ def test_close_event_runs_full_shutdown_instead_of_hiding_to_tray():
 
     MainWindow.closeEvent(FakeWindow(), FakeEvent())
 
-    assert calls == ["shutdown", "accepted"]
+    assert calls == ["shutdown", "ignored"]
 
 
-def test_quit_app_waits_for_ocr_workers_before_exiting(monkeypatch):
+def test_quit_app_hides_and_starts_non_blocking_worker_shutdown(monkeypatch):
     calls = []
 
     class FakeNetworkTasks:
@@ -50,23 +50,80 @@ def test_quit_app_waits_for_ocr_workers_before_exiting(monkeypatch):
             self._network_tasks = FakeNetworkTasks()
             self._tray = FakeTray()
 
+        def hide(self):
+            calls.append("window")
+
         def _stop_alert(self, *, wait_for_worker=False):
             calls.append(("alert", wait_for_worker))
 
         def _stop_monitor(self, *, wait_for_workers=False):
             calls.append(("monitor", wait_for_workers))
 
-    monkeypatch.setattr(QApplication, "quit", lambda: calls.append("quit"))
+        def _finish_quit_when_workers_stop(self):
+            calls.append("poll")
+
+    monkeypatch.setattr(
+        "app.ui.main_window.QTimer.singleShot",
+        lambda delay, callback: (calls.append(("timer", delay)), callback()),
+    )
 
     MainWindow._quit_app(FakeWindow())
 
     assert calls == [
-        ("monitor", True),
-        ("alert", True),
-        "network",
+        "window",
         "tray",
-        "quit",
+        ("monitor", False),
+        ("alert", False),
+        "network",
+        ("timer", 0),
+        "poll",
     ]
+
+
+def test_shutdown_poll_quits_only_after_qt_workers_exit(monkeypatch):
+    callbacks = []
+    calls = []
+
+    class FakeWorker:
+        running = True
+
+        def isRunning(self):
+            return self.running
+
+    class FakeController:
+        running = True
+
+        def is_running(self):
+            return self.running
+
+    class FakeWindow:
+        def __init__(self):
+            self.worker = FakeWorker()
+            self.controller = FakeController()
+            self._stopping_monitor_workers = {self.worker}
+            self._stopping_alert_controllers = {self.controller}
+            self._finish_quit_when_workers_stop = (
+                lambda: MainWindow._finish_quit_when_workers_stop(self)
+            )
+
+    window = FakeWindow()
+    monkeypatch.setattr(
+        "app.ui.main_window.QTimer.singleShot",
+        lambda delay, callback: callbacks.append((delay, callback)),
+    )
+    monkeypatch.setattr(QApplication, "quit", lambda: calls.append("quit"))
+
+    MainWindow._finish_quit_when_workers_stop(window)
+
+    assert len(callbacks) == 1
+    assert callbacks[0][0] == 50
+    assert calls == []
+
+    window.worker.running = False
+    window.controller.running = False
+    callbacks.pop()[1]()
+
+    assert calls == ["quit"]
 
 
 def test_alert_toggle_starts_and_stops_embedded_controller(monkeypatch):
