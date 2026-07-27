@@ -181,9 +181,9 @@ describe("WorkbenchPage", () => {
     expect(container.querySelector('[data-testid="observation-table"]')).toBeInTheDocument();
     expect(container).toHaveTextContent("Pilot One");
     expect(container).toHaveTextContent("预警频道");
-    expect(container).toHaveTextContent("预警情报工作台");
-    expect(container).toHaveTextContent("状态更新时间");
-    expect(container).toHaveTextContent("在线监控");
+    expect(container).not.toHaveTextContent("预警情报工作台");
+    expect(container).not.toHaveTextContent("状态更新时间");
+    expect(container).not.toHaveTextContent("在线监控");
     expect(container).toHaveTextContent("实时态势");
     expect(container).not.toHaveTextContent("区域态势");
     expect(container.querySelector(".sector-panel")).not.toBeInTheDocument();

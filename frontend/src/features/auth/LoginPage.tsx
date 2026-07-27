@@ -34,24 +34,35 @@ export function LoginPage() {
 
   return (
     <main className="auth-page">
-      <form className="auth-login-panel" onSubmit={submit}>
-        <div className="auth-mark"><LockKeyhole size={22} /></div>
-        <p className="eyebrow">EVE 哨兵</p>
-        <h1>登录情报平台</h1>
-        <label>
-          <span>用户名</span>
-          <input autoComplete="username" required value={username} onChange={(e) => setUsername(e.target.value)} />
-        </label>
-        <label>
-          <span>密码</span>
-          <input autoComplete="current-password" required type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-        </label>
-        {error ? <p className="auth-error" role="alert">{error}</p> : null}
-        <button disabled={submitting || loading} type="submit">
-          <LogIn size={16} />
-          {submitting ? "正在登录" : "登录"}
-        </button>
-      </form>
+      <div className="auth-layout">
+        <section className="auth-brand-panel">
+          <span className="auth-brand-mark"><LockKeyhole size={24} /></span>
+          <div>
+            <p>EVE Sentry</p>
+            <h1>预警管理平台</h1>
+          </div>
+          <span className="auth-brand-status">情报服务在线</span>
+        </section>
+        <form className="auth-login-panel" onSubmit={submit}>
+          <div className="auth-login-heading">
+            <p>账号登录</p>
+            <h2>进入管理系统</h2>
+          </div>
+          <label>
+            <span>用户名</span>
+            <input autoComplete="username" required value={username} onChange={(e) => setUsername(e.target.value)} />
+          </label>
+          <label>
+            <span>密码</span>
+            <input autoComplete="current-password" required type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          </label>
+          {error ? <p className="auth-error" role="alert">{error}</p> : null}
+          <button disabled={submitting || loading} type="submit">
+            <LogIn size={16} />
+            {submitting ? "正在登录" : "登录"}
+          </button>
+        </form>
+      </div>
     </main>
   );
 }

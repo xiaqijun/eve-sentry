@@ -1,6 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { ArrowLeft, Building2, KeyRound, Plus, RefreshCw, ShieldAlert, Trash2, UserPlus, Users } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Building2, KeyRound, Plus, RefreshCw, ShieldAlert, Trash2, UserPlus, Users } from "lucide-react";
 
 import {
   addCorporation,
@@ -80,11 +79,11 @@ export function AdminPage() {
   };
 
   return (
-    <main className="admin-shell">
-      <header className="account-header">
+    <div className="admin-shell">
+      <header className="content-page-header account-header">
         <div>
-          <Link to="/"><ArrowLeft size={16} />返回态势图</Link>
-          <p className="eyebrow">访问控制</p><h1>用户与 EVE 身份管理</h1>
+          <p className="content-page-kicker">访问控制</p>
+          <h2>用户与 EVE 身份管理</h2>
         </div>
         <button disabled={loading} type="button" onClick={() => void load()}><RefreshCw size={15} />刷新</button>
       </header>
@@ -158,6 +157,6 @@ export function AdminPage() {
           <div className="audit-list">{audit.slice(0, 100).map((item) => <div key={item.audit_id}><time>{new Date(item.created_at).toLocaleString("zh-CN", { hour12: false })}</time><strong>{item.action}</strong><span>{item.target_user_id || "系统"}</span></div>)}</div>
         </article>
       </section>
-    </main>
+    </div>
   );
 }

@@ -295,16 +295,24 @@ class AuthHttpMixin:
         return morsel.value if morsel is not None else ""
 
     def _session_cookie_header(self, token: str) -> str:
-        return (
+        header = (
             f"{SESSION_COOKIE_NAME}={token}; Path=/; Max-Age=43200; "
-            "HttpOnly; Secure; SameSite=Strict"
+            "HttpOnly; SameSite=Strict"
         )
+        return f"{header}; Secure" if self._request_uses_https() else header
 
     def _clear_session_cookie_header(self) -> str:
-        return (
+        header = (
             f"{SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; "
-            "HttpOnly; Secure; SameSite=Strict"
+            "HttpOnly; SameSite=Strict"
         )
+        return f"{header}; Secure" if self._request_uses_https() else header
+
+    def _request_uses_https(self) -> bool:
+        forwarded_proto = str(
+            self.headers.get("X-Forwarded-Proto") or ""
+        ).split(",", 1)[0]
+        return forwarded_proto.strip().casefold() == "https"
 
     def _send_auth_json(
         self,

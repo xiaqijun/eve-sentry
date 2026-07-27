@@ -57,9 +57,12 @@ EVE_SENTRY_PUBLIC_URL=https://sentry.example.com
 1. 备份 PostgreSQL 或 SQLite 数据库。
 2. 升级代码并设置 `EVE_SENTRY_SERVER_AUTH_MODE=setup`，创建认证表和管理员；此时认证管理端点受保护，现有数据、OCR 和 SSE 接口暂不强制认证。
 3. 创建初始管理员，配置允许军团和必要的用户角色白名单。
-4. 为域名配置可信 TLS 证书，验证 HTTP 跳转、HTTPS 和 HSTS。
+4. 确认统一入口可访问。可直接使用 HTTP；公网环境仍建议后续配置 TLS。
 5. 创建 QQ 机器人只读服务密钥，升级机器人并确认 Bootstrap/SSE 正常。
 6. 升级桌面客户端，为用户创建账号并完成首次历史日志校验。
 7. 将 `EVE_SENTRY_SERVER_AUTH_MODE=enforce`，重启服务并验证健康检查、网页登录、OCR、心跳和 SSE。
 
-不要在远程明文 HTTP 地址上发送密钥。客户端会拒绝这种配置；只有本机 `localhost`/`127.0.0.1` 调试允许 HTTP。
+服务端与客户端均支持通过 HTTP 使用网页登录和 API 密钥。HTTP 会以明文传输密码、
+会话 Cookie 和 API 密钥，公网链路存在被窃听或篡改的风险；如网络环境允许，仍建议
+使用 HTTPS。经反向代理访问 HTTPS 时，应传递 `X-Forwarded-Proto: https`，服务端会
+自动为会话 Cookie 增加 `Secure` 属性。

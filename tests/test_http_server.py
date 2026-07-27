@@ -2503,10 +2503,19 @@ def test_browser_session_requires_csrf_and_service_key_is_read_only(tmp_path):
         assert status == 200
         set_cookie = response_headers["Set-Cookie"]
         assert "HttpOnly" in set_cookie
-        assert "Secure" in set_cookie
+        assert "Secure" not in set_cookie
         assert "SameSite=Strict" in set_cookie
         cookie = set_cookie.split(";", 1)[0]
         csrf = payload["csrf_token"]
+
+        status, secure_headers, _ = authenticated_request(
+            f"{server.url}/api/v1/auth/login",
+            method="POST",
+            payload={"username": "admin", "password": "admin-password-123"},
+            headers={"X-Forwarded-Proto": "https"},
+        )
+        assert status == 200
+        assert "Secure" in secure_headers["Set-Cookie"]
 
         status, _, payload = authenticated_request(
             f"{server.url}/api/v1/admin/users",

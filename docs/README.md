@@ -46,8 +46,8 @@ $env:EVE_SENTRY_ONNX_MODEL_DIR = "$PWD\.runtime\onnx-models"
 发行包已经包含 Python 运行时、DirectML、ONNX Runtime 和 OCR 模型，目标电脑无需另外安装 Python 或模型。必须保留完整的 `_internal` 目录，不能只复制 EXE。
 
 启用服务端认证后，先在网页账号页创建桌面密钥，再把密钥填入客户端设置区。
-Windows 客户端会用 DPAPI 保存密钥、已处理日志文件名和累计角色身份；远程服务
-地址必须使用 HTTPS。首次启动会异步扫描全部历史 EVE Chatlogs，后续每 10 秒只
+Windows 客户端会用 DPAPI 保存密钥、已处理日志文件名和累计角色身份；服务地址
+可使用 HTTP 或 HTTPS，公网 HTTP 会明文传输密钥，建议仅在可信网络使用。首次启动会异步扫描全部历史 EVE Chatlogs，后续每 10 秒只
 处理新增文件和仍在等待完整 `Listener` 的新文件，不会周期性续签身份。
 
 ## 构建客户端

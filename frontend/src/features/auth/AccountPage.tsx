@@ -1,6 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { ArrowLeft, KeyRound, LogOut, Plus, ShieldCheck, Trash2 } from "lucide-react";
-import { Link, useNavigate } from "react-router-dom";
+import { KeyRound, Plus, ShieldCheck, Trash2 } from "lucide-react";
 
 import {
   changePassword,
@@ -16,8 +15,7 @@ function formatTime(value?: string): string {
 }
 
 export function AccountPage() {
-  const { logout, refresh, user } = useAuth();
-  const navigate = useNavigate();
+  const { refresh, user } = useAuth();
   const [keys, setKeys] = useState<ApiKeyRecord[]>([]);
   const [newKeyName, setNewKeyName] = useState("");
   const [createdSecret, setCreatedSecret] = useState("");
@@ -57,19 +55,12 @@ export function AccountPage() {
   };
 
   return (
-    <main className="account-shell">
-      <header className="account-header">
+    <div className="account-shell">
+      <header className="content-page-header account-header">
         <div>
-          <Link to="/"><ArrowLeft size={16} />返回态势图</Link>
-          <p className="eyebrow">账号与设备</p>
-          <h1>{user?.display_name || user?.username}</h1>
+          <p className="content-page-kicker">个人设置</p>
+          <h2>{user?.display_name || user?.username}</h2>
           <span>{user?.role === "admin" ? "管理员" : "普通用户"} · {user?.username}</span>
-        </div>
-        <div className="account-actions">
-          {user?.role === "admin" ? <Link className="button-link" to="/admin"><ShieldCheck size={16} />管理后台</Link> : null}
-          <button type="button" onClick={() => void logout().then(() => navigate("/login"))}>
-            <LogOut size={16} />退出
-          </button>
         </div>
       </header>
 
@@ -118,6 +109,6 @@ export function AccountPage() {
           </form>
         </article>
       </section>
-    </main>
+    </div>
   );
 }

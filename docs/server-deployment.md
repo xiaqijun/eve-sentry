@@ -150,14 +150,15 @@ sudo systemctl restart eve-sentry
 
 ## 5. 配置 OpenResty/Nginx 统一入口
 
-生产环境必须由 OpenResty 或 Nginx 通过 HTTPS 统一对外暴露 React 工作台和 Python API：
+生产环境建议由 OpenResty 或 Nginx 统一对外暴露 React 工作台和 Python API：
 
 - `/` -> `frontend/dist`
 - `/api/` -> `http://127.0.0.1:8765`
 
-先把 `deploy/linux/eve-sentry.nginx.conf` 中的 `sentry.example.com` 和证书路径
-替换成真实值。模板将 80 端口全部跳转到 HTTPS，并在 443 端口启用 HSTS；
-证书未验证前不要开启强制认证。
+仓库模板默认使用 HTTPS。没有证书时也可以沿用现有 HTTP 入口并开启认证，服务端会
+签发不带 `Secure` 的 `HttpOnly; SameSite=Strict` 会话 Cookie。HTTP 会明文传输密码、
+Cookie 和 API 密钥，建议仅在可信网络中使用；后续切换 HTTPS 时应让代理传递
+`X-Forwarded-Proto: https`。
 
 推荐从 Windows 开发机使用固化的部署脚本。脚本会依次执行锁定依赖安装、
 前端测试、生产构建、压缩上传、服务器端备份、`rsync --delete` 原位同步、
@@ -294,13 +295,13 @@ curl http://127.0.0.1:8765/api/v1/esi/status
 服务端可访问后，把本地客户端指向 OpenResty/Nginx 统一入口:
 
 ```text
-检测客户端: EVE_SENTRY_INTEL_URL=https://YOUR_DOMAIN
-频道客户端: --server https://YOUR_DOMAIN
-预警客户端: --server https://YOUR_DOMAIN
+检测客户端: EVE_SENTRY_INTEL_URL=http://YOUR_SERVER
+频道客户端: --server http://YOUR_SERVER
+预警客户端: --server http://YOUR_SERVER
 ```
 
-只有在服务器本机调试或明确放通内网访问时，才直连 `http://127.0.0.1:8765`。
-公网部署应收口到 OpenResty/Nginx，不要直接把 `8765` 对全网开放。
+无论使用 HTTP 还是 HTTPS，公网部署都应收口到 OpenResty/Nginx，不要直接把
+`8765` 对全网开放。HTTP 认证适合可信网络；公网建议配置 HTTPS。
 
 职责边界:
 

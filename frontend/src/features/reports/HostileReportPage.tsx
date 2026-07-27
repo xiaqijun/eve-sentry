@@ -3,7 +3,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
-  ArrowLeft,
   BarChart3,
   Clock3,
   MapPinned,
@@ -11,9 +10,7 @@ import {
   ShieldAlert,
   Skull,
   Users,
-  UserRound,
 } from "lucide-react";
-import { Link } from "react-router-dom";
 
 import { fetchHostileAlertHistory } from "./api";
 import {
@@ -95,21 +92,14 @@ export function HostileReportPage() {
   const activeRange = RANGE_OPTIONS.find((item) => item.value === range)?.label || "7 天";
 
   return (
-    <main className="report-shell">
-      <header className="report-header">
+    <div className="report-shell">
+      <header className="content-page-header report-header">
         <div className="report-heading">
-          <Link className="report-back-link" to="/">
-            <ArrowLeft size={16} />
-            返回态势图
-          </Link>
-          <div>
-            <p className="eyebrow">EVE 哨兵 · 敌对情报</p>
-            <h1>敌对来袭报表</h1>
-            <span>所有统计仅包含 ESI 已确认存在的角色，OCR 噪声与未验证目标不计入。</span>
-          </div>
+          <p className="content-page-kicker">敌对情报</p>
+          <h2>敌对来袭统计</h2>
+          <span>所有统计仅包含 ESI 已确认存在的角色，OCR 噪声与未验证目标不计入。</span>
         </div>
         <div className="report-header-actions">
-          <Link className="report-account-link" to="/account"><UserRound size={15} />账号</Link>
           <div className="report-range-tabs" aria-label="报表统计范围">
             {RANGE_OPTIONS.map((item) => (
               <button
@@ -278,6 +268,6 @@ export function HostileReportPage() {
           {historyQuery.isLoading ? <div className="report-empty">正在加载来袭历史…</div> : null}
         </div>
       </section>
-    </main>
+    </div>
   );
 }

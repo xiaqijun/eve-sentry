@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
-  Activity,
-  BarChart3,
   Bell,
   Database,
   Filter,
@@ -12,7 +10,6 @@ import {
   Map,
   Radar,
   Skull,
-  UserRound,
 } from "lucide-react";
 
 import {
@@ -39,17 +36,6 @@ type WorkbenchNavId = "map" | "observations" | "alerts" | "esi";
 
 const REALTIME_EVENT_WINDOW_MS = 60 * 60 * 1000;
 const BOOTSTRAP_REFRESH_INTERVAL_MS = 60000;
-
-function formatTime(value?: string): string {
-  if (!value) {
-    return "-";
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-  return parsed.toLocaleString("zh-CN", { hour12: false });
-}
 
 function formatClock(value?: string): string {
   if (!value) {
@@ -200,7 +186,6 @@ export function WorkbenchPage() {
   const bootstrap = bootstrapQuery.data;
   const summary = bootstrap ? summarizeWorkbench(bootstrap) : null;
   const selected = selectedSystem(bootstrap, selectedSystemId);
-  const generatedAt = bootstrap ? formatTime(bootstrap.generated_at) : "-";
   const observations = useMemo(() => {
     if (!bootstrap) {
       return [];
@@ -444,29 +429,8 @@ export function WorkbenchPage() {
   );
 
   return (
-    <main className="workbench-shell">
+    <div className="workbench-shell">
       <aside className="left-rail" aria-label="实时态势栏">
-        <section className="brand-panel">
-          <div>
-            <p className="eyebrow">EVE 哨兵</p>
-            <h1>预警情报工作台</h1>
-          </div>
-          <div className="rail-meta-grid">
-            <div className="rail-meta">
-              <span>状态更新时间</span>
-              <strong>{generatedAt}</strong>
-            </div>
-            <div className="rail-meta">
-              <span>在线客户端</span>
-              <strong>{summary?.onlineClients ?? 0}</strong>
-            </div>
-          </div>
-          <span className="rail-status-chip">
-            <Activity size={13} />
-            在线监控
-          </span>
-        </section>
-
         <nav className="nav-panel" aria-label="右侧面板切换">
           <div className="nav-panel-header">
             <span>右侧面板</span>
@@ -501,16 +465,6 @@ export function WorkbenchPage() {
             <span>当前显示</span>
             <strong>{activeNavItem.status}</strong>
           </p>
-          <a className="report-nav-link" href="/reports">
-            <BarChart3 size={16} />
-            <span>来袭报表</span>
-            <strong>历史统计</strong>
-          </a>
-          <a className="report-nav-link account-nav-link" href="/account">
-            <UserRound size={16} />
-            <span>账号与密钥</span>
-            <strong>访问控制</strong>
-          </a>
         </nav>
 
         <section className="threat-status-panel">
@@ -634,6 +588,6 @@ export function WorkbenchPage() {
         <span>成员：{summary?.onlineClients ?? 0}</span>
         <span>星系：{summary?.systems ?? 0}</span>
       </footer>
-    </main>
+    </div>
   );
 }

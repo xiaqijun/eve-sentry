@@ -77,7 +77,7 @@ describe("HostileReportPage", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
 
-    expect(container).toHaveTextContent("敌对来袭报表");
+    expect(container).toHaveTextContent("敌对来袭统计");
     expect(container).toHaveTextContent("所有统计仅包含 ESI 已确认存在的角色");
     expect(container).toHaveTextContent("来袭批次");
     expect(container).toHaveTextContent("目标人次");
