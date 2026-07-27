@@ -31,6 +31,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--auth-bootstrap-admin", default="")
     parser.add_argument("--auth-bootstrap-password-file", default="")
+    parser.add_argument("--auth-esi-client-id", default="")
+    parser.add_argument("--auth-esi-redirect-uri", default="")
     parser.add_argument("--config", default="intel_config.json")
     parser.add_argument("--map-config", default="intel_map.json")
     parser.add_argument(
@@ -258,6 +260,7 @@ def _build_auth_service(
         AuthRepository(connect),
         resolver,
         enforce_requests=args.auth_mode == "enforce",
+        esi_sso_client=_build_auth_esi_sso_client(args),
     )
     username = str(args.auth_bootstrap_admin or "").strip()
     if username:
@@ -284,6 +287,20 @@ def _build_esi_sso_client(args: argparse.Namespace) -> Any:
         client_id=args.esi_client_id,
         redirect_uri=args.esi_redirect_uri,
         scopes=args.esi_scopes or DEFAULT_SCOPES,
+    )
+
+
+def _build_auth_esi_sso_client(args: argparse.Namespace) -> Any | None:
+    client_id = str(args.auth_esi_client_id or args.esi_client_id or "").strip()
+    redirect_uri = str(args.auth_esi_redirect_uri or "").strip()
+    if not client_id or not redirect_uri:
+        return None
+    from app.esi.sso import EveSsoClient
+
+    return EveSsoClient(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        scopes=[],
     )
 
 

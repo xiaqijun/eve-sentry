@@ -53,8 +53,11 @@ describe("ManagementShell", () => {
     expect(container).toHaveTextContent("EVE Sentry");
     expect(container).toHaveTextContent("态势工作台");
     expect(container).toHaveTextContent("来袭报表");
-    expect(container).toHaveTextContent("账号与密钥");
-    expect(container).toHaveTextContent("用户与权限");
+    expect(container).toHaveTextContent("设备密钥");
+    expect(container).toHaveTextContent("账号安全");
+    expect(container).toHaveTextContent("用户管理");
+    expect(container).toHaveTextContent("身份授权");
+    expect(container).toHaveTextContent("审计日志");
     expect(container).toHaveTextContent("报表内容");
     expect(container.querySelector('a[href="/reports"]')).toHaveClass("active");
   });
@@ -76,7 +79,34 @@ describe("ManagementShell", () => {
 
     expect(container).toHaveTextContent("公开模式");
     expect(container).toHaveTextContent("工作台内容");
-    expect(container).not.toHaveTextContent("账号与密钥");
-    expect(container).not.toHaveTextContent("用户与权限");
+    expect(container).not.toHaveTextContent("设备密钥");
+    expect(container).not.toHaveTextContent("账号安全");
+    expect(container).not.toHaveTextContent("用户管理");
+    expect(container).not.toHaveTextContent("身份授权");
+    expect(container).not.toHaveTextContent("审计日志");
+  });
+
+  it("keeps password settings hidden for EVE member accounts", async () => {
+    useAuthMock.mockReturnValue({
+      authEnabled: true,
+      logout: vi.fn(),
+      user: { display_name: "值班员", role: "member", username: "watcher" },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <Routes>
+            <Route element={<ManagementShell />} path="/">
+              <Route index element={<div>工作台内容</div>} />
+            </Route>
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container).toHaveTextContent("设备密钥");
+    expect(container).not.toHaveTextContent("账号安全");
+    expect(container).not.toHaveTextContent("用户管理");
   });
 });

@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import secrets
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
+from app.esi.sso import EsiSsoError
 from app.server.auth_store import AuthRepository
 
 
@@ -17,6 +20,7 @@ SESSION_COOKIE_NAME = "eve_sentry_session"
 SESSION_HOURS = 12
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_FAILURE_LIMIT = 5
+ESI_LOGIN_STATE_SECONDS = 5 * 60
 
 
 class AuthError(RuntimeError):
@@ -79,12 +83,16 @@ class AuthService:
         repository: AuthRepository,
         resolver: Any,
         enforce_requests: bool = True,
+        esi_sso_client: Any | None = None,
     ) -> None:
         self.repository = repository
         self.resolver = resolver
         self.enforce_requests = bool(enforce_requests)
+        self.esi_sso_client = esi_sso_client
         self._login_failures: dict[str, list[float]] = {}
         self._login_lock = threading.Lock()
+        self._esi_login_states: dict[str, dict[str, Any]] = {}
+        self._esi_login_lock = threading.Lock()
 
     def ensure_bootstrap_admin(self, username: str, password: str) -> dict[str, Any]:
         """Create the first administrator only while the user table is empty."""
@@ -115,7 +123,11 @@ class AuthService:
         role = str(role or "member").strip().casefold()
         if role not in {"admin", "member"}:
             raise AuthError("role must be admin or member", 400, "invalid_role")
-        password_hash = _hash_password(password)
+        password_hash = _hash_password(
+            password if role == "admin" or password else secrets.token_urlsafe(48)
+        )
+        if role == "member":
+            must_change_password = False
         now = _now_iso()
         record = {
             "user_id": uuid.uuid4().hex,
@@ -149,7 +161,98 @@ class AuthService:
             raise AuthError("invalid username or password", 401, "invalid_credentials")
         if str(user.get("status")) != "active":
             raise AuthError("user is disabled", 403, "user_disabled")
+        if str(user.get("role")) != "admin":
+            raise AuthError(
+                "non-administrator users must sign in with EVE Online",
+                403,
+                "eve_sso_required",
+            )
         self._clear_login_failures(throttle_key)
+        return self._create_browser_session(user, "password")
+
+    def begin_esi_login(self, return_to: str = "/") -> str:
+        """Create a one-time EVE SSO authorization URL for a member login."""
+        if self.esi_sso_client is None:
+            raise AuthError("EVE Online login is not configured", 503, "esi_login_unavailable")
+        safe_return_to = _safe_return_path(return_to)
+        session = self.esi_sso_client.create_authorization_session(scopes=[])
+        now = time.monotonic()
+        with self._esi_login_lock:
+            self._esi_login_states = {
+                key: value
+                for key, value in self._esi_login_states.items()
+                if float(value["expires_at"]) > now
+            }
+            self._esi_login_states[_secret_hash(session.state)] = {
+                "session": session,
+                "return_to": safe_return_to,
+                "expires_at": now + ESI_LOGIN_STATE_SECONDS,
+            }
+        return str(session.authorization_url)
+
+    def complete_esi_login(self, callback_url: str) -> dict[str, Any]:
+        """Exchange an EVE callback and create a browser session for its member."""
+        query = parse_qs(urlparse(callback_url).query)
+        state = str((query.get("state") or [""])[0])
+        if not state:
+            raise AuthError("EVE login state is missing", 400, "invalid_esi_state")
+        with self._esi_login_lock:
+            pending = self._esi_login_states.pop(_secret_hash(state), None)
+        if pending is None:
+            raise AuthError("EVE login state is invalid or already used", 400, "invalid_esi_state")
+        if float(pending["expires_at"]) <= time.monotonic():
+            raise AuthError("EVE login state has expired", 400, "expired_esi_state")
+        try:
+            code = self.esi_sso_client.parse_callback_url(
+                pending["session"], callback_url
+            )
+            tokens = self.esi_sso_client.exchange_code(code, pending["session"])
+        except EsiSsoError as exc:
+            raise IdentityUnavailableError(f"EVE login failed: {exc}") from exc
+        character_id = getattr(tokens, "character_id", None)
+        if character_id is None:
+            raise AuthError(
+                "EVE login did not identify a character",
+                403,
+                "eve_character_missing",
+            )
+        matches = self.repository.users_for_character_id(int(character_id))
+        if not matches:
+            raise AuthError(
+                "this EVE character is not assigned to a platform user",
+                403,
+                "eve_character_not_assigned",
+            )
+        if len(matches) != 1:
+            raise AuthError(
+                "this EVE character is assigned to multiple platform users",
+                409,
+                "eve_character_ambiguous",
+            )
+        user = matches[0]
+        if str(user.get("status")) != "active":
+            raise AuthError("user is disabled", 403, "user_disabled")
+        try:
+            profile = self.resolver.character_profile(int(character_id))
+        except Exception as exc:
+            raise IdentityUnavailableError(f"EVE identity lookup failed: {exc}") from exc
+        login = self._create_browser_session(
+            user,
+            "eve_sso",
+            {
+                "character_id": int(character_id),
+                "character_name": str(profile.get("name") or ""),
+            },
+        )
+        login["return_to"] = str(pending["return_to"])
+        return login
+
+    def _create_browser_session(
+        self,
+        user: dict[str, Any],
+        method: str,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         token = secrets.token_urlsafe(48)
         csrf_token = secrets.token_urlsafe(32)
         now = datetime.now(UTC)
@@ -162,7 +265,12 @@ class AuthService:
             "last_seen_at": now.isoformat(),
         }
         self.repository.create_session(record)
-        self._audit(str(user["user_id"]), str(user["user_id"]), "session.login", {})
+        self._audit(
+            str(user["user_id"]),
+            str(user["user_id"]),
+            "session.login",
+            {"method": method, **(details or {})},
+        )
         return {
             "session_token": token,
             "csrf_token": csrf_token,
@@ -647,6 +755,14 @@ def _positive_int(value: Any, label: str) -> int:
 
 def _username_key(value: str) -> str:
     return str(value or "").strip().casefold()
+
+
+def _safe_return_path(value: str) -> str:
+    path = str(value or "/").strip()
+    parsed = urlparse(path)
+    if not path.startswith("/") or path.startswith("//") or parsed.scheme or parsed.netloc:
+        return "/"
+    return path
 
 
 def _secret_hash(value: str) -> str:

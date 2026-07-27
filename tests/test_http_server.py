@@ -1,9 +1,10 @@
 import json
+import http.client
 import threading
 import time
 from types import SimpleNamespace
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from app.core.models import Evidence, ThreatEvent
@@ -11,7 +12,7 @@ from app.core.heartbeat import monitored_system_names
 from app.esi.cache import EsiCache
 from app.esi.resolver import EsiResolver
 from app.esi.session import ContactStanding
-from app.esi.sso import EsiSsoError
+from app.esi.sso import AuthorizationSession, EsiSsoError, TokenSet
 from app.intel.classification import CLASSIFICATION_VERSION
 from app.intel.enrichment import ThreatEnricher
 from app.intel.config import IntelConfigStore
@@ -42,6 +43,23 @@ class AuthTestResolver:
 
     def corporation_profile(self, corporation_id):
         return {"corporation_id": int(corporation_id), "name": "Blue Corp"}
+
+
+class AuthTestSsoClient:
+    def create_authorization_session(self, scopes=None):
+        return AuthorizationSession(
+            authorization_url="https://login.eve.test/authorize?state=web-state",
+            state="web-state",
+            redirect_uri="http://sentry.test/api/v1/auth/esi/callback",
+            code_verifier="verifier",
+            scopes=list(scopes or []),
+        )
+
+    def parse_callback_url(self, session, callback_url):
+        return "web-code"
+
+    def exchange_code(self, code, session):
+        return TokenSet(access_token="token", character_id=101)
 
 
 def request_json(url, method="GET", payload=None):
@@ -2525,6 +2543,45 @@ def test_authenticated_business_posts_preserve_their_request_body(tmp_path):
         server.stop()
 
 
+def test_eve_sso_http_flow_sets_member_session_cookie(tmp_path):
+    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    auth = AuthService(
+        AuthRepository(store._connect),
+        AuthTestResolver(),
+        esi_sso_client=AuthTestSsoClient(),
+    )
+    member = auth.create_user("pilot", "", role="member")
+    auth.add_whitelist_character(member["user_id"], 101, "main", member["user_id"])
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    parsed = urlparse(server.url)
+    connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3)
+    try:
+        connection.request(
+            "GET",
+            "/api/v1/auth/esi/start?return_to=%2Faccount%2Fkeys",
+        )
+        start = connection.getresponse()
+        start.read()
+        assert start.status == 302
+        assert start.getheader("Location") == (
+            "https://login.eve.test/authorize?state=web-state"
+        )
+
+        connection.request(
+            "GET",
+            "/api/v1/auth/esi/callback?state=web-state&code=web-code",
+        )
+        callback = connection.getresponse()
+        callback.read()
+        assert callback.status == 302
+        assert callback.getheader("Location") == "/account/keys"
+        assert "eve_sentry_session=" in str(callback.getheader("Set-Cookie"))
+    finally:
+        connection.close()
+        server.stop()
+
+
 def test_browser_session_requires_csrf_and_service_key_is_read_only(tmp_path):
     store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
@@ -2604,15 +2661,9 @@ def test_member_session_cannot_access_administrator_routes(tmp_path):
             method="POST",
             payload={"username": "pilot", "password": "pilot-password-123"},
         )
-        assert status == 200
-        cookie = response_headers["Set-Cookie"].split(";", 1)[0]
-
-        status, _, payload = authenticated_request(
-            f"{server.url}/api/v1/admin/users",
-            headers={"Cookie": cookie},
-        )
         assert status == 403
-        assert payload["code"] == "forbidden"
+        assert "Set-Cookie" not in response_headers
+        assert payload["code"] == "eve_sso_required"
     finally:
         server.stop()
 

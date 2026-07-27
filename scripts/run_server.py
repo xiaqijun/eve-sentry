@@ -40,6 +40,16 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
         "--auth-bootstrap-password-file",
         values.get("EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_PASSWORD_FILE", ""),
     )
+    _append_option(
+        argv,
+        "--auth-esi-client-id",
+        values.get("EVE_SENTRY_SERVER_AUTH_ESI_CLIENT_ID", ""),
+    )
+    _append_option(
+        argv,
+        "--auth-esi-redirect-uri",
+        values.get("EVE_SENTRY_SERVER_AUTH_ESI_REDIRECT_URI", ""),
+    )
     _append_option(argv, "--config", values.get("EVE_SENTRY_SERVER_CONFIG", ""))
     _append_option(
         argv,

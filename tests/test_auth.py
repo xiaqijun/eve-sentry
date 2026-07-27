@@ -1,7 +1,9 @@
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from app.esi.sso import AuthorizationSession, EsiSsoError, TokenSet
 from app.server.auth import AuthError, AuthService
 from app.server.auth_store import AuthRepository
 from app.server.sqlite_store import SQLiteIntelStore
@@ -31,6 +33,32 @@ class FakeResolver:
         return {"corporation_id": int(corporation_id), "name": "Blue Corp"}
 
 
+class FakeSsoClient:
+    def __init__(self, character_id=101, fail=False):
+        self.character_id = character_id
+        self.fail = fail
+
+    def create_authorization_session(self, scopes=None):
+        return AuthorizationSession(
+            authorization_url="https://login.eve.test/authorize?state=state-1",
+            state="state-1",
+            redirect_uri="http://sentry.test/api/v1/auth/esi/callback",
+            code_verifier="verifier",
+            scopes=list(scopes or []),
+        )
+
+    def parse_callback_url(self, session, callback_url):
+        query = parse_qs(urlparse(callback_url).query)
+        if query.get("state", [""])[0] != session.state:
+            raise EsiSsoError("state mismatch")
+        return query.get("code", [""])[0]
+
+    def exchange_code(self, code, session):
+        if self.fail:
+            raise EsiSsoError("token endpoint unavailable")
+        return TokenSet(access_token="token", character_id=self.character_id)
+
+
 @pytest.fixture()
 def auth(tmp_path):
     store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
@@ -42,8 +70,8 @@ def _member(auth):
 
 
 def test_login_session_and_api_key_secrets_are_not_returned_from_lists(auth):
-    user = _member(auth)
-    login = auth.login("pilot", "a-strong-password", "test")
+    user = auth.create_user("admin", "a-strong-password", role="admin")
+    login = auth.login("admin", "a-strong-password", "test")
     principal = auth.authenticate_session(login["session_token"])
     assert principal.user_id == user["user_id"]
     assert principal.csrf_token == login["csrf_token"]
@@ -54,6 +82,67 @@ def test_login_session_and_api_key_secrets_are_not_returned_from_lists(auth):
     with pytest.raises(AuthError) as exc_info:
         auth.authenticate_api_key(created["secret"])
     assert exc_info.value.code == "identity_validation_required"
+
+
+def test_member_password_login_requires_eve_sso(auth):
+    _member(auth)
+
+    with pytest.raises(AuthError) as exc_info:
+        auth.login("pilot", "a-strong-password", "test")
+
+    assert exc_info.value.status == 403
+    assert exc_info.value.code == "eve_sso_required"
+
+
+def test_eve_sso_logs_in_exactly_assigned_active_member(auth):
+    user = _member(auth)
+    auth.add_whitelist_character(user["user_id"], 101, "main", user["user_id"])
+    auth.esi_sso_client = FakeSsoClient(101)
+
+    assert auth.begin_esi_login("/account/keys").startswith("https://login.eve.test/")
+    login = auth.complete_esi_login(
+        "/api/v1/auth/esi/callback?state=state-1&code=code-1"
+    )
+
+    assert login["return_to"] == "/account/keys"
+    assert login["user"]["user_id"] == user["user_id"]
+    assert auth.authenticate_session(login["session_token"]).role == "member"
+
+
+def test_eve_sso_rejects_unknown_ambiguous_and_replayed_characters(auth):
+    first = _member(auth)
+    second = auth.create_user("pilot-two", "another-password", role="member")
+    auth.add_whitelist_character(first["user_id"], 101, "main", first["user_id"])
+    auth.add_whitelist_character(second["user_id"], 101, "alt", first["user_id"])
+    auth.esi_sso_client = FakeSsoClient(101)
+    auth.begin_esi_login()
+
+    with pytest.raises(AuthError) as exc_info:
+        auth.complete_esi_login("/callback?state=state-1&code=code-1")
+    assert exc_info.value.code == "eve_character_ambiguous"
+
+    with pytest.raises(AuthError) as replay_info:
+        auth.complete_esi_login("/callback?state=state-1&code=code-1")
+    assert replay_info.value.code == "invalid_esi_state"
+
+    auth.esi_sso_client = FakeSsoClient(999)
+    auth.begin_esi_login()
+    with pytest.raises(AuthError) as unknown_info:
+        auth.complete_esi_login("/callback?state=state-1&code=code-2")
+    assert unknown_info.value.code == "eve_character_not_assigned"
+
+
+def test_eve_sso_network_failure_does_not_create_session(auth):
+    user = _member(auth)
+    auth.add_whitelist_character(user["user_id"], 101, "main", user["user_id"])
+    auth.esi_sso_client = FakeSsoClient(101, fail=True)
+    auth.begin_esi_login()
+
+    with pytest.raises(AuthError) as exc_info:
+        auth.complete_esi_login("/callback?state=state-1&code=code-1")
+
+    assert exc_info.value.code == "identity_validation_unavailable"
+    assert auth.repository.list_audit()[-1]["action"] != "session.login"
 
 
 def test_password_and_api_key_secrets_are_only_persisted_as_hashes(auth):

@@ -232,6 +232,17 @@ sudo systemctl reload nginx
 
 ## 6. authenticated ESI 登录
 
+普通用户网页登录使用独立回调地址，EVE 开发者后台登记的 callback 必须与这里完全一致：
+
+```bash
+EVE_SENTRY_SERVER_AUTH_ESI_CLIENT_ID=YOUR_EVE_APP_CLIENT_ID
+EVE_SENTRY_SERVER_AUTH_ESI_REDIRECT_URI=http://YOUR_SERVER/api/v1/auth/esi/callback
+```
+
+普通用户通过角色白名单或已验证角色 ID 匹配平台账号；管理员仍使用用户名和密码登录。
+网页登录只申请身份认证，不申请 ESI 数据权限。下面的 authenticated ESI session 是服务端读取
+位置、联系人和搜索数据使用的另一套授权，两者的回调地址互不共用。
+
 先确认环境文件里已经配置 authenticated ESI 的运行路径和 scopes:
 
 ```bash

@@ -6,7 +6,7 @@ import json
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
 from app.server.auth import AuthError, AuthPrincipal, AuthService, SESSION_COOKIE_NAME
 
@@ -27,6 +27,11 @@ class AuthHttpMixin:
         if path == "/api/health":
             return True
         if path == "/api/v1/auth/login" and method == "POST":
+            return True
+        if path in {
+            "/api/v1/auth/esi/start",
+            "/api/v1/auth/esi/callback",
+        } and method == "GET":
             return True
         if not service.enforce_requests and not self._is_auth_management_path(path):
             return True
@@ -90,6 +95,32 @@ class AuthHttpMixin:
         service = self._auth_service()
         if service is None:
             return False
+        if path == "/api/v1/auth/esi/start":
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                authorization_url = service.begin_esi_login(
+                    str((query.get("return_to") or ["/"])[0])
+                )
+            except AuthError as exc:
+                self._send_auth_redirect(
+                    f"/login?{urlencode({'esi_error': exc.code})}"
+                )
+                return True
+            self._send_auth_redirect(authorization_url)
+            return True
+        if path == "/api/v1/auth/esi/callback":
+            try:
+                login = service.complete_esi_login(self.path)
+            except AuthError as exc:
+                self._send_auth_redirect(
+                    f"/login?{urlencode({'esi_error': exc.code})}"
+                )
+                return True
+            self._send_auth_redirect(
+                str(login["return_to"]),
+                cookie=self._session_cookie_header(str(login["session_token"])),
+            )
+            return True
         auth_paths = {
             "/api/v1/auth/me",
             "/api/v1/me/keys",
@@ -338,6 +369,14 @@ class AuthHttpMixin:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_auth_redirect(self, location: str, cookie: str = "") -> None:
+        self.send_response(HTTPStatus.FOUND)
+        self._send_common_headers("text/plain; charset=utf-8", 0)
+        self.send_header("Location", location)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
 
     def _send_auth_error(self, exc: AuthError) -> None:
         self._send_json(

@@ -20,6 +20,8 @@ def test_server_cli_defaults_to_sqlite_storage():
     assert args.map_sde_path is None
     assert args.map_refresh_on_start is False
     assert args.esi_client_id == ""
+    assert args.auth_esi_client_id == ""
+    assert args.auth_esi_redirect_uri == ""
     assert args.esi_redirect_uri == "http://127.0.0.1:8766/callback"
     assert args.esi_token_file == "esi_tokens.json"
     assert args.esi_token_storage == "auto"
@@ -239,6 +241,20 @@ def test_server_cli_accepts_authenticated_esi_options():
     assert args.esi_login_timeout == 10
     assert args.esi_no_browser is True
     assert args.esi_scopes == ["esi-location.read_location.v1"]
+
+
+def test_server_cli_accepts_member_web_esi_login_options():
+    args = build_arg_parser().parse_args(
+        [
+            "--auth-esi-client-id",
+            "member-client-id",
+            "--auth-esi-redirect-uri",
+            "http://sentry.test/api/v1/auth/esi/callback",
+        ]
+    )
+
+    assert args.auth_esi_client_id == "member-client-id"
+    assert args.auth_esi_redirect_uri == "http://sentry.test/api/v1/auth/esi/callback"
 
 
 def test_server_cli_builds_esi_config_summary(tmp_path):

@@ -1785,6 +1785,10 @@ def test_run_server_builds_argv_from_environment():
             "EVE_SENTRY_SERVER_POSTGRES_DSN": (
                 "postgresql://eve:secret@db.internal:5432/eve_sentry"
             ),
+            "EVE_SENTRY_SERVER_AUTH_ESI_CLIENT_ID": "member-client-id",
+            "EVE_SENTRY_SERVER_AUTH_ESI_REDIRECT_URI": (
+                "http://sentry.test/api/v1/auth/esi/callback"
+            ),
             "EVE_SENTRY_SERVER_CONFIG": "/srv/eve/intel_config.json",
             "EVE_SENTRY_SERVER_MAP_CONFIG": "/srv/eve/intel_map.json",
             "EVE_SENTRY_SERVER_MAP_SOURCE": "sde",
@@ -1814,6 +1818,10 @@ def test_run_server_builds_argv_from_environment():
         "/srv/eve/intel.sqlite3",
         "--postgres-dsn",
         "postgresql://eve:secret@db.internal:5432/eve_sentry",
+        "--auth-esi-client-id",
+        "member-client-id",
+        "--auth-esi-redirect-uri",
+        "http://sentry.test/api/v1/auth/esi/callback",
         "--config",
         "/srv/eve/intel_config.json",
         "--map-config",
