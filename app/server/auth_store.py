@@ -274,6 +274,21 @@ class AuthRepository:
                 (revoked_at, reason, key_id),
             )
 
+    def enable_api_key(self, key_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE auth_api_keys
+                SET status = 'active', revoked_at = '', revoked_reason = ''
+                WHERE key_id = ?
+                """,
+                (key_id,),
+            )
+
+    def delete_api_key(self, key_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM auth_api_keys WHERE key_id = ?", (key_id,))
+
     def create_session(self, record: dict[str, Any]) -> None:
         with self._connect() as connection:
             connection.execute(

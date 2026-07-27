@@ -2760,6 +2760,41 @@ def test_administrator_can_delete_another_user_over_http(tmp_path):
         server.stop()
 
 
+def test_api_key_can_be_revoked_enabled_and_permanently_deleted_over_http(tmp_path):
+    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    key = auth.create_api_key(admin["user_id"], "Desktop", admin["user_id"])
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    try:
+        status, response_headers, payload = authenticated_request(
+            f"{server.url}/api/v1/auth/login",
+            method="POST",
+            payload={"username": "admin", "password": "admin-password-123"},
+        )
+        assert status == 200
+        headers = {
+            "Cookie": response_headers["Set-Cookie"].split(";", 1)[0],
+            "X-CSRF-Token": payload["csrf_token"],
+        }
+        key_url = f"{server.url}/api/v1/me/keys/{key['key_id']}"
+
+        assert authenticated_request(key_url, method="DELETE", headers=headers)[0] == 200
+        assert auth.repository.api_key_by_id(key["key_id"])["status"] == "revoked"
+        assert authenticated_request(
+            f"{key_url}/enable", method="POST", headers=headers
+        )[0] == 200
+        assert auth.repository.api_key_by_id(key["key_id"])["status"] == "active"
+        assert authenticated_request(key_url, method="DELETE", headers=headers)[0] == 200
+        assert authenticated_request(
+            f"{key_url}/record", method="DELETE", headers=headers
+        )[0] == 200
+        assert auth.repository.api_key_by_id(key["key_id"]) is None
+    finally:
+        server.stop()
+
+
 def test_member_session_cannot_access_administrator_routes(tmp_path):
     store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())

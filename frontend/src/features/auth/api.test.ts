@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { apiRequest, login, setCsrfToken } from "./api";
+import { apiRequest, deleteKey, enableKey, login, setCsrfToken } from "./api";
 
 describe("authenticated API client", () => {
   beforeEach(() => {
@@ -52,5 +52,19 @@ describe("authenticated API client", () => {
     });
     expect(listener).toHaveBeenCalledOnce();
     window.removeEventListener("eve-sentry-auth-required", listener);
+  });
+
+  it("uses distinct endpoints for enabling and permanently deleting a key", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+
+    await enableKey("key/1");
+    await deleteKey("key/1");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/me/keys/key%2F1/enable");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/me/keys/key%2F1/record");
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "DELETE" });
   });
 });

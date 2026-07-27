@@ -6,6 +6,8 @@ import type { AuditRecord } from "./types";
 
 const AUDIT_ACTION_LABELS: Record<string, string> = {
   "api_key.created": "创建密钥",
+  "api_key.deleted": "删除密钥",
+  "api_key.enabled": "启用密钥",
   "api_key.revoked": "吊销密钥",
   "character.whitelist_removed": "移除角色白名单",
   "character.whitelisted": "添加角色白名单",

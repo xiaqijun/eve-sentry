@@ -16,7 +16,9 @@ const apiMocks = vi.hoisted(() => ({
   createMyKey: vi.fn(),
   createServiceKey: vi.fn(),
   createUser: vi.fn(),
+  deleteKey: vi.fn(),
   deleteUser: vi.fn(),
+  enableKey: vi.fn(),
   listAdminUsers: vi.fn(),
   listAudit: vi.fn(),
   listCorporations: vi.fn(),
@@ -154,6 +156,24 @@ describe("split management pages", () => {
     expect(container).toHaveTextContent("密钥前缀");
     expect(container).toHaveTextContent("主监控端");
     expect(container).not.toHaveTextContent("当前密码");
+  });
+
+  it("allows manually revoked keys to be enabled or deleted", async () => {
+    apiMocks.listMyKeys.mockResolvedValue([{
+      identity_verified: true,
+      key_id: "key-2",
+      key_prefix: "eve_revoked",
+      key_type: "desktop",
+      last_used_at: "2026-07-27T12:00:00Z",
+      name: "备用监控端",
+      revoked_reason: "revoked by user",
+      status: "revoked",
+      user_id: "user-1",
+    }]);
+    await render(<AccountKeysPage />);
+
+    expect(container.querySelector('[aria-label="重新启用 备用监控端"]')).toBeInTheDocument();
+    expect(container.querySelector('[aria-label="删除 备用监控端"]')).toBeInTheDocument();
   });
 
   it("keeps password settings separate from device credentials", async () => {

@@ -1,10 +1,12 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   BadgeCheck,
+  Ban,
   Eye,
   KeyRound,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Trash2,
   UserPlus,
@@ -15,7 +17,9 @@ import {
 import {
   createServiceKey,
   createUser,
+  deleteKey,
   deleteUser,
+  enableKey,
   listAdminUsers,
   resetUserPassword,
   revokeKey,
@@ -110,6 +114,11 @@ export function AdminUsersPage() {
     setSelectedUserId(userId);
     setServiceSecret("");
   };
+
+  const canEnableKey = (key: ApiKeyRecord) => [
+    "revoked by user",
+    "revoked by administrator",
+  ].includes(key.revoked_reason || "");
 
   const deleteSelectedUser = async () => {
     if (!selectedUser || selectedUser.user_id === currentUser?.user_id) return;
@@ -221,7 +230,7 @@ export function AdminUsersPage() {
               <section className="management-drawer-section">
                 <div className="admin-section-heading"><h3>设备与服务密钥</h3><span>{selectedUser.keys.length} 个</span></div>
                 <div className="compact-list">
-                  {selectedUser.keys.map((key) => <div key={key.key_id}><span>{key.name}<small>{key.key_prefix}… · {key.key_type}</small></span><em className={`status-text ${key.status}`}>{key.status === "active" ? "有效" : "已吊销"}</em>{key.status === "active" ? <button className="icon-button" title="吊销密钥" type="button" onClick={() => void run(() => revokeKey(key.key_id))}><Trash2 size={14} /></button> : null}</div>)}
+                  {selectedUser.keys.map((key) => <div key={key.key_id}><span>{key.name}<small>{key.key_prefix}… · {key.key_type}</small></span><span className="compact-key-actions"><em className={`status-text ${key.status}`}>{key.status === "active" ? "有效" : "已吊销"}</em>{key.status === "active" ? <button className="icon-button" title="吊销密钥" type="button" onClick={() => void run(() => revokeKey(key.key_id))}><Ban size={14} /></button> : null}{key.status === "revoked" && canEnableKey(key) ? <button className="icon-button" title="重新启用密钥" type="button" onClick={() => void run(() => enableKey(key.key_id))}><RotateCcw size={14} /></button> : null}{key.status === "revoked" ? <button className="icon-button danger-text" title="永久删除密钥" type="button" onClick={() => { if (window.confirm(`确定永久删除密钥“${key.name}”吗？`)) void run(() => deleteKey(key.key_id)); }}><Trash2 size={14} /></button> : null}</span></div>)}
                   {selectedUser.keys.length === 0 ? <p className="admin-empty">暂无密钥</p> : null}
                 </div>
               </section>

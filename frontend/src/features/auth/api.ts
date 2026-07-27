@@ -108,6 +108,18 @@ export async function revokeKey(keyId: string): Promise<void> {
   await apiRequest(`/api/v1/me/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
 }
 
+export async function enableKey(keyId: string): Promise<void> {
+  await apiRequest(`/api/v1/me/keys/${encodeURIComponent(keyId)}/enable`, {
+    method: "POST",
+  });
+}
+
+export async function deleteKey(keyId: string): Promise<void> {
+  await apiRequest(`/api/v1/me/keys/${encodeURIComponent(keyId)}/record`, {
+    method: "DELETE",
+  });
+}
+
 export async function listAdminUsers(): Promise<AdminUser[]> {
   return (await apiRequest<{ users: AdminUser[] }>("/api/v1/admin/users")).users;
 }

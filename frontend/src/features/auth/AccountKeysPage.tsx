@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
-import { BadgeCheck, KeyRound, Plus, Trash2 } from "lucide-react";
+import { BadgeCheck, Ban, KeyRound, Plus, RotateCcw, Trash2 } from "lucide-react";
 
-import { createMyKey, listMyKeys, revokeKey } from "./api";
+import { createMyKey, deleteKey, enableKey, listMyKeys, revokeKey } from "./api";
 import { useAuth } from "./AuthContext";
 import type { ApiKeyRecord } from "./types";
 
@@ -17,6 +17,10 @@ export function AccountKeysPage() {
   const [error, setError] = useState("");
   const activeKeys = keys.filter((key) => key.status === "active");
   const verifiedKeys = activeKeys.filter((key) => key.identity_verified);
+  const canEnable = (key: ApiKeyRecord) => [
+    "revoked by user",
+    "revoked by administrator",
+  ].includes(key.revoked_reason || "");
 
   const loadKeys = async () => setKeys(await listMyKeys());
   useEffect(() => { void loadKeys().catch((reason) => setError(String(reason))); }, []);
@@ -31,6 +35,16 @@ export function AccountKeysPage() {
       await loadKeys();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "密钥创建失败");
+    }
+  };
+
+  const runKeyAction = async (action: () => Promise<void>) => {
+    setError("");
+    try {
+      await action();
+      await loadKeys();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "密钥操作失败");
     }
   };
 
@@ -78,11 +92,11 @@ export function AccountKeysPage() {
                 <span>{key.identity_verified ? "已校验" : "等待校验"}</span>
                 <em className={`status-badge ${key.status}`}>{key.status === "active" ? "有效" : "已吊销"}</em>
                 <time>{formatTime(key.last_used_at)}</time>
-                {key.status === "active" ? (
-                  <button aria-label={`吊销 ${key.name}`} className="management-row-action" title="吊销密钥" type="button" onClick={() => void revokeKey(key.key_id).then(loadKeys)}>
-                    <Trash2 size={14} />吊销
-                  </button>
-                ) : <span>-</span>}
+                <span className="management-key-actions">
+                  {key.status === "active" ? <button aria-label={`吊销 ${key.name}`} className="icon-button" title="吊销密钥" type="button" onClick={() => void runKeyAction(() => revokeKey(key.key_id))}><Ban size={14} /></button> : null}
+                  {key.status === "revoked" && canEnable(key) ? <button aria-label={`重新启用 ${key.name}`} className="icon-button" title="重新启用密钥" type="button" onClick={() => void runKeyAction(() => enableKey(key.key_id))}><RotateCcw size={14} /></button> : null}
+                  {key.status === "revoked" ? <button aria-label={`删除 ${key.name}`} className="icon-button danger-text" title="永久删除密钥" type="button" onClick={() => { if (window.confirm(`确定永久删除密钥“${key.name}”吗？`)) void runKeyAction(() => deleteKey(key.key_id)); }}><Trash2 size={14} /></button> : null}
+                </span>
               </div>
             ))}
             {keys.length === 0 ? <p className="management-table-empty">尚未创建设备密钥</p> : null}

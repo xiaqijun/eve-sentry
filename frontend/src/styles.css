@@ -3690,7 +3690,19 @@ button {
 }
 
 .device-key-row {
-  grid-template-columns: minmax(150px, 1.4fr) minmax(100px, 0.9fr) 78px 68px minmax(140px, 1fr) 60px;
+  grid-template-columns: minmax(150px, 1.4fr) minmax(100px, 0.9fr) 78px 68px minmax(140px, 1fr) 72px;
+}
+
+.management-key-actions,
+.compact-key-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+}
+
+.compact-key-actions > em {
+  margin-right: 3px;
 }
 
 .device-key-row code,

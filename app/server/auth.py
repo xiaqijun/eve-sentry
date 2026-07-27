@@ -454,8 +454,55 @@ class AuthService:
             raise AuthError("API key not found", 404, "api_key_not_found")
         if not principal.is_admin and str(key["user_id"]) != principal.user_id:
             raise AuthError("administrator access is required", 403, "forbidden")
-        self.repository.revoke_api_key(key_id, _now_iso(), "revoked by user")
+        if str(key.get("status")) != "active":
+            raise AuthError("API key is already revoked", 409, "api_key_already_revoked")
+        reason = (
+            "revoked by administrator"
+            if principal.is_admin and str(key["user_id"]) != principal.user_id
+            else "revoked by user"
+        )
+        self.repository.revoke_api_key(key_id, _now_iso(), reason)
         self._audit(principal.user_id, str(key["user_id"]), "api_key.revoked", {"key_id": key_id})
+
+    def enable_api_key(self, key_id: str, principal: AuthPrincipal) -> None:
+        key = self.repository.api_key_by_id(key_id)
+        if key is None:
+            raise AuthError("API key not found", 404, "api_key_not_found")
+        if not principal.is_admin and str(key["user_id"]) != principal.user_id:
+            raise AuthError("administrator access is required", 403, "forbidden")
+        if str(key.get("status")) == "active":
+            raise AuthError("API key is already active", 409, "api_key_already_active")
+        if str(key.get("revoked_reason")) not in {
+            "revoked by user",
+            "revoked by administrator",
+        }:
+            raise AuthError(
+                "this API key cannot be restored",
+                409,
+                "api_key_restore_forbidden",
+            )
+        user = self.repository.user_by_id(str(key["user_id"]))
+        if user is None:
+            raise AuthError("user not found", 404, "user_not_found")
+        if str(user.get("status")) != "active":
+            raise AuthError("user is disabled", 403, "user_disabled")
+        self.repository.enable_api_key(key_id)
+        self._audit(principal.user_id, str(key["user_id"]), "api_key.enabled", {"key_id": key_id})
+
+    def delete_api_key(self, key_id: str, principal: AuthPrincipal) -> None:
+        key = self.repository.api_key_by_id(key_id)
+        if key is None:
+            raise AuthError("API key not found", 404, "api_key_not_found")
+        if not principal.is_admin and str(key["user_id"]) != principal.user_id:
+            raise AuthError("administrator access is required", 403, "forbidden")
+        if str(key.get("status")) != "revoked":
+            raise AuthError(
+                "active API keys must be revoked before deletion",
+                409,
+                "api_key_must_be_revoked",
+            )
+        self.repository.delete_api_key(key_id)
+        self._audit(principal.user_id, str(key["user_id"]), "api_key.deleted", {"key_id": key_id})
 
     def list_api_keys(self, user_id: str) -> list[dict[str, Any]]:
         return [_public_api_key(item) for item in self.repository.list_api_keys(user_id)]

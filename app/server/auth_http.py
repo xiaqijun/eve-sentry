@@ -179,7 +179,8 @@ class AuthHttpMixin:
             "/api/v1/admin/corporations",
         }
         user_action = self._admin_user_action(path)
-        if path not in auth_paths and user_action is None:
+        key_action = self._api_key_action(path)
+        if path not in auth_paths and user_action is None and key_action is None:
             return False
         try:
             if path == "/api/v1/auth/login":
@@ -220,6 +221,12 @@ class AuthHttpMixin:
                 )
                 self._send_json({"ok": True, "key": key}, HTTPStatus.CREATED)
                 return True
+            if key_action is not None:
+                key_id, action = key_action
+                if action == "enable":
+                    service.enable_api_key(key_id, principal)
+                    self._send_json({"ok": True})
+                    return True
             if path == "/api/v1/client/identity-check":
                 names = payload.get("characters", payload.get("names", []))
                 if not isinstance(names, list):
@@ -297,7 +304,14 @@ class AuthHttpMixin:
         try:
             prefix = "/api/v1/me/keys/"
             if path.startswith(prefix):
-                service.revoke_api_key(unquote(path[len(prefix):]).strip(), principal)
+                suffix = unquote(path[len(prefix):]).strip("/")
+                key_id, separator, action = suffix.partition("/")
+                if separator and action == "record":
+                    service.delete_api_key(key_id, principal)
+                elif not separator:
+                    service.revoke_api_key(key_id, principal)
+                else:
+                    return False
                 self._send_json({"ok": True})
                 return True
             prefix = "/api/v1/admin/corporations/"
@@ -339,6 +353,16 @@ class AuthHttpMixin:
         }:
             return None
         return user_id, action
+
+    def _api_key_action(self, path: str) -> tuple[str, str] | None:
+        prefix = "/api/v1/me/keys/"
+        if not path.startswith(prefix):
+            return None
+        suffix = unquote(path[len(prefix):]).strip("/")
+        key_id, separator, action = suffix.partition("/")
+        if not key_id or not separator or action != "enable":
+            return None
+        return key_id, action
 
     def _require_principal(self) -> AuthPrincipal:
         principal = self._auth_principal

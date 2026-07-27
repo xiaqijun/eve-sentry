@@ -84,6 +84,49 @@ def test_login_session_and_api_key_secrets_are_not_returned_from_lists(auth):
     assert exc_info.value.code == "identity_validation_required"
 
 
+def test_manually_revoked_api_key_can_be_enabled_then_deleted(auth):
+    user = auth.create_user("admin", "a-strong-password", role="admin")
+    login = auth.login("admin", "a-strong-password", "test")
+    principal = auth.authenticate_session(login["session_token"])
+    created = auth.create_api_key(user["user_id"], "Desktop", user["user_id"])
+
+    auth.revoke_api_key(created["key_id"], principal)
+    revoked = auth.repository.api_key_by_id(created["key_id"])
+    assert revoked["status"] == "revoked"
+    assert revoked["revoked_reason"] == "revoked by user"
+
+    auth.enable_api_key(created["key_id"], principal)
+    enabled = auth.repository.api_key_by_id(created["key_id"])
+    assert enabled["status"] == "active"
+    assert enabled["revoked_at"] == ""
+    assert enabled["revoked_reason"] == ""
+
+    auth.revoke_api_key(created["key_id"], principal)
+    auth.delete_api_key(created["key_id"], principal)
+    assert auth.repository.api_key_by_id(created["key_id"]) is None
+    assert [item["action"] for item in auth.repository.list_audit()[:4]] == [
+        "api_key.deleted",
+        "api_key.revoked",
+        "api_key.enabled",
+        "api_key.revoked",
+    ]
+
+
+def test_automatically_revoked_api_key_cannot_be_enabled(auth):
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    member = _member(auth)
+    created = auth.create_api_key(member["user_id"], "Desktop", admin["user_id"])
+    login = auth.login("admin", "admin-password-123", "test")
+    principal = auth.authenticate_session(login["session_token"])
+    auth.set_user_status(member["user_id"], False, admin["user_id"])
+    auth.set_user_status(member["user_id"], True, admin["user_id"])
+
+    with pytest.raises(AuthError) as exc_info:
+        auth.enable_api_key(created["key_id"], principal)
+
+    assert exc_info.value.code == "api_key_restore_forbidden"
+
+
 def test_member_password_login_requires_eve_sso(auth):
     _member(auth)
 
