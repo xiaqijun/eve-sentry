@@ -18,6 +18,8 @@ jobs:
   release:
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,9 +28,11 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: requirements-onnx.txt
+          cache-dependency-path: |
+            requirements-onnx.txt
+            requirements-server.txt
       - name: Install build dependencies
-        run: python -m pip install -r requirements-onnx.txt pyinstaller pytest
+        run: python -m pip install -r requirements-onnx.txt -r requirements-server.txt pyinstaller pytest
       - name: Run tests
         run: python -m pytest -q
         env:
