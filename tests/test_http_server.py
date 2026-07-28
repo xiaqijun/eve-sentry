@@ -2202,6 +2202,10 @@ def test_v1_events_stream_returns_alert_sse(tmp_path):
         payload = next(item["data"] for item in events if item.get("event") == "alert")
         assert bootstrap["schema_version"] == "intel_bootstrap.v1"
         assert bootstrap["map"]["summary"]["alert_count"] == 1
+        assert "reports" not in bootstrap
+        assert "observations" not in bootstrap
+        assert "config" not in bootstrap
+        assert "esi" not in bootstrap
         assert payload["id"] == created["alert"]["id"]
 
         status, headers, body = request_text(

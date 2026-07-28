@@ -498,6 +498,7 @@ class IntelApiClient:
         timeout: float = 30.0,
         heartbeat: float | None = None,
         should_stop: Callable[[], bool] | None = None,
+        include_bootstrap: bool = False,
         acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str = "",
@@ -506,6 +507,8 @@ class IntelApiClient:
         params = {"limit": str(limit), "timeout": str(timeout)}
         if heartbeat is not None:
             params["heartbeat"] = str(max(0.0, float(heartbeat)))
+        if include_bootstrap:
+            params["bootstrap"] = "true"
         if since:
             params["since"] = since
         if acknowledged is not None:

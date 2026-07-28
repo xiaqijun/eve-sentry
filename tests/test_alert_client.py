@@ -1,6 +1,44 @@
 from argparse import Namespace
 
-from app.alert_client import AlertTrayController
+from app.alert_client import AlertClientState, AlertEventWorker, AlertTrayController
+
+
+def test_alert_worker_connects_sse_before_posting_heartbeat(tmp_path):
+    calls = []
+    worker = None
+
+    class FakeApi:
+        def __init__(self, server, timeout, api_key):
+            calls.append(("init", server, timeout, api_key))
+
+        def iter_events(self, **kwargs):
+            calls.append(("events", kwargs))
+            yield {"event": "bootstrap", "data": {"active_intel": []}}
+            worker._stop_requested = True
+
+        def post_heartbeat(self, **kwargs):
+            calls.append(("heartbeat", kwargs))
+            return {"client_id": kwargs["client_id"]}
+
+    worker = AlertEventWorker(
+        "http://intel.example",
+        AlertClientState(tmp_path / "alerts.json"),
+        timeout=5.0,
+        api_key="eve_valid",
+        api_factory=FakeApi,
+    )
+    statuses = []
+    bootstraps = []
+    worker.status_changed.connect(lambda status, message: statuses.append((status, message)))
+    worker.bootstrap_received.connect(bootstraps.append)
+
+    worker.run()
+
+    assert calls[1][0] == "events"
+    assert calls[1][1]["include_bootstrap"] is True
+    assert calls[2][0] == "heartbeat"
+    assert statuses == [("connected", "")]
+    assert bootstraps == [{"active_intel": []}]
 
 
 def test_alert_controller_stop_can_skip_worker_wait():

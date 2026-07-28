@@ -368,11 +368,13 @@ def test_intel_api_client_stops_sse_after_keepalive(monkeypatch):
             timeout=30,
             heartbeat=1.0,
             should_stop=should_stop,
+            include_bootstrap=True,
         )
     )
 
     assert events == []
     assert "heartbeat=1.0" in captured["url"]
+    assert "bootstrap=true" in captured["url"]
     assert response.readline_calls == 1
 
 

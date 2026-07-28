@@ -1110,6 +1110,36 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             "esi": self._esi_status_payload(),
         }
 
+    def _event_bootstrap_payload(
+        self,
+        active_items: list[dict[str, Any]],
+        alerts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Build the compact state required by alert SSE consumers."""
+        hostile_counts = _active_hostile_counts(alerts)
+        systems = [
+            {
+                "name": system_name,
+                "system_name": system_name,
+                "hostile_count": hostile_count,
+            }
+            for system_name, hostile_count in sorted(hostile_counts.items())
+        ]
+        return {
+            "schema_version": "intel_bootstrap.v1",
+            "generated_at": utc_now_iso(),
+            "map": {
+                "systems": systems,
+                "summary": {
+                    "system_count": len(systems),
+                    "alert_count": len(alerts),
+                },
+            },
+            "alerts": alerts,
+            "active_intel": active_items,
+            "clients": self._store().heartbeat_snapshot(),
+        }
+
     def _map_snapshot_payload(self) -> dict[str, Any]:
         return self._map_snapshot_from_snapshot(
             self._runtime_snapshot(include_reports=False, include_alerts=False)
@@ -2058,13 +2088,15 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     alerts,
                     key=lambda item: str(item.get("created_at") or ""),
                 )
+                active_snapshot_alerts: list[dict[str, Any]] = []
                 if active_only:
+                    active_snapshot_alerts = self._active_alert_list(
+                        since="",
+                        limit=None,
+                        active_items=active_items,
+                    )
                     current_hostile_counts = _active_hostile_counts(
-                        self._active_alert_list(
-                            since="",
-                            limit=None,
-                            active_items=active_items,
-                        )
+                        active_snapshot_alerts
                     )
                     if active_hostile_counts is not None:
                         for system_name in sorted(
@@ -2086,7 +2118,10 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                             wrote_event = True
                     active_hostile_counts = current_hostile_counts
                 if active_only and include_bootstrap:
-                    bootstrap = self._bootstrap_payload()
+                    bootstrap = self._event_bootstrap_payload(
+                        active_items or [],
+                        active_snapshot_alerts,
+                    )
                     next_client_stale_in = _next_monitoring_heartbeat_stale_in(
                         bootstrap.get("clients")
                     )
