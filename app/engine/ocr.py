@@ -3,6 +3,7 @@
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -25,6 +26,7 @@ class OCREngine:
     ) -> None:
         self._confidence_threshold = confidence_threshold
         self._ocr: Optional[object] = None
+        self._init_lock = threading.Lock()
         self._lang = lang
         self._device = device or os.environ.get("EVE_SENTRY_OCR_DEVICE", "auto")
         self._backend = (
@@ -37,6 +39,15 @@ class OCREngine:
             )
             self._backend = "paddle"
         self._model_dir = model_dir
+
+    def initialize(self, progress: Callable[[str], None] | None = None) -> bool:
+        """Load the configured inference runtime once and report readiness."""
+        if self._ocr is not None:
+            return True
+        with self._init_lock:
+            if self._ocr is None:
+                self._init_ocr(progress=progress)
+        return self._ocr is not None
 
     def _init_ocr(self, progress: Callable[[str], None] | None = None) -> None:
         """Lazy-init the configured OCR backend."""
@@ -178,9 +189,7 @@ class OCREngine:
         progress: Callable[[str], None] | None = None,
     ) -> list[tuple[str, float]]:
         """Run OCR on *image* and return high-confidence text lines."""
-        if self._ocr is None:
-            self._init_ocr(progress=progress)
-        if self._ocr is None:
+        if not self.initialize(progress=progress):
             return []
 
         prepared = self._prepare_image(image)

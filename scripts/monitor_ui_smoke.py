@@ -203,6 +203,9 @@ def run_smoke(args: argparse.Namespace) -> dict:
                 _ = kwargs
                 counters.ocr_created += 1
 
+            def initialize(self) -> bool:
+                return True
+
             def recognize(self, image) -> list[str]:
                 _ = image
                 counters.ocr_recognize_calls += 1
