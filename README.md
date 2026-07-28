@@ -111,6 +111,9 @@ PP-OCRv6 模型。客户端启动时静默检查版本，也可在左侧版本�
 文件大小和 SHA256，随后退出、替换目录并自动重启。大文件下载由 Cloudflare Worker
 代理并缓存，发布与部署方式见 [监控客户端](docs/client.md)。
 
+`main` 分支由 GitHub Actions 自动测试并部署服务端；修改 `app/version.py` 的版本号会
+额外触发 Windows 客户端构建和 Release 发布。日常部署及客户端推送无需人工执行命令。
+
 ONNX 模型应位于：
 
 ```text

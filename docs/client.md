@@ -82,6 +82,11 @@ Cloudflare Worker 位于 `deploy/cloudflare-download`，提供 `/latest.json` �
 .\scripts\publish_client_release.ps1 -DownloadBaseUrl "https://<worker>/download"
 ```
 
+正常发布由 `.github/workflows/release-client.yml` 完成。只需修改
+`app/version.py` 中的 `APP_VERSION` 并推送 `main`；工作流会运行完整测试，从上一版
+Release 恢复固定 ONNX 模型，构建并发布新安装包，然后验证 Cloudflare 更新清单和
+分段下载。`workflow_dispatch` 仅用于发布异常后的重跑。
+
 ## 打包
 
 当前轻量发行包使用 `packaging/eve-sentry-monitor-onnx.spec`：
