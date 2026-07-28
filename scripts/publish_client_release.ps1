@@ -52,8 +52,12 @@ try {
 
     if (-not $SkipGithub) {
         $tag = "v$Version"
-        gh release view $tag *> $null
-        if ($LASTEXITCODE -eq 0) {
+        $previousErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        gh release view $tag --json tagName 2>$null | Out-Null
+        $releaseExists = $LASTEXITCODE -eq 0
+        $ErrorActionPreference = $previousErrorAction
+        if ($releaseExists) {
             gh release upload $tag $assetPath $manifestPath --clobber
         } else {
             gh release create $tag $assetPath $manifestPath --target HEAD --title "EVE Sentry v$Version" --generate-notes
