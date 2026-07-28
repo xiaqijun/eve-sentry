@@ -1009,8 +1009,7 @@ class MainWindow(QMainWindow):
         self._monitor_btn.setEnabled(True)
         self._alert_btn.setEnabled(True)
         payload = result if isinstance(result, dict) else {}
-        characters = list(payload.get("characters") or [])
-        self._settings.set_auth_status(f"身份已验证 · {len(characters)} 个角色")
+        self._settings.set_auth_status("")
         processed_count = int(payload.get("processed_count") or 0)
         if processed_count:
             self._log_message(f"已检查 {processed_count} 个新增 EVE 日志文件")
