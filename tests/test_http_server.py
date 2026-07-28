@@ -2460,7 +2460,7 @@ def test_v1_events_push_monitoring_node_offline_at_stale_deadline(tmp_path):
         server.stop()
 
 
-def test_auth_enforcement_protects_api_and_accepts_permanently_verified_key(tmp_path):
+def test_auth_enforcement_accepts_valid_key_before_listener_is_discovered(tmp_path):
     store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
     admin = auth.create_user("admin", "admin-password-123", role="admin")
@@ -2482,8 +2482,15 @@ def test_auth_enforcement_protects_api_and_accepts_permanently_verified_key(tmp_
         status, _, payload = authenticated_request(
             f"{server.url}/api/v1/bootstrap", headers=headers
         )
-        assert status == 428
-        assert payload["code"] == "identity_validation_required"
+        assert status == 200
+        assert "bootstrap" in payload
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/bootstrap",
+            headers={"Authorization": "Bearer eve_invalid"},
+        )
+        assert status == 401
+        assert payload["code"] == "invalid_api_key"
 
         status, _, payload = authenticated_request(
             f"{server.url}/api/v1/client/identity-check",
@@ -2508,7 +2515,6 @@ def test_authenticated_business_posts_preserve_their_request_body(tmp_path):
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
     member = auth.create_user("pilot", "pilot-password-123", role="member")
     key = auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
-    auth.repository.mark_api_key_verified(key["key_id"])
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()
     headers = {"Authorization": f"Bearer {key['secret']}"}

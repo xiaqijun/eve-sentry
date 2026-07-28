@@ -185,6 +185,14 @@ class IntelApiClient:
             raise IntelApiError("server returned an invalid identity payload")
         return identity
 
+    def validate_api_key(self) -> dict[str, Any]:
+        """Validate the configured API key through an always-protected route."""
+        payload = self._request("GET", self._v1_path("/auth/me"))
+        user = payload.get("user")
+        if not isinstance(user, dict):
+            raise IntelApiError("server returned an invalid authenticated user payload")
+        return user
+
     def list_heartbeats(self) -> list[dict[str, Any]]:
         """Fetch recent runtime heartbeats from the intel server."""
         payload = self._request("GET", self._v1_path("/clients"))

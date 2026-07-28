@@ -79,9 +79,8 @@ def test_login_session_and_api_key_secrets_are_not_returned_from_lists(auth):
     created = auth.create_api_key(user["user_id"], "Desktop", user["user_id"])
     assert created["secret"].startswith("eve_")
     assert "secret" not in auth.list_api_keys(user["user_id"])[0]
-    with pytest.raises(AuthError) as exc_info:
-        auth.authenticate_api_key(created["secret"])
-    assert exc_info.value.code == "identity_validation_required"
+    principal = auth.authenticate_api_key(created["secret"])
+    assert principal.identity_verified is False
 
 
 def test_manually_revoked_api_key_can_be_enabled_then_deleted(auth):

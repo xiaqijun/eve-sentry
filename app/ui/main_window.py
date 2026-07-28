@@ -984,13 +984,13 @@ class MainWindow(QMainWindow):
         if pending_names:
             identity = client.verify_eve_characters(pending_names)
             self._identity_scanner.mark_verified(pending_names)
+        elif not scan.key_validated:
+            client.validate_api_key()
+            self._identity_scanner.mark_key_validated()
+            identity = {"verified": True, "permanent": True}
         else:
-            identity = {"verified": scan.identity_verified, "permanent": True}
+            identity = {"verified": True, "permanent": True}
         state = self._settings.auth_state_store().load()
-        if not state.get("identity_verified"):
-            if scan.pending_files:
-                raise IntelApiError("等待新日志文件写入 Listener")
-            raise IntelApiError("EVE 日志中没有可验证的 Listener")
         return {
             "identity": identity,
             "characters": list(state.get("characters") or []),

@@ -379,7 +379,7 @@ class AuthService:
     def authenticate_api_key(
         self,
         secret: str,
-        allow_unverified: bool = False,
+        allow_unverified: bool = True,
     ) -> AuthPrincipal:
         key = self.repository.api_key_by_hash(_secret_hash(secret))
         if key is None or str(key.get("status")) != "active":

@@ -41,10 +41,7 @@ class AuthHttpMixin:
             authorization = str(self.headers.get("Authorization") or "").strip()
             if authorization.casefold().startswith("bearer "):
                 secret = authorization[7:].strip()
-                principal = service.authenticate_api_key(
-                    secret,
-                    allow_unverified=path == "/api/v1/client/identity-check",
-                )
+                principal = service.authenticate_api_key(secret)
             else:
                 session_token = self._session_cookie()
                 if not session_token:

@@ -1,5 +1,6 @@
 import json
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -199,6 +200,101 @@ def test_alert_toggle_starts_and_stops_embedded_controller(monkeypatch):
 
 def test_detector_client_has_no_local_threat_handler():
     assert not hasattr(MainWindow, "_on_threat_detected")
+
+
+def test_identity_check_accepts_valid_key_without_listener_and_caches_validation():
+    class FakeScanner:
+        def __init__(self):
+            self.key_validated = False
+            self.marked = 0
+
+        def scan(self, _api_key):
+            return SimpleNamespace(
+                pending_characters=[],
+                pending_files=["Local_new.txt"],
+                processed_count=0,
+                key_validated=self.key_validated,
+                identity_verified=False,
+            )
+
+        def mark_key_validated(self):
+            self.key_validated = True
+            self.marked += 1
+
+    class FakeClient:
+        def __init__(self):
+            self.validation_calls = 0
+
+        def validate_api_key(self):
+            self.validation_calls += 1
+            return {"user_id": "user-1"}
+
+    class FakeStore:
+        def load(self):
+            return {"characters": [], "key_validated": True}
+
+    class FakeSettings:
+        def auth_state_store(self):
+            return FakeStore()
+
+    window = MainWindow.__new__(MainWindow)
+    window._identity_scanner = FakeScanner()
+    window._settings = FakeSettings()
+    client = FakeClient()
+
+    first = MainWindow._scan_and_validate_identities(window, client, "eve_valid")
+    second = MainWindow._scan_and_validate_identities(window, client, "eve_valid")
+
+    assert first["characters"] == []
+    assert first["pending_files"] == ["Local_new.txt"]
+    assert second["characters"] == []
+    assert client.validation_calls == 1
+    assert window._identity_scanner.marked == 1
+
+
+def test_identity_check_submits_listener_found_after_key_validation():
+    class FakeScanner:
+        def __init__(self):
+            self.verified = []
+
+        def scan(self, _api_key):
+            return SimpleNamespace(
+                pending_characters=["Alice"],
+                pending_files=[],
+                processed_count=1,
+                key_validated=True,
+                identity_verified=False,
+            )
+
+        def mark_verified(self, names):
+            self.verified = list(names)
+
+    class FakeClient:
+        def __init__(self):
+            self.names = []
+
+        def verify_eve_characters(self, names):
+            self.names = list(names)
+            return {"verified": True, "permanent": True}
+
+    class FakeStore:
+        def load(self):
+            return {"characters": ["Alice"], "key_validated": True}
+
+    class FakeSettings:
+        def auth_state_store(self):
+            return FakeStore()
+
+    window = MainWindow.__new__(MainWindow)
+    window._identity_scanner = FakeScanner()
+    window._settings = FakeSettings()
+    client = FakeClient()
+
+    result = MainWindow._scan_and_validate_identities(window, client, "eve_valid")
+
+    assert result["characters"] == ["Alice"]
+    assert client.names == ["Alice"]
+    assert window._identity_scanner.verified == ["Alice"]
 
 
 def test_identity_success_displays_success_without_character_count():

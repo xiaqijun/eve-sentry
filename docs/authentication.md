@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 管理员 | 用户名和密码 | 全部管理页面、账号安全和业务接口 |
 | 普通用户 | EVE SSO | 态势页、报表和自己的设备密钥 |
-| 桌面设备密钥 | `Authorization: Bearer <key>` | 身份验证通过后的客户端 API |
+| 桌面设备密钥 | `Authorization: Bearer <key>` | 有效密钥可访问客户端 API；Listener 用于持续风控 |
 | 只读服务密钥 | `Authorization: Bearer <key>` | 仅 `GET /api/v1/bootstrap` 和 `GET /api/v1/events` |
 
 普通用户只有在 EVE SSO 角色属于管理员配置的允许军团时才能登录。管理员账号不使用
@@ -51,11 +51,12 @@ EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_PASSWORD_FILE=/etc/eve-sentry/admin-password
 ## 桌面身份验证
 
 1. 用户创建桌面设备密钥。
-2. 新密钥只能调用 `/api/v1/client/identity-check`。
-3. 客户端扫描全部历史 EVE 日志中的 `Listener` 并提交角色名。
-4. 服务端通过 ESI 解析角色 ID、军团和联盟。
-5. 角色属于任一允许军团，或角色 ID 位于该用户白名单时，密钥验证通过。
-6. 验证长期有效；后续只有新增角色、规则变化或管理员操作会重新判定。
+2. 客户端通过受保护的账号接口验证密钥；密钥有效即可开启监控和预警。
+3. 客户端同时扫描全部历史 EVE 日志。没有发现 `Listener` 不算校验失败，也不阻止启动。
+4. 发现 `Listener` 后，客户端调用 `/api/v1/client/identity-check` 提交角色名。
+5. 服务端通过 ESI 解析角色 ID、军团和联盟。
+6. 角色属于任一允许军团，或角色 ID 位于该用户白名单时继续使用；否则触发风控。
+7. 密钥验证长期有效；后续只有新增角色、规则变化或管理员操作会重新判定角色身份。
 
 客户端每 10 秒只查找新增日志文件，不重复扫描已处理文件的内容。新文件尚未写出
 `Listener` 时不会标记完成。新角色遇到 ESI 超时或无法解析时，客户端暂停监控、预警
@@ -69,7 +70,8 @@ EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_PASSWORD_FILE=/etc/eve-sentry/admin-password
 - 断开 SSE，并使客户端停止监控与预警。
 
 管理员修改允许军团或角色白名单时，服务端根据已保存的验证角色立即重新计算授权。
-管理员解禁后必须签发新密钥，并重新完成首次日志校验。
+管理员解禁后必须签发新密钥。新密钥有效即可启动；客户端仍会重新扫描历史日志，并在
+发现 `Listener` 后提交风控校验。
 
 ## 服务密钥
 
