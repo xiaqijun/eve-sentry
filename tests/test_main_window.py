@@ -201,7 +201,7 @@ def test_detector_client_has_no_local_threat_handler():
     assert not hasattr(MainWindow, "_on_threat_detected")
 
 
-def test_identity_success_does_not_display_verified_character_count():
+def test_identity_success_displays_success_without_character_count():
     class FakeButton:
         def __init__(self):
             self.enabled = False
@@ -233,7 +233,7 @@ def test_identity_success_does_not_display_verified_character_count():
         {"action": "runtime"},
     )
 
-    assert window._settings.auth_status == ""
+    assert window._settings.auth_status == "认证成功"
     assert window._monitor_btn.enabled is True
     assert window._alert_btn.enabled is True
 
