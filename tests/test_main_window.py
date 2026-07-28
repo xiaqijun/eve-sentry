@@ -996,6 +996,7 @@ def test_start_monitor_creates_worker_only_for_selected_eve_window(monkeypatch):
     window._workers = {}
     window._worker_contexts = {}
     window._worker = None
+    window._ocr = object()
     resolved_characters = []
 
     def refresh_location(force=False, context=None):
@@ -1019,6 +1020,7 @@ def test_start_monitor_creates_worker_only_for_selected_eve_window(monkeypatch):
     MainWindow._start_monitor(window, identity_checked=True)
 
     assert len(created_workers) == 1
+    assert created_workers[0].ocr is window._ocr
     assert created_workers[0].window["title"] == "EVE - Pilot B"
     assert created_workers[0].region == {"x": 760, "y": 190, "w": 220, "h": 420}
     assert all(worker.interval == 2.0 for worker in created_workers)

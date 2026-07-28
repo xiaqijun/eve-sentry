@@ -120,6 +120,11 @@ class MainWindow(QMainWindow):
         self._window_refresh_timer.timeout.connect(self._refresh_detected_windows)
         self._network_tasks = BackgroundTaskRunner(max_workers=2, parent=self)
         self._network_tasks.completed.connect(self._on_network_task_completed)
+        self._network_tasks.submit_once(
+            "ocr_init",
+            self._ocr.initialize,
+            {"kind": "ocr_init"},
+        )
         self._identity_timer = QTimer(self)
         self._identity_timer.setInterval(10000)
         self._identity_timer.timeout.connect(self._poll_identity_logs)
@@ -1208,10 +1213,15 @@ class MainWindow(QMainWindow):
         self._workers = {}
         self._worker_contexts = {}
         interval = self._settings.get_interval()
-        for target in targets:
+        for index, target in enumerate(targets):
+            ocr_engine = (
+                self._ocr
+                if index == 0
+                else OCREngine(lang="en", confidence_threshold=0.7)
+            )
             worker = MonitorWorker(
                 Capturer(),
-                OCREngine(lang="en", confidence_threshold=0.7),
+                ocr_engine,
             )
             window = target["window"]
             region = target["region"]

@@ -71,6 +71,21 @@ def test_ocr_errors_return_empty_result():
     assert engine.recognize(Image.new("RGB", (4, 4))) == []
 
 
+def test_initialize_loads_inference_runtime_only_once(monkeypatch):
+    engine = OCREngine()
+    calls = []
+
+    def initialize(progress=None):
+        calls.append(progress)
+        engine._ocr = object()
+
+    monkeypatch.setattr(engine, "_init_ocr", initialize)
+
+    assert engine.initialize() is True
+    assert engine.initialize() is True
+    assert calls == [None]
+
+
 def test_constructor_falls_back_to_paddleocr_2_option_name():
     calls = []
 
