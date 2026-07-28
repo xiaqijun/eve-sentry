@@ -44,6 +44,7 @@ jobs:
       - name: Build and publish client
         run: >-
           .\scripts\publish_client_release.ps1
+          -Python "python"
           -DownloadBaseUrl "https://evesentrydownload.kisectool.com/download"
         env:
           GH_TOKEN: ${{ github.token }}
