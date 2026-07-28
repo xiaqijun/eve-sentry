@@ -109,6 +109,8 @@ describe("split management pages", () => {
     expect(viewScout).toBeDefined();
     await act(async () => viewScout?.click());
 
+    const actionButton = container.querySelector('[aria-label="用户操作"]') as HTMLButtonElement | null;
+    await act(async () => actionButton?.click());
     expect(container).toHaveTextContent("删除用户");
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const deleteButton = Array.from(container.querySelectorAll("button"))
@@ -118,6 +120,28 @@ describe("split management pages", () => {
       await Promise.resolve();
     });
     expect(apiMocks.deleteUser).toHaveBeenCalledWith("user-2");
+  });
+
+  it("places user lifecycle actions in the drawer header menu", async () => {
+    apiMocks.listAdminUsers.mockResolvedValue([
+      user,
+      { ...user, display_name: "侦察员", role: "member", user_id: "user-2", username: "scout" },
+    ]);
+    await render(<AdminUsersPage />);
+
+    const viewScout = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.getAttribute("aria-label") === "查看 侦察员");
+    await act(async () => viewScout?.click());
+
+    const header = container.querySelector(".management-drawer-header");
+    const body = container.querySelector(".management-drawer-body");
+    expect(header?.querySelector('[aria-label="用户操作"]')).toBeInTheDocument();
+    expect(body).not.toHaveTextContent("禁用用户");
+
+    const actionButton = header?.querySelector('[aria-label="用户操作"]') as HTMLButtonElement | null;
+    await act(async () => actionButton?.click());
+    expect(header).toHaveTextContent("禁用用户");
+    expect(body).not.toHaveTextContent("禁用用户");
   });
 
   it("keeps verified identities on the identity page", async () => {

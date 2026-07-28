@@ -3892,6 +3892,74 @@ button {
   padding-bottom: 15px;
 }
 
+.management-drawer-header-actions {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.management-icon-button {
+  display: grid;
+  width: 32px;
+  min-height: 32px !important;
+  place-items: center;
+  padding: 0 !important;
+  border: 1px solid #d7dcdf;
+  border-radius: 4px;
+  color: #6f797f;
+  background: #ffffff;
+}
+
+.management-icon-button:hover,
+.management-icon-button[aria-expanded="true"] {
+  border-color: #8db9aa;
+  color: #275e4d;
+  background: #edf7f3;
+}
+
+.management-actions-menu {
+  position: absolute;
+  z-index: 3;
+  top: 38px;
+  right: 38px;
+  display: grid;
+  min-width: 154px;
+  gap: 3px;
+  padding: 5px;
+  border: 1px solid #d4dade;
+  border-radius: 5px;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(18, 24, 27, 0.16);
+}
+
+.management-actions-menu button {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 3px;
+  color: #3f4a50;
+  font-size: 10px;
+  text-align: left;
+  background: transparent;
+}
+
+.management-actions-menu button:hover {
+  background: #f2f6f5;
+}
+
+.management-actions-menu button:first-child {
+  color: #865814;
+}
+
+.management-actions-menu button.danger-action {
+  color: #a33c37;
+}
+
 .management-drawer-body {
   display: grid;
   gap: 16px;

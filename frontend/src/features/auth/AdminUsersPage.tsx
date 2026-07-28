@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   BadgeCheck,
   Ban,
+  EllipsisVertical,
   Eye,
   KeyRound,
   Plus,
@@ -39,6 +40,7 @@ export function AdminUsersPage() {
   const [createRole, setCreateRole] = useState<"admin" | "member">("member");
   const [createOpen, setCreateOpen] = useState(false);
   const [serviceSecret, setServiceSecret] = useState("");
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -113,6 +115,7 @@ export function AdminUsersPage() {
   const openUser = (userId: string) => {
     setSelectedUserId(userId);
     setServiceSecret("");
+    setActionsOpen(false);
   };
 
   const canEnableKey = (key: ApiKeyRecord) => [
@@ -216,16 +219,21 @@ export function AdminUsersPage() {
                 <span className="admin-user-avatar">{(selectedUser.display_name || selectedUser.username).slice(0, 1).toUpperCase()}</span>
                 <div><span className="admin-user-heading-meta">用户详情</span><h2 id="user-detail-title">{selectedUser.display_name || selectedUser.username}</h2><p>@{selectedUser.username} · {selectedUser.role === "admin" ? "管理员" : "普通用户"}</p></div>
               </div>
-              <button aria-label="关闭详情" className="management-close-button" type="button" onClick={() => setSelectedUserId("")}><X size={17} /></button>
+              <div className="management-drawer-header-actions">
+                <button aria-expanded={actionsOpen} aria-label="用户操作" className="management-icon-button" title="用户操作" type="button" onClick={() => setActionsOpen((current) => !current)}><EllipsisVertical size={17} /></button>
+                <button aria-label="关闭详情" className="management-close-button" type="button" onClick={() => { setActionsOpen(false); setSelectedUserId(""); }}><X size={17} /></button>
+                {actionsOpen ? (
+                  <div aria-label="用户操作菜单" className="management-actions-menu" role="menu">
+                    <button role="menuitem" type="button" onClick={() => { setActionsOpen(false); void run(() => setUserActive(selectedUser.user_id, selectedUser.status !== "active", "管理员操作")); }}>{selectedUser.status === "active" ? "禁用用户" : "解禁用户"}</button>
+                    {selectedUser.role === "admin" ? <button role="menuitem" type="button" onClick={() => { setActionsOpen(false); const password = window.prompt("输入至少 12 位的新密码"); if (password) void run(() => resetUserPassword(selectedUser.user_id, password)); }}>重置密码</button> : null}
+                    <button role="menuitem" type="button" onClick={() => { setActionsOpen(false); void createReadonlyKey(); }}><KeyRound size={14} />创建只读密钥</button>
+                    {selectedUser.user_id !== currentUser?.user_id ? <button className="danger-action" role="menuitem" type="button" onClick={() => { setActionsOpen(false); void deleteSelectedUser(); }}><Trash2 size={14} />删除用户</button> : null}
+                  </div>
+                ) : null}
+              </div>
             </header>
             <div className="management-drawer-body">
               <div className="management-drawer-status"><span>账号状态</span><em className={`status-badge ${selectedUser.status}`}><BadgeCheck size={13} />{selectedUser.status === "active" ? "正常" : "已禁用"}</em></div>
-              <div className="admin-actions-row">
-                <button type="button" onClick={() => void run(() => setUserActive(selectedUser.user_id, selectedUser.status !== "active", "管理员操作"))}>{selectedUser.status === "active" ? "禁用用户" : "解禁用户"}</button>
-                {selectedUser.role === "admin" ? <button type="button" onClick={() => { const password = window.prompt("输入至少 12 位的新密码"); if (password) void run(() => resetUserPassword(selectedUser.user_id, password)); }}>重置密码</button> : null}
-                <button type="button" onClick={() => void createReadonlyKey()}><KeyRound size={14} />创建只读密钥</button>
-                {selectedUser.user_id !== currentUser?.user_id ? <button className="danger-action" type="button" onClick={() => void deleteSelectedUser()}><Trash2 size={14} />删除用户</button> : null}
-              </div>
               {serviceSecret ? <div className="secret-once"><strong>服务密钥只显示这一次</strong><code>{serviceSecret}</code></div> : null}
               <section className="management-drawer-section">
                 <div className="admin-section-heading"><h3>设备与服务密钥</h3><span>{selectedUser.keys.length} 个</span></div>
