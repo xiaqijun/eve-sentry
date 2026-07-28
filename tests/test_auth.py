@@ -340,6 +340,19 @@ def test_unresolved_character_blocks_without_disabling_user(auth):
     assert auth.repository.user_by_id(user["user_id"])["status"] == "active"
 
 
+def test_missing_listener_does_not_disable_user_or_key(auth):
+    user = _member(auth)
+    created = auth.create_api_key(user["user_id"], "Desktop", user["user_id"])
+    principal = auth.authenticate_api_key(created["secret"])
+
+    with pytest.raises(AuthError) as exc_info:
+        auth.verify_characters(principal, [])
+
+    assert exc_info.value.code == "eve_listener_required"
+    assert auth.repository.user_by_id(user["user_id"])["status"] == "active"
+    assert auth.repository.api_key_by_id(created["key_id"])["status"] == "active"
+
+
 def test_removed_rule_rechecks_saved_characters_and_requires_new_key_after_enable(auth):
     user = _member(auth)
     auth.add_allowed_corporation(9001, user["user_id"])

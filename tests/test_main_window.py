@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -8,6 +9,7 @@ from PyQt6.QtWidgets import QApplication, QStyle, QStyleOptionSpinBox
 
 from app.ui.main_window import MainWindow
 from app.ui.settings import SettingsPanel
+from app.ui.settings import DEFAULT_CHATLOG_DIR
 from app.ui.settings import DEFAULT_INTEL_URL
 from app.ui.theme import APP_QSS
 
@@ -180,7 +182,7 @@ def test_alert_toggle_starts_and_stops_embedded_controller(monkeypatch):
         lambda _delay, callback: callback(),
     )
 
-    MainWindow._start_alert(window)
+    MainWindow._start_alert(window, identity_checked=True)
 
     assert calls[:3] == [
         ("init", "http://intel.example", False, None),
@@ -202,7 +204,7 @@ def test_detector_client_has_no_local_threat_handler():
     assert not hasattr(MainWindow, "_on_threat_detected")
 
 
-def test_identity_check_accepts_valid_key_without_listener_and_caches_validation():
+def test_key_validation_is_independent_from_listener_scan():
     class FakeScanner:
         def __init__(self):
             self.key_validated = False
@@ -242,14 +244,14 @@ def test_identity_check_accepts_valid_key_without_listener_and_caches_validation
     window._settings = FakeSettings()
     client = FakeClient()
 
-    first = MainWindow._scan_and_validate_identities(window, client, "eve_valid")
-    second = MainWindow._scan_and_validate_identities(window, client, "eve_valid")
+    MainWindow._validate_api_key(window, client)
+    MainWindow._validate_api_key(window, client)
+    scan = MainWindow._scan_and_validate_identities(window, client, "eve_valid")
 
-    assert first["characters"] == []
-    assert first["pending_files"] == ["Local_new.txt"]
-    assert second["characters"] == []
-    assert client.validation_calls == 1
-    assert window._identity_scanner.marked == 1
+    assert scan["characters"] == []
+    assert scan["pending_files"] == ["Local_new.txt"]
+    assert client.validation_calls == 2
+    assert window._identity_scanner.marked == 2
 
 
 def test_identity_check_submits_listener_found_after_key_validation():
@@ -297,6 +299,59 @@ def test_identity_check_submits_listener_found_after_key_validation():
     assert window._identity_scanner.verified == ["Alice"]
 
 
+def test_listener_poll_rediscovers_log_path_and_runs_as_silent_task():
+    submissions = []
+
+    class FakeSettings:
+        def get_api_key(self):
+            return "eve_valid"
+
+        def get_channel_log_dir(self):
+            return "D:/New/EVE/logs/Chatlogs"
+
+    class FakeScanner:
+        log_dir = Path("C:/Old/Chatlogs")
+
+    class FakeRunner:
+        def submit_latest(self, key, task, metadata):
+            submissions.append((key, task, metadata))
+            return True
+
+    window = MainWindow.__new__(MainWindow)
+    window._settings = FakeSettings()
+    window._identity_scanner = FakeScanner()
+    window._intel_client = object()
+    window._network_tasks = FakeRunner()
+
+    MainWindow._poll_identity_logs(window)
+
+    assert window._identity_scanner.log_dir == Path("D:/New/EVE/logs/Chatlogs")
+    assert window._listener_scan_running is True
+    assert submissions[0][0] == "listener"
+    assert submissions[0][2] == {"kind": "listener"}
+
+
+def test_listener_background_errors_only_disable_features_for_auth_rejection():
+    disabled = []
+    window = MainWindow.__new__(MainWindow)
+    window._listener_scan_running = True
+    window._disable_authenticated_features = disabled.append
+
+    MainWindow._handle_listener_scan_error(window, TimeoutError("ESI timed out"))
+
+    assert window._listener_scan_running is False
+    assert disabled == []
+
+    window._listener_scan_running = True
+    MainWindow._handle_listener_scan_error(
+        window,
+        RuntimeError("API key is invalid or revoked"),
+    )
+
+    assert window._listener_scan_running is False
+    assert disabled == ["API key is invalid or revoked"]
+
+
 def test_identity_success_displays_success_without_character_count():
     class FakeButton:
         def __init__(self):
@@ -304,6 +359,9 @@ def test_identity_success_displays_success_without_character_count():
 
         def setEnabled(self, enabled):
             self.enabled = enabled
+
+        def setChecked(self, checked):
+            self.checked = checked
 
     class FakeSettings:
         def __init__(self):
@@ -321,12 +379,13 @@ def test_identity_success_displays_success_without_character_count():
     window._settings = FakeSettings()
     window._alert_controller = None
     window._is_monitoring = lambda: False
+    window._start_monitor = lambda identity_checked=False: None
     window._log_message = lambda _message: None
 
     MainWindow._handle_identity_check_success(
         window,
         {"characters": ["Alice", "Bob"], "processed_count": 0},
-        {"action": "runtime"},
+        {"action": "monitor"},
     )
 
     assert window._settings.auth_status == "认证成功"
@@ -667,6 +726,22 @@ def test_settings_panel_environment_overrides_saved_chatlog_dir(
     assert panel.get_channel_log_dir() == "E:/Env/Chatlogs"
 
 
+def test_settings_panel_rediscovers_active_chatlog_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("EVE_SENTRY_CHATLOG_DIR", raising=False)
+    calls = []
+
+    def resolve(preferred=None):
+        calls.append(str(preferred))
+        return Path("C:/Old/Chatlogs" if len(calls) == 1 else "D:/New/Chatlogs")
+
+    monkeypatch.setattr("app.ui.settings.resolve_chatlog_dir", resolve)
+    qt_app()
+    panel = SettingsPanel(config_path=tmp_path / "channel_settings.json")
+
+    assert panel.get_channel_log_dir() == str(Path("D:/New/Chatlogs"))
+    assert calls == [str(DEFAULT_CHATLOG_DIR), str(Path("C:/Old/Chatlogs"))]
+
+
 def test_settings_panel_persists_normalized_server_url(tmp_path, monkeypatch):
     monkeypatch.delenv("EVE_SENTRY_INTEL_URL", raising=False)
     config_path = tmp_path / "channel_settings.json"
@@ -894,7 +969,7 @@ def test_start_monitor_creates_worker_only_for_selected_eve_window(monkeypatch):
     window._monitor_btn = type("Button", (), {"setChecked": lambda self, value: None, "setText": lambda self, text: None, "setStyleSheet": lambda self, text: None})()
     window._status_label = type("Label", (), {"setText": lambda self, text: None, "setStyleSheet": lambda self, text: None})()
 
-    MainWindow._start_monitor(window)
+    MainWindow._start_monitor(window, identity_checked=True)
 
     assert len(created_workers) == 1
     assert created_workers[0].window["title"] == "EVE - Pilot B"
@@ -1277,7 +1352,7 @@ def test_start_monitor_rejects_missing_eve_windows(monkeypatch):
     window._detect_window = lambda: None
     window._monitor_btn = FakeButton()
 
-    MainWindow._start_monitor(window)
+    MainWindow._start_monitor(window, identity_checked=True)
 
     assert window._monitor_btn.checked is False
     assert messages == ["当前没有可用的 EVE 窗口。"]
