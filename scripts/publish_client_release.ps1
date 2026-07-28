@@ -60,7 +60,8 @@ try {
         if ($releaseExists) {
             gh release upload $tag $assetPath $manifestPath --clobber
         } else {
-            gh release create $tag $assetPath $manifestPath --target HEAD --title "EVE Sentry v$Version" --generate-notes
+            $targetCommit = (git rev-parse HEAD).Trim()
+            gh release create $tag $assetPath $manifestPath --target $targetCommit --title "EVE Sentry v$Version" --generate-notes
         }
         if ($LASTEXITCODE -ne 0) { throw "GitHub release failed with exit code $LASTEXITCODE" }
     }
