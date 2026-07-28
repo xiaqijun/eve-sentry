@@ -201,6 +201,43 @@ def test_detector_client_has_no_local_threat_handler():
     assert not hasattr(MainWindow, "_on_threat_detected")
 
 
+def test_identity_success_does_not_display_verified_character_count():
+    class FakeButton:
+        def __init__(self):
+            self.enabled = False
+
+        def setEnabled(self, enabled):
+            self.enabled = enabled
+
+    class FakeSettings:
+        def __init__(self):
+            self.auth_status = None
+
+        def set_auth_status(self, message):
+            self.auth_status = message
+
+    window = MainWindow.__new__(MainWindow)
+    window._identity_check_running = True
+    window._identity_wants_monitor = False
+    window._identity_wants_alert = False
+    window._monitor_btn = FakeButton()
+    window._alert_btn = FakeButton()
+    window._settings = FakeSettings()
+    window._alert_controller = None
+    window._is_monitoring = lambda: False
+    window._log_message = lambda _message: None
+
+    MainWindow._handle_identity_check_success(
+        window,
+        {"characters": ["Alice", "Bob"], "processed_count": 0},
+        {"action": "runtime"},
+    )
+
+    assert window._settings.auth_status == ""
+    assert window._monitor_btn.enabled is True
+    assert window._alert_btn.enabled is True
+
+
 def test_publish_ocr_snapshot_posts_only_detected_names():
     class FakeClient:
         def __init__(self):
