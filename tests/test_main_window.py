@@ -1078,7 +1078,7 @@ def test_build_monitor_targets_uses_only_selected_window():
     assert [target["character_name"] for target in targets] == ["Pilot B"]
 
 
-def test_detect_window_labels_duplicate_titles_with_hwnd_and_size():
+def test_detect_window_handles_button_signal_and_labels_duplicate_titles():
     class FakeCombo:
         def __init__(self):
             self.items = []
@@ -1149,7 +1149,7 @@ def test_detect_window_labels_duplicate_titles_with_hwnd_and_size():
     window._log_messages = []
     window._log_message = lambda message: window._log_messages.append(message)
 
-    MainWindow._detect_window(window)
+    MainWindow._detect_window(window, False)
 
     assert window._window_combo.items == [
         ("EVE - Pilot #1 · hwnd 1 · 800x600", 1),
