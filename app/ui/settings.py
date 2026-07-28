@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -20,6 +21,7 @@ from PyQt6.QtWidgets import (
 
 from app.channels.log_watcher import DEFAULT_CHATLOG_DIR, resolve_chatlog_dir
 from app.channels.identity_logs import ClientAuthStateStore
+from app.version import current_version
 
 
 DEFAULT_INTEL_URL = "http://114.132.167.239:8765"
@@ -47,6 +49,7 @@ class SettingsPanel(QWidget):
     scan_settings_changed = pyqtSignal()
     server_url_changed = pyqtSignal(str)
     api_key_changed = pyqtSignal(str)
+    update_requested = pyqtSignal()
 
     def __init__(self, parent=None, config_path: str | Path | None = None):
         super().__init__(parent)
@@ -119,6 +122,20 @@ class SettingsPanel(QWidget):
         scan_layout.addLayout(keyword_row)
 
         layout.addWidget(scan_group)
+
+        version_group = QGroupBox("版本")
+        version_layout = QVBoxLayout(version_group)
+        version_layout.setContentsMargins(0, 16, 0, 2)
+        version_layout.setSpacing(6)
+        self._update_status_label = QLabel(f"当前 v{current_version()}")
+        self._update_status_label.setObjectName("authStatus")
+        self._update_status_label.setWordWrap(True)
+        version_layout.addWidget(self._update_status_label)
+        self._update_button = QPushButton("检查更新")
+        self._update_button.setObjectName("secondaryAction")
+        self._update_button.clicked.connect(self.update_requested.emit)
+        version_layout.addWidget(self._update_button)
+        layout.addWidget(version_group)
         layout.addStretch()
 
         self._interval_spin.valueChanged.connect(self._on_scan_settings_changed)
@@ -155,6 +172,17 @@ class SettingsPanel(QWidget):
         color = "#ff6b73" if error else "#37d6b0"
         self._auth_status_label.setStyleSheet(f"color: {color};")
         self._auth_status_label.setText(str(message or ""))
+
+    def set_update_state(
+        self,
+        message: str,
+        action_text: str,
+        enabled: bool,
+    ) -> None:
+        """Update the compact release status and action button."""
+        self._update_status_label.setText(str(message or ""))
+        self._update_button.setText(str(action_text or "检查更新"))
+        self._update_button.setEnabled(bool(enabled))
 
     def save_channel_config(self) -> None:
         """Persist local monitor settings using the existing settings file."""

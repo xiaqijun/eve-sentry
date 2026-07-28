@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "eve-sentry-download",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-28",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "GITHUB_OWNER": "xiaqijun",
+    "GITHUB_REPO": "eve-sentry"
+  }
+}

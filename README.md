@@ -104,6 +104,13 @@ $env:EVE_SENTRY_OCR_DEVICE = "dml"
 python -m app.detector_client
 ```
 
+## 客户端下载与更新
+
+Windows 便携客户端通过 GitHub Release 发布，安装包包含 ONNX Runtime、DirectML 和
+PP-OCRv6 模型。客户端启动时静默检查版本，也可在左侧版本区手动下载；安装前会校验
+文件大小和 SHA256，随后退出、替换目录并自动重启。大文件下载由 Cloudflare Worker
+代理并缓存，发布与部署方式见 [监控客户端](docs/client.md)。
+
 ONNX 模型应位于：
 
 ```text

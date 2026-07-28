@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 
 from app.ui.main_window import MainWindow
+from app.version import current_version
 
 
 def main():
@@ -56,6 +57,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("EVE Sentry")
     app.setOrganizationName("EveSentry")
+    app.setApplicationVersion(current_version())
 
     window = MainWindow()
     window.show()
