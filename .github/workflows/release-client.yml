@@ -53,12 +53,22 @@ jobs:
         run: |
           $version = (python -c "from app.version import APP_VERSION; print(APP_VERSION)").Trim()
           $manifestUrl = "https://evesentrydownload.kisectool.com/latest.json?run=$env:GITHUB_RUN_ID"
-          $manifest = Invoke-RestMethod -Uri $manifestUrl -TimeoutSec 30
-          if ($manifest.version -ne $version) {
-              throw "Manifest version $($manifest.version) does not match $version"
+          $verified = $false
+          for ($attempt = 1; $attempt -le 12; $attempt++) {
+              $manifest = Invoke-RestMethod -Uri "$manifestUrl&attempt=$attempt" -TimeoutSec 30
+              if ($manifest.version -ne $version) {
+                  Start-Sleep -Seconds 5
+                  continue
+              }
+              $headers = curl.exe -fsS -D - -o NUL -H "Range: bytes=0-1023" $manifest.url
+              $expectedRange = "Content-Range:\s*bytes 0-1023/$([regex]::Escape([string]$manifest.size))"
+              if ($LASTEXITCODE -eq 0 -and $headers -match "206 Partial Content" -and $headers -match $expectedRange) {
+                  $verified = $true
+                  break
+              }
+              Start-Sleep -Seconds 5
           }
-          $headers = curl.exe -fsS -D - -o NUL -H "Range: bytes=0-1023" $manifest.url
-          if ($LASTEXITCODE -ne 0 -or $headers -notmatch "206 Partial Content") {
+          if (-not $verified) {
               throw "Cloudflare range download verification failed."
           }
           gh release view "v$version" --json url,assets,targetCommitish

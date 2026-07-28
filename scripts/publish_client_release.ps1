@@ -34,7 +34,7 @@ try {
 
     $file = Get-Item -LiteralPath $assetPath
     $hash = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $downloadUrl = "$($DownloadBaseUrl.TrimEnd('/'))/$assetName"
+    $downloadUrl = "$($DownloadBaseUrl.TrimEnd('/'))/${assetName}?sha256=${hash}"
     $manifest = [ordered]@{
         version = $Version
         url = $downloadUrl
