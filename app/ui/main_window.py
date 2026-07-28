@@ -6,6 +6,7 @@ import time
 from argparse import Namespace
 from concurrent.futures import Future
 from datetime import datetime
+from pathlib import Path
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QAction
@@ -931,18 +932,12 @@ class MainWindow(QMainWindow):
         )
 
     def _begin_identity_check(self, action: str = "runtime") -> None:
-        """Scan Listener history and validate only identities not yet accepted."""
-        if _instance_attr(self, "_identity_scanner") is None:
-            if action == "monitor":
-                self._start_monitor(identity_checked=True)
-            elif action == "alert":
-                self._start_alert(identity_checked=True)
-            return
+        """Validate the API key before enabling an authenticated feature."""
         if action == "monitor":
             self._identity_wants_monitor = True
         elif action == "alert":
             self._identity_wants_alert = True
-        if self._identity_check_running:
+        if _instance_attr(self, "_identity_check_running", False):
             return
 
         api_key = self._settings.get_api_key()
@@ -954,7 +949,7 @@ class MainWindow(QMainWindow):
                 self._alert_btn.setChecked(False)
             return
         if self._intel_client is None:
-            self._settings.set_auth_status("认证客户端不可用，请检查 HTTPS 地址", error=True)
+            self._settings.set_auth_status("认证客户端不可用，请检查服务端地址", error=True)
             if action == "monitor":
                 self._monitor_btn.setChecked(False)
             elif action == "alert":
@@ -962,7 +957,7 @@ class MainWindow(QMainWindow):
             return
 
         self._identity_check_running = True
-        self._settings.set_auth_status("正在检查 EVE 登录角色")
+        self._settings.set_auth_status("正在验证密钥")
         if action == "monitor":
             self._monitor_btn.setEnabled(False)
         elif action == "alert":
@@ -970,9 +965,16 @@ class MainWindow(QMainWindow):
         client = self._intel_client
         self._network_tasks.submit_latest(
             "identity",
-            lambda: self._scan_and_validate_identities(client, api_key),
+            lambda: self._validate_api_key(client),
             {"kind": "identity", "action": action},
         )
+
+    def _validate_api_key(self, client: IntelApiClient) -> dict:
+        user = client.validate_api_key()
+        scanner = _instance_attr(self, "_identity_scanner")
+        if scanner is not None:
+            scanner.mark_key_validated()
+        return {"user": user}
 
     def _scan_and_validate_identities(
         self,
@@ -984,12 +986,8 @@ class MainWindow(QMainWindow):
         if pending_names:
             identity = client.verify_eve_characters(pending_names)
             self._identity_scanner.mark_verified(pending_names)
-        elif not scan.key_validated:
-            client.validate_api_key()
-            self._identity_scanner.mark_key_validated()
-            identity = {"verified": True, "permanent": True}
         else:
-            identity = {"verified": True, "permanent": True}
+            identity = {"verified": scan.identity_verified, "permanent": True}
         state = self._settings.auth_state_store().load()
         return {
             "identity": identity,
@@ -999,20 +997,30 @@ class MainWindow(QMainWindow):
         }
 
     def _poll_identity_logs(self) -> None:
-        """Check only files not recorded by the prior successful scans."""
-        if not self._settings.get_api_key() or self._identity_check_running:
+        """Silently discover and upload Listener identities in the background."""
+        scanner = _instance_attr(self, "_identity_scanner")
+        client = _instance_attr(self, "_intel_client")
+        if (
+            scanner is None
+            or client is None
+            or not self._settings.get_api_key()
+            or _instance_attr(self, "_listener_scan_running", False)
+        ):
             return
-        self._begin_identity_check("runtime")
+        scanner.log_dir = Path(self._settings.get_channel_log_dir())
+        self._listener_scan_running = True
+        api_key = self._settings.get_api_key()
+        self._network_tasks.submit_latest(
+            "listener",
+            lambda: self._scan_and_validate_identities(client, api_key),
+            {"kind": "listener"},
+        )
 
     def _handle_identity_check_success(self, result: object, metadata: dict) -> None:
         self._identity_check_running = False
         self._monitor_btn.setEnabled(True)
         self._alert_btn.setEnabled(True)
-        payload = result if isinstance(result, dict) else {}
         self._settings.set_auth_status("认证成功")
-        processed_count = int(payload.get("processed_count") or 0)
-        if processed_count:
-            self._log_message(f"已检查 {processed_count} 个新增 EVE 日志文件")
 
         action = str(metadata.get("action") or "runtime")
         resume_monitor = self._identity_wants_monitor or action == "monitor"
@@ -1032,27 +1040,40 @@ class MainWindow(QMainWindow):
         self._alert_btn.setEnabled(True)
         message = str(exc)
         action = str(metadata.get("action") or "runtime")
-        fatal = any(
-            token in message.casefold()
-            for token in ("unauthorized", "revoked", "disabled", "invalid api key")
-        )
-        if action == "monitor":
-            self._identity_wants_monitor = not fatal
-        if action == "alert":
-            self._identity_wants_alert = not fatal
+        if _is_auth_rejection(message):
+            self._disable_authenticated_features(message)
+            return
+        self._identity_wants_monitor = False
+        self._identity_wants_alert = False
+        if action == "monitor" and not self._is_monitoring():
+            self._monitor_btn.setChecked(False)
+        if action == "alert" and self._alert_controller is None:
+            self._alert_btn.setChecked(False)
+        self._settings.set_auth_status(message, error=True)
+        self._log_message(f"客户端密钥验证失败：{message}")
+
+    def _handle_listener_scan_success(self) -> None:
+        self._listener_scan_running = False
+
+    def _handle_listener_scan_error(self, exc: Exception) -> None:
+        self._listener_scan_running = False
+        message = str(exc)
+        if _is_auth_rejection(message):
+            self._disable_authenticated_features(message)
+            return
+        logger.warning("Background Listener validation failed: %s", message)
+
+    def _disable_authenticated_features(self, message: str) -> None:
+        self._identity_wants_monitor = False
+        self._identity_wants_alert = False
         if self._is_monitoring():
-            self._identity_wants_monitor = not fatal
             self._stop_monitor()
         if self._alert_controller is not None:
-            self._identity_wants_alert = not fatal
             self._stop_alert()
         self._monitor_btn.setChecked(False)
         self._alert_btn.setChecked(False)
-        if fatal:
-            self._identity_wants_monitor = False
-            self._identity_wants_alert = False
         self._settings.set_auth_status(message, error=True)
-        self._log_message(f"客户端身份校验失败：{message}")
+        self._log_message(f"客户端认证失效：{message}")
 
     def _set_heartbeat_enabled(self, enabled: bool) -> None:
         timer = _instance_attr(self, "_heartbeat_timer")
@@ -1082,6 +1103,8 @@ class MainWindow(QMainWindow):
                 self._handle_heartbeat_publish_error(exc)
             elif kind == "identity":
                 self._handle_identity_check_error(exc, metadata)
+            elif kind == "listener":
+                self._handle_listener_scan_error(exc)
         else:
             if kind == "ocr":
                 self._handle_ocr_publish_success(metadata)
@@ -1090,6 +1113,8 @@ class MainWindow(QMainWindow):
                 self._refresh_status_cards()
             elif kind == "identity":
                 self._handle_identity_check_success(result, metadata)
+            elif kind == "listener":
+                self._handle_listener_scan_success()
         finally:
             runner = _instance_attr(self, "_network_tasks")
             if runner is not None:
@@ -1115,6 +1140,9 @@ class MainWindow(QMainWindow):
 
     def _handle_heartbeat_publish_error(self, exc: Exception) -> None:
         message = str(exc)
+        if _is_auth_rejection(message):
+            self._disable_authenticated_features(message)
+            return
         if message != self._last_heartbeat_error:
             self._last_heartbeat_error = message
             self._log_message(f"Heartbeat update failed: {message}")
@@ -1712,6 +1740,20 @@ def _instance_attr(instance, name: str, default=None):
         return instance.__dict__.get(name, default)
     except RuntimeError:
         return default
+
+
+def _is_auth_rejection(message: str) -> bool:
+    text = str(message or "").casefold()
+    return any(
+        token in text
+        for token in (
+            "unauthorized",
+            "revoked",
+            "disabled",
+            "invalid api key",
+            "authentication is required",
+        )
+    )
 
 
 def _env_float(name: str, default: float, minimum: float = 0.0) -> float:

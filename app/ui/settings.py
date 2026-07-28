@@ -136,8 +136,14 @@ class SettingsPanel(QWidget):
         return normalize_server_url(self._server_url_edit.text())
 
     def get_channel_log_dir(self) -> str:
-        """Return the chatlog directory used only for local-system detection."""
-        return self._chatlog_dir or str(DEFAULT_CHATLOG_DIR)
+        """Return the currently active EVE Chatlogs directory."""
+        configured = os.environ.get("EVE_SENTRY_CHATLOG_DIR", "").strip()
+        if configured:
+            resolved = os.path.expandvars(configured)
+        else:
+            resolved = str(resolve_chatlog_dir(self._chatlog_dir or DEFAULT_CHATLOG_DIR))
+        self._chatlog_dir = str(resolved)
+        return self._chatlog_dir
 
     def get_api_key(self) -> str:
         return self._api_key_edit.text().strip()
