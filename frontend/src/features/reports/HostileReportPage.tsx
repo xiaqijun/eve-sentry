@@ -4,7 +4,7 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
-  Clock3,
+  GitBranch,
   MapPinned,
   RefreshCw,
   ShieldAlert,
@@ -155,16 +155,21 @@ export function HostileReportPage() {
           <strong>{report.systemCount}</strong>
           <small>{report.systems[0]?.name ? `最多：${report.systems[0].name}` : "暂无记录"}</small>
         </article>
-        <article className="report-metric-card warning">
-          <span><Activity size={15} />高危批次</span>
-          <strong>{report.highRiskCount}</strong>
-          <small>严重与高危告警</small>
-        </article>
-        <article className="report-metric-card">
-          <span><Clock3 size={15} />日均来袭</span>
-          <strong>{report.averagePerDay.toFixed(1)}</strong>
-          <small>按当前统计范围折算</small>
-        </article>
+      </section>
+
+      <section className="report-panel report-insights-panel" aria-label="来袭特征">
+        <div className="report-panel-title">
+          <div><Activity size={17} /><span>来袭特征</span></div>
+          <strong>{activeRange}</strong>
+        </div>
+        <div className="report-insight-grid">
+          <div><span>单批峰值</span><strong>{report.peakTargetsPerIncident}</strong><small>人</small></div>
+          <div><span>重复出现目标</span><strong>{report.repeatTargetCount}</strong><small>人</small></div>
+          <div><span>跨星系目标</span><strong>{report.crossSystemTargetCount}</strong><small>人</small></div>
+          <div><span>高危占比</span><strong>{report.highRiskRate.toFixed(0)}</strong><small>%</small></div>
+          <div><span>日均来袭</span><strong>{report.averagePerDay.toFixed(1)}</strong><small>批</small></div>
+          <div><span>平均每批</span><strong>{report.averageTargetsPerIncident.toFixed(1)}</strong><small>人</small></div>
+        </div>
       </section>
 
       <section className="report-grid report-grid-top">
@@ -224,7 +229,7 @@ export function HostileReportPage() {
 
         <article className="report-panel">
           <div className="report-panel-title">
-            <div><Skull size={17} /><span>高频敌对目标</span></div>
+            <div><GitBranch size={17} /><span>高频敌对目标</span></div>
             <strong>TOP 8</strong>
           </div>
           <div className="report-ranking-table">

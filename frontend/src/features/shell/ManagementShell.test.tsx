@@ -56,10 +56,12 @@ describe("ManagementShell", () => {
     expect(container).toHaveTextContent("设备密钥");
     expect(container).toHaveTextContent("账号安全");
     expect(container).toHaveTextContent("用户管理");
-    expect(container).toHaveTextContent("身份授权");
+    expect(container).toHaveTextContent("身份记录");
+    expect(container).toHaveTextContent("白名单管理");
     expect(container).toHaveTextContent("审计日志");
     expect(container).toHaveTextContent("报表内容");
     expect(container.querySelector('a[href="/reports"]')).toHaveClass("active");
+    expect(container.querySelector('a[href="/admin/whitelist"]')).toBeInTheDocument();
   });
 
   it("hides account administration in public mode", async () => {
@@ -82,7 +84,8 @@ describe("ManagementShell", () => {
     expect(container).not.toHaveTextContent("设备密钥");
     expect(container).not.toHaveTextContent("账号安全");
     expect(container).not.toHaveTextContent("用户管理");
-    expect(container).not.toHaveTextContent("身份授权");
+    expect(container).not.toHaveTextContent("身份记录");
+    expect(container).not.toHaveTextContent("白名单管理");
     expect(container).not.toHaveTextContent("审计日志");
   });
 

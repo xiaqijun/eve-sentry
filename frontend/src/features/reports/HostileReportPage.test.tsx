@@ -82,6 +82,12 @@ describe("HostileReportPage", () => {
     expect(container).toHaveTextContent("来袭批次");
     expect(container).toHaveTextContent("目标人次");
     expect(container).toHaveTextContent("独立敌对");
+    expect(container).toHaveTextContent("来袭特征");
+    expect(container).toHaveTextContent("单批峰值");
+    expect(container).toHaveTextContent("重复出现目标");
+    expect(container).toHaveTextContent("跨星系目标");
+    expect(container).toHaveTextContent("高危占比");
+    expect(container).toHaveTextContent("平均每批");
     expect(container).toHaveTextContent("S-KSWL");
     expect(container).toHaveTextContent("Alice");
     expect(container).toHaveTextContent("Bob");

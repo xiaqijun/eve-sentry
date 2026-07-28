@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  Building2,
   ChevronRight,
   Fingerprint,
   KeyRound,
@@ -21,7 +22,8 @@ const PAGE_META: Record<string, { title: string }> = {
   "/account/keys": { title: "设备密钥" },
   "/account/security": { title: "账号安全" },
   "/admin/users": { title: "用户管理" },
-  "/admin/identity": { title: "身份授权" },
+  "/admin/identity": { title: "身份记录" },
+  "/admin/whitelist": { title: "白名单管理" },
   "/admin/audit": { title: "审计日志" },
 };
 
@@ -84,7 +86,13 @@ export function ManagementShell() {
           {user?.role === "admin" ? (
             <NavLink className={navigationClass} to="/admin/identity">
               <Fingerprint size={17} />
-              <span>身份授权</span>
+              <span>身份记录</span>
+            </NavLink>
+          ) : null}
+          {user?.role === "admin" ? (
+            <NavLink className={navigationClass} to="/admin/whitelist">
+              <Building2 size={17} />
+              <span>白名单管理</span>
             </NavLink>
           ) : null}
           {user?.role === "admin" ? (

@@ -4,6 +4,7 @@ import type {
   ApiKeyRecord,
   AuditRecord,
   AuthUser,
+  ClientsSnapshot,
 } from "./types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "";
@@ -200,4 +201,8 @@ export async function removeWhitelistCharacter(
 
 export async function listAudit(): Promise<AuditRecord[]> {
   return (await apiRequest<{ audit: AuditRecord[] }>("/api/v1/admin/audit")).audit;
+}
+
+export async function fetchClients(): Promise<ClientsSnapshot> {
+  return (await apiRequest<{ clients: ClientsSnapshot }>("/api/v1/clients")).clients;
 }

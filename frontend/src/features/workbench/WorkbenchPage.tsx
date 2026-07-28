@@ -118,6 +118,44 @@ interface LatestEventSummary {
   text: string;
 }
 
+interface VerifiedHostileSummary {
+  hostileCount: number;
+  systemCount: number;
+}
+
+function summarizeVerifiedHostiles(alerts: AlertItem[]): VerifiedHostileSummary {
+  const characterIds = new Set<number>();
+  const systems = new Set<string>();
+
+  alerts.forEach((alert) => {
+    if (alert.classification !== "red") {
+      return;
+    }
+    const verifiedCharacterIds = (alert.verified_characters || [])
+      .map((character) => Number(character?.character_id))
+      .filter((characterId) => Number.isInteger(characterId) && characterId > 0);
+    if (verifiedCharacterIds.length === 0) {
+      return;
+    }
+    verifiedCharacterIds.forEach((characterId) => characterIds.add(characterId));
+
+    const systemId = Number(alert.system_id);
+    if (Number.isInteger(systemId) && systemId > 0) {
+      systems.add(`id:${systemId}`);
+      return;
+    }
+    const systemName = String(alert.system_name || "").trim().toLocaleLowerCase();
+    if (systemName) {
+      systems.add(`name:${systemName}`);
+    }
+  });
+
+  return {
+    hostileCount: characterIds.size,
+    systemCount: systems.size,
+  };
+}
+
 function isRecentEvent(value: string | undefined, nowMs: number): boolean {
   if (!value) {
     return false;
@@ -304,14 +342,12 @@ export function WorkbenchPage() {
     };
   }, [bootstrap?.esi.authenticated, esiLoginPending, queryClient]);
 
-  const highRiskCount = observations.filter((item) =>
-    item.level === "critical" || item.level === "high",
-  ).length;
   const latestEvent = latestEventSummary(bootstrap?.alerts || [], observations);
+  const verifiedHostiles = summarizeVerifiedHostiles(bootstrap?.alerts || []);
   const esiStatus = esiStatusText(bootstrap);
   const canStartEsiLogin = Boolean(bootstrap?.esi.config?.client_id_configured);
-  const activeSystemCount = graphData.nodes.filter((item) =>
-    item.hostileCount > 0 || (item.killCount ?? 0) > 0 || item.monitorCount > 0,
+  const onlineMonitorNodeCount = graphData.nodes.filter((item) =>
+    item.monitorOnlineCount > 0,
   ).length;
   const navItems: {
     id: WorkbenchNavId;
@@ -467,29 +503,27 @@ export function WorkbenchPage() {
           </p>
         </nav>
 
-        <section className="threat-status-panel">
+        <section className="threat-status-panel" aria-label="态势统计">
           <div className="section-title compact-title">
             <Radar size={16} />
-            <span>实时态势</span>
+            <span>态势统计</span>
           </div>
           <div className="metric-grid">
             <div className="metric-card">
-              <span>状态</span>
-              <strong className={highRiskCount > 0 ? "danger-text" : ""}>
-                {highRiskCount > 0 ? "警戒" : "平稳"}
-              </strong>
+              <span>在线预警节点</span>
+              <strong>{onlineMonitorNodeCount}</strong>
             </div>
             <div className="metric-card">
-              <span>活跃星系</span>
-              <strong>{activeSystemCount}</strong>
+              <span>当前有敌星系</span>
+              <strong className={verifiedHostiles.systemCount > 0 ? "danger-text" : ""}>{verifiedHostiles.systemCount}</strong>
             </div>
             <div className="metric-card">
-              <span>敌对</span>
-              <strong className="danger-text">{observations.length}</strong>
+              <span>当前敌对人数</span>
+              <strong className={verifiedHostiles.hostileCount > 0 ? "danger-text" : ""}>{verifiedHostiles.hostileCount}</strong>
             </div>
             <div className="metric-card">
-              <span>告警</span>
-              <strong>{bootstrap?.alerts.length ?? 0}</strong>
+              <span>最近更新时间</span>
+              <strong className="metric-card-time">{formatClock(bootstrap?.generated_at)}</strong>
             </div>
           </div>
         </section>

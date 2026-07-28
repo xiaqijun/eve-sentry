@@ -23,10 +23,10 @@ export function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const queryError = new URLSearchParams(location.search).get("esi_error") || "";
-  const [error, setError] = useState(
-    queryError ? ESI_ERRORS[queryError] || "EVE 登录失败" : "",
-  );
+  const [loginError, setLoginError] = useState("");
+  const queryErrorCode = new URLSearchParams(location.search).get("esi_error") || "";
+  const queryError = queryErrorCode ? ESI_ERRORS[queryErrorCode] || "EVE 登录失败" : "";
+  const error = loginError || queryError;
 
   if (!loading && (!authEnabled || user)) {
     return <Navigate replace to="/" />;
@@ -35,13 +35,22 @@ export function LoginPage() {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setSubmitting(true);
-    setError("");
+    setLoginError("");
+    if (queryErrorCode) {
+      const searchParams = new URLSearchParams(location.search);
+      searchParams.delete("esi_error");
+      const search = searchParams.toString();
+      navigate(
+        { pathname: location.pathname, search: search ? `?${search}` : "", hash: location.hash },
+        { replace: true, state: location.state },
+      );
+    }
     try {
       await login(username, password);
       const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname;
       navigate(from || "/", { replace: true });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "登录失败");
+      setLoginError(reason instanceof Error ? reason.message : "登录失败");
     } finally {
       setSubmitting(false);
     }

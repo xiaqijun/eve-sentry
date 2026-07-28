@@ -70,6 +70,11 @@ describe("hostile reporting", () => {
     expect(report.uniqueTargets).toBe(2);
     expect(report.systemCount).toBe(2);
     expect(report.highRiskCount).toBe(1);
+    expect(report.peakTargetsPerIncident).toBe(2);
+    expect(report.repeatTargetCount).toBe(1);
+    expect(report.crossSystemTargetCount).toBe(1);
+    expect(report.highRiskRate).toBe(50);
+    expect(report.averageTargetsPerIncident).toBe(1.5);
     expect(report.systems.map((item) => item.name)).toEqual(["S-KSWL", "1DQ1-A"]);
     expect(report.targets[0]).toMatchObject({
       name: "Alice",
@@ -90,7 +95,20 @@ describe("hostile reporting", () => {
     expect(report.incidentCount).toBe(3);
     expect(report.uniqueTargets).toBe(3);
     expect(report.highRiskCount).toBe(2);
+    expect(report.peakTargetsPerIncident).toBe(2);
+    expect(report.repeatTargetCount).toBe(1);
+    expect(report.crossSystemTargetCount).toBe(1);
     expect(report.trend.reduce((sum, item) => sum + item.count, 0)).toBe(3);
     expect(reportRangeStart("all", NOW)).toBeNull();
+  });
+
+  it("returns zero-valued features when no verified hostile records exist", () => {
+    const report = buildHostileReport([], "7d", NOW);
+
+    expect(report.peakTargetsPerIncident).toBe(0);
+    expect(report.repeatTargetCount).toBe(0);
+    expect(report.crossSystemTargetCount).toBe(0);
+    expect(report.highRiskRate).toBe(0);
+    expect(report.averageTargetsPerIncident).toBe(0);
   });
 });

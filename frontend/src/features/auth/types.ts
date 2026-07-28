@@ -65,3 +65,27 @@ export interface AuditRecord {
   details?: Record<string, unknown> | string;
   created_at: string;
 }
+
+export interface ClientHeartbeatDetails {
+  client_version?: string;
+  host?: string;
+  last_action?: string;
+  last_error?: string;
+  [key: string]: unknown;
+}
+
+export interface ClientHeartbeatRecord {
+  client_id: string;
+  client_type?: string;
+  label?: string;
+  status?: string;
+  seen_at: string;
+  online?: boolean;
+  details?: ClientHeartbeatDetails;
+}
+
+export interface ClientsSnapshot {
+  count: number;
+  heartbeats: ClientHeartbeatRecord[];
+  summary?: Record<string, unknown>;
+}

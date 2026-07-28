@@ -331,6 +331,39 @@ def test_confirmed_unauthorized_character_revokes_only_submitting_key(auth):
     assert audit["details"]["api_key_id"] == first["key_id"]
 
 
+def test_identity_audit_records_client_key_character_and_failure_reason(auth):
+    user = _member(auth)
+    auth.add_allowed_corporation(9001, user["user_id"])
+    created = auth.create_api_key(user["user_id"], "Main monitor", user["user_id"])
+    pending = auth.authenticate_api_key(created["secret"], allow_unverified=True)
+
+    auth.verify_characters(pending, ["Alice"])
+
+    verified = auth.repository.list_audit()[0]
+    assert verified["action"] == "identity.verified"
+    assert verified["details"]["api_key_id"] == created["key_id"]
+    assert verified["details"]["api_key_name"] == "Main monitor"
+    assert verified["details"]["api_key_prefix"] == created["key_prefix"]
+    assert verified["details"]["characters"][0]["character_name"] == "Alice"
+
+    with pytest.raises(AuthError) as exc_info:
+        auth.verify_characters(pending, ["Unknown Person"])
+
+    assert exc_info.value.code == "identity_validation_unavailable"
+    failed = auth.repository.list_audit()[0]
+    assert failed["action"] == "identity.check_failed"
+    assert failed["details"] == {
+        "api_key_id": created["key_id"],
+        "api_key_name": "Main monitor",
+        "api_key_prefix": created["key_prefix"],
+        "characters": ["Unknown Person"],
+        "error_code": "identity_validation_unavailable",
+        "reason": "EVE character could not be resolved: Unknown Person",
+    }
+    assert auth.repository.user_by_id(user["user_id"])["status"] == "active"
+    assert auth.repository.api_key_by_id(created["key_id"])["status"] == "active"
+
+
 def test_unresolved_character_blocks_without_disabling_user(auth):
     user = _member(auth)
     created = auth.create_api_key(user["user_id"], "Desktop", user["user_id"])

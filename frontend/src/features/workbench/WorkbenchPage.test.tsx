@@ -30,7 +30,7 @@ const bootstrap: BootstrapPayload = {
     links: [],
     summary: {
       system_count: 1,
-      hostile_count: 3,
+      hostile_count: 99,
       report_count: 9,
       alert_count: 7,
     },
@@ -51,14 +51,52 @@ const bootstrap: BootstrapPayload = {
       system_name: "0-UVHJ",
       system_id: 30003615,
       names: ["Pilot One"],
+      verified_characters: [{ character_id: 101, name: "Pilot One" }],
+      classification: "red",
       level: "high",
       score: 80,
       created_at: "2026-07-02T12:01:00Z",
     },
+    {
+      id: "alert-duplicate",
+      system_name: "0-UVHJ",
+      system_id: 30003615,
+      names: ["Pilot One"],
+      verified_characters: [{ character_id: 101, name: "Pilot One" }],
+      classification: "red",
+      level: "medium",
+      created_at: "2026-07-02T12:00:30Z",
+    },
+    {
+      id: "alert-unverified",
+      system_name: "1DQ1-A",
+      system_id: 30004759,
+      names: ["OCR Noise"],
+      verified_characters: [{ character_id: 0, name: "OCR Noise" }],
+      classification: "red",
+      level: "critical",
+      created_at: "2026-07-02T12:00:20Z",
+    },
+    {
+      id: "alert-friendly",
+      system_name: "F-NMX6",
+      system_id: 30004758,
+      names: ["Friendly Pilot"],
+      verified_characters: [{ character_id: 202, name: "Friendly Pilot" }],
+      classification: "white",
+      level: "low",
+      created_at: "2026-07-02T12:00:10Z",
+    },
   ],
   clients: {
     count: 1,
-    heartbeats: [],
+    heartbeats: [{
+      client_id: "monitor-1",
+      client_type: "alert_client",
+      online: true,
+      system_id: 30003615,
+      details: { monitoring: true },
+    }],
     summary: {
       count: 1,
       online_count: 1,
@@ -182,9 +220,12 @@ describe("WorkbenchPage", () => {
     expect(container).toHaveTextContent("Pilot One");
     expect(container).toHaveTextContent("预警频道");
     expect(container).not.toHaveTextContent("预警情报工作台");
-    expect(container).not.toHaveTextContent("状态更新时间");
-    expect(container).not.toHaveTextContent("在线监控");
-    expect(container).toHaveTextContent("实时态势");
+    const situationStats = container.querySelector('[aria-label="态势统计"]');
+    expect(situationStats).toBeInTheDocument();
+    expect(situationStats).toHaveTextContent("在线预警节点1");
+    expect(situationStats).toHaveTextContent("当前有敌星系1");
+    expect(situationStats).toHaveTextContent("当前敌对人数1");
+    expect(situationStats).toHaveTextContent("最近更新时间");
     expect(container).not.toHaveTextContent("区域态势");
     expect(container.querySelector(".sector-panel")).not.toBeInTheDocument();
     expect(container).toHaveTextContent("敌对飞行员观察列表");
@@ -285,6 +326,7 @@ describe("WorkbenchPage", () => {
 
     expect(container).not.toHaveTextContent("Pilot Two");
     expect(container.querySelector("#workbench-alert-panel")).toHaveTextContent("暂无告警");
+    expect(situationStats).toHaveTextContent("当前敌对人数0");
     expect(apiMocks.connectAlerts).toHaveBeenCalledTimes(1);
 
     await act(async () => {

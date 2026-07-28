@@ -547,7 +547,27 @@ class AuthService:
         clean_names = _clean_names(names)
         if not clean_names:
             raise AuthError("at least one EVE Listener is required", 428, "eve_listener_required")
-        resolved = [self._resolve_character(name) for name in clean_names]
+        key = self.repository.api_key_by_id(principal.api_key_id) or {}
+        key_details = {
+            "api_key_id": principal.api_key_id,
+            "api_key_name": str(key.get("name") or ""),
+            "api_key_prefix": str(key.get("key_prefix") or ""),
+        }
+        try:
+            resolved = [self._resolve_character(name) for name in clean_names]
+        except AuthError as exc:
+            self._audit(
+                principal.user_id,
+                principal.user_id,
+                "identity.check_failed",
+                {
+                    **key_details,
+                    "characters": clean_names,
+                    "error_code": exc.code,
+                    "reason": str(exc),
+                },
+            )
+            raise
         allowed_corps = self.repository.allowed_corporation_ids()
         whitelisted = self.repository.whitelist_ids(principal.user_id)
         unauthorized = [
@@ -567,8 +587,10 @@ class AuthService:
                     principal.user_id,
                     "identity.key_revoked",
                     {
-                        "api_key_id": principal.api_key_id,
+                        **key_details,
                         "characters": unauthorized,
+                        "error_code": "unauthorized_eve_character",
+                        "reason": reason,
                     },
                     now=now,
                 ),
@@ -590,8 +612,8 @@ class AuthService:
             })
         self.repository.mark_api_key_verified(principal.api_key_id)
         self._audit(principal.user_id, principal.user_id, "identity.verified", {
-            "api_key_id": principal.api_key_id,
-            "character_ids": [item["character_id"] for item in resolved],
+            **key_details,
+            "characters": resolved,
         })
         return {
             "verified": True,

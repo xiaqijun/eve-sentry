@@ -36,6 +36,11 @@ export interface HostileReport {
   systemCount: number;
   highRiskCount: number;
   averagePerDay: number;
+  peakTargetsPerIncident: number;
+  repeatTargetCount: number;
+  crossSystemTargetCount: number;
+  highRiskRate: number;
+  averageTargetsPerIncident: number;
   trend: TrendPoint[];
   systems: SystemReportRow[];
   targets: TargetReportRow[];
@@ -353,14 +358,28 @@ export function buildHostileReport(
   const durationDays = startMs === null
     ? Math.max(1, ((nowMs - earliestAlertMs) / DAY_MS) + 1)
     : Math.max(1, (nowMs - startMs) / DAY_MS);
+  const highRiskCount = severityCounts.critical + severityCounts.high;
+  const peakTargetsPerIncident = alerts.reduce(
+    (maximum, alert) => Math.max(maximum, cleanVerifiedCharacters(alert).length),
+    0,
+  );
+  const repeatTargetCount = [...targetMap.values()]
+    .filter((item) => item.incidents > 1).length;
+  const crossSystemTargetCount = [...targetMap.values()]
+    .filter((item) => item.systems.size > 1).length;
 
   return {
     incidentCount: alerts.length,
     targetSightings,
     uniqueTargets: uniqueTargets.size,
     systemCount: systemMap.size,
-    highRiskCount: severityCounts.critical + severityCounts.high,
+    highRiskCount,
     averagePerDay: alerts.length / durationDays,
+    peakTargetsPerIncident,
+    repeatTargetCount,
+    crossSystemTargetCount,
+    highRiskRate: alerts.length > 0 ? (highRiskCount / alerts.length) * 100 : 0,
+    averageTargetsPerIncident: alerts.length > 0 ? targetSightings / alerts.length : 0,
     trend: buildTrend(alerts, range, nowMs),
     systems,
     targets,
