@@ -3,6 +3,84 @@
 EVE Sentry 是一套面向 EVE Online 本地频道的敌对监控与预警系统，包含 Windows
 监控客户端、Python 情报服务、React 管理页面和 QQ 机器人事件接入。
 
+## 系统架构
+
+```mermaid
+flowchart LR
+    subgraph edge["EVE 客户端侧"]
+        eve["选中的 EVE 窗口"]
+        logs["EVE Chatlogs"]
+        monitor["Windows 监控客户端<br/>截图 · 红框检测 · ONNX OCR"]
+        overlay["实时预警浮窗"]
+        eve --> monitor
+        logs --> monitor
+    end
+
+    subgraph service["情报服务"]
+        api["认证 API · OCR 上报 · 心跳"]
+        intel["角色解析 · 敌我分类<br/>实时态 · 历史告警"]
+        stream["SSE 事件流"]
+        database[("PostgreSQL")]
+        api --> intel
+        intel <--> database
+        intel --> stream
+    end
+
+    subgraph consumers["展示与通知"]
+        web["React 管理系统<br/>态势图 · 来袭报表"]
+        bot["QQ 机器人"]
+        clients["其他预警客户端"]
+    end
+
+    esi["EVE ESI"] --> intel
+    sde["EVE SDE"] --> intel
+    monitor -->|"设备密钥 · 快照"| api
+    stream --> overlay
+    stream --> web
+    stream --> bot
+    stream --> clients
+```
+
+## 预警链路
+
+```mermaid
+sequenceDiagram
+    participant EVE as EVE 成员列表
+    participant Client as 监控客户端
+    participant Server as 情报服务
+    participant Notice as 浮窗 / Web / QQ
+
+    EVE->>Client: 当前成员列表画面
+    Client->>Client: 检测红色敌对图标并立即本地预警
+    Client->>Server: 上报星系、敌对姓名和人数快照
+    Server->>Server: 解析角色并确认敌我关系
+    Server-->>Notice: 来敌事件 + 当前敌对人数
+    loop 持续监控
+        Client->>Server: 刷新当前名单快照
+        Server->>Server: 计算进入、仍在和离开状态
+    end
+    Server-->>Notice: 敌对全部离开后发布星系安全事件
+```
+
+## 身份与访问
+
+```mermaid
+flowchart LR
+    member["普通用户"] --> sso["EVE SSO"]
+    sso --> corp{"允许军团？"}
+    corp -->|"是"| session["网页登录会话"]
+
+    admin["管理员"] --> password["密码登录"]
+    password --> session
+
+    session --> key["创建桌面设备密钥"]
+    key --> listener["客户端扫描 Chatlogs Listener"]
+    listener --> check["服务端身份校验"]
+    check --> rule{"允许军团或角色白名单？"}
+    rule -->|"是"| access["长期客户端访问权限"]
+    rule -->|"否"| revoke["禁用用户并吊销会话和密钥"]
+```
+
 ## 当前能力
 
 - 监控客户端只采集用户选中的 EVE 窗口，识别成员列表中的红色敌对图标与角色名。
