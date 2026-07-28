@@ -237,6 +237,30 @@ def test_eve_sso_auto_creates_and_reuses_member_for_allowed_corporation(auth):
     ] == 101
 
 
+def test_eve_sso_does_not_treat_listener_verification_as_account_binding(auth):
+    observer = _member(auth)
+    auth.add_allowed_corporation(9001, observer["user_id"])
+    auth.repository.upsert_verified_character({
+        "user_id": observer["user_id"],
+        "character_id": 101,
+        "character_name": "Alice",
+        "corporation_id": 9001,
+        "corporation_name": "Blue Corp",
+        "first_seen_at": "2026-07-28T00:00:00+00:00",
+        "last_seen_at": "2026-07-28T00:00:00+00:00",
+    })
+    auth.esi_sso_client = FakeSsoClient(101)
+
+    auth.begin_esi_login()
+    first_login = auth.complete_esi_login("/callback?state=state-1&code=code-1")
+    auth.begin_esi_login()
+    second_login = auth.complete_esi_login("/callback?state=state-1&code=code-2")
+
+    assert first_login["user"]["username"] == "eve-101"
+    assert first_login["user"]["user_id"] != observer["user_id"]
+    assert second_login["user"]["user_id"] == first_login["user"]["user_id"]
+
+
 def test_eve_sso_rejects_assigned_member_outside_allowed_corporations(auth):
     user = _member(auth)
     auth.add_whitelist_character(user["user_id"], 202, "alt", user["user_id"])

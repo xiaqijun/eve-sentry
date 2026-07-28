@@ -146,27 +146,28 @@ class AuthRepository:
         return self._one("SELECT * FROM auth_users WHERE user_id = ?", (user_id,))
 
     def users_for_character_id(self, character_id: int) -> list[dict[str, Any]]:
-        """Return member accounts explicitly associated with an EVE character."""
+        """Return member accounts explicitly assigned to an EVE character."""
+        username_keys = (
+            f"eve-{int(character_id)}",
+            f"eve-member-{int(character_id)}",
+        )
         return self._all(
             """
             SELECT DISTINCT users.*
             FROM auth_users AS users
             WHERE users.role = 'member'
               AND (
+                users.username_key IN (?, ?)
+                OR
                 EXISTS (
                     SELECT 1 FROM auth_character_whitelist AS whitelist
                     WHERE whitelist.user_id = users.user_id
                       AND whitelist.character_id = ?
                 )
-                OR EXISTS (
-                    SELECT 1 FROM auth_verified_characters AS verified
-                    WHERE verified.user_id = users.user_id
-                      AND verified.character_id = ?
-                )
               )
             ORDER BY users.username_key ASC
             """,
-            (int(character_id), int(character_id)),
+            (*username_keys, int(character_id)),
         )
 
     def list_users(self) -> list[dict[str, Any]]:
