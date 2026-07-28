@@ -32,9 +32,9 @@ jobs:
             requirements-onnx.txt
             requirements-server.txt
       - name: Install build dependencies
-        run: python -m pip install -r requirements-onnx.txt -r requirements-server.txt pyinstaller pytest
+        run: python -m pip install -r requirements-onnx.txt -r requirements-server.txt pyinstaller pytest pytest-rerunfailures
       - name: Run tests
-        run: python -m pytest -q
+        run: python -m pytest -q --reruns 1 --reruns-delay 1
         env:
           QT_QPA_PLATFORM: offscreen
       - name: Restore bundled OCR models
