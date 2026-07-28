@@ -581,7 +581,7 @@ class MainWindow(QMainWindow):
     def _detect_window(self, windows: list[dict] | None = None) -> None:
         """Find all EVE windows and populate the window selector."""
         previous_hwnd = self._window_combo.currentData()
-        if windows is None:
+        if windows is None or isinstance(windows, bool):
             keyword = self._settings.get_keyword()
             windows = self._capturer.list_eve_windows(keyword)
         self._window_signature = _window_list_signature(windows)
