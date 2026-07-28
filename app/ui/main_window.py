@@ -55,6 +55,7 @@ from app.ui.background_tasks import BackgroundTaskRunner
 from app.ui.region_selector import RegionSelector
 from app.ui.settings import SettingsPanel
 from app.ui.theme import APP_QSS, monitor_button_style, status_card_style
+from app.updater import ClientUpdater
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,10 @@ class MainWindow(QMainWindow):
         self._workers: dict[str, MonitorWorker] = {}
         self._worker_contexts: dict[str, dict] = {}
         self._settings = SettingsPanel()
+        self._updater = ClientUpdater(parent=self)
+        self._updater.state_changed.connect(self._settings.set_update_state)
+        self._updater.restart_requested.connect(self._quit_app)
+        self._settings.update_requested.connect(self._updater.request_action)
         self._identity_scanner = EveIdentityLogScanner(
             self._settings.get_channel_log_dir(),
             self._settings.auth_state_store(),
@@ -309,6 +314,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._begin_identity_check)
         if _env_flag("EVE_SENTRY_AUTO_START_MONITOR", default=False):
             QTimer.singleShot(0, self._auto_start_monitor)
+        QTimer.singleShot(1500, self._updater.check)
 
     def _auto_start_monitor(self) -> None:
         """Start monitoring once the event loop is ready when explicitly requested."""

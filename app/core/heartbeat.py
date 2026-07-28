@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from importlib import metadata
 from typing import Any
 
+from app.version import current_version
+
 
 def heartbeat_now_iso() -> str:
     """Return an ISO-8601 UTC timestamp with second precision."""
@@ -21,7 +23,7 @@ def resolve_runtime_identity() -> dict[str, str]:
         try:
             version = metadata.version("eve-sentry")
         except metadata.PackageNotFoundError:
-            version = "dev"
+            version = current_version()
     host = (
         str(os.environ.get("EVE_SENTRY_CLIENT_HOST") or "").strip()
         or str(os.environ.get("COMPUTERNAME") or "").strip()

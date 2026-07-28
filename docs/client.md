@@ -65,6 +65,22 @@ OCR 推理运行时也会在界面启动后后台加载，选中窗口开始监�
 | `EVE_SENTRY_OCR_DEVICE` | `auto` | `dml`、`cuda`、`cpu` 或 `auto` |
 | `EVE_SENTRY_AUTO_START_MONITOR` | `0` | 启动后自动请求开启监控 |
 | `EVE_SENTRY_PUBLISH_INTEL` | `1` | 设置为 `0` 可进行不上报的本地测试 |
+| `EVE_SENTRY_CLIENT_VERSION` | 内置版本 | 仅用于开发测试时覆盖客户端版本 |
+| `EVE_SENTRY_UPDATE_MANIFEST_URL` | GitHub Release | 覆盖自动更新清单地址，必须使用 HTTPS |
+
+## 客户端更新
+
+客户端启动后会静默检查 GitHub Release 的 `latest.json`，也可在左侧版本区手动检查。
+发现新版本后，客户端通过清单中的下载地址异步获取完整压缩包，校验文件大小和
+SHA256；点击“安装并重启”后，独立 PowerShell 进程会等待客户端退出、替换便携目录并
+重新启动。设备密钥和本地状态保存在用户目录中，不会被更新覆盖。
+
+Cloudflare Worker 位于 `deploy/cloudflare-download`，提供 `/latest.json` 和
+`/download/<asset.zip>`，用于缓存 GitHub Release 下载。发布命令：
+
+```powershell
+.\scripts\publish_client_release.ps1 -DownloadBaseUrl "https://<worker>/download"
+```
 
 ## 打包
 
