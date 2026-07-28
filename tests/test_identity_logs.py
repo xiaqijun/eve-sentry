@@ -54,8 +54,13 @@ def test_new_file_without_listener_remains_pending_until_header_is_written(tmp_p
     )
 
     first = scanner.scan("eve_key")
+    assert first.key_validated is False
     assert first.pending_files == ["Local_new.txt"]
     assert first.pending_characters == []
+
+    scanner.mark_key_validated()
+    validated = scanner.scan("eve_key")
+    assert validated.key_validated is True
 
     _write_log(pending_path, "Alice")
     second = scanner.scan("eve_key")
@@ -76,6 +81,7 @@ def test_changing_key_resets_file_index_and_protected_state_hides_secret(tmp_pat
     second = scanner.scan("eve_second_secret")
 
     assert second.initial_scan is True
+    assert second.key_validated is False
     assert second.pending_characters == ["Alice"]
     raw = state_path.read_text(encoding="utf-8")
     assert "eve_first_secret" not in raw

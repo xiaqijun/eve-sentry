@@ -31,6 +31,7 @@ class IdentityScanResult:
     pending_files: list[str]
     processed_count: int
     initial_scan: bool
+    key_validated: bool
     identity_verified: bool
 
 
@@ -97,6 +98,7 @@ class ClientAuthStateStore:
             "api_key": "",
             "key_fingerprint": "",
             "initialized": False,
+            "key_validated": False,
             "identity_verified": False,
             "processed_files": [],
             "characters": [],
@@ -159,6 +161,7 @@ class EveIdentityLogScanner:
                 characters.append(listener)
 
         previous_pending = _clean_names(state.get("pending_characters", []))
+        key_validated = bool(state.get("key_validated"))
         verified = bool(state.get("identity_verified"))
         verified_names = set() if not verified else {
             item for item in previous_character_keys if item not in {
@@ -184,8 +187,14 @@ class EveIdentityLogScanner:
             pending_files=pending_files,
             processed_count=processed_count,
             initial_scan=initial_scan,
+            key_validated=key_validated,
             identity_verified=verified,
         )
+
+    def mark_key_validated(self) -> None:
+        state = self.state_store.load()
+        state["key_validated"] = True
+        self.state_store.save(state)
 
     def mark_verified(self, names: list[str]) -> None:
         state = self.state_store.load()
@@ -195,6 +204,7 @@ class EveIdentityLogScanner:
             if item.casefold() not in verified_keys
         ]
         state["pending_characters"] = pending
+        state["key_validated"] = True
         state["identity_verified"] = not pending and bool(state.get("characters"))
         self.state_store.save(state)
 

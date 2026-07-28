@@ -74,10 +74,11 @@ flowchart LR
     password --> session
 
     session --> key["创建桌面设备密钥"]
+    key --> access["有效密钥立即开启客户端"]
     key --> listener["客户端扫描 Chatlogs Listener"]
-    listener --> check["服务端身份校验"]
+    listener -->|"发现角色"| check["服务端身份风控"]
     check --> rule{"允许军团或角色白名单？"}
-    rule -->|"是"| access["长期客户端访问权限"]
+    rule -->|"是"| access
     rule -->|"否"| revoke["禁用用户并吊销会话和密钥"]
 ```
 
