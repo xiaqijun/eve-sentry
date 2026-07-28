@@ -14,6 +14,8 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   "corporation.allowed": "添加允许军团",
   "corporation.removed": "移除允许军团",
   "identity.user_disabled": "身份违规禁用用户",
+  "identity.key_revoked": "身份违规吊销密钥",
+  "identity.desktop_keys_revoked": "授权变更吊销设备密钥",
   "identity.verified": "验证角色身份",
   "password.changed": "修改密码",
   "password.reset": "重置密码",

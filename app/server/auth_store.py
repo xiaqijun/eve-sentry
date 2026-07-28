@@ -274,6 +274,44 @@ class AuthRepository:
                 (revoked_at, reason, key_id),
             )
 
+    def revoke_api_key_and_audit(
+        self,
+        key_id: str,
+        revoked_at: str,
+        reason: str,
+        audit: dict[str, Any],
+    ) -> None:
+        """Revoke one API key and persist the identity audit atomically."""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE auth_api_keys
+                SET status = 'revoked', revoked_at = ?, revoked_reason = ?
+                WHERE key_id = ? AND status = 'active'
+                """,
+                (revoked_at, reason, key_id),
+            )
+            self._insert_audit(connection, audit)
+
+    def revoke_desktop_keys_and_audit(
+        self,
+        user_id: str,
+        revoked_at: str,
+        reason: str,
+        audit: dict[str, Any],
+    ) -> None:
+        """Revoke active desktop keys without disabling the owning user."""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE auth_api_keys
+                SET status = 'revoked', revoked_at = ?, revoked_reason = ?
+                WHERE user_id = ? AND key_type = 'desktop' AND status = 'active'
+                """,
+                (revoked_at, reason, user_id),
+            )
+            self._insert_audit(connection, audit)
+
     def enable_api_key(self, key_id: str) -> None:
         with self._connect() as connection:
             connection.execute(

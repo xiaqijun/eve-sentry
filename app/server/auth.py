@@ -558,15 +558,18 @@ class AuthService:
         if unauthorized:
             reason = "unauthorized EVE character detected"
             now = _now_iso()
-            self.repository.disable_user_and_keys(
-                principal.user_id,
-                reason,
+            self.repository.revoke_api_key_and_audit(
+                principal.api_key_id,
                 now,
+                reason,
                 self._audit_record(
                     principal.user_id,
                     principal.user_id,
-                    "identity.user_disabled",
-                    {"characters": unauthorized},
+                    "identity.key_revoked",
+                    {
+                        "api_key_id": principal.api_key_id,
+                        "characters": unauthorized,
+                    },
                     now=now,
                 ),
             )
@@ -765,12 +768,16 @@ class AuthService:
         if not unauthorized:
             return
         now = _now_iso()
-        self.repository.disable_user_and_keys(
+        self.repository.revoke_desktop_keys_and_audit(
             user_id,
-            "authorization rules no longer allow a verified EVE character",
             now,
+            "authorization rules no longer allow a verified EVE character",
             self._audit_record(
-                actor_user_id, user_id, "identity.user_disabled", {"characters": unauthorized}, now=now,
+                actor_user_id,
+                user_id,
+                "identity.desktop_keys_revoked",
+                {"characters": unauthorized},
+                now=now,
             ),
         )
         self._notify_authorization_changed()

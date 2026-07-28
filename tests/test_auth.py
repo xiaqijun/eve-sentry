@@ -312,7 +312,7 @@ def test_user_bound_character_whitelist_allows_character(auth):
     assert auth.verify_characters(pending, ["Mallory"])["verified"] is True
 
 
-def test_confirmed_unauthorized_character_disables_user_and_all_keys(auth):
+def test_confirmed_unauthorized_character_revokes_only_submitting_key(auth):
     user = _member(auth)
     first = auth.create_api_key(user["user_id"], "One", user["user_id"])
     second = auth.create_api_key(user["user_id"], "Two", user["user_id"])
@@ -322,10 +322,13 @@ def test_confirmed_unauthorized_character_disables_user_and_all_keys(auth):
         auth.verify_characters(pending, ["Mallory"])
 
     assert exc_info.value.code == "unauthorized_eve_character"
-    assert auth.repository.user_by_id(user["user_id"])["status"] == "disabled"
-    assert {item["status"] for item in auth.list_api_keys(user["user_id"])} == {"revoked"}
-    with pytest.raises(AuthError):
-        auth.authenticate_api_key(second["secret"], allow_unverified=True)
+    assert auth.repository.user_by_id(user["user_id"])["status"] == "active"
+    assert auth.repository.api_key_by_id(first["key_id"])["status"] == "revoked"
+    assert auth.repository.api_key_by_id(second["key_id"])["status"] == "active"
+    assert auth.authenticate_api_key(second["secret"], allow_unverified=True).user_id == user["user_id"]
+    audit = auth.repository.list_audit()[0]
+    assert audit["action"] == "identity.key_revoked"
+    assert audit["details"]["api_key_id"] == first["key_id"]
 
 
 def test_unresolved_character_blocks_without_disabling_user(auth):
@@ -353,17 +356,20 @@ def test_missing_listener_does_not_disable_user_or_key(auth):
     assert auth.repository.api_key_by_id(created["key_id"])["status"] == "active"
 
 
-def test_removed_rule_rechecks_saved_characters_and_requires_new_key_after_enable(auth):
+def test_removed_rule_revokes_desktop_keys_without_disabling_user(auth):
     user = _member(auth)
     auth.add_allowed_corporation(9001, user["user_id"])
     created = auth.create_api_key(user["user_id"], "Desktop", user["user_id"])
+    service = auth.create_api_key(
+        user["user_id"], "Service", user["user_id"], key_type="service_readonly"
+    )
     pending = auth.authenticate_api_key(created["secret"], allow_unverified=True)
     auth.verify_characters(pending, ["Alice"])
 
     auth.delete_allowed_corporation(9001, user["user_id"])
-    assert auth.repository.user_by_id(user["user_id"])["status"] == "disabled"
-
-    auth.set_user_status(user["user_id"], True, user["user_id"])
     assert auth.repository.user_by_id(user["user_id"])["status"] == "active"
+    assert auth.repository.api_key_by_id(created["key_id"])["status"] == "revoked"
+    assert auth.repository.api_key_by_id(service["key_id"])["status"] == "active"
+    assert auth.authenticate_api_key(service["secret"]).is_read_only is True
     with pytest.raises(AuthError):
         auth.authenticate_api_key(created["secret"], allow_unverified=True)
