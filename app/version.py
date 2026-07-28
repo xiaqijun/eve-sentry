@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 DEFAULT_UPDATE_MANIFEST_URL = (
-    "https://github.com/xiaqijun/eve-sentry/releases/latest/download/latest.json"
+    "https://evesentrydownload.kisectool.com/latest.json"
 )
 
 
