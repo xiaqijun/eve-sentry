@@ -389,8 +389,55 @@ def test_identity_success_displays_success_without_character_count():
     )
 
     assert window._settings.auth_status == "认证成功"
+    assert window._api_key_validated is True
     assert window._monitor_btn.enabled is True
     assert window._alert_btn.enabled is True
+
+
+def test_cached_key_validation_starts_monitor_without_network_wait():
+    class FakeSettings:
+        def get_api_key(self):
+            return "eve_valid"
+
+    started = []
+    window = MainWindow.__new__(MainWindow)
+    window._settings = FakeSettings()
+    window._intel_client = object()
+    window._api_key_validated = True
+    window._identity_check_running = False
+    window._identity_wants_monitor = False
+    window._identity_wants_alert = False
+    window._start_monitor = lambda identity_checked=False: started.append(identity_checked)
+
+    MainWindow._begin_identity_check(window, "monitor")
+
+    assert started == [True]
+    assert window._identity_wants_monitor is False
+
+
+def test_auth_rejection_clears_cached_key_validation():
+    class FakeButton:
+        def setChecked(self, _checked):
+            return None
+
+    class FakeSettings:
+        def set_auth_status(self, _message, error=False):
+            return None
+
+    window = MainWindow.__new__(MainWindow)
+    window._api_key_validated = True
+    window._identity_wants_monitor = False
+    window._identity_wants_alert = False
+    window._is_monitoring = lambda: False
+    window._alert_controller = None
+    window._monitor_btn = FakeButton()
+    window._alert_btn = FakeButton()
+    window._settings = FakeSettings()
+    window._log_message = lambda _message: None
+
+    MainWindow._disable_authenticated_features(window, "API key is invalid or revoked")
+
+    assert window._api_key_validated is False
 
 
 def test_publish_ocr_snapshot_posts_only_detected_names():

@@ -80,6 +80,7 @@ class MainWindow(QMainWindow):
             self._settings.auth_state_store(),
         )
         self._identity_check_running = False
+        self._api_key_validated = False
         self._identity_wants_monitor = False
         self._identity_wants_alert = False
         self._intel_url = self._settings.get_server_url()
@@ -299,6 +300,8 @@ class MainWindow(QMainWindow):
         self._window_refresh_timer.start()
         self._refresh_window_status_table()
         self._refresh_status_cards()
+        if self._settings.get_api_key():
+            QTimer.singleShot(0, self._begin_identity_check)
         if _env_flag("EVE_SENTRY_AUTO_START_MONITOR", default=False):
             QTimer.singleShot(0, self._auto_start_monitor)
 
@@ -902,6 +905,7 @@ class MainWindow(QMainWindow):
         restart_alert = self._alert_controller is not None
         self._intel_url = server_url
         self._intel_client = self._create_intel_client()
+        self._api_key_validated = False
         self._last_heartbeat_error = ""
         self._heartbeat_last_error = ""
         self._log_message(f"服务端地址已更新：{server_url}")
@@ -913,6 +917,9 @@ class MainWindow(QMainWindow):
             self._refresh_intel_location(force=True)
             self._publish_heartbeat()
         self._refresh_status_cards()
+        settings = _instance_attr(self, "_settings")
+        if settings is not None and settings.get_api_key():
+            QTimer.singleShot(0, self._begin_identity_check)
 
     def _apply_api_key(self, _api_key: str) -> None:
         """Reset network clients and local runtime state after a key change."""
@@ -925,11 +932,14 @@ class MainWindow(QMainWindow):
             self._stop_alert()
             self._alert_btn.setChecked(False)
         self._intel_client = self._create_intel_client()
+        self._api_key_validated = False
         self._identity_wants_monitor = False
         self._identity_wants_alert = False
         self._settings.set_auth_status(
             "等待身份校验" if self._settings.get_api_key() else "未配置认证密钥"
         )
+        if self._settings.get_api_key():
+            QTimer.singleShot(0, self._begin_identity_check)
 
     def _begin_identity_check(self, action: str = "runtime") -> None:
         """Validate the API key before enabling an authenticated feature."""
@@ -954,6 +964,15 @@ class MainWindow(QMainWindow):
                 self._monitor_btn.setChecked(False)
             elif action == "alert":
                 self._alert_btn.setChecked(False)
+            return
+
+        if _instance_attr(self, "_api_key_validated", False):
+            if action == "monitor":
+                self._identity_wants_monitor = False
+                self._start_monitor(identity_checked=True)
+            elif action == "alert":
+                self._identity_wants_alert = False
+                self._start_alert(identity_checked=True)
             return
 
         self._identity_check_running = True
@@ -1018,6 +1037,7 @@ class MainWindow(QMainWindow):
 
     def _handle_identity_check_success(self, result: object, metadata: dict) -> None:
         self._identity_check_running = False
+        self._api_key_validated = True
         self._monitor_btn.setEnabled(True)
         self._alert_btn.setEnabled(True)
         self._settings.set_auth_status("认证成功")
@@ -1064,6 +1084,7 @@ class MainWindow(QMainWindow):
         logger.warning("Background Listener validation failed: %s", message)
 
     def _disable_authenticated_features(self, message: str) -> None:
+        self._api_key_validated = False
         self._identity_wants_monitor = False
         self._identity_wants_alert = False
         if self._is_monitoring():
