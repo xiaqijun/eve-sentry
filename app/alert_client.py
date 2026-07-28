@@ -1095,20 +1095,22 @@ class AlertEventWorker(QThread):
             api_key=self.api_key,
         )
         backoff = 1.0
-        self._post_heartbeat(api, "starting")
         while not self._stop_requested:
             try:
-                self.status_changed.emit("connected", "")
-                self._post_heartbeat(api, "connected", force=True)
+                connection_announced = False
                 for event in api.iter_events(
                     timeout=self.timeout,
                     heartbeat=1.0,
                     should_stop=lambda: self._stop_requested,
+                    include_bootstrap=True,
                 ):
                     if self._stop_requested:
                         break
                     if not isinstance(event, dict):
                         continue
+                    if not connection_announced:
+                        self.status_changed.emit("connected", "")
+                        connection_announced = True
                     self._last_success_at = heartbeat_now_iso()
                     event_name = str(event.get("event") or "").strip()
                     data = event.get("data")
