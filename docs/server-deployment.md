@@ -171,6 +171,28 @@ npm run build
 6. 升级桌面客户端并完成身份校验。
 7. 切换到 `enforce`，重启服务并验证健康、登录、OCR、心跳和 SSE。
 
+## 自动部署
+
+`.github/workflows/deploy-server.yml` 在每次 `main` 推送后执行完整 Python 测试、前端
+测试和生产构建。验证通过后，工作流上传单一部署归档并调用
+`deploy/ci/deploy_release.sh`。远端流程使用部署锁，备份受管理的后端文件、前端静态
+目录和 systemd 单元，安装服务端依赖并重启；健康检查失败时自动恢复备份。默认保留
+最近 5 次部署备份。
+
+GitHub Actions 配置：
+
+| 类型 | 名称 | 用途 |
+|---|---|---|
+| Secret | `EVE_SENTRY_DEPLOY_SSH_KEY` | 服务端 SSH 私钥 |
+| Secret | `EVE_SENTRY_DEPLOY_KNOWN_HOSTS` | 固定 SSH 主机指纹 |
+| Variable | `EVE_SENTRY_DEPLOY_HOST` | 部署主机 |
+| Variable | `EVE_SENTRY_DEPLOY_USER` | SSH 用户 |
+| Variable | `EVE_SENTRY_DEPLOY_PORT` | SSH 端口 |
+| Variable | `EVE_SENTRY_PUBLIC_URL` | 部署后的公开健康检查地址 |
+
+日常部署不需要人工操作。只有工作流失败时，才使用 `workflow_dispatch` 重跑或查看远端
+备份和服务日志。
+
 ## 验证
 
 ```bash

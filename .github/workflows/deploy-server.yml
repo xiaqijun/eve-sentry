@@ -1,0 +1,109 @@
+name: Deploy Server
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: eve-sentry-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-onnx.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements-onnx.txt pytest
+      - name: Run Python tests
+        run: python -m pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          if-no-files-found: error
+          retention-days: 3
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend-dist
+      - name: Build deployment archive
+        run: |
+          set -euo pipefail
+          mkdir -p deployment/backend deployment/frontend
+          cp -a app scripts deploy resources deployment/backend/
+          cp -a main.py requirements-server.txt intel_map.json deployment/backend/
+          cp -a frontend-dist/. deployment/frontend/
+          tar -czf "eve-sentry-${GITHUB_SHA}.tar.gz" -C deployment .
+      - name: Configure deployment SSH
+        env:
+          DEPLOY_KEY: ${{ secrets.EVE_SENTRY_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.EVE_SENTRY_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/eve-sentry
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/eve-sentry ~/.ssh/known_hosts
+      - name: Upload and deploy
+        env:
+          DEPLOY_HOST: ${{ vars.EVE_SENTRY_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.EVE_SENTRY_DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.EVE_SENTRY_DEPLOY_PORT }}
+        run: |
+          set -euo pipefail
+          target="${DEPLOY_USER}@${DEPLOY_HOST}"
+          archive="/tmp/eve-sentry-${GITHUB_SHA}.tar.gz"
+          script="/tmp/eve-sentry-deploy-${GITHUB_SHA}.sh"
+          ssh_options=(-i ~/.ssh/eve-sentry -p "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes)
+          scp_options=(-i ~/.ssh/eve-sentry -P "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes)
+          scp "${scp_options[@]}" "eve-sentry-${GITHUB_SHA}.tar.gz" "$target:$archive"
+          scp "${scp_options[@]}" deploy/ci/deploy_release.sh "$target:$script"
+          ssh "${ssh_options[@]}" "$target" "bash '$script' '$archive' '$GITHUB_SHA'"
+      - name: Verify public health
+        env:
+          PUBLIC_URL: ${{ vars.EVE_SENTRY_PUBLIC_URL }}
+        run: |
+          set -euo pipefail
+          curl -fsS --retry 10 --retry-delay 2 --retry-all-errors \
+            "${PUBLIC_URL%/}/api/health" > health.json
+          python - <<'PY'
+          import json
+          payload = json.load(open("health.json", encoding="utf-8"))
+          if not payload.get("health", {}).get("ok"):
+              raise SystemExit(f"unhealthy response: {payload}")
+          print(json.dumps(payload, ensure_ascii=False))
+          PY
