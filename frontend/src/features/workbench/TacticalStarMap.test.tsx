@@ -11,12 +11,16 @@ import type { TacticalGraphData } from "./tacticalGraph";
 
 const forceGraphMock = vi.hoisted(() => ({
   latestProps: null as Record<string, unknown> | null,
+  pauseAnimation: vi.fn(),
+  resumeAnimation: vi.fn(),
   zoomToFit: vi.fn(),
 }));
 
 vi.mock("react-force-graph-2d", () => ({
   default: forwardRef((props: Record<string, unknown>, ref) => {
     useImperativeHandle(ref, () => ({
+      pauseAnimation: forceGraphMock.pauseAnimation,
+      resumeAnimation: forceGraphMock.resumeAnimation,
       zoomToFit: forceGraphMock.zoomToFit,
     }));
     forceGraphMock.latestProps = props;
@@ -76,6 +80,8 @@ const graphData: TacticalGraphData = {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("TacticalStarMap", () => {
@@ -153,6 +159,63 @@ describe("TacticalStarMap", () => {
 
     await act(async () => {
       root.unmount();
+    });
+    container.remove();
+  });
+
+  test("animates semantic activity and pauses rendering when motion is reduced", async () => {
+    forceGraphMock.pauseAnimation.mockClear();
+    forceGraphMock.resumeAnimation.mockClear();
+    const matchMedia = vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList);
+    vi.stubGlobal("matchMedia", matchMedia);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <TacticalStarMap graphData={graphData} onSelectSystem={() => {}} />,
+      );
+    });
+
+    expect(forceGraphMock.resumeAnimation).toHaveBeenCalled();
+    expect(forceGraphMock.latestProps?.autoPauseRedraw).toBe(false);
+    const particleCount = forceGraphMock.latestProps?.linkDirectionalParticles as Function;
+    const particleColor = forceGraphMock.latestProps?.linkDirectionalParticleColor as Function;
+    const activeLink = {
+      ...graphData.links[0],
+      source: graphData.nodes[0],
+      target: graphData.nodes[1],
+    };
+    expect(particleCount(activeLink)).toBe(2);
+    expect(particleColor(activeLink)).toBe("rgba(214, 69, 61, 0.82)");
+
+    matchMedia.mockReturnValue({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList);
+    await act(async () => {
+      root.unmount();
+    });
+
+    const reducedMotionRoot = createRoot(container);
+    await act(async () => {
+      reducedMotionRoot.render(
+        <TacticalStarMap graphData={graphData} onSelectSystem={() => {}} />,
+      );
+    });
+    expect(forceGraphMock.pauseAnimation).toHaveBeenCalled();
+    expect(forceGraphMock.latestProps?.autoPauseRedraw).toBe(true);
+    expect(forceGraphMock.latestProps?.linkDirectionalParticles).toBe(0);
+    expect(container.querySelector(".reduce-motion")).toBeInTheDocument();
+
+    await act(async () => {
+      reducedMotionRoot.unmount();
     });
     container.remove();
   });
@@ -268,8 +331,8 @@ describe("TacticalStarMap", () => {
     expect(fillText).not.toHaveBeenCalledWith("敌:", expect.any(Number), expect.any(Number));
     expect(fillText).not.toHaveBeenCalledWith("损:", expect.any(Number), expect.any(Number));
     expect(fillText).not.toHaveBeenCalledWith("1", expect.any(Number), expect.any(Number));
-    expect(strokeColors[0]).toBe("rgba(214, 69, 61, 0.24)");
-    expect(arc).toHaveBeenCalledTimes(3);
+    expect(strokeColors).toContain("rgba(214, 69, 61, 0.24)");
+    expect(arc.mock.calls.length).toBeGreaterThanOrEqual(5);
 
     await act(async () => {
       root.unmount();

@@ -63,6 +63,62 @@ function fitCanvasText(
   return `${result}...`;
 }
 
+function animationTime(): number {
+  return typeof performance === "undefined" ? 0 : performance.now();
+}
+
+function nodePhase(node: TacticalGraphNode, timeMs: number, durationMs: number): number {
+  const seed = [...node.id].reduce((sum, character) => sum + character.charCodeAt(0), 0);
+  return ((timeMs + seed * 37) % durationMs) / durationMs;
+}
+
+function nodePulseColor(node: TacticalGraphNode): string | null {
+  if (node.hostileCount > 0) {
+    return "214, 69, 61";
+  }
+  if ((node.killCount ?? 0) > 0) {
+    return "185, 133, 40";
+  }
+  if (node.channelIntelCount > 0 || node.observationCount > 0) {
+    return "47, 134, 165";
+  }
+  if (node.monitorOnlineCount > 0 || node.isSelected) {
+    return "47, 149, 109";
+  }
+  return null;
+}
+
+function drawNodePulse(
+  node: TacticalGraphNode,
+  context: CanvasRenderingContext2D,
+  globalScale: number,
+  radius: number,
+  timeMs: number,
+): void {
+  const color = nodePulseColor(node);
+  if (!color) {
+    return;
+  }
+  const pulseCount = node.hostileCount > 0 ? 2 : 1;
+  const basePhase = nodePhase(node, timeMs, node.hostileCount > 0 ? 1500 : 2400);
+  const x = Number(node.x || 0);
+  const y = Number(node.y || 0);
+  for (let index = 0; index < pulseCount; index += 1) {
+    const phase = (basePhase + index / pulseCount) % 1;
+    context.beginPath();
+    context.arc(
+      x,
+      y,
+      radius + (7 + phase * 16) / globalScale,
+      0,
+      Math.PI * 2,
+    );
+    context.strokeStyle = `rgba(${color}, ${0.3 * (1 - phase)})`;
+    context.lineWidth = Math.max(0.7, 1.2 / globalScale);
+    context.stroke();
+  }
+}
+
 function drawHostilePortrait(
   intel: TacticalHostileIntel,
   context: CanvasRenderingContext2D,
@@ -96,6 +152,7 @@ function drawHostileCard(
   node: NodeObject<TacticalGraphNode>,
   context: CanvasRenderingContext2D,
   globalScale: number,
+  timeMs: number,
 ): void {
   const intel = node.hostileIntel;
   if (!intel) {
@@ -181,6 +238,22 @@ function drawHostileCard(
     (HOSTILE_CARD_WIDTH - 4) * Math.min(1, Math.max(0.08, (intel.threatScore ?? 35) / 100)),
     3,
   );
+  const riskWidth = (HOSTILE_CARD_WIDTH - 4) *
+    Math.min(1, Math.max(0.08, (intel.threatScore ?? 35) / 100));
+  const shimmerWidth = 24;
+  const shimmerStart = x + 4 - shimmerWidth +
+    ((timeMs % 1800) / 1800) * (riskWidth + shimmerWidth);
+  const shimmerLeft = Math.max(x + 4, shimmerStart);
+  const shimmerRight = Math.min(x + 4 + riskWidth, shimmerStart + shimmerWidth);
+  if (shimmerRight > shimmerLeft) {
+    context.fillStyle = "rgba(255, 255, 255, 0.62)";
+    context.fillRect(
+      shimmerLeft,
+      y + HOSTILE_CARD_HEIGHT - 3,
+      shimmerRight - shimmerLeft,
+      3,
+    );
+  }
   context.restore();
 }
 
@@ -267,9 +340,10 @@ function drawNode(
   node: NodeObject<TacticalGraphNode>,
   context: CanvasRenderingContext2D,
   globalScale: number,
+  timeMs: number = 0,
 ): void {
   if (node.kind === "hostile-card") {
-    drawHostileCard(node, context, globalScale);
+    drawHostileCard(node, context, globalScale, timeMs);
     return;
   }
   const label = node.name;
@@ -282,6 +356,7 @@ function drawNode(
   const y = Number(node.y || 0);
 
   context.save();
+  drawNodePulse(node, context, globalScale, radius, timeMs);
   if (node.isSelected || node.hostileCount > 0) {
     context.beginPath();
     context.arc(x, y, radius + (node.isSelected ? 9 : 7), 0, Math.PI * 2);
@@ -356,6 +431,66 @@ function graphNode(value: unknown): TacticalGraphNode | null {
     : null;
 }
 
+function linkActivityNodes(
+  link: TacticalGraphLink,
+): [TacticalGraphNode | null, TacticalGraphNode | null] {
+  return [graphNode(link.source), graphNode(link.target)];
+}
+
+function linkParticleCount(link: TacticalGraphLink): number {
+  if (link.kind === "hostile-intel") {
+    return 3;
+  }
+  const [source, target] = linkActivityNodes(link);
+  if ((source?.hostileCount || 0) > 0 || (target?.hostileCount || 0) > 0) {
+    return 2;
+  }
+  if ((source?.monitorOnlineCount || 0) > 0 || (target?.monitorOnlineCount || 0) > 0) {
+    return 1;
+  }
+  if (
+    (source?.channelIntelCount || 0) > 0 ||
+    (target?.channelIntelCount || 0) > 0 ||
+    (source?.observationCount || 0) > 0 ||
+    (target?.observationCount || 0) > 0 ||
+    (source?.killCount || 0) > 0 ||
+    (target?.killCount || 0) > 0
+  ) {
+    return 1;
+  }
+  return 0;
+}
+
+function linkParticleColor(link: TacticalGraphLink): string {
+  if (link.kind === "hostile-intel") {
+    return "rgba(214, 69, 61, 0.94)";
+  }
+  const [source, target] = linkActivityNodes(link);
+  if ((source?.hostileCount || 0) > 0 || (target?.hostileCount || 0) > 0) {
+    return "rgba(214, 69, 61, 0.82)";
+  }
+  if ((source?.killCount || 0) > 0 || (target?.killCount || 0) > 0) {
+    return "rgba(185, 133, 40, 0.82)";
+  }
+  if (
+    (source?.channelIntelCount || 0) > 0 ||
+    (target?.channelIntelCount || 0) > 0 ||
+    (source?.observationCount || 0) > 0 ||
+    (target?.observationCount || 0) > 0
+  ) {
+    return "rgba(47, 134, 165, 0.82)";
+  }
+  return "rgba(47, 149, 109, 0.78)";
+}
+
+function linkParticleSpeed(link: TacticalGraphLink): number {
+  return link.kind === "hostile-intel" ? 0.008 : 0.0035;
+}
+
+function linkParticleWidth(link: TacticalGraphLink): number {
+  return link.kind === "hostile-intel" ? 2.4 : 1.7;
+}
+
 export function TacticalStarMap({
   fitSignal = 0,
   graphData,
@@ -365,6 +500,13 @@ export function TacticalStarMap({
   const graphRef =
     useRef<ForceGraphMethods<TacticalGraphNode, TacticalGraphLink>>();
   const [size, setSize] = useState({ height: 560, width: 900 });
+  const [motionEnabled, setMotionEnabled] = useState(() => {
+    const preference = typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+      ? undefined
+      : window.matchMedia("(prefers-reduced-motion: reduce)");
+    return !preference?.matches;
+  });
 
   useEffect(() => {
     const element = containerRef.current;
@@ -381,6 +523,19 @@ export function TacticalStarMap({
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") {
+      return undefined;
+    }
+    const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (!preference) {
+      return undefined;
+    }
+    const updatePreference = () => setMotionEnabled(!preference.matches);
+    preference.addEventListener?.("change", updatePreference);
+    return () => preference.removeEventListener?.("change", updatePreference);
+  }, []);
+
   const hasHostileCards = graphData.nodes.some(
     (node) => node.kind === "hostile-card",
   );
@@ -391,6 +546,23 @@ export function TacticalStarMap({
     graphRef.current?.zoomToFit(duration, fitPadding);
   }, [fitPadding]);
   const hasGraphData = graphData.nodes.length > 0;
+
+  useEffect(() => {
+    const syncAnimationState = () => {
+      if (motionEnabled && hasGraphData && !document.hidden) {
+        graphRef.current?.resumeAnimation();
+      } else {
+        graphRef.current?.pauseAnimation();
+      }
+    };
+
+    syncAnimationState();
+    document.addEventListener("visibilitychange", syncAnimationState);
+    return () => {
+      document.removeEventListener("visibilitychange", syncAnimationState);
+      graphRef.current?.pauseAnimation();
+    };
+  }, [hasGraphData, motionEnabled]);
 
   useEffect(() => {
     if (!hasGraphData) {
@@ -405,9 +577,20 @@ export function TacticalStarMap({
   }, [fitGraph, fitSignal, hasGraphData]);
 
   const linkColor = useMemo(() => "rgba(91, 112, 119, 0.28)", []);
+  const animatedNodePainter = useCallback((
+    node: NodeObject<TacticalGraphNode>,
+    context: CanvasRenderingContext2D,
+    globalScale: number,
+  ) => {
+    drawNode(node, context, globalScale, motionEnabled ? animationTime() : 0);
+  }, [motionEnabled]);
 
   return (
-    <div className="tactical-star-map" data-testid="tactical-star-map" ref={containerRef}>
+    <div
+      className={`tactical-star-map ${motionEnabled ? "is-motion-enabled" : "reduce-motion"}`}
+      data-testid="tactical-star-map"
+      ref={containerRef}
+    >
       {graphData.nodes.length === 0 ? (
         <div className="tactical-star-map-empty">暂无实时敌对目标</div>
       ) : null}
@@ -420,22 +603,17 @@ export function TacticalStarMap({
         width={size.width}
         height={size.height}
         backgroundColor="rgba(0,0,0,0)"
+        autoPauseRedraw={!motionEnabled}
         cooldownTicks={0}
         enableNodeDrag={false}
         enablePanInteraction
         enablePointerInteraction
         enableZoomInteraction
         linkColor={linkColor}
-        linkDirectionalParticles={(link) =>
-          link.kind === "hostile-intel"
-            ? 2
-            : (graphNode(link.source)?.hostileCount || 0) > 0
-              ? 1
-              : 0
-        }
-        linkDirectionalParticleColor={() => "rgba(214, 69, 61, 0.82)"}
-        linkDirectionalParticleSpeed={0.004}
-        linkDirectionalParticleWidth={1.8}
+        linkDirectionalParticles={motionEnabled ? linkParticleCount : 0}
+        linkDirectionalParticleColor={linkParticleColor}
+        linkDirectionalParticleSpeed={linkParticleSpeed}
+        linkDirectionalParticleWidth={linkParticleWidth}
         linkCanvasObject={drawGateLink}
         linkCanvasObjectMode={() => "replace"}
         linkWidth={(link) => {
@@ -447,7 +625,7 @@ export function TacticalStarMap({
         }}
         maxZoom={9}
         minZoom={0.12}
-        nodeCanvasObject={drawNode}
+        nodeCanvasObject={animatedNodePainter}
         nodePointerAreaPaint={paintNodePointerArea}
         onNodeClick={(node) =>
           onSelectSystem(typeof node.systemId === "number" ? node.systemId : null)
