@@ -3,7 +3,7 @@ import type { AlertItem, BootstrapPayload, Level } from "./types";
 export interface TacticalGraphNode {
   id: string;
   name: string;
-  kind?: "system" | "hostile-card";
+  kind?: "system" | "hostile-summary";
   systemId?: number;
   x: number;
   y: number;
@@ -23,8 +23,10 @@ export interface TacticalGraphNode {
   threatLevel: Level | "unknown";
   threatScore: number | null;
   hostileIntel?: TacticalHostileIntel;
+  hostileMembers?: TacticalHostileIntel[];
   hostileAnchorX?: number;
   hostileAnchorY?: number;
+  hostileCardHidden?: boolean;
 }
 
 export interface TacticalGraphLink {
@@ -542,43 +544,41 @@ export function buildTacticalGraph(
     }
     const hostiles = hostileIntelBySystem.get(systemNode.name) || [];
     const direction = systemNode.x >= centerX ? 1 : -1;
-    hostiles.forEach((hostile, index) => {
-      const verticalOffset = (index - (hostiles.length - 1) / 2) * 86;
-      const hostileId = hostileIntelKey(hostile.characterId, hostile.name);
-      const nodeId = `hostile:${systemNode.id}:${hostileId}`;
-      const x = systemNode.x + direction * 124;
-      const y = systemNode.y + verticalOffset;
-      hostileNodes.push({
-        id: nodeId,
-        name: hostile.name,
-        kind: "hostile-card",
-        systemId: systemNode.systemId,
-        x,
-        y,
-        fx: x,
-        fy: y,
-        security: null,
-        hostileCount: 0,
-        reportCount: 0,
-        observationCount: 0,
-        channelIntelCount: 0,
-        killCount: 0,
-        monitorCount: 0,
-        monitorOnlineCount: 0,
-        monitorLabels: [],
-        hasAlerts: true,
-        isSelected: systemNode.isSelected,
-        threatLevel: hostile.threatLevel,
-        threatScore: hostile.threatScore,
-        hostileIntel: hostile,
-        hostileAnchorX: systemNode.x,
-        hostileAnchorY: systemNode.y,
-      });
-      hostileLinks.push({
-        source: systemNode.id,
-        target: nodeId,
-        kind: "hostile-intel",
-      });
+    const leadHostile = hostiles[0];
+    const nodeId = `hostile-summary:${systemNode.id}`;
+    const x = systemNode.x + direction * 124;
+    const y = systemNode.y;
+    hostileNodes.push({
+      id: nodeId,
+      name: systemNode.name,
+      kind: "hostile-summary",
+      systemId: systemNode.systemId,
+      x,
+      y,
+      fx: x,
+      fy: y,
+      security: null,
+      hostileCount: Math.max(systemNode.hostileCount, hostiles.length),
+      reportCount: systemNode.reportCount,
+      observationCount: systemNode.observationCount,
+      channelIntelCount: systemNode.channelIntelCount,
+      killCount: 0,
+      monitorCount: 0,
+      monitorOnlineCount: 0,
+      monitorLabels: [],
+      hasAlerts: true,
+      isSelected: systemNode.isSelected,
+      threatLevel: leadHostile?.threatLevel || systemNode.threatLevel,
+      threatScore: leadHostile?.threatScore ?? systemNode.threatScore,
+      hostileIntel: leadHostile,
+      hostileMembers: hostiles,
+      hostileAnchorX: systemNode.x,
+      hostileAnchorY: systemNode.y,
+    });
+    hostileLinks.push({
+      source: systemNode.id,
+      target: nodeId,
+      kind: "hostile-intel",
     });
   });
 

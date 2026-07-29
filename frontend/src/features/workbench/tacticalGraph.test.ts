@@ -204,7 +204,7 @@ describe("buildTacticalGraph", () => {
     });
   });
 
-  it("creates connected hostile identity cards from live profiles and verified alerts", () => {
+  it("groups every hostile in a system into one connected summary", () => {
     const graph = buildTacticalGraph({
       ...bootstrap,
       active_intel: [
@@ -225,6 +225,12 @@ describe("buildTacticalGraph", () => {
                 corporation_name: "Red Horizon",
                 alliance_name: "Northern Threat",
               },
+              {
+                character_id: 90000002,
+                name: "Pilot Two",
+                corporation_name: "Red Horizon",
+                alliance_name: "Northern Threat",
+              },
             ],
           },
         },
@@ -235,6 +241,7 @@ describe("buildTacticalGraph", () => {
           classification: "red",
           verified_characters: [
             { character_id: 90000001, name: "Pilot One" },
+            { character_id: 90000002, name: "Pilot Two" },
           ],
           level: "critical",
           score: 94,
@@ -242,11 +249,14 @@ describe("buildTacticalGraph", () => {
       ],
     }, null, { includeHostileCards: true });
 
-    const hostileCard = graph.nodes.find((node) => node.kind === "hostile-card");
-    expect(hostileCard).toMatchObject({
-      kind: "hostile-card",
-      name: "Pilot One",
+    const hostileSummaries = graph.nodes.filter((node) => node.kind === "hostile-summary");
+    expect(hostileSummaries).toHaveLength(1);
+    const hostileSummary = hostileSummaries[0];
+    expect(hostileSummary).toMatchObject({
+      kind: "hostile-summary",
+      name: "0-UVHJ",
       systemId: 30003615,
+      hostileCount: 2,
       threatLevel: "critical",
       threatScore: 94,
       hostileIntel: {
@@ -258,11 +268,49 @@ describe("buildTacticalGraph", () => {
         threatScore: 94,
       },
     });
+    expect(hostileSummary.hostileMembers).toEqual([
+      expect.objectContaining({ name: "Pilot One" }),
+      expect.objectContaining({ name: "Pilot Two" }),
+    ]);
     expect(graph.links).toContainEqual({
       source: "0-UVHJ",
-      target: hostileCard?.id,
+      target: hostileSummary.id,
       kind: "hostile-intel",
     });
+  });
+
+  it("creates one hostile summary for each affected system", () => {
+    const graph = buildTacticalGraph({
+      ...bootstrap,
+      active_intel: [
+        {
+          id: "hostile-one",
+          source: "eve-sentry-detector",
+          system_name: "0-UVHJ",
+          character_id: 90000001,
+          name: "Pilot One",
+          active: true,
+          metadata: { contact_standing: -10 },
+        },
+        {
+          id: "hostile-two",
+          source: "eve-sentry-detector",
+          system_name: "NCG-PW",
+          character_id: 90000002,
+          name: "Pilot Two",
+          active: true,
+          metadata: { contact_standing: -10 },
+        },
+      ],
+    }, null, { includeHostileCards: true });
+
+    const summaries = graph.nodes.filter((node) => node.kind === "hostile-summary");
+    expect(summaries).toHaveLength(2);
+    expect(summaries.map((node) => node.name).sort()).toEqual(["0-UVHJ", "NCG-PW"]);
+    expect(graph.links.filter((link) => link.kind === "hostile-intel")).toEqual([
+      expect.objectContaining({ source: "0-UVHJ" }),
+      expect.objectContaining({ source: "NCG-PW" }),
+    ]);
   });
 
   it("does not count friendly OCR active intel as hostile activity", () => {

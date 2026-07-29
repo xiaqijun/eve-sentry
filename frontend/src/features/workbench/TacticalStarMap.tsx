@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Avatar, Drawer, Empty, List, Tag } from "@arco-design/web-react";
 import ForceGraph2D, {
   type ForceGraphMethods,
   type NodeObject,
@@ -10,6 +11,12 @@ import type {
   TacticalGraphNode,
   TacticalHostileIntel,
 } from "./tacticalGraph";
+import {
+  HOSTILE_SUMMARY_CARD_HEIGHT,
+  HOSTILE_SUMMARY_CARD_WIDTH,
+  layoutHostileSummaryNodes,
+  type HostileLayoutRect,
+} from "./hostileCardLayout";
 
 interface TacticalStarMapProps {
   fitSignal?: number;
@@ -17,9 +24,7 @@ interface TacticalStarMapProps {
   onSelectSystem: (systemId: number | null) => void;
 }
 
-const HOSTILE_CARD_WIDTH = 232;
-const HOSTILE_CARD_HEIGHT = 94;
-const HOSTILE_PORTRAIT_SIZE = 62;
+const HOSTILE_PORTRAIT_SIZE = 48;
 const portraitCache = new Map<number, HTMLImageElement>();
 
 const THREAT_STYLE: Record<
@@ -120,14 +125,14 @@ function drawNodePulse(
 }
 
 function drawHostilePortrait(
-  intel: TacticalHostileIntel,
+  intel: TacticalHostileIntel | undefined,
   context: CanvasRenderingContext2D,
   x: number,
   y: number,
 ): void {
   context.fillStyle = "#e8eeeb";
   context.fillRect(x, y, HOSTILE_PORTRAIT_SIZE, HOSTILE_PORTRAIT_SIZE);
-  const portrait = portraitFor(intel.characterId);
+  const portrait = portraitFor(intel?.characterId ?? null);
   if (portrait?.complete && portrait.naturalWidth > 0) {
     context.drawImage(
       portrait,
@@ -141,7 +146,7 @@ function drawHostilePortrait(
     context.font = '700 20px "Segoe UI", "Microsoft YaHei", sans-serif';
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillText(intel.name.slice(0, 1).toUpperCase(), x + 31, y + 32);
+    context.fillText((intel?.name || "?").slice(0, 1).toUpperCase(), x + 24, y + 24);
   }
   context.strokeStyle = "#d7dfdb";
   context.lineWidth = 1;
@@ -155,24 +160,23 @@ function drawHostileCard(
   timeMs: number,
 ): void {
   const intel = node.hostileIntel;
-  if (!intel) {
+  if (node.hostileCardHidden) {
     return;
   }
-  const x = -HOSTILE_CARD_WIDTH / 2;
-  const y = -HOSTILE_CARD_HEIGHT / 2;
-  const useVerticalLayout = globalScale < 0.5 &&
-    typeof node.hostileAnchorX === "number" &&
-    typeof node.hostileAnchorY === "number";
-  const cardX = useVerticalLayout
-    ? Number(node.hostileAnchorX)
-    : Number(node.x || 0);
-  const cardY = useVerticalLayout
-    ? Number(node.hostileAnchorY) - 108 / globalScale
-    : Number(node.y || 0);
-  const threat = THREAT_STYLE[intel.threatLevel];
-  const score = intel.threatScore === null
+  const x = -HOSTILE_SUMMARY_CARD_WIDTH / 2;
+  const y = -HOSTILE_SUMMARY_CARD_HEIGHT / 2;
+  const cardX = Number(node.x || 0);
+  const cardY = Number(node.y || 0);
+  const threat = THREAT_STYLE[intel?.threatLevel || node.threatLevel];
+  const threatScore = intel?.threatScore ?? node.threatScore;
+  const score = threatScore === null
     ? threat.label
-    : `${threat.label} ${Math.round(intel.threatScore)}`;
+    : `${threat.label} ${Math.round(threatScore)}`;
+  const hostileCount = Math.max(node.hostileCount, node.hostileMembers?.length || 0);
+  const extraCount = Math.max(0, hostileCount - 1);
+  const pilotName = intel?.name || "身份待解析";
+  const corporation = intel?.corporation || "未解析军团";
+  const alliance = intel?.alliance || `${hostileCount} 名敌对信号`;
 
   context.save();
   context.translate(cardX, cardY);
@@ -181,65 +185,65 @@ function drawHostileCard(
   context.shadowBlur = 12;
   context.shadowOffsetY = 4;
   context.fillStyle = "rgba(255, 255, 255, 0.98)";
-  context.fillRect(x, y, HOSTILE_CARD_WIDTH, HOSTILE_CARD_HEIGHT);
+  context.fillRect(x, y, HOSTILE_SUMMARY_CARD_WIDTH, HOSTILE_SUMMARY_CARD_HEIGHT);
   context.shadowColor = "transparent";
   context.strokeStyle = node.isSelected ? "#23845f" : "#d8e0dc";
   context.lineWidth = node.isSelected ? 2 : 1;
-  context.strokeRect(x, y, HOSTILE_CARD_WIDTH, HOSTILE_CARD_HEIGHT);
+  context.strokeRect(x, y, HOSTILE_SUMMARY_CARD_WIDTH, HOSTILE_SUMMARY_CARD_HEIGHT);
   context.fillStyle = "#d6453d";
-  context.fillRect(x, y, 4, HOSTILE_CARD_HEIGHT);
+  context.fillRect(x, y, 4, HOSTILE_SUMMARY_CARD_HEIGHT);
 
   drawHostilePortrait(intel, context, x + 12, y + 16);
 
-  context.font = '700 13px "Segoe UI", "Microsoft YaHei", sans-serif';
+  context.font = '700 12px "Segoe UI", "Microsoft YaHei", sans-serif';
   context.textAlign = "left";
   context.textBaseline = "middle";
   context.fillStyle = "#202c27";
-  context.fillText(fitCanvasText(context, intel.name, 92), x + 86, y + 20);
+  context.fillText(fitCanvasText(context, pilotName, 82), x + 70, y + 18);
 
-  const threatWidth = Math.max(40, context.measureText(score).width + 12);
-  context.fillStyle = threat.background;
-  context.fillRect(x + HOSTILE_CARD_WIDTH - threatWidth - 10, y + 10, threatWidth, 20);
   context.font = '700 9px "Segoe UI", "Microsoft YaHei", sans-serif';
+  const threatWidth = Math.max(38, context.measureText(score).width + 10);
+  context.fillStyle = threat.background;
+  context.fillRect(x + HOSTILE_SUMMARY_CARD_WIDTH - threatWidth - 10, y + 9, threatWidth, 19);
   context.textAlign = "center";
   context.fillStyle = threat.foreground;
-  context.fillText(score, x + HOSTILE_CARD_WIDTH - threatWidth / 2 - 10, y + 20);
+  context.fillText(score, x + HOSTILE_SUMMARY_CARD_WIDTH - threatWidth / 2 - 10, y + 18.5);
 
-  const detailX = x + 86;
-  context.font = '700 8px "Segoe UI", "Microsoft YaHei", sans-serif';
-  context.textAlign = "center";
-  context.fillStyle = "#eaf1ee";
-  context.fillRect(detailX, y + 40, 18, 15);
-  context.fillRect(detailX, y + 65, 18, 15);
-  context.fillStyle = "#587067";
-  context.fillText("军", detailX + 9, y + 47.5);
-  context.fillText("联", detailX + 9, y + 72.5);
-
-  context.font = '500 10px "Segoe UI", "Microsoft YaHei", sans-serif';
+  context.font = '500 9px "Segoe UI", "Microsoft YaHei", sans-serif';
   context.textAlign = "left";
   context.fillStyle = "#56655f";
   context.fillText(
-    fitCanvasText(context, intel.corporation, 112),
-    detailX + 24,
-    y + 47.5,
+    fitCanvasText(context, corporation, 104),
+    x + 70,
+    y + 39,
   );
   context.fillText(
-    fitCanvasText(context, intel.alliance, 112),
-    detailX + 24,
-    y + 72.5,
+    fitCanvasText(context, alliance, extraCount > 0 ? 76 : 104),
+    x + 70,
+    y + 57,
   );
 
+  if (extraCount > 0) {
+    const badge = `+${extraCount}`;
+    context.font = '700 9px "Segoe UI", "Microsoft YaHei", sans-serif';
+    context.textAlign = "center";
+    context.fillStyle = "#fbe9e7";
+    context.fillRect(x + HOSTILE_SUMMARY_CARD_WIDTH - 42, y + 47, 30, 18);
+    context.fillStyle = "#b42318";
+    context.fillText(badge, x + HOSTILE_SUMMARY_CARD_WIDTH - 27, y + 56);
+  }
+
   context.fillStyle = "#edf1ef";
-  context.fillRect(x + 4, y + HOSTILE_CARD_HEIGHT - 3, HOSTILE_CARD_WIDTH - 4, 3);
+  context.fillRect(x + 4, y + HOSTILE_SUMMARY_CARD_HEIGHT - 3, HOSTILE_SUMMARY_CARD_WIDTH - 4, 3);
   context.fillStyle = threat.foreground;
   context.fillRect(
     x + 4,
-    y + HOSTILE_CARD_HEIGHT - 3,
-    (HOSTILE_CARD_WIDTH - 4) * Math.min(1, Math.max(0.08, (intel.threatScore ?? 35) / 100)),
+    y + HOSTILE_SUMMARY_CARD_HEIGHT - 3,
+    (HOSTILE_SUMMARY_CARD_WIDTH - 4) * Math.min(1, Math.max(0.08, (threatScore ?? 35) / 100)),
     3,
   );
-  const riskWidth = (HOSTILE_CARD_WIDTH - 4) *
-    Math.min(1, Math.max(0.08, (intel.threatScore ?? 35) / 100));
+  const riskWidth = (HOSTILE_SUMMARY_CARD_WIDTH - 4) *
+    Math.min(1, Math.max(0.08, (threatScore ?? 35) / 100));
   const shimmerWidth = 24;
   const shimmerStart = x + 4 - shimmerWidth +
     ((timeMs % 1800) / 1800) * (riskWidth + shimmerWidth);
@@ -249,7 +253,7 @@ function drawHostileCard(
     context.fillStyle = "rgba(255, 255, 255, 0.62)";
     context.fillRect(
       shimmerLeft,
-      y + HOSTILE_CARD_HEIGHT - 3,
+      y + HOSTILE_SUMMARY_CARD_HEIGHT - 3,
       shimmerRight - shimmerLeft,
       3,
     );
@@ -295,19 +299,25 @@ function drawGateLink(
   context.save();
   context.lineCap = "round";
   if (link.kind === "hostile-intel") {
-    const useVerticalLayout = globalScale < 0.5 &&
-      typeof target.hostileAnchorX === "number" &&
-      typeof target.hostileAnchorY === "number";
-    const targetX = useVerticalLayout ? Number(target.hostileAnchorX) : x2;
-    const targetY = useVerticalLayout
-      ? Number(target.hostileAnchorY) - 108 / globalScale
-      : y2;
-    const midpointX = useVerticalLayout ? x1 : x1 + (targetX - x1) * 0.52;
-    const midpointY = useVerticalLayout ? y1 + (targetY - y1) * 0.45 : y1;
+    if (target.hostileCardHidden) {
+      context.restore();
+      return;
+    }
+    const deltaX = x2 - x1;
+    const deltaY = y2 - y1;
+    const horizontal = Math.abs(deltaX) >= Math.abs(deltaY);
+    const targetX = horizontal
+      ? x2 - Math.sign(deltaX || 1) * HOSTILE_SUMMARY_CARD_WIDTH / 2 / globalScale
+      : x2;
+    const targetY = horizontal
+      ? y2
+      : y2 - Math.sign(deltaY || 1) * HOSTILE_SUMMARY_CARD_HEIGHT / 2 / globalScale;
+    const midpointX = x1 + (targetX - x1) * 0.52;
+    const midpointY = y1 + (targetY - y1) * 0.52;
     context.beginPath();
     context.moveTo(x1, y1);
-    context.lineTo(midpointX, midpointY);
-    context.lineTo(midpointX, targetY);
+    context.lineTo(horizontal ? midpointX : x1, horizontal ? y1 : midpointY);
+    context.lineTo(horizontal ? midpointX : targetX, horizontal ? targetY : midpointY);
     context.lineTo(targetX, targetY);
     context.strokeStyle = "rgba(214, 69, 61, 0.72)";
     context.lineWidth = Math.max(1.4, 1.6 / globalScale);
@@ -315,7 +325,7 @@ function drawGateLink(
     context.stroke();
     context.setLineDash?.([]);
     context.beginPath();
-    context.arc(midpointX, targetY, 2.4 / globalScale, 0, Math.PI * 2);
+    context.arc(targetX, targetY, 2.4 / globalScale, 0, Math.PI * 2);
     context.fillStyle = "#d6453d";
     context.fill();
     context.restore();
@@ -342,7 +352,7 @@ function drawNode(
   globalScale: number,
   timeMs: number = 0,
 ): void {
-  if (node.kind === "hostile-card") {
+  if (node.kind === "hostile-summary") {
     drawHostileCard(node, context, globalScale, timeMs);
     return;
   }
@@ -409,14 +419,18 @@ function paintNodePointerArea(
   node: NodeObject<TacticalGraphNode>,
   color: string,
   context: CanvasRenderingContext2D,
+  globalScale: number = 1,
 ): void {
   context.fillStyle = color;
-  if (node.kind === "hostile-card") {
+  if (node.kind === "hostile-summary") {
+    if (node.hostileCardHidden) {
+      return;
+    }
     context.fillRect(
-      Number(node.x || 0) - HOSTILE_CARD_WIDTH / 2,
-      Number(node.y || 0) - HOSTILE_CARD_HEIGHT / 2,
-      HOSTILE_CARD_WIDTH,
-      HOSTILE_CARD_HEIGHT,
+      Number(node.x || 0) - HOSTILE_SUMMARY_CARD_WIDTH / 2 / globalScale,
+      Number(node.y || 0) - HOSTILE_SUMMARY_CARD_HEIGHT / 2 / globalScale,
+      HOSTILE_SUMMARY_CARD_WIDTH / globalScale,
+      HOSTILE_SUMMARY_CARD_HEIGHT / globalScale,
     );
     return;
   }
@@ -491,6 +505,33 @@ function linkParticleWidth(link: TacticalGraphLink): number {
   return link.kind === "hostile-intel" ? 2.4 : 1.7;
 }
 
+function portraitUrl(characterId: number | null): string | undefined {
+  return characterId === null
+    ? undefined
+    : `https://images.evetech.net/characters/${characterId}/portrait?size=64`;
+}
+
+function visibleOverlayRects(container: HTMLDivElement | null): HostileLayoutRect[] {
+  const stage = container?.closest(".star-map-stage");
+  if (!container || !stage) {
+    return [];
+  }
+  const canvasRect = container.getBoundingClientRect();
+  return Array.from(
+    stage.querySelectorAll<HTMLElement>(
+      ".star-map-status, .star-map-legend, .star-map-tools, .star-map-selection",
+    ),
+  ).map((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      x: rect.left - canvasRect.left,
+      y: rect.top - canvasRect.top,
+      width: rect.width,
+      height: rect.height,
+    };
+  }).filter((rect) => rect.width > 0 && rect.height > 0);
+}
+
 export function TacticalStarMap({
   fitSignal = 0,
   graphData,
@@ -500,6 +541,7 @@ export function TacticalStarMap({
   const graphRef =
     useRef<ForceGraphMethods<TacticalGraphNode, TacticalGraphLink>>();
   const [size, setSize] = useState({ height: 560, width: 900 });
+  const [hostileDetailSystemId, setHostileDetailSystemId] = useState<number | null>(null);
   const [motionEnabled, setMotionEnabled] = useState(() => {
     const preference = typeof window === "undefined" ||
       typeof window.matchMedia !== "function"
@@ -537,7 +579,7 @@ export function TacticalStarMap({
   }, []);
 
   const hasHostileCards = graphData.nodes.some(
-    (node) => node.kind === "hostile-card",
+    (node) => node.kind === "hostile-summary",
   );
   const fitPadding = hasHostileCards
     ? Math.min(260, Math.max(128, size.width * 0.25))
@@ -584,6 +626,42 @@ export function TacticalStarMap({
   ) => {
     drawNode(node, context, globalScale, motionEnabled ? animationTime() : 0);
   }, [motionEnabled]);
+  const layoutHostileCards = useCallback((
+    _context: CanvasRenderingContext2D,
+    globalScale: number,
+  ) => {
+    const graph = graphRef.current;
+    if (!graph) {
+      return;
+    }
+    layoutHostileSummaryNodes(
+      graphData.nodes,
+      size.width,
+      size.height,
+      globalScale,
+      {
+        graphToScreen: (x, y) => graph.graph2ScreenCoords(x, y),
+        screenToGraph: (x, y) => graph.screen2GraphCoords(x, y),
+      },
+      visibleOverlayRects(containerRef.current),
+    );
+  }, [graphData.nodes, size.height, size.width]);
+  const selectedHostileSummary = useMemo(() => graphData.nodes.find((node) =>
+    node.kind === "hostile-summary" && node.systemId === hostileDetailSystemId,
+  ), [graphData.nodes, hostileDetailSystemId]);
+  const selectedHostiles = selectedHostileSummary?.hostileMembers || [];
+  const unresolvedHostileCount = Math.max(
+    0,
+    (selectedHostileSummary?.hostileCount || 0) - selectedHostiles.length,
+  );
+  const closeHostileDetail = useCallback(() => setHostileDetailSystemId(null), []);
+  const selectNode = useCallback((node: TacticalGraphNode) => {
+    const systemId = typeof node.systemId === "number" ? node.systemId : null;
+    onSelectSystem(systemId);
+    if (systemId !== null && (node.kind === "hostile-summary" || node.hostileCount > 0)) {
+      setHostileDetailSystemId(systemId);
+    }
+  }, [onSelectSystem]);
 
   return (
     <div
@@ -616,6 +694,12 @@ export function TacticalStarMap({
         linkDirectionalParticleWidth={linkParticleWidth}
         linkCanvasObject={drawGateLink}
         linkCanvasObjectMode={() => "replace"}
+        linkVisibility={(link) => {
+          if (link.kind !== "hostile-intel") {
+            return true;
+          }
+          return !graphNode(link.target)?.hostileCardHidden;
+        }}
         linkWidth={(link) => {
           const source = graphNode(link.source);
           const target = graphNode(link.target);
@@ -627,10 +711,68 @@ export function TacticalStarMap({
         minZoom={0.12}
         nodeCanvasObject={animatedNodePainter}
         nodePointerAreaPaint={paintNodePointerArea}
-        onNodeClick={(node) =>
-          onSelectSystem(typeof node.systemId === "number" ? node.systemId : null)
-        }
+        nodeVisibility={(node) => node.kind !== "hostile-summary" || !node.hostileCardHidden}
+        onNodeClick={selectNode}
+        onRenderFramePre={layoutHostileCards}
       />
+      <Drawer
+        className="hostile-detail-drawer"
+        footer={null}
+        title={selectedHostileSummary
+          ? `${selectedHostileSummary.name} · 敌对详情`
+          : "敌对详情"}
+        visible={Boolean(selectedHostileSummary)}
+        width={440}
+        onCancel={closeHostileDetail}
+      >
+        <div className="hostile-detail-summary">
+          <span>当前侦测</span>
+          <strong>{selectedHostileSummary?.hostileCount || 0} 名敌对</strong>
+          <Tag color="red">实时态势</Tag>
+        </div>
+        {selectedHostiles.length > 0 ? (
+          <List
+            className="hostile-detail-list"
+            dataSource={selectedHostiles}
+            render={(intel) => {
+              const threat = THREAT_STYLE[intel.threatLevel];
+              return (
+                <List.Item key={`${intel.characterId ?? "unknown"}:${intel.name}`}>
+                  <div className="hostile-detail-item">
+                    <Avatar size={44}>
+                      {portraitUrl(intel.characterId) ? (
+                        <img
+                          alt=""
+                          src={portraitUrl(intel.characterId)}
+                        />
+                      ) : intel.name.slice(0, 1).toUpperCase()}
+                    </Avatar>
+                    <div className="hostile-detail-identity">
+                      <div>
+                        <strong>{intel.name}</strong>
+                        <Tag color="red" size="small">
+                          {intel.threatScore === null
+                            ? threat.label
+                            : `${threat.label} ${Math.round(intel.threatScore)}`}
+                        </Tag>
+                      </div>
+                      <span title={intel.corporation}>军团 · {intel.corporation}</span>
+                      <span title={intel.alliance}>联盟 · {intel.alliance}</span>
+                    </div>
+                  </div>
+                </List.Item>
+              );
+            }}
+          />
+        ) : (
+          <Empty description="已发现敌对信号，身份资料仍在解析" />
+        )}
+        {unresolvedHostileCount > 0 ? (
+          <div className="hostile-detail-unresolved">
+            另有 {unresolvedHostileCount} 名敌对身份待解析
+          </div>
+        ) : null}
+      </Drawer>
     </div>
   );
 }

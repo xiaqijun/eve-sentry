@@ -11,16 +11,20 @@ import type { TacticalGraphData } from "./tacticalGraph";
 
 const forceGraphMock = vi.hoisted(() => ({
   latestProps: null as Record<string, unknown> | null,
+  graph2ScreenCoords: vi.fn((x: number, y: number) => ({ x, y })),
   pauseAnimation: vi.fn(),
   resumeAnimation: vi.fn(),
+  screen2GraphCoords: vi.fn((x: number, y: number) => ({ x, y })),
   zoomToFit: vi.fn(),
 }));
 
 vi.mock("react-force-graph-2d", () => ({
   default: forwardRef((props: Record<string, unknown>, ref) => {
     useImperativeHandle(ref, () => ({
+      graph2ScreenCoords: forceGraphMock.graph2ScreenCoords,
       pauseAnimation: forceGraphMock.pauseAnimation,
       resumeAnimation: forceGraphMock.resumeAnimation,
+      screen2GraphCoords: forceGraphMock.screen2GraphCoords,
       zoomToFit: forceGraphMock.zoomToFit,
     }));
     forceGraphMock.latestProps = props;
@@ -220,7 +224,7 @@ describe("TacticalStarMap", () => {
     container.remove();
   });
 
-  test("does not draw an extra canvas background layer over the HUD image", async () => {
+  test("uses the pre-render hook only to lay out hostile summaries", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -231,7 +235,11 @@ describe("TacticalStarMap", () => {
       );
     });
 
-    expect(forceGraphMock.latestProps?.onRenderFramePre).toBeUndefined();
+    const onRenderFramePre = forceGraphMock.latestProps?.onRenderFramePre as Function;
+    const fillRect = vi.fn();
+    expect(onRenderFramePre).toEqual(expect.any(Function));
+    onRenderFramePre({ fillRect } as unknown as CanvasRenderingContext2D, 1);
+    expect(fillRect).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();
@@ -340,20 +348,9 @@ describe("TacticalStarMap", () => {
     container.remove();
   });
 
-  test("draws hostile identity cards with portraits, risk badges, and organization rows", async () => {
-    const hostileCard = {
-      ...graphData.nodes[1],
-      id: "hostile:NCG-PW:id:90000001",
-      name: "Pilot One",
-      kind: "hostile-card" as const,
-      x: 304,
-      y: 150,
-      fx: 304,
-      fy: 150,
-      hostileCount: 0,
-      threatLevel: "high" as const,
-      threatScore: 88,
-      hostileIntel: {
+  test("lays out one compact summary and opens the full hostile drawer", async () => {
+    const hostileMembers = [
+      {
         characterId: 90000001,
         name: "Pilot One",
         corporation: "Red Horizon",
@@ -361,6 +358,31 @@ describe("TacticalStarMap", () => {
         threatLevel: "high" as const,
         threatScore: 88,
       },
+      {
+        characterId: 90000002,
+        name: "Pilot Two",
+        corporation: "Red Horizon",
+        alliance: "Northern Threat",
+        threatLevel: "medium" as const,
+        threatScore: 61,
+      },
+    ];
+    const hostileCard = {
+      ...graphData.nodes[1],
+      id: "hostile-summary:NCG-PW",
+      name: "NCG-PW",
+      kind: "hostile-summary" as const,
+      x: 304,
+      y: 150,
+      fx: 304,
+      fy: 150,
+      hostileAnchorX: 180,
+      hostileAnchorY: 150,
+      hostileCount: 2,
+      threatLevel: "high" as const,
+      threatScore: 88,
+      hostileIntel: hostileMembers[0],
+      hostileMembers,
     };
     const hostileGraphData: TacticalGraphData = {
       nodes: [...graphData.nodes, hostileCard],
@@ -409,16 +431,19 @@ describe("TacticalStarMap", () => {
     } as unknown as CanvasRenderingContext2D;
     const drawNode = forceGraphMock.latestProps?.nodeCanvasObject;
     const drawLink = forceGraphMock.latestProps?.linkCanvasObject;
+    const layoutNodes = forceGraphMock.latestProps?.onRenderFramePre;
 
     expect(drawNode).toEqual(expect.any(Function));
+    expect(layoutNodes).toEqual(expect.any(Function));
+    (layoutNodes as Function)(context, 1);
+    expect(hostileCard.hostileCardHidden).toBe(false);
     (drawNode as Function)(hostileCard, context, 1);
     expect(fillText).toHaveBeenCalledWith("Pilot One", expect.any(Number), expect.any(Number));
     expect(fillText).toHaveBeenCalledWith("高危 88", expect.any(Number), expect.any(Number));
-    expect(fillText).toHaveBeenCalledWith("军", expect.any(Number), expect.any(Number));
-    expect(fillText).toHaveBeenCalledWith("联", expect.any(Number), expect.any(Number));
     expect(fillText).toHaveBeenCalledWith("Red Horizon", expect.any(Number), expect.any(Number));
     expect(fillText).toHaveBeenCalledWith("Northern Threat", expect.any(Number), expect.any(Number));
-    expect(fillRect.mock.calls.length).toBeGreaterThanOrEqual(8);
+    expect(fillText).toHaveBeenCalledWith("+1", expect.any(Number), expect.any(Number));
+    expect(fillRect.mock.calls.length).toBeGreaterThanOrEqual(6);
     expect(strokeRect).toHaveBeenCalled();
 
     (drawLink as Function)(
@@ -430,6 +455,18 @@ describe("TacticalStarMap", () => {
       context,
     );
     expect(lineTo).toHaveBeenCalledTimes(3);
+
+    const onNodeClick = forceGraphMock.latestProps?.onNodeClick as Function;
+    await act(async () => {
+      onNodeClick(hostileCard);
+    });
+    expect(document.body).toHaveTextContent("NCG-PW · 敌对详情");
+    expect(document.body).toHaveTextContent("Pilot One");
+    expect(document.body).toHaveTextContent("Pilot Two");
+    expect(document.body).toHaveTextContent("2 名敌对");
+
+    (layoutNodes as Function)(context, 0.2);
+    expect(hostileCard.hostileCardHidden).toBe(true);
 
     await act(async () => {
       root.unmount();
