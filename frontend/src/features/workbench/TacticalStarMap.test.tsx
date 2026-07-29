@@ -200,7 +200,7 @@ describe("TacticalStarMap", () => {
     container.remove();
   });
 
-  test("draws compact HUD metrics without monitor text labels", async () => {
+  test("draws system labels and compact threat badges without legacy HUD text", async () => {
     const monitoredGraphData: TacticalGraphData = {
       ...graphData,
       nodes: graphData.nodes.map((node) =>
@@ -263,11 +263,12 @@ describe("TacticalStarMap", () => {
       expect.any(Number),
       expect.any(Number),
     );
-    expect(fillText).toHaveBeenCalledWith("敌:", expect.any(Number), expect.any(Number));
+    expect(fillText).toHaveBeenCalledWith("0-UVHJ", expect.any(Number), expect.any(Number));
     expect(fillText).toHaveBeenCalledWith("3", expect.any(Number), expect.any(Number));
-    expect(fillText).toHaveBeenCalledWith("损:", expect.any(Number), expect.any(Number));
-    expect(fillText).toHaveBeenCalledWith("1", expect.any(Number), expect.any(Number));
-    expect(strokeColors[0]).toBe("#20e879");
+    expect(fillText).not.toHaveBeenCalledWith("敌:", expect.any(Number), expect.any(Number));
+    expect(fillText).not.toHaveBeenCalledWith("损:", expect.any(Number), expect.any(Number));
+    expect(fillText).not.toHaveBeenCalledWith("1", expect.any(Number), expect.any(Number));
+    expect(strokeColors[0]).toBe("rgba(239, 91, 82, 0.28)");
     expect(arc).toHaveBeenCalledTimes(3);
 
     await act(async () => {

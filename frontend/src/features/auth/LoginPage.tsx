@@ -1,4 +1,5 @@
 import { FormEvent, useState } from "react";
+import { Alert, Button, Card, Divider, Input, Tag, Typography } from "@arco-design/web-react";
 import { LogIn, Orbit, ShieldCheck } from "lucide-react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 
@@ -67,37 +68,36 @@ export function LoginPage() {
         <section className="auth-brand-panel">
           <span className="auth-brand-mark"><ShieldCheck size={24} /></span>
           <div>
-            <p>EVE Sentry</p>
-            <h1>预警管理平台</h1>
+            <Typography.Text>EVE Sentry</Typography.Text>
+            <Typography.Title heading={2}>预警管理平台</Typography.Title>
           </div>
-          <span className="auth-brand-status">情报服务在线</span>
+          <Tag className="auth-brand-status" color="green">情报服务在线</Tag>
         </section>
-        <section className="auth-login-panel">
+        <Card className="auth-login-panel">
           <div className="auth-login-heading">
-            <p>身份认证</p>
-            <h2>进入管理系统</h2>
+            <Typography.Text type="secondary">身份认证</Typography.Text>
+            <Typography.Title heading={4}>进入管理系统</Typography.Title>
           </div>
           <a className="esi-member-login" href={esiLoginUrl}>
             <Orbit size={18} />
             使用 EVE Online 登录
           </a>
-          {error ? <p className="auth-error" role="alert">{error}</p> : null}
-          <div className="auth-login-divider"><span>管理员</span></div>
+          {error ? <div role="alert"><Alert className="auth-error" closable={false} content={error} type="error" /></div> : null}
+          <Divider className="auth-login-divider">管理员</Divider>
           <form className="admin-login-form" onSubmit={submit}>
             <label>
               <span>用户名</span>
-              <input autoComplete="username" required value={username} onChange={(e) => setUsername(e.target.value)} />
+              <Input autoComplete="username" required value={username} onChange={setUsername} />
             </label>
             <label>
               <span>密码</span>
-              <input autoComplete="current-password" required type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+              <Input.Password autoComplete="current-password" required value={password} onChange={setPassword} />
             </label>
-            <button disabled={submitting || loading} type="submit">
-              <LogIn size={16} />
+            <Button htmlType="submit" icon={<LogIn size={16} />} loading={submitting} long type="primary" disabled={loading}>
               {submitting ? "正在登录" : "管理员登录"}
-            </button>
+            </Button>
           </form>
-        </section>
+        </Card>
       </div>
     </main>
   );

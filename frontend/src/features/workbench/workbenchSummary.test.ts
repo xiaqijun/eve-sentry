@@ -90,4 +90,11 @@ describe("summarizeWorkbench", () => {
       onlineClients: 1,
     });
   });
+
+  it("defaults online clients to zero for a legacy bootstrap without clients", () => {
+    expect(summarizeWorkbench({
+      ...bootstrap,
+      clients: undefined,
+    } as unknown as BootstrapPayload).onlineClients).toBe(0);
+  });
 });

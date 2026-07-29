@@ -225,7 +225,7 @@ describe("WorkbenchPage", () => {
     expect(situationStats).toHaveTextContent("在线预警节点1");
     expect(situationStats).toHaveTextContent("当前有敌星系1");
     expect(situationStats).toHaveTextContent("当前敌对人数1");
-    expect(situationStats).toHaveTextContent("最近更新时间");
+    expect(situationStats).toHaveTextContent("更新时间");
     expect(container).not.toHaveTextContent("区域态势");
     expect(container.querySelector(".sector-panel")).not.toBeInTheDocument();
     expect(container).toHaveTextContent("敌对飞行员观察列表");
@@ -234,7 +234,7 @@ describe("WorkbenchPage", () => {
 
     const navPanel = container.querySelector('[aria-label="右侧面板切换"]');
     expect(navPanel).toBeInTheDocument();
-    expect(navPanel).toHaveTextContent("右侧面板");
+    expect(container).toHaveTextContent("情报面板");
     expect(navPanel).toHaveTextContent("总览");
     expect(navPanel).toHaveTextContent("观察列表和告警队列同时显示");
     expect(navPanel).toHaveTextContent("观察");
@@ -243,7 +243,7 @@ describe("WorkbenchPage", () => {
     expect(container.querySelector('.nav-panel button[aria-pressed="true"]')).toHaveTextContent("总览");
     expect(container.querySelector(".quick-icons")).not.toBeInTheDocument();
     expect(container.querySelector(".sector-preview")).not.toBeInTheDocument();
-    expect(container.querySelector('[aria-label="实时态势栏"]')).toBeInTheDocument();
+    expect(container.querySelector('[aria-label="星图工作区"]')).toBeInTheDocument();
     expect(container.querySelector('[aria-label="切换区域"]')).not.toBeInTheDocument();
     expect(container.querySelector('[aria-label="切换视图模式"]')).not.toBeInTheDocument();
     expect(container.querySelector('[aria-label="切换视图"]')).not.toBeInTheDocument();
@@ -264,8 +264,10 @@ describe("WorkbenchPage", () => {
     expect(container.querySelector('[aria-label="Fit 星图"]')).toBeInTheDocument();
     const mapLegend = container.querySelector(".map-legend");
     expect(mapLegend).toHaveTextContent("监控在线");
-    expect(mapLegend).toHaveTextContent("敌对");
-    expect(mapLegend?.querySelectorAll("span")).toHaveLength(2);
+    expect(mapLegend).toHaveTextContent("敌对活动");
+    expect(mapLegend).toHaveTextContent("情报记录");
+    expect(mapLegend).toHaveTextContent("舰船损失");
+    expect(mapLegend?.querySelectorAll("span")).toHaveLength(4);
     expect(mapLegend).not.toHaveTextContent("高安全区");
     expect(mapLegend).not.toHaveTextContent("低安全区");
     expect(mapLegend).not.toHaveTextContent("跃迁通道");

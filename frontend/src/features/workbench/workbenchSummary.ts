@@ -8,6 +8,6 @@ export function summarizeWorkbench(
     hostiles: Number(bootstrap.map.summary.hostile_count ?? 0),
     reports: Number(bootstrap.map.summary.report_count ?? bootstrap.reports.length),
     alerts: Number(bootstrap.map.summary.alert_count ?? bootstrap.alerts.length),
-    onlineClients: Number(bootstrap.clients.summary.online_count ?? 0),
+    onlineClients: Number(bootstrap.clients?.summary?.online_count ?? 0),
   };
 }

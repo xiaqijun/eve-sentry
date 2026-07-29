@@ -1,24 +1,40 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import {
-  Activity,
+  Alert,
+  Button,
+  Card,
+  Empty,
+  Grid,
+  Progress,
+  Radio,
+  Statistic,
+  Table,
+  Tag,
+  Typography,
+  type TableColumnProps,
+} from "@arco-design/web-react";
+import { IconRefresh } from "@arco-design/web-react/icon";
+import { useQuery } from "@tanstack/react-query";
+import type { EChartsOption } from "echarts";
+import {
   AlertTriangle,
   BarChart3,
-  GitBranch,
+  CheckCircle2,
   MapPinned,
-  RefreshCw,
   ShieldAlert,
   Skull,
   Users,
 } from "lucide-react";
 
+import { EveChart } from "../../components/EveChart";
 import { fetchHostileAlertHistory } from "./api";
 import {
   buildHostileReport,
   type ReportRange,
-  type SeverityReportRow,
+  type SystemReportRow,
+  type TargetReportRow,
 } from "./reporting";
-import type { Level } from "../workbench/types";
+import type { AlertItem, Level } from "../workbench/types";
 
 const REPORT_REFRESH_INTERVAL_MS = 60000;
 
@@ -30,14 +46,10 @@ const RANGE_OPTIONS: Array<{ value: ReportRange; label: string }> = [
 ];
 
 function formatTime(value?: string): string {
-  if (!value) {
-    return "-";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleString("zh-CN", { hour12: false });
+  if (!value) return "-";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString("zh-CN", { hour12: false });
 }
 
 function levelLabel(level?: Level | "unknown"): string {
@@ -51,28 +63,77 @@ function levelLabel(level?: Level | "unknown"): string {
   return labels[level || "unknown"];
 }
 
-function severityClass(level?: Level | "unknown"): string {
-  return `severity-${level || "unknown"}`;
+function levelColor(level?: Level | "unknown"): string {
+  if (level === "critical") return "red";
+  if (level === "high") return "orangered";
+  if (level === "medium") return "orange";
+  if (level === "low") return "green";
+  return "gray";
 }
 
-function SeverityBars({ rows }: { rows: SeverityReportRow[] }) {
-  const maximum = Math.max(1, ...rows.map((row) => row.count));
-  return (
-    <div className="severity-bars">
-      {rows.map((row) => (
-        <div className="severity-row" key={row.level}>
-          <span>{levelLabel(row.level)}</span>
-          <div className="severity-track">
-            <i
-              className={severityClass(row.level)}
-              style={{ width: `${(row.count / maximum) * 100}%` }}
-            />
-          </div>
-          <strong>{row.count}</strong>
-        </div>
-      ))}
-    </div>
-  );
+function trendOption(labels: string[], values: number[]): EChartsOption {
+  return {
+    animationDuration: 350,
+    grid: { top: 18, right: 16, bottom: 28, left: 38 },
+    tooltip: { trigger: "axis" },
+    xAxis: {
+      type: "category",
+      boundaryGap: false,
+      data: labels,
+      axisLine: { lineStyle: { color: "#dfe5e2" } },
+      axisLabel: { color: "#7c8882", fontSize: 11 },
+      axisTick: { show: false },
+    },
+    yAxis: {
+      type: "value",
+      minInterval: 1,
+      axisLabel: { color: "#8a9490", fontSize: 11 },
+      splitLine: { lineStyle: { color: "#edf0ef" } },
+    },
+    series: [{
+      type: "line",
+      data: values,
+      smooth: 0.25,
+      showSymbol: values.length <= 12,
+      symbol: "circle",
+      symbolSize: 7,
+      lineStyle: { color: "#176b50", width: 2.5 },
+      itemStyle: { color: "#176b50", borderColor: "#ffffff", borderWidth: 2 },
+      areaStyle: { color: "rgba(23,107,80,0.10)" },
+    }],
+  };
+}
+
+function severityOption(rows: Array<{ level: Level | "unknown"; count: number }>): EChartsOption {
+  const colors: Record<Level | "unknown", string> = {
+    critical: "#c9362b",
+    high: "#e36b32",
+    medium: "#d7a02a",
+    low: "#3b8f6c",
+    unknown: "#9aa4a0",
+  };
+  return {
+    animationDuration: 350,
+    tooltip: { trigger: "item" },
+    legend: {
+      bottom: 0,
+      icon: "circle",
+      itemHeight: 8,
+      itemWidth: 8,
+      textStyle: { color: "#68746e", fontSize: 11 },
+    },
+    series: [{
+      type: "pie",
+      radius: ["48%", "72%"],
+      center: ["50%", "43%"],
+      label: { show: false },
+      data: rows.filter((row) => row.count > 0).map((row) => ({
+        name: levelLabel(row.level),
+        value: row.count,
+        itemStyle: { color: colors[row.level] },
+      })),
+    }],
+  };
 }
 
 export function HostileReportPage() {
@@ -88,191 +149,101 @@ export function HostileReportPage() {
     () => buildHostileReport(historyQuery.data?.alerts || [], range),
     [historyQuery.data?.alerts, range],
   );
-  const trendMaximum = Math.max(1, ...report.trend.map((point) => point.count));
   const activeRange = RANGE_OPTIONS.find((item) => item.value === range)?.label || "7 天";
 
+  const systemColumns: TableColumnProps<SystemReportRow>[] = [
+    { title: "星系", dataIndex: "name", render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
+    { title: "有效来袭", dataIndex: "incidentCount", width: 100, sorter: (a, b) => a.incidentCount - b.incidentCount },
+    { title: "目标人次", dataIndex: "targetSightings", width: 100 },
+    { title: "独立目标", dataIndex: "uniqueTargets", width: 100 },
+    { title: "最后出现", dataIndex: "lastSeen", width: 168, render: (value?: string) => formatTime(value) },
+  ];
+  const targetColumns: TableColumnProps<TargetReportRow>[] = [
+    { title: "已验证目标", dataIndex: "name", render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
+    { title: "出现批次", dataIndex: "incidentCount", width: 100, sorter: (a, b) => a.incidentCount - b.incidentCount },
+    { title: "涉及星系", dataIndex: "systems", render: (value: string[]) => value.join("、") || "-" },
+    { title: "最后出现", dataIndex: "lastSeen", width: 168, render: (value?: string) => formatTime(value) },
+  ];
+  const recentColumns: TableColumnProps<AlertItem>[] = [
+    { title: "时间", dataIndex: "created_at", width: 168, render: (value?: string) => formatTime(value) },
+    { title: "星系", dataIndex: "system_name", width: 120, render: (value?: string) => value || "未知星系" },
+    { title: "已验证目标", dataIndex: "names", render: (value?: string[]) => (value || []).join("、") || "-" },
+    { title: "风险", dataIndex: "level", width: 90, render: (value?: Level) => <Tag color={levelColor(value)}>{levelLabel(value)}</Tag> },
+    { title: "状态", dataIndex: "acknowledged", width: 90, render: (value?: boolean) => value ? "已确认" : "待确认" },
+  ];
+
   return (
-    <div className="report-shell">
-      <header className="content-page-header report-header">
-        <div className="report-heading">
-          <p className="content-page-kicker">敌对情报</p>
-          <h2>敌对来袭统计</h2>
-          <span>所有统计仅包含 ESI 已确认存在的角色，OCR 噪声与未验证目标不计入。</span>
+    <div className="hostile-report-page">
+      <header className="arco-page-header hostile-report-header">
+        <div>
+          <Typography.Text className="content-page-kicker">仅统计 ESI 已验证敌对角色</Typography.Text>
+          <Typography.Title heading={4}>敌对来袭报表</Typography.Title>
         </div>
-        <div className="report-header-actions">
-          <div className="report-range-tabs" aria-label="报表统计范围">
-            {RANGE_OPTIONS.map((item) => (
-              <button
-                aria-pressed={range === item.value}
-                className={range === item.value ? "active" : ""}
-                key={item.value}
-                type="button"
-                onClick={() => setRange(item.value)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-          <button
-            className="report-refresh-button"
-            disabled={historyQuery.isFetching}
-            type="button"
-            onClick={() => void historyQuery.refetch()}
-          >
-            <RefreshCw className={historyQuery.isFetching ? "is-spinning" : ""} size={15} />
-            刷新
-          </button>
+        <div className="hostile-report-actions">
+          <Radio.Group aria-label="报表统计范围" type="button" value={range} onChange={(value) => setRange(value as ReportRange)}>
+            {RANGE_OPTIONS.map((item) => <Radio key={item.value} value={item.value}>{item.label}</Radio>)}
+          </Radio.Group>
+          <Button icon={<IconRefresh />} loading={historyQuery.isFetching} type="outline" onClick={() => void historyQuery.refetch()}>刷新</Button>
         </div>
       </header>
 
       {historyQuery.isError ? (
-        <section className="report-message report-message-error" role="alert">
-          <AlertTriangle size={18} />
-          {historyQuery.error instanceof Error
-            ? historyQuery.error.message
-            : "来袭历史加载失败"}
-        </section>
+        <Alert type="error" content={historyQuery.error instanceof Error ? historyQuery.error.message : "来袭历史加载失败"} />
       ) : null}
 
-      <section className="report-metrics" aria-label="敌对来袭摘要">
-        <article className="report-metric-card danger">
-          <span><ShieldAlert size={15} />来袭批次</span>
-          <strong>{report.incidentCount}</strong>
-          <small>{activeRange}内服务端告警</small>
-        </article>
-        <article className="report-metric-card">
-          <span><Users size={15} />目标人次</span>
-          <strong>{report.targetSightings}</strong>
-          <small>ESI 已确认角色人次</small>
-        </article>
-        <article className="report-metric-card">
-          <span><Skull size={15} />独立敌对</span>
-          <strong>{report.uniqueTargets}</strong>
-          <small>去重后的角色数量</small>
-        </article>
-        <article className="report-metric-card">
-          <span><MapPinned size={15} />涉及星系</span>
-          <strong>{report.systemCount}</strong>
-          <small>{report.systems[0]?.name ? `最多：${report.systems[0].name}` : "暂无记录"}</small>
-        </article>
-      </section>
+      <Grid.Row className="arco-summary-grid hostile-report-kpis" gutter={16}>
+        <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<CheckCircle2 size={17} />} title="有效来袭" value={report.incidentCount} extra={<Typography.Text type="secondary">{activeRange}内已验证事件</Typography.Text>} /></Card></Grid.Col>
+        <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<Users size={17} />} title="独立敌对" value={report.uniqueTargets} extra={<Typography.Text type="secondary">去重后的角色数量</Typography.Text>} /></Card></Grid.Col>
+        <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<ShieldAlert size={17} />} title="高危事件" value={report.highRiskCount} extra={<Typography.Text type="secondary">严重与高危事件</Typography.Text>} /></Card></Grid.Col>
+        <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<MapPinned size={17} />} title="涉及星系" value={report.systemCount} extra={<Typography.Text type="secondary">存在有效记录的星系</Typography.Text>} /></Card></Grid.Col>
+      </Grid.Row>
 
-      <section className="report-panel report-insights-panel" aria-label="来袭特征">
-        <div className="report-panel-title">
-          <div><Activity size={17} /><span>来袭特征</span></div>
-          <strong>{activeRange}</strong>
+      <Card className="report-data-quality" title={<span><CheckCircle2 size={16} />数据有效性</span>}>
+        <div className="report-quality-main">
+          <div><span>有效数据率</span><strong>{report.verificationRate.toFixed(0)}%</strong></div>
+          <Progress percent={report.verificationRate} showText={false} color="#176b50" />
         </div>
-        <div className="report-insight-grid">
-          <div><span>单批峰值</span><strong>{report.peakTargetsPerIncident}</strong><small>人</small></div>
-          <div><span>重复出现目标</span><strong>{report.repeatTargetCount}</strong><small>人</small></div>
-          <div><span>跨星系目标</span><strong>{report.crossSystemTargetCount}</strong><small>人</small></div>
-          <div><span>高危占比</span><strong>{report.highRiskRate.toFixed(0)}</strong><small>%</small></div>
-          <div><span>日均来袭</span><strong>{report.averagePerDay.toFixed(1)}</strong><small>批</small></div>
-          <div><span>平均每批</span><strong>{report.averageTargetsPerIncident.toFixed(1)}</strong><small>人</small></div>
+        <div className="report-quality-stats">
+          <div><span>原始记录</span><strong>{report.sourceCount}</strong></div>
+          <div><span>有效记录</span><strong>{report.incidentCount}</strong></div>
+          <div><span>排除噪声</span><strong>{report.excludedCount}</strong></div>
+          <div><span>待确认</span><strong>{report.unacknowledgedCount}</strong></div>
+          <div><span>目标人次</span><strong>{report.targetSightings}</strong></div>
+          <div><span>平均每批</span><strong>{report.averageTargetsPerIncident.toFixed(1)}</strong></div>
         </div>
-      </section>
+      </Card>
 
-      <section className="report-grid report-grid-top">
-        <article className="report-panel report-trend-panel">
-          <div className="report-panel-title">
-            <div><BarChart3 size={17} /><span>来袭趋势</span></div>
-            <strong>{report.incidentCount} 批</strong>
-          </div>
-          {report.trend.length > 0 ? (
-            <div className="report-trend-chart" role="img" aria-label="敌对来袭时间趋势">
-              {report.trend.map((point) => (
-                <div className="report-trend-column" key={point.key} title={`${point.label}：${point.count} 批`}>
-                  <strong>{point.count || ""}</strong>
-                  <div className="report-trend-track">
-                    <i style={{ height: `${Math.max(point.count ? 8 : 0, (point.count / trendMaximum) * 100)}%` }} />
-                  </div>
-                  <span>{point.label}</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="report-empty">当前范围暂无趋势数据</div>
-          )}
-        </article>
+      <Grid.Row className="hostile-report-chart-grid" gutter={16}>
+        <Grid.Col lg={16} xs={24}>
+          <Card className="hostile-report-card" title={<span><BarChart3 size={16} />有效来袭趋势</span>} extra={<Tag color="green">{activeRange}</Tag>}>
+            {report.incidentCount > 0 ? (
+              <EveChart height={286} option={trendOption(report.trend.map((item) => item.label), report.trend.map((item) => item.count))} />
+            ) : <Empty description="当前范围暂无有效来袭趋势" />}
+          </Card>
+        </Grid.Col>
+        <Grid.Col lg={8} xs={24}>
+          <Card className="hostile-report-card" title={<span><ShieldAlert size={16} />风险分布</span>} extra={<Typography.Text type="secondary">高危 {report.highRiskRate.toFixed(0)}%</Typography.Text>}>
+            {report.incidentCount > 0 ? <EveChart height={286} option={severityOption(report.severity)} /> : <Empty description="暂无风险分布" />}
+          </Card>
+        </Grid.Col>
+      </Grid.Row>
 
-        <article className="report-panel">
-          <div className="report-panel-title">
-            <div><ShieldAlert size={17} /><span>风险等级</span></div>
-            <strong>{report.highRiskCount} 高危</strong>
-          </div>
-          <SeverityBars rows={report.severity} />
-        </article>
-      </section>
+      <Grid.Row className="hostile-report-ranking-grid" gutter={16}>
+        <Grid.Col lg={12} xs={24}>
+          <Card className="hostile-report-card" title={<span><MapPinned size={16} />星系来袭排行</span>} extra={<Typography.Text type="secondary">TOP 8</Typography.Text>}>
+            <Table<SystemReportRow> border={false} columns={systemColumns} data={report.systems.slice(0, 8)} pagination={false} rowKey="name" scroll={{ x: 620 }} />
+          </Card>
+        </Grid.Col>
+        <Grid.Col lg={12} xs={24}>
+          <Card className="hostile-report-card" title={<span><Skull size={16} />高频敌对目标</span>} extra={<Typography.Text type="secondary">TOP 8</Typography.Text>}>
+            <Table<TargetReportRow> border={false} columns={targetColumns} data={report.targets.slice(0, 8)} pagination={false} rowKey="characterId" scroll={{ x: 560 }} />
+          </Card>
+        </Grid.Col>
+      </Grid.Row>
 
-      <section className="report-grid report-grid-rankings">
-        <article className="report-panel">
-          <div className="report-panel-title">
-            <div><MapPinned size={17} /><span>星系来袭排行</span></div>
-            <strong>TOP 8</strong>
-          </div>
-          <div className="report-ranking-table">
-            <div className="report-table-head report-system-row">
-              <span>星系</span><span>批次</span><span>目标人次</span><span>独立目标</span><span>最后来袭</span>
-            </div>
-            {report.systems.slice(0, 8).map((item, index) => (
-              <div className="report-table-row report-system-row" key={item.name}>
-                <strong><b>{index + 1}</b>{item.name}</strong>
-                <span>{item.incidentCount}</span>
-                <span>{item.targetSightings}</span>
-                <span>{item.uniqueTargets}</span>
-                <time>{formatTime(item.lastSeen)}</time>
-              </div>
-            ))}
-            {report.systems.length === 0 ? <div className="report-empty">暂无星系记录</div> : null}
-          </div>
-        </article>
-
-        <article className="report-panel">
-          <div className="report-panel-title">
-            <div><GitBranch size={17} /><span>高频敌对目标</span></div>
-            <strong>TOP 8</strong>
-          </div>
-          <div className="report-ranking-table">
-            <div className="report-table-head report-target-row">
-              <span>目标</span><span>出现批次</span><span>涉及星系</span><span>最后出现</span>
-            </div>
-            {report.targets.slice(0, 8).map((item, index) => (
-              <div className="report-table-row report-target-row" key={item.name}>
-                <strong><b>{index + 1}</b>{item.name}</strong>
-                <span>{item.incidentCount}</span>
-                <span title={item.systems.join("、")}>{item.systems.join("、")}</span>
-                <time>{formatTime(item.lastSeen)}</time>
-              </div>
-            ))}
-            {report.targets.length === 0 ? <div className="report-empty">暂无敌对目标</div> : null}
-          </div>
-        </article>
-      </section>
-
-      <section className="report-panel report-recent-panel">
-        <div className="report-panel-title">
-          <div><AlertTriangle size={17} /><span>最近来袭记录</span></div>
-          <strong>更新于 {formatTime(historyQuery.data?.generatedAt)}</strong>
-        </div>
-        <div className="report-recent-table">
-          <div className="report-table-head report-recent-row">
-            <span>时间</span><span>星系</span><span>敌对目标</span><span>等级</span><span>状态</span>
-          </div>
-          {report.recent.map((item) => (
-            <div className="report-table-row report-recent-row" key={item.id}>
-              <time>{formatTime(item.created_at)}</time>
-              <strong>{item.system_name || "未知星系"}</strong>
-              <span title={(item.names || []).join("、")}>{(item.names || []).join("、") || "未知目标"}</span>
-              <em className={severityClass(item.level)}>{levelLabel(item.level)}</em>
-              <span>{item.acknowledged ? "已确认" : "未确认"}</span>
-            </div>
-          ))}
-          {!historyQuery.isLoading && report.recent.length === 0 ? (
-            <div className="report-empty">当前范围暂无敌对来袭记录</div>
-          ) : null}
-          {historyQuery.isLoading ? <div className="report-empty">正在加载来袭历史…</div> : null}
-        </div>
-      </section>
+      <Card className="hostile-report-card hostile-report-recent" title={<span><AlertTriangle size={16} />最近有效来袭</span>} extra={<Typography.Text type="secondary">更新于 {formatTime(historyQuery.data?.generatedAt)}</Typography.Text>}>
+        <Table<AlertItem> border={false} columns={recentColumns} data={report.recent} pagination={false} rowKey="id" scroll={{ x: 760 }} />
+      </Card>
     </div>
   );
 }

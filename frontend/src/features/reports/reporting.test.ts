@@ -66,6 +66,9 @@ describe("hostile reporting", () => {
     const report = buildHostileReport(alerts, "7d", NOW);
 
     expect(report.incidentCount).toBe(2);
+    expect(report.sourceCount).toBe(4);
+    expect(report.excludedCount).toBe(2);
+    expect(report.verificationRate).toBe(50);
     expect(report.targetSightings).toBe(3);
     expect(report.uniqueTargets).toBe(2);
     expect(report.systemCount).toBe(2);
@@ -93,6 +96,9 @@ describe("hostile reporting", () => {
     const report = buildHostileReport(alerts, "all", NOW);
 
     expect(report.incidentCount).toBe(3);
+    expect(report.sourceCount).toBe(5);
+    expect(report.excludedCount).toBe(2);
+    expect(report.verificationRate).toBe(60);
     expect(report.uniqueTargets).toBe(3);
     expect(report.highRiskCount).toBe(2);
     expect(report.peakTargetsPerIncident).toBe(2);
@@ -110,5 +116,8 @@ describe("hostile reporting", () => {
     expect(report.crossSystemTargetCount).toBe(0);
     expect(report.highRiskRate).toBe(0);
     expect(report.averageTargetsPerIncident).toBe(0);
+    expect(report.sourceCount).toBe(0);
+    expect(report.excludedCount).toBe(0);
+    expect(report.verificationRate).toBe(0);
   });
 });

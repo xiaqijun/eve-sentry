@@ -1,20 +1,21 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Button, Card, Input, Select, Space, Table, Tag, Typography } from "@arco-design/web-react";
+import { IconEye, IconMore, IconPlus, IconUserAdd, IconUserGroup } from "@arco-design/web-react/icon";
 import {
-  BadgeCheck,
   Ban,
-  EllipsisVertical,
-  Eye,
   KeyRound,
-  Plus,
-  RefreshCw,
   RotateCcw,
-  Search,
   Trash2,
-  UserPlus,
-  Users,
   X,
 } from "lucide-react";
 
+import {
+  AccountStatusTag,
+  ManagementError,
+  ManagementPageHeader,
+  ManagementSummary,
+  UserIdentity,
+} from "../../components/ManagementPage";
 import {
   createServiceKey,
   createUser,
@@ -139,73 +140,58 @@ export function AdminUsersPage() {
     }
   };
 
+  const columns = [
+    { title: "用户", render: (_: unknown, user: AdminUser) => <UserIdentity displayName={user.display_name} username={user.username} /> },
+    { title: "角色", dataIndex: "role", render: (role: AdminUser["role"]) => <Tag color={role === "admin" ? "arcoblue" : "gray"}>{role === "admin" ? "管理员" : "普通用户"}</Tag> },
+    { title: "状态", dataIndex: "status", render: (status: AdminUser["status"]) => <AccountStatusTag status={status} /> },
+    { title: "有效密钥", dataIndex: "keys", render: (keys: AdminUser["keys"]) => keys.filter((key) => key.status === "active").length },
+    { title: "已验证角色", dataIndex: "verified_characters", render: (items: AdminUser["verified_characters"]) => items.length },
+    {
+      title: "操作",
+      render: (_: unknown, user: AdminUser) => (
+        <Button aria-label={`查看 ${user.display_name || user.username}`} icon={<IconEye />} size="small" title="查看详情" type="text" onClick={() => openUser(user.user_id)}>查看</Button>
+      ),
+    },
+  ];
+
   return (
     <div className="admin-shell">
-      <header className="content-page-header account-header">
-        <div>
-          <h2>用户管理</h2>
-        </div>
-        <button className="page-refresh-button" disabled={loading} type="button" onClick={() => void load()}><RefreshCw className={loading ? "is-spinning" : ""} size={15} />刷新数据</button>
-      </header>
-      {error ? <div className="auth-banner error" role="alert">{error}</div> : null}
+      <ManagementPageHeader loading={loading} refreshLabel="刷新数据" title="用户管理" onRefresh={() => void load()} />
+      <ManagementError error={error} />
+      <ManagementSummary ariaLabel="用户管理摘要" items={[
+        { label: "平台用户", value: users.length },
+        { label: "正常用户", value: activeUsers },
+        { label: "有效密钥", value: activeKeys },
+      ]} />
 
-      <section className="admin-summary admin-summary-three" aria-label="用户管理摘要">
-        <div><span>平台用户</span><strong>{users.length}</strong></div>
-        <div><span>正常用户</span><strong>{activeUsers}</strong></div>
-        <div><span>有效密钥</span><strong>{activeKeys}</strong></div>
-      </section>
-
-      <section className="management-table-panel">
-        <div className="management-table-toolbar">
-          <div>
-            <div className="account-panel-title"><Users size={17} /><h2>用户列表</h2></div>
-            <span>共 {filteredUsers.length} 个结果</span>
-          </div>
-          <div className="management-table-actions">
-            <label className="management-search-field">
-              <Search size={14} />
-              <input aria-label="搜索用户" placeholder="搜索用户名或显示名称" value={search} onChange={(event) => setSearch(event.target.value)} />
-            </label>
-            <select aria-label="筛选用户状态" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as UserStatusFilter)}>
-              <option value="all">全部状态</option>
-              <option value="active">正常</option>
-              <option value="disabled">已禁用</option>
-            </select>
-            <button className="management-primary-button" type="button" onClick={() => setCreateOpen(true)}><Plus size={15} />新建用户</button>
-          </div>
-        </div>
-
-        <div className="management-data-table user-management-table">
-          <div className="management-data-head user-management-row">
-            <span>用户</span><span>角色</span><span>状态</span><span>有效密钥</span><span>已验证角色</span><span>操作</span>
-          </div>
-          {filteredUsers.map((user) => (
-            <div className="management-data-row user-management-row" key={user.user_id}>
-              <div className="management-user-cell">
-                <b>{(user.display_name || user.username).slice(0, 1).toUpperCase()}</b>
-                <span><strong>{user.display_name || user.username}</strong><small>@{user.username}</small></span>
-              </div>
-              <span>{user.role === "admin" ? "管理员" : "普通用户"}</span>
-              <em className={`status-badge ${user.status}`}><BadgeCheck size={12} />{user.status === "active" ? "正常" : "已禁用"}</em>
-              <span>{user.keys.filter((key) => key.status === "active").length}</span>
-              <span>{user.verified_characters.length}</span>
-              <button aria-label={`查看 ${user.display_name || user.username}`} className="management-row-action" title="查看详情" type="button" onClick={() => openUser(user.user_id)}><Eye size={15} />查看</button>
-            </div>
-          ))}
-          {!loading && filteredUsers.length === 0 ? <div className="management-table-empty">没有符合条件的用户</div> : null}
-        </div>
-      </section>
+      <Card
+        className="management-table-panel arco-management-card"
+        extra={(
+          <Space wrap>
+            <Input.Search aria-label="搜索用户" placeholder="搜索用户名或显示名称" value={search} onChange={setSearch} />
+            <Select aria-label="筛选用户状态" value={statusFilter} style={{ width: 120 }} onChange={(value) => setStatusFilter(value as UserStatusFilter)}>
+              <Select.Option value="all">全部状态</Select.Option>
+              <Select.Option value="active">正常</Select.Option>
+              <Select.Option value="disabled">已禁用</Select.Option>
+            </Select>
+            <Button icon={<IconPlus />} type="primary" onClick={() => setCreateOpen(true)}>新建用户</Button>
+          </Space>
+        )}
+        title={<Space><IconUserGroup /><span>用户列表</span><Typography.Text type="secondary">共 {filteredUsers.length} 个结果</Typography.Text></Space>}
+      >
+        <Table<AdminUser> border={false} columns={columns} data={filteredUsers} loading={loading} noDataElement="没有符合条件的用户" pagination={false} rowKey="user_id" />
+      </Card>
 
       {createOpen ? (
         <div className="management-modal-backdrop" role="presentation" onMouseDown={() => setCreateOpen(false)}>
           <section aria-labelledby="create-user-title" aria-modal="true" className="management-modal" role="dialog" onMouseDown={(event) => event.stopPropagation()}>
             <header><div><span>新建账号</span><h2 id="create-user-title">创建平台用户</h2></div><button aria-label="关闭" className="management-close-button" type="button" onClick={() => setCreateOpen(false)}><X size={17} /></button></header>
             <form className="management-dialog-form" onSubmit={submitUser}>
-              <label><span>用户名</span><input name="username" placeholder="用于登录" required /></label>
-              <label><span>显示名称</span><input name="display_name" placeholder="页面展示名称" /></label>
-              <label><span>权限角色</span><select name="role" value={createRole} onChange={(event) => setCreateRole(event.target.value === "admin" ? "admin" : "member")}><option value="member">普通用户</option><option value="admin">管理员</option></select></label>
-              {createRole === "admin" ? <label><span>初始密码</span><input minLength={12} name="password" placeholder="至少 12 位" required type="password" /></label> : null}
-              <footer><button type="button" onClick={() => setCreateOpen(false)}>取消</button><button className="management-primary-button" type="submit"><UserPlus size={15} />创建用户</button></footer>
+              <label><span>用户名</span><Input name="username" placeholder="用于登录" required /></label>
+              <label><span>显示名称</span><Input name="display_name" placeholder="页面展示名称" /></label>
+              <label><span>权限角色</span><Select value={createRole} onChange={(value) => setCreateRole(value === "admin" ? "admin" : "member")}><Select.Option value="member">普通用户</Select.Option><Select.Option value="admin">管理员</Select.Option></Select></label>
+              {createRole === "admin" ? <label><span>初始密码</span><Input.Password minLength={12} name="password" placeholder="至少 12 位" required /></label> : null}
+              <footer><Button type="secondary" onClick={() => setCreateOpen(false)}>取消</Button><Button htmlType="submit" icon={<IconUserAdd />} type="primary">创建用户</Button></footer>
             </form>
           </section>
         </div>
@@ -220,20 +206,20 @@ export function AdminUsersPage() {
                 <div><span className="admin-user-heading-meta">用户详情</span><h2 id="user-detail-title">{selectedUser.display_name || selectedUser.username}</h2><p>@{selectedUser.username} · {selectedUser.role === "admin" ? "管理员" : "普通用户"}</p></div>
               </div>
               <div className="management-drawer-header-actions">
-                <button aria-expanded={actionsOpen} aria-label="用户操作" className="management-icon-button" title="用户操作" type="button" onClick={() => setActionsOpen((current) => !current)}><EllipsisVertical size={17} /></button>
-                <button aria-label="关闭详情" className="management-close-button" type="button" onClick={() => { setActionsOpen(false); setSelectedUserId(""); }}><X size={17} /></button>
+                <Button aria-expanded={actionsOpen} aria-label="用户操作" className="management-icon-button" icon={<IconMore />} shape="circle" title="用户操作" type="text" onClick={() => setActionsOpen((current) => !current)} />
+                <Button aria-label="关闭详情" className="management-close-button" icon={<X size={17} />} shape="circle" type="text" onClick={() => { setActionsOpen(false); setSelectedUserId(""); }} />
                 {actionsOpen ? (
                   <div aria-label="用户操作菜单" className="management-actions-menu" role="menu">
-                    <button role="menuitem" type="button" onClick={() => { setActionsOpen(false); void run(() => setUserActive(selectedUser.user_id, selectedUser.status !== "active", "管理员操作")); }}>{selectedUser.status === "active" ? "禁用用户" : "解禁用户"}</button>
-                    {selectedUser.role === "admin" ? <button role="menuitem" type="button" onClick={() => { setActionsOpen(false); const password = window.prompt("输入至少 12 位的新密码"); if (password) void run(() => resetUserPassword(selectedUser.user_id, password)); }}>重置密码</button> : null}
-                    <button role="menuitem" type="button" onClick={() => { setActionsOpen(false); void createReadonlyKey(); }}><KeyRound size={14} />创建只读密钥</button>
-                    {selectedUser.user_id !== currentUser?.user_id ? <button className="danger-action" role="menuitem" type="button" onClick={() => { setActionsOpen(false); void deleteSelectedUser(); }}><Trash2 size={14} />删除用户</button> : null}
+                    <Button role="menuitem" type="text" onClick={() => { setActionsOpen(false); void run(() => setUserActive(selectedUser.user_id, selectedUser.status !== "active", "管理员操作")); }}>{selectedUser.status === "active" ? "禁用用户" : "解禁用户"}</Button>
+                    {selectedUser.role === "admin" ? <Button role="menuitem" type="text" onClick={() => { setActionsOpen(false); const password = window.prompt("输入至少 12 位的新密码"); if (password) void run(() => resetUserPassword(selectedUser.user_id, password)); }}>重置密码</Button> : null}
+                    <Button icon={<KeyRound size={14} />} role="menuitem" type="text" onClick={() => { setActionsOpen(false); void createReadonlyKey(); }}>创建只读密钥</Button>
+                    {selectedUser.user_id !== currentUser?.user_id ? <Button className="danger-action" icon={<Trash2 size={14} />} role="menuitem" status="danger" type="text" onClick={() => { setActionsOpen(false); void deleteSelectedUser(); }}>删除用户</Button> : null}
                   </div>
                 ) : null}
               </div>
             </header>
             <div className="management-drawer-body">
-              <div className="management-drawer-status"><span>账号状态</span><em className={`status-badge ${selectedUser.status}`}><BadgeCheck size={13} />{selectedUser.status === "active" ? "正常" : "已禁用"}</em></div>
+              <div className="management-drawer-status"><span>账号状态</span><AccountStatusTag status={selectedUser.status} /></div>
               {serviceSecret ? <div className="secret-once"><strong>服务密钥只显示这一次</strong><code>{serviceSecret}</code></div> : null}
               <section className="management-drawer-section">
                 <div className="admin-section-heading"><h3>设备与服务密钥</h3><span>{selectedUser.keys.length} 个</span></div>

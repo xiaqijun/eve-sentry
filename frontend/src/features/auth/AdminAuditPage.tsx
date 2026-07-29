@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, ScrollText, TriangleAlert, UserRound } from "lucide-react";
+import { Card, Empty, List, Space, Tag, Typography } from "@arco-design/web-react";
+import { IconExclamationCircle, IconFile, IconUser } from "@arco-design/web-react/icon";
 
+import {
+  ManagementError,
+  ManagementPageHeader,
+  ManagementSummary,
+} from "../../components/ManagementPage";
 import { fetchClients, listAudit } from "./api";
 import type { AuditRecord, ClientHeartbeatRecord } from "./types";
 
@@ -140,46 +146,53 @@ export function AdminAuditPage() {
 
   return (
     <div className="admin-shell">
-      <header className="content-page-header account-header">
-        <div>
-          <h2>审计日志</h2>
-        </div>
-        <button className="page-refresh-button" disabled={loading} type="button" onClick={() => void load()}><RefreshCw className={loading ? "is-spinning" : ""} size={15} />刷新日志</button>
-      </header>
-      {error ? <div className="auth-banner error" role="alert">{error}</div> : null}
-
-      <section className="admin-summary" aria-label="审计日志摘要">
-        <div><span>记录总数</span><strong>{audit.length}</strong></div>
-        <div><span>近 24 小时</span><strong>{recentCount}</strong></div>
-        <div><span>涉及用户</span><strong>{affectedUsers}</strong></div>
-        <div><span>当前异常客户端</span><strong>{exceptionClients.length}</strong></div>
-      </section>
+      <ManagementPageHeader loading={loading} refreshLabel="刷新日志" title="审计日志" onRefresh={() => void load()} />
+      <ManagementError error={error} />
+      <ManagementSummary ariaLabel="审计日志摘要" items={[
+        { label: "记录总数", value: audit.length },
+        { label: "近 24 小时", value: recentCount },
+        { label: "涉及用户", value: affectedUsers },
+        { label: "当前异常客户端", value: exceptionClients.length },
+      ]} />
 
       <section className="audit-page-grid">
-        <article className="account-panel audit-panel audit-page-panel">
-          <div className="account-panel-heading audit-page-heading">
-            <div className="account-panel-title"><ScrollText size={17} /><h2>操作记录</h2></div>
-          </div>
-          <div className="audit-table-head"><span>时间</span><span>检测结果</span><span>用户</span></div>
-          <div className="audit-list">
-            {audit.slice(0, 100).map((item) => {
-              const details = formatAuditDetails(item);
-              return <div key={item.audit_id}><time>{new Date(item.created_at).toLocaleString("zh-CN", { hour12: false })}</time><strong>{formatAuditAction(item.action)}{details ? `｜${details}` : ""}</strong><span><UserRound size={13} />{item.target_user_id || "系统"}</span></div>;
-            })}
-            {!loading && audit.length === 0 ? <p className="admin-empty">暂无审计记录</p> : null}
-          </div>
-        </article>
-        <article className="account-panel audit-panel audit-page-panel">
-          <div className="account-panel-heading audit-page-heading">
-            <div className="account-panel-title"><TriangleAlert size={17} /><h2>客户端异常检测</h2></div>
-            <span>{exceptionClients.length} 个异常</span>
-          </div>
-          <div className="audit-table-head"><span>时间</span><span>客户端</span><span>异常</span></div>
-          <div className="audit-list">
-            {exceptionClients.map((client) => <div key={client.client_id}><time>{new Date(client.seen_at).toLocaleString("zh-CN", { hour12: false })}</time><strong>{clientIdentity(client)}</strong><span>{clientExceptionSummary(client)}</span></div>)}
-            {!loading && exceptionClients.length === 0 ? <p className="admin-empty">暂无客户端异常</p> : null}
-          </div>
-        </article>
+        <Card className="account-panel audit-panel audit-page-panel arco-management-card" title={<Space><IconFile />操作记录</Space>}>
+          {audit.length ? (
+            <List
+              dataSource={audit.slice(0, 100)}
+              render={(item) => {
+                const details = formatAuditDetails(item);
+                return (
+                  <List.Item key={item.audit_id} extra={<Tag icon={<IconUser />}>{item.target_user_id || "系统"}</Tag>}>
+                    <List.Item.Meta
+                      description={new Date(item.created_at).toLocaleString("zh-CN", { hour12: false })}
+                      title={`${formatAuditAction(item.action)}${details ? `｜${details}` : ""}`}
+                    />
+                  </List.Item>
+                );
+              }}
+            />
+          ) : <Empty description="暂无审计记录" />}
+        </Card>
+        <Card
+          className="account-panel audit-panel audit-page-panel arco-management-card"
+          extra={<Tag color={exceptionClients.length ? "red" : "green"}>{exceptionClients.length} 个异常</Tag>}
+          title={<Space><IconExclamationCircle />客户端异常检测</Space>}
+        >
+          {exceptionClients.length ? (
+            <List
+              dataSource={exceptionClients}
+              render={(client) => (
+                <List.Item key={client.client_id}>
+                  <List.Item.Meta
+                    description={<Space direction="vertical" size={2}><Typography.Text>{clientExceptionSummary(client)}</Typography.Text><Typography.Text type="secondary">{new Date(client.seen_at).toLocaleString("zh-CN", { hour12: false })}</Typography.Text></Space>}
+                    title={clientIdentity(client)}
+                  />
+                </List.Item>
+              )}
+            />
+          ) : <Empty description="暂无客户端异常" />}
+        </Card>
       </section>
     </div>
   );

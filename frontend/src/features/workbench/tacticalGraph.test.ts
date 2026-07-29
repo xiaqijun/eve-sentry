@@ -342,4 +342,13 @@ describe("buildTacticalGraph", () => {
       monitorLabels: [],
     });
   });
+
+  it("treats a legacy bootstrap without clients as having no monitors", () => {
+    const graph = buildTacticalGraph({
+      ...bootstrap,
+      clients: undefined,
+    } as unknown as BootstrapPayload);
+
+    expect(graph.nodes.every((node) => node.monitorOnlineCount === 0)).toBe(true);
+  });
 });

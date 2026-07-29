@@ -1,50 +1,46 @@
+import { Badge, Breadcrumb, Layout, Menu, Tag, Typography } from "@arco-design/web-react";
 import {
-  BarChart3,
-  Building2,
-  ChevronRight,
-  Fingerprint,
-  KeyRound,
-  LayoutDashboard,
-  LockKeyhole,
-  LogOut,
-  Radio,
-  ScrollText,
-  ShieldCheck,
-  UsersRound,
-} from "lucide-react";
-import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+  IconApps,
+  IconBook,
+  IconDashboard,
+  IconFile,
+  IconIdcard,
+  IconLock,
+  IconSafe,
+  IconUserGroup,
+} from "@arco-design/web-react/icon";
+import { ShieldCheck } from "lucide-react";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { useAuth } from "../auth/AuthContext";
+import { AccountMenu } from "./AccountMenu";
 
 const PAGE_META: Record<string, { title: string }> = {
-  "/": { title: "态势工作台" },
+  "/": { title: "星图态势" },
+  "/dashboard": { title: "仪表盘" },
   "/reports": { title: "来袭报表" },
   "/account/keys": { title: "设备密钥" },
-  "/account/security": { title: "账号安全" },
   "/admin/users": { title: "用户管理" },
   "/admin/identity": { title: "身份记录" },
   "/admin/whitelist": { title: "白名单管理" },
   "/admin/audit": { title: "审计日志" },
 };
 
+const { Header, Content, Sider } = Layout;
+const { Item: MenuItem, ItemGroup: MenuItemGroup } = Menu;
+
 function navigationClass({ isActive }: { isActive: boolean }) {
   return isActive ? "management-nav-link active" : "management-nav-link";
 }
 
 export function ManagementShell() {
-  const { authEnabled, logout, user } = useAuth();
+  const { authEnabled, user } = useAuth();
   const location = useLocation();
-  const navigate = useNavigate();
   const page = PAGE_META[location.pathname] || PAGE_META["/"];
 
-  const signOut = async () => {
-    await logout();
-    navigate("/login", { replace: true });
-  };
-
   return (
-    <div className="management-shell">
-      <aside className="management-sidebar">
+    <Layout className="management-shell arco-management-shell">
+      <Sider className="management-sidebar arco-management-sider" width={236}>
         <div className="management-brand">
           <span className="management-brand-mark"><ShieldCheck size={20} /></span>
           <div>
@@ -52,101 +48,70 @@ export function ManagementShell() {
           </div>
         </div>
 
-        <nav className="management-navigation" aria-label="主导航">
-          <span className="management-nav-section">监控与情报</span>
-          <NavLink className={navigationClass} end to="/">
-            <LayoutDashboard size={17} />
-            <span>态势工作台</span>
-          </NavLink>
-          <NavLink className={navigationClass} to="/reports">
-            <BarChart3 size={17} />
-            <span>来袭报表</span>
-          </NavLink>
-
-          {user ? <span className="management-nav-section">个人账号</span> : null}
+        <Menu
+          aria-label="主导航"
+          className="management-navigation arco-management-menu"
+          selectedKeys={[location.pathname]}
+          theme="dark"
+        >
+          <MenuItemGroup key="monitor" title="监控与情报">
+            <MenuItem key="/dashboard">
+              <NavLink className={navigationClass} to="/dashboard"><IconDashboard /><span>仪表盘</span></NavLink>
+            </MenuItem>
+            <MenuItem key="/">
+              <NavLink className={navigationClass} end to="/"><IconApps /><span>星图态势</span></NavLink>
+            </MenuItem>
+            <MenuItem key="/reports">
+              <NavLink className={navigationClass} to="/reports"><IconBook /><span>来袭报表</span></NavLink>
+            </MenuItem>
+          </MenuItemGroup>
           {user ? (
-            <NavLink className={navigationClass} to="/account/keys">
-              <KeyRound size={17} />
-              <span>设备密钥</span>
-            </NavLink>
+            <MenuItemGroup key="account" title="个人账号">
+              <MenuItem key="/account/keys">
+                <NavLink className={navigationClass} to="/account/keys"><IconLock /><span>设备密钥</span></NavLink>
+              </MenuItem>
+            </MenuItemGroup>
           ) : null}
           {user?.role === "admin" ? (
-            <NavLink className={navigationClass} to="/account/security">
-              <LockKeyhole size={17} />
-              <span>账号安全</span>
-            </NavLink>
+            <MenuItemGroup key="admin" title="系统管理">
+              <MenuItem key="/admin/users">
+                <NavLink className={navigationClass} to="/admin/users"><IconUserGroup /><span>用户管理</span></NavLink>
+              </MenuItem>
+              <MenuItem key="/admin/identity">
+                <NavLink className={navigationClass} to="/admin/identity"><IconIdcard /><span>身份记录</span></NavLink>
+              </MenuItem>
+              <MenuItem key="/admin/whitelist">
+                <NavLink className={navigationClass} to="/admin/whitelist"><IconSafe /><span>白名单管理</span></NavLink>
+              </MenuItem>
+              <MenuItem key="/admin/audit">
+                <NavLink className={navigationClass} to="/admin/audit"><IconFile /><span>审计日志</span></NavLink>
+              </MenuItem>
+            </MenuItemGroup>
           ) : null}
-          {user?.role === "admin" ? <span className="management-nav-section">系统管理</span> : null}
-          {user?.role === "admin" ? (
-            <NavLink className={navigationClass} to="/admin/users">
-              <UsersRound size={17} />
-              <span>用户管理</span>
-            </NavLink>
-          ) : null}
-          {user?.role === "admin" ? (
-            <NavLink className={navigationClass} to="/admin/identity">
-              <Fingerprint size={17} />
-              <span>身份记录</span>
-            </NavLink>
-          ) : null}
-          {user?.role === "admin" ? (
-            <NavLink className={navigationClass} to="/admin/whitelist">
-              <Building2 size={17} />
-              <span>白名单管理</span>
-            </NavLink>
-          ) : null}
-          {user?.role === "admin" ? (
-            <NavLink className={navigationClass} to="/admin/audit">
-              <ScrollText size={17} />
-              <span>审计日志</span>
-            </NavLink>
-          ) : null}
-        </nav>
+        </Menu>
+      </Sider>
 
-        <div className="management-user-card">
-          <span className="management-user-avatar">
-            {(user?.display_name || user?.username || "访").slice(0, 1).toUpperCase()}
-          </span>
-          <div>
-            <strong>{user?.display_name || user?.username || "访客模式"}</strong>
-            <small>{user ? (user.role === "admin" ? "管理员" : "普通用户") : "认证未启用"}</small>
-          </div>
-          {user ? (
-            <button aria-label="退出登录" title="退出登录" type="button" onClick={() => void signOut()}>
-              <LogOut size={16} />
-            </button>
-          ) : null}
-        </div>
-      </aside>
-
-      <section className="management-main">
-        <header className="management-topbar">
+      <Layout className="management-main">
+        <Header className="management-topbar arco-management-header">
           <div className="management-page-context">
-            <div className="management-breadcrumb">
-              <span>EVE Sentry</span>
-              <ChevronRight size={13} />
-              <strong>{page.title}</strong>
-            </div>
-            <h1>{page.title}</h1>
+            <Breadcrumb className="management-breadcrumb">
+              <Breadcrumb.Item>EVE Sentry</Breadcrumb.Item>
+              <Breadcrumb.Item>{page.title}</Breadcrumb.Item>
+            </Breadcrumb>
+            <Typography.Title heading={5}>{page.title}</Typography.Title>
           </div>
           <div className="management-topbar-actions">
-            <span className="management-live-status">
-              <Radio size={15} />
+            <Tag className="management-live-status" color={authEnabled ? "green" : "gray"}>
+              <Badge status={authEnabled ? "success" : "default"} />
               {authEnabled ? "服务在线" : "公开模式"}
-            </span>
-            <span className="management-topbar-user">
-              <b>{(user?.display_name || user?.username || "访").slice(0, 1).toUpperCase()}</b>
-              <span>
-                <strong>{user?.display_name || user?.username || "访客"}</strong>
-                <small>{user ? (user.role === "admin" ? "管理员" : "普通用户") : "无需认证"}</small>
-              </span>
-            </span>
+            </Tag>
+            <AccountMenu />
           </div>
-        </header>
-        <div className={`management-content${location.pathname === "/" ? " management-content-workbench" : ""}`}>
+        </Header>
+        <Content className={`management-content${location.pathname === "/" ? " management-content-workbench" : ""}`}>
           <Outlet />
-        </div>
-      </section>
-    </div>
+        </Content>
+      </Layout>
+    </Layout>
   );
 }

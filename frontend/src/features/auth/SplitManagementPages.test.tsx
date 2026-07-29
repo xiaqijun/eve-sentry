@@ -4,7 +4,6 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountKeysPage } from "./AccountKeysPage";
-import { AccountSecurityPage } from "./AccountSecurityPage";
 import { AdminAuditPage } from "./AdminAuditPage";
 import { AdminIdentityPage } from "./AdminIdentityPage";
 import { AdminUsersPage } from "./AdminUsersPage";
@@ -13,7 +12,6 @@ import { AdminWhitelistPage } from "./AdminWhitelistPage";
 const apiMocks = vi.hoisted(() => ({
   addCorporation: vi.fn(),
   addWhitelistCharacter: vi.fn(),
-  changePassword: vi.fn(),
   createMyKey: vi.fn(),
   createServiceKey: vi.fn(),
   createUser: vi.fn(),
@@ -348,11 +346,5 @@ describe("split management pages", () => {
 
     expect(container.querySelector('[aria-label="重新启用 备用监控端"]')).toBeInTheDocument();
     expect(container.querySelector('[aria-label="删除 备用监控端"]')).toBeInTheDocument();
-  });
-
-  it("keeps password settings separate from device credentials", async () => {
-    await render(<AccountSecurityPage />);
-    expect(container).toHaveTextContent("修改登录密码");
-    expect(container).not.toHaveTextContent("创建设备密钥");
   });
 });

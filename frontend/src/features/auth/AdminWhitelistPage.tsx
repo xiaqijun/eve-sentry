@@ -1,6 +1,12 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Building2, Eye, Plus, RefreshCw, Search, Trash2, Users, X } from "lucide-react";
+import { Button, Card, Drawer, Empty, Input, List, Space, Table, Typography } from "@arco-design/web-react";
+import { IconDelete, IconEye, IconPlus, IconSafe, IconUserGroup } from "@arco-design/web-react/icon";
 
+import {
+  ManagementError,
+  ManagementPageHeader,
+  UserIdentity,
+} from "../../components/ManagementPage";
 import {
   addCorporation,
   addWhitelistCharacter,
@@ -71,92 +77,81 @@ export function AdminWhitelistPage() {
     setCharacterNote("");
   };
 
+  const corporationColumns = [
+    {
+      title: "军团",
+      render: (_: unknown, corporation: AllowedCorporation) => (
+        <Space><IconSafe /><span><strong>{corporation.corporation_name || "未知军团"}</strong><small className="arco-table-subtext">ID {corporation.corporation_id}</small></span></Space>
+      ),
+    },
+    {
+      title: "操作",
+      width: 100,
+      render: (_: unknown, corporation: AllowedCorporation) => (
+        <Button aria-label={`移除 ${corporation.corporation_name || corporation.corporation_id}`} icon={<IconDelete />} size="small" status="danger" title="移除" type="text" onClick={() => void run(() => removeCorporation(corporation.corporation_id))} />
+      ),
+    },
+  ];
+
+  const userColumns = [
+    { title: "用户", render: (_: unknown, user: AdminUser) => <UserIdentity displayName={user.display_name} username={user.username} /> },
+    { title: "白名单角色", dataIndex: "whitelist", render: (items: AdminUser["whitelist"]) => items.length },
+    {
+      title: "操作",
+      render: (_: unknown, user: AdminUser) => (
+        <Button aria-label={`管理 ${user.display_name || user.username} 白名单`} icon={<IconEye />} size="small" type="text" onClick={() => setSelectedUserId(user.user_id)}>管理</Button>
+      ),
+    },
+  ];
+
   return (
     <div className="admin-shell">
-      <header className="content-page-header account-header">
-        <div><h2>白名单管理</h2></div>
-        <button className="page-refresh-button" disabled={loading} type="button" onClick={() => void load()}>
-          <RefreshCw className={loading ? "is-spinning" : ""} size={15} />刷新
-        </button>
-      </header>
-      {error ? <div className="auth-banner error" role="alert">{error}</div> : null}
+      <ManagementPageHeader loading={loading} title="白名单管理" onRefresh={() => void load()} />
+      <ManagementError error={error} />
 
-      <section className="management-table-panel">
-        <div className="management-table-toolbar">
-          <div className="account-panel-title"><Building2 size={17} /><h2>军团白名单</h2></div>
+      <Card
+        className="management-table-panel arco-management-card"
+        extra={(
           <form className="management-policy-form" onSubmit={submitCorporation}>
-            <input aria-label="军团 ID" inputMode="numeric" placeholder="军团 ID" required value={corporationId} onChange={(event) => setCorporationId(event.target.value)} />
-            <button className="management-primary-button" type="submit"><Plus size={15} />添加</button>
+            <Input aria-label="军团 ID" inputMode="numeric" placeholder="军团 ID" required value={corporationId} onChange={setCorporationId} />
+            <Button htmlType="submit" icon={<IconPlus />} type="primary">添加</Button>
           </form>
-        </div>
-        <div className="identity-corporation-list">
-          {corporations.map((corporation) => (
-            <div key={corporation.corporation_id}>
-              <span className="identity-corporation-icon"><Building2 size={15} /></span>
-              <span><strong>{corporation.corporation_name || "未知军团"}</strong><small>ID {corporation.corporation_id}</small></span>
-              <button aria-label={`移除 ${corporation.corporation_name || corporation.corporation_id}`} className="icon-button" title="移除" type="button" onClick={() => void run(() => removeCorporation(corporation.corporation_id))}><Trash2 size={14} /></button>
-            </div>
-          ))}
-          {!loading && corporations.length === 0 ? <p className="management-table-empty">暂无军团</p> : null}
-        </div>
-      </section>
+        )}
+        title={<Space><IconSafe /><span>军团白名单</span></Space>}
+      >
+        <Table<AllowedCorporation> border={false} columns={corporationColumns} data={corporations} loading={loading} noDataElement="暂无军团" pagination={false} rowKey="corporation_id" />
+      </Card>
 
-      <section className="management-table-panel">
-        <div className="management-table-toolbar">
-          <div>
-            <div className="account-panel-title"><Users size={17} /><h2>角色白名单</h2></div>
-            <span>共 {filteredUsers.length} 个用户</span>
-          </div>
-          <label className="management-search-field">
-            <Search size={14} />
-            <input aria-label="搜索用户" placeholder="搜索用户" value={search} onChange={(event) => setSearch(event.target.value)} />
-          </label>
-        </div>
-        <div className="management-data-table">
-          <div className="management-data-head whitelist-user-row">
-            <span>用户</span><span>白名单角色</span><span>操作</span>
-          </div>
-          {filteredUsers.map((user) => (
-            <div className="management-data-row whitelist-user-row" key={user.user_id}>
-              <div className="management-user-cell">
-                <b>{(user.display_name || user.username).slice(0, 1).toUpperCase()}</b>
-                <span><strong>{user.display_name || user.username}</strong><small>@{user.username}</small></span>
-              </div>
-              <span>{user.whitelist.length}</span>
-              <button aria-label={`管理 ${user.display_name || user.username} 白名单`} className="management-row-action" title="管理" type="button" onClick={() => setSelectedUserId(user.user_id)}><Eye size={15} />管理</button>
-            </div>
-          ))}
-          {!loading && filteredUsers.length === 0 ? <div className="management-table-empty">暂无用户</div> : null}
-        </div>
-      </section>
+      <Card
+        className="management-table-panel arco-management-card"
+        extra={<Input.Search aria-label="搜索用户" placeholder="搜索用户" value={search} onChange={setSearch} />}
+        title={<Space><IconUserGroup /><span>角色白名单</span><Typography.Text type="secondary">共 {filteredUsers.length} 个用户</Typography.Text></Space>}
+      >
+        <Table<AdminUser> border={false} columns={userColumns} data={filteredUsers} loading={loading} noDataElement="暂无用户" pagination={false} rowKey="user_id" />
+      </Card>
 
-      {selectedUser ? (
-        <div className="management-drawer-backdrop" role="presentation" onMouseDown={() => setSelectedUserId("")}>
-          <aside aria-labelledby="whitelist-detail-title" aria-modal="true" className="management-drawer" role="dialog" onMouseDown={(event) => event.stopPropagation()}>
-            <header className="management-drawer-header">
-              <div className="admin-user-heading">
-                <span className="admin-user-avatar"><Users size={19} /></span>
-                <div><h2 id="whitelist-detail-title">{selectedUser.display_name || selectedUser.username}</h2><p>@{selectedUser.username}</p></div>
-              </div>
-              <button aria-label="关闭白名单详情" className="management-close-button" type="button" onClick={() => setSelectedUserId("")}><X size={17} /></button>
-            </header>
-            <div className="management-drawer-body">
-              <section className="management-drawer-section">
-                <div className="admin-section-heading"><h3>角色白名单</h3><span>{selectedUser.whitelist.length} 个</span></div>
+      <Drawer footer={null} title={selectedUser ? <UserIdentity displayName={selectedUser.display_name} username={selectedUser.username} /> : "白名单详情"} visible={Boolean(selectedUser)} width={460} onCancel={() => setSelectedUserId("")}>
+        {selectedUser ? (
+          <Space direction="vertical" size={18} style={{ width: "100%" }}>
+            <Typography.Title heading={6}>角色白名单 · {selectedUser.whitelist.length}</Typography.Title>
                 <form className="identity-character-form" onSubmit={submitCharacter}>
-                  <input aria-label="角色 ID" inputMode="numeric" placeholder="角色 ID" required value={characterId} onChange={(event) => setCharacterId(event.target.value)} />
-                  <input aria-label="备注" placeholder="备注（可选）" value={characterNote} onChange={(event) => setCharacterNote(event.target.value)} />
-                  <button className="management-primary-button" type="submit"><Plus size={14} />添加</button>
+              <Input aria-label="角色 ID" inputMode="numeric" placeholder="角色 ID" required value={characterId} onChange={setCharacterId} />
+              <Input aria-label="备注" placeholder="备注（可选）" value={characterNote} onChange={setCharacterNote} />
+              <Button htmlType="submit" icon={<IconPlus />} type="primary">添加</Button>
                 </form>
-                <div className="compact-list">
-                  {selectedUser.whitelist.map((item) => <div key={item.character_id}><span><strong>{item.character_name}</strong><small>ID {item.character_id}{item.note ? ` · ${item.note}` : ""}</small></span><button aria-label={`移除 ${item.character_name}`} className="icon-button" title="移除" type="button" onClick={() => void run(() => removeWhitelistCharacter(selectedUser.user_id, item.character_id))}><Trash2 size={14} /></button></div>)}
-                  {selectedUser.whitelist.length === 0 ? <p className="admin-empty">暂无角色</p> : null}
-                </div>
-              </section>
-            </div>
-          </aside>
-        </div>
-      ) : null}
+            {selectedUser.whitelist.length ? (
+              <List
+                dataSource={selectedUser.whitelist}
+                render={(item) => (
+                  <List.Item key={item.character_id} extra={<Button aria-label={`移除 ${item.character_name}`} icon={<IconDelete />} status="danger" title="移除" type="text" onClick={() => void run(() => removeWhitelistCharacter(selectedUser.user_id, item.character_id))} />}>
+                    <List.Item.Meta title={item.character_name} description={`ID ${item.character_id}${item.note ? ` · ${item.note}` : ""}`} />
+                  </List.Item>
+                )}
+              />
+            ) : <Empty description="暂无角色" />}
+          </Space>
+        ) : null}
+      </Drawer>
     </div>
   );
 }

@@ -17,6 +17,11 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock("./api", () => ({
   fetchHostileAlertHistory: apiMocks.fetchHostileAlertHistory,
 }));
+vi.mock("../../components/EveChart", () => ({
+  EveChart: ({ className }: { className?: string }) => (
+    <div className={className} data-testid="eve-chart" />
+  ),
+}));
 
 describe("HostileReportPage", () => {
   afterEach(() => {
@@ -77,21 +82,23 @@ describe("HostileReportPage", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
 
-    expect(container).toHaveTextContent("敌对来袭统计");
-    expect(container).toHaveTextContent("所有统计仅包含 ESI 已确认存在的角色");
-    expect(container).toHaveTextContent("来袭批次");
-    expect(container).toHaveTextContent("目标人次");
+    expect(container).toHaveTextContent("敌对来袭报表");
+    expect(container).toHaveTextContent("仅统计 ESI 已验证敌对角色");
+    expect(container).toHaveTextContent("有效来袭");
     expect(container).toHaveTextContent("独立敌对");
-    expect(container).toHaveTextContent("来袭特征");
-    expect(container).toHaveTextContent("单批峰值");
-    expect(container).toHaveTextContent("重复出现目标");
-    expect(container).toHaveTextContent("跨星系目标");
-    expect(container).toHaveTextContent("高危占比");
-    expect(container).toHaveTextContent("平均每批");
+    expect(container).toHaveTextContent("高危事件");
+    expect(container).toHaveTextContent("数据有效性");
+    expect(container).toHaveTextContent("有效数据率");
+    expect(container).toHaveTextContent("排除噪声");
+    expect(container).toHaveTextContent("有效来袭趋势");
+    expect(container).toHaveTextContent("风险分布");
+    expect(container).toHaveTextContent("星系来袭排行");
+    expect(container).toHaveTextContent("高频敌对目标");
+    expect(container).toHaveTextContent("最近有效来袭");
     expect(container).toHaveTextContent("S-KSWL");
     expect(container).toHaveTextContent("Alice");
     expect(container).toHaveTextContent("Bob");
-    expect(container.querySelector('[aria-label="敌对来袭时间趋势"]')).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-testid="eve-chart"]')).toHaveLength(2);
     expect(apiMocks.fetchHostileAlertHistory).toHaveBeenCalledWith("7d");
 
     await act(async () => root.unmount());

@@ -142,7 +142,7 @@ function summarizeMonitors(
   }
 
   const summaries = new Map<string, MonitorSummary>();
-  for (const heartbeat of bootstrap.clients.heartbeats || []) {
+  for (const heartbeat of bootstrap.clients?.heartbeats || []) {
     const details = asRecord(heartbeat.details);
     if (heartbeat.online !== true || details.monitoring !== true) {
       continue;

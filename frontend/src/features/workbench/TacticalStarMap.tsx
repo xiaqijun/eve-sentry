@@ -18,15 +18,18 @@ interface TacticalStarMapProps {
 
 function nodeColor(node: TacticalGraphNode): string {
   if (node.hostileCount > 0) {
-    return "#ff4038";
+    return "#ef5b52";
   }
   if ((node.killCount ?? 0) > 0) {
-    return "#ffb347";
+    return "#dca548";
   }
   if (node.channelIntelCount > 0 || node.observationCount > 0) {
-    return "#17d7ff";
+    return "#55a7c7";
   }
-  return "#a9d8ef";
+  if (node.monitorOnlineCount > 0) {
+    return "#55bd92";
+  }
+  return "#6d8089";
 }
 
 function drawGateLink(
@@ -49,39 +52,17 @@ function drawGateLink(
 
   context.save();
   context.lineCap = "round";
-  context.lineJoin = "round";
-
   context.beginPath();
   context.moveTo(x1, y1);
   context.lineTo(x2, y2);
-  context.strokeStyle = "rgba(0, 8, 12, 0.86)";
-  context.lineWidth = isSelected ? 5.4 : 4.2;
-  context.stroke();
-
-  context.beginPath();
-  context.moveTo(x1, y1);
-  context.lineTo(x2, y2);
-  context.shadowColor = isHot ? "#ff4b40" : isLossHot ? "#ffb347" : "#1ccfff";
-  context.shadowBlur = isHot || isSelected ? 14 : 7;
   context.strokeStyle = isHot
-    ? "rgba(255, 87, 70, 0.9)"
+    ? "rgba(239, 91, 82, 0.72)"
     : isLossHot
-      ? "rgba(255, 179, 71, 0.76)"
-    : isSelected
-      ? "rgba(114, 232, 255, 0.96)"
-      : "rgba(64, 207, 255, 0.72)";
-  context.lineWidth = isSelected ? 2.4 : 1.65;
-  context.stroke();
-
-  context.shadowBlur = 0;
-  context.setLineDash([7, 9]);
-  context.beginPath();
-  context.moveTo(x1, y1);
-  context.lineTo(x2, y2);
-  context.strokeStyle = isHot
-    ? "rgba(255, 191, 93, 0.72)"
-    : "rgba(177, 244, 255, 0.28)";
-  context.lineWidth = 0.8;
+      ? "rgba(220, 165, 72, 0.58)"
+      : isSelected
+        ? "rgba(115, 191, 164, 0.74)"
+        : "rgba(105, 132, 143, 0.30)";
+  context.lineWidth = isSelected ? 2.2 : isHot || isLossHot ? 1.5 : 1;
   context.stroke();
   context.restore();
 }
@@ -92,107 +73,57 @@ function drawNode(
   globalScale: number,
 ): void {
   const label = node.name;
-  const color = node.monitorOnlineCount > 0 ? "#20e879" : nodeColor(node);
+  const color = nodeColor(node);
   const lossCount = Math.max(0, node.killCount ?? 0);
-  const hasHud = node.hostileCount > 0 || lossCount > 0;
-  const hasChannelIntel = node.channelIntelCount > 0;
-  const radius = node.isSelected ? 6.5 : hasHud ? 5.8 : 4.4;
-  const fontSize = Math.max(7, 10 / globalScale);
+  const isActive = node.hostileCount > 0 || lossCount > 0 || node.channelIntelCount > 0;
+  const radius = node.isSelected ? 7.4 : node.hostileCount > 0 ? 6.5 : isActive ? 5.6 : 4.6;
+  const fontSize = Math.max(8, 11 / globalScale);
   const x = Number(node.x || 0);
   const y = Number(node.y || 0);
 
   context.save();
+  if (node.isSelected || node.hostileCount > 0) {
+    context.beginPath();
+    context.arc(x, y, radius + (node.isSelected ? 9 : 7), 0, Math.PI * 2);
+    context.fillStyle = node.isSelected
+      ? "rgba(85, 189, 146, 0.10)"
+      : "rgba(239, 91, 82, 0.09)";
+    context.fill();
+    context.strokeStyle = node.isSelected
+      ? "rgba(85, 189, 146, 0.38)"
+      : "rgba(239, 91, 82, 0.28)";
+    context.lineWidth = 1;
+    context.stroke();
+  }
+
   context.beginPath();
   context.arc(x, y, radius, 0, Math.PI * 2);
-  context.fillStyle = "rgba(2, 10, 14, 0.92)";
+  context.fillStyle = color;
   context.fill();
-  context.lineWidth = node.isSelected ? 2.2 : 1.6;
-  context.strokeStyle = color;
-  context.shadowColor = color;
-  context.shadowBlur = hasHud || node.isSelected ? 18 : 9;
+  context.lineWidth = node.isSelected ? 2 : 1.2;
+  context.strokeStyle = node.isSelected ? "#e8fff6" : "rgba(255,255,255,0.72)";
   context.stroke();
 
-  if (hasHud || node.isSelected) {
-    context.shadowBlur = 0;
-    context.strokeStyle =
-      node.hostileCount > 0
-        ? "rgba(255, 64, 56, 0.34)"
-        : lossCount > 0
-          ? "rgba(255, 179, 71, 0.34)"
-          : "rgba(255, 255, 255, 0.42)";
-    context.lineWidth = 1;
-    context.beginPath();
-    context.arc(x, y, radius + 10, 0, Math.PI * 2);
-    context.stroke();
-    context.beginPath();
-    context.arc(x, y, radius + 18, 0, Math.PI * 2);
-    context.stroke();
-  }
-
-  if (hasChannelIntel && !hasHud) {
-    const intelRadius = Math.max(3.2, 4.8 / globalScale);
-    context.shadowBlur = 12;
-    context.shadowColor = "#17d7ff";
-    context.strokeStyle = "rgba(23, 215, 255, 0.82)";
-    context.lineWidth = Math.max(0.8, 1 / globalScale);
-    context.beginPath();
-    context.moveTo(x, y - radius - intelRadius - 3);
-    context.lineTo(x + intelRadius, y - radius - 3);
-    context.lineTo(x, y - radius + intelRadius - 3);
-    context.lineTo(x - intelRadius, y - radius - 3);
-    context.closePath();
-    context.stroke();
-  }
-
-  context.shadowBlur = 0;
-  context.font = `700 ${fontSize}px "Segoe UI", sans-serif`;
+  context.font = `600 ${fontSize}px "Segoe UI", "Microsoft YaHei", sans-serif`;
   context.textAlign = "center";
   context.textBaseline = "top";
-  context.fillStyle = "#eaf8ff";
+  context.fillStyle = node.isSelected || isActive ? "#eef6f3" : "#9fadb1";
   context.fillText(label, x, y + radius + 3);
-  if (hasHud) {
-    const hudFontSize = Math.max(6, 8 / globalScale);
-    const paddingX = Math.max(4, 5 / globalScale);
-    const paddingY = Math.max(2, 3 / globalScale);
-    const gap = Math.max(3, 4 / globalScale);
-    const hudY = y + radius + 5 + fontSize;
-    const segments = [
-      { color: "#ff6a5f", text: "敌:" },
-      { color: "#ffffff", text: String(node.hostileCount) },
-      { color: "#ffc266", text: "损:" },
-      { color: "#ffffff", text: String(lossCount) },
-    ];
 
-    context.font = `700 ${hudFontSize}px "Cascadia Mono", "Consolas", "Segoe UI", monospace`;
-    const widths = segments.map((segment) => context.measureText(segment.text).width);
-    const textWidth = widths.reduce((sum, width) => sum + width, 0) + gap * 3;
-    const hudWidth = textWidth + paddingX * 2;
-    const hudHeight = hudFontSize + paddingY * 2;
-    const hudX = x - hudWidth / 2;
-
-    context.shadowColor = node.hostileCount > 0 ? "#ff4038" : "#ffb347";
-    context.shadowBlur = 12;
-    context.fillStyle =
-      node.hostileCount > 0
-        ? "rgba(24, 5, 5, 0.82)"
-        : "rgba(24, 16, 4, 0.78)";
-    context.fillRect(hudX, hudY, hudWidth, hudHeight);
-    context.shadowBlur = 0;
-    context.strokeStyle =
-      node.hostileCount > 0
-        ? "rgba(255, 90, 80, 0.62)"
-        : "rgba(255, 190, 92, 0.62)";
-    context.lineWidth = Math.max(0.8, 1 / globalScale);
-    context.strokeRect(hudX, hudY, hudWidth, hudHeight);
-
-    context.textAlign = "left";
-    context.textBaseline = "top";
-    let cursor = hudX + paddingX;
-    segments.forEach((segment, index) => {
-      context.fillStyle = segment.color;
-      context.fillText(segment.text, cursor, hudY + paddingY);
-      cursor += widths[index] + (index === 1 ? gap * 2 : gap);
-    });
+  if (node.hostileCount > 0 || lossCount > 0) {
+    const badgeText = node.hostileCount > 0 ? String(node.hostileCount) : String(lossCount);
+    const badgeRadius = Math.max(4.2, 5.2 / globalScale);
+    const badgeX = x + radius + 2;
+    const badgeY = y - radius - 2;
+    context.beginPath();
+    context.arc(badgeX, badgeY, badgeRadius, 0, Math.PI * 2);
+    context.fillStyle = node.hostileCount > 0 ? "#b92f28" : "#9b6e1d";
+    context.fill();
+    context.font = `700 ${Math.max(6, 7 / globalScale)}px "Segoe UI", sans-serif`;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = "#ffffff";
+    context.fillText(badgeText, badgeX, badgeY + 0.3);
   }
   context.restore();
 }
@@ -256,7 +187,7 @@ export function TacticalStarMap({
     };
   }, [fitGraph, fitSignal, hasGraphData]);
 
-  const linkColor = useMemo(() => "rgba(39, 201, 255, 0.34)", []);
+  const linkColor = useMemo(() => "rgba(105, 132, 143, 0.30)", []);
 
   return (
     <div className="tactical-star-map" data-testid="tactical-star-map" ref={containerRef}>
@@ -281,9 +212,9 @@ export function TacticalStarMap({
         linkDirectionalParticles={(link) =>
           (graphNode(link.source)?.hostileCount || 0) > 0 ? 1 : 0
         }
-        linkDirectionalParticleColor={() => "rgba(255, 74, 64, 0.82)"}
+        linkDirectionalParticleColor={() => "rgba(239, 91, 82, 0.86)"}
         linkDirectionalParticleSpeed={0.004}
-        linkDirectionalParticleWidth={1.4}
+        linkDirectionalParticleWidth={1.8}
         linkCanvasObject={drawGateLink}
         linkCanvasObjectMode={() => "replace"}
         linkWidth={(link) => {

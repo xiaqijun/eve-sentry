@@ -30,7 +30,11 @@ export interface SeverityReportRow {
 }
 
 export interface HostileReport {
+  sourceCount: number;
   incidentCount: number;
+  excludedCount: number;
+  verificationRate: number;
+  unacknowledgedCount: number;
   targetSightings: number;
   uniqueTargets: number;
   systemCount: number;
@@ -251,16 +255,16 @@ export function buildHostileReport(
   nowMs: number = Date.now(),
 ): HostileReport {
   const startMs = reportRangeStart(range, nowMs);
-  const alerts = sourceAlerts
-    .map(verifiedAlert)
-    .filter((alert): alert is AlertItem => alert !== null)
-    .filter((alert) => {
+  const rangedSourceAlerts = sourceAlerts.filter((alert) => {
       if (startMs === null) {
         return true;
       }
       const timestamp = parsedTime(alert.created_at);
       return timestamp !== null && timestamp >= startMs && timestamp <= nowMs;
-    })
+    });
+  const alerts = rangedSourceAlerts
+    .map(verifiedAlert)
+    .filter((alert): alert is AlertItem => alert !== null)
     .sort((left, right) => (
       (parsedTime(right.created_at) || 0) - (parsedTime(left.created_at) || 0)
     ));
@@ -369,7 +373,13 @@ export function buildHostileReport(
     .filter((item) => item.systems.size > 1).length;
 
   return {
+    sourceCount: rangedSourceAlerts.length,
     incidentCount: alerts.length,
+    excludedCount: rangedSourceAlerts.length - alerts.length,
+    verificationRate: rangedSourceAlerts.length > 0
+      ? (alerts.length / rangedSourceAlerts.length) * 100
+      : 0,
+    unacknowledgedCount: alerts.filter((alert) => !alert.acknowledged).length,
     targetSightings,
     uniqueTargets: uniqueTargets.size,
     systemCount: systemMap.size,

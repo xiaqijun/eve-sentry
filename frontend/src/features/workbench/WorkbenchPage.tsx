@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Button, Input } from "@arco-design/web-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Bell,
   Database,
-  Filter,
   LayoutDashboard,
   LogIn,
   Map,
-  Radar,
   Skull,
 } from "lucide-react";
 
@@ -394,7 +393,6 @@ export function WorkbenchPage() {
   const showObservationPanel = activeNav === "map" || activeNav === "observations";
   const showAlertPanel = activeNav === "map" || activeNav === "alerts";
   const showEsiPanel = activeNav === "esi";
-  const rightRailClassName = `right-rail right-rail-${activeNav}`;
   const activateNav = (id: WorkbenchNavId) => {
     setActiveNav(id);
     if (window.innerWidth <= 900) {
@@ -437,10 +435,11 @@ export function WorkbenchPage() {
         </div>
       </div>
       <div className="esi-actions">
-        <button
+        <Button
           className="esi-login-button"
           disabled={!canStartEsiLogin || esiLoginStarting || esiLoginPending}
-          type="button"
+          loading={esiLoginStarting}
+          type="primary"
           onClick={handleEsiLogin}
         >
           <LogIn size={14} />
@@ -449,7 +448,7 @@ export function WorkbenchPage() {
             : bootstrap?.esi.authenticated
               ? "重新登录"
               : "登录 ESI"}
-        </button>
+        </Button>
         {esiLoginPending ? (
           <span className="esi-login-note">
             {esiLoginStatus === "pending" ? "等待 EVE 授权回调" : "正在检查授权状态"}
@@ -464,154 +463,134 @@ export function WorkbenchPage() {
     </section>
   );
 
-  return (
-    <div className="workbench-shell">
-      <aside className="left-rail" aria-label="实时态势栏">
-        <nav className="nav-panel" aria-label="右侧面板切换">
-          <div className="nav-panel-header">
-            <span>右侧面板</span>
-            <strong>{activeNavItem.label}</strong>
+  const observationPanel = (
+    <section className="panel observation-panel" id="workbench-observation-panel">
+      <div className="section-title section-title-row">
+        <div>
+          <Skull size={16} />
+          <span>敌对飞行员观察列表</span>
+        </div>
+        <strong>{observations.length}</strong>
+      </div>
+      <Input.Search
+        aria-label="筛选敌对飞行员"
+        className="observation-search"
+        placeholder="搜索飞行员、星系或来源"
+        value={filterText}
+        onChange={setFilterText}
+      />
+      <ObservationTable observations={observations} />
+    </section>
+  );
+
+  const alertPanel = (
+    <section className="panel alert-panel" id="workbench-alert-panel">
+      <div className="section-title section-title-row">
+        <div>
+          <AlertTriangle size={16} />
+          <span>告警队列</span>
+        </div>
+        <strong className="danger-text">{bootstrap?.alerts.length ?? 0}</strong>
+      </div>
+      <div className="intel-table">
+        {(bootstrap?.alerts || []).slice(0, 8).map((item) => (
+          <div className="intel-row alert-row" key={item.id}>
+            <span>{formatClock(item.created_at)}</span>
+            <strong>{item.system_name || "未知星系"}</strong>
+            <em>{levelLabel(item.level)}</em>
+            <span>{item.acknowledged ? "已确认" : "待确认"}</span>
           </div>
+        ))}
+        {(!bootstrap || bootstrap.alerts.length === 0) ? (
+          <div className="table-empty">暂无告警</div>
+        ) : null}
+      </div>
+    </section>
+  );
+
+  return (
+    <div className="star-map-workspace">
+      <section className="star-map-stage" id="workbench-map-panel" aria-label="星图工作区">
+        <TacticalStarMap
+          fitSignal={fitSignal}
+          graphData={graphData}
+          onSelectSystem={setSelectedSystemId}
+        />
+
+        <section className="star-map-status" aria-label="态势统计">
+          <div><span>在线预警节点</span><strong>{onlineMonitorNodeCount}</strong></div>
+          <div><span>当前有敌星系</span><strong className={verifiedHostiles.systemCount > 0 ? "danger-text" : ""}>{verifiedHostiles.systemCount}</strong></div>
+          <div><span>当前敌对人数</span><strong className={verifiedHostiles.hostileCount > 0 ? "danger-text" : ""}>{verifiedHostiles.hostileCount}</strong></div>
+          <div><span>更新时间</span><strong>{formatClock(bootstrap?.generated_at)}</strong></div>
+        </section>
+
+        <div className="star-map-legend map-legend">
+          <strong>图层</strong>
+          <span><i className="legend-dot monitor" />监控在线</span>
+          <span><i className="legend-dot danger" />敌对活动</span>
+          <span><i className="legend-dot intel" />情报记录</span>
+          <span><i className="legend-dot loss" />舰船损失</span>
+        </div>
+
+        <div className="star-map-tools" aria-label="星图工具">
+          <div>
+            <span>当前定位</span>
+            <strong>{selected?.name || "全部星系"}</strong>
+          </div>
+          <Button aria-label="Fit 星图" size="small" type="outline" onClick={() => setFitSignal((value) => value + 1)}>重置视图</Button>
+        </div>
+
+        {selected ? (
+          <div className="star-map-selection">
+            <span>已选星系</span>
+            <strong>{selected.name}</strong>
+            <small>{String(selected.region || "未知区域")} · ID {selected.system_id}</small>
+          </div>
+        ) : null}
+
+        {bootstrapQuery.isError ? <div className="star-map-error" role="alert">星图态势加载失败</div> : null}
+      </section>
+
+      <aside className={`star-intel-dock star-intel-dock-${activeNav}`} id="workbench-detail-rail" aria-label="情报详情">
+        <header className="star-intel-header">
+          <div><span>情报面板</span><strong>{activeNavItem.label}</strong></div>
+          <em>{bootstrapQuery.isFetching ? "同步中" : "实时"}</em>
+        </header>
+        <nav className="nav-panel star-intel-nav" aria-label="右侧面板切换">
           <div className="nav-panel-tabs" aria-label="右侧面板">
             {navItems.map((item) => {
               const Icon = item.icon;
-              const selected = activeNav === item.id;
+              const isSelected = activeNav === item.id;
               return (
-                <button
+                <Button
                   aria-controls={item.panelId}
                   aria-label={`切换到${item.label}面板`}
-                  aria-pressed={selected}
-                  className={selected ? "active" : ""}
+                  aria-pressed={isSelected}
+                  className={isSelected ? "active" : ""}
                   data-nav-id={item.id}
                   key={item.id}
                   title={item.status}
-                  type="button"
+                  type="text"
                   onClick={() => activateNav(item.id)}
                 >
-                  <Icon size={16} />
-                  <span>
-                    <strong>{item.label}</strong>
-                  </span>
+                  <Icon size={15} />
+                  <span><strong>{item.label}</strong></span>
                   <b>{item.badge}</b>
-                </button>
+                </Button>
               );
             })}
           </div>
-          <p className="nav-panel-status">
-            <span>当前显示</span>
-            <strong>{activeNavItem.status}</strong>
-          </p>
+          <p className="nav-panel-status"><span>当前显示</span><strong>{activeNavItem.status}</strong></p>
         </nav>
 
-        <section className="threat-status-panel" aria-label="态势统计">
-          <div className="section-title compact-title">
-            <Radar size={16} />
-            <span>态势统计</span>
-          </div>
-          <div className="metric-grid">
-            <div className="metric-card">
-              <span>在线预警节点</span>
-              <strong>{onlineMonitorNodeCount}</strong>
-            </div>
-            <div className="metric-card">
-              <span>当前有敌星系</span>
-              <strong className={verifiedHostiles.systemCount > 0 ? "danger-text" : ""}>{verifiedHostiles.systemCount}</strong>
-            </div>
-            <div className="metric-card">
-              <span>当前敌对人数</span>
-              <strong className={verifiedHostiles.hostileCount > 0 ? "danger-text" : ""}>{verifiedHostiles.hostileCount}</strong>
-            </div>
-            <div className="metric-card">
-              <span>最近更新时间</span>
-              <strong className="metric-card-time">{formatClock(bootstrap?.generated_at)}</strong>
-            </div>
-          </div>
-        </section>
-
+        <div className="star-intel-content">
+          {showEsiPanel ? esiPanel : null}
+          {showObservationPanel ? observationPanel : null}
+          {showAlertPanel ? alertPanel : null}
+        </div>
       </aside>
 
-      <section className="center-stack" aria-label="星图工作区">
-        <section className="map-pane" id="workbench-map-panel">
-          <div className="map-canvas">
-            <div className="map-legend">
-              <strong>图例</strong>
-              <span><i className="legend-dot monitor" />监控在线</span>
-              <span><i className="legend-dot danger" />敌对</span>
-            </div>
-            <TacticalStarMap
-              fitSignal={fitSignal}
-              graphData={graphData}
-              onSelectSystem={setSelectedSystemId}
-            />
-            <div className="map-tools" aria-label="星图工具">
-              <span className="map-tool-status">
-                {selected?.name ? `锁定 ${selected.name}` : "未锁定星系"}
-              </span>
-              <button
-                type="button"
-                aria-label="Fit 星图"
-                onClick={() => setFitSignal((value) => value + 1)}
-              >
-                Fit
-              </button>
-              <span className="map-tool-mode">2D</span>
-            </div>
-          </div>
-        </section>
-      </section>
-
-      <aside className={rightRailClassName} id="workbench-detail-rail" aria-label="情报详情">
-        {showEsiPanel ? esiPanel : null}
-        {showObservationPanel ? (
-          <section className="panel observation-panel" id="workbench-observation-panel">
-            <div className="section-title section-title-row">
-              <div>
-                <Skull size={16} />
-                <span>敌对飞行员观察列表</span>
-              </div>
-              <strong>{observations.length}</strong>
-            </div>
-            <label className="observation-search">
-              <Filter size={15} />
-              <input
-                aria-label="筛选敌对飞行员"
-                type="search"
-                value={filterText}
-                onChange={(event) => setFilterText(event.target.value)}
-                placeholder="搜索飞行员、星系或来源"
-              />
-            </label>
-            <ObservationTable observations={observations} />
-          </section>
-        ) : null}
-
-        {showAlertPanel ? (
-          <section className="panel alert-panel" id="workbench-alert-panel">
-            <div className="section-title section-title-row">
-              <div>
-                <AlertTriangle size={16} />
-                <span>告警队列</span>
-              </div>
-              <strong className="danger-text">{bootstrap?.alerts.length ?? 0}</strong>
-            </div>
-            <div className="intel-table">
-              {(bootstrap?.alerts || []).slice(0, 6).map((item) => (
-                <div className="intel-row alert-row" key={item.id}>
-                  <span>{formatClock(item.created_at)}</span>
-                  <strong>{item.system_name || "未知星系"}</strong>
-                  <em>{levelLabel(item.level)}</em>
-                  <span>{item.acknowledged ? "确认中" : "新"}</span>
-                </div>
-              ))}
-              {(!bootstrap || bootstrap.alerts.length === 0) ? (
-                <div className="table-empty">暂无告警</div>
-              ) : null}
-            </div>
-          </section>
-        ) : null}
-      </aside>
-
-      <footer className="bottom-bar" aria-label="最新事件">
+      <footer className="star-event-bar bottom-bar" aria-label="最新事件">
         <span>数据状态：<strong className="online-dot">在线</strong></span>
         <div className={`latest-event ${latestEvent.active ? "" : "is-empty"}`}>
           <AlertTriangle size={17} />

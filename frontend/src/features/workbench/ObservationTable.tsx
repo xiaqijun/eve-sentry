@@ -1,9 +1,4 @@
-import {
-  createColumnHelper,
-  flexRender,
-  getCoreRowModel,
-  useReactTable,
-} from "@tanstack/react-table";
+import { Table } from "@arco-design/web-react";
 
 import type { PilotObservation } from "./types";
 
@@ -26,80 +21,27 @@ function formatClock(value?: string): string {
   });
 }
 
-const columnHelper = createColumnHelper<PilotObservation>();
-
 const columns = [
-  columnHelper.accessor("pilotName", {
-    cell: (info) => (
-      <strong className="pilot-name" title={info.getValue()}>
-        {info.getValue()}
-      </strong>
-    ),
-    header: "飞行员",
-  }),
-  columnHelper.accessor((row) => row.systemName || "未知", {
-    cell: (info) => info.getValue(),
-    header: "星系",
-    id: "systemName",
-  }),
-  columnHelper.accessor((row) => row.sources.join(" / ") || "情报", {
-    cell: (info) => info.getValue(),
-    header: "来源",
-    id: "sources",
-  }),
-  columnHelper.accessor((row) => formatClock(row.latestSeen), {
-    cell: (info) => info.getValue(),
-    header: "最近出现",
-    id: "latestSeen",
-  }),
-  columnHelper.accessor((row) => row.repeatCount ?? row.evidenceCount, {
-    cell: (info) => info.getValue(),
-    header: "次数",
-    id: "count",
-  }),
+  { title: "飞行员", dataIndex: "pilotName", render: (value: string) => <strong className="pilot-name" title={value}>{value}</strong> },
+  { title: "星系", dataIndex: "systemName", render: (value?: string) => value || "未知" },
+  { title: "来源", dataIndex: "sources", render: (value: string[]) => value.join(" / ") || "情报" },
+  { title: "最近出现", dataIndex: "latestSeen", render: (value?: string) => formatClock(value) },
+  { title: "次数", render: (_: unknown, row: PilotObservation) => row.repeatCount ?? row.evidenceCount },
 ];
 
 export function ObservationTable({ observations }: ObservationTableProps) {
-  const table = useReactTable({
-    columns,
-    data: observations,
-    getCoreRowModel: getCoreRowModel(),
-  });
-
   return (
     <div className="observation-table" data-testid="observation-table">
-      <table>
-        <thead>
-          {table.getHeaderGroups().map((headerGroup) => (
-            <tr key={headerGroup.id}>
-              {headerGroup.headers.map((header) => (
-                <th key={header.id}>
-                  {header.isPlaceholder
-                    ? null
-                    : flexRender(
-                        header.column.columnDef.header,
-                        header.getContext(),
-                      )}
-                </th>
-              ))}
-            </tr>
-          ))}
-        </thead>
-        <tbody>
-          {table.getRowModel().rows.map((row) => (
-            <tr className={`level-${row.original.level}`} key={row.id}>
-              {row.getVisibleCells().map((cell) => (
-                <td key={cell.id}>
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {observations.length === 0 ? (
-        <div className="empty-state">暂无实时敌对目标</div>
-      ) : null}
+      <Table<PilotObservation>
+        border={false}
+        columns={columns}
+        data={observations}
+        noDataElement={<div className="empty-state">暂无实时敌对目标</div>}
+        pagination={false}
+        rowClassName={(record) => `level-${record.level}`}
+        rowKey="id"
+        size="mini"
+      />
       <div className="source-strip">
         {observations.slice(0, 6).map((item) => (
           <div className="source-tags" key={item.id}>
