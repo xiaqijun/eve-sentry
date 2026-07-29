@@ -6115,14 +6115,39 @@ body {
   z-index: 2;
   top: 0;
   bottom: 0;
-  left: 0;
-  width: 1px;
+  left: -88px;
+  width: 88px;
   pointer-events: none;
   content: "";
   opacity: 0;
-  background: rgba(47, 149, 109, 0.34);
-  box-shadow: 0 0 14px rgba(47, 149, 109, 0.18);
-  animation: star-map-scan 8s linear infinite;
+  border-right: 1px solid rgba(47, 149, 109, 0.48);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(47, 149, 109, 0.025) 32%,
+    rgba(47, 149, 109, 0.12)
+  );
+  box-shadow: 10px 0 22px rgba(47, 149, 109, 0.08);
+  animation: star-map-scan 5.5s linear infinite;
+}
+
+.tactical-star-map.is-motion-enabled::after {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  pointer-events: none;
+  content: "";
+  background: linear-gradient(
+    118deg,
+    transparent 36%,
+    rgba(47, 149, 109, 0.015) 43%,
+    rgba(47, 149, 109, 0.07) 50%,
+    rgba(47, 149, 109, 0.018) 56%,
+    transparent 64%
+  );
+  background-position: 100% 100%;
+  background-size: 220% 220%;
+  animation: star-map-radar-sweep 9s ease-in-out infinite;
 }
 
 @keyframes star-map-scan {
@@ -6142,8 +6167,25 @@ body {
   }
 }
 
+@keyframes star-map-radar-sweep {
+  0%, 12% {
+    opacity: 0;
+    background-position: 100% 100%;
+  }
+
+  28%, 76% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+    background-position: 0 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .tactical-star-map::before {
+  .tactical-star-map::before,
+  .tactical-star-map::after {
     display: none;
     animation: none;
   }
