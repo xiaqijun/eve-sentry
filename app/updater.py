@@ -6,8 +6,11 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -90,6 +93,42 @@ def default_update_dir() -> Path:
     return Path.home() / ".eve-sentry" / "updates"
 
 
+def cleanup_update_artifacts(
+    update_dir: Path,
+    temp_dir: Path | None = None,
+    stale_after_seconds: float = 24 * 60 * 60,
+) -> None:
+    """Remove packages and staging files left by completed or interrupted updates."""
+    update_root = Path(update_dir)
+    for pattern in (
+        "EVE-Sentry-Monitor-*.zip",
+        "EVE-Sentry-Monitor-*.zip.part",
+        "apply-*.ps1",
+    ):
+        for path in update_root.glob(pattern):
+            try:
+                if path.is_file() or path.is_symlink():
+                    path.unlink()
+            except OSError:
+                continue
+    try:
+        update_root.rmdir()
+    except OSError:
+        pass
+
+    stage_root = Path(temp_dir or tempfile.gettempdir())
+    stale_before = time.time() - max(0.0, float(stale_after_seconds))
+    for path in stage_root.glob("eve-sentry-update-*"):
+        if not path.is_dir():
+            continue
+        try:
+            if path.stat().st_mtime > stale_before:
+                continue
+            shutil.rmtree(path)
+        except OSError:
+            continue
+
+
 def build_update_script(
     package_path: Path,
     install_dir: Path,
@@ -106,6 +145,7 @@ def build_update_script(
     return f"""$ErrorActionPreference = 'Stop'
 $package = '{escaped['package']}'
 $install = '{escaped['install']}'
+$updateRoot = Split-Path -Parent $PSCommandPath
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('eve-sentry-update-' + [guid]::NewGuid())
 try {{
     Wait-Process -Id {int(process_id)} -ErrorAction SilentlyContinue
@@ -121,7 +161,13 @@ try {{
 }} finally {{
     Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $package -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath $updateRoot -File -ErrorAction SilentlyContinue |
+        Where-Object {{ $_.Name -like 'EVE-Sentry-Monitor-*.zip' -or $_.Name -like '*.zip.part' -or $_.Name -like 'apply-*.ps1' }} |
+        Remove-Item -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+    if ((Test-Path -LiteralPath $updateRoot) -and -not (Get-ChildItem -LiteralPath $updateRoot -Force -ErrorAction SilentlyContinue)) {{
+        Remove-Item -LiteralPath $updateRoot -Force -ErrorAction SilentlyContinue
+    }}
 }}
 """
 
@@ -143,6 +189,7 @@ class ClientUpdater(QObject):
         self.manifest_url = str(manifest_url or update_manifest_url()).strip()
         self.installed_version = str(installed_version or current_version()).strip()
         self.update_dir = Path(update_dir or default_update_dir())
+        cleanup_update_artifacts(self.update_dir)
         self._network = QNetworkAccessManager(self)
         self._release: ReleaseInfo | None = None
         self._download_reply: QNetworkReply | None = None
