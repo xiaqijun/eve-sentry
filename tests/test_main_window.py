@@ -753,6 +753,15 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
         "scan_interval": 5,
         "window_keyword": "EVE - Pilot",
         "server_url": DEFAULT_INTEL_URL,
+        "start_with_windows": False,
+        "start_minimized": False,
+        "close_to_tray": True,
+        "restore_monitor_state": True,
+        "alert_muted": False,
+        "alert_volume": 100,
+        "alert_cooldown": 15,
+        "quiet_hours": "",
+        "alert_min_severity": "low",
     }
 
 

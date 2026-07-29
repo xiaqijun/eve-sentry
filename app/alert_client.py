@@ -504,7 +504,7 @@ def build_heartbeat_details(
     return details
 
 
-def play_alert_sound() -> None:
+def play_alert_sound(volume: float = 1.0) -> None:
     """Play the bundled alert sound once if the resource exists."""
     sound_path = Path(__file__).parent.parent / "resources" / "alert.wav"
     if not sound_path.exists():
@@ -512,7 +512,7 @@ def play_alert_sound() -> None:
     try:
         sound = QSoundEffect()
         sound.setSource(QUrl.fromLocalFile(str(sound_path.resolve())))
-        sound.setVolume(1.0)
+        sound.setVolume(max(0.0, min(1.0, float(volume))))
         sound.play()
         AlertOverlay.ACTIVE_SOUNDS.append(sound)
         QTimer.singleShot(5000, lambda: _forget_sound(sound))
@@ -525,6 +525,32 @@ def _forget_sound(sound: QSoundEffect) -> None:
         AlertOverlay.ACTIVE_SOUNDS.remove(sound)
     except ValueError:
         pass
+
+
+def _severity_rank(value: str) -> int:
+    return {
+        "low": 0,
+        "medium": 1,
+        "high": 2,
+        "critical": 3,
+    }.get(str(value or "").casefold(), 2)
+
+
+def _in_quiet_hours(value: str, now: datetime | None = None) -> bool:
+    """Return whether local time falls inside a HH:MM-HH:MM window."""
+    text = str(value or "").strip()
+    if not text or "-" not in text:
+        return False
+    start_text, end_text = (part.strip() for part in text.split("-", 1))
+    try:
+        start = datetime.strptime(start_text, "%H:%M").time()
+        end = datetime.strptime(end_text, "%H:%M").time()
+    except ValueError:
+        return False
+    current = (now or datetime.now()).time()
+    if start <= end:
+        return start <= current < end
+    return current >= start or current < end
 
 
 class AlertOverlay(QWidget):
@@ -1208,6 +1234,14 @@ class AlertTrayController:
         self.overlay.move_to_default_position()
         self._recent_summaries: list[dict[str, Any]] = []
         self._local_hostile_counts: dict[str, tuple[str, int]] = {}
+        self._alert_volume = max(0.0, min(1.0, float(getattr(args, "alert_volume", 1.0))))
+        self._alert_muted = bool(getattr(args, "alert_muted", False))
+        self._alert_cooldown = max(0.0, float(getattr(args, "alert_cooldown", 15.0)))
+        self._quiet_hours = str(getattr(args, "quiet_hours", "") or "").strip()
+        self._minimum_severity = str(
+            getattr(args, "alert_min_severity", "low") or "low"
+        ).casefold()
+        self._last_notified: dict[str, tuple[float, int]] = {}
         self._tray: QSystemTrayIcon | None = None
         self._worker = AlertEventWorker(
             args.server,
@@ -1439,10 +1473,34 @@ class AlertTrayController:
         self._apply_local_hostile_counts()
         self.overlay.show_summaries(self._recent_summaries)
         self.overlay.set_status("新告警", "danger")
-        play_alert_sound()
+        hostile_count = int(summary.get("hostile_count") or 0)
+        notification_key = system.casefold()
+        last_notified = getattr(self, "_last_notified", {})
+        self._last_notified = last_notified
+        previous_notification = last_notified.get(notification_key)
+        now = time.monotonic()
+        in_cooldown = bool(
+            previous_notification
+            and now - previous_notification[0]
+            < float(getattr(self, "_alert_cooldown", 0.0))
+        )
+        severity_allowed = _severity_rank(
+            str(alert.get("level") or alert.get("threat_level") or "high")
+        ) >= _severity_rank(getattr(self, "_minimum_severity", "low"))
+        quiet = _in_quiet_hours(getattr(self, "_quiet_hours", ""))
+        muted = bool(getattr(self, "_alert_muted", False))
+        if severity_allowed and not quiet and not muted and not in_cooldown:
+            volume = getattr(self, "_alert_volume", None)
+            if volume is None:
+                play_alert_sound()
+            else:
+                play_alert_sound(volume)
+        if not severity_allowed or quiet or in_cooldown:
+            return
+        last_notified[notification_key] = (now, hostile_count)
         self._notify(
             "敌对告警",
-            f"❗ {summary['system_name']} 来敌",
+            f"❗ {summary['system_name']} 来敌 {hostile_count} 人",
         )
 
     def _on_safe(self, event: dict[str, Any]) -> None:

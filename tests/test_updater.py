@@ -1,4 +1,5 @@
 import hashlib
+import base64
 import json
 import os
 from pathlib import Path
@@ -9,8 +10,10 @@ from app.updater import (
     UpdateError,
     build_update_script,
     cleanup_update_artifacts,
+    canonical_manifest_bytes,
     is_newer_version,
     parse_release_manifest,
+    verify_release_manifest_signature,
 )
 
 
@@ -48,6 +51,21 @@ def test_parse_release_manifest_validates_required_fields():
     assert release.filename.endswith(".zip")
 
 
+def test_parse_release_manifest_accepts_separate_model_component():
+    model_payload = release_payload(
+        version="model-2026-07",
+        filename="EVE-Sentry-Monitor-ONNX-models-model-2026-07.zip",
+        url="https://download.example/EVE-Sentry-Monitor-ONNX-models-model-2026-07.zip",
+    )
+    payload = release_payload(components={"models": model_payload})
+
+    release = parse_release_manifest(payload)
+
+    assert release.models is not None
+    assert release.models.version == "model-2026-07"
+    assert release.models.filename.endswith(".zip")
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -77,6 +95,36 @@ def test_build_update_script_waits_replaces_and_restarts(tmp_path):
     assert "*.zip.part" in script
     assert "apply-*.ps1" in script
     assert "Remove-Item -LiteralPath $updateRoot" in script
+    assert "previous-version" in script
+    assert "--update-health-marker" in script
+    assert "previous version restored" in script
+
+
+def test_release_manifest_signature_rejects_tampering(tmp_path):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private_key = Ed25519PrivateKey.generate()
+    public_key_path = tmp_path / "update_public_key.pem"
+    public_key_path.write_bytes(
+        private_key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    payload = release_payload(
+        signature_algorithm="ed25519",
+        signing_key_id="test",
+    )
+    payload["signature"] = base64.b64encode(
+        private_key.sign(canonical_manifest_bytes(payload))
+    ).decode("ascii")
+
+    verify_release_manifest_signature(payload, public_key_path)
+
+    payload["size"] += 1
+    with pytest.raises(UpdateError):
+        verify_release_manifest_signature(payload, public_key_path)
 
 
 def test_cleanup_update_artifacts_removes_only_owned_files(tmp_path):
@@ -94,13 +142,15 @@ def test_cleanup_update_artifacts_removes_only_owned_files(tmp_path):
     active_stage.mkdir()
     for path in (package, partial, script, unrelated):
         path.write_text("data", encoding="utf-8")
+    for path in (package, script):
+        os.utime(path, (0, 0))
     (stale_stage / "payload.bin").write_text("data", encoding="utf-8")
     os.utime(stale_stage, (0, 0))
 
     cleanup_update_artifacts(update_dir, temp_dir)
 
     assert not package.exists()
-    assert not partial.exists()
+    assert partial.read_text(encoding="utf-8") == "data"
     assert not script.exists()
     assert not stale_stage.exists()
     assert active_stage.exists()
@@ -110,7 +160,9 @@ def test_cleanup_update_artifacts_removes_only_owned_files(tmp_path):
 def test_cleanup_update_artifacts_removes_empty_update_directory(tmp_path):
     update_dir = tmp_path / "updates"
     update_dir.mkdir()
-    (update_dir / "apply-1.2.0.ps1").write_text("data", encoding="utf-8")
+    script = update_dir / "apply-1.2.0.ps1"
+    script.write_text("data", encoding="utf-8")
+    os.utime(script, (0, 0))
 
     cleanup_update_artifacts(update_dir, tmp_path / "temp")
 

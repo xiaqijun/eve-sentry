@@ -9,6 +9,8 @@ from typing import Any
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -50,6 +52,8 @@ class SettingsPanel(QWidget):
     server_url_changed = pyqtSignal(str)
     api_key_changed = pyqtSignal(str)
     update_requested = pyqtSignal()
+    behavior_settings_changed = pyqtSignal()
+    diagnostics_requested = pyqtSignal()
 
     def __init__(self, parent=None, config_path: str | Path | None = None):
         super().__init__(parent)
@@ -123,6 +127,75 @@ class SettingsPanel(QWidget):
 
         layout.addWidget(scan_group)
 
+        behavior_group = QGroupBox("启动与托盘")
+        behavior_layout = QVBoxLayout(behavior_group)
+        behavior_layout.setContentsMargins(0, 16, 0, 2)
+        behavior_layout.setSpacing(6)
+        self._start_with_windows_check = QCheckBox("开机启动")
+        self._start_with_windows_check.setChecked(bool(config["start_with_windows"]))
+        self._start_minimized_check = QCheckBox("启动后最小化")
+        self._start_minimized_check.setChecked(bool(config["start_minimized"]))
+        self._close_to_tray_check = QCheckBox("关闭到托盘")
+        self._close_to_tray_check.setChecked(bool(config["close_to_tray"]))
+        self._restore_monitor_check = QCheckBox("恢复上次监控状态")
+        self._restore_monitor_check.setChecked(bool(config["restore_monitor_state"]))
+        for checkbox in (
+            self._start_with_windows_check,
+            self._start_minimized_check,
+            self._close_to_tray_check,
+            self._restore_monitor_check,
+        ):
+            behavior_layout.addWidget(checkbox)
+            checkbox.toggled.connect(self._on_behavior_settings_changed)
+        layout.addWidget(behavior_group)
+
+        alert_group = QGroupBox("告警")
+        alert_layout = QVBoxLayout(alert_group)
+        alert_layout.setContentsMargins(0, 16, 0, 2)
+        alert_layout.setSpacing(6)
+        self._alert_muted_check = QCheckBox("静音")
+        self._alert_muted_check.setChecked(bool(config["alert_muted"]))
+        alert_layout.addWidget(self._alert_muted_check)
+        volume_row = QHBoxLayout()
+        volume_row.addWidget(QLabel("音量"))
+        self._alert_volume_spin = QSpinBox()
+        self._alert_volume_spin.setRange(0, 100)
+        self._alert_volume_spin.setSuffix("%")
+        self._alert_volume_spin.setValue(int(config["alert_volume"]))
+        volume_row.addWidget(self._alert_volume_spin)
+        alert_layout.addLayout(volume_row)
+        cooldown_row = QHBoxLayout()
+        cooldown_row.addWidget(QLabel("冷却"))
+        self._alert_cooldown_spin = QSpinBox()
+        self._alert_cooldown_spin.setRange(0, 300)
+        self._alert_cooldown_spin.setSuffix(" 秒")
+        self._alert_cooldown_spin.setValue(int(config["alert_cooldown"]))
+        cooldown_row.addWidget(self._alert_cooldown_spin)
+        alert_layout.addLayout(cooldown_row)
+        self._quiet_hours_edit = QLineEdit(str(config["quiet_hours"]))
+        self._quiet_hours_edit.setPlaceholderText("免打扰 23:00-07:00")
+        alert_layout.addWidget(self._quiet_hours_edit)
+        self._alert_severity_combo = QComboBox()
+        self._alert_severity_combo.addItem("全部严重度", "low")
+        self._alert_severity_combo.addItem("中等及以上", "medium")
+        self._alert_severity_combo.addItem("高危及以上", "high")
+        self._alert_severity_combo.addItem("仅严重", "critical")
+        severity_index = self._alert_severity_combo.findData(
+            str(config["alert_min_severity"])
+        )
+        self._alert_severity_combo.setCurrentIndex(max(0, severity_index))
+        alert_layout.addWidget(self._alert_severity_combo)
+        for widget, signal in (
+            (self._alert_muted_check, self._alert_muted_check.toggled),
+            (self._alert_volume_spin, self._alert_volume_spin.valueChanged),
+            (self._alert_cooldown_spin, self._alert_cooldown_spin.valueChanged),
+            (self._quiet_hours_edit, self._quiet_hours_edit.editingFinished),
+            (self._alert_severity_combo, self._alert_severity_combo.currentIndexChanged),
+        ):
+            _ = widget
+            signal.connect(self._on_behavior_settings_changed)
+        layout.addWidget(alert_group)
+
         version_group = QGroupBox("版本")
         version_layout = QVBoxLayout(version_group)
         version_layout.setContentsMargins(0, 16, 0, 2)
@@ -136,6 +209,10 @@ class SettingsPanel(QWidget):
         self._update_button.clicked.connect(self.update_requested.emit)
         version_layout.addWidget(self._update_button)
         layout.addWidget(version_group)
+        diagnostics_button = QPushButton("导出诊断包")
+        diagnostics_button.setObjectName("secondaryAction")
+        diagnostics_button.clicked.connect(self.diagnostics_requested.emit)
+        layout.addWidget(diagnostics_button)
         layout.addStretch()
 
         self._interval_spin.valueChanged.connect(self._on_scan_settings_changed)
@@ -164,6 +241,29 @@ class SettingsPanel(QWidget):
 
     def get_api_key(self) -> str:
         return self._api_key_edit.text().strip()
+
+    def get_start_with_windows(self) -> bool:
+        return self._start_with_windows_check.isChecked()
+
+    def get_start_minimized(self) -> bool:
+        return self._start_minimized_check.isChecked()
+
+    def get_close_to_tray(self) -> bool:
+        return self._close_to_tray_check.isChecked()
+
+    def get_restore_monitor_state(self) -> bool:
+        return self._restore_monitor_check.isChecked()
+
+    def get_alert_preferences(self) -> dict[str, Any]:
+        return {
+            "muted": self._alert_muted_check.isChecked(),
+            "volume": self._alert_volume_spin.value() / 100.0,
+            "cooldown": float(self._alert_cooldown_spin.value()),
+            "quiet_hours": self._quiet_hours_edit.text().strip(),
+            "min_severity": str(
+                self._alert_severity_combo.currentData() or "low"
+            ),
+        }
 
     def auth_state_store(self) -> ClientAuthStateStore:
         return self._auth_state_store
@@ -209,6 +309,10 @@ class SettingsPanel(QWidget):
         if changed:
             self.api_key_changed.emit(api_key)
 
+    def _on_behavior_settings_changed(self, _value=None) -> None:
+        self.save_channel_config()
+        self.behavior_settings_changed.emit()
+
     def _load_channel_config(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         try:
@@ -250,6 +354,19 @@ class SettingsPanel(QWidget):
             "scan_interval": scan_interval,
             "window_keyword": window_keyword,
             "server_url": server_url,
+            "start_with_windows": bool(payload.get("start_with_windows", False)),
+            "start_minimized": bool(payload.get("start_minimized", False)),
+            "close_to_tray": bool(payload.get("close_to_tray", True)),
+            "restore_monitor_state": bool(
+                payload.get("restore_monitor_state", True)
+            ),
+            "alert_muted": bool(payload.get("alert_muted", False)),
+            "alert_volume": max(0, min(100, int(payload.get("alert_volume", 100)))),
+            "alert_cooldown": max(0, min(300, int(payload.get("alert_cooldown", 15)))),
+            "quiet_hours": str(payload.get("quiet_hours", "")).strip(),
+            "alert_min_severity": str(
+                payload.get("alert_min_severity", "low")
+            ).strip().casefold(),
         }
 
     def _channel_config_payload(self) -> dict[str, Any]:
@@ -258,6 +375,15 @@ class SettingsPanel(QWidget):
             "scan_interval": int(self._interval_spin.value()),
             "window_keyword": self.get_keyword(),
             "server_url": self.get_server_url(),
+            "start_with_windows": self.get_start_with_windows(),
+            "start_minimized": self.get_start_minimized(),
+            "close_to_tray": self.get_close_to_tray(),
+            "restore_monitor_state": self.get_restore_monitor_state(),
+            "alert_muted": self._alert_muted_check.isChecked(),
+            "alert_volume": self._alert_volume_spin.value(),
+            "alert_cooldown": self._alert_cooldown_spin.value(),
+            "quiet_hours": self._quiet_hours_edit.text().strip(),
+            "alert_min_severity": self._alert_severity_combo.currentData(),
         }
 
     def _clean_scan_interval(self, value: Any) -> int:

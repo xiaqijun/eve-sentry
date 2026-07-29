@@ -26,6 +26,10 @@ def _candidate_model_roots(model_dir: str | Path | None) -> Iterable[Path]:
     if env_dir:
         yield Path(env_dir)
 
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        yield Path(local_app_data) / "EVE Sentry" / "models"
+
     bundle_path = getattr(sys, "_MEIPASS", None)
     if bundle_path:
         yield Path(bundle_path) / "models"
