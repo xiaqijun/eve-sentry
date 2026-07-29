@@ -148,11 +148,13 @@ export function WorkbenchPage() {
         </section>
 
         <div className="star-map-legend map-legend">
-          <strong>图层</strong>
-          <span><i className="legend-dot monitor" />监控在线</span>
-          <span><i className="legend-dot danger" />敌对活动</span>
-          <span><i className="legend-dot intel" />情报记录</span>
-          <span><i className="legend-dot loss" />舰船损失</span>
+          <strong>节点状态</strong>
+          <span><i className="legend-dot monitor" />在线监控</span>
+          <span><i className="legend-dot danger" />实时敌对</span>
+          <span><i className="legend-dot intel" />活跃情报</span>
+          <span><i className="legend-dot loss" />近 1 小时损失</span>
+          <span><i className="legend-dot selected" />当前选中</span>
+          <small>数字徽标表示敌对人数或损失数</small>
         </div>
 
         <div className="star-map-tools" aria-label="星图工具">

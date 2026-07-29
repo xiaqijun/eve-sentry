@@ -6272,12 +6272,56 @@ body {
   white-space: nowrap;
 }
 
+.star-map-legend .legend-dot {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid rgba(255, 255, 255, 0.96);
+  background: #7b898d;
+  box-shadow: 0 0 0 2px rgba(123, 137, 141, 0.12);
+}
+
+.star-map-legend .legend-dot.monitor {
+  border-color: rgba(255, 255, 255, 0.96);
+  background: #2f956d;
+  box-shadow: 0 0 0 3px rgba(47, 149, 109, 0.12);
+}
+
+.star-map-legend .legend-dot.danger {
+  border-color: rgba(255, 255, 255, 0.96);
+  background: #d6453d;
+  box-shadow: 0 0 0 3px rgba(214, 69, 61, 0.12);
+}
+
 .legend-dot.intel {
   border-color: #55a7c7;
 }
 
 .legend-dot.loss {
   border-color: #dca548;
+}
+
+.star-map-legend .legend-dot.intel {
+  border-color: rgba(255, 255, 255, 0.96);
+  background: #2f86a5;
+  box-shadow: 0 0 0 3px rgba(47, 134, 165, 0.12);
+}
+
+.star-map-legend .legend-dot.loss {
+  border-color: rgba(255, 255, 255, 0.96);
+  background: #b98528;
+  box-shadow: 0 0 0 3px rgba(185, 133, 40, 0.12);
+}
+
+.star-map-legend .legend-dot.selected {
+  border: 2px solid #23845f;
+  background: #7b898d;
+  box-shadow: 0 0 0 3px rgba(35, 132, 95, 0.16);
+}
+
+.star-map-legend small {
+  color: #81908a;
+  font-size: 9px;
+  white-space: nowrap;
 }
 
 .star-map-tools {
