@@ -6,10 +6,18 @@ import argparse
 import base64
 import json
 import os
+import sys
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+# Running ``python scripts/update_signing.py`` makes ``scripts`` sys.path[0].
+# Add the repository root so the release entry point can import application code
+# in a clean CI checkout without relying on an editable package installation.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from app.updater import canonical_manifest_bytes
 
