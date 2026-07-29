@@ -62,6 +62,7 @@ datas = [
     (str(ROOT / "resources" / "alert.wav"), "resources"),
     (str(ROOT / "resources" / "spin-up.svg"), "resources"),
     (str(ROOT / "resources" / "spin-down.svg"), "resources"),
+    (str(ROOT / "resources" / "update_public_key.pem"), "resources"),
 ]
 datas += collect_model_files()
 datas += collect_data_files(

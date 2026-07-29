@@ -1,5 +1,6 @@
 """Background worker thread for the monitor loop."""
 
+import hashlib
 import logging
 from typing import Optional
 
@@ -45,12 +46,18 @@ class MonitorWorker(QThread):
         self,
         capturer: Capturer,
         ocr: OCREngine,
+        scan_offset: float = 0.0,
         parent=None,
     ):
         super().__init__(parent)
         self._capturer = capturer
         self._ocr = ocr
         self._interval = 2.0           # seconds between scans
+        self._active_interval = self._interval
+        self._scan_offset = max(0.0, float(scan_offset))
+        self._unchanged_frames = 0
+        self._previous_fingerprint = b""
+        self._burst_scans_remaining = 0
         self._running = False
         self._region: Optional[dict] = None  # {x, y, w, h}
         self._window: Optional[dict] = None  # {hwnd, title, w, h}
@@ -71,6 +78,11 @@ class MonitorWorker(QThread):
     def set_interval(self, seconds: float) -> None:
         """Set the delay between scans (1-10 seconds)."""
         self._interval = max(1.0, min(10.0, float(seconds)))
+        self._active_interval = self._interval
+
+    def set_scan_offset(self, seconds: float) -> None:
+        """Delay the first scan so multiple windows do not capture together."""
+        self._scan_offset = max(0.0, float(seconds))
 
     def stop(self) -> None:
         """Request the current scan and the monitor loop to stop."""
@@ -83,7 +95,7 @@ class MonitorWorker(QThread):
 
     def _wait_for_next_scan(self) -> None:
         """Wait between scans while remaining responsive to shutdown."""
-        remaining_ms = int(self._interval * 1000)
+        remaining_ms = int(self._active_interval * 1000)
         while remaining_ms > 0 and not self._stop_requested():
             sleep_ms = min(100, remaining_ms)
             self.msleep(sleep_ms)
@@ -112,6 +124,10 @@ class MonitorWorker(QThread):
         self.status_update.emit("监控已启动")
 
         try:
+            if self._scan_offset:
+                self._active_interval = self._scan_offset
+                self._wait_for_next_scan()
+                self._active_interval = self._interval
             while not self._stop_requested():
                 if self._region is None:
                     self.status_update.emit("未设置截图区域")
@@ -129,12 +145,45 @@ class MonitorWorker(QThread):
                     if self._stop_requested():
                         break
 
+                    fingerprint = _frame_fingerprint(img)
+                    frame_changed = fingerprint != self._previous_fingerprint
+                    self._previous_fingerprint = fingerprint
+                    if frame_changed:
+                        self._unchanged_frames = 0
+                        self._burst_scans_remaining = max(
+                            self._burst_scans_remaining,
+                            2,
+                        )
+                    else:
+                        self._unchanged_frames += 1
+
                     # 2. Detect hostile icons before OCR and publish count changes.
                     hostile_icons = find_hostile_icons(img)
                     hostile_count = len(hostile_icons)
                     if hostile_count != previous_hostile_count:
                         self.hostile_detected.emit(hostile_count)
+                        self._burst_scans_remaining = 4
                     previous_hostile_count = hostile_count
+
+                    if (
+                        not frame_changed
+                        and (
+                            hostile_count == 0
+                            or self._burst_scans_remaining <= 0
+                        )
+                    ):
+                        scan_count += 1
+                        self.scan_complete.emit(scan_count)
+                        slowdown = 0.25 if hostile_count else 0.5
+                        maximum = 5.0 if hostile_count else 10.0
+                        self._active_interval = min(
+                            maximum,
+                            self._interval
+                            * (1.0 + min(4, self._unchanged_frames) * slowdown),
+                        )
+                        self.status_update.emit("画面无变化，已跳过 OCR")
+                        self._wait_for_next_scan()
+                        continue
 
                     hostile_rows = (
                         extract_hostile_name_rows(img) if hostile_icons else None
@@ -144,10 +193,15 @@ class MonitorWorker(QThread):
                     if hostile_rows is None:
                         red_row_mismatch_count = 0
                         if not ocr_ready:
-                            # Warm the model once, but keep a no-hostile snapshot empty.
-                            self._ocr.recognize(
-                                img, progress=self.status_update.emit
-                            )
+                            warm_up = getattr(self._ocr, "warm_up", None)
+                            if callable(warm_up):
+                                warm_up()
+                            else:
+                                # Preserve direct engine compatibility for tools/tests.
+                                self._ocr.recognize(
+                                    img,
+                                    progress=self.status_update.emit,
+                                )
                         ocr_results = []
                         names = []
                         verified_hostile_count = 0
@@ -191,6 +245,15 @@ class MonitorWorker(QThread):
                     self.scan_complete.emit(scan_count)
                     self.status_update.emit(build_scan_status(ocr_results))
 
+                    if hostile_count > 0 or self._burst_scans_remaining > 0:
+                        self._active_interval = max(0.5, self._interval * 0.5)
+                        self._burst_scans_remaining = max(
+                            0,
+                            self._burst_scans_remaining - 1,
+                        )
+                    else:
+                        self._active_interval = self._interval
+
                     if fallback_deferred:
                         self.status_update.emit(
                             "红框姓名定位失败 1/2，等待下一帧确认"
@@ -222,3 +285,9 @@ class MonitorWorker(QThread):
         finally:
             if owns_capturer:
                 capturer.close()
+
+
+def _frame_fingerprint(image) -> bytes:
+    """Return a cheap frame fingerprint for OCR change detection."""
+    reduced = image.convert("L").resize((32, 32))
+    return hashlib.blake2b(reduced.tobytes(), digest_size=12).digest()

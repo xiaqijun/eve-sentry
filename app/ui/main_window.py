@@ -8,11 +8,13 @@ from concurrent.futures import Future
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QSettings, QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHeaderView,
@@ -41,6 +43,7 @@ from app.alert_client import (
 )
 from app.channels.identity_logs import EveIdentityLogScanner
 from app.channels.local_system import find_latest_local_system
+from app.diagnostics import default_log_path, export_diagnostic_bundle
 from app.engine.capturer import Capturer
 from app.core.heartbeat import (
     build_detector_heartbeat_details,
@@ -48,14 +51,19 @@ from app.core.heartbeat import (
     resolve_runtime_identity,
 )
 from app.engine.ocr import OCREngine
+from app.engine.ocr_scheduler import SharedOCRScheduler
 from app.engine.worker import MonitorWorker
 from app.intel_client import IntelApiClient, IntelApiError
 from app.models.region_prefs import RegionPreferences
+from app.persistent_intel_client import PersistentIntelApiClient
 from app.ui.background_tasks import BackgroundTaskRunner
+from app.ui.reliable_uploads import ReliableUploadManager
 from app.ui.region_selector import RegionSelector
 from app.ui.settings import SettingsPanel
 from app.ui.theme import APP_QSS, monitor_button_style, status_card_style
+from app.startup import set_start_with_windows
 from app.updater import ClientUpdater
+from app.version import current_version
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +76,15 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(900, 620)
         self.resize(980, 680)
         self.setStyleSheet(APP_QSS)
+        self._runtime_settings = QSettings("EveSentry", "EVE Sentry Monitor")
+        geometry = self._runtime_settings.value("window/geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
 
         self._region_prefs = RegionPreferences("region_prefs.json")
         self._capturer = Capturer()
-        self._ocr = OCREngine(lang="en", confidence_threshold=0.7)
+        self._ocr = None  # legacy test/tool injection point; models load on monitor start
+        self._ocr_scheduler: SharedOCRScheduler | None = None
         self._worker: MonitorWorker | None = None
         self._workers: dict[str, MonitorWorker] = {}
         self._worker_contexts: dict[str, dict] = {}
@@ -117,6 +130,7 @@ class MainWindow(QMainWindow):
         self._last_heartbeat_error = ""
         self._uploads_enabled = False
         self._intel_client = self._create_intel_client()
+        self._upload_manager: ReliableUploadManager | None = None
         self._heartbeat_timer = QTimer(self)
         self._heartbeat_timer.setInterval(int(self._heartbeat_interval * 1000))
         self._heartbeat_timer.timeout.connect(self._publish_heartbeat)
@@ -125,11 +139,6 @@ class MainWindow(QMainWindow):
         self._window_refresh_timer.timeout.connect(self._refresh_detected_windows)
         self._network_tasks = BackgroundTaskRunner(max_workers=2, parent=self)
         self._network_tasks.completed.connect(self._on_network_task_completed)
-        self._network_tasks.submit_once(
-            "ocr_init",
-            self._ocr.initialize,
-            {"kind": "ocr_init"},
-        )
         self._identity_timer = QTimer(self)
         self._identity_timer.setInterval(10000)
         self._identity_timer.timeout.connect(self._poll_identity_logs)
@@ -153,6 +162,10 @@ class MainWindow(QMainWindow):
         self._settings.scan_settings_changed.connect(self._apply_scan_settings)
         self._settings.server_url_changed.connect(self._apply_server_url)
         self._settings.api_key_changed.connect(self._apply_api_key)
+        self._settings.behavior_settings_changed.connect(
+            self._apply_behavior_settings
+        )
+        self._settings.diagnostics_requested.connect(self._export_diagnostics)
         root.addWidget(self._settings)
 
         workspace = QWidget()
@@ -168,6 +181,12 @@ class MainWindow(QMainWindow):
         page_title.setObjectName("pageTitle")
         header_row.addWidget(page_title)
         header_row.addStretch()
+
+        self._connection_label = QLabel(
+            "重连中" if self._intel_client is not None else "未配置"
+        )
+        self._connection_label.setObjectName("authStatus")
+        header_row.addWidget(self._connection_label)
 
         self._monitor_btn = QPushButton("开始监控")
         self._monitor_btn.setObjectName("primaryAction")
@@ -226,6 +245,10 @@ class MainWindow(QMainWindow):
         )
         select_btn.clicked.connect(self._select_region)
         target_row.addWidget(select_btn)
+        preview_btn = QPushButton("预览")
+        preview_btn.setObjectName("secondaryAction")
+        preview_btn.clicked.connect(self._preview_region)
+        target_row.addWidget(preview_btn)
         target_layout.addLayout(target_row)
 
         self._window_label = QLabel("窗口：未检测")
@@ -295,6 +318,7 @@ class MainWindow(QMainWindow):
         clear_btn.clicked.connect(self._log.clear)
         self._log.setReadOnly(True)
         self._log.setObjectName("runtimeLog")
+        self._log.document().setMaximumBlockCount(1500)
         right.addWidget(self._log)
 
         root.addWidget(workspace, 1)
@@ -304,7 +328,14 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self._status)
         self._status_label = QLabel("待机")
         self._status.addWidget(self._status_label)
+        self._ocr_health_label = QLabel("OCR 未加载")
+        self._status.addPermanentWidget(self._ocr_health_label)
+        self._ocr_health_timer = QTimer(self)
+        self._ocr_health_timer.setInterval(2000)
+        self._ocr_health_timer.timeout.connect(self._refresh_ocr_health)
+        self._ocr_health_timer.start()
 
+        self._reset_upload_manager()
         self._setup_tray()
         self._detect_window()
         self._window_refresh_timer.start()
@@ -312,7 +343,12 @@ class MainWindow(QMainWindow):
         self._refresh_status_cards()
         if self._settings.get_api_key():
             QTimer.singleShot(0, self._begin_identity_check)
-        if _env_flag("EVE_SENTRY_AUTO_START_MONITOR", default=False):
+        restore_monitoring = bool(
+            self._runtime_settings.value("monitor/was_running", False, type=bool)
+        )
+        if _env_flag("EVE_SENTRY_AUTO_START_MONITOR", default=False) or (
+            self._settings.get_restore_monitor_state() and restore_monitoring
+        ):
             QTimer.singleShot(0, self._auto_start_monitor)
         QTimer.singleShot(1500, self._updater.check)
 
@@ -322,6 +358,10 @@ class MainWindow(QMainWindow):
             return
         self._monitor_btn.setChecked(True)
         self._start_monitor()
+
+    def should_start_minimized(self) -> bool:
+        """Return whether the configured startup should remain in the tray."""
+        return self._settings.get_start_minimized()
 
     def _make_status_card(self, key: str) -> QFrame:
         """Build a compact status card for the desktop HUD."""
@@ -581,6 +621,12 @@ class MainWindow(QMainWindow):
     def _detect_window(self, windows: list[dict] | None = None) -> None:
         """Find all EVE windows and populate the window selector."""
         previous_hwnd = self._window_combo.currentData()
+        runtime_settings = _instance_attr(self, "_runtime_settings")
+        preferred_title = (
+            str(runtime_settings.value("monitor/window_title", "") or "")
+            if runtime_settings is not None
+            else ""
+        )
         if windows is None or isinstance(windows, bool):
             keyword = self._settings.get_keyword()
             windows = self._capturer.list_eve_windows(keyword)
@@ -606,6 +652,10 @@ class MainWindow(QMainWindow):
                     window["hwnd"],
                 )
                 if window["hwnd"] == previous_hwnd:
+                    selected_index = index
+                elif previous_hwnd is None and preferred_title and (
+                    str(window.get("title") or "") == preferred_title
+                ):
                     selected_index = index
         self._window_combo.blockSignals(False)
 
@@ -697,6 +747,9 @@ class MainWindow(QMainWindow):
         self._window_label.setText(
             f"窗口：{self._window_combo.currentText()} -> 成员列表 {member['w']}x{member['h']}"
         )
+        runtime_settings = _instance_attr(self, "_runtime_settings")
+        if runtime_settings is not None:
+            runtime_settings.setValue("monitor/window_title", info.get("title", ""))
         self._refresh_status_cards()
         self._refresh_window_status_table()
 
@@ -742,6 +795,55 @@ class MainWindow(QMainWindow):
         self._selector.region_selected.connect(self._on_region_selected)
         self._selector.selector_closed.connect(self._on_selector_closed)
         self._selector.show()
+
+    def _preview_region(self) -> None:
+        """Show the exact capture area without initializing the OCR model."""
+        region = self._manual_region or self._detected_region
+        if not region:
+            QMessageBox.information(self, "识别区域预览", "请先选择 EVE 窗口或识别区域。")
+            return
+        try:
+            image = self._capturer.screenshot(
+                region["x"],
+                region["y"],
+                region["w"],
+                region["h"],
+            )
+            from PIL.ImageQt import ImageQt
+            from PyQt6.QtGui import QPixmap
+
+            pixmap = QPixmap.fromImage(ImageQt(image.convert("RGB")))
+        except Exception as exc:
+            QMessageBox.warning(self, "预览失败", str(exc))
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("OCR 识别区域预览")
+        dialog.resize(min(720, pixmap.width() + 24), min(760, pixmap.height() + 24))
+        layout = QVBoxLayout(dialog)
+        preview = QLabel()
+        preview.setPixmap(pixmap)
+        layout.addWidget(preview)
+        dialog.show()
+        self._region_preview_dialog = dialog
+
+    def _refresh_ocr_health(self) -> None:
+        label = _instance_attr(self, "_ocr_health_label")
+        if label is None:
+            return
+        scheduler = _instance_attr(self, "_ocr_scheduler")
+        if scheduler is None:
+            label.setText("OCR 未加载")
+            return
+        health = scheduler.health()
+        if health["state"] == "loading":
+            label.setText("OCR 加载中")
+        elif health["failed"]:
+            label.setText(f"OCR 异常 {health['failed']} 次")
+        else:
+            label.setText(
+                f"OCR 就绪 · {health['models_loaded']}/{health['max_instances']} 模型"
+                f" · {health['last_latency_ms']:.0f} ms"
+            )
 
     def _on_region_selected(self, x: int, y: int, w: int, h: int) -> None:
         """Handle region selected; coordinates are absolute screen coords."""
@@ -811,6 +913,12 @@ class MainWindow(QMainWindow):
         if app is None:
             self._alert_btn.setChecked(False)
             return
+        settings = _instance_attr(self, "_settings")
+        alert_preferences = (
+            settings.get_alert_preferences()
+            if settings is not None and hasattr(settings, "get_alert_preferences")
+            else {}
+        )
         args = Namespace(
             server=self._intel_url,
             state=default_state_path(),
@@ -835,6 +943,11 @@ class MainWindow(QMainWindow):
                 if _instance_attr(self, "_settings") is not None
                 else ""
             ),
+            alert_volume=alert_preferences.get("volume", 1.0),
+            alert_muted=alert_preferences.get("muted", False),
+            alert_cooldown=alert_preferences.get("cooldown", 15.0),
+            quiet_hours=alert_preferences.get("quiet_hours", ""),
+            alert_min_severity=alert_preferences.get("min_severity", "low"),
         )
         try:
             controller = AlertTrayController(
@@ -916,6 +1029,7 @@ class MainWindow(QMainWindow):
         restart_alert = self._alert_controller is not None
         self._intel_url = server_url
         self._intel_client = self._create_intel_client()
+        self._reset_upload_manager()
         self._api_key_validated = False
         self._last_heartbeat_error = ""
         self._heartbeat_last_error = ""
@@ -943,6 +1057,7 @@ class MainWindow(QMainWindow):
             self._stop_alert()
             self._alert_btn.setChecked(False)
         self._intel_client = self._create_intel_client()
+        self._reset_upload_manager()
         self._api_key_validated = False
         self._identity_wants_monitor = False
         self._identity_wants_alert = False
@@ -951,6 +1066,56 @@ class MainWindow(QMainWindow):
         )
         if self._settings.get_api_key():
             QTimer.singleShot(0, self._begin_identity_check)
+
+    def _apply_behavior_settings(self) -> None:
+        """Apply startup integration immediately after a preference change."""
+        try:
+            set_start_with_windows(self._settings.get_start_with_windows())
+        except OSError as exc:
+            self._log_message(f"无法更新开机启动设置：{exc}")
+
+    def _export_diagnostics(self) -> None:
+        """Export version, OCR health, window state and redacted logs."""
+        default_name = f"eve-sentry-diagnostics-{datetime.now():%Y%m%d-%H%M%S}.zip"
+        target, _filter = QFileDialog.getSaveFileName(
+            self,
+            "导出诊断包",
+            str(Path.home() / "Desktop" / default_name),
+            "ZIP archive (*.zip)",
+        )
+        if not target:
+            return
+        scheduler = _instance_attr(self, "_ocr_scheduler")
+        diagnostics = {
+            "version": current_version(),
+            "connection_state": getattr(
+                _instance_attr(self, "_upload_manager"),
+                "state",
+                "disabled",
+            ),
+            "ocr": scheduler.health() if scheduler is not None else {"state": "idle"},
+            "monitoring": self._is_monitoring(),
+            "windows": [
+                {
+                    "window_title": context.get("window_title", ""),
+                    "system_name": context.get("system_name", "Unknown"),
+                    "runtime_status": context.get("runtime_status", ""),
+                    "region": context.get("region"),
+                    "last_error": context.get("last_error", ""),
+                }
+                for context in self._worker_contexts.values()
+            ],
+        }
+        try:
+            bundle = export_diagnostic_bundle(
+                Path(target),
+                diagnostics,
+                default_log_path(),
+            )
+        except OSError as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
+            return
+        self._log_message(f"诊断包已导出：{bundle}")
 
     def _begin_identity_check(self, action: str = "runtime") -> None:
         """Validate the API key before enabling an authenticated feature."""
@@ -1219,12 +1384,12 @@ class MainWindow(QMainWindow):
         self._workers = {}
         self._worker_contexts = {}
         interval = self._settings.get_interval()
+        ocr_engine = _instance_attr(self, "_ocr")
+        if ocr_engine is None:
+            self._ocr_scheduler = SharedOCRScheduler()
+            self._ocr_scheduler.warm_up()
+            ocr_engine = self._ocr_scheduler
         for index, target in enumerate(targets):
-            ocr_engine = (
-                self._ocr
-                if index == 0
-                else OCREngine(lang="en", confidence_threshold=0.7)
-            )
             worker = MonitorWorker(
                 Capturer(),
                 ocr_engine,
@@ -1234,6 +1399,9 @@ class MainWindow(QMainWindow):
             worker.set_window(window)
             worker.set_region(region["x"], region["y"], region["w"], region["h"])
             worker.set_interval(interval)
+            set_scan_offset = getattr(worker, "set_scan_offset", None)
+            if callable(set_scan_offset):
+                set_scan_offset(index * interval / max(1, len(targets)))
             worker.ocr_snapshot.connect(
                 lambda names, hostile_icon_count, context=target: self._publish_ocr_snapshot(
                     names,
@@ -1389,6 +1557,11 @@ class MainWindow(QMainWindow):
         for worker in workers:
             worker.stop()
 
+        scheduler = _instance_attr(self, "_ocr_scheduler")
+        if scheduler is not None:
+            scheduler.close(wait=False)
+            self._ocr_scheduler = None
+
         if timeout_ms == 0:
             for worker in workers:
                 self._disconnect_worker_signals(worker)
@@ -1419,7 +1592,6 @@ class MainWindow(QMainWindow):
         self._stopping_monitor_workers = set()
         if failed:
             self._capturer = Capturer()
-            self._ocr = OCREngine(lang="en", confidence_threshold=0.7)
         self._workers = {}
         self._worker_contexts = {}
         self._worker = None
@@ -1450,7 +1622,7 @@ class MainWindow(QMainWindow):
         except ValueError:
             timeout = 10.0
         try:
-            return IntelApiClient(
+            return PersistentIntelApiClient(
                 self._intel_url,
                 timeout=timeout,
                 api_key=self._settings.get_api_key(),
@@ -1500,6 +1672,18 @@ class MainWindow(QMainWindow):
         }
         if hostile_icon_count > 0:
             payload["hostile_icon_count"] = int(hostile_icon_count)
+        upload_manager = _instance_attr(self, "_upload_manager")
+        if upload_manager is not None:
+            upload_manager.submit_snapshot(
+                client_id,
+                payload,
+                {
+                    "kind": "ocr",
+                    "context": context,
+                    "names": list(names),
+                },
+            )
+            return
         runner = _instance_attr(self, "_network_tasks")
         if runner is not None:
             client = self._intel_client
@@ -1585,6 +1769,13 @@ class MainWindow(QMainWindow):
             "heartbeat_interval_seconds": self._heartbeat_interval,
             "details": details,
         }
+        upload_manager = _instance_attr(self, "_upload_manager")
+        if upload_manager is not None:
+            upload_manager.submit_heartbeat(
+                payload,
+                {"kind": "heartbeat", "task_key": task_key},
+            )
+            return
         runner = _instance_attr(self, "_network_tasks")
         if runner is not None:
             client = self._intel_client
@@ -1602,6 +1793,54 @@ class MainWindow(QMainWindow):
             if message != self._last_heartbeat_error:
                 self._last_heartbeat_error = message
                 self._log_message(f"Heartbeat update failed: {message}")
+        self._refresh_status_cards()
+
+    def _on_upload_state_changed(self, state: str, label: str) -> None:
+        """Expose reliable-upload state without overloading monitor status."""
+        connection_label = _instance_attr(self, "_connection_label")
+        if connection_label is not None:
+            colors = {
+                "online": "#37d6b0",
+                "reconnecting": "#f6c760",
+                "offline_cached": "#f6c760",
+                "authentication_failed": "#ff6b73",
+            }
+            connection_label.setText(label)
+            connection_label.setStyleSheet(
+                f"color: {colors.get(state, '#a8b1c7')}; font-weight: 600;"
+            )
+        if state == "authentication_failed":
+            self._disable_authenticated_features(label)
+        elif state in {"reconnecting", "offline_cached"}:
+            self._last_heartbeat_error = label
+        else:
+            self._last_heartbeat_error = ""
+
+    def _reset_upload_manager(self) -> None:
+        """Rebuild reliable uploads after server URL or credentials change."""
+        previous = _instance_attr(self, "_upload_manager")
+        if previous is not None:
+            previous.shutdown(timeout=1.0)
+        self._upload_manager = None
+        client = _instance_attr(self, "_intel_client")
+        if client is None or not callable(getattr(client, "post_ocr_snapshot", None)):
+            return
+        try:
+            self._upload_manager = ReliableUploadManager(client, parent=self)
+        except RuntimeError:
+            # Some focused tests construct MainWindow without QObject.__init__.
+            self._upload_manager = ReliableUploadManager(client, parent=None)
+        self._upload_manager.state_changed.connect(self._on_upload_state_changed)
+        self._upload_manager.snapshot_uploaded.connect(
+            self._handle_ocr_publish_success
+        )
+        self._upload_manager.heartbeat_uploaded.connect(
+            self._on_reliable_heartbeat_uploaded
+        )
+
+    def _on_reliable_heartbeat_uploaded(self, _metadata: object) -> None:
+        self._last_heartbeat_error = ""
+        self._heartbeat_last_success_at = heartbeat_now_iso()
         self._refresh_status_cards()
 
     def _refresh_intel_location(
@@ -1707,11 +1946,11 @@ class MainWindow(QMainWindow):
             menu = QMenu()
             self._tray.setContextMenu(menu)
 
-        show_action = QAction("Show")
+        show_action = QAction("显示主窗口")
         show_action.triggered.connect(self.show)
         menu.addAction(show_action)
 
-        quit_action = QAction("Quit")
+        quit_action = QAction("退出")
         quit_action.triggered.connect(self._quit_app)
         menu.addAction(quit_action)
 
@@ -1724,6 +1963,22 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Hide immediately while background workers unwind asynchronously."""
+        runtime_settings = _instance_attr(self, "_runtime_settings")
+        if runtime_settings is not None:
+            runtime_settings.setValue("window/geometry", self.saveGeometry())
+            runtime_settings.setValue("monitor/was_running", self._is_monitoring())
+        settings = _instance_attr(self, "_settings")
+        close_to_tray = bool(
+            settings is not None
+            and getattr(settings, "get_close_to_tray", lambda: False)()
+        )
+        if close_to_tray and not _instance_attr(self, "_shutdown_in_progress", False):
+            self.hide()
+            tray = _instance_attr(self, "_tray")
+            if tray is not None:
+                tray.showMessage("EVE Sentry", "客户端仍在托盘中运行")
+            event.ignore()
+            return
         self._quit_app()
         event.ignore()
 
@@ -1731,7 +1986,14 @@ class MainWindow(QMainWindow):
         if _instance_attr(self, "_shutdown_in_progress", False):
             return
         self._shutdown_in_progress = True
+        runtime_settings = _instance_attr(self, "_runtime_settings")
+        if runtime_settings is not None:
+            runtime_settings.setValue("window/geometry", self.saveGeometry())
+            runtime_settings.setValue("monitor/was_running", self._is_monitoring())
         self.hide()
+        updater = _instance_attr(self, "_updater")
+        if updater is not None:
+            updater.install_on_exit()
         tray = _instance_attr(self, "_tray")
         if tray is not None:
             tray.hide()
@@ -1740,6 +2002,10 @@ class MainWindow(QMainWindow):
         network_tasks = _instance_attr(self, "_network_tasks")
         if network_tasks is not None:
             network_tasks.shutdown()
+        upload_manager = _instance_attr(self, "_upload_manager")
+        if upload_manager is not None:
+            upload_manager.shutdown(timeout=1.5)
+            self._upload_manager = None
         QTimer.singleShot(0, self._finish_quit_when_workers_stop)
 
     def _finish_quit_when_workers_stop(self) -> None:

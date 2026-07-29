@@ -5,6 +5,8 @@ import logging
 import os
 import sys
 
+from app.diagnostics import configure_client_logging
+
 # Skip PaddleOCR's slow connectivity check and unreachable huggingface.
 # Must be set before any PaddleOCR import.
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
@@ -43,11 +45,14 @@ from app.version import current_version
 
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        stream=sys.stderr,
-    )
+    configure_client_logging(logging.INFO)
+
+    health_marker = ""
+    if "--update-health-marker" in sys.argv:
+        marker_index = sys.argv.index("--update-health-marker")
+        if marker_index + 1 < len(sys.argv):
+            health_marker = sys.argv[marker_index + 1]
+            del sys.argv[marker_index:marker_index + 2]
 
     # High-DPI support
     QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -60,7 +65,19 @@ def main():
     app.setApplicationVersion(current_version())
 
     window = MainWindow()
-    window.show()
+    if health_marker:
+        try:
+            from pathlib import Path
+
+            Path(health_marker).write_text("ok", encoding="ascii")
+        except OSError:
+            logging.getLogger(__name__).exception(
+                "Could not write update startup health marker"
+            )
+    if window.should_start_minimized():
+        window.hide()
+    else:
+        window.show()
 
     sys.exit(app.exec())
 

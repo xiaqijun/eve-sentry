@@ -368,7 +368,7 @@ def test_monitor_ui_smoke_constructs_main_window_offscreen_without_side_effects(
         "intel_client_created": 0,
         "list_eve_windows_calls": 1,
         "network_requests": 0,
-        "ocr_created": 1,
+        "ocr_created": 0,
         "ocr_snapshot_posts": 0,
         "ocr_recognize_calls": 0,
         "screenshot_calls": 0,

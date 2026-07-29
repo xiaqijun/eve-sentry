@@ -115,6 +115,9 @@ class IntelApiClient:
         system_id: int | None = None,
         confidence: float | None = None,
         hostile_icon_count: int = 0,
+        snapshot_id: str = "",
+        sequence: int | None = None,
+        captured_at: str = "",
     ) -> dict[str, Any]:
         """Publish the current OCR-detected pilot-name snapshot."""
         payload: dict[str, Any] = {
@@ -131,6 +134,12 @@ class IntelApiClient:
             payload["confidence"] = confidence
         if hostile_icon_count > 0:
             payload["hostile_icon_count"] = int(hostile_icon_count)
+        if snapshot_id:
+            payload["snapshot_id"] = str(snapshot_id)
+        if sequence is not None:
+            payload["sequence"] = int(sequence)
+        if captured_at:
+            payload["captured_at"] = str(captured_at)
         path = self._v1_path("/ocr/snapshot")
         try:
             return self._request("POST", path, payload=payload)

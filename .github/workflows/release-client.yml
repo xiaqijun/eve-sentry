@@ -48,6 +48,7 @@ jobs:
           -DownloadBaseUrl "https://evesentrydownload.kisectool.com/download"
         env:
           GH_TOKEN: ${{ github.token }}
+          EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 }}
       - name: Verify release manifest and download range
         shell: pwsh
         run: |
