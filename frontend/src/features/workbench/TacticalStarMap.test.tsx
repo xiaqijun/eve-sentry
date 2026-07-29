@@ -268,8 +268,105 @@ describe("TacticalStarMap", () => {
     expect(fillText).not.toHaveBeenCalledWith("敌:", expect.any(Number), expect.any(Number));
     expect(fillText).not.toHaveBeenCalledWith("损:", expect.any(Number), expect.any(Number));
     expect(fillText).not.toHaveBeenCalledWith("1", expect.any(Number), expect.any(Number));
-    expect(strokeColors[0]).toBe("rgba(239, 91, 82, 0.28)");
+    expect(strokeColors[0]).toBe("rgba(214, 69, 61, 0.24)");
     expect(arc).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  test("draws hostile identity cards with portraits, risk badges, and organization rows", async () => {
+    const hostileCard = {
+      ...graphData.nodes[1],
+      id: "hostile:NCG-PW:id:90000001",
+      name: "Pilot One",
+      kind: "hostile-card" as const,
+      x: 304,
+      y: 150,
+      fx: 304,
+      fy: 150,
+      hostileCount: 0,
+      threatLevel: "high" as const,
+      threatScore: 88,
+      hostileIntel: {
+        characterId: 90000001,
+        name: "Pilot One",
+        corporation: "Red Horizon",
+        alliance: "Northern Threat",
+        threatLevel: "high" as const,
+        threatScore: 88,
+      },
+    };
+    const hostileGraphData: TacticalGraphData = {
+      nodes: [...graphData.nodes, hostileCard],
+      links: [
+        ...graphData.links,
+        {
+          source: "NCG-PW",
+          target: hostileCard.id,
+          kind: "hostile-intel",
+        },
+      ],
+    };
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <TacticalStarMap
+          graphData={hostileGraphData}
+          onSelectSystem={() => {}}
+        />,
+      );
+    });
+
+    const fillText = vi.fn();
+    const fillRect = vi.fn();
+    const strokeRect = vi.fn();
+    const lineTo = vi.fn();
+    const context = {
+      save: vi.fn(),
+      restore: vi.fn(),
+      translate: vi.fn(),
+      scale: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo,
+      arc: vi.fn(),
+      fill: vi.fn(),
+      stroke: vi.fn(),
+      fillRect,
+      strokeRect,
+      fillText,
+      measureText: vi.fn((text: string) => ({ width: text.length * 5 })),
+      setLineDash: vi.fn(),
+    } as unknown as CanvasRenderingContext2D;
+    const drawNode = forceGraphMock.latestProps?.nodeCanvasObject;
+    const drawLink = forceGraphMock.latestProps?.linkCanvasObject;
+
+    expect(drawNode).toEqual(expect.any(Function));
+    (drawNode as Function)(hostileCard, context, 1);
+    expect(fillText).toHaveBeenCalledWith("Pilot One", expect.any(Number), expect.any(Number));
+    expect(fillText).toHaveBeenCalledWith("高危 88", expect.any(Number), expect.any(Number));
+    expect(fillText).toHaveBeenCalledWith("军", expect.any(Number), expect.any(Number));
+    expect(fillText).toHaveBeenCalledWith("联", expect.any(Number), expect.any(Number));
+    expect(fillText).toHaveBeenCalledWith("Red Horizon", expect.any(Number), expect.any(Number));
+    expect(fillText).toHaveBeenCalledWith("Northern Threat", expect.any(Number), expect.any(Number));
+    expect(fillRect.mock.calls.length).toBeGreaterThanOrEqual(8);
+    expect(strokeRect).toHaveBeenCalled();
+
+    (drawLink as Function)(
+      {
+        ...hostileGraphData.links[1],
+        source: graphData.nodes[1],
+        target: hostileCard,
+      },
+      context,
+    );
+    expect(lineTo).toHaveBeenCalledTimes(3);
 
     await act(async () => {
       root.unmount();

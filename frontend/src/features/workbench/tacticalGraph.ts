@@ -3,6 +3,7 @@ import type { AlertItem, BootstrapPayload, Level } from "./types";
 export interface TacticalGraphNode {
   id: string;
   name: string;
+  kind?: "system" | "hostile-card";
   systemId?: number;
   x: number;
   y: number;
@@ -21,16 +22,33 @@ export interface TacticalGraphNode {
   isSelected: boolean;
   threatLevel: Level | "unknown";
   threatScore: number | null;
+  hostileIntel?: TacticalHostileIntel;
+  hostileAnchorX?: number;
+  hostileAnchorY?: number;
 }
 
 export interface TacticalGraphLink {
   source: string;
   target: string;
+  kind?: "gate" | "hostile-intel";
 }
 
 export interface TacticalGraphData {
   nodes: TacticalGraphNode[];
   links: TacticalGraphLink[];
+}
+
+export interface TacticalHostileIntel {
+  characterId: number | null;
+  name: string;
+  corporation: string;
+  alliance: string;
+  threatLevel: Level | "unknown";
+  threatScore: number | null;
+}
+
+interface TacticalGraphOptions {
+  includeHostileCards?: boolean;
 }
 
 const LEVEL_RANK: Record<Level | "unknown", number> = {
@@ -284,9 +302,150 @@ function summarizeActiveIntel(
   return summaries;
 }
 
+function normalizeLevel(value: unknown): Level | "unknown" {
+  return value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "critical"
+    ? value
+    : "unknown";
+}
+
+function systemLookups(bootstrap: BootstrapPayload): {
+  byId: Map<number, string>;
+  byName: Map<string, string>;
+} {
+  const byId = new Map<number, string>();
+  const byName = new Map<string, string>();
+  bootstrap.map.systems.forEach((system) => {
+    if (typeof system.system_id === "number") {
+      byId.set(system.system_id, system.name);
+    }
+    byName.set(system.name.trim().toLowerCase(), system.name);
+  });
+  return { byId, byName };
+}
+
+function hostileIntelKey(characterId: number | null, name: string): string {
+  return characterId !== null
+    ? `id:${characterId}`
+    : `name:${name.trim().toLowerCase()}`;
+}
+
+function mergeHostileIntel(
+  summaries: Map<string, Map<string, TacticalHostileIntel>>,
+  systemName: string,
+  candidate: Record<string, unknown>,
+  threatLevel: Level | "unknown" = "unknown",
+  threatScore: number | null = null,
+): void {
+  const characterId = firstNumber(candidate.character_id, candidate.characterId);
+  const name = firstString(candidate.name, candidate.character_name);
+  if (characterId === null && !name) {
+    return;
+  }
+
+  const displayName = name || `角色 ${characterId}`;
+  const key = hostileIntelKey(characterId, displayName);
+  const systemSummaries =
+    summaries.get(systemName) || new Map<string, TacticalHostileIntel>();
+  const current = systemSummaries.get(key);
+  const nextLevel =
+    current && LEVEL_RANK[current.threatLevel] > LEVEL_RANK[threatLevel]
+      ? current.threatLevel
+      : threatLevel;
+  const nextScore =
+    current?.threatScore !== null && current?.threatScore !== undefined
+      ? Math.max(current.threatScore, threatScore ?? current.threatScore)
+      : threatScore;
+
+  systemSummaries.set(key, {
+    characterId: characterId ?? current?.characterId ?? null,
+    name: firstString(name, current?.name) || displayName,
+    corporation:
+      firstString(candidate.corporation_name, current?.corporation) || "未知军团",
+    alliance:
+      firstString(candidate.alliance_name, current?.alliance) || "未知联盟",
+    threatLevel: nextLevel,
+    threatScore: nextScore,
+  });
+  summaries.set(systemName, systemSummaries);
+}
+
+function summarizeHostileIntel(
+  bootstrap: BootstrapPayload,
+): Map<string, TacticalHostileIntel[]> {
+  const { byId, byName } = systemLookups(bootstrap);
+  const summaries = new Map<string, Map<string, TacticalHostileIntel>>();
+
+  for (const item of bootstrap.active_intel || []) {
+    if (item.active === false || !activeIntelIsHostile(item)) {
+      continue;
+    }
+    const systemName = activeIntelNodeName(item, byId, byName);
+    if (!systemName) {
+      continue;
+    }
+    const metadata = asRecord(item.metadata);
+    const profiles = Array.isArray(metadata.character_profiles)
+      ? metadata.character_profiles.map(asRecord)
+      : [];
+    if (profiles.length > 0) {
+      profiles.forEach((profile) => mergeHostileIntel(summaries, systemName, profile));
+      continue;
+    }
+    mergeHostileIntel(summaries, systemName, {
+      ...metadata,
+      character_id: item.character_id ?? metadata.character_id,
+      name: item.name || metadata.name,
+    });
+  }
+
+  for (const alert of bootstrap.alerts) {
+    if (alert.classification !== "red") {
+      continue;
+    }
+    const systemName =
+      (typeof alert.system_id === "number" ? byId.get(alert.system_id) : undefined) ||
+      byName.get(String(alert.system_name || "").trim().toLowerCase());
+    if (!systemName) {
+      continue;
+    }
+    const alertRecord = asRecord(alert);
+    for (const character of alert.verified_characters || []) {
+      mergeHostileIntel(
+        summaries,
+        systemName,
+        {
+          ...alertRecord,
+          character_id: character.character_id,
+          name: character.name,
+        },
+        normalizeLevel(alert.level),
+        typeof alert.score === "number" ? alert.score : null,
+      );
+    }
+  }
+
+  const result = new Map<string, TacticalHostileIntel[]>();
+  summaries.forEach((items, systemName) => {
+    result.set(
+      systemName,
+      [...items.values()].sort(
+        (left, right) =>
+          LEVEL_RANK[right.threatLevel] - LEVEL_RANK[left.threatLevel] ||
+          (right.threatScore ?? -1) - (left.threatScore ?? -1) ||
+          left.name.localeCompare(right.name),
+      ),
+    );
+  });
+  return result;
+}
+
 export function buildTacticalGraph(
   bootstrap: BootstrapPayload,
   selectedSystemId?: number | null,
+  options: TacticalGraphOptions = {},
 ): TacticalGraphData {
   const alertsBySystem = new Map<number, AlertItem[]>();
   for (const alert of bootstrap.alerts) {
@@ -302,8 +461,7 @@ export function buildTacticalGraph(
   const activeIntelBySystem = summarizeActiveIntel(bootstrap);
   const hasActiveIntelPayload = Array.isArray(bootstrap.active_intel);
 
-  return {
-    nodes: bootstrap.map.systems.map((system) => {
+  const systemNodes = bootstrap.map.systems.map((system) => {
       const systemAlerts =
         typeof system.system_id === "number"
           ? alertsBySystem.get(system.system_id) || []
@@ -337,6 +495,7 @@ export function buildTacticalGraph(
       return {
         id: system.name,
         name: system.name,
+        kind: "system" as const,
         systemId: system.system_id,
         x,
         y,
@@ -360,10 +519,71 @@ export function buildTacticalGraph(
         threatLevel: hasRealtimeIntel ? alertSummary.level : "unknown",
         threatScore: hasRealtimeIntel ? alertSummary.score : null,
       };
-    }),
-    links: bootstrap.map.links.map((link) => ({
+    });
+  const gateLinks: TacticalGraphLink[] = bootstrap.map.links.map((link) => ({
       source: link.from,
       target: link.to,
-    })),
+    }));
+
+  if (!options.includeHostileCards) {
+    return { links: gateLinks, nodes: systemNodes };
+  }
+
+  const hostileIntelBySystem = summarizeHostileIntel(bootstrap);
+  const centerX = systemNodes.length > 0
+    ? systemNodes.reduce((sum, node) => sum + node.x, 0) / systemNodes.length
+    : 0;
+  const hostileNodes: TacticalGraphNode[] = [];
+  const hostileLinks: TacticalGraphLink[] = [];
+
+  systemNodes.forEach((systemNode) => {
+    if (systemNode.hostileCount <= 0) {
+      return;
+    }
+    const hostiles = hostileIntelBySystem.get(systemNode.name) || [];
+    const direction = systemNode.x >= centerX ? 1 : -1;
+    hostiles.forEach((hostile, index) => {
+      const verticalOffset = (index - (hostiles.length - 1) / 2) * 86;
+      const hostileId = hostileIntelKey(hostile.characterId, hostile.name);
+      const nodeId = `hostile:${systemNode.id}:${hostileId}`;
+      const x = systemNode.x + direction * 124;
+      const y = systemNode.y + verticalOffset;
+      hostileNodes.push({
+        id: nodeId,
+        name: hostile.name,
+        kind: "hostile-card",
+        systemId: systemNode.systemId,
+        x,
+        y,
+        fx: x,
+        fy: y,
+        security: null,
+        hostileCount: 0,
+        reportCount: 0,
+        observationCount: 0,
+        channelIntelCount: 0,
+        killCount: 0,
+        monitorCount: 0,
+        monitorOnlineCount: 0,
+        monitorLabels: [],
+        hasAlerts: true,
+        isSelected: systemNode.isSelected,
+        threatLevel: hostile.threatLevel,
+        threatScore: hostile.threatScore,
+        hostileIntel: hostile,
+        hostileAnchorX: systemNode.x,
+        hostileAnchorY: systemNode.y,
+      });
+      hostileLinks.push({
+        source: systemNode.id,
+        target: nodeId,
+        kind: "hostile-intel",
+      });
+    });
+  });
+
+  return {
+    nodes: [...systemNodes, ...hostileNodes],
+    links: [...gateLinks, ...hostileLinks],
   };
 }

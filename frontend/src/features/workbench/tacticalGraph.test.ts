@@ -204,6 +204,67 @@ describe("buildTacticalGraph", () => {
     });
   });
 
+  it("creates connected hostile identity cards from live profiles and verified alerts", () => {
+    const graph = buildTacticalGraph({
+      ...bootstrap,
+      active_intel: [
+        {
+          id: "ocr-hostile",
+          source: "eve-sentry-detector",
+          system_name: "0-UVHJ",
+          system_id: 30003615,
+          character_id: 90000001,
+          name: "Pilot One",
+          active: true,
+          metadata: {
+            contact_standing: -10,
+            character_profiles: [
+              {
+                character_id: 90000001,
+                name: "Pilot One",
+                corporation_name: "Red Horizon",
+                alliance_name: "Northern Threat",
+              },
+            ],
+          },
+        },
+      ],
+      alerts: [
+        {
+          ...bootstrap.alerts[0],
+          classification: "red",
+          verified_characters: [
+            { character_id: 90000001, name: "Pilot One" },
+          ],
+          level: "critical",
+          score: 94,
+        },
+      ],
+    }, null, { includeHostileCards: true });
+
+    const hostileCard = graph.nodes.find((node) => node.kind === "hostile-card");
+    expect(hostileCard).toMatchObject({
+      kind: "hostile-card",
+      name: "Pilot One",
+      systemId: 30003615,
+      threatLevel: "critical",
+      threatScore: 94,
+      hostileIntel: {
+        characterId: 90000001,
+        name: "Pilot One",
+        corporation: "Red Horizon",
+        alliance: "Northern Threat",
+        threatLevel: "critical",
+        threatScore: 94,
+      },
+    });
+    expect(graph.links).toContainEqual({
+      source: "0-UVHJ",
+      target: hostileCard?.id,
+      kind: "hostile-intel",
+    });
+  });
+
   it("does not count friendly OCR active intel as hostile activity", () => {
     const graph = buildTacticalGraph({
       ...bootstrap,
