@@ -51,6 +51,7 @@ from app.core.heartbeat import (
     resolve_runtime_identity,
 )
 from app.engine.ocr import OCREngine
+from app.engine.ocr_runtime import preload_ocr_runtime
 from app.engine.ocr_scheduler import SharedOCRScheduler
 from app.engine.worker import MonitorWorker
 from app.intel_client import IntelApiClient, IntelApiError
@@ -350,7 +351,19 @@ class MainWindow(QMainWindow):
             self._settings.get_restore_monitor_state() and restore_monitoring
         ):
             QTimer.singleShot(0, self._auto_start_monitor)
+        QTimer.singleShot(350, self._preload_ocr_runtime)
         QTimer.singleShot(1500, self._updater.check)
+
+    def _preload_ocr_runtime(self) -> None:
+        """Warm Python OCR imports off the UI thread while keeping models lazy."""
+        runner = _instance_attr(self, "_network_tasks")
+        if runner is None:
+            return
+        runner.submit_once(
+            "ocr-runtime-preload",
+            preload_ocr_runtime,
+            {"kind": "ocr_runtime_preload"},
+        )
 
     def _auto_start_monitor(self) -> None:
         """Start monitoring once the event loop is ready when explicitly requested."""
