@@ -97,17 +97,17 @@ jobs:
           scp "${scp_options[@]}" "eve-sentry-${GITHUB_SHA}.tar.gz" "$target:$archive"
           scp "${scp_options[@]}" deploy/ci/deploy_release.sh "$target:$script"
           ssh "${ssh_options[@]}" "$target" "bash '$script' '$archive' '$GITHUB_SHA'"
-      - name: Verify public health
+      - name: Verify public readiness
         env:
           PUBLIC_URL: ${{ vars.EVE_SENTRY_PUBLIC_URL }}
         run: |
           set -euo pipefail
           curl -fsS --retry 10 --retry-delay 2 --retry-all-errors \
-            "${PUBLIC_URL%/}/api/health" > health.json
+            "${PUBLIC_URL%/}/api/readyz" > readiness.json
           python - <<'PY'
           import json
-          payload = json.load(open("health.json", encoding="utf-8"))
-          if not payload.get("health", {}).get("ok"):
-              raise SystemExit(f"unhealthy response: {payload}")
+          payload = json.load(open("readiness.json", encoding="utf-8"))
+          if not payload.get("ok"):
+              raise SystemExit(f"not-ready response: {payload}")
           print(json.dumps(payload, ensure_ascii=False))
           PY

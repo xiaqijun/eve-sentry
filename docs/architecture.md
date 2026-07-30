@@ -9,7 +9,7 @@
 | Web 管理系统 | `frontend/` | 态势图、来袭报表、账号和管理员功能 |
 | QQ 机器人 | 独立部署 | 使用只读服务密钥读取 Bootstrap 和 SSE，发送主动预警 |
 
-生产服务端使用 PostgreSQL。SQLite 和 JSON 存储只用于本地开发、兼容和数据迁移。
+生产服务端使用 PostgreSQL，启动时只加载有界热数据；JSON 存储仅保留为兼容模式。
 
 ## OCR 与预警流程
 

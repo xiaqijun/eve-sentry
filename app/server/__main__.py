@@ -2,7 +2,8 @@
 
 import argparse
 import logging
-import time
+import signal
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -18,12 +19,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", default=8765, type=int)
     parser.add_argument("--data", default="intel_reports.json")
     parser.add_argument(
-        "--storage",
-        choices=["json", "sqlite", "postgres"],
-        default="sqlite",
+        "--report-retention-days",
+        type=int,
+        default=0,
+        help="delete reports older than this many days on startup; 0 disables",
     )
-    parser.add_argument("--db", default="intel.sqlite3")
+    parser.add_argument(
+        "--storage",
+        choices=["json", "postgres"],
+        default="postgres",
+    )
     parser.add_argument("--postgres-dsn", default="")
+    parser.add_argument(
+        "--hot-report-limit",
+        type=int,
+        default=5000,
+        help="maximum recent reports held in memory by PostgreSQL storage",
+    )
     parser.add_argument(
         "--auth-mode",
         choices=["off", "setup", "enforce"],
@@ -161,14 +173,43 @@ def main(argv: list[str] | None = None) -> int:
     if auth_service is not None:
         server_options["auth_service"] = auth_service
     server = IntelHTTPServer(store, **server_options)
-    server.start()
-    print(f"Intel map: {server.url}")
+    started = False
     try:
-        while True:
-            time.sleep(3600)
-    except KeyboardInterrupt:
-        server.stop()
+        server.start()
+        started = True
+        print(f"Intel map: {server.url}")
+        _wait_for_shutdown()
+    finally:
+        try:
+            if started:
+                server.stop()
+        finally:
+            close_store = getattr(store, "close", None)
+            if callable(close_store):
+                close_store()
     return 0
+
+
+def _wait_for_shutdown() -> None:
+    """Wait for SIGINT or SIGTERM while restoring the caller's handlers."""
+    shutdown_requested = threading.Event()
+
+    def request_shutdown(signum, _frame) -> None:
+        logger = logging.getLogger(__name__)
+        logger.info("Shutdown requested by signal %s", signum)
+        shutdown_requested.set()
+
+    previous_handlers = {
+        signum: signal.getsignal(signum)
+        for signum in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        for signum in previous_handlers:
+            signal.signal(signum, request_shutdown)
+        shutdown_requested.wait()
+    finally:
+        for signum, previous in previous_handlers.items():
+            signal.signal(signum, previous)
 
 
 def _build_store(
@@ -179,23 +220,10 @@ def _build_store(
     scorer: Any | None = None,
     enricher: Any | None = None,
 ) -> IntelStore:
-    if args.storage == "sqlite":
-        from app.server.sqlite_store import SQLiteIntelStore
-
-        return SQLiteIntelStore(
-            args.db,
-            import_json_path=args.data,
-            systems=systems,
-            links=links,
-            resolver=resolver,
-            scorer=scorer,
-            enricher=enricher,
-            allow_unmapped_systems=False,
-        )
     if args.storage == "postgres":
         from app.server.postgres_store import PostgreSQLIntelStore
 
-        return PostgreSQLIntelStore(
+        store = PostgreSQLIntelStore(
             args.postgres_dsn,
             import_json_path=args.data,
             systems=systems,
@@ -204,16 +232,37 @@ def _build_store(
             scorer=scorer,
             enricher=enricher,
             allow_unmapped_systems=False,
+            hot_report_limit=args.hot_report_limit,
         )
-    return IntelStore(
-        args.data,
-        systems=systems,
-        links=links,
-        resolver=resolver,
-        scorer=scorer,
-        enricher=enricher,
-        allow_unmapped_systems=False,
-    )
+    else:
+        store = IntelStore(
+            args.data,
+            systems=systems,
+            links=links,
+            resolver=resolver,
+            scorer=scorer,
+            enricher=enricher,
+            allow_unmapped_systems=False,
+        )
+
+    retention_days = int(getattr(args, "report_retention_days", 0) or 0)
+    if retention_days > 0:
+        try:
+            removed = store.prune_reports_older_than(retention_days)
+        except Exception:
+            try:
+                store.close()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to close store after report pruning failed"
+                )
+            raise
+        logging.getLogger(__name__).info(
+            "Pruned %s reports older than %s days",
+            removed,
+            retention_days,
+        )
+    return store
 
 
 def _validate_args(
@@ -224,8 +273,12 @@ def _validate_args(
         parser.error("--esi-client-id is required when using ESI login")
     if args.storage == "postgres" and not str(args.postgres_dsn or "").strip():
         parser.error("--postgres-dsn is required when using PostgreSQL storage")
+    if args.report_retention_days < 0:
+        parser.error("--report-retention-days must not be negative")
+    if args.hot_report_limit <= 0:
+        parser.error("--hot-report-limit must be positive")
     if args.auth_mode != "off" and args.storage == "json":
-        parser.error("authentication requires SQLite or PostgreSQL storage")
+        parser.error("authentication requires PostgreSQL storage")
     if args.auth_bootstrap_admin and not args.auth_bootstrap_password_file:
         parser.error(
             "--auth-bootstrap-password-file is required with --auth-bootstrap-admin"

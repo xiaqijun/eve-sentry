@@ -21,6 +21,7 @@ SESSION_COOKIE_NAME = "eve_sentry_session"
 SESSION_HOURS = 12
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_FAILURE_LIMIT = 5
+LOGIN_IP_FAILURE_LIMIT = 25
 ESI_LOGIN_STATE_SECONDS = 5 * 60
 
 logger = logging.getLogger(__name__)
@@ -180,11 +181,17 @@ class AuthService:
 
     def login(self, username: str, password: str, remote_key: str = "") -> dict[str, Any]:
         username_key = _username_key(username)
-        throttle_key = f"{remote_key}:{username_key}"
-        self._check_login_rate(throttle_key)
+        remote_key = str(remote_key or "").strip()
+        ip_throttle_key = f"ip:{remote_key}" if remote_key else ""
+        pair_throttle_key = f"pair:{remote_key}:{username_key}"
+        if ip_throttle_key:
+            self._check_login_rate(ip_throttle_key, LOGIN_IP_FAILURE_LIMIT)
+        self._check_login_rate(pair_throttle_key, LOGIN_FAILURE_LIMIT)
         user = self.repository.user_by_username(username_key)
         if user is None or not _verify_password(password, str(user["password_hash"])):
-            self._record_login_failure(throttle_key)
+            if ip_throttle_key:
+                self._record_login_failure(ip_throttle_key)
+            self._record_login_failure(pair_throttle_key)
             raise AuthError("invalid username or password", 401, "invalid_credentials")
         if str(user.get("status")) != "active":
             raise AuthError("user is disabled", 403, "user_disabled")
@@ -194,7 +201,7 @@ class AuthService:
                 403,
                 "eve_sso_required",
             )
-        self._clear_login_failures(throttle_key)
+        self._clear_login_failures(pair_throttle_key)
         return self._create_browser_session(user, "password")
 
     def begin_esi_login(self, return_to: str = "/") -> str:
@@ -858,19 +865,18 @@ class AuthService:
             "created_at": now or _now_iso(),
         }
 
-    def _check_login_rate(self, key: str) -> None:
-        import time
-
+    def _check_login_rate(self, key: str, limit: int = LOGIN_FAILURE_LIMIT) -> None:
         cutoff = time.monotonic() - LOGIN_WINDOW_SECONDS
         with self._login_lock:
             failures = [item for item in self._login_failures.get(key, []) if item >= cutoff]
-            self._login_failures[key] = failures
-            if len(failures) >= LOGIN_FAILURE_LIMIT:
+            if failures:
+                self._login_failures[key] = failures
+            else:
+                self._login_failures.pop(key, None)
+            if len(failures) >= max(1, int(limit)):
                 raise AuthError("too many login attempts", 429, "login_rate_limited")
 
     def _record_login_failure(self, key: str) -> None:
-        import time
-
         with self._login_lock:
             self._login_failures.setdefault(key, []).append(time.monotonic())
 

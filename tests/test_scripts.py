@@ -12,7 +12,6 @@ import pytest
 
 from app.server.intel_store import IntelStore
 from app.server.http_server import IntelHTTPServer
-from app.server.sqlite_store import SQLiteIntelStore
 
 
 def eve_chat_timestamp(offset_seconds: int = 0) -> str:
@@ -268,14 +267,33 @@ def test_monitor_ui_smoke_help_runs_from_repo_root():
 def test_nginx_template_disables_buffering_for_v1_event_stream():
     config = Path("deploy/linux/eve-sentry.nginx.conf").read_text(encoding="utf-8")
 
+    assert (
+        "limit_req_zone $binary_remote_addr "
+        "zone=eve_sentry_api:10m rate=20r/s;"
+    ) in config
+    assert (
+        "limit_conn_zone $binary_remote_addr zone=eve_sentry_sse:10m;"
+        in config
+    )
+    assert "client_max_body_size 1m;" in config
+    assert "limit_req_status 429;" in config
+    assert "limit_conn_status 429;" in config
     assert "location ~ ^/api/(v1/)?events$" in config
     event_location = config.split("location ~ ^/api/(v1/)?events$", 1)[1].split(
         "location /api/",
         1,
     )[0]
+    assert "limit_req zone=eve_sentry_api burst=40 nodelay;" in event_location
+    assert "limit_conn eve_sentry_sse 5;" in event_location
     assert "proxy_buffering off;" in event_location
     assert "proxy_cache off;" in event_location
     assert "proxy_read_timeout 3600s;" in event_location
+    assert "proxy_set_header X-Request-ID $request_id;" in event_location
+
+    api_location = config.split("location /api/", 1)[1].split("location /", 1)[0]
+    assert "limit_req zone=eve_sentry_api burst=40 nodelay;" in api_location
+    assert "limit_conn eve_sentry_sse" not in api_location
+    assert "proxy_set_header X-Request-ID $request_id;" in api_location
 
 
 def test_monitor_ui_smoke_constructs_main_window_offscreen_without_side_effects(
@@ -1781,7 +1799,6 @@ def test_run_server_builds_argv_from_environment():
             "EVE_SENTRY_SERVER_HOST": "0.0.0.0",
             "EVE_SENTRY_SERVER_PORT": "9000",
             "EVE_SENTRY_SERVER_STORAGE": "postgres",
-            "EVE_SENTRY_SERVER_DB": "/srv/eve/intel.sqlite3",
             "EVE_SENTRY_SERVER_POSTGRES_DSN": (
                 "postgresql://eve:secret@db.internal:5432/eve_sentry"
             ),
@@ -1814,8 +1831,6 @@ def test_run_server_builds_argv_from_environment():
         "9000",
         "--storage",
         "postgres",
-        "--db",
-        "/srv/eve/intel.sqlite3",
         "--postgres-dsn",
         "postgresql://eve:secret@db.internal:5432/eve_sentry",
         "--config",
@@ -1847,6 +1862,16 @@ def test_run_server_builds_argv_from_environment():
         "--esi-scope",
         "esi-characters.read_contacts.v1",
     ]
+
+
+def test_run_server_maps_report_retention_environment_option():
+    module = _load_script_module("run_server_retention", "scripts/run_server.py")
+
+    argv = module.build_server_argv(
+        {"EVE_SENTRY_SERVER_REPORT_RETENTION_DAYS": "90"}
+    )
+
+    assert argv == ["--report-retention-days", "90"]
 
 
 def test_run_server_main_appends_cli_args(monkeypatch):
@@ -1907,113 +1932,6 @@ def test_channel_smoke_posts_sample_chatlog_to_local_server(tmp_path):
         item["metadata"].get("hostile_count") == 3
         for item in payload["observations"]
     )
-
-
-def test_import_intel_json_dry_run_does_not_create_database(tmp_path):
-    json_path = tmp_path / "intel_reports.json"
-    db_path = tmp_path / "intel.sqlite3"
-    store = IntelStore(json_path, systems={}, links=[])
-    store.add_report(
-        "Tama",
-        ["Alice"],
-        source="ocr",
-        seen_at="2026-06-29T12:00:00+00:00",
-    )
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "scripts/import_intel_json.py",
-            "--source",
-            str(json_path),
-            "--db",
-            str(db_path),
-            "--dry-run",
-            "--json",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0
-    payload = json.loads(result.stdout)
-    assert payload["ok"] is True
-    assert payload["dry_run"] is True
-    assert payload["source_count"] == 1
-    assert payload["imported_count"] == 0
-    assert not db_path.exists()
-
-
-def test_import_intel_json_populates_sqlite_and_preserves_ack(tmp_path):
-    json_path = tmp_path / "intel_reports.json"
-    db_path = tmp_path / "intel.sqlite3"
-    store = IntelStore(json_path, systems={}, links=[])
-    report = store.add_report(
-        "Tama",
-        ["Alice"],
-        source="ocr",
-        seen_at="2026-06-29T12:00:00+00:00",
-    )
-    store.ack_alert(f"evt_{report.report_id}", acknowledged_by="client", note="sent")
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "scripts/import_intel_json.py",
-            "--source",
-            str(json_path),
-            "--db",
-            str(db_path),
-            "--json",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0
-    payload = json.loads(result.stdout)
-    assert payload["ok"] is True
-    assert payload["imported_count"] == 1
-    assert payload["final_count"] == 1
-
-    imported = SQLiteIntelStore(db_path, systems={}, links=[])
-    alert = imported.list_alerts()[0]
-    assert alert["source_observation_id"] == report.report_id
-    assert alert["acknowledged"] is True
-    assert alert["acknowledged_by"] == "client"
-    assert alert["acknowledgement_note"] == "sent"
-
-
-def test_import_intel_json_refuses_existing_database_without_replace(tmp_path):
-    json_path = tmp_path / "intel_reports.json"
-    db_path = tmp_path / "intel.sqlite3"
-    legacy = IntelStore(json_path, systems={}, links=[])
-    legacy.add_report("Tama", ["Alice"], source="ocr")
-    existing = SQLiteIntelStore(db_path, systems={}, links=[])
-    existing.add_report("Oijanen", ["Bob"], source="manual")
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "scripts/import_intel_json.py",
-            "--source",
-            str(json_path),
-            "--db",
-            str(db_path),
-            "--json",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 1
-    payload = json.loads(result.stdout)
-    assert payload["ok"] is False
-    assert "already contains reports" in payload["error"]
-    assert len(SQLiteIntelStore(db_path, systems={}, links=[]).list_reports()) == 1
 
 
 def _load_script_module(name: str, relative_path: str):

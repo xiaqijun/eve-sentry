@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import threading
@@ -990,6 +992,167 @@ class IntelStore:
             system_key="system_name",
         )
 
+    def report_page(
+        self,
+        *,
+        cursor: str = "",
+        limit: int = 100,
+        system: str | None = None,
+        name: str | None = None,
+        include_suppressed: bool = False,
+    ) -> dict[str, Any]:
+        """Return a deterministic keyset-paginated report page."""
+        reports, next_cursor = self._report_page_items(
+            cursor=cursor,
+            limit=limit,
+            system=system,
+            name=name,
+            include_suppressed=include_suppressed,
+        )
+        return {
+            "reports": [report.to_dict() for report in reports],
+            "next_cursor": next_cursor,
+        }
+
+    def observation_page(
+        self,
+        *,
+        cursor: str = "",
+        limit: int = 100,
+        source: str | None = None,
+        system: str | None = None,
+        name: str | None = None,
+        include_suppressed: bool = False,
+    ) -> dict[str, Any]:
+        """Return a deterministic keyset-paginated observation page."""
+        reports, next_cursor = self._report_page_items(
+            cursor=cursor,
+            limit=limit,
+            source=source,
+            system=system,
+            name=name,
+            include_suppressed=include_suppressed,
+        )
+        return {
+            "observations": [
+                report.to_observation().to_dict() for report in reports
+            ],
+            "next_cursor": next_cursor,
+        }
+
+    def _report_page_items(
+        self,
+        *,
+        cursor: str,
+        limit: int,
+        source: str | None = None,
+        system: str | None = None,
+        name: str | None = None,
+        include_suppressed: bool = False,
+    ) -> tuple[list[IntelReport], str]:
+        limit = self._validate_page_limit(limit)
+        anchor = self._decode_report_page_cursor(cursor)
+        reports = sorted(
+            self._reports_snapshot(),
+            key=self._report_page_key,
+            reverse=True,
+        )
+        visible = self._visible_reports(
+            reports,
+            include_suppressed=include_suppressed,
+        )
+        filtered = [
+            report
+            for report in visible
+            if (anchor is None or self._report_page_key(report) < anchor)
+            and self._report_matches_page_filters(
+                report,
+                source=source,
+                system=system,
+                name=name,
+            )
+        ]
+        page = filtered[:limit]
+        next_cursor = (
+            self._encode_report_page_cursor(page[-1])
+            if len(filtered) > limit and page
+            else ""
+        )
+        return page, next_cursor
+
+    def _report_matches_page_filters(
+        self,
+        report: IntelReport,
+        *,
+        source: str | None = None,
+        system: str | None = None,
+        name: str | None = None,
+    ) -> bool:
+        source_query = str(source or "").strip().casefold()
+        system_query = str(system or "").strip().casefold()
+        name_query = str(name or "").strip().casefold()
+        if source_query and report.source.casefold() != source_query:
+            return False
+        if system_query and report.system.casefold() != system_query:
+            return False
+        return not name_query or any(
+            value.casefold() == name_query for value in report.names
+        )
+
+    def _validate_page_limit(self, limit: int) -> int:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        if limit > 1000:
+            raise ValueError("limit must not exceed 1000")
+        return limit
+
+    def _report_page_key(self, report: IntelReport) -> tuple[str, str, str]:
+        return (
+            str(report.seen_at or ""),
+            str(report.received_at or ""),
+            str(report.report_id or ""),
+        )
+
+    def _encode_report_page_cursor(self, report: IntelReport) -> str:
+        payload = json.dumps(
+            [1, *self._report_page_key(report)],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+    def _decode_report_page_cursor(
+        self,
+        cursor: str,
+    ) -> tuple[str, str, str] | None:
+        token = str(cursor or "").strip()
+        if not token:
+            return None
+        if len(token) > 2048:
+            raise ValueError("invalid pagination cursor")
+        try:
+            padding = "=" * (-len(token) % 4)
+            raw = base64.urlsafe_b64decode((token + padding).encode("ascii"))
+            payload = json.loads(raw.decode("utf-8"))
+        except (
+            UnicodeDecodeError,
+            UnicodeEncodeError,
+            binascii.Error,
+            json.JSONDecodeError,
+            ValueError,
+        ) as exc:
+            raise ValueError("invalid pagination cursor") from exc
+        if (
+            not isinstance(payload, list)
+            or len(payload) != 4
+            or payload[0] != 1
+            or not all(isinstance(value, str) for value in payload[1:])
+            or any(len(value) > 256 for value in payload[1:])
+            or not payload[3]
+        ):
+            raise ValueError("invalid pagination cursor")
+        return payload[1], payload[2], payload[3]
+
     def record_ocr_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Record one detector OCR snapshot and update active intel state."""
         client_id = str(payload.get("client_id") or "").strip()
@@ -1545,6 +1708,66 @@ class IntelStore:
             self._alert_cache.pop(report_id, None)
             self._save_reports()
             return True
+
+    def prune_reports_older_than(
+        self,
+        retention_days: int,
+        *,
+        now: str | None = None,
+    ) -> int:
+        """Delete reports received before the configured retention window."""
+        if isinstance(retention_days, bool) or not isinstance(retention_days, int):
+            raise ValueError("retention_days must be an integer")
+        if retention_days < 0:
+            raise ValueError("retention_days must not be negative")
+        if retention_days == 0:
+            return 0
+
+        now_at = self._parse_timestamp(now or utc_now_iso())
+        if now_at is None:
+            raise ValueError("now must be an ISO timestamp")
+        cutoff = now_at - timedelta(days=retention_days)
+
+        with self._lock:
+            protected_ids = {
+                report_id
+                for item in self._active_intel.values()
+                if item.active
+                for report_id in item.source_observation_ids
+            }
+            retained: list[IntelReport] = []
+            removed_ids: list[str] = []
+            for report in self._reports:
+                received_at = self._parse_timestamp(
+                    report.received_at or report.seen_at
+                )
+                if (
+                    report.report_id in protected_ids
+                    or received_at is None
+                    or received_at >= cutoff
+                ):
+                    retained.append(report)
+                else:
+                    removed_ids.append(report.report_id)
+
+            if not removed_ids:
+                return 0
+
+            previous_reports = self._reports
+            self._reports = retained
+            try:
+                self._persist_pruned_reports(removed_ids)
+            except Exception:
+                self._reports = previous_reports
+                raise
+            for report_id in removed_ids:
+                self._alert_cache.pop(report_id, None)
+            return len(removed_ids)
+
+    def _persist_pruned_reports(self, report_ids: list[str]) -> None:
+        """Persist report pruning for the file-backed store."""
+        _ = report_ids
+        self._save_reports()
 
     def record_heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Record one client heartbeat in memory for runtime diagnostics."""

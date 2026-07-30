@@ -74,6 +74,8 @@ EVE_SENTRY_SERVER_HOST=127.0.0.1
 EVE_SENTRY_SERVER_PORT=8765
 EVE_SENTRY_SERVER_STORAGE=postgres
 EVE_SENTRY_SERVER_POSTGRES_DSN=postgresql://eve_sentry:CHANGE_ME@127.0.0.1:5432/eve_sentry
+EVE_SENTRY_SERVER_HOT_REPORT_LIMIT=5000
+EVE_SENTRY_SERVER_REPORT_RETENTION_DAYS=0
 EVE_SENTRY_SERVER_CONFIG=/var/lib/eve-sentry/intel_config.json
 EVE_SENTRY_SERVER_AUTH_MODE=setup
 EVE_SENTRY_SERVER_MAP_SOURCE=sde
@@ -84,6 +86,10 @@ EVE_SENTRY_SERVER_ESI_REDIRECT_URI=http://YOUR_SERVER/api/v1/auth/esi/callback
 EVE_SENTRY_SERVER_ESI_TOKEN_FILE=/var/lib/eve-sentry/esi_tokens.json
 EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain
 ```
+
+`EVE_SENTRY_SERVER_REPORT_RETENTION_DAYS` 默认为 `0`，不会自动删除历史。设为正整数后，
+服务端每次启动会按 `received_at` 删除超出窗口的报告；仍被活跃情报引用的报告会保留。
+启用前先备份数据库。PostgreSQL 使用批量删除，JSON 存储会重写保留后的文件。
 
 认证不依赖 HTTPS 才能启用。HTTP 仅适合可信网络；公网建议配置 TLS，并把回调地址、
 客户端地址和机器人地址统一切换为 HTTPS。
@@ -133,6 +139,10 @@ sudo journalctl -u eve-sentry -f
 sudo systemctl restart eve-sentry
 ```
 
+服务端为每个请求输出一条 INFO 级 JSON 访问记录，字段包括 `request_id`、方法、无查询
+参数的路径、状态码和耗时。所有响应同时返回 `X-Request-ID`；仓库提供的 Nginx 模板会
+用 `$request_id` 串联代理与应用日志。访问记录不会写入查询参数、认证头、Cookie 或请求体。
+
 ## 前端与反向代理
 
 ```bash
@@ -176,7 +186,7 @@ npm run build
 `.github/workflows/deploy-server.yml` 在每次 `main` 推送后执行完整 Python 测试、前端
 测试和生产构建。验证通过后，工作流上传单一部署归档并调用
 `deploy/ci/deploy_release.sh`。远端流程使用部署锁，备份受管理的后端文件、前端静态
-目录和 systemd 单元，安装服务端依赖并重启；健康检查失败时自动恢复备份。默认保留
+目录和 systemd 单元，安装服务端依赖并重启；就绪检查失败时自动恢复备份。默认保留
 最近 5 次部署备份。
 
 GitHub Actions 配置：
@@ -188,7 +198,7 @@ GitHub Actions 配置：
 | Variable | `EVE_SENTRY_DEPLOY_HOST` | 部署主机 |
 | Variable | `EVE_SENTRY_DEPLOY_USER` | SSH 用户 |
 | Variable | `EVE_SENTRY_DEPLOY_PORT` | SSH 端口 |
-| Variable | `EVE_SENTRY_PUBLIC_URL` | 部署后的公开健康检查地址 |
+| Variable | `EVE_SENTRY_PUBLIC_URL` | 部署后的公开站点根地址 |
 
 日常部署不需要人工操作。只有工作流失败时，才使用 `workflow_dispatch` 重跑或查看远端
 备份和服务日志。
@@ -196,6 +206,8 @@ GitHub Actions 配置：
 ## 验证
 
 ```bash
+curl http://127.0.0.1:8765/api/livez
+curl http://127.0.0.1:8765/api/readyz
 curl http://127.0.0.1:8765/api/health
 curl -H "Authorization: Bearer $EVE_SENTRY_API_KEY" \
   http://127.0.0.1:8765/api/v1/clients

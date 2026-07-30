@@ -23,11 +23,20 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
     _append_option(argv, "--port", values.get("EVE_SENTRY_SERVER_PORT", ""))
     _append_option(argv, "--storage", values.get("EVE_SENTRY_SERVER_STORAGE", ""))
     _append_option(argv, "--data", values.get("EVE_SENTRY_SERVER_DATA", ""))
-    _append_option(argv, "--db", values.get("EVE_SENTRY_SERVER_DB", ""))
+    _append_option(
+        argv,
+        "--report-retention-days",
+        values.get("EVE_SENTRY_SERVER_REPORT_RETENTION_DAYS", ""),
+    )
     _append_option(
         argv,
         "--postgres-dsn",
         values.get("EVE_SENTRY_SERVER_POSTGRES_DSN", ""),
+    )
+    _append_option(
+        argv,
+        "--hot-report-limit",
+        values.get("EVE_SENTRY_SERVER_HOT_REPORT_LIMIT", ""),
     )
     _append_option(argv, "--auth-mode", values.get("EVE_SENTRY_SERVER_AUTH_MODE", ""))
     _append_option(

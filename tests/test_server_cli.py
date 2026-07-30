@@ -4,14 +4,14 @@ from app.server import __main__ as server_main
 from app.server.__main__ import build_arg_parser
 from app.server.intel_store import IntelStore, StarSystem
 from app.server.postgres_store import PostgreSQLIntelStore
-from app.server.sqlite_store import SQLiteIntelStore
 
 
-def test_server_cli_defaults_to_sqlite_storage():
+def test_server_cli_defaults_to_postgres_storage():
     args = build_arg_parser().parse_args([])
 
-    assert args.storage == "sqlite"
-    assert args.db == "intel.sqlite3"
+    assert args.storage == "postgres"
+    assert args.postgres_dsn == ""
+    assert args.hot_report_limit == 5000
     assert args.data == "intel_reports.json"
     assert args.map_config == "intel_map.json"
     assert args.map_source is None
@@ -32,7 +32,7 @@ def test_server_cli_defaults_to_sqlite_storage():
     assert args.esi_scopes == []
 
 
-def test_server_cli_can_select_legacy_json_storage():
+def test_server_cli_can_select_json_storage():
     args = build_arg_parser().parse_args(
         ["--storage", "json", "--data", "legacy.json"]
     )
@@ -63,6 +63,86 @@ def test_server_cli_requires_postgres_dsn():
         server_main._validate_args(parser, args)
 
 
+def test_server_cli_report_retention_defaults_off_and_rejects_negative_values():
+    parser = build_arg_parser()
+    defaults = parser.parse_args([])
+    invalid = parser.parse_args(["--report-retention-days", "-1"])
+
+    assert defaults.report_retention_days == 0
+    with pytest.raises(SystemExit):
+        server_main._validate_args(parser, invalid)
+
+
+def test_server_cli_prunes_reports_on_startup_when_explicitly_enabled(tmp_path):
+    json_path = tmp_path / "intel_reports.json"
+    seed = IntelStore(json_path)
+    old = seed.add_observation(
+        {
+            "source": "manual",
+            "system_name": "Tama",
+            "names": ["Old Pilot"],
+            "seen_at": "2000-01-01T00:00:00+00:00",
+            "received_at": "2000-01-01T00:00:00+00:00",
+        }
+    )
+    recent = seed.add_observation(
+        {
+            "source": "manual",
+            "system_name": "Tama",
+            "names": ["Recent Pilot"],
+            "seen_at": "2099-01-01T00:00:00+00:00",
+            "received_at": "2099-01-01T00:00:00+00:00",
+        }
+    )
+    seed.close()
+    args = build_arg_parser().parse_args(
+        [
+            "--storage",
+            "json",
+            "--data",
+            str(json_path),
+            "--report-retention-days",
+            "30",
+        ]
+    )
+
+    store = server_main._build_store(args)
+    try:
+        assert [item["id"] for item in store.list_reports()] == [
+            recent.observation_id
+        ]
+        assert old.observation_id not in {
+            item["id"] for item in store.list_reports()
+        }
+    finally:
+        store.close()
+
+
+def test_server_cli_closes_store_when_startup_retention_fails(monkeypatch):
+    calls = []
+
+    class FailingStore:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def prune_reports_older_than(self, retention_days):
+            calls.append(("prune", retention_days))
+            raise RuntimeError("pruning failed")
+
+        def close(self):
+            calls.append(("close",))
+
+    monkeypatch.setattr(server_main, "IntelStore", FailingStore)
+    args = build_arg_parser().parse_args(
+        ["--storage", "json", "--report-retention-days", "30"]
+    )
+
+    with pytest.raises(RuntimeError, match="pruning failed"):
+        server_main._build_store(args)
+
+    assert calls == [("prune", 30), ("close",)]
+
+
 def test_server_cli_accepts_map_sde_options():
     args = build_arg_parser().parse_args(
         [
@@ -88,9 +168,8 @@ def test_server_cli_accepts_map_sde_options():
     assert args.map_refresh_on_start is True
 
 
-def test_server_cli_default_store_uses_sqlite_and_imports_legacy_json(tmp_path):
+def test_server_cli_json_store_uses_existing_data(tmp_path):
     json_path = tmp_path / "intel_reports.json"
-    db_path = tmp_path / "intel.sqlite3"
     legacy = IntelStore(json_path, systems={}, links=[])
     legacy.add_report(
         "Tama",
@@ -98,15 +177,17 @@ def test_server_cli_default_store_uses_sqlite_and_imports_legacy_json(tmp_path):
         source="ocr",
         seen_at="2026-06-29T12:00:00+00:00",
     )
+    legacy.close()
     args = build_arg_parser().parse_args(
-        ["--db", str(db_path), "--data", str(json_path)]
+        ["--storage", "json", "--data", str(json_path)]
     )
 
     store = server_main._build_store(args)
-
-    assert isinstance(store, SQLiteIntelStore)
-    assert db_path.exists()
-    assert [report["names"] for report in store.list_reports()] == [["Alice"]]
+    try:
+        assert isinstance(store, IntelStore)
+        assert [report["names"] for report in store.list_reports()] == [["Alice"]]
+    finally:
+        store.close()
 
 
 def test_server_cli_build_store_can_use_legacy_json_storage(tmp_path):
@@ -119,7 +200,6 @@ def test_server_cli_build_store_can_use_legacy_json_storage(tmp_path):
     report = store.add_report("Tama", ["Bob"], seen_at="2026-06-29T12:00:00+00:00")
 
     assert isinstance(store, IntelStore)
-    assert not isinstance(store, SQLiteIntelStore)
     assert json_path.exists()
     assert [item["id"] for item in store.list_reports()] == [report.report_id]
 
@@ -138,6 +218,7 @@ def test_server_cli_build_store_can_use_postgres_storage(monkeypatch):
             scorer=None,
             enricher=None,
             allow_unmapped_systems=True,
+            hot_report_limit=5000,
         ):
             calls.append(
                 {
@@ -149,6 +230,7 @@ def test_server_cli_build_store_can_use_postgres_storage(monkeypatch):
                     "scorer": scorer,
                     "enricher": enricher,
                     "allow_unmapped_systems": allow_unmapped_systems,
+                    "hot_report_limit": hot_report_limit,
                 }
             )
 
@@ -188,6 +270,7 @@ def test_server_cli_build_store_can_use_postgres_storage(monkeypatch):
             "scorer": "scorer",
             "enricher": "enricher",
             "allow_unmapped_systems": False,
+            "hot_report_limit": 5000,
         }
     ]
 
@@ -333,18 +416,26 @@ def test_server_cli_login_only_runs_login_and_exits(monkeypatch):
     monkeypatch.setattr(server_main, "_run_esi_login", fake_login)
 
     code = server_main.main(
-        ["--esi-login-only", "--esi-client-id", "client-id", "--esi-no-browser"]
+        [
+            "--storage",
+            "json",
+            "--esi-login-only",
+            "--esi-client-id",
+            "client-id",
+            "--esi-no-browser",
+        ]
     )
 
     assert code == 0
     assert calls == ["client-id"]
 
 
-def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
-    calls = {"build_store": [], "server": []}
+def test_server_cli_main_starts_server_with_default_postgres_store(monkeypatch):
+    calls = {"build_store": [], "server": [], "lifecycle": []}
 
     class DummyStore:
-        pass
+        def close(self):
+            calls["lifecycle"].append("store.close")
 
     class DummyServer:
         url = "http://127.0.0.1:8765"
@@ -374,10 +465,10 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
                 )
 
         def start(self):
-            return None
+            calls["lifecycle"].append("server.start")
 
         def stop(self):
-            return None
+            calls["lifecycle"].append("server.stop")
 
     class DummyConfigStore:
         def __init__(self, path):
@@ -397,7 +488,6 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
         calls["build_store"].append(
             {
                 "storage": args.storage,
-                "db": args.db,
                 "data": args.data,
                 "systems": systems,
                 "links": links,
@@ -408,23 +498,24 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
         )
         return DummyStore()
 
-    def fake_sleep(seconds):
-        raise KeyboardInterrupt()
+    def fake_wait_for_shutdown():
+        calls["lifecycle"].append("wait")
 
     monkeypatch.setattr(server_main, "_build_store", fake_build_store)
     monkeypatch.setattr(server_main, "IntelHTTPServer", DummyServer)
-    monkeypatch.setattr(server_main.time, "sleep", fake_sleep)
+    monkeypatch.setattr(server_main, "_wait_for_shutdown", fake_wait_for_shutdown)
     monkeypatch.setattr(
         "app.intel.config.IntelConfigStore",
         DummyConfigStore,
     )
 
-    code = server_main.main([])
+    code = server_main.main(
+        ["--postgres-dsn", "postgresql://example.test/eve_sentry"]
+    )
 
     assert code == 0
     assert len(calls["build_store"]) == 1
-    assert calls["build_store"][0]["storage"] == "sqlite"
-    assert calls["build_store"][0]["db"] == "intel.sqlite3"
+    assert calls["build_store"][0]["storage"] == "postgres"
     assert calls["build_store"][0]["data"] == "intel_reports.json"
     assert calls["build_store"][0]["resolver"] is None
     assert calls["build_store"][0]["scorer"] == "dummy-scorer"
@@ -439,3 +530,51 @@ def test_server_cli_main_starts_server_with_default_sqlite_store(monkeypatch):
     assert calls["server"][0]["esi_config"]["client_id_configured"] is False
     assert calls["server"][0]["esi_login"] is None
     assert calls["server"][0]["map_config_store"] is not None
+    assert calls["lifecycle"] == [
+        "server.start",
+        "wait",
+        "server.stop",
+        "store.close",
+    ]
+
+
+def test_wait_for_shutdown_handles_sigterm_and_restores_handlers(monkeypatch):
+    installed = {}
+    calls = []
+    previous_handlers = {
+        server_main.signal.SIGINT: object(),
+        server_main.signal.SIGTERM: object(),
+    }
+
+    class FakeEvent:
+        def __init__(self):
+            self.was_set = False
+
+        def set(self):
+            self.was_set = True
+
+        def wait(self):
+            installed[server_main.signal.SIGTERM](server_main.signal.SIGTERM, None)
+            assert self.was_set is True
+
+    def fake_signal(signum, handler):
+        calls.append((signum, handler))
+        installed[signum] = handler
+
+    monkeypatch.setattr(server_main.threading, "Event", FakeEvent)
+    monkeypatch.setattr(
+        server_main.signal,
+        "getsignal",
+        lambda signum: previous_handlers[signum],
+    )
+    monkeypatch.setattr(server_main.signal, "signal", fake_signal)
+
+    server_main._wait_for_shutdown()
+
+    assert installed == previous_handlers
+    assert [signum for signum, _ in calls] == [
+        server_main.signal.SIGINT,
+        server_main.signal.SIGTERM,
+        server_main.signal.SIGINT,
+        server_main.signal.SIGTERM,
+    ]

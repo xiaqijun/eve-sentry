@@ -1,12 +1,12 @@
 from app.server.auth import AuthService
 from app.server.auth_store import AuthRepository
 from app.server.http_server import IntelHTTPServer
-from app.server.sqlite_store import SQLiteIntelStore
+from tests.auth_test_store import AuthTestStore
 from tests.test_http_server import AuthTestResolver, authenticated_request
 
 
 def test_setup_mode_keeps_data_open_but_protects_auth_management(tmp_path):
-    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(
         AuthRepository(store._connect),
         AuthTestResolver(),
@@ -29,6 +29,7 @@ def test_setup_mode_keeps_data_open_but_protects_auth_management(tmp_path):
         assert payload["code"] == "authentication_required"
     finally:
         server.stop()
+        store.close()
 
 
 def test_cli_accepts_setup_auth_mode():

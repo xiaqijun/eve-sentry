@@ -90,7 +90,7 @@ EVE_SENTRY_PUBLIC_URL=http://YOUR_SERVER
 
 - 网页会话 Cookie 为 `HttpOnly; SameSite=Strict`；HTTPS 请求额外设置 `Secure`。
 - 网页非只读请求必须携带 `X-CSRF-Token`。
-- 登录接口有失败限流。
+- 管理员登录同时按“IP + 用户名”和 IP 汇总失败次数限流，避免轮换用户名绕过。
 - 普通用户不能访问 `/api/v1/admin/*`。
 - 只读服务密钥不能写入数据，也不能读取其授权范围外的接口。
 - SSE 每 30 秒检查一次主体状态，认证变更会主动唤醒检查。

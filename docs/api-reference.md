@@ -18,10 +18,16 @@ Authorization: Bearer eve_xxx
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/api/health` | 服务、存储、地图、ESI 和事件流状态 |
+| `GET` | `/api/livez` | 进程存活探针，不访问外部依赖 |
+| `GET` | `/api/readyz` | 存储就绪探针，未就绪时返回 `503` |
+| `GET` | `/api/health` | 已脱敏的服务、存储、地图、ESI 和事件流状态 |
 | `POST` | `/api/v1/auth/login` | 管理员密码登录 |
 | `GET` | `/api/v1/auth/esi/start` | 开始普通用户 EVE SSO 登录 |
 | `GET` | `/api/v1/auth/esi/callback` | 统一 EVE SSO 回调 |
+
+所有 HTTP 响应都包含 `X-Request-ID`，可用于关联服务端访问日志。可信的本机反向代理
+可以传入最长 64 个字符、仅含字母、数字、点、下划线和连字符的请求 ID；其他来源由
+服务端重新生成。`/api/health` 的 `events.sse.active_connections` 给出当前 SSE 连接数。
 
 ## 账号与管理
 
@@ -62,6 +68,18 @@ Authorization: Bearer eve_xxx
 | `GET/POST` | `/api/v1/reports` | 历史上报读取和写入 |
 | `GET/POST` | `/api/v1/observations` | 规范化观察记录读取和写入 |
 | `POST` | `/api/v1/channel-lines` | 独立频道客户端上传日志行 |
+
+历史报告和观察记录支持显式游标分页。首个请求传 `cursor=start`，后续请求原样传回
+`next_cursor`；`next_cursor` 为 `null` 表示结束。分页默认每页 100 条，`limit` 最大 1000。
+使用后续游标时应保持 `source`、`system` 和 `name` 筛选条件不变。例如：
+
+```http
+GET /api/v1/observations?cursor=start&limit=100&source=intel_channel
+GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
+```
+
+未传 `cursor` 时继续使用原列表行为和原响应结构。PostgreSQL 分页直接使用数据库
+键集查询，不会为单次分页请求复制和排序完整历史列表。
 
 SSE 常用查询参数：
 

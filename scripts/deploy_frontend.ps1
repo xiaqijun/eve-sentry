@@ -5,10 +5,10 @@ Build and deploy the React workbench to the production static directory.
 .DESCRIPTION
 Runs a deterministic frontend install, tests, and build; uploads a compressed
 artifact over SSH; creates a timestamped remote backup; deploys with rsync; and
-verifies both the backend health endpoint and the public static assets.
+    verifies both backend readiness and the public static assets.
 
 The remote script restores the backup automatically when extraction, sync, or
-the remote health check fails after deployment starts.
+    the remote readiness check fails after deployment starts.
 
 .EXAMPLE
 .\scripts\deploy_frontend.ps1 `
@@ -24,7 +24,7 @@ param(
     [ValidatePattern('^/[A-Za-z0-9_./-]+$')]
     [string]$RemoteRoot = "/opt/1panel/www/eve-sentry",
     [ValidatePattern('^https?://[A-Za-z0-9_.:/-]+$')]
-    [string]$RemoteHealthUrl = "http://127.0.0.1:8765/api/health",
+    [string]$RemoteHealthUrl = "http://127.0.0.1:8765/api/readyz",
     [ValidatePattern('^(|https?://[A-Za-z0-9_.:/-]+)$')]
     [string]$PublicUrl = "",
     [switch]$SkipInstall,
@@ -208,9 +208,9 @@ echo "ASSET_SHA256=$asset_sha256"
         if ($publicAsset.StatusCode -ne 200) {
             throw "The public JavaScript asset returned HTTP $($publicAsset.StatusCode)."
         }
-        $publicHealth = Invoke-RestMethod -Uri "$publicBase/api/health" -TimeoutSec 20
-        if (-not $publicHealth.health.ok) {
-            throw "The public API health check did not report health.ok=true."
+        $publicReadiness = Invoke-RestMethod -Uri "$publicBase/api/readyz" -TimeoutSec 20
+        if (-not $publicReadiness.ok) {
+            throw "The public API readiness check did not report ok=true."
         }
     }
 

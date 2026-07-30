@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import os
+import re
 import threading
 import time
-import hashlib
+import uuid
+from functools import wraps
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from ipaddress import ip_address
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -20,10 +25,34 @@ from app.server.auth_http import AuthHttpMixin
 from app.server.intel_store import IntelStore, utc_now_iso
 
 logger = logging.getLogger(__name__)
+access_logger = logging.getLogger(f"{__name__}.access")
 API_V1_PREFIX = "/api/v1"
 _EVENT_STREAM_CONDITION = threading.Condition()
 _EVENT_STREAM_GENERATION = 0
+_ACTIVE_EVENT_STREAMS = 0
 SSE_AUTH_RECHECK_SECONDS = 30.0
+MAX_JSON_BODY_BYTES = 1024 * 1024
+MAX_QUERY_LIMIT = 1000
+MAX_SSE_TIMEOUT_SECONDS = 300.0
+MAX_SSE_HEARTBEAT_SECONDS = 60.0
+MAX_ACCESS_LOG_PATH_CHARS = 512
+_REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
+
+
+class RequestBodyError(ValueError):
+    """Request body error with the HTTP status that should be returned."""
+
+    def __init__(
+        self,
+        message: str,
+        status: HTTPStatus = HTTPStatus.BAD_REQUEST,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def _request_error_status(exc: ValueError) -> HTTPStatus:
+    return getattr(exc, "status", HTTPStatus.BAD_REQUEST)
 
 
 def _notify_event_streams() -> None:
@@ -46,6 +75,29 @@ def _wait_for_event_stream_change(generation: int, timeout: float) -> None:
     with _EVENT_STREAM_CONDITION:
         if _EVENT_STREAM_GENERATION == generation:
             _EVENT_STREAM_CONDITION.wait(timeout=timeout)
+
+
+def _active_event_stream_count() -> int:
+    """Return the number of SSE responses currently being served."""
+    with _EVENT_STREAM_CONDITION:
+        return _ACTIVE_EVENT_STREAMS
+
+
+def _track_event_stream(method):
+    """Track an event-stream handler for its full response lifetime."""
+
+    @wraps(method)
+    def tracked(*args, **kwargs):
+        global _ACTIVE_EVENT_STREAMS
+        with _EVENT_STREAM_CONDITION:
+            _ACTIVE_EVENT_STREAMS += 1
+        try:
+            return method(*args, **kwargs)
+        finally:
+            with _EVENT_STREAM_CONDITION:
+                _ACTIVE_EVENT_STREAMS = max(0, _ACTIVE_EVENT_STREAMS - 1)
+
+    return tracked
 
 
 def _next_monitoring_heartbeat_stale_in(client_snapshot: Any) -> float | None:
@@ -186,6 +238,70 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
 
     server_version = "EveSentryIntel/1.0"
 
+    def handle_one_request(self) -> None:
+        """Serve one request and emit one structured access-log record."""
+        self._request_id = uuid.uuid4().hex
+        self._response_status = None
+        started_at = time.perf_counter()
+        try:
+            super().handle_one_request()
+        finally:
+            if getattr(self, "raw_requestline", b""):
+                self._log_access_request(started_at)
+
+    def parse_request(self) -> bool:
+        """Adopt a safe upstream request ID after parsing request headers."""
+        parsed = super().parse_request()
+        peer = str(getattr(self, "client_address", ("",))[0]).strip()
+        try:
+            peer_is_loopback = ip_address(peer).is_loopback
+        except ValueError:
+            peer_is_loopback = False
+        if parsed and peer_is_loopback:
+            request_id = str(self.headers.get("X-Request-ID") or "").strip()
+            if _REQUEST_ID_PATTERN.fullmatch(request_id):
+                self._request_id = request_id
+        return parsed
+
+    def end_headers(self) -> None:
+        self.send_header("X-Request-ID", self._request_id)
+        self.send_header("Access-Control-Expose-Headers", "X-Request-ID")
+        super().end_headers()
+
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        """Capture response status; final logging happens after the response."""
+        _ = size
+        try:
+            self._response_status = int(code)
+        except (TypeError, ValueError):
+            self._response_status = None
+
+    def _log_access_request(self, started_at: float) -> None:
+        duration_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+        raw_path = str(getattr(self, "path", "") or "")
+        try:
+            path = urlparse(raw_path).path or "/"
+        except ValueError:
+            path = "/"
+        path = path[:MAX_ACCESS_LOG_PATH_CHARS]
+        record = {
+            "event": "http_request",
+            "request_id": self._request_id,
+            "method": str(getattr(self, "command", "") or ""),
+            "path": path,
+            "status": self._response_status,
+            "duration_ms": round(duration_ms, 3),
+        }
+        access_logger.info(
+            json.dumps(record, ensure_ascii=True, separators=(",", ":"))
+        )
+
+    def _send_auth_exception(self, exc: Exception) -> None:
+        if isinstance(exc, RequestBodyError):
+            self._send_json({"error": str(exc)}, exc.status)
+            return
+        super()._send_auth_exception(exc)
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
@@ -198,6 +314,18 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         if path == "/api/health":
             self._send_json({"health": self._health_payload()})
+            return
+        if path == "/api/livez":
+            self._send_json({"ok": True})
+            return
+        if path == "/api/readyz":
+            payload = self._readiness_payload()
+            status = (
+                HTTPStatus.OK
+                if payload["ok"]
+                else HTTPStatus.SERVICE_UNAVAILABLE
+            )
+            self._send_json(payload, status)
             return
         if path == "/api/heartbeats":
             self._send_json(self._store().heartbeat_snapshot())
@@ -501,7 +629,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             try:
                 payload = self._read_optional_json()
             except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
 
             alert = self._store().ack_alert(
@@ -521,7 +649,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             try:
                 result = self._add_channel_line(self._read_json())
             except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
             if not result.get("ignored"):
                 _notify_event_streams()
@@ -534,7 +662,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             try:
                 heartbeat = self._store().record_heartbeat(self._read_json())
             except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
             _notify_event_streams()
             self._send_json({"ok": True, "heartbeat": heartbeat}, HTTPStatus.CREATED)
@@ -556,7 +684,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     refresh_if_needed=False,
                 )
             except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
             except Exception as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
@@ -606,7 +734,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             )
             _notify_event_streams()
         except (ValueError, json.JSONDecodeError) as exc:
-            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            self._send_json({"error": str(exc)}, _request_error_status(exc))
             return
 
         self._send_json(
@@ -640,7 +768,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     refresh_if_needed=config.get("source") in {"sde", "esi"},
                 )
             except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
 
             self._store().set_map_data(systems, links, allow_unmapped_systems=False)
@@ -669,7 +797,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             payload = self._read_json()
             config = config_store.update(payload)
         except (ValueError, json.JSONDecodeError) as exc:
-            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            self._send_json({"error": str(exc)}, _request_error_status(exc))
             return
 
         self._store().set_scorer(config.build_scorer())
@@ -988,7 +1116,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             try:
                 payload = self._read_optional_json()
             except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
             alert = self._store().ack_alert(
                 alert_id,
@@ -1006,7 +1134,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             try:
                 result = self._add_channel_line(self._read_json())
             except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
             if not result.get("ignored"):
                 _notify_event_streams()
@@ -1019,7 +1147,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             try:
                 result = self._store().record_ocr_snapshot(self._read_json())
             except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
             _notify_event_streams()
             status = HTTPStatus.CREATED if result.get("created") else HTTPStatus.OK
@@ -1029,7 +1157,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             try:
                 heartbeat = self._store().record_heartbeat(self._read_json())
             except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
             _notify_event_streams()
             self._send_json({"ok": True, "heartbeat": heartbeat}, HTTPStatus.CREATED)
@@ -1051,7 +1179,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             payload = self._read_json()
             config = config_store.update(payload)
         except (ValueError, json.JSONDecodeError) as exc:
-            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            self._send_json({"error": str(exc)}, _request_error_status(exc))
             return
         self._store().set_scorer(config.build_scorer())
         self._send_json({"ok": True, "config": config.to_dict()})
@@ -1083,7 +1211,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             )
             _notify_event_streams()
         except (ValueError, json.JSONDecodeError) as exc:
-            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            self._send_json({"error": str(exc)}, _request_error_status(exc))
             return
         self._send_json(
             {
@@ -1109,6 +1237,34 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             "config": self._config_store().to_dict() if self._config_store() else None,
             "esi": self._esi_status_payload(),
         }
+
+    def _public_esi_health(self) -> dict[str, Any]:
+        status = self._esi_status_payload()
+        public_status = {
+            key: status[key]
+            for key in (
+                "enabled",
+                "public",
+                "authenticated",
+                "session",
+                "expired",
+            )
+            if key in status
+        }
+        config = status.get("config")
+        if isinstance(config, dict):
+            public_status["config"] = {
+                key: config[key]
+                for key in (
+                    "client_id_configured",
+                    "token_file_present",
+                    "token_storage",
+                )
+                if key in config
+            }
+        if status.get("error"):
+            public_status["degraded"] = True
+        return public_status
 
     def _event_bootstrap_payload(
         self,
@@ -1450,6 +1606,26 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         query = parse_qs(raw_query)
         try:
             limit = self._parse_optional_int(query.get("limit", [""])[0])
+            cursor_values = query.get("cursor")
+            if cursor_values:
+                cursor = str(cursor_values[0] or "").strip()
+                page = self._store().report_page(
+                    cursor="" if cursor == "start" else cursor,
+                    system=query.get("system", [""])[0],
+                    name=query.get("name", [""])[0],
+                    limit=limit or 100,
+                )
+                reports = page["reports"]
+                next_cursor = str(page.get("next_cursor") or "")
+                self._send_json(
+                    {
+                        "reports": reports,
+                        "count": len(reports),
+                        "next_cursor": next_cursor or None,
+                        "has_more": bool(next_cursor),
+                    }
+                )
+                return
         except ValueError as exc:
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -1464,6 +1640,27 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         query = parse_qs(raw_query)
         try:
             limit = self._parse_optional_int(query.get("limit", [""])[0])
+            cursor_values = query.get("cursor")
+            if cursor_values:
+                cursor = str(cursor_values[0] or "").strip()
+                page = self._store().observation_page(
+                    cursor="" if cursor == "start" else cursor,
+                    source=query.get("source", [""])[0],
+                    system=query.get("system", [""])[0],
+                    name=query.get("name", [""])[0],
+                    limit=limit or 100,
+                )
+                observations = page["observations"]
+                next_cursor = str(page.get("next_cursor") or "")
+                self._send_json(
+                    {
+                        "observations": observations,
+                        "count": len(observations),
+                        "next_cursor": next_cursor or None,
+                        "has_more": bool(next_cursor),
+                    }
+                )
+                return
         except ValueError as exc:
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -1661,25 +1858,48 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             "storage": self._storage_health(store),
             "config": self._config_health(),
             "map": self._map_health(store),
-            "esi": self._esi_status_payload(),
+            "esi": self._public_esi_health(),
             "killboard": self._killboard_health(store),
             "clients": store.heartbeat_summary(),
             "events": self._event_health(store),
         }
+
+    def _readiness_payload(self) -> dict[str, Any]:
+        storage_ready = self._storage_ready(self._store())
+        return {
+            "ok": storage_ready,
+            "checks": {
+                "storage": {"ok": storage_ready},
+            },
+        }
+
+    def _storage_ready(self, store: IntelStore) -> bool:
+        connect = getattr(store, "_connect", None)
+        if callable(connect):
+            try:
+                with connect() as connection:
+                    row = connection.execute("SELECT 1").fetchone()
+                return row is not None
+            except Exception as exc:
+                logger.warning(
+                    "Storage readiness probe failed (%s)",
+                    type(exc).__name__,
+                )
+                return False
+
+        path = getattr(store, "_filepath", None)
+        return path is not None and self._storage_path_writable(path)
 
     def _storage_health(self, store: IntelStore) -> dict[str, Any]:
         postgres_dsn = getattr(store, "_postgres_safe_dsn", "")
         if postgres_dsn:
             return {
                 "type": type(store).__name__,
-                "path": "",
-                "dsn": str(postgres_dsn),
                 "writable": True,
             }
         path = getattr(store, "_db_path", None) or getattr(store, "_filepath", None)
         return {
             "type": type(store).__name__,
-            "path": str(path) if path is not None else "",
             "writable": self._storage_path_writable(path),
         }
 
@@ -1702,7 +1922,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         config = config_store.to_dict()
         return {
             "enabled": True,
-            "path": str(getattr(config_store, "path", "")),
             "schema_version": config.get("schema_version", ""),
             "scoring_version": config.get("scoring_version", ""),
             "evidence_rule_count": len(config.get("evidence_rules") or []),
@@ -1725,15 +1944,13 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         config = map_config_store.to_dict()
         return {
             "enabled": True,
-            "path": str(getattr(map_config_store, "path", "")),
             "schema_version": config.get("schema_version", ""),
             "source": config.get("source", ""),
             "layout_mode": config.get("layout_mode", ""),
-            "sde_path": config.get("sde_path", ""),
             "system_count": active_system_count,
             "link_count": active_link_count,
             "last_refreshed_at": config.get("last_refreshed_at", ""),
-            "last_refresh_error": config.get("last_refresh_error", ""),
+            "refresh_error": bool(config.get("last_refresh_error")),
         }
 
     def _event_health(self, store: IntelStore) -> dict[str, Any]:
@@ -1744,6 +1961,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 "enabled": True,
                 "path": "/api/v1/events",
                 "legacy_path": "/api/events",
+                "active_connections": _active_event_stream_count(),
             },
         }
 
@@ -1841,22 +2059,47 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         }
 
     def _read_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length)
-        data = json.loads(raw.decode("utf-8"))
+        raw = self._read_json_body()
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise RequestBodyError("request body must be valid UTF-8") from exc
         if not isinstance(data, dict):
             raise ValueError("request body must be a JSON object")
         return data
 
     def _read_optional_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length)
+        raw = self._read_json_body()
         if not raw.strip():
             return {}
-        data = json.loads(raw.decode("utf-8"))
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise RequestBodyError("request body must be valid UTF-8") from exc
         if not isinstance(data, dict):
             raise ValueError("request body must be a JSON object")
         return data
+
+    def _read_json_body(self) -> bytes:
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            raise RequestBodyError("Content-Length header is required")
+        if not raw_length.isascii() or not raw_length.isdecimal():
+            raise RequestBodyError("Content-Length must be a non-negative integer")
+        try:
+            length = int(raw_length)
+        except (TypeError, ValueError) as exc:
+            raise RequestBodyError(
+                "Content-Length must be a non-negative integer"
+            ) from exc
+        if length < 0:
+            raise RequestBodyError("Content-Length must be a non-negative integer")
+        if length > MAX_JSON_BODY_BYTES:
+            raise RequestBodyError(
+                f"request body must not exceed {MAX_JSON_BODY_BYTES} bytes",
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            )
+        return self.rfile.read(length)
 
     def _parse_optional_int(self, raw: str) -> int | None:
         raw = raw.strip()
@@ -1865,6 +2108,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         value = int(raw)
         if value < 0:
             raise ValueError("limit must be non-negative")
+        if value > MAX_QUERY_LIMIT:
+            raise ValueError(f"limit must not exceed {MAX_QUERY_LIMIT}")
         return value
 
     def _parse_optional_float_param(self, raw: str, label: str) -> float | None:
@@ -1872,8 +2117,16 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         if not raw:
             return None
         value = float(raw)
+        if not math.isfinite(value):
+            raise ValueError(f"{label} must be finite")
         if value < 0:
             raise ValueError(f"{label} must be non-negative")
+        maximum = {
+            "timeout": MAX_SSE_TIMEOUT_SECONDS,
+            "heartbeat": MAX_SSE_HEARTBEAT_SECONDS,
+        }.get(label)
+        if maximum is not None and value > maximum:
+            raise ValueError(f"{label} must not exceed {maximum:g}")
         return value
 
     def _parse_alert_filters(
@@ -2002,6 +2255,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return since, "", False
         return "", "", False
 
+    @_track_event_stream
     def _stream_events(
         self,
         since: str = "",

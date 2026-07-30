@@ -22,7 +22,7 @@ from app.server.auth import AuthService
 from app.server.auth_store import AuthRepository
 from app.server.intel_store import IntelStore, StarSystem
 from app.server.map_config import MapConfigStore
-from app.server.sqlite_store import SQLiteIntelStore
+from tests.auth_test_store import AuthTestStore
 
 
 class AuthTestResolver:
@@ -168,8 +168,8 @@ def test_health_and_cors_preflight(tmp_path):
         assert payload["health"]["ok"] is True
         assert payload["health"]["schema_version"] == "health.v1"
         assert payload["health"]["storage"]["type"] == "IntelStore"
-        assert payload["health"]["storage"]["path"].endswith("intel.json")
         assert payload["health"]["storage"]["writable"] is True
+        assert "path" not in payload["health"]["storage"]
         assert payload["health"]["config"] == {"enabled": False}
         assert payload["health"]["esi"]["enabled"] is False
         assert payload["health"]["esi"]["authenticated"] is False
@@ -221,10 +221,10 @@ def test_health_does_not_generate_alerts(tmp_path):
         server.stop()
 
 
-def test_health_reports_config_and_sqlite(tmp_path):
+def test_health_reports_config_and_json_storage(tmp_path):
     config_store = IntelConfigStore(tmp_path / "intel_config.json")
-    store = SQLiteIntelStore(
-        tmp_path / "intel.sqlite3",
+    store = IntelStore(
+        tmp_path / "intel.json",
         scorer=config_store.build_scorer(),
         enricher=ThreatEnricher(),
     )
@@ -243,10 +243,11 @@ def test_health_reports_config_and_sqlite(tmp_path):
         status, payload = request_json(f"{server.url}/api/health")
         assert status == 200
         health = payload["health"]
-        assert health["storage"]["type"] == "SQLiteIntelStore"
-        assert health["storage"]["path"].endswith("intel.sqlite3")
+        assert health["storage"]["type"] == "IntelStore"
         assert health["storage"]["writable"] is True
+        assert "path" not in health["storage"]
         assert health["config"]["enabled"] is True
+        assert "path" not in health["config"]
         assert health["config"]["schema_version"] == "scoring_config.v1"
         assert health["config"]["scoring_version"] == CLASSIFICATION_VERSION
         assert health["config"]["evidence_rule_count"] > 0
@@ -268,10 +269,79 @@ def test_health_reports_postgres_storage_without_secret(tmp_path):
         assert status == 200
         storage = payload["health"]["storage"]
         assert storage["type"] == "IntelStore"
-        assert storage["path"] == ""
-        assert storage["dsn"] == "postgresql://***@db.internal:5432/eve_sentry"
         assert storage["writable"] is True
-        assert "secret" not in json.dumps(storage)
+        assert "path" not in storage
+        assert "dsn" not in storage
+        assert "db.internal" not in json.dumps(storage)
+    finally:
+        server.stop()
+
+
+def test_public_health_sanitizes_esi_configuration_paths(tmp_path):
+    token_file = tmp_path / "private" / "esi_tokens.json"
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json"),
+        port=0,
+        esi_config={
+            "client_id_configured": True,
+            "redirect_uri": "https://internal.example/api/v1/auth/esi/callback",
+            "token_file": str(token_file),
+            "token_file_present": False,
+            "token_storage": "plain",
+            "scopes": ["private.scope"],
+        },
+    )
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/health")
+
+        assert status == 200
+        esi = payload["health"]["esi"]
+        assert esi["config"] == {
+            "client_id_configured": True,
+            "token_file_present": False,
+            "token_storage": "plain",
+        }
+        serialized = json.dumps(esi)
+        assert str(token_file) not in serialized
+        assert "internal.example" not in serialized
+        assert "private.scope" not in serialized
+    finally:
+        server.stop()
+
+
+def test_public_health_sanitizes_map_paths_and_error_details(tmp_path):
+    class PrivateMapConfig:
+        path = tmp_path / "private-map-config.json"
+
+        def to_dict(self):
+            return {
+                "schema_version": "map_config.v1",
+                "source": "sde",
+                "layout_mode": "geographic",
+                "sde_path": str(tmp_path / "private-sde"),
+                "last_refreshed_at": "2026-07-30T10:00:00+00:00",
+                "last_refresh_error": "credential leaked by upstream error",
+            }
+
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json"),
+        port=0,
+        map_config_store=PrivateMapConfig(),
+    )
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/health")
+
+        assert status == 200
+        map_health = payload["health"]["map"]
+        assert map_health["refresh_error"] is True
+        assert "path" not in map_health
+        assert "sde_path" not in map_health
+        assert "last_refresh_error" not in map_health
+        serialized = json.dumps(map_health)
+        assert "private-sde" not in serialized
+        assert "credential leaked" not in serialized
     finally:
         server.stop()
 
@@ -370,8 +440,8 @@ def test_v1_ocr_snapshot_endpoint_updates_active_intel(tmp_path):
 
 
 def test_remote_alert_count_uses_latest_detector_snapshot_total(tmp_path):
-    store = SQLiteIntelStore(
-        tmp_path / "intel.sqlite3",
+    store = IntelStore(
+        tmp_path / "intel.json",
         systems={},
         links=[],
         scorer=ScoringEngine(cooldown_seconds=0),
@@ -2465,7 +2535,7 @@ def test_v1_events_push_monitoring_node_offline_at_stale_deadline(tmp_path):
 
 
 def test_auth_enforcement_accepts_valid_key_before_listener_is_discovered(tmp_path):
-    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
     admin = auth.create_user("admin", "admin-password-123", role="admin")
     auth.add_allowed_corporation(9001, admin["user_id"])
@@ -2515,7 +2585,7 @@ def test_auth_enforcement_accepts_valid_key_before_listener_is_discovered(tmp_pa
 
 
 def test_authenticated_business_posts_preserve_their_request_body(tmp_path):
-    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
     member = auth.create_user("pilot", "pilot-password-123", role="member")
     key = auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
@@ -2554,7 +2624,7 @@ def test_authenticated_business_posts_preserve_their_request_body(tmp_path):
 
 
 def test_eve_sso_http_flow_sets_member_session_cookie(tmp_path):
-    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(
         AuthRepository(store._connect),
         AuthTestResolver(),
@@ -2605,7 +2675,7 @@ def test_shared_esi_callback_routes_tactical_authorization_by_state(tmp_path):
             self.callbacks.append(callback_url)
             return {"status": "authenticated"}
 
-    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(
         AuthRepository(store._connect),
         AuthTestResolver(),
@@ -2671,7 +2741,7 @@ def test_shared_esi_callback_completes_tactical_flow_without_auth_service(tmp_pa
 
 
 def test_browser_session_requires_csrf_and_service_key_is_read_only(tmp_path):
-    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
     admin = auth.create_user("admin", "admin-password-123", role="admin")
     service_key = auth.create_api_key(
@@ -2738,7 +2808,7 @@ def test_browser_session_requires_csrf_and_service_key_is_read_only(tmp_path):
 
 
 def test_administrator_can_delete_another_user_over_http(tmp_path):
-    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
     admin = auth.create_user("admin", "admin-password-123", role="admin")
     member = auth.create_user("pilot", "pilot-password-123", role="member")
@@ -2771,7 +2841,7 @@ def test_administrator_can_delete_another_user_over_http(tmp_path):
 
 
 def test_api_key_can_be_revoked_enabled_and_permanently_deleted_over_http(tmp_path):
-    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
     admin = auth.create_user("admin", "admin-password-123", role="admin")
     key = auth.create_api_key(admin["user_id"], "Desktop", admin["user_id"])
@@ -2806,7 +2876,7 @@ def test_api_key_can_be_revoked_enabled_and_permanently_deleted_over_http(tmp_pa
 
 
 def test_member_session_cannot_access_administrator_routes(tmp_path):
-    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
     auth.create_user("pilot", "pilot-password-123", role="member")
     server = IntelHTTPServer(store, port=0, auth_service=auth)
@@ -2825,7 +2895,7 @@ def test_member_session_cannot_access_administrator_routes(tmp_path):
 
 
 def test_service_key_is_scoped_to_bootstrap_and_sse(tmp_path):
-    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
     admin = auth.create_user("admin", "admin-password-123", role="admin")
     service_key = auth.create_api_key(
@@ -2856,7 +2926,7 @@ def test_service_key_is_scoped_to_bootstrap_and_sse(tmp_path):
 
 
 def test_sse_disconnects_after_service_key_owner_is_disabled(tmp_path):
-    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
     admin = auth.create_user("admin", "admin-password-123", role="admin")
     service_key = auth.create_api_key(
@@ -2886,7 +2956,7 @@ def test_sse_does_not_revalidate_unchanged_service_key_every_second(
     tmp_path,
     monkeypatch,
 ):
-    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
+    store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
     admin = auth.create_user("admin", "admin-password-123", role="admin")
     service_key = auth.create_api_key(
@@ -3297,10 +3367,10 @@ def test_events_stream_since_parameter_remains_exclusive(tmp_path):
         server.stop()
 
 
-def test_sqlite_server_restart_preserves_ack_and_event_resume(tmp_path):
-    db_path = tmp_path / "intel.sqlite3"
+def test_json_server_restart_preserves_ack_and_event_resume(tmp_path):
+    data_path = tmp_path / "intel.json"
     first_server = IntelHTTPServer(
-        SQLiteIntelStore(db_path, systems={}, links=[]),
+        IntelStore(data_path, systems={}, links=[]),
         port=0,
     )
     first_server.start()
@@ -3330,7 +3400,7 @@ def test_sqlite_server_restart_preserves_ack_and_event_resume(tmp_path):
         first_server.stop()
 
     second_server = IntelHTTPServer(
-        SQLiteIntelStore(db_path, systems={}, links=[]),
+        IntelStore(data_path, systems={}, links=[]),
         port=0,
     )
     second_server.start()

@@ -5,7 +5,7 @@ archive="${1:?deployment archive is required}"
 revision="${2:?git revision is required}"
 backend_root="${3:-/opt/eve-sentry}"
 frontend_root="${4:-/opt/1panel/www/eve-sentry}"
-health_url="${5:-http://127.0.0.1:8765/api/health}"
+health_url="${5:-http://127.0.0.1:8765/api/readyz}"
 service_name="${6:-eve-sentry}"
 
 if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
@@ -125,7 +125,7 @@ for _ in $(seq 1 30); do
 done
 if [[ "$healthy" -ne 1 ]]; then
     journalctl -u "$service_name" -n 100 --no-pager >&2 || true
-    echo "Health check failed after deployment." >&2
+    echo "Readiness check failed after deployment." >&2
     exit 1
 fi
 

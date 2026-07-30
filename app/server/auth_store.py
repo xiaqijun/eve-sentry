@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 
 def migrate_auth_schema(connection: Any) -> None:
-    """Create authentication tables using SQLite/PostgreSQL compatible SQL."""
+    """Create authentication tables in PostgreSQL."""
     statements = (
         """
         CREATE TABLE IF NOT EXISTS auth_users (
@@ -107,7 +107,7 @@ def migrate_auth_schema(connection: Any) -> None:
 
 
 class AuthRepository:
-    """Database operations shared by SQLite and PostgreSQL deployments."""
+    """Database operations used by PostgreSQL deployments."""
 
     def __init__(self, connect: Callable[[], Any]) -> None:
         self._connect = connect

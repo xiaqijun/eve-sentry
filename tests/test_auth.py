@@ -4,9 +4,9 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from app.esi.sso import AuthorizationSession, EsiSsoError, TokenSet
-from app.server.auth import AuthError, AuthService
+from app.server.auth import LOGIN_IP_FAILURE_LIMIT, AuthError, AuthService
 from app.server.auth_store import AuthRepository
-from app.server.sqlite_store import SQLiteIntelStore
+from tests.auth_test_store import AuthTestStore
 
 
 class FakeResolver:
@@ -61,8 +61,12 @@ class FakeSsoClient:
 
 @pytest.fixture()
 def auth(tmp_path):
-    store = SQLiteIntelStore(tmp_path / "intel.sqlite3")
-    return AuthService(AuthRepository(store._connect), FakeResolver())
+    store = AuthTestStore(tmp_path / "intel.json")
+    service = AuthService(AuthRepository(store._connect), FakeResolver())
+    try:
+        yield service
+    finally:
+        store.close()
 
 
 def _member(auth):
@@ -312,6 +316,23 @@ def test_login_rate_limit_blocks_repeated_failures(auth):
         auth.login("pilot", "a-strong-password", "198.51.100.10")
     assert exc_info.value.status == 429
     assert exc_info.value.code == "login_rate_limited"
+
+
+def test_login_rate_limit_blocks_one_ip_rotating_usernames(auth):
+    remote_ip = "198.51.100.44"
+    for index in range(LOGIN_IP_FAILURE_LIMIT):
+        with pytest.raises(AuthError) as exc_info:
+            auth.login(f"missing-{index}", "wrong-password", remote_ip)
+        assert exc_info.value.code == "invalid_credentials"
+
+    with pytest.raises(AuthError) as exc_info:
+        auth.login("another-missing-user", "wrong-password", remote_ip)
+    assert exc_info.value.status == 429
+    assert exc_info.value.code == "login_rate_limited"
+
+    with pytest.raises(AuthError) as other_ip_error:
+        auth.login("another-missing-user", "wrong-password", "198.51.100.45")
+    assert other_ip_error.value.code == "invalid_credentials"
 
 
 def test_allowed_corporation_permanently_verifies_desktop_key(auth):

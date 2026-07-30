@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from http import HTTPStatus
 from http.cookies import SimpleCookie
+from ipaddress import ip_address
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
@@ -25,7 +26,7 @@ class AuthHttpMixin:
         self._auth_principal = None
         if service is None:
             return True
-        if path == "/api/health":
+        if path in {"/api/health", "/api/livez", "/api/readyz"}:
             return True
         if path == "/api/v1/auth/login" and method == "POST":
             return True
@@ -185,7 +186,7 @@ class AuthHttpMixin:
                 login = service.login(
                     str(payload.get("username") or ""),
                     str(payload.get("password") or ""),
-                    str(getattr(self, "client_address", ("",))[0]),
+                    self._login_client_ip(),
                 )
                 self._send_auth_json(
                     {"user": login["user"], "csrf_token": login["csrf_token"]},
@@ -292,6 +293,21 @@ class AuthHttpMixin:
             self._send_auth_exception(exc)
             return True
         return False
+
+    def _login_client_ip(self) -> str:
+        peer = str(getattr(self, "client_address", ("",))[0]).strip()
+        try:
+            peer_ip = ip_address(peer)
+        except ValueError:
+            return peer
+        if not peer_ip.is_loopback:
+            return peer
+
+        real_ip = str(self.headers.get("X-Real-IP") or "").strip()
+        try:
+            return str(ip_address(real_ip))
+        except ValueError:
+            return peer
 
     def _handle_auth_delete(self, path: str) -> bool:
         service = self._auth_service()
