@@ -30,6 +30,7 @@ POSTGRES_POOL_MIN_SIZE = 2
 POSTGRES_POOL_MAX_SIZE = 8
 POSTGRES_POOL_TIMEOUT_SECONDS = 5.0
 DEFAULT_HOT_REPORT_LIMIT = 5000
+POSTGRES_ID_LOOKUP_BATCH_SIZE = 1000
 
 
 class PostgreSQLIntelStore(IntelStore):
@@ -590,11 +591,12 @@ class PostgreSQLIntelStore(IntelStore):
             stored_report = self._read_report_by_id(report_id)
             if stored_report is None:
                 return False
+            if not self._delete_report(report_id):
+                return False
             self._reports = [
                 report for report in self._reports if report.report_id != report_id
             ]
             self._alert_cache.pop(report_id, None)
-            self._delete_report(report_id)
             return True
 
     def prune_reports_older_than(
@@ -614,42 +616,93 @@ class PostgreSQLIntelStore(IntelStore):
         if now_at is None:
             raise ValueError("now must be an ISO timestamp")
         cutoff = (now_at - timedelta(days=retention_days)).isoformat()
-        protected_ids = sorted(
-            {
-                report_id
-                for item in self._active_intel.values()
-                if item.active
-                for report_id in item.source_observation_ids
-                if report_id
-            }
-        )
-        clauses = ["COALESCE(NULLIF(received_at, ''), seen_at) < ?"]
-        params: list[Any] = [cutoff]
-        if protected_ids:
-            placeholders = ", ".join("?" for _ in protected_ids)
-            clauses.append(f"report_id NOT IN ({placeholders})")
-            params.extend(protected_ids)
         with self._connect() as connection:
-            rows = connection.execute(
-                f"""
-                DELETE FROM intel_reports
-                WHERE {' AND '.join(clauses)}
-                RETURNING report_id
+            result = connection.execute(
+                """
+                WITH active_report_refs AS (
+                    SELECT DISTINCT jsonb_array_elements_text(
+                        COALESCE(
+                            NULLIF(source_observation_ids_json, ''), '[]'
+                        )::jsonb
+                    ) AS report_id
+                    FROM active_intel
+                    WHERE active = 1
+                )
+                DELETE FROM intel_reports AS report
+                WHERE COALESCE(
+                    NULLIF(report.received_at, ''), report.seen_at
+                )::timestamptz < ?::timestamptz
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM active_report_refs AS active_ref
+                      WHERE active_ref.report_id = report.report_id
+                  )
                 """,
-                tuple(params),
-            ).fetchall()
-        removed_ids = {str(row["report_id"]) for row in rows}
-        if not removed_ids:
+                (cutoff,),
+            )
+            removed_count = max(0, int(result.rowcount))
+        if removed_count == 0:
             return 0
+        with self._lock:
+            cached_ids = [report.report_id for report in self._reports]
+        existing_ids = self._read_existing_report_ids(cached_ids)
         with self._lock:
             self._reports = [
                 report
                 for report in self._reports
-                if report.report_id not in removed_ids
+                if report.report_id in existing_ids
             ]
-            for report_id in removed_ids:
+            for report_id in set(cached_ids) - existing_ids:
                 self._alert_cache.pop(report_id, None)
-        return len(removed_ids)
+        return removed_count
+
+    def prune_inactive_active_intel_older_than(
+        self,
+        retention_days: int,
+        *,
+        now: str | None = None,
+    ) -> int:
+        """Delete inactive intel rows whose lifecycle ended before the cutoff."""
+        if isinstance(retention_days, bool) or not isinstance(retention_days, int):
+            raise ValueError("retention_days must be an integer")
+        if retention_days < 0:
+            raise ValueError("retention_days must not be negative")
+        if retention_days == 0:
+            return 0
+        now_at = self._parse_timestamp(now or utc_now_iso())
+        if now_at is None:
+            raise ValueError("now must be an ISO timestamp")
+        cutoff = (now_at - timedelta(days=retention_days)).isoformat()
+        with self._connect() as connection:
+            result = connection.execute(
+                """
+                DELETE FROM active_intel
+                WHERE active = 0
+                  AND COALESCE(
+                      NULLIF(cleared_at, ''),
+                      NULLIF(left_at, ''),
+                      NULLIF(last_seen_at, ''),
+                      NULLIF(first_seen_at, '')
+                  )::timestamptz < ?::timestamptz
+                """,
+                (cutoff,),
+            )
+            removed_count = max(0, int(result.rowcount))
+        if removed_count == 0:
+            return 0
+        with self._lock:
+            cached_inactive_ids = [
+                active_id
+                for active_id, item in self._active_intel.items()
+                if not item.active
+            ]
+        existing_ids = self._read_existing_active_intel_ids(cached_inactive_ids)
+        with self._lock:
+            for active_id in set(cached_inactive_ids) - existing_ids:
+                item = self._active_intel.get(active_id)
+                if item is not None and not item.active:
+                    self._active_intel.pop(active_id, None)
+        return removed_count
 
     def _migrate(self) -> None:
         with self._connect() as connection:
@@ -882,6 +935,13 @@ class PostgreSQLIntelStore(IntelStore):
             )
             connection.execute(
                 """
+                CREATE INDEX IF NOT EXISTS idx_active_intel_active_last_seen
+                ON active_intel(last_seen_at)
+                WHERE active = 1
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS client_heartbeats (
                     client_id TEXT PRIMARY KEY,
                     client_type TEXT NOT NULL,
@@ -1019,6 +1079,47 @@ class PostgreSQLIntelStore(IntelStore):
                 (report_id,),
             ).fetchone()
         return self._report_from_row(row) if row is not None else None
+
+    def _read_existing_report_ids(self, report_ids: list[str]) -> set[str]:
+        if not report_ids:
+            return set()
+        existing_ids: set[str] = set()
+        for offset in range(0, len(report_ids), POSTGRES_ID_LOOKUP_BATCH_SIZE):
+            batch = report_ids[offset : offset + POSTGRES_ID_LOOKUP_BATCH_SIZE]
+            placeholders = ", ".join("?" for _ in batch)
+            with self._connect() as connection:
+                rows = connection.execute(
+                    f"""
+                    SELECT report_id
+                    FROM intel_reports
+                    WHERE report_id IN ({placeholders})
+                    """,
+                    tuple(batch),
+                ).fetchall()
+            existing_ids.update(str(row["report_id"]) for row in rows)
+        return existing_ids
+
+    def _read_existing_active_intel_ids(
+        self,
+        active_ids: list[str],
+    ) -> set[str]:
+        if not active_ids:
+            return set()
+        existing_ids: set[str] = set()
+        for offset in range(0, len(active_ids), POSTGRES_ID_LOOKUP_BATCH_SIZE):
+            batch = active_ids[offset : offset + POSTGRES_ID_LOOKUP_BATCH_SIZE]
+            placeholders = ", ".join("?" for _ in batch)
+            with self._connect() as connection:
+                rows = connection.execute(
+                    f"""
+                    SELECT active_id
+                    FROM active_intel
+                    WHERE active_id IN ({placeholders})
+                    """,
+                    tuple(batch),
+                ).fetchall()
+            existing_ids.update(str(row["active_id"]) for row in rows)
+        return existing_ids
 
     def _report_for_alert_id(self, alert_id: str) -> IntelReport | None:
         report_id = alert_id[4:] if alert_id.startswith("evt_") else alert_id
@@ -1264,12 +1365,29 @@ class PostgreSQLIntelStore(IntelStore):
                 self._row_from_report(report),
             )
 
-    def _delete_report(self, report_id: str) -> None:
+    def _delete_report(self, report_id: str) -> bool:
         with self._connect() as connection:
-            connection.execute(
-                "DELETE FROM intel_reports WHERE report_id = ?",
+            row = connection.execute(
+                """
+                DELETE FROM intel_reports AS report
+                WHERE report.report_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM active_intel AS intel
+                      WHERE intel.active = 1
+                        AND jsonb_exists(
+                            COALESCE(
+                                NULLIF(intel.source_observation_ids_json, ''),
+                                '[]'
+                            )::jsonb,
+                            report.report_id
+                        )
+                  )
+                RETURNING report.report_id
+                """,
                 (report_id,),
-            )
+            ).fetchone()
+        return row is not None
 
     def _persist_pruned_reports(self, report_ids: list[str]) -> None:
         if not report_ids:

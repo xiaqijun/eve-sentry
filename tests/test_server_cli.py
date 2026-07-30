@@ -73,6 +73,18 @@ def test_server_cli_report_retention_defaults_off_and_rejects_negative_values():
         server_main._validate_args(parser, invalid)
 
 
+def test_server_cli_inactive_intel_retention_defaults_on_and_rejects_negative():
+    parser = build_arg_parser()
+    defaults = parser.parse_args([])
+    disabled = parser.parse_args(["--inactive-intel-retention-days", "0"])
+    invalid = parser.parse_args(["--inactive-intel-retention-days", "-1"])
+
+    assert defaults.inactive_intel_retention_days == 30
+    assert disabled.inactive_intel_retention_days == 0
+    with pytest.raises(SystemExit):
+        server_main._validate_args(parser, invalid)
+
+
 def test_server_cli_prunes_reports_on_startup_when_explicitly_enabled(tmp_path):
     json_path = tmp_path / "intel_reports.json"
     seed = IntelStore(json_path)
@@ -206,6 +218,7 @@ def test_server_cli_build_store_can_use_legacy_json_storage(tmp_path):
 
 def test_server_cli_build_store_can_use_postgres_storage(monkeypatch):
     calls = []
+    prunes = []
 
     class DummyPostgresStore:
         def __init__(
@@ -233,6 +246,10 @@ def test_server_cli_build_store_can_use_postgres_storage(monkeypatch):
                     "hot_report_limit": hot_report_limit,
                 }
             )
+
+        def prune_inactive_active_intel_older_than(self, retention_days):
+            prunes.append(retention_days)
+            return 0
 
     monkeypatch.setattr(
         "app.server.postgres_store.PostgreSQLIntelStore",
@@ -273,6 +290,7 @@ def test_server_cli_build_store_can_use_postgres_storage(monkeypatch):
             "hot_report_limit": 5000,
         }
     ]
+    assert prunes == [30]
 
 
 def test_server_cli_build_store_keeps_configured_map_locked(tmp_path):

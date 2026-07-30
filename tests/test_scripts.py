@@ -1874,6 +1874,19 @@ def test_run_server_maps_report_retention_environment_option():
     assert argv == ["--report-retention-days", "90"]
 
 
+def test_run_server_maps_inactive_intel_retention_environment_option():
+    module = _load_script_module(
+        "run_server_inactive_intel_retention",
+        "scripts/run_server.py",
+    )
+
+    argv = module.build_server_argv(
+        {"EVE_SENTRY_SERVER_INACTIVE_INTEL_RETENTION_DAYS": "30"}
+    )
+
+    assert argv == ["--inactive-intel-retention-days", "30"]
+
+
 def test_run_server_main_appends_cli_args(monkeypatch):
     module = _load_script_module("run_server", "scripts/run_server.py")
     recorded = []

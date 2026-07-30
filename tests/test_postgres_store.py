@@ -126,6 +126,44 @@ def test_postgres_connection_converts_bulk_delete_placeholders():
     ]
 
 
+@pytest.mark.parametrize(
+    ("returned_row", "deleted"),
+    [(None, False), ({"report_id": "report-1"}, True)],
+)
+def test_postgres_delete_report_respects_active_database_references(
+    returned_row,
+    deleted,
+):
+    calls = []
+
+    class Result:
+        def fetchone(self):
+            return returned_row
+
+    class FakeConnection:
+        def execute(self, query, params):
+            calls.append((" ".join(query.split()), params))
+            return Result()
+
+    class FakePoolContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._connect = lambda: _PostgresConnection(FakePoolContext())
+
+    assert store._delete_report("report-1") is deleted
+    query, params = calls[0]
+    assert "NOT EXISTS" in query
+    assert "jsonb_exists" in query
+    assert "active = 1" in query
+    assert "RETURNING report.report_id" in query
+    assert params == ("report-1",)
+
+
 def test_postgres_report_page_query_uses_converted_keyset_placeholders():
     calls = []
 
@@ -269,8 +307,7 @@ def test_postgres_retention_deletes_in_database_without_loading_history():
     calls = []
 
     class Result:
-        def fetchall(self):
-            return [{"report_id": "old-report"}]
+        rowcount = 1
 
     class FakeConnection:
         def execute(self, query, params):
@@ -297,6 +334,55 @@ def test_postgres_retention_deletes_in_database_without_loading_history():
     )
 
     assert removed == 1
-    assert calls[0][0].startswith("DELETE FROM intel_reports")
-    assert "RETURNING report_id" in calls[0][0]
+    assert calls[0][0].startswith("WITH active_report_refs AS")
+    assert "NOT EXISTS" in calls[0][0]
+    assert "jsonb_array_elements_text" in calls[0][0]
+    assert "active = 1" in calls[0][0]
     assert calls[0][1] == ("2026-06-30T00:00:00+00:00",)
+
+
+def test_postgres_prunes_only_inactive_intel_older_than_cutoff():
+    calls = []
+
+    class Result:
+        rowcount = 1
+
+    class FakeConnection:
+        def execute(self, query, params):
+            calls.append((" ".join(query.split()), params))
+            return Result()
+
+    class FakePoolContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._connect = lambda: _PostgresConnection(FakePoolContext())
+    store._active_intel = {}
+    store._lock = threading.RLock()
+
+    removed = store.prune_inactive_active_intel_older_than(
+        30,
+        now="2026-07-30T00:00:00+00:00",
+    )
+
+    assert removed == 1
+    query, params = calls[0]
+    assert query.startswith("DELETE FROM active_intel")
+    assert "active = 0" in query
+    assert "NULLIF(cleared_at, '')" in query
+    assert "NULLIF(left_at, '')" in query
+    assert "::timestamptz < %s::timestamptz" in query
+    assert "RETURNING active_id" not in query
+    assert params == ("2026-06-30T00:00:00+00:00",)
+
+
+@pytest.mark.parametrize("retention_days", [-1, True, 1.5])
+def test_postgres_inactive_intel_retention_rejects_invalid_days(retention_days):
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+
+    with pytest.raises(ValueError):
+        store.prune_inactive_active_intel_older_than(retention_days)

@@ -30,6 +30,11 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
     )
     _append_option(
         argv,
+        "--inactive-intel-retention-days",
+        values.get("EVE_SENTRY_SERVER_INACTIVE_INTEL_RETENTION_DAYS", ""),
+    )
+    _append_option(
+        argv,
         "--postgres-dsn",
         values.get("EVE_SENTRY_SERVER_POSTGRES_DSN", ""),
     )

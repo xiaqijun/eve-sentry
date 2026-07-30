@@ -76,6 +76,7 @@ EVE_SENTRY_SERVER_STORAGE=postgres
 EVE_SENTRY_SERVER_POSTGRES_DSN=postgresql://eve_sentry:CHANGE_ME@127.0.0.1:5432/eve_sentry
 EVE_SENTRY_SERVER_HOT_REPORT_LIMIT=5000
 EVE_SENTRY_SERVER_REPORT_RETENTION_DAYS=0
+EVE_SENTRY_SERVER_INACTIVE_INTEL_RETENTION_DAYS=30
 EVE_SENTRY_SERVER_CONFIG=/var/lib/eve-sentry/intel_config.json
 EVE_SENTRY_SERVER_AUTH_MODE=setup
 EVE_SENTRY_SERVER_MAP_SOURCE=sde
@@ -90,6 +91,9 @@ EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain
 `EVE_SENTRY_SERVER_REPORT_RETENTION_DAYS` 默认为 `0`，不会自动删除历史。设为正整数后，
 服务端每次启动会按 `received_at` 删除超出窗口的报告；仍被活跃情报引用的报告会保留。
 启用前先备份数据库。PostgreSQL 使用批量删除，JSON 存储会重写保留后的文件。
+
+`EVE_SENTRY_SERVER_INACTIVE_INTEL_RETENTION_DAYS` 默认为 `30`。PostgreSQL 启动时只会
+删除超过窗口的 inactive 情报行；活跃情报及其引用的历史报告不会被删除。设为 `0` 可关闭。
 
 认证不依赖 HTTPS 才能启用。HTTP 仅适合可信网络；公网建议配置 TLS，并把回调地址、
 客户端地址和机器人地址统一切换为 HTTPS。

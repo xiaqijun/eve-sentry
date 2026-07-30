@@ -25,6 +25,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="delete reports older than this many days on startup; 0 disables",
     )
     parser.add_argument(
+        "--inactive-intel-retention-days",
+        type=int,
+        default=30,
+        help=(
+            "delete inactive PostgreSQL intel rows older than this many days; "
+            "0 disables"
+        ),
+    )
+    parser.add_argument(
         "--storage",
         choices=["json", "postgres"],
         default="postgres",
@@ -245,23 +254,37 @@ def _build_store(
             allow_unmapped_systems=False,
         )
 
-    retention_days = int(getattr(args, "report_retention_days", 0) or 0)
-    if retention_days > 0:
+    report_retention_days = int(
+        getattr(args, "report_retention_days", 0) or 0
+    )
+    inactive_intel_retention_days = int(
+        getattr(args, "inactive_intel_retention_days", 30) or 0
+    )
+    try:
+        if args.storage == "postgres" and inactive_intel_retention_days > 0:
+            removed = store.prune_inactive_active_intel_older_than(
+                inactive_intel_retention_days
+            )
+            logging.getLogger(__name__).info(
+                "Pruned %s inactive intel rows older than %s days",
+                removed,
+                inactive_intel_retention_days,
+            )
+        if report_retention_days > 0:
+            removed = store.prune_reports_older_than(report_retention_days)
+            logging.getLogger(__name__).info(
+                "Pruned %s reports older than %s days",
+                removed,
+                report_retention_days,
+            )
+    except Exception:
         try:
-            removed = store.prune_reports_older_than(retention_days)
+            store.close()
         except Exception:
-            try:
-                store.close()
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "Failed to close store after report pruning failed"
-                )
-            raise
-        logging.getLogger(__name__).info(
-            "Pruned %s reports older than %s days",
-            removed,
-            retention_days,
-        )
+            logging.getLogger(__name__).exception(
+                "Failed to close store after startup pruning failed"
+            )
+        raise
     return store
 
 
@@ -275,6 +298,8 @@ def _validate_args(
         parser.error("--postgres-dsn is required when using PostgreSQL storage")
     if args.report_retention_days < 0:
         parser.error("--report-retention-days must not be negative")
+    if args.inactive_intel_retention_days < 0:
+        parser.error("--inactive-intel-retention-days must not be negative")
     if args.hot_report_limit <= 0:
         parser.error("--hot-report-limit must be positive")
     if args.auth_mode != "off" and args.storage == "json":
