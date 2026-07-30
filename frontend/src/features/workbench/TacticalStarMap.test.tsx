@@ -348,7 +348,7 @@ describe("TacticalStarMap", () => {
     container.remove();
   });
 
-  test("lays out one compact summary and opens the full hostile drawer", async () => {
+  test("expands one compact summary on click and then opens the full hostile drawer", async () => {
     const hostileMembers = [
       {
         characterId: 90000001,
@@ -429,12 +429,23 @@ describe("TacticalStarMap", () => {
       measureText: vi.fn((text: string) => ({ width: text.length * 5 })),
       setLineDash: vi.fn(),
     } as unknown as CanvasRenderingContext2D;
-    const drawNode = forceGraphMock.latestProps?.nodeCanvasObject;
-    const drawLink = forceGraphMock.latestProps?.linkCanvasObject;
-    const layoutNodes = forceGraphMock.latestProps?.onRenderFramePre;
+    let drawNode = forceGraphMock.latestProps?.nodeCanvasObject;
+    let drawLink = forceGraphMock.latestProps?.linkCanvasObject;
+    let layoutNodes = forceGraphMock.latestProps?.onRenderFramePre;
+    let onNodeClick = forceGraphMock.latestProps?.onNodeClick as Function;
 
     expect(drawNode).toEqual(expect.any(Function));
     expect(layoutNodes).toEqual(expect.any(Function));
+    (layoutNodes as Function)(context, 1);
+    expect(hostileCard.hostileCardHidden).toBe(true);
+
+    await act(async () => {
+      onNodeClick(hostileGraphData.nodes[1]);
+    });
+    drawNode = forceGraphMock.latestProps?.nodeCanvasObject;
+    drawLink = forceGraphMock.latestProps?.linkCanvasObject;
+    layoutNodes = forceGraphMock.latestProps?.onRenderFramePre;
+    onNodeClick = forceGraphMock.latestProps?.onNodeClick as Function;
     (layoutNodes as Function)(context, 1);
     expect(hostileCard.hostileCardHidden).toBe(false);
     (drawNode as Function)(hostileCard, context, 1);
@@ -456,7 +467,6 @@ describe("TacticalStarMap", () => {
     );
     expect(lineTo).toHaveBeenCalledTimes(3);
 
-    const onNodeClick = forceGraphMock.latestProps?.onNodeClick as Function;
     await act(async () => {
       onNodeClick(hostileCard);
     });
@@ -466,6 +476,16 @@ describe("TacticalStarMap", () => {
     expect(document.body).toHaveTextContent("2 名敌对");
 
     (layoutNodes as Function)(context, 0.2);
+    expect(hostileCard.hostileCardHidden).toBe(true);
+
+    (layoutNodes as Function)(context, 1);
+    expect(hostileCard.hostileCardHidden).toBe(false);
+    onNodeClick = forceGraphMock.latestProps?.onNodeClick as Function;
+    await act(async () => {
+      onNodeClick(hostileGraphData.nodes[1]);
+    });
+    layoutNodes = forceGraphMock.latestProps?.onRenderFramePre;
+    (layoutNodes as Function)(context, 1);
     expect(hostileCard.hostileCardHidden).toBe(true);
 
     await act(async () => {

@@ -1,7 +1,7 @@
 import type { TacticalGraphNode } from "./tacticalGraph";
 
-export const HOSTILE_SUMMARY_CARD_WIDTH = 200;
-export const HOSTILE_SUMMARY_CARD_HEIGHT = 80;
+export const HOSTILE_SUMMARY_CARD_WIDTH = 160;
+export const HOSTILE_SUMMARY_CARD_HEIGHT = 64;
 export const HOSTILE_SUMMARY_MIN_SCALE = 0.26;
 const MAX_VISIBLE_SUMMARIES = 8;
 const CARD_GAP = 10;

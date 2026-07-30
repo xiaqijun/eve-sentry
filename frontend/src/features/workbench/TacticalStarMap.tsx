@@ -25,6 +25,7 @@ interface TacticalStarMapProps {
 }
 
 const HOSTILE_PORTRAIT_SIZE = 48;
+const HOSTILE_CARD_DRAW_SCALE = 0.8;
 const portraitCache = new Map<number, HTMLImageElement>();
 
 const THREAT_STYLE: Record<
@@ -163,8 +164,10 @@ function drawHostileCard(
   if (node.hostileCardHidden) {
     return;
   }
-  const x = -HOSTILE_SUMMARY_CARD_WIDTH / 2;
-  const y = -HOSTILE_SUMMARY_CARD_HEIGHT / 2;
+  const cardWidth = HOSTILE_SUMMARY_CARD_WIDTH / HOSTILE_CARD_DRAW_SCALE;
+  const cardHeight = HOSTILE_SUMMARY_CARD_HEIGHT / HOSTILE_CARD_DRAW_SCALE;
+  const x = -cardWidth / 2;
+  const y = -cardHeight / 2;
   const cardX = Number(node.x || 0);
   const cardY = Number(node.y || 0);
   const threat = THREAT_STYLE[intel?.threatLevel || node.threatLevel];
@@ -180,18 +183,21 @@ function drawHostileCard(
 
   context.save();
   context.translate(cardX, cardY);
-  context.scale(1 / globalScale, 1 / globalScale);
+  context.scale(
+    HOSTILE_CARD_DRAW_SCALE / globalScale,
+    HOSTILE_CARD_DRAW_SCALE / globalScale,
+  );
   context.shadowColor = "rgba(44, 62, 55, 0.16)";
   context.shadowBlur = 12;
   context.shadowOffsetY = 4;
   context.fillStyle = "rgba(255, 255, 255, 0.98)";
-  context.fillRect(x, y, HOSTILE_SUMMARY_CARD_WIDTH, HOSTILE_SUMMARY_CARD_HEIGHT);
+  context.fillRect(x, y, cardWidth, cardHeight);
   context.shadowColor = "transparent";
   context.strokeStyle = node.isSelected ? "#23845f" : "#d8e0dc";
   context.lineWidth = node.isSelected ? 2 : 1;
-  context.strokeRect(x, y, HOSTILE_SUMMARY_CARD_WIDTH, HOSTILE_SUMMARY_CARD_HEIGHT);
+  context.strokeRect(x, y, cardWidth, cardHeight);
   context.fillStyle = "#d6453d";
-  context.fillRect(x, y, 4, HOSTILE_SUMMARY_CARD_HEIGHT);
+  context.fillRect(x, y, 4, cardHeight);
 
   drawHostilePortrait(intel, context, x + 12, y + 16);
 
@@ -204,10 +210,10 @@ function drawHostileCard(
   context.font = '700 9px "Segoe UI", "Microsoft YaHei", sans-serif';
   const threatWidth = Math.max(38, context.measureText(score).width + 10);
   context.fillStyle = threat.background;
-  context.fillRect(x + HOSTILE_SUMMARY_CARD_WIDTH - threatWidth - 10, y + 9, threatWidth, 19);
+  context.fillRect(x + cardWidth - threatWidth - 10, y + 9, threatWidth, 19);
   context.textAlign = "center";
   context.fillStyle = threat.foreground;
-  context.fillText(score, x + HOSTILE_SUMMARY_CARD_WIDTH - threatWidth / 2 - 10, y + 18.5);
+  context.fillText(score, x + cardWidth - threatWidth / 2 - 10, y + 18.5);
 
   context.font = '500 9px "Segoe UI", "Microsoft YaHei", sans-serif';
   context.textAlign = "left";
@@ -228,21 +234,21 @@ function drawHostileCard(
     context.font = '700 9px "Segoe UI", "Microsoft YaHei", sans-serif';
     context.textAlign = "center";
     context.fillStyle = "#fbe9e7";
-    context.fillRect(x + HOSTILE_SUMMARY_CARD_WIDTH - 42, y + 47, 30, 18);
+    context.fillRect(x + cardWidth - 42, y + 47, 30, 18);
     context.fillStyle = "#b42318";
-    context.fillText(badge, x + HOSTILE_SUMMARY_CARD_WIDTH - 27, y + 56);
+    context.fillText(badge, x + cardWidth - 27, y + 56);
   }
 
   context.fillStyle = "#edf1ef";
-  context.fillRect(x + 4, y + HOSTILE_SUMMARY_CARD_HEIGHT - 3, HOSTILE_SUMMARY_CARD_WIDTH - 4, 3);
+  context.fillRect(x + 4, y + cardHeight - 3, cardWidth - 4, 3);
   context.fillStyle = threat.foreground;
   context.fillRect(
     x + 4,
-    y + HOSTILE_SUMMARY_CARD_HEIGHT - 3,
-    (HOSTILE_SUMMARY_CARD_WIDTH - 4) * Math.min(1, Math.max(0.08, (threatScore ?? 35) / 100)),
+    y + cardHeight - 3,
+    (cardWidth - 4) * Math.min(1, Math.max(0.08, (threatScore ?? 35) / 100)),
     3,
   );
-  const riskWidth = (HOSTILE_SUMMARY_CARD_WIDTH - 4) *
+  const riskWidth = (cardWidth - 4) *
     Math.min(1, Math.max(0.08, (threatScore ?? 35) / 100));
   const shimmerWidth = 24;
   const shimmerStart = x + 4 - shimmerWidth +
@@ -253,7 +259,7 @@ function drawHostileCard(
     context.fillStyle = "rgba(255, 255, 255, 0.62)";
     context.fillRect(
       shimmerLeft,
-      y + HOSTILE_SUMMARY_CARD_HEIGHT - 3,
+      y + cardHeight - 3,
       shimmerRight - shimmerLeft,
       3,
     );
@@ -541,6 +547,7 @@ export function TacticalStarMap({
   const graphRef =
     useRef<ForceGraphMethods<TacticalGraphNode, TacticalGraphLink>>();
   const [size, setSize] = useState({ height: 560, width: 900 });
+  const [expandedHostileSystemId, setExpandedHostileSystemId] = useState<number | null>(null);
   const [hostileDetailSystemId, setHostileDetailSystemId] = useState<number | null>(null);
   const [motionEnabled, setMotionEnabled] = useState(() => {
     const preference = typeof window === "undefined" ||
@@ -578,11 +585,21 @@ export function TacticalStarMap({
     return () => preference.removeEventListener?.("change", updatePreference);
   }, []);
 
+  useEffect(() => {
+    if (expandedHostileSystemId === null || graphData.nodes.some((node) =>
+      node.kind === "hostile-summary" && node.systemId === expandedHostileSystemId
+    )) {
+      return;
+    }
+    setExpandedHostileSystemId(null);
+    setHostileDetailSystemId(null);
+  }, [expandedHostileSystemId, graphData.nodes]);
+
   const hasHostileCards = graphData.nodes.some(
     (node) => node.kind === "hostile-summary",
   );
   const fitPadding = hasHostileCards
-    ? Math.min(260, Math.max(128, size.width * 0.25))
+    ? Math.min(200, Math.max(96, size.width * 0.2))
     : Math.min(96, Math.max(48, size.width * 0.15));
   const fitGraph = useCallback((duration = 650) => {
     graphRef.current?.zoomToFit(duration, fitPadding);
@@ -634,8 +651,18 @@ export function TacticalStarMap({
     if (!graph) {
       return;
     }
+    graphData.nodes.forEach((node) => {
+      if (node.kind === "hostile-summary") {
+        node.hostileCardHidden = node.systemId !== expandedHostileSystemId;
+      }
+    });
+    if (expandedHostileSystemId === null) {
+      return;
+    }
     layoutHostileSummaryNodes(
-      graphData.nodes,
+      graphData.nodes.filter((node) =>
+        node.kind !== "hostile-summary" || node.systemId === expandedHostileSystemId
+      ),
       size.width,
       size.height,
       globalScale,
@@ -645,7 +672,7 @@ export function TacticalStarMap({
       },
       visibleOverlayRects(containerRef.current),
     );
-  }, [graphData.nodes, size.height, size.width]);
+  }, [expandedHostileSystemId, graphData.nodes, size.height, size.width]);
   const selectedHostileSummary = useMemo(() => graphData.nodes.find((node) =>
     node.kind === "hostile-summary" && node.systemId === hostileDetailSystemId,
   ), [graphData.nodes, hostileDetailSystemId]);
@@ -658,8 +685,20 @@ export function TacticalStarMap({
   const selectNode = useCallback((node: TacticalGraphNode) => {
     const systemId = typeof node.systemId === "number" ? node.systemId : null;
     onSelectSystem(systemId);
-    if (systemId !== null && (node.kind === "hostile-summary" || node.hostileCount > 0)) {
+    if (systemId === null) {
+      setExpandedHostileSystemId(null);
+      setHostileDetailSystemId(null);
+      return;
+    }
+    if (node.kind === "hostile-summary") {
       setHostileDetailSystemId(systemId);
+      return;
+    }
+    setHostileDetailSystemId(null);
+    if (node.hostileCount > 0) {
+      setExpandedHostileSystemId((current) => current === systemId ? null : systemId);
+    } else {
+      setExpandedHostileSystemId(null);
     }
   }, [onSelectSystem]);
 
