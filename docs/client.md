@@ -1,126 +1,107 @@
-# 监控客户端
+# 客户端操作指南
 
-## 运行要求
+这份文档只介绍 Windows 客户端的界面操作。下载安装后，不需要配置 Python、OCR 模型或环境变量。
 
-- Windows 10/11，Python 3.11+ 或已打包客户端。
-- EVE Online 使用窗口化或无边框窗口模式；游戏最小化时 Windows 通常无法提供有效画面。
-- DirectML 发行版不要求 CUDA，支持大多数现代 AMD、Intel 和 NVIDIA 显卡。
-- 模型目录包含 PP-OCRv6 medium detector 和 recognizer 的 `model.onnx`。
+## 下载和启动
 
-源码运行：
+1. 下载[最新版 Windows 客户端](https://evesentrydownload.kisectool.com/download/latest)。
+2. 解压整个压缩包，不要只复制其中的 EXE 文件。
+3. 启动 `EVE-Sentry-Monitor.exe`。
+4. 将 EVE Online 设为“窗口化”或“无边框窗口”模式，并保持游戏窗口未最小化。
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -r requirements-onnx.txt
-$env:EVE_SENTRY_OCR_BACKEND = "onnx"
-$env:EVE_SENTRY_OCR_DEVICE = "dml"
-.\scripts\start_monitor_client.ps1 -Server http://127.0.0.1:8765
-```
+首次运行时，Windows 如果显示安全提示，请确认文件来源后选择继续运行。
 
-也可直接执行 `python -m app.detector_client`。
+## 第一次使用
 
-## 使用流程
+### 1. 连接服务端
 
-1. 填写服务端地址和网页账号中创建的桌面设备密钥。
-2. 客户端会自动定位当前活跃的 EVE Chatlogs 目录；环境变量可用于强制指定路径。
-3. 点击刷新或等待客户端自动刷新窗口列表。
-4. 在下拉框选择一个 EVE 窗口，必要时重新框选成员列表区域。
-5. 开启监控以启动截图、OCR、快照上报和心跳。
-6. 开启预警以显示 SSE 浮窗和告警声音。
+在客户端左侧填写：
 
-监控和预警是两个独立开关。停止监控会停止本机采集并让该节点从其他预警客户端移除；
-关闭预警只停止本机订阅和浮窗，不影响 OCR 上报。
+- **服务端**：管理员提供的服务器地址。
+- **设备密钥**：从网页账号中创建，或向管理员获取；通常以 `eve_` 开头。
 
-浮窗每个方框代表一个正在监控的星系节点：安全为绿色，来敌为红色并显示实时人数。
-本机检测到红色敌对图标时会立即更新当前星系；服务端推送继续用于同步其他节点。
-客户端不发送右下角系统通知，预警信息统一显示在可缩放的顶部浮窗中。
+输入完成后点击界面其他位置。顶部连接状态显示正常后再继续操作。
 
-## EVE 身份校验
+### 2. 选择 EVE 窗口
 
-设备密钥和身份状态使用 Windows DPAPI 保存。新密钥或本地索引缺失时会扫描全部历史
-聊天日志中的 `Listener`；完成首次验证后只处理新增日志文件。新增文件暂未写出完整
-`Listener` 时保持待处理，下一个 10 秒周期继续检查。
+1. 先登录 EVE，并打开本地频道成员列表。
+2. 在 **目标窗口** 下拉框中选择要监控的角色窗口。
+3. 如果没有看到窗口，点击下拉框右侧的 **刷新窗口** 图标。
+4. 点击 **选择区域**，框选本地频道的成员列表区域。
+5. 点击 **预览**，确认截图只包含需要识别的成员列表。
 
-客户端启动后会在后台预校验密钥；同一运行周期内启动监控或预警时复用校验结果，
-不再重复等待网络请求。密钥、服务端地址变化或服务端拒绝认证时会立即清除结果并重验。
+客户端会记住窗口和区域。窗口位置、大小或显示器缩放发生明显变化时，建议重新选择区域。
 
-OCR 推理运行时也会在界面启动后后台加载，选中窗口开始监控时复用已加载的首个引擎。
-预警开启时直接建立 SSE 并请求 Bootstrap，运行心跳不再阻塞首次连接。
+### 3. 开始监控和预警
 
-认证或 ESI 暂时失败时，客户端不会阻塞界面，但监控、预警和上报保持暂停。确认角色
-不属于允许军团且不在用户白名单时，服务端会禁用用户，客户端必须更换新签发密钥。
+- 点击 **开始监控**：识别当前所选 EVE 窗口，并把结果发送到服务端。
+- 点击 **开启预警**：接收各监控节点的预警，在顶部浮窗显示并按设置播放声音。
 
-## 主要配置
+这两个按钮互相独立：
 
-| 环境变量 | 默认值 | 作用 |
-| --- | --- | --- |
-| `EVE_SENTRY_INTEL_URL` | `http://114.132.167.239:8765` | 服务端统一入口 |
-| `EVE_SENTRY_CHATLOG_DIR` | EVE 默认 Chatlogs | 本地聊天日志目录 |
-| `EVE_SENTRY_SCAN_INTERVAL` | `2` | OCR 扫描间隔，界面范围 1-10 秒 |
-| `EVE_SENTRY_WINDOW_KEYWORD` | `EVE -` | 窗口标题过滤关键字 |
-| `EVE_SENTRY_HEARTBEAT_INTERVAL` | `15` | 心跳间隔，最小 5 秒 |
-| `EVE_SENTRY_INTEL_TIMEOUT` | `10` | HTTP 请求超时秒数 |
-| `EVE_SENTRY_OCR_BACKEND` | 源码默认 `paddle` | 生产客户端设置为 `onnx` |
-| `EVE_SENTRY_ONNX_MODEL_DIR` | 自动搜索 | ONNX 模型根目录 |
-| `EVE_SENTRY_OCR_DEVICE` | `auto` | `dml`、`cuda`、`cpu` 或 `auto` |
-| `EVE_SENTRY_AUTO_START_MONITOR` | `0` | 启动后自动请求开启监控 |
-| `EVE_SENTRY_PUBLISH_INTEL` | `1` | 设置为 `0` 可进行不上报的本地测试 |
-| `EVE_SENTRY_CLIENT_VERSION` | 内置版本 | 仅用于开发测试时覆盖客户端版本 |
-| `EVE_SENTRY_UPDATE_MANIFEST_URL` | GitHub Release | 覆盖自动更新清单地址，必须使用 HTTPS |
+- 只开启监控时，本机会上报信息，但不会显示预警浮窗。
+- 只开启预警时，本机不会识别窗口，但仍可接收其他节点的预警。
+- 需要完整功能时，请同时开启监控和预警。
 
-## 客户端更新
+## 界面说明
 
-客户端启动后会静默检查 GitHub Release 的 `latest.json`，也可在左侧版本区手动检查。
-发现新版本后，客户端通过清单中的下载地址异步获取完整压缩包，校验文件大小和
-SHA256；点击“安装并重启”后，独立 PowerShell 进程会等待客户端退出、替换便携目录并
-重新启动。设备密钥和本地状态保存在用户目录中，不会被更新覆盖。
+| 区域 | 用途 |
+| --- | --- |
+| 左侧设置 | 填写服务端和设备密钥，调整扫描间隔、窗口关键字及告警声音 |
+| 顶部按钮 | 开始或停止监控，开启或关闭预警 |
+| 目标窗口 | 选择 EVE 窗口、重新框选识别区域、查看预览 |
+| 运行状态 | 查看服务端、身份、OCR、窗口和区域是否正常 |
+| 窗口状态 | 查看当前窗口、区域、监控状态和最近动作 |
+| 运行日志 | 查看连接、识别和上传过程；右上角按钮可清空日志 |
 
-Cloudflare Worker 位于 `deploy/cloudflare-download`，提供 `/latest.json` 和
-`/download/<asset.zip>`，用于缓存 GitHub Release 下载。发布命令：
+### 告警声音
 
-```powershell
-.\scripts\publish_client_release.ps1 -DownloadBaseUrl "https://<worker>/download"
-```
+左侧可以：
 
-正常发布由 `.github/workflows/release-client.yml` 完成。只需修改
-`app/version.py` 中的 `APP_VERSION` 并推送 `main`；工作流会运行完整测试，从上一版
-Release 恢复固定 ONNX 模型，构建并发布新安装包，然后验证 Cloudflare 更新清单和
-分段下载。`workflow_dispatch` 仅用于发布异常后的重跑。
+- 开启或关闭 **告警声音**。
+- 设置同一轮告警的 **播放间隔**。
+- 设置同一轮告警的 **播放次数**。
 
-## 打包
+顶部预警浮窗中，绿色表示安全，红色表示发现敌对目标；红色方框会显示当前人数。
 
-当前轻量发行包使用 `packaging/eve-sentry-monitor-onnx.spec`：
+## 日常使用
 
-```powershell
-.\.venv\Scripts\python -m pip install pyinstaller
-$env:EVE_SENTRY_ONNX_MODEL_CACHE = "$PWD\.runtime\onnx-models"
-.\.venv\Scripts\python -m PyInstaller --clean --noconfirm packaging\eve-sentry-monitor-onnx.spec
-Compress-Archive -Path .\dist\EVE-Sentry-Monitor-ONNX -DestinationPath .\dist\EVE-Sentry-Monitor-ONNX.zip -Force
-```
+1. 启动并登录 EVE Online。
+2. 启动 EVE Sentry。
+3. 确认顶部连接状态和 **运行状态** 没有异常。
+4. 确认 **目标窗口** 选择正确。
+5. 点击 **开始监控**。
+6. 需要接收预警时，再点击 **开启预警**。
 
-输出目录必须整体分发，不能只复制 EXE。验收文件：
+退出前可分别点击 **停止监控** 和 **关闭预警**。如果直接关闭客户端，也会停止本机监控。
 
-```powershell
-$root = ".\dist\EVE-Sentry-Monitor-ONNX"
-Test-Path "$root\EVE-Sentry-Monitor.exe"
-Test-Path "$root\_internal\models\PP-OCRv6_medium_det\model.onnx"
-Test-Path "$root\_internal\models\PP-OCRv6_medium_rec\model.onnx"
-Get-FileHash .\dist\EVE-Sentry-Monitor-ONNX.zip -Algorithm SHA256
-```
+## 更新客户端
 
-`packaging/eve-sentry-monitor-bundled.spec` 是体积较大的 Paddle 兼容构建，不是当前推荐发行版。
+客户端会自动检查新版本，也可以点击左下角的 **检查更新**。
 
-## 排查
+发现新版本后，按界面提示下载并选择 **安装并重启**。更新期间不要手动移动或删除客户端目录；设备密钥和本地设置会保留。
 
-- `服务连接异常`：先访问 `GET /api/health`，再确认地址、设备密钥和服务端认证模式。
-- `OCR snapshot upload failed`：检查反向代理、请求超时和服务端日志；客户端只对传输错误重试一次。
-- 窗口列表缺少新窗口：等待自动刷新或点击刷新，确认窗口标题包含配置关键字。
-- 识别区域偏移：重新框选成员列表；客户端会按窗口位置、大小和 DPI 缩放保存区域。
-- GPU 回退：检查日志中的 detector/recognizer provider，DirectML 应为 `DmlExecutionProvider`。
-- 当前星系错误：确认窗口标题角色名与对应 Local 日志的 `Listener` 一致。
+## 常见问题
 
-界面烟雾测试不会连接服务端或执行真实 OCR：
+### 目标窗口为空
 
-```powershell
-python scripts/monitor_ui_smoke.py --json --screenshot .\monitor-ui-smoke.png
-```
+- 确认 EVE 已启动且已进入角色。
+- 确认游戏不是全屏独占模式，也没有最小化。
+- 点击 **刷新窗口**。
+- 如果改过 **窗口关键字**，恢复默认值后重试。
+
+### 预览区域不正确
+
+点击 **选择区域** 重新框选成员列表。框选时尽量避开聊天正文、滚动条以外的按钮和其他窗口。
+
+### 无法开始监控
+
+依次查看 **运行状态** 中的服务端、身份、OCR、窗口和区域。设备密钥失效时，需要在网页中重新创建密钥或联系管理员。
+
+### 有红色预警但没有声音
+
+确认左侧 **告警声音** 已开启、Windows 没有静音，并检查播放间隔和播放次数。
+
+### 仍然无法解决
+
+点击左下角 **导出诊断包**，把生成的文件和问题发生时间一起交给管理员。诊断包用于排查客户端状态，不需要手工复制运行日志。

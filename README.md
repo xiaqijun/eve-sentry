@@ -106,10 +106,11 @@ python -m app.detector_client
 
 ## 客户端下载与更新
 
-Windows 便携客户端通过 GitHub Release 发布，安装包包含 ONNX Runtime、DirectML 和
-PP-OCRv6 模型。客户端启动时静默检查版本，也可在左侧版本区手动下载；安装前会校验
-文件大小和 SHA256，随后退出、替换目录并自动重启。大文件下载由 Cloudflare Worker
-代理并缓存，发布与部署方式见 [监控客户端](docs/client.md)。
+Windows 用户直接下载并解压完整便携包即可使用。连接服务端、选择 EVE 窗口、框选识别
+区域以及开启监控和预警的步骤见 [客户端操作指南](docs/client.md)。
+
+固定下载入口：[下载最新版 Windows 客户端](https://evesentrydownload.kisectool.com/download/latest)。
+该地址不包含版本号，会自动跳转到最新完整客户端包，并支持 HTTP Range 断点续传。
 
 `main` 分支由 GitHub Actions 自动测试并部署服务端；修改 `app/version.py` 的版本号会
 额外触发 Windows 客户端构建和 Release 发布。日常部署及客户端推送无需人工执行命令。
@@ -121,11 +122,11 @@ ONNX 模型应位于：
 .runtime/onnx-models/PP-OCRv6_medium_rec/model.onnx
 ```
 
-本地服务端可使用 SQLite：
+本地服务端使用 PostgreSQL；启动时仅加载有界近期报告与活跃情报引用：
 
 ```powershell
 python -m pip install -r requirements-server.txt
-python -m app.server --host 127.0.0.1 --port 8765
+python -m app.server --host 127.0.0.1 --port 8765 --postgres-dsn postgresql://eve_sentry:password@127.0.0.1:5432/eve_sentry
 ```
 
 前端开发：
@@ -147,11 +148,7 @@ npm run build
 
 ## 文档
 
-- [系统架构](docs/architecture.md)
-- [监控客户端](docs/client.md)
-- [认证与 EVE 身份校验](docs/authentication.md)
-- [Web 管理系统](docs/web-console.md)
-- [API 参考](docs/api-reference.md)
+- [客户端操作指南](docs/client.md)
 - [服务端部署](docs/server-deployment.md)
 
 运行时数据库、配置、EVE SSO token、本地密钥状态和模型缓存均不应提交到仓库。
