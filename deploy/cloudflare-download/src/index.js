@@ -1,9 +1,53 @@
 const ASSET_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.zip$/;
+const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:[+-][0-9A-Za-z.-]+)?$/;
 
 function githubReleaseUrl(env, assetName) {
   const owner = encodeURIComponent(env.GITHUB_OWNER || "xiaqijun");
   const repo = encodeURIComponent(env.GITHUB_REPO || "eve-sentry");
   return `https://github.com/${owner}/${repo}/releases/latest/download/${encodeURIComponent(assetName)}`;
+}
+
+function latestManifestUrl(env) {
+  const owner = encodeURIComponent(env.GITHUB_OWNER || "xiaqijun");
+  const repo = encodeURIComponent(env.GITHUB_REPO || "eve-sentry");
+  return `https://github.com/${owner}/${repo}/releases/latest/download/latest.json`;
+}
+
+async function redirectToLatestClient(request, env) {
+  const upstream = await fetch(latestManifestUrl(env), {
+    headers: { "User-Agent": "EVE-Sentry-Download-Worker/1.0" },
+    redirect: "follow",
+    cf: {
+      cacheEverything: true,
+      cacheTtl: 60,
+    },
+  });
+  if (!upstream.ok) {
+    return new Response("Latest release unavailable", { status: 502 });
+  }
+
+  let manifest;
+  try {
+    manifest = await upstream.json();
+  } catch {
+    return new Response("Invalid latest release manifest", { status: 502 });
+  }
+  const version = String(manifest?.version || "").trim().replace(/^v/, "");
+  if (!RELEASE_VERSION.test(version)) {
+    return new Response("Invalid latest release version", { status: 502 });
+  }
+
+  const assetName = `EVE-Sentry-Monitor-ONNX-${version}.zip`;
+  const target = new URL(`/download/${encodeURIComponent(assetName)}`, request.url);
+  return new Response(null, {
+    status: 302,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "public, max-age=60, s-maxage=60",
+      Location: target.toString(),
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }
 
 function responseHeaders(source, cacheSeconds) {
@@ -47,10 +91,10 @@ export default {
       return Response.json({ ok: true, service: "eve-sentry-download" });
     }
     if (url.pathname === "/latest.json") {
-      const owner = encodeURIComponent(env.GITHUB_OWNER || "xiaqijun");
-      const repo = encodeURIComponent(env.GITHUB_REPO || "eve-sentry");
-      const target = `https://github.com/${owner}/${repo}/releases/latest/download/latest.json`;
-      return proxyRelease(request, env, target, 60);
+      return proxyRelease(request, env, latestManifestUrl(env), 60);
+    }
+    if (url.pathname === "/download/latest") {
+      return redirectToLatestClient(request, env);
     }
     if (url.pathname.startsWith("/download/")) {
       const assetName = decodeURIComponent(url.pathname.slice("/download/".length));
