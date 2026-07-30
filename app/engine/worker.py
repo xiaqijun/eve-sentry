@@ -14,6 +14,7 @@ from app.engine.capturer import (
 from app.engine.hostile_icons import extract_hostile_name_rows, find_hostile_icons
 from app.engine.ocr import OCREngine
 from app.engine.ocr_names import ocr_candidate_names
+from app.engine.ocr_scheduler import OCRRequestSuperseded
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class MonitorWorker(QThread):
         self._running = False
         self._region: Optional[dict] = None  # {x, y, w, h}
         self._window: Optional[dict] = None  # {hwnd, title, w, h}
+        self._ocr_request_key: str | None = None
 
     def set_region(self, x: int, y: int, w: int, h: int) -> None:
         """Set the screen region to capture."""
@@ -74,6 +76,19 @@ class MonitorWorker(QThread):
             "w": window.get("w", 0),
             "h": window.get("h", 0),
         }
+        self._ocr_request_key = f"window:{self._window['hwnd']}"
+
+    def _recognize(self, image, progress=None, *, priority: int = 0):
+        """Use scheduler coalescing when available, while keeping engine compatibility."""
+        recognize_latest = getattr(self._ocr, "recognize_latest", None)
+        if callable(recognize_latest) and self._ocr_request_key:
+            return recognize_latest(
+                image,
+                progress=progress,
+                request_key=self._ocr_request_key,
+                priority=priority,
+            )
+        return self._ocr.recognize(image, progress=progress)
 
     def set_interval(self, seconds: float) -> None:
         """Set the delay between scans (1-10 seconds)."""
@@ -198,7 +213,7 @@ class MonitorWorker(QThread):
                                 warm_up()
                             else:
                                 # Preserve direct engine compatibility for tools/tests.
-                                self._ocr.recognize(
+                                self._recognize(
                                     img,
                                     progress=self.status_update.emit,
                                 )
@@ -207,9 +222,10 @@ class MonitorWorker(QThread):
                         verified_hostile_count = 0
                     else:
                         progress = None if ocr_ready else self.status_update.emit
-                        hostile_ocr_results = self._ocr.recognize(
+                        hostile_ocr_results = self._recognize(
                             hostile_rows,
                             progress=progress,
+                            priority=10,
                         )
                         hostile_names = build_ocr_snapshot_names(hostile_ocr_results)
                         if len(hostile_names) == hostile_count:
@@ -230,7 +246,7 @@ class MonitorWorker(QThread):
                             else:
                                 # Do not assign a red marker to the wrong pilot. Fall
                                 # back to the complete list after a confirmed mismatch.
-                                ocr_results = self._ocr.recognize(img)
+                                ocr_results = self._recognize(img)
                                 names = build_ocr_snapshot_names(ocr_results)
                                 verified_hostile_count = 0
                     if not ocr_ready:
@@ -269,9 +285,12 @@ class MonitorWorker(QThread):
                     else:
                         self.status_update.emit("敌对图标行未识别到姓名")
 
+                except OCRRequestSuperseded:
+                    logger.debug("Discarded superseded OCR frame")
+                    self.status_update.emit("OCR 已跳过过期帧")
                 except TargetWindowClosed:
-                    logger.info("Target EVE window closed; stopping monitor worker")
-                    self.status_update.emit("EVE 窗口已关闭，监控已停止")
+                    logger.info("Target EVE window closed; waiting for monitor reconnect")
+                    self.status_update.emit("EVE 窗口已关闭，等待自动重连")
                     break
                 except BackgroundCaptureUnavailable:
                     logger.debug("Background capture unavailable; skipping OCR frame")

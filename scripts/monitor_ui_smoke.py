@@ -284,7 +284,10 @@ def run_smoke(args: argparse.Namespace) -> dict:
                 "width": window.width(),
                 "height": window.height(),
             },
-            "settings": widget_geometry_in_window(window._settings, window),
+            "settings": widget_geometry_in_window(
+                getattr(window, "_settings_scroll", window._settings),
+                window,
+            ),
             "monitor_button": widget_geometry_in_window(window._monitor_btn, window),
             "window_combo": widget_geometry_in_window(window._window_combo, window),
             "window_label": widget_geometry_in_window(window._window_label, window),

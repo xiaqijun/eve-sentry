@@ -304,7 +304,7 @@ def test_monitor_worker_stops_when_the_game_window_closes():
 
     worker.run()
 
-    assert statuses[-1] == "EVE 窗口已关闭，监控已停止"
+    assert statuses[-1] == "EVE 窗口已关闭，等待自动重连"
 
 
 def test_monitor_worker_skips_ocr_when_background_frame_is_unavailable():

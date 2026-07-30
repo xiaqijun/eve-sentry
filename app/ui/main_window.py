@@ -1,5 +1,6 @@
 """Main application window."""
 
+import io
 import logging
 import os
 import time
@@ -8,8 +9,8 @@ from concurrent.futures import Future
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QSettings, QTimer
-from PyQt6.QtGui import QAction
+from PyQt6.QtCore import QSettings, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -67,6 +68,50 @@ from app.updater import ClientUpdater
 from app.version import current_version
 
 logger = logging.getLogger(__name__)
+
+
+class PreviewCaptureWorker(QThread):
+    """Capture one background window region and return detached PNG bytes."""
+
+    captured = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, window: dict, region: dict, parent=None) -> None:
+        super().__init__(parent)
+        self._window = dict(window)
+        self._region = dict(region)
+
+    def run(self) -> None:
+        capturer = None
+        image_data = b""
+        error = ""
+        try:
+            capturer = Capturer()
+            capturer.select_window(
+                self._window["hwnd"],
+                self._window.get("title", ""),
+                self._window.get("w", 0),
+                self._window.get("h", 0),
+            )
+            image = capturer.screenshot(
+                self._region["x"],
+                self._region["y"],
+                self._region["w"],
+                self._region["h"],
+            )
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            image_data = buffer.getvalue()
+        except Exception as exc:
+            error = str(exc)
+        finally:
+            if capturer is not None:
+                capturer.close()
+        if error:
+            self.failed.emit(error)
+        elif image_data:
+            self.captured.emit(image_data)
+
 
 class MainWindow(QMainWindow):
     """Top-level window: settings on the left, log on the right, tray icon."""
@@ -138,6 +183,7 @@ class MainWindow(QMainWindow):
         self._window_refresh_timer = QTimer(self)
         self._window_refresh_timer.setInterval(3000)
         self._window_refresh_timer.timeout.connect(self._refresh_detected_windows)
+        self._monitor_reconnect_scheduled = False
         self._network_tasks = BackgroundTaskRunner(max_workers=2, parent=self)
         self._network_tasks.completed.connect(self._on_network_task_completed)
         self._identity_timer = QTimer(self)
@@ -146,6 +192,7 @@ class MainWindow(QMainWindow):
         self._identity_timer.start()
         self._alert_controller: AlertTrayController | None = None
         self._stopping_monitor_workers: set[MonitorWorker] = set()
+        self._preview_capture_worker: PreviewCaptureWorker | None = None
 
         self._popup_alerts_enabled = False
         self._manual_region: dict | None = None
@@ -159,7 +206,6 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self._settings.setFixedWidth(240)
         self._settings.scan_settings_changed.connect(self._apply_scan_settings)
         self._settings.server_url_changed.connect(self._apply_server_url)
         self._settings.api_key_changed.connect(self._apply_api_key)
@@ -167,6 +213,7 @@ class MainWindow(QMainWindow):
             self._apply_behavior_settings
         )
         self._settings.diagnostics_requested.connect(self._export_diagnostics)
+        self._settings.setFixedWidth(240)
         root.addWidget(self._settings)
 
         workspace = QWidget()
@@ -320,7 +367,7 @@ class MainWindow(QMainWindow):
         self._log.setReadOnly(True)
         self._log.setObjectName("runtimeLog")
         self._log.document().setMaximumBlockCount(1500)
-        right.addWidget(self._log)
+        right.addWidget(self._log, 1)
 
         root.addWidget(workspace, 1)
 
@@ -375,6 +422,12 @@ class MainWindow(QMainWindow):
     def should_start_minimized(self) -> bool:
         """Return whether the configured startup should remain in the tray."""
         return self._settings.get_start_minimized()
+
+    def activate_window(self) -> None:
+        """Bring the existing client window to the foreground."""
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
 
     def _make_status_card(self, key: str) -> QFrame:
         """Build a compact status card for the desktop HUD."""
@@ -680,6 +733,7 @@ class MainWindow(QMainWindow):
             self._detected_region = None
             self._capturer.close()
             self._window_label.setText("窗口：未找到")
+        self._sync_monitor_window_status(windows)
         self._refresh_status_cards()
         self._refresh_window_status_table()
 
@@ -688,10 +742,53 @@ class MainWindow(QMainWindow):
         keyword = self._settings.get_keyword()
         windows = self._capturer.list_eve_windows(keyword)
         self._sync_monitor_target_geometry(windows)
+        self._sync_monitor_window_status(windows)
         signature = _window_list_signature(windows)
         if signature == _instance_attr(self, "_window_signature", ()):
             return
         self._detect_window(windows=windows)
+        if windows:
+            self._schedule_monitor_reconnect()
+
+    def _sync_monitor_window_status(self, windows: list[dict]) -> None:
+        """Keep the global status aligned with the worker, not transient geometry."""
+        monitor_btn = _instance_attr(self, "_monitor_btn")
+        status_label = _instance_attr(self, "_status_label")
+        if (
+            monitor_btn is None
+            or status_label is None
+            or not monitor_btn.isChecked()
+        ):
+            return
+        if self._running_workers():
+            status_label.setText("监控中")
+            status_label.setStyleSheet("color: #37d6b0; font-weight: bold;")
+        elif not windows:
+            status_label.setText("等待 EVE 窗口重新出现")
+            status_label.setStyleSheet("color: #f0b35a; font-weight: bold;")
+
+    def _schedule_monitor_reconnect(self) -> None:
+        """Restart monitoring after a previously monitored window reappears."""
+        monitor_btn = _instance_attr(self, "_monitor_btn")
+        if monitor_btn is None or not monitor_btn.isChecked():
+            return
+        if self._running_workers() or _instance_attr(self, "_stopping_monitor_workers", set()):
+            return
+        if _instance_attr(self, "_monitor_reconnect_scheduled", False):
+            return
+        self._monitor_reconnect_scheduled = True
+        QTimer.singleShot(0, self._reconnect_monitor)
+
+    def _reconnect_monitor(self) -> None:
+        self._monitor_reconnect_scheduled = False
+        monitor_btn = _instance_attr(self, "_monitor_btn")
+        if monitor_btn is None or not monitor_btn.isChecked() or self._running_workers():
+            return
+        targets = self._build_monitor_targets()
+        if not targets:
+            return
+        self._log_message("EVE 窗口已重新出现，正在恢复监控")
+        self._start_monitor(identity_checked=True)
 
     def _sync_monitor_target_geometry(self, windows: list[dict]) -> None:
         """Remap active capture regions when an EVE window moves or resizes."""
@@ -815,19 +912,41 @@ class MainWindow(QMainWindow):
         if not region:
             QMessageBox.information(self, "识别区域预览", "请先选择 EVE 窗口或识别区域。")
             return
+        worker = _instance_attr(self, "_preview_capture_worker")
+        if worker is not None and worker.isRunning():
+            return
+
+        window = self._current_window_info()
+        if window is None:
+            QMessageBox.warning(self, "预览失败", "当前 EVE 窗口不可用，请重新检测窗口。")
+            return
+
+        self._start_preview_capture(window, region)
+
+    def _start_preview_capture(self, window: dict, region: dict) -> None:
+        if _instance_attr(self, "_shutdown_in_progress", False):
+            return
+        worker = PreviewCaptureWorker(window, region, self)
+        self._preview_capture_worker = worker
+        worker.captured.connect(self._show_region_preview)
+        worker.failed.connect(self._show_preview_error)
+        worker.finished.connect(
+            lambda worker=worker: self._on_preview_capture_finished(worker)
+        )
+        worker.start()
+
+    def _show_region_preview(self, image_data: bytes) -> None:
+        """Render a captured preview frame on the GUI thread."""
+        if _instance_attr(self, "_shutdown_in_progress", False):
+            return
         try:
-            image = self._capturer.screenshot(
-                region["x"],
-                region["y"],
-                region["w"],
-                region["h"],
-            )
-            from PIL.ImageQt import ImageQt
             from PyQt6.QtGui import QPixmap
 
-            pixmap = QPixmap.fromImage(ImageQt(image.convert("RGB")))
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(image_data, "PNG"):
+                raise RuntimeError("预览图片解码失败。")
         except Exception as exc:
-            QMessageBox.warning(self, "预览失败", str(exc))
+            self._show_preview_error(str(exc))
             return
         dialog = QDialog(self)
         dialog.setWindowTitle("OCR 识别区域预览")
@@ -838,6 +957,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(preview)
         dialog.show()
         self._region_preview_dialog = dialog
+
+    def _show_preview_error(self, message: str) -> None:
+        if not _instance_attr(self, "_shutdown_in_progress", False):
+            QMessageBox.warning(self, "预览失败", message)
+
+    def _on_preview_capture_finished(self, worker: PreviewCaptureWorker) -> None:
+        if _instance_attr(self, "_preview_capture_worker") is worker:
+            self._preview_capture_worker = None
+        worker.deleteLater()
 
     def _refresh_ocr_health(self) -> None:
         label = _instance_attr(self, "_ocr_health_label")
@@ -958,14 +1086,15 @@ class MainWindow(QMainWindow):
             ),
             alert_volume=alert_preferences.get("volume", 1.0),
             alert_muted=alert_preferences.get("muted", False),
-            alert_cooldown=alert_preferences.get("cooldown", 15.0),
-            quiet_hours=alert_preferences.get("quiet_hours", ""),
-            alert_min_severity=alert_preferences.get("min_severity", "low"),
+            alert_cooldown=15.0,
+            alert_repeat_interval=alert_preferences.get("repeat_interval", 2.0),
+            alert_repeat_count=alert_preferences.get("repeat_count", 3),
         )
         try:
             controller = AlertTrayController(
                 app,
                 args,
+                api_factory=PersistentIntelApiClient,
                 tray_enabled=False,
                 notification_callback=None,
             )
@@ -1359,6 +1488,7 @@ class MainWindow(QMainWindow):
         self._refresh_status_cards()
 
     def _start_monitor(self, *, identity_checked: bool = False) -> None:
+        self._monitor_reconnect_scheduled = False
         if not identity_checked:
             self._begin_identity_check("monitor")
             return
@@ -1540,7 +1670,6 @@ class MainWindow(QMainWindow):
                 task_key="heartbeat:offline",
             )
         self._uploads_enabled = False
-        self._set_heartbeat_enabled(False)
         self._stop_monitor_workers(
             timeout_ms=None if wait_for_workers else 0,
         )
@@ -1731,10 +1860,7 @@ class MainWindow(QMainWindow):
         monitoring_override: bool | None = None,
         task_key: str = "heartbeat",
     ) -> None:
-        if (
-            self._intel_client is None
-            or not _instance_attr(self, "_uploads_enabled", True)
-        ):
+        if self._intel_client is None:
             return
         monitoring = (
             self._is_monitoring()
@@ -1850,6 +1976,8 @@ class MainWindow(QMainWindow):
         self._upload_manager.heartbeat_uploaded.connect(
             self._on_reliable_heartbeat_uploaded
         )
+        self._set_heartbeat_enabled(True)
+        QTimer.singleShot(0, self._publish_heartbeat)
 
     def _on_reliable_heartbeat_uploaded(self, _metadata: object) -> None:
         self._last_heartbeat_error = ""
@@ -1952,24 +2080,62 @@ class MainWindow(QMainWindow):
         self._tray.setToolTip("EVE Sentry")
         self._tray.activated.connect(self._on_tray_activated)
 
-        menu = self._tray.contextMenu()
-        if menu is None:
-            from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtWidgets import QMenu
 
-            menu = QMenu()
-            self._tray.setContextMenu(menu)
+        self._tray_menu = QMenu(self)
 
-        show_action = QAction("显示主窗口")
+        show_action = self._tray_menu.addAction("显示主窗口")
         show_action.triggered.connect(self.show)
-        menu.addAction(show_action)
 
-        quit_action = QAction("退出")
+        self._tray_menu.addSeparator()
+        self._tray_behavior_actions = {}
+        behavior_items = (
+            ("start_with_windows", "开机启动", self._settings.get_start_with_windows),
+            ("start_minimized", "启动后最小化", self._settings.get_start_minimized),
+            ("close_to_tray", "关闭到托盘", self._settings.get_close_to_tray),
+            (
+                "restore_monitor_state",
+                "恢复上次监控状态",
+                self._settings.get_restore_monitor_state,
+            ),
+        )
+        for preference, label, getter in behavior_items:
+            action = self._tray_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(getter())
+            action.toggled.connect(
+                lambda checked, name=preference: self._settings.set_behavior_preference(
+                    name,
+                    checked,
+                )
+            )
+            self._tray_behavior_actions[preference] = action
+        self._tray_menu.aboutToShow.connect(self._sync_tray_behavior_actions)
+
+        self._tray_menu.addSeparator()
+        quit_action = self._tray_menu.addAction("退出")
         quit_action.triggered.connect(self._quit_app)
-        menu.addAction(quit_action)
 
         self._tray.show()
 
+    def _sync_tray_behavior_actions(self) -> None:
+        values = {
+            "start_with_windows": self._settings.get_start_with_windows(),
+            "start_minimized": self._settings.get_start_minimized(),
+            "close_to_tray": self._settings.get_close_to_tray(),
+            "restore_monitor_state": self._settings.get_restore_monitor_state(),
+        }
+        for name, action in self._tray_behavior_actions.items():
+            previous = action.blockSignals(True)
+            action.setChecked(values[name])
+            action.blockSignals(previous)
+
     def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Context:
+            menu = getattr(self, "_tray_menu", None)
+            if menu is not None:
+                menu.exec(QCursor.pos())
+            return
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.show()
             self.raise_()
@@ -2010,6 +2176,7 @@ class MainWindow(QMainWindow):
         tray = _instance_attr(self, "_tray")
         if tray is not None:
             tray.hide()
+        MainWindow._set_heartbeat_enabled(self, False)
         self._stop_monitor(wait_for_workers=False)
         self._stop_alert(wait_for_worker=False)
         network_tasks = _instance_attr(self, "_network_tasks")
@@ -2037,7 +2204,11 @@ class MainWindow(QMainWindow):
         alert_running = any(
             controller.is_running() for controller in alert_controllers
         )
-        if monitor_running or alert_running:
+        preview_worker = _instance_attr(self, "_preview_capture_worker")
+        preview_running = (
+            preview_worker is not None and preview_worker.isRunning()
+        )
+        if monitor_running or alert_running or preview_running:
             QTimer.singleShot(50, self._finish_quit_when_workers_stop)
             return
         QApplication.quit()

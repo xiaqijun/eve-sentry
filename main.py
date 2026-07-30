@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 
 from app.ui.main_window import MainWindow
+from app.single_instance import SingleInstanceGuard
 from app.version import current_version
 
 
@@ -64,7 +65,13 @@ def main():
     app.setOrganizationName("EveSentry")
     app.setApplicationVersion(current_version())
 
+    instance = SingleInstanceGuard("EveSentry-Monitor", parent=app)
+    if not instance.acquire():
+        return 0
+
     window = MainWindow()
+    instance.activate_requested.connect(window.activate_window)
+    app.aboutToQuit.connect(instance.close)
     if health_marker:
         try:
             from pathlib import Path

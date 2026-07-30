@@ -10,7 +10,6 @@ from typing import Any
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -27,6 +26,13 @@ from app.version import current_version
 
 
 DEFAULT_INTEL_URL = "http://114.132.167.239:8765"
+DEFAULT_ALERT_VOLUME = 1.0
+DEFAULT_ALERT_REPEAT_INTERVAL = 2
+DEFAULT_ALERT_REPEAT_COUNT = 3
+SETTINGS_INPUT_HEIGHT = 30
+SETTINGS_LONG_INPUT_WIDTH = 198
+SETTINGS_INLINE_INPUT_WIDTH = 136
+SETTINGS_NUMBER_INPUT_WIDTH = 60
 
 
 def normalize_server_url(value: Any) -> str:
@@ -66,8 +72,8 @@ class SettingsPanel(QWidget):
         self._auth_state_store = ClientAuthStateStore()
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 18, 16, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(14, 12, 14, 8)
+        layout.setSpacing(5)
 
         brand = QLabel("EVE SENTRY")
         brand.setObjectName("brandTitle")
@@ -77,20 +83,28 @@ class SettingsPanel(QWidget):
         product.setObjectName("brandMeta")
         layout.addWidget(product)
 
-        server_group = QGroupBox("连接")
+        server_group = QGroupBox()
         server_layout = QVBoxLayout(server_group)
-        server_layout.setContentsMargins(0, 16, 0, 2)
-        server_layout.setSpacing(6)
+        server_layout.setContentsMargins(0, 4, 0, 0)
+        server_layout.setSpacing(4)
         server_label = QLabel("服务端")
         server_label.setObjectName("fieldLabel")
         server_layout.addWidget(server_label)
         self._server_url_edit = QLineEdit(str(config["server_url"]))
+        self._server_url_edit.setFixedSize(
+            SETTINGS_LONG_INPUT_WIDTH,
+            SETTINGS_INPUT_HEIGHT,
+        )
         self._server_url_edit.setPlaceholderText(DEFAULT_INTEL_URL)
         server_layout.addWidget(self._server_url_edit)
         key_label = QLabel("设备密钥")
         key_label.setObjectName("fieldLabel")
         server_layout.addWidget(key_label)
         self._api_key_edit = QLineEdit(self._auth_state_store.api_key())
+        self._api_key_edit.setFixedSize(
+            SETTINGS_LONG_INPUT_WIDTH,
+            SETTINGS_INPUT_HEIGHT,
+        )
         self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_key_edit.setPlaceholderText("eve_...")
         server_layout.addWidget(self._api_key_edit)
@@ -100,21 +114,27 @@ class SettingsPanel(QWidget):
         server_layout.addWidget(self._auth_status_label)
         layout.addWidget(server_group)
 
-        scan_group = QGroupBox("识别")
+        scan_group = QGroupBox()
         scan_layout = QVBoxLayout(scan_group)
-        scan_layout.setContentsMargins(0, 16, 0, 2)
-        scan_layout.setSpacing(8)
+        scan_layout.setContentsMargins(0, 4, 0, 0)
+        scan_layout.setSpacing(4)
 
         interval_row = QHBoxLayout()
         interval_label = QLabel("扫描间隔")
         interval_label.setObjectName("fieldLabel")
         interval_row.addWidget(interval_label)
+        interval_row.addStretch()
         self._interval_spin = QSpinBox()
+        self._interval_spin.setFixedSize(
+            SETTINGS_NUMBER_INPUT_WIDTH,
+            SETTINGS_INPUT_HEIGHT,
+        )
         self._interval_spin.setRange(1, 10)
         self._interval_spin.setValue(int(config["scan_interval"]))
-        self._interval_spin.setSuffix(" 秒")
         interval_row.addWidget(self._interval_spin)
-        interval_row.addStretch()
+        interval_unit = QLabel("秒")
+        interval_unit.setObjectName("inputUnit")
+        interval_row.addWidget(interval_unit)
         scan_layout.addLayout(interval_row)
 
         keyword_row = QHBoxLayout()
@@ -122,15 +142,20 @@ class SettingsPanel(QWidget):
         keyword_label.setObjectName("fieldLabel")
         keyword_row.addWidget(keyword_label)
         self._keyword_edit = QLineEdit(str(config["window_keyword"]))
+        self._keyword_edit.setFixedSize(
+            SETTINGS_INLINE_INPUT_WIDTH,
+            SETTINGS_INPUT_HEIGHT,
+        )
         keyword_row.addWidget(self._keyword_edit)
         scan_layout.addLayout(keyword_row)
 
         layout.addWidget(scan_group)
 
-        behavior_group = QGroupBox("启动与托盘")
-        behavior_layout = QVBoxLayout(behavior_group)
-        behavior_layout.setContentsMargins(0, 16, 0, 2)
-        behavior_layout.setSpacing(6)
+        self._behavior_group = QGroupBox("启动与托盘")
+        self._behavior_group.setObjectName("behaviorPanel")
+        behavior_layout = QHBoxLayout(self._behavior_group)
+        behavior_layout.setContentsMargins(10, 8, 10, 8)
+        behavior_layout.setSpacing(12)
         self._start_with_windows_check = QCheckBox("开机启动")
         self._start_with_windows_check.setChecked(bool(config["start_with_windows"]))
         self._start_minimized_check = QCheckBox("启动后最小化")
@@ -147,73 +172,73 @@ class SettingsPanel(QWidget):
         ):
             behavior_layout.addWidget(checkbox)
             checkbox.toggled.connect(self._on_behavior_settings_changed)
-        layout.addWidget(behavior_group)
+        self._behavior_group.hide()
 
-        alert_group = QGroupBox("告警")
+        alert_group = QGroupBox()
         alert_layout = QVBoxLayout(alert_group)
-        alert_layout.setContentsMargins(0, 16, 0, 2)
-        alert_layout.setSpacing(6)
-        self._alert_muted_check = QCheckBox("静音")
-        self._alert_muted_check.setChecked(bool(config["alert_muted"]))
-        alert_layout.addWidget(self._alert_muted_check)
-        volume_row = QHBoxLayout()
-        volume_row.addWidget(QLabel("音量"))
-        self._alert_volume_spin = QSpinBox()
-        self._alert_volume_spin.setRange(0, 100)
-        self._alert_volume_spin.setSuffix("%")
-        self._alert_volume_spin.setValue(int(config["alert_volume"]))
-        volume_row.addWidget(self._alert_volume_spin)
-        alert_layout.addLayout(volume_row)
-        cooldown_row = QHBoxLayout()
-        cooldown_row.addWidget(QLabel("冷却"))
-        self._alert_cooldown_spin = QSpinBox()
-        self._alert_cooldown_spin.setRange(0, 300)
-        self._alert_cooldown_spin.setSuffix(" 秒")
-        self._alert_cooldown_spin.setValue(int(config["alert_cooldown"]))
-        cooldown_row.addWidget(self._alert_cooldown_spin)
-        alert_layout.addLayout(cooldown_row)
-        self._quiet_hours_edit = QLineEdit(str(config["quiet_hours"]))
-        self._quiet_hours_edit.setPlaceholderText("免打扰 23:00-07:00")
-        alert_layout.addWidget(self._quiet_hours_edit)
-        self._alert_severity_combo = QComboBox()
-        self._alert_severity_combo.addItem("全部严重度", "low")
-        self._alert_severity_combo.addItem("中等及以上", "medium")
-        self._alert_severity_combo.addItem("高危及以上", "high")
-        self._alert_severity_combo.addItem("仅严重", "critical")
-        severity_index = self._alert_severity_combo.findData(
-            str(config["alert_min_severity"])
+        alert_layout.setContentsMargins(0, 4, 0, 0)
+        alert_layout.setSpacing(4)
+        self._alert_sound_check = QCheckBox("告警声音")
+        self._alert_sound_check.setChecked(bool(config["alert_sound_enabled"]))
+        alert_layout.addWidget(self._alert_sound_check)
+        interval_row = QHBoxLayout()
+        interval_row.addWidget(QLabel("播放间隔"))
+        interval_row.addStretch()
+        self._alert_repeat_interval_spin = QSpinBox()
+        self._alert_repeat_interval_spin.setRange(1, 60)
+        self._alert_repeat_interval_spin.setFixedSize(
+            SETTINGS_NUMBER_INPUT_WIDTH,
+            SETTINGS_INPUT_HEIGHT,
         )
-        self._alert_severity_combo.setCurrentIndex(max(0, severity_index))
-        alert_layout.addWidget(self._alert_severity_combo)
-        for widget, signal in (
-            (self._alert_muted_check, self._alert_muted_check.toggled),
-            (self._alert_volume_spin, self._alert_volume_spin.valueChanged),
-            (self._alert_cooldown_spin, self._alert_cooldown_spin.valueChanged),
-            (self._quiet_hours_edit, self._quiet_hours_edit.editingFinished),
-            (self._alert_severity_combo, self._alert_severity_combo.currentIndexChanged),
+        self._alert_repeat_interval_spin.setValue(config["alert_repeat_interval"])
+        interval_row.addWidget(self._alert_repeat_interval_spin)
+        repeat_interval_unit = QLabel("秒")
+        repeat_interval_unit.setObjectName("inputUnit")
+        interval_row.addWidget(repeat_interval_unit)
+        alert_layout.addLayout(interval_row)
+        count_row = QHBoxLayout()
+        count_row.addWidget(QLabel("播放次数"))
+        count_row.addStretch()
+        self._alert_repeat_count_spin = QSpinBox()
+        self._alert_repeat_count_spin.setRange(1, 10)
+        self._alert_repeat_count_spin.setFixedSize(
+            SETTINGS_NUMBER_INPUT_WIDTH,
+            SETTINGS_INPUT_HEIGHT,
+        )
+        self._alert_repeat_count_spin.setValue(config["alert_repeat_count"])
+        count_row.addWidget(self._alert_repeat_count_spin)
+        repeat_count_unit = QLabel("次")
+        repeat_count_unit.setObjectName("inputUnit")
+        count_row.addWidget(repeat_count_unit)
+        alert_layout.addLayout(count_row)
+        for signal in (
+            self._alert_sound_check.toggled,
+            self._alert_repeat_interval_spin.valueChanged,
+            self._alert_repeat_count_spin.valueChanged,
         ):
-            _ = widget
             signal.connect(self._on_behavior_settings_changed)
         layout.addWidget(alert_group)
 
-        version_group = QGroupBox("版本")
+        version_group = QGroupBox()
         version_layout = QVBoxLayout(version_group)
-        version_layout.setContentsMargins(0, 16, 0, 2)
-        version_layout.setSpacing(6)
+        version_layout.setContentsMargins(0, 4, 0, 0)
+        version_layout.setSpacing(4)
         self._update_status_label = QLabel(f"当前 v{current_version()}")
         self._update_status_label.setObjectName("authStatus")
         self._update_status_label.setWordWrap(True)
         version_layout.addWidget(self._update_status_label)
+        layout.addStretch()
+        layout.addWidget(version_group)
+
         self._update_button = QPushButton("检查更新")
         self._update_button.setObjectName("secondaryAction")
         self._update_button.clicked.connect(self.update_requested.emit)
-        version_layout.addWidget(self._update_button)
-        layout.addWidget(version_group)
+        layout.addWidget(self._update_button)
+
         diagnostics_button = QPushButton("导出诊断包")
         diagnostics_button.setObjectName("secondaryAction")
         diagnostics_button.clicked.connect(self.diagnostics_requested.emit)
         layout.addWidget(diagnostics_button)
-        layout.addStretch()
 
         self._interval_spin.valueChanged.connect(self._on_scan_settings_changed)
         self._keyword_edit.editingFinished.connect(self._on_scan_settings_changed)
@@ -254,15 +279,25 @@ class SettingsPanel(QWidget):
     def get_restore_monitor_state(self) -> bool:
         return self._restore_monitor_check.isChecked()
 
+    def set_behavior_preference(self, name: str, enabled: bool) -> None:
+        """Update a startup preference selected from the tray menu."""
+        checkboxes = {
+            "start_with_windows": self._start_with_windows_check,
+            "start_minimized": self._start_minimized_check,
+            "close_to_tray": self._close_to_tray_check,
+            "restore_monitor_state": self._restore_monitor_check,
+        }
+        checkbox = checkboxes.get(str(name))
+        if checkbox is None:
+            raise KeyError(f"Unknown behavior preference: {name}")
+        checkbox.setChecked(bool(enabled))
+
     def get_alert_preferences(self) -> dict[str, Any]:
         return {
-            "muted": self._alert_muted_check.isChecked(),
-            "volume": self._alert_volume_spin.value() / 100.0,
-            "cooldown": float(self._alert_cooldown_spin.value()),
-            "quiet_hours": self._quiet_hours_edit.text().strip(),
-            "min_severity": str(
-                self._alert_severity_combo.currentData() or "low"
-            ),
+            "muted": not self._alert_sound_check.isChecked(),
+            "volume": DEFAULT_ALERT_VOLUME,
+            "repeat_interval": float(self._alert_repeat_interval_spin.value()),
+            "repeat_count": self._alert_repeat_count_spin.value(),
         }
 
     def auth_state_store(self) -> ClientAuthStateStore:
@@ -360,13 +395,18 @@ class SettingsPanel(QWidget):
             "restore_monitor_state": bool(
                 payload.get("restore_monitor_state", True)
             ),
-            "alert_muted": bool(payload.get("alert_muted", False)),
-            "alert_volume": max(0, min(100, int(payload.get("alert_volume", 100)))),
-            "alert_cooldown": max(0, min(300, int(payload.get("alert_cooldown", 15)))),
-            "quiet_hours": str(payload.get("quiet_hours", "")).strip(),
-            "alert_min_severity": str(
-                payload.get("alert_min_severity", "low")
-            ).strip().casefold(),
+            "alert_sound_enabled": bool(
+                payload.get(
+                    "alert_sound_enabled",
+                    not bool(payload.get("alert_muted", False)),
+                )
+            ),
+            "alert_repeat_interval": self._clean_alert_repeat_interval(
+                payload.get("alert_repeat_interval", DEFAULT_ALERT_REPEAT_INTERVAL)
+            ),
+            "alert_repeat_count": self._clean_alert_repeat_count(
+                payload.get("alert_repeat_count", DEFAULT_ALERT_REPEAT_COUNT)
+            ),
         }
 
     def _channel_config_payload(self) -> dict[str, Any]:
@@ -379,11 +419,9 @@ class SettingsPanel(QWidget):
             "start_minimized": self.get_start_minimized(),
             "close_to_tray": self.get_close_to_tray(),
             "restore_monitor_state": self.get_restore_monitor_state(),
-            "alert_muted": self._alert_muted_check.isChecked(),
-            "alert_volume": self._alert_volume_spin.value(),
-            "alert_cooldown": self._alert_cooldown_spin.value(),
-            "quiet_hours": self._quiet_hours_edit.text().strip(),
-            "alert_min_severity": self._alert_severity_combo.currentData(),
+            "alert_sound_enabled": self._alert_sound_check.isChecked(),
+            "alert_repeat_interval": self._alert_repeat_interval_spin.value(),
+            "alert_repeat_count": self._alert_repeat_count_spin.value(),
         }
 
     def _clean_scan_interval(self, value: Any) -> int:
@@ -391,3 +429,15 @@ class SettingsPanel(QWidget):
             return max(1, min(10, int(value)))
         except (TypeError, ValueError):
             return 2
+
+    def _clean_alert_repeat_interval(self, value: Any) -> int:
+        try:
+            return max(1, min(60, int(value)))
+        except (TypeError, ValueError):
+            return DEFAULT_ALERT_REPEAT_INTERVAL
+
+    def _clean_alert_repeat_count(self, value: Any) -> int:
+        try:
+            return max(1, min(10, int(value)))
+        except (TypeError, ValueError):
+            return DEFAULT_ALERT_REPEAT_COUNT

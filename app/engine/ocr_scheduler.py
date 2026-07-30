@@ -5,12 +5,16 @@ from __future__ import annotations
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from typing import Callable
 
 from PIL import Image
 
 from app.engine.ocr import OCREngine
+
+
+class OCRRequestSuperseded(RuntimeError):
+    """Raised when a newer frame replaced a queued OCR request."""
 
 
 class SharedOCRScheduler:
@@ -40,6 +44,9 @@ class SharedOCRScheduler:
         self._failed = 0
         self._last_latency_ms = 0.0
         self._last_success_at = 0.0
+        self._job_lock = threading.RLock()
+        self._latest_generation: dict[str, int] = {}
+        self._jobs: dict[Future, tuple[str, int, int]] = {}
 
     def recognize(self, image: Image.Image, progress=None) -> list[tuple[str, float]]:
         """Run OCR on the bounded inference pool and return its result."""
@@ -47,6 +54,70 @@ class SharedOCRScheduler:
             if self._closed:
                 raise RuntimeError("OCR scheduler is closed")
         return self._executor.submit(self._recognize, image, progress).result()
+
+    def recognize_latest(
+        self,
+        image: Image.Image,
+        progress=None,
+        *,
+        request_key: str,
+        priority: int = 0,
+    ) -> list[tuple[str, float]]:
+        """Run only the newest queued request for a window.
+
+        A running model invocation is allowed to finish, but queued older frames
+        are cancelled before they consume an inference slot.
+        """
+        key = str(request_key or "window")
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("OCR scheduler is closed")
+        with self._job_lock:
+            generation = self._latest_generation.get(key, 0) + 1
+            self._latest_generation[key] = generation
+            for future, (job_key, _job_generation, job_priority) in list(
+                self._jobs.items()
+            ):
+                if future.done():
+                    self._jobs.pop(future, None)
+                    continue
+                if job_key == key or priority > job_priority:
+                    future.cancel()
+            future = self._executor.submit(
+                self._recognize_latest,
+                key,
+                generation,
+                int(priority),
+                image,
+                progress,
+            )
+            self._jobs[future] = (key, generation, int(priority))
+            future.add_done_callback(self._forget_job)
+        try:
+            return future.result()
+        except CancelledError as exc:
+            raise OCRRequestSuperseded from exc
+
+    def _recognize_latest(
+        self,
+        key: str,
+        generation: int,
+        _priority: int,
+        image: Image.Image,
+        progress,
+    ) -> list[tuple[str, float]]:
+        with self._job_lock:
+            if generation != self._latest_generation.get(key):
+                raise OCRRequestSuperseded
+        result = self._recognize(image, progress)
+        with self._job_lock:
+            if generation != self._latest_generation.get(key):
+                raise OCRRequestSuperseded
+        return result
+
+    def _forget_job(self, future: Future) -> None:
+        with self._job_lock:
+            self._jobs.pop(future, None)
 
     def warm_up(self) -> None:
         """Load one model asynchronously after monitoring has started."""
@@ -80,6 +151,8 @@ class SharedOCRScheduler:
             if self._closed:
                 return
             self._closed = True
+        with self._job_lock:
+            self._jobs.clear()
         self._executor.shutdown(wait=wait, cancel_futures=True)
 
     def _engine(self) -> OCREngine:
