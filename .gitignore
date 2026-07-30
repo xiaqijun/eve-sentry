@@ -16,6 +16,8 @@ build/
 *.egg
 node_modules/
 coverage/
+.next/
+out/
 
 # uv
 .uv/

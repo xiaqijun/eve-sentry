@@ -87,7 +87,7 @@ export default {
       return new Response("Method not allowed", { status: 405 });
     }
     const url = new URL(request.url);
-    if (url.pathname === "/" || url.pathname === "/health") {
+    if (url.pathname === "/health") {
       return Response.json({ ok: true, service: "eve-sentry-download" });
     }
     if (url.pathname === "/latest.json") {

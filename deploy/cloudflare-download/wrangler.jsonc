@@ -4,6 +4,16 @@
   "main": "src/index.js",
   "compatibility_date": "2026-07-28",
   "workers_dev": true,
+  "assets": {
+    "directory": "../../download-site/out",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page",
+    "run_worker_first": [
+      "/health",
+      "/latest.json",
+      "/download/*"
+    ]
+  },
   "routes": [
     {
       "pattern": "evesentrydownload.kisectool.com",
