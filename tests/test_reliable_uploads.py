@@ -97,3 +97,88 @@ def test_reliable_uploader_reports_authentication_failure_without_retrying():
         assert len(calls) == 1
     finally:
         manager.shutdown()
+
+
+def test_reliable_uploader_restores_latest_snapshot_after_restart(tmp_path):
+    state_path = tmp_path / "offline-snapshots.json"
+    failed = threading.Event()
+
+    class OfflineClient:
+        def post_ocr_snapshot(self, **_payload):
+            failed.set()
+            raise transient_error()
+
+        def post_heartbeat(self, **_payload):
+            raise transient_error()
+
+    first = ReliableUploadManager(
+        OfflineClient(),
+        state_path=state_path,
+        random_source=lambda: 0.5,
+    )
+    try:
+        first.submit_snapshot(
+            "window-1",
+            {
+                "client_id": "window-1",
+                "source_instance": "EVE - A",
+                "system_name": "Tama",
+                "names": ["Latest Pilot"],
+                "api_key": "do-not-persist",
+            },
+            ttl=60,
+        )
+        assert failed.wait(1)
+        assert state_path.exists()
+        assert "do-not-persist" not in state_path.read_text(encoding="utf-8")
+    finally:
+        first.shutdown()
+
+    calls = []
+
+    class OnlineClient:
+        def post_ocr_snapshot(self, **payload):
+            calls.append(payload)
+            return {"ok": True}
+
+        def post_heartbeat(self, **_payload):
+            return {"ok": True}
+
+    second = ReliableUploadManager(OnlineClient(), state_path=state_path)
+    try:
+        assert wait_until(lambda: second.pending_snapshot_count() == 0)
+        assert calls and calls[0]["names"] == ["Latest Pilot"]
+    finally:
+        second.shutdown()
+    assert not state_path.exists()
+
+
+def test_reliable_uploader_drops_expired_disk_snapshot(tmp_path):
+    state_path = tmp_path / "offline-snapshots.json"
+
+    class OfflineClient:
+        def post_ocr_snapshot(self, **_payload):
+            raise transient_error()
+
+        def post_heartbeat(self, **_payload):
+            raise transient_error()
+
+    manager = ReliableUploadManager(OfflineClient(), state_path=state_path)
+    manager.submit_snapshot(
+        "window-1",
+        {
+            "client_id": "window-1",
+            "source_instance": "EVE - A",
+            "system_name": "Tama",
+            "names": [],
+        },
+        ttl=0.1,
+    )
+    time.sleep(0.2)
+    manager.shutdown()
+
+    restored = ReliableUploadManager(OfflineClient(), state_path=state_path)
+    try:
+        assert restored.pending_snapshot_count() == 0
+    finally:
+        restored.shutdown()

@@ -5,12 +5,23 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication, QStyle, QStyleOptionSpinBox
+from PyQt6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QStyle,
+    QStyleOptionSpinBox,
+    QSystemTrayIcon,
+    QWidget,
+)
 
-from app.ui.main_window import MainWindow
+from app.ui.main_window import MainWindow, PreviewCaptureWorker
 from app.ui.settings import SettingsPanel
 from app.ui.settings import DEFAULT_CHATLOG_DIR
 from app.ui.settings import DEFAULT_INTEL_URL
+from app.ui.settings import SETTINGS_INLINE_INPUT_WIDTH
+from app.ui.settings import SETTINGS_INPUT_HEIGHT
+from app.ui.settings import SETTINGS_LONG_INPUT_WIDTH
+from app.ui.settings import SETTINGS_NUMBER_INPUT_WIDTH
 from app.ui.theme import APP_QSS
 
 _QT_APP = None
@@ -19,6 +30,68 @@ def qt_app():
     global _QT_APP
     _QT_APP = QApplication.instance() or _QT_APP or QApplication([])
     return _QT_APP
+
+
+def test_setup_tray_keeps_context_menu_alive(tmp_path):
+    qt_app()
+
+    class TrayHost(QWidget):
+        def __init__(self):
+            super().__init__()
+            self._settings = SettingsPanel(
+                config_path=tmp_path / "tray-settings.json"
+            )
+
+        def _on_tray_activated(self, _reason):
+            pass
+
+        def _quit_app(self):
+            pass
+
+        def _sync_tray_behavior_actions(self):
+            MainWindow._sync_tray_behavior_actions(self)
+
+    host = TrayHost()
+    MainWindow._setup_tray(host)
+
+    assert host._tray.contextMenu() is None
+    assert host._tray_menu.parent() is host
+    assert [
+        action.text()
+        for action in host._tray_menu.actions()
+        if not action.isSeparator()
+    ] == [
+        "显示主窗口",
+        "开机启动",
+        "启动后最小化",
+        "关闭到托盘",
+        "恢复上次监控状态",
+        "退出",
+    ]
+    start_minimized = host._tray_behavior_actions["start_minimized"]
+    start_minimized.setChecked(True)
+    assert host._settings.get_start_minimized() is True
+    host._settings.set_behavior_preference("start_minimized", False)
+    host._sync_tray_behavior_actions()
+    assert start_minimized.isChecked() is False
+    host._tray.hide()
+
+
+def test_tray_context_activation_explicitly_opens_menu():
+    calls = []
+
+    class FakeMenu:
+        def exec(self, position):
+            calls.append(position)
+
+    window = SimpleNamespace(_tray_menu=FakeMenu())
+
+    MainWindow._on_tray_activated(
+        window,
+        QSystemTrayIcon.ActivationReason.Context,
+    )
+
+    assert len(calls) == 1
 
 
 def test_close_event_starts_shutdown_without_accepting_a_blocking_close():
@@ -757,12 +830,55 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
         "start_minimized": False,
         "close_to_tray": True,
         "restore_monitor_state": True,
-        "alert_muted": False,
-        "alert_volume": 100,
-        "alert_cooldown": 15,
-        "quiet_hours": "",
-        "alert_min_severity": "low",
+        "alert_sound_enabled": True,
+        "alert_repeat_interval": 2,
+        "alert_repeat_count": 3,
     }
+
+    assert not hasattr(panel, "_alert_volume_spin")
+    assert not hasattr(panel, "_alert_cooldown_spin")
+    assert not hasattr(panel, "_quiet_hours_edit")
+    assert not hasattr(panel, "_alert_severity_combo")
+    assert all(
+        widget.height() == SETTINGS_INPUT_HEIGHT
+        for widget in (
+            panel._server_url_edit,
+            panel._api_key_edit,
+            panel._interval_spin,
+            panel._keyword_edit,
+            panel._alert_repeat_interval_spin,
+            panel._alert_repeat_count_spin,
+        )
+    )
+    assert panel._server_url_edit.width() == SETTINGS_LONG_INPUT_WIDTH
+    assert panel._api_key_edit.width() == SETTINGS_LONG_INPUT_WIDTH
+    assert panel._keyword_edit.width() == SETTINGS_INLINE_INPUT_WIDTH
+    assert all(
+        widget.width() == SETTINGS_NUMBER_INPUT_WIDTH
+        for widget in (
+            panel._interval_spin,
+            panel._alert_repeat_interval_spin,
+            panel._alert_repeat_count_spin,
+        )
+    )
+    assert all(
+        widget.suffix() == ""
+        for widget in (
+            panel._interval_spin,
+            panel._alert_repeat_interval_spin,
+            panel._alert_repeat_count_spin,
+        )
+    )
+    assert [
+        label.text() for label in panel.findChildren(QLabel, "inputUnit")
+    ] == ["秒", "秒", "次"]
+    assert panel.get_alert_preferences() == {
+        "muted": False,
+        "volume": 1.0,
+        "repeat_interval": 2.0,
+        "repeat_count": 3,
+    }
+    assert panel._behavior_group.isHidden()
 
 
 def test_settings_panel_environment_overrides_saved_chatlog_dir(
@@ -780,6 +896,34 @@ def test_settings_panel_environment_overrides_saved_chatlog_dir(
     panel = SettingsPanel(config_path=config_path)
 
     assert panel.get_channel_log_dir() == "E:/Env/Chatlogs"
+
+
+def test_settings_panel_migrates_legacy_muted_alert_setting(tmp_path):
+    config_path = tmp_path / "channel_settings.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "alert_muted": True,
+                "quiet_hours": "23:00-07:00",
+                "alert_min_severity": "critical",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    qt_app()
+    panel = SettingsPanel(config_path=config_path)
+
+    assert panel._alert_sound_check.isChecked() is False
+    assert panel.get_alert_preferences()["muted"] is True
+    panel.save_channel_config()
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["alert_sound_enabled"] is False
+    assert saved["alert_repeat_interval"] == 2
+    assert saved["alert_repeat_count"] == 3
+    assert "alert_muted" not in saved
+    assert "quiet_hours" not in saved
+    assert "alert_min_severity" not in saved
 
 
 def test_settings_panel_rediscovers_active_chatlog_dir(tmp_path, monkeypatch):
@@ -882,12 +1026,13 @@ def test_spinbox_buttons_match_visible_right_edge(tmp_path):
         spinbox,
     )
 
-    assert up_rect.width() >= 26
-    assert down_rect.width() >= 26
+    assert up_rect.width() >= 20
+    assert down_rect.width() >= 20
     assert up_rect.left() == down_rect.left()
     assert up_rect.right() == spinbox.rect().right()
     assert down_rect.right() == spinbox.rect().right()
     assert up_rect.bottom() < down_rect.bottom()
+    assert down_rect.bottom() == spinbox.rect().bottom()
 
     panel.close()
 
@@ -1318,6 +1463,100 @@ def test_refresh_remaps_running_worker_after_window_move_and_resize():
     assert controller.anchor == current_window
 
 
+def test_refresh_restarts_monitor_when_window_reappears():
+    qt_app()
+
+    class FakeButton:
+        def isChecked(self):
+            return True
+
+    class FakeCapturer:
+        def list_eve_windows(self, _keyword):
+            return [{"hwnd": 42, "title": "EVE - Pilot", "w": 1200, "h": 900}]
+
+    class FakeSettings:
+        def get_keyword(self):
+            return "EVE -"
+
+    class FakeCombo:
+        def currentData(self):
+            return None
+
+    window = MainWindow.__new__(MainWindow)
+    window._settings = FakeSettings()
+    window._capturer = FakeCapturer()
+    window._window_combo = FakeCombo()
+    window._window_signature = ()
+    window._workers = {}
+    window._worker = None
+    window._worker_contexts = {}
+    window._stopping_monitor_workers = set()
+    window._monitor_btn = FakeButton()
+    window._monitor_reconnect_scheduled = False
+    window._detect_window = lambda windows=None: None
+    window._build_monitor_targets = lambda: [{"key": "window"}]
+    window._log_message = lambda _message: None
+    starts = []
+    window._start_monitor = lambda **kwargs: starts.append(kwargs)
+
+    MainWindow._refresh_detected_windows(window)
+    MainWindow._reconnect_monitor(window)
+
+    assert starts == [{"identity_checked": True}]
+
+
+def test_transient_missing_window_does_not_override_running_monitor_status():
+    class FakeButton:
+        def isChecked(self):
+            return True
+
+    class FakeLabel:
+        def setText(self, text):
+            self.text = text
+
+        def setStyleSheet(self, style):
+            self.style = style
+
+    class FakeWorker:
+        def isRunning(self):
+            return True
+
+    window = MainWindow.__new__(MainWindow)
+    window._monitor_btn = FakeButton()
+    window._status_label = FakeLabel()
+    window._workers = {"window": FakeWorker()}
+    window._worker = None
+
+    MainWindow._sync_monitor_window_status(window, [])
+
+    assert window._status_label.text == "监控中"
+    assert "#37d6b0" in window._status_label.style
+
+
+def test_missing_window_shows_waiting_after_monitor_worker_stops():
+    class FakeButton:
+        def isChecked(self):
+            return True
+
+    class FakeLabel:
+        def setText(self, text):
+            self.text = text
+
+        def setStyleSheet(self, style):
+            self.style = style
+
+    window = MainWindow.__new__(MainWindow)
+    window._monitor_btn = FakeButton()
+    window._status_label = FakeLabel()
+    window._workers = {}
+    window._worker = None
+
+    MainWindow._sync_monitor_window_status(window, [])
+
+    assert window._status_label.text == "等待 EVE 窗口重新出现"
+    assert "#f0b35a" in window._status_label.style
+
+
 class FakeStatusTable:
     def __init__(self, columns=4):
         self._columns = columns
@@ -1562,23 +1801,52 @@ def test_publish_heartbeat_includes_multi_window_targets():
     )
 
 
-def test_stopped_monitor_does_not_publish_ocr_or_heartbeat():
-    class FailingClient:
+def test_stopped_monitor_skips_ocr_but_publishes_idle_heartbeat():
+    class Client:
+        def __init__(self):
+            self.heartbeat = None
+
         def post_ocr_snapshot(self, **_payload):
             raise AssertionError("stopped monitor uploaded OCR")
 
-        def post_heartbeat(self, **_payload):
-            raise AssertionError("stopped monitor uploaded heartbeat")
+        def post_heartbeat(self, **payload):
+            self.heartbeat = payload
+            return {"client_id": payload["client_id"], "online": True}
+
+    class FakeCombo:
+        def currentText(self):
+            return "EVE - Pilot"
 
     window = MainWindow.__new__(MainWindow)
-    window._intel_client = FailingClient()
+    window._intel_client = Client()
     window._uploads_enabled = False
+    window._workers = {}
+    window._worker = None
+    window._worker_contexts = {}
+    window._heartbeat_client_id = "detector-client:test"
+    window._heartbeat_interval = 15.0
+    window._heartbeat_runtime = {
+        "client_version": "test-version",
+        "host": "test-host",
+    }
+    window._heartbeat_last_action = "monitor_stopped"
+    window._heartbeat_last_error = ""
+    window._heartbeat_last_success_at = ""
+    window._intel_system = "Unknown"
+    window._intel_system_source = "default"
+    window._popup_alerts_enabled = False
+    window._window_combo = FakeCombo()
+    window._last_heartbeat_error = ""
+    window._refresh_status_cards = lambda: None
 
     MainWindow._publish_ocr_snapshot(window, ["Alice"])
     MainWindow._publish_heartbeat(window)
 
+    assert window._intel_client.heartbeat["status"] == "idle"
+    assert window._intel_client.heartbeat["details"]["monitoring"] is False
 
-def test_stop_monitor_disables_timer_and_queues_without_uploading():
+
+def test_stop_monitor_keeps_connection_timer_and_publishes_idle_status():
     class FakeTimer:
         def __init__(self):
             self.active = True
@@ -1644,8 +1912,8 @@ def test_stop_monitor_disables_timer_and_queues_without_uploading():
     MainWindow._stop_monitor(window)
 
     assert window._uploads_enabled is False
-    assert window._heartbeat_timer.active is False
-    assert window._heartbeat_timer.stop_calls == 1
+    assert window._heartbeat_timer.active is True
+    assert window._heartbeat_timer.stop_calls == 0
     assert window._network_tasks.cancel_calls == 1
     assert window._alert_controller.forgotten == [["S-KSWL"]]
     assert window._monitor_btn.text == "开始监控"
@@ -1836,6 +2104,94 @@ def test_switching_selected_window_clears_stale_manual_region():
 
     assert window._manual_region is None
     assert window._detected_region == {"x": 650, "y": 220, "w": 200, "h": 300}
+
+
+def test_preview_capture_worker_returns_detached_background_capture(monkeypatch):
+    qt_app()
+    calls = []
+    expected_image_data = b"preview-png"
+    captured = []
+    failed = []
+
+    class FakeImage:
+        def save(self, buffer, format):
+            calls.append(("save", format))
+            buffer.write(expected_image_data)
+
+    class FakeCapturer:
+        def __init__(self):
+            calls.append(("create",))
+
+        def select_window(self, hwnd, title, width, height):
+            calls.append(("select", hwnd, title, width, height))
+
+        def screenshot(self, x, y, width, height):
+            calls.append(("screenshot", x, y, width, height))
+            return FakeImage()
+
+        def close(self):
+            calls.append(("close",))
+
+    monkeypatch.setattr("app.ui.main_window.Capturer", FakeCapturer)
+    worker = PreviewCaptureWorker(
+        {
+            "hwnd": 99,
+            "title": "EVE - Selected",
+            "w": 1920,
+            "h": 1000,
+        },
+        {"x": 362, "y": 145, "w": 197, "h": 833},
+    )
+    worker.captured.connect(
+        lambda image: (calls.append(("emit",)), captured.append(image))
+    )
+    worker.failed.connect(failed.append)
+
+    worker.run()
+
+    assert captured == [expected_image_data]
+    assert failed == []
+    assert calls == [
+        ("create",),
+        ("select", 99, "EVE - Selected", 1920, 1000),
+        ("screenshot", 362, 145, 197, 833),
+        ("save", "PNG"),
+        ("close",),
+        ("emit",),
+    ]
+
+
+def test_preview_does_not_hide_client_or_activate_game_window():
+    region = {"x": 362, "y": 145, "w": 197, "h": 833}
+    selected_window = {
+        "hwnd": 99,
+        "title": "EVE - Selected",
+        "w": 1920,
+        "h": 1000,
+    }
+    window = MainWindow.__new__(MainWindow)
+    window._manual_region = region
+    window._detected_region = None
+    window._preview_capture_worker = None
+    window._current_window_info = lambda: selected_window
+    window.hide = lambda: (_ for _ in ()).throw(AssertionError("client hidden"))
+    window._capturer = type(
+        "Capturer",
+        (),
+        {
+            "activate_window": lambda self, hwnd: (_ for _ in ()).throw(
+                AssertionError(f"game activated: {hwnd}")
+            )
+        },
+    )()
+    starts = []
+    window._start_preview_capture = (
+        lambda target, capture_region: starts.append((target, capture_region))
+    )
+
+    MainWindow._preview_region(window)
+
+    assert starts == [(selected_window, region)]
 
 
 def test_select_region_passes_window_title_to_selector(monkeypatch):

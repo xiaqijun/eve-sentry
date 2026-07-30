@@ -41,6 +41,42 @@ def test_alert_worker_connects_sse_before_posting_heartbeat(tmp_path):
     assert bootstraps == [{"active_intel": []}]
 
 
+def test_alert_worker_keeps_online_status_during_normal_stream_rollover(tmp_path):
+    worker = None
+    stream_count = 0
+
+    class FakeApi:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def iter_events(self, **_kwargs):
+            nonlocal stream_count
+            stream_count += 1
+            if stream_count == 1:
+                yield {"event": "bootstrap", "data": {"active_intel": []}}
+                return
+            worker._stop_requested = True
+            return
+            yield
+
+        def post_heartbeat(self, **kwargs):
+            return {"client_id": kwargs["client_id"]}
+
+    worker = AlertEventWorker(
+        "http://intel.example",
+        AlertClientState(tmp_path / "alerts.json"),
+        timeout=5.0,
+        api_factory=FakeApi,
+    )
+    statuses = []
+    worker.status_changed.connect(lambda status, message: statuses.append((status, message)))
+
+    worker.run()
+
+    assert stream_count == 2
+    assert statuses == [("connected", "")]
+
+
 def test_alert_controller_stop_can_skip_worker_wait():
     calls = []
 
@@ -99,6 +135,41 @@ def test_alert_controller_stop_waits_during_application_shutdown():
         "worker_stop",
         "overlay_hide",
         ("worker_wait", 34000),
+    ]
+
+
+def test_alert_sound_sequence_uses_configured_interval_and_count(monkeypatch):
+    calls = []
+
+    class FakeTimer:
+        def stop(self):
+            calls.append("timer_stop")
+
+        def start(self, interval):
+            calls.append(("timer_start", interval))
+
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller._alert_muted = False
+    controller._alert_volume = 0.75
+    controller._alert_repeat_count = 3
+    controller._alert_repeat_interval_ms = 1500
+    controller._sound_repeat_timer = FakeTimer()
+    monkeypatch.setattr(
+        "app.alert_client.play_alert_sound",
+        lambda volume: calls.append(("sound", volume)),
+    )
+
+    controller._play_alert_sound_sequence()
+    controller._play_next_alert_sound()
+    controller._play_next_alert_sound()
+
+    assert calls == [
+        "timer_stop",
+        ("sound", 0.75),
+        ("timer_start", 1500),
+        ("sound", 0.75),
+        ("timer_start", 1500),
+        ("sound", 0.75),
     ]
 
 

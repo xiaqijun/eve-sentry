@@ -32,6 +32,36 @@ QWidget#settingsPanel {
     background: #0e1218;
     border-right: 1px solid #252b34;
 }
+QWidget#settingsPanel QLineEdit,
+QWidget#settingsPanel QComboBox,
+QWidget#settingsPanel QSpinBox {
+    min-height: 0;
+    padding: 2px 8px;
+}
+QWidget#settingsPanel QSpinBox {
+    padding: 1px 2px 1px 7px;
+}
+QWidget#settingsPanel QSpinBox::up-button,
+QWidget#settingsPanel QSpinBox::down-button {
+    width: 20px;
+}
+QWidget#settingsPanel QSpinBox::up-arrow,
+QWidget#settingsPanel QSpinBox::down-arrow {
+    width: 8px;
+    height: 5px;
+}
+QWidget#settingsPanel QGroupBox {
+    margin-top: 14px;
+}
+QWidget#settingsPanel QCheckBox {
+    min-height: 24px;
+    padding: 0 3px;
+    spacing: 7px;
+}
+QWidget#settingsPanel QPushButton {
+    min-height: 28px;
+    padding: 4px 10px;
+}
 QLabel#brandTitle {
     color: #f4f7fa;
     font-size: 17px;
@@ -57,6 +87,10 @@ QLabel#fieldTitle {
 }
 QLabel#fieldLabel {
     color: #858e9b;
+    font-size: 11px;
+}
+QLabel#inputUnit {
+    color: #737d89;
     font-size: 11px;
 }
 QLabel#targetMeta {

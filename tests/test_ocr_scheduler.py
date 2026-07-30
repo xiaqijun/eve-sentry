@@ -3,7 +3,7 @@ import time
 
 from PIL import Image
 
-from app.engine.ocr_scheduler import SharedOCRScheduler
+from app.engine.ocr_scheduler import OCRRequestSuperseded, SharedOCRScheduler
 
 
 def test_shared_ocr_scheduler_reuses_one_lazy_model():
@@ -59,3 +59,68 @@ def test_shared_ocr_scheduler_bounds_parallel_model_instances():
         for caller in callers:
             caller.join(1)
         scheduler.close(wait=True)
+
+
+def test_shared_ocr_scheduler_keeps_only_latest_frame_per_window():
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class FakeEngine:
+        def initialize(self):
+            pass
+
+        def recognize(self, _image, progress=None):
+            _ = progress
+            calls.append(len(calls))
+            if len(calls) == 1:
+                started.set()
+                release.wait(1)
+            return [(f"frame-{len(calls)}", 0.99)]
+
+    scheduler = SharedOCRScheduler(max_instances=1, engine_factory=FakeEngine)
+    image = Image.new("RGB", (20, 20))
+    first_error = []
+    second_error = []
+
+    first = threading.Thread(
+        target=lambda: _capture_error(
+            first_error,
+            scheduler.recognize_latest,
+            image,
+            request_key="window:1",
+        )
+    )
+    second = threading.Thread(
+        target=lambda: _capture_error(
+            second_error,
+            scheduler.recognize_latest,
+            image,
+            request_key="window:1",
+        )
+    )
+    try:
+        first.start()
+        assert started.wait(1)
+        second.start()
+        time.sleep(0.03)
+        latest = scheduler.recognize_latest(image, request_key="window:1")
+        release.set()
+        first.join(1)
+        second.join(1)
+        assert first_error and isinstance(first_error[0], OCRRequestSuperseded)
+        assert latest == [("frame-2", 0.99)]
+        assert second_error and isinstance(second_error[0], OCRRequestSuperseded)
+        assert len(calls) <= 2
+    finally:
+        release.set()
+        first.join(1)
+        second.join(1)
+        scheduler.close(wait=True)
+
+
+def _capture_error(target, function, *args, **kwargs):
+    try:
+        function(*args, **kwargs)
+    except Exception as exc:  # pragma: no cover - assertion checks the type
+        target.append(exc)

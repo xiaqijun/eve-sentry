@@ -1122,6 +1122,7 @@ class AlertEventWorker(QThread):
         )
         backoff = 1.0
         while not self._stop_requested:
+            retrying_after_error = False
             try:
                 connection_announced = False
                 for event in api.iter_events(
@@ -1159,20 +1160,25 @@ class AlertEventWorker(QThread):
                         self._post_heartbeat(api, "connected")
                 backoff = 1.0
             except IntelApiError as exc:
+                retrying_after_error = True
                 message = summarize_heartbeat_error(str(exc))
                 self.status_changed.emit("error", message)
                 self._post_heartbeat(api, "error", message, force=True)
                 self._sleep_with_stop(backoff)
                 backoff = min(self.reconnect_max_delay, backoff * 2)
             except Exception as exc:
+                retrying_after_error = True
                 message = summarize_heartbeat_error(str(exc))
                 self.status_changed.emit("error", message)
                 self._post_heartbeat(api, "error", message, force=True)
                 self._sleep_with_stop(backoff)
                 backoff = min(self.reconnect_max_delay, backoff * 2)
-            if not self._stop_requested:
+            if retrying_after_error and not self._stop_requested:
                 self.status_changed.emit("reconnecting", "")
                 self._post_heartbeat(api, "reconnecting")
+        close = getattr(api, "close", None)
+        if callable(close):
+            close()
 
     def _sleep_with_stop(self, seconds: float) -> None:
         deadline = time.monotonic() + max(0.0, seconds)
@@ -1237,10 +1243,19 @@ class AlertTrayController:
         self._alert_volume = max(0.0, min(1.0, float(getattr(args, "alert_volume", 1.0))))
         self._alert_muted = bool(getattr(args, "alert_muted", False))
         self._alert_cooldown = max(0.0, float(getattr(args, "alert_cooldown", 15.0)))
-        self._quiet_hours = str(getattr(args, "quiet_hours", "") or "").strip()
-        self._minimum_severity = str(
-            getattr(args, "alert_min_severity", "low") or "low"
-        ).casefold()
+        repeat_interval = max(
+            1.0,
+            min(60.0, float(getattr(args, "alert_repeat_interval", 2.0))),
+        )
+        self._alert_repeat_interval_ms = int(repeat_interval * 1000)
+        self._alert_repeat_count = max(
+            1,
+            min(10, int(getattr(args, "alert_repeat_count", 3))),
+        )
+        self._remaining_sound_plays = 0
+        self._sound_repeat_timer = QTimer(self.overlay)
+        self._sound_repeat_timer.setSingleShot(True)
+        self._sound_repeat_timer.timeout.connect(self._play_next_alert_sound)
         self._last_notified: dict[str, tuple[float, int]] = {}
         self._tray: QSystemTrayIcon | None = None
         self._worker = AlertEventWorker(
@@ -1267,6 +1282,10 @@ class AlertTrayController:
 
     def stop(self, *, wait_for_worker: bool = True) -> None:
         """Request shutdown, optionally waiting for the SSE worker to exit."""
+        sound_timer = getattr(self, "_sound_repeat_timer", None)
+        if sound_timer is not None:
+            sound_timer.stop()
+        self._remaining_sound_plays = 0
         self._worker.stop()
         self.overlay.hide()
         if self._tray is not None:
@@ -1484,24 +1503,45 @@ class AlertTrayController:
             and now - previous_notification[0]
             < float(getattr(self, "_alert_cooldown", 0.0))
         )
-        severity_allowed = _severity_rank(
-            str(alert.get("level") or alert.get("threat_level") or "high")
-        ) >= _severity_rank(getattr(self, "_minimum_severity", "low"))
-        quiet = _in_quiet_hours(getattr(self, "_quiet_hours", ""))
         muted = bool(getattr(self, "_alert_muted", False))
-        if severity_allowed and not quiet and not muted and not in_cooldown:
-            volume = getattr(self, "_alert_volume", None)
-            if volume is None:
-                play_alert_sound()
-            else:
-                play_alert_sound(volume)
-        if not severity_allowed or quiet or in_cooldown:
+        if not muted and not in_cooldown:
+            self._play_alert_sound_sequence()
+        if in_cooldown:
             return
         last_notified[notification_key] = (now, hostile_count)
         self._notify(
             "敌对告警",
             f"❗ {summary['system_name']} 来敌 {hostile_count} 人",
         )
+
+    def _play_alert_sound_sequence(self) -> None:
+        """Play the configured number of alert sounds without blocking the UI."""
+        timer = getattr(self, "_sound_repeat_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._remaining_sound_plays = max(
+            1,
+            int(getattr(self, "_alert_repeat_count", 1)),
+        )
+        self._play_next_alert_sound()
+
+    def _play_next_alert_sound(self) -> None:
+        if bool(getattr(self, "_alert_muted", False)):
+            self._remaining_sound_plays = 0
+            return
+        remaining = int(getattr(self, "_remaining_sound_plays", 0))
+        if remaining <= 0:
+            return
+        volume = getattr(self, "_alert_volume", None)
+        if volume is None:
+            play_alert_sound()
+        else:
+            play_alert_sound(volume)
+        remaining -= 1
+        self._remaining_sound_plays = remaining
+        timer = getattr(self, "_sound_repeat_timer", None)
+        if remaining > 0 and timer is not None:
+            timer.start(int(getattr(self, "_alert_repeat_interval_ms", 2000)))
 
     def _on_safe(self, event: dict[str, Any]) -> None:
         """Notify once after the final hostile leaves a solar system."""
