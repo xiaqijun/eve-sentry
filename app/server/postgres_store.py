@@ -264,6 +264,17 @@ class PostgreSQLIntelStore(IntelStore):
         with self._lock:
             new_reports: list[IntelReport] = []
             changed_active_ids: set[str] = set()
+            accepted, moved_items = self._transition_ocr_client_system(
+                client_id,
+                system_name,
+                seen_at,
+            )
+            if not accepted:
+                return result.to_dict(include_active=False)
+            for item in moved_items:
+                changed_active_ids.add(item.active_id)
+            result.expired += len(moved_items)
+
             for name in names:
                 active_id = self._active_ocr_id(client_id, system_name, name)
                 item = self._active_intel.get(active_id)

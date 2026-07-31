@@ -1192,6 +1192,16 @@ class IntelStore:
         changed_reports = False
         esi_tasks: list[_OcrEsiTask] = []
         with self._lock:
+            accepted, moved_items = self._transition_ocr_client_system(
+                client_id,
+                system_name,
+                seen_at,
+            )
+            if not accepted:
+                result.active = self.list_active_intel(source=source)
+                return result.to_dict(include_active=False)
+            result.expired += len(moved_items)
+
             for name in names:
                 active_id = self._active_ocr_id(
                     client_id,
@@ -3042,6 +3052,44 @@ class IntelStore:
         )
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return f"ocr:{digest}"
+
+    def _transition_ocr_client_system(
+        self,
+        client_id: str,
+        system_name: str,
+        seen_at: str,
+    ) -> tuple[bool, list[ActiveIntelItem]]:
+        """Expire one detector target's old system state before a location change."""
+        normalized_system = str(system_name or "").strip()
+        if not normalized_system or normalized_system.casefold() == "unknown":
+            return True, []
+
+        incoming_seen_at = self._parse_timestamp(seen_at)
+        moved_items: list[ActiveIntelItem] = []
+        for item in self._active_intel.values():
+            if not item.active or item.source != "eve-sentry-detector":
+                continue
+            if item.metadata.get("client_id") != client_id:
+                continue
+            if item.system_name.casefold() == normalized_system.casefold():
+                continue
+            item_seen_at = self._parse_timestamp(item.last_seen_at)
+            if (
+                incoming_seen_at is not None
+                and item_seen_at is not None
+                and item_seen_at > incoming_seen_at
+            ):
+                return False, []
+            moved_items.append(item)
+
+        for item in moved_items:
+            item.active = False
+            item.left_at = seen_at
+            item.metadata["left_reason"] = "system_changed"
+            item.metadata["next_system_name"] = normalized_system
+            self._ocr_missing_counts.pop(item.active_id, None)
+            self._reset_ocr_alert_cooldown(item)
+        return True, moved_items
 
     def _active_channel_id(
         self,

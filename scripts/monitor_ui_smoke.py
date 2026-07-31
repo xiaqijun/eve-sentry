@@ -150,6 +150,24 @@ def run_smoke(args: argparse.Namespace) -> dict:
 
         import app.ui.main_window as main_window
 
+        class FakeRuntimeSettings:
+            values: dict[str, object] = {}
+
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def contains(self, key: str) -> bool:
+                return key in self.values
+
+            def value(self, key: str, default=None, type=None):
+                value = self.values.get(key, default)
+                return type(value) if type is not None else value
+
+            def setValue(self, key: str, value) -> None:
+                self.values[key] = value
+
+        main_window.QSettings = FakeRuntimeSettings
+
         class FakeCapturer:
             def __init__(self) -> None:
                 counters.capturer_created += 1
@@ -290,6 +308,10 @@ def run_smoke(args: argparse.Namespace) -> dict:
             ),
             "monitor_button": widget_geometry_in_window(window._monitor_btn, window),
             "window_combo": widget_geometry_in_window(window._window_combo, window),
+            "monitor_window_button": widget_geometry_in_window(
+                window._monitor_window_button,
+                window,
+            ),
             "window_label": widget_geometry_in_window(window._window_label, window),
             "window_status_table": widget_geometry_in_window(
                 window._window_status_table,
@@ -300,6 +322,7 @@ def run_smoke(args: argparse.Namespace) -> dict:
         right_controls = [
             layout_rects["monitor_button"],
             layout_rects["window_combo"],
+            layout_rects["monitor_window_button"],
             layout_rects["window_label"],
             layout_rects["window_status_table"],
             layout_rects["log"],
@@ -377,6 +400,18 @@ def run_smoke(args: argparse.Namespace) -> dict:
             ),
         }
         worker_count = len(getattr(window, "_workers", {}))
+        monitor_windows_by_key = window._monitor_windows_by_key
+        monitor_menu_items = [
+            {
+                "text": action.text(),
+                "checked": action.isChecked(),
+                "online": key in monitor_windows_by_key,
+                "character": str(action.property("characterName") or ""),
+                "system": str(action.property("systemName") or ""),
+                "status": str(action.property("runtimeStatus") or ""),
+            }
+            for key, action in window._monitor_window_actions.items()
+        ]
         payload = {
             "ok": True,
             "error": "",
@@ -391,6 +426,20 @@ def run_smoke(args: argparse.Namespace) -> dict:
             "window_combo_count": window._window_combo.count(),
             "window_combo_items": window_combo_items,
             "selected_window": window._window_combo.currentText(),
+            "monitor_selection_text": window._monitor_window_button.text(),
+            "monitor_selected_count": sum(
+                action.isChecked() and key in monitor_windows_by_key
+                for key, action in window._monitor_window_actions.items()
+            ),
+            "monitor_offline_count": sum(
+                key not in monitor_windows_by_key
+                for key in window._monitor_window_actions
+            ),
+            "monitor_selection_state": str(
+                window._monitor_window_button.property("selectionState") or ""
+            ),
+            "monitor_selection_tooltip": window._monitor_window_button.toolTip(),
+            "monitor_menu_items": monitor_menu_items,
             "window_label": window._window_label.text(),
             "window_status_rows": status_table_rows,
             "monitor_button": window._monitor_btn.text(),

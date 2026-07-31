@@ -20,6 +20,38 @@ def region_selector_hint_lines(title: str) -> list[str]:
     ]
 
 
+def map_rect_between_geometries(
+    rect: dict[str, int],
+    source: dict[str, int],
+    target: dict[str, int],
+) -> dict[str, int]:
+    """Map a rectangle between physical and logical coordinate spaces."""
+    source_width = int(source.get("w") or 0)
+    source_height = int(source.get("h") or 0)
+    if source_width <= 0 or source_height <= 0:
+        return {key: int(rect.get(key) or 0) for key in ("x", "y", "w", "h")}
+    scale_x = int(target.get("w") or 0) / source_width
+    scale_y = int(target.get("h") or 0) / source_height
+    return {
+        "x": int(
+            round(
+                int(target.get("x") or 0)
+                + (int(rect.get("x") or 0) - int(source.get("x") or 0))
+                * scale_x
+            )
+        ),
+        "y": int(
+            round(
+                int(target.get("y") or 0)
+                + (int(rect.get("y") or 0) - int(source.get("y") or 0))
+                * scale_y
+            )
+        ),
+        "w": max(1, int(round(int(rect.get("w") or 0) * scale_x))),
+        "h": max(1, int(round(int(rect.get("h") or 0) * scale_y))),
+    }
+
+
 class RegionSelector(QWidget):
     """Semi-transparent overlay used to drag-select a screen region."""
 
@@ -34,6 +66,8 @@ class RegionSelector(QWidget):
         h: int,
         title: str = "",
         parent: QWidget | None = None,
+        *,
+        physical_geometry: dict[str, int] | None = None,
     ) -> None:
         super().__init__(parent)
 
@@ -49,6 +83,9 @@ class RegionSelector(QWidget):
         self.setGeometry(x, y, w, h)
 
         self._target_title = title
+        self._physical_geometry = (
+            dict(physical_geometry) if physical_geometry is not None else None
+        )
         self._start = None
         self._end = None
         self._dragging = False
@@ -59,8 +96,8 @@ class RegionSelector(QWidget):
         painter.fillRect(self.rect(), region_selector_overlay_color())
 
         if self._dragging and self._start is not None and self._end is not None:
-            p1 = self.mapFromGlobal(self._start)
-            p2 = self.mapFromGlobal(self._end)
+            p1 = self._start
+            p2 = self._end
             rx = min(p1.x(), p2.x())
             ry = min(p1.y(), p2.y())
             rw = abs(p2.x() - p1.x())
@@ -88,7 +125,7 @@ class RegionSelector(QWidget):
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
-            point = self._clamp_global_point(event.globalPosition().toPoint())
+            point = self._clamp_local_point(event.position().toPoint())
             self._start = point
             self._end = point
             self._dragging = True
@@ -96,7 +133,7 @@ class RegionSelector(QWidget):
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if self._dragging:
-            self._end = self._clamp_global_point(event.globalPosition().toPoint())
+            self._end = self._clamp_local_point(event.position().toPoint())
             self.update()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
@@ -109,7 +146,27 @@ class RegionSelector(QWidget):
             sw = abs(x2 - x1)
             sh = abs(y2 - y1)
             if sw > 10 and sh > 10:
-                self.region_selected.emit(sx, sy, sw, sh)
+                local_region = {"x": sx, "y": sy, "w": sw, "h": sh}
+                if self._physical_geometry is not None:
+                    selected = map_rect_between_geometries(
+                        local_region,
+                        {"x": 0, "y": 0, "w": self.width(), "h": self.height()},
+                        self._physical_geometry,
+                    )
+                else:
+                    global_origin = self.mapToGlobal(self.rect().topLeft())
+                    selected = {
+                        "x": global_origin.x() + sx,
+                        "y": global_origin.y() + sy,
+                        "w": sw,
+                        "h": sh,
+                    }
+                self.region_selected.emit(
+                    selected["x"],
+                    selected["y"],
+                    selected["w"],
+                    selected["h"],
+                )
             self.close()
 
     def showEvent(self, event) -> None:  # noqa: N802
@@ -138,10 +195,9 @@ class RegionSelector(QWidget):
         self.selector_closed.emit()
         super().closeEvent(event)
 
-    def _clamp_global_point(self, point):
-        geometry = self.geometry()
-        x = max(geometry.left(), min(point.x(), geometry.right()))
-        y = max(geometry.top(), min(point.y(), geometry.bottom()))
+    def _clamp_local_point(self, point):
+        x = max(0, min(point.x(), max(0, self.width() - 1)))
+        y = max(0, min(point.y(), max(0, self.height() - 1)))
         point.setX(x)
         point.setY(y)
         return point

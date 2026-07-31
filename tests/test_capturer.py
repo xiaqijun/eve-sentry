@@ -233,6 +233,24 @@ class TestFindEveWindow:
             "monitor": r"\\.\DISPLAY2",
         }
 
+    @patch("app.engine.capturer.win32api")
+    def test_monitor_geometry_returns_physical_bounds(self, mock_win32api):
+        mock_win32api.MonitorFromWindow.return_value = 42
+        mock_win32api.GetMonitorInfo.return_value = {
+            "Monitor": (1920, -200, 5760, 1960),
+            "Flags": 0,
+        }
+
+        result = Capturer().get_monitor_geometry(7)
+
+        assert result == {
+            "x": 1920,
+            "y": -200,
+            "w": 3840,
+            "h": 2160,
+            "primary": False,
+        }
+
     @patch("app.engine.capturer.win32gui")
     @patch("app.engine.capturer.win32process")
     @patch("app.engine.capturer.psutil")

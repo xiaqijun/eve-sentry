@@ -8,9 +8,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import (
     QApplication,
     QLabel,
+    QMenu,
     QStyle,
     QStyleOptionSpinBox,
     QSystemTrayIcon,
+    QToolButton,
     QWidget,
 )
 
@@ -30,6 +32,21 @@ def qt_app():
     global _QT_APP
     _QT_APP = QApplication.instance() or _QT_APP or QApplication([])
     return _QT_APP
+
+
+class FakeCheckAction:
+    def __init__(self, checked=False, text=""):
+        self._checked = checked
+        self._text = text
+
+    def isChecked(self):
+        return self._checked
+
+    def setChecked(self, checked):
+        self._checked = bool(checked)
+
+    def text(self):
+        return self._text
 
 
 def test_setup_tray_keeps_context_menu_alive(tmp_path):
@@ -370,6 +387,63 @@ def test_identity_check_submits_listener_found_after_key_validation():
     assert result["characters"] == ["Alice"]
     assert client.names == ["Alice"]
     assert window._identity_scanner.verified == ["Alice"]
+
+
+def test_identity_check_backfills_and_remembers_missing_character_id():
+    remembered = []
+
+    class FakeScanner:
+        def scan(self, _api_key):
+            return SimpleNamespace(
+                pending_characters=[],
+                pending_files=[],
+                processed_count=0,
+                key_validated=True,
+                identity_verified=True,
+            )
+
+        def mark_verified(self, names):
+            assert names == ["Alice"]
+
+    class FakeClient:
+        def verify_eve_characters(self, names):
+            assert names == ["Alice"]
+            return {
+                "verified": True,
+                "permanent": True,
+                "characters": [
+                    {"character_id": 101, "character_name": "Alice"},
+                ],
+            }
+
+    class FakeStore:
+        def load(self):
+            return {
+                "characters": ["Alice"],
+                "character_identities": [],
+            }
+
+        def remember_character_identities(self, characters):
+            remembered.extend(characters)
+
+    store = FakeStore()
+    window = MainWindow.__new__(MainWindow)
+    window._identity_scanner = FakeScanner()
+    window._settings = type(
+        "Settings",
+        (),
+        {"auth_state_store": lambda self: store},
+    )()
+
+    MainWindow._scan_and_validate_identities(
+        window,
+        FakeClient(),
+        "eve_valid",
+    )
+
+    assert remembered == [
+        {"character_id": 101, "character_name": "Alice"},
+    ]
 
 
 def test_listener_poll_rediscovers_log_path_and_runs_as_silent_task():
@@ -786,6 +860,60 @@ def test_refresh_intel_location_uses_only_local_chatlog(monkeypatch):
     assert client.calls == 0
 
 
+def test_window_system_change_refreshes_local_alert_systems(monkeypatch):
+    class Detection:
+        system_name = "HB-FSO"
+
+    class Controller:
+        def __init__(self):
+            self.systems = []
+
+        def show_monitoring_systems(self, systems):
+            self.systems.append(list(systems))
+
+    monkeypatch.setattr(
+        "app.ui.main_window.find_latest_local_system",
+        lambda log_dir, character_name="": (
+            Detection()
+            if log_dir == "C:/EVE/Chatlogs" and character_name == "Pilot A"
+            else None
+        ),
+    )
+    context = {
+        "key": "pilot-a",
+        "character_name": "Pilot A",
+        "system_name": "S-KSWL",
+        "system_source": "chatlog",
+        "_location_next_check": 0.0,
+    }
+    window = MainWindow.__new__(MainWindow)
+    window._use_local_system_log = True
+    window._settings = type(
+        "Settings",
+        (),
+        {"get_channel_log_dir": lambda self: "C:/EVE/Chatlogs"},
+    )()
+    window._location_refresh_ttl = 5.0
+    window._last_local_system_error = ""
+    window._heartbeat_last_action = ""
+    window._heartbeat_last_success_at = ""
+    window._heartbeat_last_error = ""
+    window._worker_contexts = {"pilot-a": context}
+    window._workers = {"pilot-a": object()}
+    window._alert_controller = Controller()
+    window._log_message = lambda _message: None
+    window._refresh_status_cards = lambda: None
+
+    assert MainWindow._refresh_intel_location(
+        window,
+        force=True,
+        context=context,
+    ) is True
+
+    assert context["system_name"] == "HB-FSO"
+    assert window._alert_controller.systems == [["HB-FSO"]]
+
+
 def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
     monkeypatch.delenv("EVE_SENTRY_CHATLOG_DIR", raising=False)
     monkeypatch.delenv("EVE_SENTRY_INTEL_URL", raising=False)
@@ -1060,7 +1188,7 @@ def test_settings_panel_persists_and_emits_live_scan_changes(
     assert len(scan_changes) == 2
 
 
-def test_start_monitor_creates_worker_only_for_selected_eve_window(monkeypatch):
+def test_start_monitor_creates_worker_for_each_eve_window(monkeypatch):
     created_workers = []
 
     class FakeSignal:
@@ -1109,6 +1237,27 @@ def test_start_monitor_creates_worker_only_for_selected_eve_window(monkeypatch):
             return True
 
     class FakeCapturer:
+        def list_eve_windows(self, keyword):
+            assert keyword == "EVE -"
+            return [
+                {
+                    "hwnd": 1,
+                    "title": "EVE - Pilot A",
+                    "x": 10,
+                    "y": 20,
+                    "w": 1000,
+                    "h": 800,
+                },
+                {
+                    "hwnd": 2,
+                    "title": "EVE - Pilot B",
+                    "x": 20,
+                    "y": 30,
+                    "w": 1000,
+                    "h": 800,
+                },
+            ]
+
         def get_member_list_region(self, window):
             return {
                 "x": window["x"] + window["w"] - 200,
@@ -1139,6 +1288,15 @@ def test_start_monitor_creates_worker_only_for_selected_eve_window(monkeypatch):
     )()
     window._region_prefs = FakeRegionPrefs()
     window._heartbeat_client_id = "detector-client:test"
+    window._monitor_window_actions = {
+        "hwnd:1:eve - pilot a": FakeCheckAction(True),
+        "hwnd:2:eve - pilot b": FakeCheckAction(True),
+    }
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: 2},
+    )()
     window._current_window_info = lambda: {
         "hwnd": 2,
         "title": "EVE - Pilot B",
@@ -1173,23 +1331,56 @@ def test_start_monitor_creates_worker_only_for_selected_eve_window(monkeypatch):
 
     MainWindow._start_monitor(window, identity_checked=True)
 
-    assert len(created_workers) == 1
-    assert created_workers[0].ocr is window._ocr
-    assert created_workers[0].window["title"] == "EVE - Pilot B"
-    assert created_workers[0].region == {"x": 760, "y": 190, "w": 220, "h": 420}
+    assert len(created_workers) == 2
+    assert all(worker.ocr is window._ocr for worker in created_workers)
+    assert [worker.window["title"] for worker in created_workers] == [
+        "EVE - Pilot B",
+        "EVE - Pilot A",
+    ]
+    assert [worker.region for worker in created_workers] == [
+        {"x": 760, "y": 190, "w": 220, "h": 420},
+        {"x": 810, "y": 20, "w": 200, "h": 800},
+    ]
     assert all(worker.interval == 2.0 for worker in created_workers)
-    assert set(window._workers) == {"hwnd:2:eve - pilot b"}
+    assert set(window._workers) == {
+        "hwnd:1:eve - pilot a",
+        "hwnd:2:eve - pilot b",
+    }
     assert {
         context["client_id"] for context in window._worker_contexts.values()
-    } == {"detector-client:test:hwnd-2-eve-pilot-b"}
+    } == {
+        "detector-client:test:user-pilot-a",
+        "detector-client:test:user-pilot-b",
+    }
     assert {
         context["source_instance"] for context in window._worker_contexts.values()
-    } == {"EVE - Pilot B"}
-    assert resolved_characters == ["Pilot B"]
+    } == {"EVE - Pilot A", "EVE - Pilot B"}
+    assert resolved_characters == ["Pilot B", "Pilot A"]
 
 
 def test_build_monitor_targets_uses_only_selected_window():
     class FakeCapturer:
+        def list_eve_windows(self, keyword):
+            assert keyword == "EVE -"
+            return [
+                {
+                    "hwnd": 1,
+                    "title": "EVE - Pilot A",
+                    "x": 10,
+                    "y": 20,
+                    "w": 1000,
+                    "h": 800,
+                },
+                {
+                    "hwnd": 2,
+                    "title": "EVE - Pilot B",
+                    "x": 20,
+                    "y": 30,
+                    "w": 1000,
+                    "h": 800,
+                },
+            ]
+
         def get_member_list_region(self, window):
             return {
                 "x": window["x"] + window["w"] - 200,
@@ -1202,6 +1393,14 @@ def test_build_monitor_targets_uses_only_selected_window():
         def resolve_region(self, window):
             return None
 
+    class FakeStore:
+        def load(self):
+            return {
+                "character_identities": [
+                    {"character_id": 202, "character_name": "Pilot B"},
+                ],
+            }
+
     window = MainWindow.__new__(MainWindow)
     window._capturer = FakeCapturer()
     window._settings = type(
@@ -1209,27 +1408,411 @@ def test_build_monitor_targets_uses_only_selected_window():
         (),
         {
             "get_keyword": lambda self: "EVE -",
+            "auth_state_store": lambda self: FakeStore(),
         },
     )()
     window._region_prefs = FakeRegionPrefs()
     window._heartbeat_client_id = "detector-client:test"
-    window._current_window_info = lambda: {
-        "hwnd": 2,
-        "title": "EVE - Pilot B",
-        "x": 20,
-        "y": 30,
-        "w": 1000,
-        "h": 800,
+    window._monitor_window_actions = {
+        "hwnd:1:eve - pilot a": FakeCheckAction(False),
+        "hwnd:2:eve - pilot b": FakeCheckAction(True),
     }
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: 2},
+    )()
 
     targets = MainWindow._build_monitor_targets(window)
 
     assert [target["key"] for target in targets] == ["hwnd:2:eve - pilot b"]
     assert [target["client_id"] for target in targets] == [
-        "detector-client:test:hwnd-2-eve-pilot-b"
+        "detector-client:test:user-202"
     ]
+    assert [target["character_id"] for target in targets] == [202]
     assert [target["source_instance"] for target in targets] == ["EVE - Pilot B"]
     assert [target["character_name"] for target in targets] == ["Pilot B"]
+
+
+def test_selected_monitor_windows_supports_arbitrary_subset():
+    windows = [
+        {"hwnd": 1, "title": "EVE - Pilot A"},
+        {"hwnd": 2, "title": "EVE - Pilot B"},
+        {"hwnd": 3, "title": "EVE - Pilot C"},
+    ]
+    window = MainWindow.__new__(MainWindow)
+    window._monitor_window_actions = {
+        "hwnd:1:eve - pilot a": FakeCheckAction(True),
+        "hwnd:2:eve - pilot b": FakeCheckAction(False),
+        "hwnd:3:eve - pilot c": FakeCheckAction(True),
+    }
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: 3},
+    )()
+
+    selected = MainWindow._selected_monitor_windows(window, windows)
+
+    assert [item["title"] for item in selected] == [
+        "EVE - Pilot C",
+        "EVE - Pilot A",
+    ]
+
+
+def test_monitor_window_menu_only_auto_selects_new_windows_in_all_mode():
+    qt_app()
+
+    class FakeRuntimeSettings:
+        def __init__(self):
+            self.values = {}
+
+        def setValue(self, key, value):
+            self.values[key] = value
+
+    windows = [
+        {"hwnd": 1, "title": "EVE - Pilot A"},
+        {"hwnd": 2, "title": "EVE - Pilot B"},
+    ]
+    window = MainWindow.__new__(MainWindow)
+    window._monitor_window_menu = QMenu()
+    window._monitor_window_button = QToolButton()
+    window._monitor_window_actions = {}
+    window._monitor_windows_by_key = {}
+    window._monitor_known_window_keys = set()
+    window._monitor_selected_titles = set()
+    window._monitor_select_all_new_windows = True
+    window._syncing_monitor_menu = False
+    window._runtime_settings = FakeRuntimeSettings()
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: 1},
+    )()
+    window._monitor_btn = type(
+        "Button",
+        (),
+        {"isChecked": lambda self: False},
+    )()
+
+    MainWindow._sync_monitor_window_menu(window, windows)
+    assert all(action.isChecked() for action in window._monitor_window_actions.values())
+
+    window._monitor_window_actions["hwnd:2:eve - pilot b"].setChecked(False)
+    MainWindow._on_monitor_window_toggled(window)
+    windows = [
+        {"hwnd": 11, "title": "EVE - Pilot A"},
+        {"hwnd": 2, "title": "EVE - Pilot B"},
+        {"hwnd": 3, "title": "EVE - Pilot C"},
+    ]
+    MainWindow._sync_monitor_window_menu(window, windows)
+
+    assert {
+        key: action.isChecked()
+        for key, action in window._monitor_window_actions.items()
+    } == {
+        "hwnd:11:eve - pilot a": True,
+        "hwnd:2:eve - pilot b": False,
+        "hwnd:3:eve - pilot c": False,
+    }
+    assert window._monitor_window_button.text() == "监控窗口 1/3"
+
+    MainWindow._select_all_monitor_windows(window)
+    windows.append({"hwnd": 4, "title": "EVE - Pilot D"})
+    MainWindow._sync_monitor_window_menu(window, windows)
+
+    assert all(action.isChecked() for action in window._monitor_window_actions.values())
+    assert window._monitor_window_button.text() == "监控窗口 4/4"
+
+
+def test_monitor_window_menu_can_select_only_current_calibration_window():
+    qt_app()
+    windows = [
+        {"hwnd": 1, "title": "EVE - Pilot A"},
+        {"hwnd": 2, "title": "EVE - Pilot B"},
+        {"hwnd": 3, "title": "EVE - Pilot C"},
+    ]
+    window = MainWindow.__new__(MainWindow)
+    window._monitor_window_menu = QMenu()
+    window._monitor_window_button = QToolButton()
+    window._monitor_window_actions = {}
+    window._monitor_windows_by_key = {}
+    window._monitor_known_window_keys = set()
+    window._monitor_selected_titles = set()
+    window._monitor_select_all_new_windows = True
+    window._syncing_monitor_menu = False
+    window._runtime_settings = type(
+        "Settings",
+        (),
+        {"setValue": lambda self, key, value: None},
+    )()
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: 2},
+    )()
+    window._monitor_btn = type(
+        "Button",
+        (),
+        {"isChecked": lambda self: False},
+    )()
+
+    MainWindow._sync_monitor_window_menu(window, windows)
+    MainWindow._select_current_monitor_window(window)
+
+    assert {
+        key: action.isChecked()
+        for key, action in window._monitor_window_actions.items()
+    } == {
+        "hwnd:1:eve - pilot a": False,
+        "hwnd:2:eve - pilot b": True,
+        "hwnd:3:eve - pilot c": False,
+    }
+    assert window._monitor_window_button.text() == "监控窗口 1/3"
+    assert window._monitor_selected_titles == {"EVE - Pilot B"}
+
+
+def test_monitor_window_change_rebuilds_running_workers(monkeypatch):
+    qt_app()
+    callbacks = []
+    starts = []
+    monkeypatch.setattr(
+        "app.ui.main_window.QTimer.singleShot",
+        lambda _delay, callback: callbacks.append(callback),
+    )
+    window = MainWindow.__new__(MainWindow)
+    window._monitor_window_actions = {
+        "hwnd:1:eve - pilot a": FakeCheckAction(True, "EVE - Pilot A"),
+    }
+    window._monitor_windows_by_key = {
+        "hwnd:1:eve - pilot a": {"hwnd": 1, "title": "EVE - Pilot A"},
+    }
+    window._monitor_selected_titles = set()
+    window._syncing_monitor_menu = False
+    window._runtime_settings = type(
+        "Settings",
+        (),
+        {"setValue": lambda self, key, value: None},
+    )()
+    window._monitor_window_button = QToolButton()
+    window._monitor_btn = type(
+        "Button",
+        (),
+        {"isChecked": lambda self: True},
+    )()
+    window._log_message = lambda message: None
+    window._start_monitor = lambda **kwargs: starts.append(kwargs)
+
+    MainWindow._on_monitor_window_toggled(window)
+    assert len(callbacks) == 1
+
+    callbacks[0]()
+    assert starts == [{"identity_checked": True}]
+
+
+def test_monitor_window_menu_shows_status_and_remembered_offline_target():
+    qt_app()
+    windows = [
+        {"hwnd": 1, "title": "EVE - Pilot A"},
+        {"hwnd": 2, "title": "EVE - Pilot B"},
+    ]
+    window = MainWindow.__new__(MainWindow)
+    window._monitor_window_menu = QMenu()
+    window._monitor_window_button = QToolButton()
+    window._monitor_window_actions = {}
+    window._monitor_windows_by_key = {}
+    window._monitor_window_titles_by_key = {}
+    window._monitor_last_status_by_title = {}
+    window._monitor_known_window_keys = set()
+    window._monitor_selected_titles = {
+        "EVE - Pilot A",
+        "EVE - Pilot C",
+    }
+    window._monitor_select_all_new_windows = False
+    window._syncing_monitor_menu = False
+    window._runtime_settings = type(
+        "Settings",
+        (),
+        {"setValue": lambda self, key, value: None},
+    )()
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: 1},
+    )()
+    window._monitor_btn = type(
+        "Button",
+        (),
+        {"isChecked": lambda self: False},
+    )()
+    window._worker_contexts = {
+        "hwnd:1:eve - pilot a": {
+            "window_title": "EVE - Pilot A",
+            "character_name": "Pilot A",
+            "system_name": "S-KSWL",
+            "runtime_status": "扫描中",
+        }
+    }
+
+    MainWindow._sync_monitor_window_menu(window, windows)
+
+    actions = window._monitor_window_actions
+    assert actions["hwnd:1:eve - pilot a"].text() == (
+        "Pilot A · S-KSWL · 扫描中"
+    )
+    assert actions["hwnd:1:eve - pilot a"].isChecked() is True
+    assert actions["hwnd:2:eve - pilot b"].text() == (
+        "Pilot B · 未知 · 未监控"
+    )
+    offline_key = "offline:eve - pilot c"
+    assert actions[offline_key].text() == "Pilot C · 未知 · 离线"
+    assert actions[offline_key].isChecked() is True
+    assert window._monitor_window_button.text() == "监控窗口 1/2 · 离线1"
+    assert window._monitor_window_button.property("selectionState") == "ready"
+
+    actions[offline_key].setChecked(False)
+    MainWindow._on_monitor_window_toggled(window)
+    MainWindow._sync_monitor_window_menu(window, windows)
+
+    assert window._monitor_selected_titles == {"EVE - Pilot A"}
+    assert offline_key not in window._monitor_window_actions
+
+
+def test_monitor_window_button_highlights_empty_and_offline_only_selection():
+    qt_app()
+    window = MainWindow.__new__(MainWindow)
+    window._monitor_window_menu = QMenu()
+    window._monitor_window_button = QToolButton()
+    window._monitor_window_actions = {}
+    window._monitor_windows_by_key = {}
+    window._monitor_window_titles_by_key = {}
+    window._monitor_last_status_by_title = {}
+    window._monitor_known_window_keys = set()
+    window._monitor_selected_titles = set()
+    window._monitor_select_all_new_windows = False
+    window._syncing_monitor_menu = False
+    window._runtime_settings = type(
+        "Settings",
+        (),
+        {"setValue": lambda self, key, value: None},
+    )()
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: 1},
+    )()
+    window._monitor_btn = type(
+        "Button",
+        (),
+        {"isChecked": lambda self: False},
+    )()
+    window._worker_contexts = {}
+    windows = [
+        {"hwnd": 1, "title": "EVE - Pilot A"},
+        {"hwnd": 2, "title": "EVE - Pilot B"},
+    ]
+
+    MainWindow._sync_monitor_window_menu(window, windows)
+
+    assert window._monitor_window_button.text() == "监控窗口 0/2"
+    assert window._monitor_window_button.property("selectionState") == "empty"
+    assert "尚未选择监控窗口" in window._monitor_window_button.toolTip()
+    assert 'selectionState="empty"' in APP_QSS
+
+    window._monitor_selected_titles = {"EVE - Pilot C"}
+    MainWindow._sync_monitor_window_menu(window, [])
+
+    assert window._monitor_window_button.text() == "监控窗口 0/0 · 离线1"
+    assert window._monitor_window_button.property("selectionState") == "offline"
+    assert "当前均离线" in window._monitor_window_button.toolTip()
+
+
+def test_offline_only_selection_stops_running_monitor():
+    qt_app()
+    stops = []
+    window = MainWindow.__new__(MainWindow)
+    window._monitor_window_actions = {
+        "offline:eve - pilot c": FakeCheckAction(
+            True,
+            "Pilot C · 未知 · 离线",
+        ),
+    }
+    window._monitor_windows_by_key = {}
+    window._monitor_window_titles_by_key = {
+        "offline:eve - pilot c": "EVE - Pilot C",
+    }
+    window._monitor_selected_titles = {"EVE - Pilot C"}
+    window._syncing_monitor_menu = False
+    window._runtime_settings = type(
+        "Settings",
+        (),
+        {"setValue": lambda self, key, value: None},
+    )()
+    window._monitor_window_button = QToolButton()
+    window._monitor_btn = type(
+        "Button",
+        (),
+        {"isChecked": lambda self: True},
+    )()
+    window._log_message = lambda message: None
+    window._stop_monitor = lambda: stops.append(True)
+
+    MainWindow._on_monitor_window_toggled(window)
+
+    assert stops == [True]
+
+
+def test_monitor_window_action_refreshes_after_status_and_system_change():
+    qt_app()
+    key = "hwnd:1:eve - pilot a"
+    context = {
+        "window_title": "EVE - Pilot A",
+        "character_name": "Pilot A",
+        "system_name": "S-KSWL",
+        "system_source": "chatlog",
+        "runtime_status": "运行中",
+        "_location_next_check": 0.0,
+    }
+    window = MainWindow.__new__(MainWindow)
+    window._test_monitor_menu = QMenu()
+    action = window._test_monitor_menu.addAction("Pilot A")
+    action.setCheckable(True)
+    action.setChecked(True)
+    window._monitor_window_actions = {key: action}
+    window._monitor_windows_by_key = {
+        key: {"hwnd": 1, "title": "EVE - Pilot A"},
+    }
+    window._monitor_window_titles_by_key = {key: "EVE - Pilot A"}
+    window._monitor_last_status_by_title = {}
+    window._worker_contexts = {key: context}
+    window._monitor_btn = type(
+        "Button",
+        (),
+        {"isChecked": lambda self: True},
+    )()
+    window._refresh_window_status_table = lambda: None
+    window._monitor_window_button = None
+
+    MainWindow._update_window_status(window, context, "异常", "OCR 失败")
+    assert action.text() == "Pilot A · S-KSWL · 异常"
+    assert window._monitor_last_status_by_title["EVE - Pilot A"] == {
+        "system_name": "S-KSWL",
+        "runtime_status": "异常",
+    }
+
+    window._location_refresh_ttl = 5.0
+    window._refresh_local_system_from_chatlog = lambda context=None: (
+        context.update(system_name="HB-FSO") is None
+    )
+    assert MainWindow._refresh_intel_location(
+        window,
+        force=True,
+        context=context,
+    ) is True
+    assert window._monitor_last_status_by_title["EVE - Pilot A"][
+        "system_name"
+    ] == "HB-FSO"
+    assert action.text() == "Pilot A · HB-FSO · 异常"
 
 
 def test_detect_window_handles_button_signal_and_labels_duplicate_titles():
@@ -1505,6 +2088,219 @@ def test_refresh_restarts_monitor_when_window_reappears():
     assert starts == [{"identity_checked": True}]
 
 
+def test_refresh_restarts_monitor_after_worker_exits_with_unchanged_window_signature(
+    monkeypatch,
+):
+    """Recover when the window returns before a missing-window refresh observes it."""
+    qt_app()
+    callbacks = []
+    starts = []
+    monitor_window = {
+        "hwnd": 42,
+        "title": "EVE - Pilot",
+        "x": 0,
+        "y": 0,
+        "w": 1200,
+        "h": 900,
+    }
+    monitor_key = "hwnd:42:eve - pilot"
+
+    class FakeWorker:
+        def __init__(self):
+            self.running = True
+
+        def isRunning(self):
+            return self.running
+
+    worker = FakeWorker()
+
+    window = MainWindow.__new__(MainWindow)
+    window._settings = type(
+        "Settings",
+        (),
+        {"get_keyword": lambda self: "EVE -"},
+    )()
+    window._capturer = type(
+        "Capturer",
+        (),
+        {"list_eve_windows": lambda self, _keyword: [dict(monitor_window)]},
+    )()
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: 42},
+    )()
+    window._window_signature = (
+        (42, "EVE - Pilot", 0, 0, 1200, 900),
+    )
+    window._monitor_window_actions = {
+        monitor_key: FakeCheckAction(True),
+    }
+    window._workers = {monitor_key: worker}
+    window._worker = window._workers[monitor_key]
+    window._worker_contexts = {}
+    window._stopping_monitor_workers = set()
+    window._monitor_btn = type(
+        "Button",
+        (),
+        {"isChecked": lambda self: True},
+    )()
+    window._monitor_reconnect_scheduled = False
+    window._sync_monitor_target_geometry = lambda _windows: None
+    window._sync_monitor_window_status = lambda _windows: None
+    window._detect_window = lambda **_kwargs: (_ for _ in ()).throw(
+        AssertionError("unchanged window signature unexpectedly rebuilt the selector")
+    )
+    window._build_monitor_targets = lambda: [{"key": monitor_key}]
+    window._log_message = lambda _message: None
+    window._start_monitor = lambda **kwargs: starts.append(kwargs)
+    monkeypatch.setattr(
+        "app.ui.main_window.QTimer.singleShot",
+        lambda _delay, callback: callbacks.append(callback),
+    )
+
+    MainWindow._refresh_detected_windows(window)
+    assert callbacks == []
+
+    worker.running = False
+    MainWindow._refresh_detected_windows(window)
+    assert len(callbacks) == 1
+    callbacks[0]()
+    assert starts == [{"identity_checked": True}]
+
+
+def test_refresh_rebuilds_all_targets_when_one_of_multiple_workers_exits(
+    monkeypatch,
+):
+    """A surviving client must not prevent another selected client recovering."""
+    qt_app()
+    callbacks = []
+    starts = []
+    windows = [
+        {
+            "hwnd": 1,
+            "title": "EVE - Pilot A",
+            "x": 0,
+            "y": 0,
+            "w": 1200,
+            "h": 900,
+        },
+        {
+            "hwnd": 2,
+            "title": "EVE - Pilot B",
+            "x": 1200,
+            "y": 0,
+            "w": 1200,
+            "h": 900,
+        },
+    ]
+    first_key = "hwnd:1:eve - pilot a"
+    second_key = "hwnd:2:eve - pilot b"
+
+    class FakeSignal:
+        def disconnect(self):
+            pass
+
+    class FakeWorker:
+        def __init__(self, running):
+            self.running = running
+            self.stop_calls = 0
+            self.wait_calls = 0
+            self.ocr_snapshot = FakeSignal()
+            self.hostile_detected = FakeSignal()
+            self.status_update = FakeSignal()
+            self.scan_complete = FakeSignal()
+
+        def isRunning(self):
+            return self.running
+
+        def stop(self):
+            self.stop_calls += 1
+
+        def wait(self, *_args):
+            self.wait_calls += 1
+            raise AssertionError("monitor recovery waited on the UI thread")
+
+    first_worker = FakeWorker(True)
+    second_worker = FakeWorker(True)
+
+    window = MainWindow.__new__(MainWindow)
+    window._settings = type(
+        "Settings",
+        (),
+        {"get_keyword": lambda self: "EVE -"},
+    )()
+    window._capturer = type(
+        "Capturer",
+        (),
+        {"list_eve_windows": lambda self, _keyword: list(windows)},
+    )()
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: 1},
+    )()
+    window._window_signature = (
+        (1, "EVE - Pilot A", 0, 0, 1200, 900),
+        (2, "EVE - Pilot B", 1200, 0, 1200, 900),
+    )
+    window._monitor_window_actions = {
+        first_key: FakeCheckAction(True),
+        second_key: FakeCheckAction(True),
+    }
+    window._workers = {
+        first_key: first_worker,
+        second_key: second_worker,
+    }
+    window._worker = window._workers[first_key]
+    window._worker_contexts = {}
+    window._stopping_monitor_workers = set()
+    window._monitor_btn = type(
+        "Button",
+        (),
+        {
+            "isChecked": lambda self: True,
+            "setEnabled": lambda self, _enabled: None,
+        },
+    )()
+    window._monitor_reconnect_scheduled = False
+    window._monitor_restart_pending = False
+    window._sync_monitor_target_geometry = lambda _windows: None
+    window._sync_monitor_window_status = lambda _windows: None
+    window._detect_window = lambda **_kwargs: (_ for _ in ()).throw(
+        AssertionError("unchanged window signature unexpectedly rebuilt the selector")
+    )
+    window._build_monitor_targets = lambda: [
+        {"key": first_key},
+        {"key": second_key},
+    ]
+    window._log_message = lambda _message: None
+    window._refresh_window_status_table = lambda: None
+    window._refresh_monitor_window_action_labels = lambda: None
+    window._start_monitor = lambda **kwargs: starts.append(kwargs)
+    monkeypatch.setattr(
+        "app.ui.main_window.QTimer.singleShot",
+        lambda _delay, callback: callbacks.append(callback),
+    )
+
+    MainWindow._refresh_detected_windows(window)
+    assert callbacks == []
+
+    second_worker.running = False
+    MainWindow._refresh_detected_windows(window)
+    assert len(callbacks) == 1
+    callbacks.pop(0)()
+    assert starts == []
+    assert first_worker.stop_calls == 1
+    assert second_worker.stop_calls == 1
+    assert first_worker.wait_calls == 0
+    assert second_worker.wait_calls == 0
+
+    first_worker.running = False
+    callbacks.pop(0)()
+    assert starts == [{"identity_checked": True}]
+
+
 def test_transient_missing_window_does_not_override_running_monitor_status():
     class FakeButton:
         def isChecked(self):
@@ -1558,7 +2354,7 @@ def test_missing_window_shows_waiting_after_monitor_worker_stops():
 
 
 class FakeStatusTable:
-    def __init__(self, columns=4):
+    def __init__(self, columns=6):
         self._columns = columns
         self.rows = []
         self.resized = False
@@ -1589,12 +2385,16 @@ def test_window_status_table_lists_worker_contexts():
     window._window_status_table = table
     window._worker_contexts = {
         "first": {
+            "character_name": "Pilot A",
+            "system_name": "S-KSWL",
             "window_title": "EVE - Pilot A",
             "region": {"x": 600, "y": 0, "w": 200, "h": 600},
             "runtime_status": "运行中",
             "last_action": "监控线程已启动",
         },
         "second": {
+            "character_name": "Pilot B",
+            "system_name": "HB-FSO",
             "window_title": "EVE - Pilot B",
             "region": {"x": 760, "y": 190, "w": 220, "h": 420},
             "runtime_status": "扫描中",
@@ -1605,8 +2405,8 @@ def test_window_status_table_lists_worker_contexts():
     MainWindow._refresh_window_status_table(window)
 
     assert table_text(table) == [
-        ["EVE - Pilot A", "200x600 @ 600,0", "运行中", "监控线程已启动"],
-        ["EVE - Pilot B", "220x420 @ 760,190", "扫描中", "OCR 名单 2"],
+        ["Pilot A", "S-KSWL", "EVE - Pilot A", "200x600 @ 600,0", "运行中", "监控线程已启动"],
+        ["Pilot B", "HB-FSO", "EVE - Pilot B", "220x420 @ 760,190", "扫描中", "OCR 名单 2"],
     ]
     assert table.resized is False
 
@@ -1614,6 +2414,8 @@ def test_window_status_table_lists_worker_contexts():
 def test_update_window_status_records_last_action():
     table = FakeStatusTable()
     context = {
+        "character_name": "Pilot A",
+        "system_name": "S-KSWL",
         "window_title": "EVE - Pilot A",
         "region": {"x": 600, "y": 0, "w": 200, "h": 600},
     }
@@ -1627,7 +2429,7 @@ def test_update_window_status_records_last_action():
     assert context["last_action"] == "本地名单 3"
     assert context["updated_at"]
     assert table_text(table) == [
-        ["EVE - Pilot A", "200x600 @ 600,0", "识别到名单", "本地名单 3"]
+        ["Pilot A", "S-KSWL", "EVE - Pilot A", "200x600 @ 600,0", "识别到名单", "本地名单 3"]
     ]
 
 
@@ -2261,6 +3063,109 @@ def test_select_region_passes_window_title_to_selector(monkeypatch):
 
     assert created == {"args": (100, 200, 800, 600), "title": "EVE - Hajimi6"}
     assert window._selector.shown is True
+
+
+def test_select_region_maps_physical_window_to_qt_logical_geometry(monkeypatch):
+    created = {}
+
+    class FakeSignal:
+        def connect(self, callback):
+            self.callback = callback
+
+    class FakeSelector:
+        def __init__(
+            self,
+            x,
+            y,
+            w,
+            h,
+            title="",
+            *,
+            physical_geometry=None,
+        ):
+            created.update(
+                geometry={"x": x, "y": y, "w": w, "h": h},
+                title=title,
+                physical_geometry=physical_geometry,
+            )
+            self.region_selected = FakeSignal()
+            self.selector_closed = FakeSignal()
+
+        def show(self):
+            created["shown"] = True
+
+    class FakeGeometry:
+        def x(self):
+            return 1920
+
+        def y(self):
+            return 0
+
+        def width(self):
+            return 2560
+
+        def height(self):
+            return 1440
+
+    class FakeScreen:
+        def geometry(self):
+            return FakeGeometry()
+
+    class FakeCapturer:
+        def activate_window(self, _hwnd):
+            pass
+
+        def get_window_info(self, _hwnd):
+            return {
+                "hwnd": 99,
+                "title": "EVE - Pilot",
+                "x": 2304,
+                "y": 216,
+                "w": 1920,
+                "h": 1080,
+            }
+
+        def get_monitor_geometry(self, _hwnd):
+            return {
+                "x": 1920,
+                "y": 0,
+                "w": 3840,
+                "h": 2160,
+                "primary": False,
+            }
+
+        def select_window(self, *_args, **_kwargs):
+            pass
+
+    monkeypatch.setattr("app.ui.main_window.RegionSelector", FakeSelector)
+    window = MainWindow.__new__(MainWindow)
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: 99},
+    )()
+    window._capturer = FakeCapturer()
+    window._settings = type("Settings", (), {"get_keyword": lambda self: "EVE -"})()
+    window._current_window_info = lambda: window._capturer.get_window_info(99)
+    window._screen_for_monitor_geometry = lambda _geometry: FakeScreen()
+    window._log_message = lambda _message: None
+    window.hide = lambda: None
+    window._on_region_selected = lambda *_args: None
+    window._on_selector_closed = lambda *_args: None
+
+    MainWindow._select_region(window)
+
+    assert created == {
+        "geometry": {"x": 2176, "y": 144, "w": 1280, "h": 720},
+        "title": "EVE - Pilot",
+        "physical_geometry": {
+            "x": 2304,
+            "y": 216,
+            "w": 1920,
+            "h": 1080,
+        },
+        "shown": True,
+    }
 
 
 def test_region_selected_updates_running_worker_region():

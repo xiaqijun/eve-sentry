@@ -86,3 +86,28 @@ def test_changing_key_resets_file_index_and_protected_state_hides_secret(tmp_pat
     raw = state_path.read_text(encoding="utf-8")
     assert "eve_first_secret" not in raw
     assert "eve_second_secret" not in raw
+
+
+def test_character_identities_are_normalized_merged_and_reset_with_key(tmp_path):
+    store = ClientAuthStateStore(
+        tmp_path / "auth.json",
+        protector=FakeProtector(),
+    )
+    store.set_api_key("eve_first")
+
+    store.remember_character_identities([
+        {"character_id": "101", "character_name": "Alice"},
+        {"character_id": 202, "character_name": "Bob"},
+        {"character_id": "bad", "character_name": "Ignored"},
+    ])
+    store.remember_character_identities([
+        {"character_id": 303, "character_name": "alice"},
+    ])
+
+    assert store.load()["character_identities"] == [
+        {"character_id": 303, "character_name": "alice"},
+        {"character_id": 202, "character_name": "Bob"},
+    ]
+
+    store.set_api_key("eve_second")
+    assert store.load()["character_identities"] == []

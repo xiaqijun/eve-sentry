@@ -36,6 +36,7 @@ from app.core.heartbeat import (
     resolve_runtime_identity,
     summarize_heartbeat_error,
 )
+from app.core.client_identity import persistent_client_id
 from app.intel_client import IntelApiClient, IntelApiError
 
 logger = logging.getLogger(__name__)
@@ -1101,7 +1102,7 @@ class AlertEventWorker(QThread):
         self.timeout = max(1.0, float(timeout))
         self.heartbeat_interval = max(5.0, float(heartbeat_interval))
         self.reconnect_max_delay = max(1.0, float(reconnect_max_delay))
-        self.client_id = client_id or f"alert-client:{os.getpid()}"
+        self.client_id = client_id or persistent_client_id("alert")
         self.api_key = str(api_key or "").strip()
         self.api_factory = api_factory
         self.consumer = AlertEventConsumer(state)

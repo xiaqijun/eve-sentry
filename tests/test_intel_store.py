@@ -1737,6 +1737,95 @@ def test_detector_heartbeat_target_flags_do_not_change_ocr_state(tmp_path):
     assert inactive == []
 
 
+def test_record_ocr_snapshot_moves_only_its_client_to_the_new_system(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test:pilot-a",
+            "source_instance": "EVE - Pilot A",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test:pilot-b",
+            "source_instance": "EVE - Pilot B",
+            "system_name": "S-KSWL",
+            "names": ["Bob"],
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+
+    moved = store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test:pilot-a",
+            "source_instance": "EVE - Pilot A",
+            "system_name": "HB-FSO",
+            "names": ["Carol"],
+            "seen_at": "2026-07-03T10:00:10+00:00",
+        }
+    )
+
+    assert moved["expired"] == 1
+    assert {
+        (item["source_instance"], item["system_name"], item["name"])
+        for item in store.list_active_intel(source="eve-sentry-detector")
+    } == {
+        ("EVE - Pilot A", "HB-FSO", "Carol"),
+        ("EVE - Pilot B", "S-KSWL", "Bob"),
+    }
+    inactive = store.list_active_intel(
+        source="eve-sentry-detector",
+        active=False,
+    )
+    assert [(item["system_name"], item["name"]) for item in inactive] == [
+        ("S-KSWL", "Alice")
+    ]
+    assert inactive[0]["metadata"]["left_reason"] == "system_changed"
+    assert inactive[0]["metadata"]["next_system_name"] == "HB-FSO"
+
+
+def test_record_ocr_snapshot_ignores_delayed_previous_system_snapshot(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    client_id = "detector-client:test:pilot-a"
+    store.record_ocr_snapshot(
+        {
+            "client_id": client_id,
+            "source_instance": "EVE - Pilot A",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            "client_id": client_id,
+            "source_instance": "EVE - Pilot A",
+            "system_name": "HB-FSO",
+            "names": ["Carol"],
+            "seen_at": "2026-07-03T10:00:10+00:00",
+        }
+    )
+
+    delayed = store.record_ocr_snapshot(
+        {
+            "client_id": client_id,
+            "source_instance": "EVE - Pilot A",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+            "seen_at": "2026-07-03T10:00:05+00:00",
+        }
+    )
+
+    assert delayed["created"] == 0
+    assert [
+        (item["system_name"], item["name"])
+        for item in store.list_active_intel(source="eve-sentry-detector")
+    ] == [("HB-FSO", "Carol")]
+
+
 def test_stale_detector_heartbeat_expires_ocr_active_intel_on_read(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
     store.record_ocr_snapshot(

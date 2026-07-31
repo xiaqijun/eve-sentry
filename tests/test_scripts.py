@@ -326,9 +326,22 @@ def test_monitor_ui_smoke_constructs_main_window_offscreen_without_side_effects(
     assert payload["monitoring"] is False
     assert payload["worker_count"] == 0
     assert payload["window_combo_count"] == 0
+    assert payload["monitor_selection_text"] == "监控窗口 0/0"
+    assert payload["monitor_selected_count"] == 0
+    assert payload["monitor_offline_count"] == 0
+    assert payload["monitor_selection_state"] == "empty"
+    assert payload["monitor_selection_tooltip"] == "未检测到 EVE 窗口"
+    assert payload["monitor_menu_items"] == []
     assert payload["window_label"] == "窗口：未找到"
     assert payload["window_status_rows"] == [
-        ["未检测到 EVE 窗口", "-", "未检测", "点击刷新或确认 EVE 已启动"]
+        [
+            "-",
+            "未知",
+            "未检测到 EVE 窗口",
+            "-",
+            "未检测",
+            "点击刷新或确认 EVE 已启动",
+        ]
     ]
     assert payload["monitor_button"] == "开始监控"
     assert payload["status_card_keys"] == [
@@ -413,11 +426,33 @@ def test_monitor_ui_smoke_can_render_detected_window_offscreen():
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["window_combo_count"] == 1
+    assert payload["monitor_selection_text"] == "监控窗口 1/1"
+    assert payload["monitor_selected_count"] == 1
+    assert payload["monitor_offline_count"] == 0
+    assert payload["monitor_selection_state"] == "ready"
+    assert payload["monitor_selection_tooltip"] == "已选择：EVE - Smoke Pilot"
+    assert payload["monitor_menu_items"] == [
+        {
+            "text": "Smoke Pilot · 未知 · 待启动",
+            "checked": True,
+            "online": True,
+            "character": "Smoke Pilot",
+            "system": "未知",
+            "status": "待启动",
+        }
+    ]
     assert payload["window_combo_items"] == ["EVE - Smoke Pilot"]
     assert payload["selected_window"] == "EVE - Smoke Pilot"
     assert payload["window_label"] == "窗口：EVE - Smoke Pilot -> 成员列表 200x600"
     assert payload["window_status_rows"] == [
-        ["EVE - Smoke Pilot", "200x600 @ 1160,160", "待启动", "选择窗口并点击开始监控"]
+        [
+            "Smoke Pilot",
+            "未知",
+            "EVE - Smoke Pilot",
+            "200x600 @ 1160,160",
+            "待启动",
+            "选择窗口并点击开始监控",
+        ]
     ]
     assert payload["monitor_button"] == "开始监控"
     assert payload["layout_checks"]["right_controls_do_not_overlap"] is True
@@ -445,6 +480,28 @@ def test_monitor_ui_smoke_can_render_multiple_detected_windows_offscreen():
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["window_combo_count"] == 2
+    assert payload["monitor_selection_text"] == "监控窗口 2/2"
+    assert payload["monitor_selected_count"] == 2
+    assert payload["monitor_offline_count"] == 0
+    assert payload["monitor_selection_state"] == "ready"
+    assert payload["monitor_menu_items"] == [
+        {
+            "text": "Smoke Pilot · 未知 · 待启动",
+            "checked": True,
+            "online": True,
+            "character": "Smoke Pilot",
+            "system": "未知",
+            "status": "待启动",
+        },
+        {
+            "text": "Smoke Pilot 2 · 未知 · 待启动",
+            "checked": True,
+            "online": True,
+            "character": "Smoke Pilot 2",
+            "system": "未知",
+            "status": "待启动",
+        },
+    ]
     assert payload["window_combo_items"] == [
         "EVE - Smoke Pilot",
         "EVE - Smoke Pilot 2",
@@ -452,7 +509,14 @@ def test_monitor_ui_smoke_can_render_multiple_detected_windows_offscreen():
     assert payload["selected_window"] == "EVE - Smoke Pilot"
     assert payload["window_label"] == "窗口：EVE - Smoke Pilot -> 成员列表 200x600"
     assert payload["window_status_rows"] == [
-        ["EVE - Smoke Pilot", "200x600 @ 1160,160", "待启动", "选择窗口并点击开始监控"]
+        [
+            "Smoke Pilot",
+            "未知",
+            "EVE - Smoke Pilot",
+            "200x600 @ 1160,160",
+            "待启动",
+            "选择窗口并点击开始监控",
+        ]
     ]
     assert payload["status_card_values"]["window"] == "EVE - Smoke Pilot"
     assert payload["status_card_values"]["region"] == "200x600"

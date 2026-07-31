@@ -5,12 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 import time
 from typing import Any
 
 from app.channels.log_watcher import DEFAULT_CHATLOG_DIR, ChatLogWatcher
+from app.core.client_identity import persistent_client_id
 from app.core.heartbeat import (
     build_channel_heartbeat_details,
     heartbeat_now_iso,
@@ -81,7 +81,7 @@ def run_channel_client(args: argparse.Namespace) -> int:
             f"Posting raw channel lines to {args.server} for server-side parsing",
             file=status_stream,
         )
-    heartbeat_client_id = f"channel-client:{os.getpid()}"
+    heartbeat_client_id = persistent_client_id("channel")
     runtime_identity = resolve_runtime_identity()
     heartbeat_interval = max(5.0, float(args.interval))
     last_heartbeat_at = 0.0

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core.active_intel import ActiveIntelItem
 from app.server.intel_store import IntelReport
 from app.server.postgres_store import (
     POSTGRES_POOL_MAX_SIZE,
@@ -301,6 +302,58 @@ def test_postgres_startup_reads_only_active_intel_rows():
 
     assert loaded == {"active-1": item}
     assert "WHERE active = 1" in calls[0][0]
+
+
+def test_postgres_ocr_snapshot_persists_old_system_as_inactive():
+    persisted_rows = []
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    old_item = ActiveIntelItem(
+        active_id="old-active",
+        source="eve-sentry-detector",
+        source_instance="EVE - Pilot A",
+        system_name="S-KSWL",
+        name="Alice",
+        metadata={"client_id": "detector-client:test:pilot-a"},
+        first_seen_at="2026-07-03T10:00:00+00:00",
+        last_seen_at="2026-07-03T10:00:00+00:00",
+    )
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._active_intel = {old_item.active_id: old_item}
+    store._reports = []
+    store._resolver = None
+    store._enricher = None
+    store._ocr_missing_counts = {}
+    store._alert_cache = {}
+    store._lock = threading.RLock()
+    store._connect = FakeConnection
+    store._active_row = lambda item: item.to_dict()
+    store._upsert_active_intel_rows = (
+        lambda _connection, rows: persisted_rows.extend(rows)
+    )
+    store._reset_ocr_alert_cooldown = lambda _item: None
+
+    result = store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test:pilot-a",
+            "source_instance": "EVE - Pilot A",
+            "system_name": "HB-FSO",
+            "names": [],
+            "seen_at": "2026-07-03T10:00:10+00:00",
+        }
+    )
+
+    assert result["expired"] == 1
+    assert old_item.active is False
+    assert old_item.left_at == "2026-07-03T10:00:10+00:00"
+    assert old_item.metadata["left_reason"] == "system_changed"
+    assert persisted_rows == [old_item.to_dict()]
 
 
 def test_postgres_retention_deletes_in_database_without_loading_history():
