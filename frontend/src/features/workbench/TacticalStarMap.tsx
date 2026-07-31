@@ -17,6 +17,7 @@ import {
   layoutHostileSummaryNodes,
   type HostileLayoutRect,
 } from "./hostileCardLayout";
+import { type ThemeMode, useTheme } from "../shell/ThemeContext";
 
 interface TacticalStarMapProps {
   fitSignal?: number;
@@ -28,15 +29,77 @@ const HOSTILE_PORTRAIT_SIZE = 48;
 const HOSTILE_CARD_DRAW_SCALE = 0.8;
 const portraitCache = new Map<number, HTMLImageElement>();
 
-const THREAT_STYLE: Record<
+const THREAT_STYLE: Record<ThemeMode, Record<
   TacticalHostileIntel["threatLevel"],
   { background: string; foreground: string; label: string }
-> = {
-  critical: { background: "#fde8e7", foreground: "#b42318", label: "严重" },
-  high: { background: "#fff0e8", foreground: "#c2410c", label: "高危" },
-  medium: { background: "#fff7d6", foreground: "#9a6700", label: "中危" },
-  low: { background: "#e8f3ff", foreground: "#1769aa", label: "低危" },
-  unknown: { background: "#eef2f1", foreground: "#66736d", label: "未知" },
+>> = {
+  light: {
+    critical: { background: "#fde8e7", foreground: "#b42318", label: "严重" },
+    high: { background: "#fff0e8", foreground: "#c2410c", label: "高危" },
+    medium: { background: "#fff7d6", foreground: "#9a6700", label: "中危" },
+    low: { background: "#e8f3ff", foreground: "#1769aa", label: "低危" },
+    unknown: { background: "#eef2f1", foreground: "#66736d", label: "未知" },
+  },
+  dark: {
+    critical: { background: "#452326", foreground: "#ff8b81", label: "严重" },
+    high: { background: "#453024", foreground: "#f0a276", label: "高危" },
+    medium: { background: "#423a21", foreground: "#e9c66e", label: "中危" },
+    low: { background: "#203841", foreground: "#7bc3dc", label: "低危" },
+    unknown: { background: "#263338", foreground: "#b4c2c0", label: "未知" },
+  },
+};
+
+const CANVAS_PALETTE: Record<ThemeMode, {
+  cardBackground: string;
+  cardBorder: string;
+  cardShadow: string;
+  mutedText: string;
+  nodeLabel: string;
+  nodeStroke: string;
+  portraitBackground: string;
+  portraitBorder: string;
+  portraitText: string;
+  quietLabel: string;
+  quietLink: string;
+  riskTrack: string;
+  selected: string;
+  selectedGlow: string;
+  text: string;
+}> = {
+  light: {
+    cardBackground: "rgba(255, 255, 255, 0.98)",
+    cardBorder: "#d8e0dc",
+    cardShadow: "rgba(44, 62, 55, 0.16)",
+    mutedText: "#56655f",
+    nodeLabel: "#26342e",
+    nodeStroke: "rgba(255,255,255,0.96)",
+    portraitBackground: "#e8eeeb",
+    portraitBorder: "#d7dfdb",
+    portraitText: "#73817a",
+    quietLabel: "#697771",
+    quietLink: "rgba(91, 112, 119, 0.28)",
+    riskTrack: "#edf1ef",
+    selected: "#176b50",
+    selectedGlow: "rgba(23, 107, 80, 0.08)",
+    text: "#202c27",
+  },
+  dark: {
+    cardBackground: "rgba(17, 27, 32, 0.98)",
+    cardBorder: "#35484e",
+    cardShadow: "rgba(0, 0, 0, 0.42)",
+    mutedText: "#91a4a3",
+    nodeLabel: "#dce8e4",
+    nodeStroke: "#132026",
+    portraitBackground: "#202e32",
+    portraitBorder: "#3a4d52",
+    portraitText: "#a3b7b4",
+    quietLabel: "#839693",
+    quietLink: "rgba(111, 134, 141, 0.42)",
+    riskTrack: "#26373c",
+    selected: "#4bb486",
+    selectedGlow: "rgba(75, 180, 134, 0.14)",
+    text: "#e5efec",
+  },
 };
 
 function portraitFor(characterId: number | null): HTMLImageElement | null {
@@ -130,8 +193,10 @@ function drawHostilePortrait(
   context: CanvasRenderingContext2D,
   x: number,
   y: number,
+  theme: ThemeMode,
 ): void {
-  context.fillStyle = "#e8eeeb";
+  const palette = CANVAS_PALETTE[theme];
+  context.fillStyle = palette.portraitBackground;
   context.fillRect(x, y, HOSTILE_PORTRAIT_SIZE, HOSTILE_PORTRAIT_SIZE);
   const portrait = portraitFor(intel?.characterId ?? null);
   if (portrait?.complete && portrait.naturalWidth > 0) {
@@ -143,13 +208,13 @@ function drawHostilePortrait(
       HOSTILE_PORTRAIT_SIZE,
     );
   } else {
-    context.fillStyle = "#73817a";
+    context.fillStyle = palette.portraitText;
     context.font = '700 20px "Segoe UI", "Microsoft YaHei", sans-serif';
     context.textAlign = "center";
     context.textBaseline = "middle";
     context.fillText((intel?.name || "?").slice(0, 1).toUpperCase(), x + 24, y + 24);
   }
-  context.strokeStyle = "#d7dfdb";
+  context.strokeStyle = palette.portraitBorder;
   context.lineWidth = 1;
   context.strokeRect(x, y, HOSTILE_PORTRAIT_SIZE, HOSTILE_PORTRAIT_SIZE);
 }
@@ -159,6 +224,7 @@ function drawHostileCard(
   context: CanvasRenderingContext2D,
   globalScale: number,
   timeMs: number,
+  theme: ThemeMode,
 ): void {
   const intel = node.hostileIntel;
   if (node.hostileCardHidden) {
@@ -170,7 +236,8 @@ function drawHostileCard(
   const y = -cardHeight / 2;
   const cardX = Number(node.x || 0);
   const cardY = Number(node.y || 0);
-  const threat = THREAT_STYLE[intel?.threatLevel || node.threatLevel];
+  const palette = CANVAS_PALETTE[theme];
+  const threat = THREAT_STYLE[theme][intel?.threatLevel || node.threatLevel];
   const threatScore = intel?.threatScore ?? node.threatScore;
   const score = threatScore === null
     ? threat.label
@@ -187,24 +254,24 @@ function drawHostileCard(
     HOSTILE_CARD_DRAW_SCALE / globalScale,
     HOSTILE_CARD_DRAW_SCALE / globalScale,
   );
-  context.shadowColor = "rgba(44, 62, 55, 0.16)";
+  context.shadowColor = palette.cardShadow;
   context.shadowBlur = 12;
   context.shadowOffsetY = 4;
-  context.fillStyle = "rgba(255, 255, 255, 0.98)";
+  context.fillStyle = palette.cardBackground;
   context.fillRect(x, y, cardWidth, cardHeight);
   context.shadowColor = "transparent";
-  context.strokeStyle = node.isSelected ? "#23845f" : "#d8e0dc";
+  context.strokeStyle = node.isSelected ? palette.selected : palette.cardBorder;
   context.lineWidth = node.isSelected ? 2 : 1;
   context.strokeRect(x, y, cardWidth, cardHeight);
   context.fillStyle = "#d6453d";
   context.fillRect(x, y, 4, cardHeight);
 
-  drawHostilePortrait(intel, context, x + 12, y + 16);
+  drawHostilePortrait(intel, context, x + 12, y + 16, theme);
 
   context.font = '700 12px "Segoe UI", "Microsoft YaHei", sans-serif';
   context.textAlign = "left";
   context.textBaseline = "middle";
-  context.fillStyle = "#202c27";
+  context.fillStyle = palette.text;
   context.fillText(fitCanvasText(context, pilotName, 82), x + 70, y + 18);
 
   context.font = '700 9px "Segoe UI", "Microsoft YaHei", sans-serif';
@@ -217,7 +284,7 @@ function drawHostileCard(
 
   context.font = '500 9px "Segoe UI", "Microsoft YaHei", sans-serif';
   context.textAlign = "left";
-  context.fillStyle = "#56655f";
+  context.fillStyle = palette.mutedText;
   context.fillText(
     fitCanvasText(context, corporation, 104),
     x + 70,
@@ -233,13 +300,13 @@ function drawHostileCard(
     const badge = `+${extraCount}`;
     context.font = '700 9px "Segoe UI", "Microsoft YaHei", sans-serif';
     context.textAlign = "center";
-    context.fillStyle = "#fbe9e7";
+    context.fillStyle = THREAT_STYLE[theme].critical.background;
     context.fillRect(x + cardWidth - 42, y + 47, 30, 18);
-    context.fillStyle = "#b42318";
+    context.fillStyle = THREAT_STYLE[theme].critical.foreground;
     context.fillText(badge, x + cardWidth - 27, y + 56);
   }
 
-  context.fillStyle = "#edf1ef";
+  context.fillStyle = palette.riskTrack;
   context.fillRect(x + 4, y + cardHeight - 3, cardWidth - 4, 3);
   context.fillStyle = threat.foreground;
   context.fillRect(
@@ -287,7 +354,9 @@ function drawGateLink(
   link: TacticalGraphLink,
   context: CanvasRenderingContext2D,
   globalScale: number = 1,
+  theme: ThemeMode = "light",
 ): void {
+  const palette = CANVAS_PALETTE[theme];
   const source = graphNode(link.source);
   const target = graphNode(link.target);
   if (!source || !target) {
@@ -346,7 +415,7 @@ function drawGateLink(
       ? "rgba(185, 133, 40, 0.55)"
       : isSelected
         ? "rgba(23, 107, 80, 0.65)"
-        : "rgba(91, 112, 119, 0.28)";
+        : palette.quietLink;
   context.lineWidth = isSelected ? 2.2 : isHot || isLossHot ? 1.5 : 1;
   context.stroke();
   context.restore();
@@ -357,9 +426,11 @@ function drawNode(
   context: CanvasRenderingContext2D,
   globalScale: number,
   timeMs: number = 0,
+  theme: ThemeMode = "light",
 ): void {
+  const palette = CANVAS_PALETTE[theme];
   if (node.kind === "hostile-summary") {
-    drawHostileCard(node, context, globalScale, timeMs);
+    drawHostileCard(node, context, globalScale, timeMs, theme);
     return;
   }
   const label = node.name;
@@ -377,7 +448,7 @@ function drawNode(
     context.beginPath();
     context.arc(x, y, radius + (node.isSelected ? 9 : 7), 0, Math.PI * 2);
     context.fillStyle = node.isSelected
-      ? "rgba(23, 107, 80, 0.08)"
+      ? palette.selectedGlow
       : "rgba(214, 69, 61, 0.08)";
     context.fill();
     context.strokeStyle = node.isSelected
@@ -392,14 +463,14 @@ function drawNode(
   context.fillStyle = color;
   context.fill();
   context.lineWidth = node.isSelected ? 2 : 1.2;
-  context.strokeStyle = node.isSelected ? "#176b50" : "rgba(255,255,255,0.96)";
+  context.strokeStyle = node.isSelected ? palette.selected : palette.nodeStroke;
   context.stroke();
 
   if (globalScale >= 0.5 || node.hostileCount > 0 || node.isSelected) {
     context.font = `600 ${fontSize}px "Segoe UI", "Microsoft YaHei", sans-serif`;
     context.textAlign = "center";
     context.textBaseline = "top";
-    context.fillStyle = node.isSelected || isActive ? "#26342e" : "#697771";
+    context.fillStyle = node.isSelected || isActive ? palette.nodeLabel : palette.quietLabel;
     context.fillText(label, x, y + radius + 3);
   }
 
@@ -543,6 +614,7 @@ export function TacticalStarMap({
   graphData,
   onSelectSystem,
 }: TacticalStarMapProps) {
+  const { theme } = useTheme();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const graphRef =
     useRef<ForceGraphMethods<TacticalGraphNode, TacticalGraphLink>>();
@@ -635,14 +707,14 @@ export function TacticalStarMap({
     };
   }, [fitGraph, fitSignal, hasGraphData]);
 
-  const linkColor = useMemo(() => "rgba(91, 112, 119, 0.28)", []);
+  const linkColor = useMemo(() => CANVAS_PALETTE[theme].quietLink, [theme]);
   const animatedNodePainter = useCallback((
     node: NodeObject<TacticalGraphNode>,
     context: CanvasRenderingContext2D,
     globalScale: number,
   ) => {
-    drawNode(node, context, globalScale, motionEnabled ? animationTime() : 0);
-  }, [motionEnabled]);
+    drawNode(node, context, globalScale, motionEnabled ? animationTime() : 0, theme);
+  }, [motionEnabled, theme]);
   const layoutHostileCards = useCallback((
     _context: CanvasRenderingContext2D,
     globalScale: number,
@@ -731,7 +803,8 @@ export function TacticalStarMap({
         linkDirectionalParticleColor={linkParticleColor}
         linkDirectionalParticleSpeed={linkParticleSpeed}
         linkDirectionalParticleWidth={linkParticleWidth}
-        linkCanvasObject={drawGateLink}
+        linkCanvasObject={(link, context, globalScale) =>
+          drawGateLink(link, context, globalScale, theme)}
         linkCanvasObjectMode={() => "replace"}
         linkVisibility={(link) => {
           if (link.kind !== "hostile-intel") {
@@ -774,7 +847,7 @@ export function TacticalStarMap({
             className="hostile-detail-list"
             dataSource={selectedHostiles}
             render={(intel) => {
-              const threat = THREAT_STYLE[intel.threatLevel];
+              const threat = THREAT_STYLE[theme][intel.threatLevel];
               return (
                 <List.Item key={`${intel.characterId ?? "unknown"}:${intel.name}`}>
                   <div className="hostile-detail-item">

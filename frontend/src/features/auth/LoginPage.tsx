@@ -5,6 +5,7 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { apiPath } from "./api";
 import { useAuth } from "./AuthContext";
+import { ThemeToggle } from "../shell/ThemeToggle";
 
 const ESI_ERRORS: Record<string, string> = {
   eve_corporation_not_allowed: "该 EVE 角色不在允许登录的军团中",
@@ -64,6 +65,7 @@ export function LoginPage() {
 
   return (
     <main className="auth-page">
+      <ThemeToggle className="login-theme-toggle" />
       <div className="auth-layout">
         <section className="auth-brand-panel">
           <span className="auth-brand-mark"><ShieldCheck size={24} /></span>

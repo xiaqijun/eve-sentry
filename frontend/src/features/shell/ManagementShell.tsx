@@ -14,6 +14,8 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { useAuth } from "../auth/AuthContext";
 import { AccountMenu } from "./AccountMenu";
+import { ThemeToggle } from "./ThemeToggle";
+import { useTheme } from "./ThemeContext";
 
 const PAGE_META: Record<string, { title: string }> = {
   "/": { title: "星图态势" },
@@ -35,6 +37,7 @@ function navigationClass({ isActive }: { isActive: boolean }) {
 
 export function ManagementShell() {
   const { authEnabled, user } = useAuth();
+  const { theme } = useTheme();
   const location = useLocation();
   const page = PAGE_META[location.pathname] || PAGE_META["/"];
 
@@ -52,7 +55,7 @@ export function ManagementShell() {
           aria-label="主导航"
           className="management-navigation arco-management-menu"
           selectedKeys={[location.pathname]}
-          theme="dark"
+          theme={theme}
         >
           <MenuItemGroup key="monitor" title="监控与情报">
             <MenuItem key="/dashboard">
@@ -101,6 +104,7 @@ export function ManagementShell() {
             <Typography.Title heading={5}>{page.title}</Typography.Title>
           </div>
           <div className="management-topbar-actions">
+            <ThemeToggle />
             <Tag className="management-live-status" color={authEnabled ? "green" : "gray"}>
               <Badge status={authEnabled ? "success" : "default"} />
               {authEnabled ? "服务在线" : "公开模式"}

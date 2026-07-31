@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 
 import { EveChart } from "../../components/EveChart";
+import { type ThemeMode, useTheme } from "../shell/ThemeContext";
 import { fetchHostileAlertHistory } from "./api";
 import {
   buildHostileReport,
@@ -71,24 +72,25 @@ function levelColor(level?: Level | "unknown"): string {
   return "gray";
 }
 
-function trendOption(labels: string[], values: number[]): EChartsOption {
+function trendOption(labels: string[], values: number[], theme: ThemeMode): EChartsOption {
+  const dark = theme === "dark";
   return {
     animationDuration: 350,
     grid: { top: 18, right: 16, bottom: 28, left: 38 },
-    tooltip: { trigger: "axis" },
+    tooltip: dark ? { trigger: "axis", backgroundColor: "#172328", borderColor: "#34474d", textStyle: { color: "#e5efec" } } : { trigger: "axis" },
     xAxis: {
       type: "category",
       boundaryGap: false,
       data: labels,
-      axisLine: { lineStyle: { color: "#dfe5e2" } },
-      axisLabel: { color: "#7c8882", fontSize: 11 },
+      axisLine: { lineStyle: { color: dark ? "#3b4c52" : "#dfe5e2" } },
+      axisLabel: { color: dark ? "#91a3a2" : "#7c8882", fontSize: 11 },
       axisTick: { show: false },
     },
     yAxis: {
       type: "value",
       minInterval: 1,
-      axisLabel: { color: "#8a9490", fontSize: 11 },
-      splitLine: { lineStyle: { color: "#edf0ef" } },
+      axisLabel: { color: dark ? "#829593" : "#8a9490", fontSize: 11 },
+      splitLine: { lineStyle: { color: dark ? "#25343a" : "#edf0ef" } },
     },
     series: [{
       type: "line",
@@ -98,13 +100,14 @@ function trendOption(labels: string[], values: number[]): EChartsOption {
       symbol: "circle",
       symbolSize: 7,
       lineStyle: { color: "#176b50", width: 2.5 },
-      itemStyle: { color: "#176b50", borderColor: "#ffffff", borderWidth: 2 },
+      itemStyle: { color: dark ? "#4bb486" : "#176b50", borderColor: dark ? "#111b20" : "#ffffff", borderWidth: 2 },
       areaStyle: { color: "rgba(23,107,80,0.10)" },
     }],
   };
 }
 
-function severityOption(rows: Array<{ level: Level | "unknown"; count: number }>): EChartsOption {
+function severityOption(rows: Array<{ level: Level | "unknown"; count: number }>, theme: ThemeMode): EChartsOption {
+  const dark = theme === "dark";
   const colors: Record<Level | "unknown", string> = {
     critical: "#c9362b",
     high: "#e36b32",
@@ -114,13 +117,13 @@ function severityOption(rows: Array<{ level: Level | "unknown"; count: number }>
   };
   return {
     animationDuration: 350,
-    tooltip: { trigger: "item" },
+    tooltip: dark ? { trigger: "item", backgroundColor: "#172328", borderColor: "#34474d", textStyle: { color: "#e5efec" } } : { trigger: "item" },
     legend: {
       bottom: 0,
       icon: "circle",
       itemHeight: 8,
       itemWidth: 8,
-      textStyle: { color: "#68746e", fontSize: 11 },
+      textStyle: { color: dark ? "#91a3a2" : "#68746e", fontSize: 11 },
     },
     series: [{
       type: "pie",
@@ -137,6 +140,7 @@ function severityOption(rows: Array<{ level: Level | "unknown"; count: number }>
 }
 
 export function HostileReportPage() {
+  const { theme } = useTheme();
   const [range, setRange] = useState<ReportRange>("7d");
   const historyQuery = useQuery({
     queryKey: ["hostile-alert-history", range],
@@ -217,13 +221,13 @@ export function HostileReportPage() {
         <Grid.Col lg={16} xs={24}>
           <Card className="hostile-report-card" title={<span><BarChart3 size={16} />有效来袭趋势</span>} extra={<Tag color="green">{activeRange}</Tag>}>
             {report.incidentCount > 0 ? (
-              <EveChart height={286} option={trendOption(report.trend.map((item) => item.label), report.trend.map((item) => item.count))} />
+              <EveChart height={286} option={trendOption(report.trend.map((item) => item.label), report.trend.map((item) => item.count), theme)} />
             ) : <Empty description="当前范围暂无有效来袭趋势" />}
           </Card>
         </Grid.Col>
         <Grid.Col lg={8} xs={24}>
           <Card className="hostile-report-card" title={<span><ShieldAlert size={16} />风险分布</span>} extra={<Typography.Text type="secondary">高危 {report.highRiskRate.toFixed(0)}%</Typography.Text>}>
-            {report.incidentCount > 0 ? <EveChart height={286} option={severityOption(report.severity)} /> : <Empty description="暂无风险分布" />}
+            {report.incidentCount > 0 ? <EveChart height={286} option={severityOption(report.severity, theme)} /> : <Empty description="暂无风险分布" />}
           </Card>
         </Grid.Col>
       </Grid.Row>

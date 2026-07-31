@@ -7,6 +7,7 @@ import { RouterProvider } from "react-router-dom";
 
 import { router } from "./router";
 import { AuthProvider } from "./features/auth/AuthContext";
+import { ThemeProvider } from "./features/shell/ThemeContext";
 import "@arco-design/web-react/dist/css/arco.css";
 import "./styles.css";
 
@@ -14,12 +15,14 @@ const queryClient = new QueryClient();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <ConfigProvider locale={zhCN}>
-      <QueryClientProvider client={queryClient}>
-        <AuthProvider>
-          <RouterProvider router={router} />
-        </AuthProvider>
-      </QueryClientProvider>
-    </ConfigProvider>
+    <ThemeProvider>
+      <ConfigProvider locale={zhCN}>
+        <QueryClientProvider client={queryClient}>
+          <AuthProvider>
+            <RouterProvider router={router} />
+          </AuthProvider>
+        </QueryClientProvider>
+      </ConfigProvider>
+    </ThemeProvider>
   </React.StrictMode>,
 );

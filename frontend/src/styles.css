@@ -2972,6 +2972,306 @@ textarea {
   }
 }
 
+/* User-selectable dark theme. Keep this layer last so it wins over the
+   legacy page-specific light tokens above and over Arco's defaults. */
+.global-theme-toggle {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid #cbd7d2;
+  border-radius: 5px;
+  color: #31584a;
+  background: #f1f7f4;
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.global-theme-toggle:hover {
+  border-color: #6aa88f;
+  background: #e6f2ec;
+}
+
+.global-theme-toggle:focus-visible {
+  outline: 2px solid #6fb69b;
+  outline-offset: 2px;
+}
+
+.auth-page {
+  position: relative;
+}
+
+.login-theme-toggle {
+  position: absolute;
+  z-index: 2;
+  top: 20px;
+  right: 20px;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --theme-page: #0b1115;
+  --theme-surface: #111a1f;
+  --theme-surface-raised: #162329;
+  --theme-border: #2b4149;
+  --theme-text: #e4eeeb;
+  --theme-muted: #93a5a3;
+}
+
+body[data-theme="dark"],
+body[data-theme="dark"] .management-main,
+body[data-theme="dark"] .management-content,
+body[data-theme="dark"] .account-shell,
+body[data-theme="dark"] .admin-shell {
+  color: var(--theme-text);
+  background: var(--theme-page);
+}
+
+body[data-theme="dark"] .management-sidebar {
+  border-right-color: #263940;
+  background: #0d171b;
+}
+
+body[data-theme="dark"] .management-brand,
+body[data-theme="dark"] .management-topbar {
+  border-color: var(--theme-border);
+  background: var(--theme-surface);
+}
+
+body[data-theme="dark"] .management-brand strong,
+body[data-theme="dark"] .management-topbar h1,
+body[data-theme="dark"] .management-topbar-user-copy strong,
+body[data-theme="dark"] .management-breadcrumb strong,
+body[data-theme="dark"] .content-page-header h2,
+body[data-theme="dark"] .report-heading h1,
+body[data-theme="dark"] .report-heading h2 {
+  color: var(--theme-text);
+}
+
+body[data-theme="dark"] .management-brand small,
+body[data-theme="dark"] .management-topbar p,
+body[data-theme="dark"] .management-topbar-user-copy small,
+body[data-theme="dark"] .management-breadcrumb,
+body[data-theme="dark"] .management-topbar .arco-breadcrumb-item,
+body[data-theme="dark"] .content-page-header span,
+body[data-theme="dark"] .report-heading span,
+body[data-theme="dark"] .report-heading .eyebrow,
+body[data-theme="dark"] .arco-typography-secondary {
+  color: var(--theme-muted) !important;
+}
+
+body[data-theme="dark"] .management-nav-link {
+  color: #a8bbb7;
+}
+
+body[data-theme="dark"] .management-nav-link:hover {
+  color: #eff8f4;
+  background: #1b2c31;
+}
+
+body[data-theme="dark"] .management-nav-link.active {
+  border-color: #376b59;
+  color: #e7fff4;
+  background: #18392e;
+}
+
+body[data-theme="dark"] .management-topbar-user,
+body[data-theme="dark"] .management-topbar-user.arco-btn {
+  border-left-color: var(--theme-border);
+  color: var(--theme-text);
+}
+
+body[data-theme="dark"] .management-live-status {
+  border-color: #326550;
+  color: #9ce1c2;
+  background: #143328;
+}
+
+body[data-theme="dark"] .global-theme-toggle {
+  border-color: #3b5b62;
+  color: #d9eee8;
+  background: #182930;
+}
+
+body[data-theme="dark"] .global-theme-toggle:hover {
+  border-color: #67b69a;
+  background: #213a40;
+}
+
+body[data-theme="dark"] .management-account-popover,
+body[data-theme="dark"] .management-modal,
+body[data-theme="dark"] .management-drawer,
+body[data-theme="dark"] .arco-management-card,
+body[data-theme="dark"] .account-panel,
+body[data-theme="dark"] .audit-panel,
+body[data-theme="dark"] .dashboard-card,
+body[data-theme="dark"] .hostile-report-card,
+body[data-theme="dark"] .report-panel,
+body[data-theme="dark"] .report-metric-card,
+body[data-theme="dark"] .report-message {
+  border-color: var(--theme-border);
+  color: var(--theme-text);
+  background: var(--theme-surface);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 28%);
+}
+
+body[data-theme="dark"] .arco-card,
+body[data-theme="dark"] .arco-table,
+body[data-theme="dark"] .arco-table-container,
+body[data-theme="dark"] .arco-table-content-inner,
+body[data-theme="dark"] .arco-input-inner-wrapper,
+body[data-theme="dark"] .arco-select-view,
+body[data-theme="dark"] .arco-picker,
+body[data-theme="dark"] .arco-modal,
+body[data-theme="dark"] .arco-drawer {
+  border-color: var(--theme-border);
+  color: var(--theme-text);
+  background-color: var(--theme-surface);
+}
+
+body[data-theme="dark"] .arco-card-header,
+body[data-theme="dark"] .arco-table-th,
+body[data-theme="dark"] .arco-table-tr,
+body[data-theme="dark"] .arco-table-td,
+body[data-theme="dark"] .management-account-heading,
+body[data-theme="dark"] .management-account-password {
+  border-color: var(--theme-border);
+}
+
+body[data-theme="dark"] .arco-table-th,
+body[data-theme="dark"] .arco-table-tr:nth-child(even) .arco-table-td {
+  background: #142127;
+}
+
+body[data-theme="dark"] .arco-table-tr:hover .arco-table-td {
+  background: #1a3035;
+}
+
+body[data-theme="dark"] .arco-input,
+body[data-theme="dark"] input,
+body[data-theme="dark"] select,
+body[data-theme="dark"] textarea,
+body[data-theme="dark"] .management-account-password input {
+  border-color: #34505a;
+  color: var(--theme-text);
+  background: #0c171c;
+}
+
+body[data-theme="dark"] .management-account-heading strong,
+body[data-theme="dark"] .management-account-details dd,
+body[data-theme="dark"] .management-account-section-title,
+body[data-theme="dark"] .arco-card-header-title,
+body[data-theme="dark"] .arco-table-td,
+body[data-theme="dark"] .arco-table-td strong,
+body[data-theme="dark"] .report-panel-title,
+body[data-theme="dark"] .report-table-row strong {
+  color: var(--theme-text);
+}
+
+body[data-theme="dark"] .management-account-heading small,
+body[data-theme="dark"] .management-account-details dt,
+body[data-theme="dark"] .management-account-password label,
+body[data-theme="dark"] .report-table-row span,
+body[data-theme="dark"] .report-table-row time,
+body[data-theme="dark"] .report-empty,
+body[data-theme="dark"] .admin-empty {
+  color: var(--theme-muted);
+}
+
+body[data-theme="dark"] .management-account-message {
+  border-color: #31604e;
+  color: #a4e4c8;
+  background: #143328;
+}
+
+body[data-theme="dark"] .management-account-message.error,
+body[data-theme="dark"] .auth-error,
+body[data-theme="dark"] .auth-banner.error {
+  border-color: #713a3d;
+  color: #ffaaa3;
+  background: #351d22;
+}
+
+body[data-theme="dark"] .management-account-logout {
+  border-color: #713a3d;
+  color: #ffaaa3;
+  background: #351d22;
+}
+
+body[data-theme="dark"] .star-map-stage,
+body[data-theme="dark"] .star-map-workspace,
+body[data-theme="dark"] .hostile-detail-drawer .arco-drawer-content,
+body[data-theme="dark"] .hostile-detail-drawer .arco-list {
+  border-color: var(--theme-border);
+  color: var(--theme-text);
+  background: #0d171c;
+}
+
+body[data-theme="dark"] .star-map-status,
+body[data-theme="dark"] .star-map-legend,
+body[data-theme="dark"] .star-map-tools,
+body[data-theme="dark"] .star-map-selection,
+body[data-theme="dark"] .hostile-detail-summary,
+body[data-theme="dark"] .hostile-detail-item {
+  border-color: var(--theme-border);
+  color: var(--theme-text);
+  background: rgba(17, 29, 35, 0.94);
+}
+
+body[data-theme="dark"] .star-map-status span,
+body[data-theme="dark"] .star-map-legend,
+body[data-theme="dark"] .hostile-detail-identity small,
+body[data-theme="dark"] .hostile-detail-unresolved {
+  color: var(--theme-muted);
+}
+
+body[data-theme="dark"] .tactical-star-map-empty,
+body[data-theme="dark"] .empty-state,
+body[data-theme="dark"] .star-map-error {
+  color: var(--theme-muted);
+  border-color: var(--theme-border);
+  background: #111f25;
+}
+
+body[data-theme="dark"] .auth-page,
+body[data-theme="dark"] .auth-loading {
+  color: var(--theme-text);
+  background: #0b1115;
+}
+
+body[data-theme="dark"] .auth-brand-panel,
+body[data-theme="dark"] .auth-login-panel {
+  border-color: var(--theme-border);
+  color: var(--theme-text);
+  background: var(--theme-surface);
+}
+
+body[data-theme="dark"] .auth-brand-panel p,
+body[data-theme="dark"] .auth-login-panel label,
+body[data-theme="dark"] .auth-login-heading p {
+  color: var(--theme-muted);
+}
+
+body[data-theme="dark"] .arco-modal-mask,
+body[data-theme="dark"] .arco-drawer-mask {
+  background-color: rgb(2 8 10 / 68%);
+}
+
+@media (max-width: 720px) {
+  body[data-theme="dark"] .global-theme-toggle {
+    min-width: 34px;
+    padding: 0 9px;
+  }
+
+  body[data-theme="dark"] .global-theme-toggle span {
+    display: none;
+  }
+}
+
 /* Management console redesign: compact navigation, clear data hierarchy. */
 .management-shell {
   grid-template-columns: 236px minmax(0, 1fr);
