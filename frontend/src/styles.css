@@ -7152,3 +7152,163 @@ body {
     justify-content: space-between;
   }
 }
+
+/* The light tactical-route palette above is intentional for light mode, but it
+   is declared after the global theme layer. Reassert the dark route palette
+   here so the management chrome, map overlays, and detail drawer switch as one
+   surface and retain readable text contrast. */
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) {
+  color: #e4eeeb;
+  background: #081115;
+}
+
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .management-sidebar {
+  border-right-color: #2b4149;
+  background: #0d171b;
+}
+
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .management-brand {
+  border-bottom-color: #2b4149;
+}
+
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .management-brand strong,
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .management-topbar .arco-typography,
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .management-topbar-user-copy strong {
+  color: #e4eeeb;
+}
+
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .arco-management-menu .arco-menu-item-group-title,
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .arco-management-menu .arco-menu-group-title,
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .management-topbar .arco-breadcrumb-item,
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .management-topbar .arco-breadcrumb-item:last-child,
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .management-topbar-user-copy small,
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .management-account-chevron {
+  color: #9fb2af;
+}
+
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .arco-management-menu .management-nav-link {
+  color: #b5c5c2;
+}
+
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .arco-management-menu .management-nav-link svg {
+  color: #95aaa7;
+}
+
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .arco-management-menu .management-nav-link:hover {
+  color: #eff8f4;
+  background: #1b2c31;
+}
+
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .arco-management-menu .management-nav-link.active {
+  color: #e7fff4;
+  background: #18392e;
+  box-shadow: inset 3px 0 #4fb58e;
+}
+
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .arco-management-menu .management-nav-link.active svg {
+  color: #76d0ad;
+}
+
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .management-topbar {
+  border-bottom-color: #2b4149;
+  background: #111a1f;
+}
+
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .management-topbar-user.arco-btn {
+  border-left-color: #2b4149;
+}
+
+body[data-theme="dark"] .arco-management-shell:has(.management-content-workbench) .management-live-status.arco-tag {
+  color: #9ce1c2;
+  background: #143328;
+}
+
+body[data-theme="dark"] .management-content-workbench {
+  background: #081115;
+}
+
+body[data-theme="dark"] .star-map-workspace {
+  color: #e4eeeb;
+}
+
+body[data-theme="dark"] .star-map-stage {
+  border-color: #2b4149;
+  background-color: #060d11;
+  background-image:
+    linear-gradient(rgba(138, 169, 178, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(138, 169, 178, 0.055) 1px, transparent 1px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32);
+}
+
+body[data-theme="dark"] .star-map-status,
+body[data-theme="dark"] .star-map-legend,
+body[data-theme="dark"] .star-map-tools,
+body[data-theme="dark"] .star-map-selection,
+body[data-theme="dark"] .management-content-workbench .star-map-legend {
+  border-color: #31464d;
+  background: rgba(17, 29, 35, 0.96);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32);
+}
+
+body[data-theme="dark"] .star-map-status > div {
+  border-right-color: #31464d;
+}
+
+body[data-theme="dark"] .star-map-status span,
+body[data-theme="dark"] .star-map-legend span,
+body[data-theme="dark"] .star-map-legend small,
+body[data-theme="dark"] .star-map-tools span,
+body[data-theme="dark"] .star-map-selection span,
+body[data-theme="dark"] .star-map-selection small {
+  color: #9fb2af;
+}
+
+body[data-theme="dark"] .star-map-status strong,
+body[data-theme="dark"] .star-map-legend strong,
+body[data-theme="dark"] .star-map-tools strong,
+body[data-theme="dark"] .star-map-selection strong,
+body[data-theme="dark"] .management-content-workbench .star-map-legend strong {
+  color: #e4eeeb;
+}
+
+body[data-theme="dark"] .management-content-workbench .arco-btn {
+  border-color: #3b555e;
+  color: #d5e4e1;
+  background: #14242b;
+}
+
+body[data-theme="dark"] .management-content-workbench .arco-btn:hover,
+body[data-theme="dark"] .management-content-workbench .arco-btn.arco-btn-primary {
+  border-color: #4b9a7b;
+  color: #effaf5;
+  background: #1b4b3b;
+}
+
+body[data-theme="dark"] .hostile-detail-drawer .arco-drawer-header,
+body[data-theme="dark"] .hostile-detail-summary,
+body[data-theme="dark"] .hostile-detail-list .arco-list-item {
+  border-color: #2b4149;
+}
+
+body[data-theme="dark"] .hostile-detail-drawer .arco-drawer-title,
+body[data-theme="dark"] .hostile-detail-identity strong {
+  color: #e4eeeb;
+}
+
+body[data-theme="dark"] .hostile-detail-summary span,
+body[data-theme="dark"] .hostile-detail-identity span,
+body[data-theme="dark"] .hostile-detail-identity small {
+  color: #9fb2af;
+}
+
+body[data-theme="dark"] .hostile-detail-item .arco-avatar {
+  border-color: #3a5158;
+  color: #b6c8c4;
+  background: #202e33;
+}
+
+body[data-theme="dark"] .hostile-detail-unresolved {
+  border-color: #74433f;
+  color: #ffb0a9;
+  background: #351d22;
+}
