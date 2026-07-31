@@ -58,6 +58,9 @@ class ClientAuthStateStore:
         state["processed_files"] = sorted({str(item) for item in state.get("processed_files", []) if str(item)})
         state["characters"] = _clean_names(state.get("characters", []))
         state["pending_characters"] = _clean_names(state.get("pending_characters", []))
+        state["character_identities"] = _clean_character_identities(
+            state.get("character_identities", [])
+        )
         return state
 
     def save(self, state: dict[str, Any]) -> None:
@@ -92,6 +95,24 @@ class ClientAuthStateStore:
         self.save(state)
         return True
 
+    def remember_character_identities(
+        self,
+        characters: list[dict[str, Any]],
+    ) -> None:
+        """Merge server-resolved EVE character IDs into protected local state."""
+        resolved = _clean_character_identities(characters)
+        if not resolved:
+            return
+        state = self.load()
+        identities = {
+            str(item["character_name"]).casefold(): item
+            for item in state.get("character_identities", [])
+        }
+        for item in resolved:
+            identities[str(item["character_name"]).casefold()] = item
+        state["character_identities"] = list(identities.values())
+        self.save(state)
+
     def empty_state(self) -> dict[str, Any]:
         return {
             "version": 1,
@@ -103,6 +124,7 @@ class ClientAuthStateStore:
             "processed_files": [],
             "characters": [],
             "pending_characters": [],
+            "character_identities": [],
         }
 
     def _unprotect(self, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -239,6 +261,35 @@ def _clean_names(values: Any) -> list[str]:
         if name and key not in seen:
             seen.add(key)
             result.append(name)
+    return result
+
+
+def _clean_character_identities(values: Any) -> list[dict[str, Any]]:
+    """Return valid, case-insensitively deduplicated character identities."""
+    if not isinstance(values, list):
+        return []
+    result: list[dict[str, Any]] = []
+    indexes: dict[str, int] = {}
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        character_name = str(value.get("character_name") or "").strip()
+        try:
+            character_id = int(value.get("character_id"))
+        except (TypeError, ValueError):
+            continue
+        if not character_name or character_id <= 0:
+            continue
+        item = {
+            "character_id": character_id,
+            "character_name": character_name,
+        }
+        key = character_name.casefold()
+        if key in indexes:
+            result[indexes[key]] = item
+        else:
+            indexes[key] = len(result)
+            result.append(item)
     return result
 
 

@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import QSettings, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QCursor
+from PyQt6.QtGui import QAction, QCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStatusBar,
@@ -44,6 +45,7 @@ from app.alert_client import (
 )
 from app.channels.identity_logs import EveIdentityLogScanner
 from app.channels.local_system import find_latest_local_system
+from app.core.client_identity import persistent_client_id
 from app.diagnostics import default_log_path, export_diagnostic_bundle
 from app.engine.capturer import Capturer
 from app.core.heartbeat import (
@@ -60,7 +62,7 @@ from app.models.region_prefs import RegionPreferences
 from app.persistent_intel_client import PersistentIntelApiClient
 from app.ui.background_tasks import BackgroundTaskRunner
 from app.ui.reliable_uploads import ReliableUploadManager
-from app.ui.region_selector import RegionSelector
+from app.ui.region_selector import RegionSelector, map_rect_between_geometries
 from app.ui.settings import SettingsPanel
 from app.ui.theme import APP_QSS, monitor_button_style, status_card_style
 from app.startup import set_start_with_windows
@@ -113,6 +115,17 @@ class PreviewCaptureWorker(QThread):
             self.captured.emit(image_data)
 
 
+class MultiSelectMenu(QMenu):
+    """Keep the popup open while checkable monitor targets are toggled."""
+
+    def mouseReleaseEvent(self, event) -> None:
+        action = self.actionAt(event.position().toPoint())
+        if action is not None and action.isEnabled() and action.isCheckable():
+            action.trigger()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class MainWindow(QMainWindow):
     """Top-level window: settings on the left, log on the right, tray icon."""
 
@@ -126,6 +139,36 @@ class MainWindow(QMainWindow):
         geometry = self._runtime_settings.value("window/geometry")
         if geometry is not None:
             self.restoreGeometry(geometry)
+        self._monitor_window_actions: dict[str, QAction] = {}
+        self._monitor_windows_by_key: dict[str, dict] = {}
+        self._monitor_window_titles_by_key: dict[str, str] = {}
+        self._monitor_last_status_by_title: dict[str, dict[str, str]] = {}
+        self._monitor_known_window_keys: set[str] = set()
+        self._monitor_selected_titles = set(
+            _string_list(
+                self._runtime_settings.value(
+                    "monitor/selected_window_titles",
+                    [],
+                )
+            )
+        )
+        has_monitor_selection = self._runtime_settings.contains(
+            "monitor/select_all"
+        )
+        legacy_monitor_all = self._runtime_settings.value(
+            "monitor/all_windows",
+            True,
+            type=bool,
+        )
+        self._monitor_select_all_new_windows = self._runtime_settings.value(
+            "monitor/select_all",
+            legacy_monitor_all,
+            type=bool,
+        )
+        self._monitor_select_current_on_first_sync = bool(
+            not has_monitor_selection and not legacy_monitor_all
+        )
+        self._syncing_monitor_menu = False
 
         self._region_prefs = RegionPreferences("region_prefs.json")
         self._capturer = Capturer()
@@ -168,7 +211,7 @@ class MainWindow(QMainWindow):
             default=15.0,
             minimum=5.0,
         )
-        self._heartbeat_client_id = f"detector-client:{os.getpid()}"
+        self._heartbeat_client_id = persistent_client_id("detector")
         self._heartbeat_runtime = resolve_runtime_identity()
         self._heartbeat_last_action = "startup"
         self._heartbeat_last_error = ""
@@ -276,6 +319,21 @@ class MainWindow(QMainWindow):
         self._window_combo.currentIndexChanged.connect(self._on_window_selected)
         target_row.addWidget(self._window_combo, 1)
 
+        self._monitor_window_button = QToolButton()
+        self._monitor_window_button.setObjectName("monitorWindowButton")
+        self._monitor_window_button.setMinimumSize(138, 34)
+        self._monitor_window_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        self._monitor_window_button.setToolTip(
+            "选择需要独立识别角色、星系和成员列表的 EVE 客户端"
+        )
+        self._monitor_window_menu = MultiSelectMenu(self._monitor_window_button)
+        self._monitor_window_menu.setToolTipsVisible(True)
+        self._monitor_window_button.setMenu(self._monitor_window_menu)
+        self._refresh_monitor_window_button()
+        target_row.addWidget(self._monitor_window_button)
+
         refresh_btn = QToolButton()
         refresh_btn.setObjectName("iconButton")
         refresh_btn.setFixedSize(34, 34)
@@ -326,9 +384,9 @@ class MainWindow(QMainWindow):
         table_title = QLabel("窗口状态")
         table_title.setObjectName("sectionTitle")
         right.addWidget(table_title)
-        self._window_status_table = QTableWidget(0, 4)
+        self._window_status_table = QTableWidget(0, 6)
         self._window_status_table.setHorizontalHeaderLabels(
-            ["窗口", "区域", "状态", "最近动作"]
+            ["角色", "星系", "窗口", "区域", "状态", "最近动作"]
         )
         self._window_status_table.setMinimumHeight(112)
         self._window_status_table.setMaximumHeight(148)
@@ -339,10 +397,12 @@ class MainWindow(QMainWindow):
         self._window_status_table.setAlternatingRowColors(True)
         self._window_status_table.setShowGrid(False)
         table_header = self._window_status_table.horizontalHeader()
-        table_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         table_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        table_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        table_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        table_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        table_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        table_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        table_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         right.addWidget(self._window_status_table)
 
         log_header = QHBoxLayout()
@@ -554,6 +614,8 @@ class MainWindow(QMainWindow):
             region = getattr(self, "_manual_region", None) or getattr(self, "_detected_region", None)
             rows = [
                 {
+                    "character_name": _character_name_from_window_title(title),
+                    "system_name": "Unknown",
                     "window_title": title or "未检测到 EVE 窗口",
                     "region": region,
                     "runtime_status": "待启动" if title else "未检测",
@@ -563,7 +625,13 @@ class MainWindow(QMainWindow):
 
         table.setRowCount(len(rows))
         for row_index, context in enumerate(rows):
+            system_name = str(context.get("system_name") or "Unknown")
+            system_label = (
+                "未知" if system_name.casefold() == "unknown" else system_name
+            )
             values = [
+                str(context.get("character_name") or "-"),
+                system_label,
                 str(context.get("window_title") or "-"),
                 self._region_label(context.get("region")),
                 str(context.get("runtime_status") or "待启动"),
@@ -593,6 +661,8 @@ class MainWindow(QMainWindow):
         elif "last_error" in context:
             context["last_error"] = ""
         context["updated_at"] = datetime.now().strftime("%H:%M:%S")
+        self._remember_monitor_window_context(context)
+        self._refresh_monitor_window_action_labels()
         self._refresh_window_status_table()
 
     def _is_monitoring(self) -> bool:
@@ -622,7 +692,13 @@ class MainWindow(QMainWindow):
 
     def _window_client_id(self, window: dict) -> str:
         """Return a unique OCR client id for one EVE window."""
-        raw = self._window_monitor_key(window)
+        user_id = str(
+            window.get("character_id")
+            or window.get("user_id")
+            or window.get("character_name")
+            or ""
+        ).strip()
+        raw = f"user:{user_id}" if user_id else self._window_monitor_key(window)
         slug = "".join(
             char if ("a" <= char <= "z" or "0" <= char <= "9") else "-"
             for char in raw.lower()
@@ -631,38 +707,421 @@ class MainWindow(QMainWindow):
         return f"{self._heartbeat_client_id}:{slug or 'window'}"
 
     def _build_monitor_targets(self) -> list[dict]:
-        """Build one monitor target for the selected EVE window."""
-        window = self._current_window_info()
-        if window is None:
+        """Build independent targets for the selected EVE windows."""
+        keyword = self._settings.get_keyword()
+        detected_windows = self._capturer.list_eve_windows(keyword)
+        windows = self._selected_monitor_windows(detected_windows)
+
+        if not windows:
             return []
 
-        region = self._region_prefs.resolve_region(window)
-        if region is None:
-            region = self._capturer.get_member_list_region(window)
-        key = self._window_monitor_key(window)
-        window_title = str(window.get("title") or key)
         configured_system = (
             _instance_attr(self, "_intel_system", "Unknown")
             if _instance_attr(self, "_intel_system_source", "default") == "env"
             else "Unknown"
         )
-        return [
-            {
-                "key": key,
-                "client_id": self._window_client_id(window),
-                "window": dict(window),
-                "window_title": window_title,
-                "character_name": _character_name_from_window_title(window_title),
-                "source_instance": self._window_combo_label(window),
-                "region": dict(region),
-                "system_name": configured_system,
-                "system_id": None,
-                "system_source": (
-                    "env" if configured_system != "Unknown" else "default"
-                ),
-                "_location_next_check": 0.0,
-            }
+        character_ids_by_name: dict[str, int] = {}
+        auth_state_store = getattr(self._settings, "auth_state_store", None)
+        if callable(auth_state_store):
+            state = auth_state_store().load()
+            for identity in state.get("character_identities", []):
+                if not isinstance(identity, dict):
+                    continue
+                character_name = str(
+                    identity.get("character_name") or ""
+                ).strip()
+                try:
+                    character_id = int(identity.get("character_id"))
+                except (TypeError, ValueError):
+                    continue
+                if character_name and character_id > 0:
+                    character_ids_by_name[character_name.casefold()] = character_id
+        targets: list[dict] = []
+        for window in windows:
+            region = self._region_prefs.resolve_region(window)
+            if region is None:
+                region = self._capturer.get_member_list_region(window)
+            key = self._window_monitor_key(window)
+            window_title = str(window.get("title") or key)
+            character_name = _character_name_from_window_title(window_title)
+            character_id = character_ids_by_name.get(character_name.casefold())
+            client_window = dict(window)
+            if character_id is not None:
+                client_window["character_id"] = character_id
+            if character_name:
+                client_window["character_name"] = character_name
+            targets.append(
+                {
+                    "key": key,
+                    "client_id": self._window_client_id(client_window),
+                    "window": dict(window),
+                    "window_title": window_title,
+                    "character_id": character_id,
+                    "character_name": character_name,
+                    "source_instance": self._window_combo_label(window),
+                    "region": dict(region),
+                    "system_name": configured_system,
+                    "system_id": None,
+                    "system_source": (
+                        "env" if configured_system != "Unknown" else "default"
+                    ),
+                    "_location_next_check": 0.0,
+                }
+            )
+        return targets
+
+    def _selected_monitor_windows(self, windows: list[dict]) -> list[dict]:
+        """Return selected windows with the current calibration target first."""
+        actions = _instance_attr(self, "_monitor_window_actions")
+        if actions is None:
+            selected_window = self._current_window_info()
+            return [selected_window] if selected_window is not None else []
+
+        selected_keys = {
+            key for key, action in actions.items() if action.isChecked()
+        }
+        selected = [
+            window
+            for window in windows
+            if self._window_monitor_key(window) in selected_keys
         ]
+        window_combo = _instance_attr(self, "_window_combo")
+        current_hwnd = window_combo.currentData() if window_combo is not None else None
+        selected.sort(
+            key=lambda window: 0 if window.get("hwnd") == current_hwnd else 1
+        )
+        return selected
+
+    def _sync_monitor_window_menu(self, windows: list[dict]) -> None:
+        """Rebuild the checkable monitor target menu without losing intent."""
+        menu = _instance_attr(self, "_monitor_window_menu")
+        if menu is None:
+            return
+        previous_actions = _instance_attr(self, "_monitor_window_actions", {})
+        previous_checked_keys = {
+            key for key, action in previous_actions.items() if action.isChecked()
+        }
+        previous_known_keys = set(
+            _instance_attr(self, "_monitor_known_window_keys", set())
+        )
+        selected_titles = set(
+            _instance_attr(self, "_monitor_selected_titles", set())
+        )
+        select_all = bool(
+            _instance_attr(self, "_monitor_select_all_new_windows", True)
+        )
+        select_current = bool(
+            _instance_attr(self, "_monitor_select_current_on_first_sync", False)
+        )
+        window_combo = _instance_attr(self, "_window_combo")
+        current_hwnd = window_combo.currentData() if window_combo is not None else None
+
+        self._syncing_monitor_menu = True
+        menu.clear()
+        select_all_action = menu.addAction("全选")
+        select_all_action.triggered.connect(self._select_all_monitor_windows)
+        current_only_action = menu.addAction("仅选当前窗口")
+        current_only_action.triggered.connect(self._select_current_monitor_window)
+        menu.addSeparator()
+
+        actions: dict[str, QAction] = {}
+        windows_by_key: dict[str, dict] = {}
+        titles_by_key: dict[str, str] = {}
+        online_titles: set[str] = set()
+        if windows:
+            title_counts: dict[str, int] = {}
+            for window in windows:
+                title_key = str(window.get("title") or "").casefold()
+                title_counts[title_key] = title_counts.get(title_key, 0) + 1
+            title_indexes: dict[str, int] = {}
+            for window in windows:
+                key = self._window_monitor_key(window)
+                title = str(window.get("title") or "EVE 窗口").strip()
+                title_key = title.casefold()
+                title_indexes[title_key] = title_indexes.get(title_key, 0) + 1
+                action = menu.addAction(
+                    self._window_combo_label(
+                        window,
+                        duplicate_index=title_indexes[title_key],
+                        duplicate_count=title_counts[title_key],
+                    )
+                )
+                action.setCheckable(True)
+                action.setChecked(
+                    select_all
+                    or (select_current and window.get("hwnd") == current_hwnd)
+                    or key in previous_checked_keys
+                    or (
+                        key not in previous_known_keys
+                        and title in selected_titles
+                    )
+                )
+                action.triggered.connect(self._on_monitor_window_toggled)
+                actions[key] = action
+                windows_by_key[key] = dict(window)
+                titles_by_key[key] = title
+                online_titles.add(title)
+
+        offline_titles = sorted(selected_titles - online_titles, key=str.casefold)
+        if offline_titles:
+            menu.addSeparator()
+            offline_header = menu.addAction("已记住但当前离线")
+            offline_header.setEnabled(False)
+            for title in offline_titles:
+                key = f"offline:{title.casefold()}"
+                action = menu.addAction(title)
+                action.setCheckable(True)
+                action.setChecked(True)
+                action.triggered.connect(self._on_monitor_window_toggled)
+                actions[key] = action
+                titles_by_key[key] = title
+        elif not windows:
+            placeholder = menu.addAction("未检测到 EVE 窗口")
+            placeholder.setEnabled(False)
+
+        self._monitor_window_actions = actions
+        self._monitor_windows_by_key = windows_by_key
+        self._monitor_window_titles_by_key = titles_by_key
+        self._monitor_known_window_keys = set(windows_by_key)
+        self._syncing_monitor_menu = False
+        if select_current and actions:
+            self._monitor_select_current_on_first_sync = False
+        if actions:
+            self._persist_monitor_window_selection(update_select_all=False)
+        self._refresh_monitor_window_action_labels()
+
+    def _remember_monitor_window_context(self, context: dict | None) -> None:
+        """Cache the last useful system and status for an EVE window title."""
+        if not context:
+            return
+        title = str(context.get("window_title") or "").strip()
+        if not title:
+            return
+        cache = _instance_attr(self, "_monitor_last_status_by_title", {})
+        previous = dict(cache.get(title) or {})
+        system_name = str(context.get("system_name") or "Unknown").strip()
+        runtime_status = str(context.get("runtime_status") or "").strip()
+        if system_name and system_name.casefold() != "unknown":
+            previous["system_name"] = system_name
+        if runtime_status:
+            previous["runtime_status"] = runtime_status
+        cache[title] = previous
+        self._monitor_last_status_by_title = cache
+
+    def _refresh_monitor_window_action_labels(self) -> None:
+        """Show character, system and runtime state on every target action."""
+        actions = _instance_attr(self, "_monitor_window_actions", {})
+        windows_by_key = _instance_attr(self, "_monitor_windows_by_key", {})
+        titles_by_key = _instance_attr(
+            self,
+            "_monitor_window_titles_by_key",
+            {},
+        )
+        contexts = _instance_attr(self, "_worker_contexts", {})
+        for context in contexts.values():
+            self._remember_monitor_window_context(context)
+        cached_status = _instance_attr(
+            self,
+            "_monitor_last_status_by_title",
+            {},
+        )
+
+        contexts_by_title = {
+            str(context.get("window_title") or "").strip(): context
+            for context in contexts.values()
+            if str(context.get("window_title") or "").strip()
+        }
+        monitor_btn = _instance_attr(self, "_monitor_btn")
+        is_monitor_checked = getattr(monitor_btn, "isChecked", None)
+        monitoring = bool(
+            callable(is_monitor_checked) and is_monitor_checked()
+        )
+        for key, action in actions.items():
+            title = str(titles_by_key.get(key) or "EVE 窗口").strip()
+            character_name = _character_name_from_window_title(title) or title
+            online = key in windows_by_key
+            context = contexts.get(key) or contexts_by_title.get(title)
+            cached = cached_status.get(title) or {}
+            system_name = str(
+                (context or {}).get("system_name")
+                or cached.get("system_name")
+                or "Unknown"
+            ).strip()
+            system_label = (
+                "未知" if system_name.casefold() == "unknown" else system_name
+            )
+            if not online:
+                status = "离线"
+            elif not action.isChecked():
+                status = "未监控"
+            elif context is not None:
+                status = str(context.get("runtime_status") or "准备中")
+            else:
+                status = "准备中" if monitoring else "待启动"
+            set_property = getattr(action, "setProperty", None)
+            if callable(set_property):
+                set_property("online", online)
+                set_property("characterName", character_name)
+                set_property("systemName", system_label)
+                set_property("runtimeStatus", status)
+            set_text = getattr(action, "setText", None)
+            if callable(set_text):
+                set_text(f"{character_name} · {system_label} · {status}")
+            set_tooltip = getattr(action, "setToolTip", None)
+            if not callable(set_tooltip):
+                continue
+            if online:
+                set_tooltip(f"{title}\n当前星系：{system_label}；状态：{status}")
+            else:
+                set_tooltip(
+                    f"{title}\n窗口当前离线；保持勾选后，重新出现时会自动恢复监控"
+                )
+        self._refresh_monitor_window_button()
+
+    def _refresh_monitor_window_button(self) -> None:
+        """Show the number and names of currently selected monitor targets."""
+        button = _instance_attr(self, "_monitor_window_button")
+        if button is None:
+            return
+        actions = _instance_attr(self, "_monitor_window_actions", {})
+        windows_by_key = _instance_attr(self, "_monitor_windows_by_key", {})
+        titles_by_key = _instance_attr(
+            self,
+            "_monitor_window_titles_by_key",
+            {},
+        )
+        online_keys = set(windows_by_key)
+        selected_online_keys = [
+            key
+            for key in online_keys
+            if key in actions and actions[key].isChecked()
+        ]
+        offline_keys = [key for key in actions if key not in online_keys]
+        text = f"监控窗口 {len(selected_online_keys)}/{len(online_keys)}"
+        if offline_keys:
+            text += f" · 离线{len(offline_keys)}"
+        button.setText(text)
+
+        selected_titles = [
+            titles_by_key.get(key, actions[key].text())
+            for key in selected_online_keys
+        ]
+        offline_titles = [
+            titles_by_key.get(key, actions[key].text())
+            for key in offline_keys
+        ]
+        if selected_titles:
+            tooltip = "已选择：" + "、".join(selected_titles)
+            selection_state = "ready"
+        elif offline_titles:
+            tooltip = "已选择的窗口当前均离线：" + "、".join(offline_titles)
+            selection_state = "offline"
+        elif online_keys:
+            tooltip = "尚未选择监控窗口，请打开菜单进行勾选"
+            selection_state = "empty"
+        else:
+            tooltip = "未检测到 EVE 窗口"
+            selection_state = "empty"
+        button.setToolTip(tooltip)
+        if button.property("selectionState") != selection_state:
+            button.setProperty("selectionState", selection_state)
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.update()
+
+    def _persist_monitor_window_selection(
+        self,
+        *,
+        update_select_all: bool = True,
+    ) -> None:
+        """Persist selected titles while retaining temporarily missing targets."""
+        actions = _instance_attr(self, "_monitor_window_actions", {})
+        windows_by_key = _instance_attr(self, "_monitor_windows_by_key", {})
+        titles_by_key = _instance_attr(
+            self,
+            "_monitor_window_titles_by_key",
+            {},
+        )
+        represented_titles = {
+            str(title).strip()
+            for title in titles_by_key.values()
+            if str(title).strip()
+        }
+        selected_titles = set(
+            _instance_attr(self, "_monitor_selected_titles", set())
+        ) - represented_titles
+        for key, action in actions.items():
+            if not action.isChecked():
+                continue
+            title = str(titles_by_key.get(key) or "").strip()
+            if title:
+                selected_titles.add(title)
+        self._monitor_selected_titles = selected_titles
+        online_keys = set(windows_by_key)
+        select_all_new_windows = bool(
+            _instance_attr(self, "_monitor_select_all_new_windows", False)
+        )
+        if update_select_all and online_keys:
+            select_all_new_windows = all(
+                key in actions and actions[key].isChecked()
+                for key in online_keys
+            )
+            self._monitor_select_all_new_windows = select_all_new_windows
+        runtime_settings = _instance_attr(self, "_runtime_settings")
+        if runtime_settings is not None:
+            runtime_settings.setValue(
+                "monitor/selected_window_titles",
+                sorted(selected_titles),
+            )
+            runtime_settings.setValue(
+                "monitor/select_all",
+                select_all_new_windows,
+            )
+
+    def _on_monitor_window_toggled(self, _checked: bool = False) -> None:
+        """Persist a target change and reconcile running monitor workers."""
+        if _instance_attr(self, "_syncing_monitor_menu", False):
+            return
+        self._persist_monitor_window_selection()
+        self._refresh_monitor_window_action_labels()
+        monitor_btn = _instance_attr(self, "_monitor_btn")
+        if monitor_btn is None or not monitor_btn.isChecked():
+            return
+        if not any(
+            key in _instance_attr(self, "_monitor_windows_by_key", {})
+            and action.isChecked()
+            for key, action in _instance_attr(
+                self,
+                "_monitor_window_actions",
+                {},
+            ).items()
+        ):
+            self._log_message("未选择监控窗口，已停止监控")
+            self._stop_monitor()
+            return
+        self._log_message("监控窗口选择已更新，正在重新连接")
+        QTimer.singleShot(0, lambda: self._start_monitor(identity_checked=True))
+
+    def _select_all_monitor_windows(self) -> None:
+        """Select every currently detected EVE window."""
+        self._syncing_monitor_menu = True
+        for action in _instance_attr(self, "_monitor_window_actions", {}).values():
+            action.setChecked(True)
+        self._syncing_monitor_menu = False
+        self._on_monitor_window_toggled(True)
+
+    def _select_current_monitor_window(self) -> None:
+        """Select only the window currently used for calibration and preview."""
+        window_combo = _instance_attr(self, "_window_combo")
+        current_hwnd = window_combo.currentData() if window_combo is not None else None
+        windows_by_key = _instance_attr(self, "_monitor_windows_by_key", {})
+        self._syncing_monitor_menu = True
+        for key, action in _instance_attr(self, "_monitor_window_actions", {}).items():
+            action.setChecked(
+                (windows_by_key.get(key) or {}).get("hwnd") == current_hwnd
+            )
+        self._syncing_monitor_menu = False
+        self._on_monitor_window_toggled(True)
 
     def _window_combo_label(
         self,
@@ -733,6 +1192,7 @@ class MainWindow(QMainWindow):
             self._detected_region = None
             self._capturer.close()
             self._window_label.setText("窗口：未找到")
+        self._sync_monitor_window_menu(windows)
         self._sync_monitor_window_status(windows)
         self._refresh_status_cards()
         self._refresh_window_status_table()
@@ -744,11 +1204,13 @@ class MainWindow(QMainWindow):
         self._sync_monitor_target_geometry(windows)
         self._sync_monitor_window_status(windows)
         signature = _window_list_signature(windows)
-        if signature == _instance_attr(self, "_window_signature", ()):
-            return
-        self._detect_window(windows=windows)
-        if windows:
-            self._schedule_monitor_reconnect()
+        if signature != _instance_attr(self, "_window_signature", ()):
+            self._detect_window(windows=windows)
+        selected_keys = {
+            self._window_monitor_key(window)
+            for window in self._selected_monitor_windows(windows)
+        }
+        self._schedule_monitor_reconnect(expected_keys=selected_keys)
 
     def _sync_monitor_window_status(self, windows: list[dict]) -> None:
         """Keep the global status aligned with the worker, not transient geometry."""
@@ -767,12 +1229,27 @@ class MainWindow(QMainWindow):
             status_label.setText("等待 EVE 窗口重新出现")
             status_label.setStyleSheet("color: #f0b35a; font-weight: bold;")
 
-    def _schedule_monitor_reconnect(self) -> None:
-        """Restart monitoring after a previously monitored window reappears."""
+    def _schedule_monitor_reconnect(
+        self,
+        *,
+        expected_keys: set[str] | None = None,
+    ) -> None:
+        """Rebuild monitoring when selected and running target sets diverge."""
         monitor_btn = _instance_attr(self, "_monitor_btn")
         if monitor_btn is None or not monitor_btn.isChecked():
             return
-        if self._running_workers() or _instance_attr(self, "_stopping_monitor_workers", set()):
+        if _instance_attr(self, "_stopping_monitor_workers", set()):
+            return
+        if expected_keys is None:
+            expected_keys = {
+                target["key"] for target in self._build_monitor_targets()
+            }
+        running_keys = {
+            key
+            for key, worker in _instance_attr(self, "_workers", {}).items()
+            if worker is not None and worker.isRunning()
+        }
+        if not expected_keys or running_keys == expected_keys:
             return
         if _instance_attr(self, "_monitor_reconnect_scheduled", False):
             return
@@ -782,12 +1259,26 @@ class MainWindow(QMainWindow):
     def _reconnect_monitor(self) -> None:
         self._monitor_reconnect_scheduled = False
         monitor_btn = _instance_attr(self, "_monitor_btn")
-        if monitor_btn is None or not monitor_btn.isChecked() or self._running_workers():
+        if monitor_btn is None or not monitor_btn.isChecked():
             return
         targets = self._build_monitor_targets()
         if not targets:
             return
-        self._log_message("EVE 窗口已重新出现，正在恢复监控")
+        expected_keys = {target["key"] for target in targets}
+        running_keys = {
+            key
+            for key, worker in _instance_attr(self, "_workers", {}).items()
+            if worker is not None and worker.isRunning()
+        }
+        if running_keys == expected_keys:
+            return
+        self._log_message("EVE 窗口状态已恢复，正在重建监控节点")
+        if self._running_workers():
+            self._monitor_restart_pending = True
+            self._stop_monitor_workers(timeout_ms=0)
+            if not _instance_attr(self, "_stopping_monitor_workers", set()):
+                self._reap_stopping_monitor_workers()
+            return
         self._start_monitor(identity_checked=True)
 
     def _sync_monitor_target_geometry(self, windows: list[dict]) -> None:
@@ -898,13 +1389,80 @@ class MainWindow(QMainWindow):
             f"{info['w']}x{info['h']}"
         )
 
+        selector_geometry = {
+            "x": int(info["x"]),
+            "y": int(info["y"]),
+            "w": int(info["w"]),
+            "h": int(info["h"]),
+        }
+        physical_geometry: dict[str, int] | None = None
+        monitor_geometry_getter = getattr(
+            self._capturer,
+            "get_monitor_geometry",
+            None,
+        )
+        monitor_geometry = (
+            monitor_geometry_getter(info["hwnd"])
+            if callable(monitor_geometry_getter)
+            else None
+        )
+        screen = self._screen_for_monitor_geometry(monitor_geometry)
+        if screen is not None and monitor_geometry is not None:
+            logical_screen = screen.geometry()
+            selector_geometry = map_rect_between_geometries(
+                selector_geometry,
+                monitor_geometry,
+                {
+                    "x": logical_screen.x(),
+                    "y": logical_screen.y(),
+                    "w": logical_screen.width(),
+                    "h": logical_screen.height(),
+                },
+            )
+            physical_geometry = {
+                "x": int(info["x"]),
+                "y": int(info["y"]),
+                "w": int(info["w"]),
+                "h": int(info["h"]),
+            }
+
+        selector_options = {"title": info["title"]}
+        if physical_geometry is not None:
+            selector_options["physical_geometry"] = physical_geometry
+
         self.hide()
         self._selector = RegionSelector(
-            info["x"], info["y"], info["w"], info["h"], title=info["title"]
+            selector_geometry["x"],
+            selector_geometry["y"],
+            selector_geometry["w"],
+            selector_geometry["h"],
+            **selector_options,
         )
         self._selector.region_selected.connect(self._on_region_selected)
         self._selector.selector_closed.connect(self._on_selector_closed)
         self._selector.show()
+
+    def _screen_for_monitor_geometry(self, monitor_geometry: dict | None):
+        """Match physical Win32 monitor bounds to a Qt logical screen."""
+        screens = QApplication.screens()
+        if not screens or not monitor_geometry:
+            return None
+        primary = QApplication.primaryScreen()
+        if monitor_geometry.get("primary") and primary is not None:
+            return primary
+
+        def match_score(screen) -> tuple[int, int]:
+            geometry = screen.geometry()
+            ratio = max(0.1, float(screen.devicePixelRatio()))
+            physical_width = int(round(geometry.width() * ratio))
+            physical_height = int(round(geometry.height() * ratio))
+            size_error = abs(physical_width - int(monitor_geometry["w"]))
+            size_error += abs(physical_height - int(monitor_geometry["h"]))
+            origin_error = abs(geometry.x() - int(monitor_geometry["x"]))
+            origin_error += abs(geometry.y() - int(monitor_geometry["y"]))
+            return size_error, origin_error
+
+        return min(screens, key=match_score)
 
     def _preview_region(self) -> None:
         """Show the exact capture area without initializing the OCR model."""
@@ -1320,12 +1878,31 @@ class MainWindow(QMainWindow):
     ) -> dict:
         scan = self._identity_scanner.scan(api_key)
         pending_names = list(scan.pending_characters)
-        if pending_names:
-            identity = client.verify_eve_characters(pending_names)
-            self._identity_scanner.mark_verified(pending_names)
+        state_store = self._settings.auth_state_store()
+        state = state_store.load()
+        resolved_names = {
+            str(item.get("character_name") or "").strip().casefold()
+            for item in state.get("character_identities", [])
+            if isinstance(item, dict)
+        }
+        names_to_resolve = list(pending_names)
+        names_to_resolve_keys = {item.casefold() for item in names_to_resolve}
+        names_to_resolve.extend(
+            name
+            for name in state.get("characters", [])
+            if str(name).strip().casefold() not in resolved_names
+            and str(name).strip().casefold()
+            not in names_to_resolve_keys
+        )
+        if names_to_resolve:
+            identity = client.verify_eve_characters(names_to_resolve)
+            self._identity_scanner.mark_verified(names_to_resolve)
+            remember = getattr(state_store, "remember_character_identities", None)
+            if callable(remember):
+                remember(identity.get("characters", []))
         else:
             identity = {"verified": scan.identity_verified, "permanent": True}
-        state = self._settings.auth_state_store().load()
+        state = state_store.load()
         return {
             "identity": identity,
             "characters": list(state.get("characters") or []),
@@ -1498,10 +2075,18 @@ class MainWindow(QMainWindow):
             targets = self._build_monitor_targets()
 
         if not targets:
+            actions = _instance_attr(self, "_monitor_window_actions")
+            no_selection = bool(actions) and not any(
+                action.isChecked() for action in actions.values()
+            )
             QMessageBox.critical(
                 self,
                 "错误",
-                "当前没有可用的 EVE 窗口。",
+                (
+                    "尚未选择监控窗口，请打开“监控窗口”菜单进行勾选。"
+                    if no_selection
+                    else "当前没有可用的 EVE 窗口。"
+                ),
             )
             self._monitor_btn.setChecked(False)
             return
@@ -1713,6 +2298,7 @@ class MainWindow(QMainWindow):
             self._worker = None
             self._monitor_btn.setEnabled(False)
             self._refresh_window_status_table()
+            self._refresh_monitor_window_action_labels()
             QTimer.singleShot(50, self._reap_stopping_monitor_workers)
             return True
 
@@ -1738,6 +2324,7 @@ class MainWindow(QMainWindow):
         self._worker_contexts = {}
         self._worker = None
         self._refresh_window_status_table()
+        self._refresh_monitor_window_action_labels()
         return not failed
 
     def _reap_stopping_monitor_workers(self) -> None:
@@ -1750,6 +2337,12 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(50, self._reap_stopping_monitor_workers)
             return
         self._monitor_btn.setEnabled(True)
+        restart_pending = bool(
+            _instance_attr(self, "_monitor_restart_pending", False)
+        )
+        self._monitor_restart_pending = False
+        if restart_pending and self._monitor_btn.isChecked():
+            self._start_monitor(identity_checked=True)
 
     def _create_intel_client(self) -> IntelApiClient | None:
         enabled = (
@@ -2011,10 +2604,14 @@ class MainWindow(QMainWindow):
         else:
             context["_location_next_check"] = next_check
 
-        return (
+        resolved = (
             self._refresh_local_system_from_chatlog(context=context)
             or has_cached_location
         )
+        if context is not None:
+            self._remember_monitor_window_context(context)
+            self._refresh_monitor_window_action_labels()
+        return resolved
 
     def _refresh_local_system_from_chatlog(self, context: dict | None = None) -> bool:
         if not getattr(self, "_use_local_system_log", False):
@@ -2062,6 +2659,11 @@ class MainWindow(QMainWindow):
                 "Current system from local chatlog"
                 f"{character_label}: {detection.system_name}"
             )
+            controller = _instance_attr(self, "_alert_controller")
+            if controller is not None:
+                controller.show_monitoring_systems(
+                    self._monitoring_system_names()
+                )
         self._refresh_status_cards()
         return True
 
@@ -2227,6 +2829,19 @@ def _instance_attr(instance, name: str, default=None):
         return instance.__dict__.get(name, default)
     except RuntimeError:
         return default
+
+
+def _string_list(value) -> list[str]:
+    """Normalize a QSettings value to a clean string list."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        values = [value]
+    return [str(item).strip() for item in values if str(item).strip()]
 
 
 def _is_auth_rejection(message: str) -> bool:

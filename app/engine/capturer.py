@@ -125,6 +125,29 @@ class Capturer:
             return ""
         return str(info.get("Device") or "").strip()
 
+    def get_monitor_geometry(self, hwnd: int) -> dict | None:
+        """Return physical monitor bounds for mapping Qt logical coordinates."""
+        try:
+            monitor = win32api.MonitorFromWindow(
+                hwnd,
+                win32con.MONITOR_DEFAULTTONEAREST,
+            )
+            info = win32api.GetMonitorInfo(monitor)
+            left, top, right, bottom = info["Monitor"]
+        except (KeyError, TypeError, ValueError, OSError):
+            return None
+        width = int(right) - int(left)
+        height = int(bottom) - int(top)
+        if width <= 0 or height <= 0:
+            return None
+        return {
+            "x": int(left),
+            "y": int(top),
+            "w": width,
+            "h": height,
+            "primary": bool(info.get("Flags", 0) & 1),
+        }
+
     def activate_window(self, hwnd: int) -> bool:
         """Restore and raise a window so the region overlay shows the target."""
         if not win32gui.IsWindow(hwnd):

@@ -242,6 +242,58 @@ QToolButton#iconButton:hover {
     border-color: #4c5967;
     background: #222a34;
 }
+QToolButton#monitorWindowButton {
+    border: 1px solid #303844;
+    border-radius: 4px;
+    padding: 5px 24px 5px 10px;
+    background: #181e26;
+    color: #e7eaee;
+    font-weight: 600;
+}
+QToolButton#monitorWindowButton:hover,
+QToolButton#monitorWindowButton:checked {
+    border-color: #23b7d8;
+    background: #202731;
+}
+QToolButton#monitorWindowButton[selectionState="empty"] {
+    border-color: #d95752;
+    background: #2b181b;
+    color: #ff9a9f;
+}
+QToolButton#monitorWindowButton[selectionState="offline"] {
+    border-color: #d89a3c;
+    background: #2a2115;
+    color: #f6c760;
+}
+QToolButton#monitorWindowButton::menu-indicator {
+    subcontrol-position: right center;
+    subcontrol-origin: padding;
+    right: 8px;
+}
+QMenu {
+    border: 1px solid #303844;
+    border-radius: 4px;
+    padding: 5px;
+    background: #11161d;
+    color: #e7eaee;
+}
+QMenu::item {
+    min-width: 180px;
+    padding: 7px 24px 7px 9px;
+}
+QMenu::item:selected {
+    border-radius: 3px;
+    background: #164d59;
+}
+QMenu::item:disabled {
+    background: transparent;
+    color: #707987;
+}
+QMenu::separator {
+    height: 1px;
+    margin: 5px 7px;
+    background: #303844;
+}
 QTextEdit#runtimeLog {
     padding: 8px;
     font-family: Consolas, "Cascadia Mono", monospace;
