@@ -131,27 +131,33 @@ def _active_hostile_counts(alerts: list[dict[str, Any]]) -> dict[str, int]:
     """Count active hostile alerts by solar system."""
     counts: dict[str, int] = {}
     detector_counts: dict[str, dict[str, int]] = {}
+    display_names: dict[str, str] = {}
     for alert in alerts:
         system_name = str(
             alert.get("system_name") or alert.get("system") or "Unknown"
         ).strip() or "Unknown"
+        system_key = system_name.casefold()
+        display_names.setdefault(system_key, system_name)
         detector_client_id = str(alert.get("detector_client_id") or "").strip()
         if detector_client_id:
             try:
                 hostile_count = max(0, int(alert.get("hostile_count") or 0))
             except (TypeError, ValueError):
                 hostile_count = 0
-            detector_counts.setdefault(system_name, {})[
+            detector_counts.setdefault(system_key, {})[
                 detector_client_id
             ] = hostile_count
             continue
-        counts[system_name] = counts.get(system_name, 0) + 1
-    for system_name, node_counts in detector_counts.items():
+        counts[system_key] = counts.get(system_key, 0) + 1
+    for system_key, node_counts in detector_counts.items():
         if node_counts:
-            counts[system_name] = counts.get(system_name, 0) + max(
+            counts[system_key] = counts.get(system_key, 0) + max(
                 node_counts.values()
             )
-    return counts
+    return {
+        display_names.get(system_key, system_key): count
+        for system_key, count in counts.items()
+    }
 
 
 class IntelHTTPServer:

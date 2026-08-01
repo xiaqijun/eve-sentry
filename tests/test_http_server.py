@@ -17,7 +17,11 @@ from app.intel.classification import CLASSIFICATION_VERSION
 from app.intel.enrichment import ThreatEnricher
 from app.intel.config import IntelConfigStore
 from app.intel.scoring import ScoringEngine, Watchlist
-from app.server.http_server import IntelHTTPServer, IntelRequestHandler
+from app.server.http_server import (
+    IntelHTTPServer,
+    IntelRequestHandler,
+    _active_hostile_counts,
+)
 from app.server.auth import AuthService
 from app.server.auth_store import AuthRepository
 from app.server.intel_store import IntelStore, StarSystem
@@ -43,6 +47,25 @@ class AuthTestResolver:
 
     def corporation_profile(self, corporation_id):
         return {"corporation_id": int(corporation_id), "name": "Blue Corp"}
+
+
+def test_active_hostile_counts_merge_case_variant_system_names():
+    counts = _active_hostile_counts(
+        [
+            {
+                "system_name": "S-KSWL",
+                "detector_client_id": "detector:a",
+                "hostile_count": 2,
+            },
+            {
+                "system_name": "s-kswl",
+                "detector_client_id": "detector:b",
+                "hostile_count": 3,
+            },
+        ]
+    )
+
+    assert counts == {"S-KSWL": 3}
 
 
 class AuthTestSsoClient:

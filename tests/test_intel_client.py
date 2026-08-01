@@ -1064,6 +1064,68 @@ def test_alert_client_syncs_counts_and_drops_unmonitored_safe_systems():
     ]
 
 
+def test_alert_client_merges_case_variant_monitoring_node_into_hostile_tile():
+    rows = sync_alert_summaries_from_bootstrap(
+        [
+            {
+                "system_name": "s-kswl",
+                "hostile_count": 0,
+                "active_hostile_count": 0,
+                "active": False,
+            }
+        ],
+        {
+            "map": {
+                "systems": [
+                    {"name": "S-KSWL", "hostile_count": 3},
+                ]
+            },
+            "active_intel": [],
+            "clients": {
+                "heartbeats": [
+                    {
+                        "client_type": "detector_client",
+                        "online": True,
+                        "details": {
+                            "monitoring": True,
+                            "system": "s-kswl",
+                        },
+                    }
+                ]
+            },
+        },
+    )
+
+    assert rows == [
+        {
+            "system_name": "S-KSWL",
+            "hostile_count": 3,
+            "active_hostile_count": 3,
+            "created_at": "",
+            "active": True,
+        }
+    ]
+
+
+def test_alert_summary_aggregation_merges_case_variant_system_names():
+    rows = aggregate_alert_summaries(
+        [
+            {"system_name": "s-kswl", "hostile_count": 0, "active": False},
+            {"system_name": "S-KSWL", "hostile_count": 2, "active": True},
+        ]
+    )
+
+    assert rows == [
+        {
+            "system_name": "s-kswl",
+            "hostile_count": 2,
+            "active_hostile_count": 2,
+            "created_at": "",
+            "active": True,
+        }
+    ]
+
+
 def test_alert_client_adds_green_tiles_for_online_monitoring_nodes():
     rows = sync_alert_summaries_from_bootstrap(
         [],
@@ -1367,6 +1429,28 @@ def test_alert_overlay_stays_on_a_left_hand_monitor(monkeypatch):
 
         assert -1920 <= overlay.x() < 0
         assert overlay.y() >= 0
+    finally:
+        overlay.close()
+
+
+def test_alert_overlay_falls_back_to_hostile_count_for_legacy_summary(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication, QLabel
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    try:
+        overlay.show_summaries(
+            [{"system_name": "S-KSWL", "hostile_count": 2, "active": True}]
+        )
+        app.processEvents()
+
+        hostile_label = next(
+            item
+            for item in overlay.findChildren(QLabel)
+            if item.objectName() == "hostileCell"
+        )
+        assert hostile_label.text() == "敌 2"
     finally:
         overlay.close()
 

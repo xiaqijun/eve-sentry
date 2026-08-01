@@ -230,7 +230,8 @@ def aggregate_alert_summaries(
     """Keep one current row per system in discovery order."""
     by_system: OrderedDict[str, dict[str, Any]] = OrderedDict()
     for item in summaries:
-        system = str(item.get("system_name") or "Unknown")
+        system = str(item.get("system_name") or "Unknown").strip() or "Unknown"
+        system_key = system.casefold()
         active = bool(item.get("active", True))
         raw_hostile_count = item.get("hostile_count")
         try:
@@ -239,9 +240,9 @@ def aggregate_alert_summaries(
             hostile_count = 0
         hostile_count = max(0, hostile_count)
         active = active and hostile_count > 0
-        existing = by_system.get(system)
+        existing = by_system.get(system_key)
         if existing is None:
-            by_system[system] = {
+            by_system[system_key] = {
                 "system_name": system,
                 "hostile_count": hostile_count if active else 0,
                 "active_hostile_count": hostile_count if active else 0,
@@ -369,7 +370,8 @@ def sync_alert_summaries_from_bootstrap(
         return updated
 
     previous_by_system = {
-        str(item.get("system_name") or "Unknown"): item for item in summaries
+        str(item.get("system_name") or "Unknown").casefold(): item
+        for item in summaries
     }
     first_seen_by_system: dict[str, str] = {}
     active_items = bootstrap.get("active_intel")
@@ -383,9 +385,10 @@ def sync_alert_summaries_from_bootstrap(
         ).strip()
         if not system or not first_seen:
             continue
-        existing = first_seen_by_system.get(system)
+        system_key = system.casefold()
+        existing = first_seen_by_system.get(system_key)
         if existing is None or first_seen < existing:
-            first_seen_by_system[system] = first_seen
+            first_seen_by_system[system_key] = first_seen
 
     current_by_system: OrderedDict[str, dict[str, Any]] = OrderedDict()
     for item in map_systems:
@@ -398,12 +401,13 @@ def sync_alert_summaries_from_bootstrap(
             hostile_count = 0
         if not system or hostile_count <= 0:
             continue
-        previous = previous_by_system.get(system, {})
-        current_by_system[system] = {
+        system_key = system.casefold()
+        previous = previous_by_system.get(system_key, {})
+        current_by_system[system_key] = {
             "system_name": system,
             "hostile_count": hostile_count,
             "active_hostile_count": hostile_count,
-            "created_at": first_seen_by_system.get(system)
+            "created_at": first_seen_by_system.get(system_key)
             or str(previous.get("created_at") or item.get("latest_seen") or ""),
             "active": True,
         }
@@ -419,9 +423,10 @@ def sync_alert_summaries_from_bootstrap(
             continue
         active_id = str(item.get("id") or "").strip()
         system = str(item.get("system_name") or "").strip()
+        system_key = system.casefold()
         if not active_id or active_id not in hostile_active_ids or not system:
             continue
-        if system in mapped_systems:
+        if system_key in mapped_systems:
             continue
         metadata = (
             item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
@@ -431,28 +436,29 @@ def sync_alert_summaries_from_bootstrap(
         except (TypeError, ValueError):
             hostile_count = 1
         count = max(1, hostile_count)
-        existing = current_by_system.get(system)
+        existing = current_by_system.get(system_key)
         if existing is not None:
             existing["hostile_count"] = int(existing["hostile_count"]) + count
             existing["active_hostile_count"] = int(
                 existing["active_hostile_count"]
             ) + count
             continue
-        previous = previous_by_system.get(system, {})
-        current_by_system[system] = {
+        previous = previous_by_system.get(system_key, {})
+        current_by_system[system_key] = {
             "system_name": system,
             "hostile_count": count,
             "active_hostile_count": count,
-            "created_at": first_seen_by_system.get(system)
+            "created_at": first_seen_by_system.get(system_key)
             or str(previous.get("created_at") or item.get("last_seen_at") or ""),
             "active": True,
         }
 
     for system in monitoring_systems:
-        if system in current_by_system:
+        system_key = system.casefold()
+        if system_key in current_by_system:
             continue
-        previous = previous_by_system.get(system, {})
-        current_by_system[system] = {
+        previous = previous_by_system.get(system_key, {})
+        current_by_system[system_key] = {
             "system_name": system,
             "hostile_count": 0,
             "active_hostile_count": 0,
@@ -463,7 +469,7 @@ def sync_alert_summaries_from_bootstrap(
     ordered: list[dict[str, Any]] = []
     for item in summaries:
         system = str(item.get("system_name") or "Unknown")
-        current = current_by_system.pop(system, None)
+        current = current_by_system.pop(system.casefold(), None)
         if current is not None:
             ordered.append(current)
     ordered.extend(
@@ -884,9 +890,12 @@ class AlertOverlay(QWidget):
                 continue
             item = rows[index]
             active = bool(item.get("active", True))
+            active_count = item.get("active_hostile_count")
+            if active_count in {None, ""}:
+                active_count = item.get("hostile_count", 0)
             hostile_count = max(
                 0,
-                int(item.get("active_hostile_count") or 0) if active else 0,
+                int(active_count or 0) if active else 0,
             )
             system_label.setText(str(item["system_name"]))
             hostile_label.setText(f"敌 {hostile_count}")
@@ -1477,11 +1486,13 @@ class AlertTrayController:
         summary = summarize_alert(alert)
         summary["active_hostile_count"] = summary["hostile_count"]
         system = str(summary.get("system_name") or "Unknown")
+        system_key = system.casefold()
         existing = next(
             (
                 item
                 for item in self._recent_summaries
-                if str(item.get("system_name") or "Unknown") == system
+                if str(item.get("system_name") or "Unknown").casefold()
+                == system_key
             ),
             None,
         )
@@ -1552,7 +1563,9 @@ class AlertTrayController:
         if system_name.casefold() in getattr(self, "_local_hostile_counts", {}):
             return
         for item in self._recent_summaries:
-            if str(item.get("system_name") or "Unknown") != system_name:
+            if str(item.get("system_name") or "Unknown").casefold() != (
+                system_name.casefold()
+            ):
                 continue
             item["active"] = False
             item["hostile_count"] = 0
