@@ -1462,6 +1462,7 @@ class AlertTrayController:
             timeout=self.args.timeout,
             heartbeat_interval=self.args.heartbeat_interval,
             reconnect_max_delay=self.args.reconnect_max_delay,
+            api_key=str(getattr(self.args, "api_key", "") or ""),
             api_factory=self.api_factory,
         )
         self._worker.alert_received.connect(self._on_alert)

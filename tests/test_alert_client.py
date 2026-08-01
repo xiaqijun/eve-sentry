@@ -77,6 +77,45 @@ def test_alert_worker_keeps_online_status_during_normal_stream_rollover(tmp_path
     assert statuses == [("connected", "")]
 
 
+def test_alert_controller_reconnect_preserves_api_key(monkeypatch, tmp_path):
+    created = []
+
+    class FakeSignal:
+        def connect(self, callback):
+            pass
+
+    class FakeWorker:
+        def __init__(self, server, state, **kwargs):
+            created.append((server, state, kwargs))
+            self.alert_received = FakeSignal()
+            self.safe_received = FakeSignal()
+            self.bootstrap_received = FakeSignal()
+            self.status_changed = FakeSignal()
+
+        def isRunning(self):
+            return False
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr("app.alert_client.AlertEventWorker", FakeWorker)
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller.args = Namespace(
+        server="http://intel.example",
+        timeout=30.0,
+        heartbeat_interval=10.0,
+        reconnect_max_delay=30.0,
+        api_key="eve_secret",
+    )
+    controller.state = AlertClientState(tmp_path / "alerts.json")
+    controller.api_factory = object()
+    controller._worker = FakeWorker("old", controller.state)
+
+    controller._restart_worker()
+
+    assert created[-1][2]["api_key"] == "eve_secret"
+
+
 def test_alert_controller_stop_can_skip_worker_wait():
     calls = []
 
