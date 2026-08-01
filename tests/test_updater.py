@@ -11,7 +11,9 @@ from app.updater import (
     build_update_script,
     cleanup_update_artifacts,
     canonical_manifest_bytes,
+    configured_update_proxy,
     is_newer_version,
+    network_proxy_from_url,
     parse_release_manifest,
     verify_release_manifest_signature,
 )
@@ -49,6 +51,42 @@ def test_parse_release_manifest_validates_required_fields():
     assert release.version == "1.2.0"
     assert release.size == 7
     assert release.filename.endswith(".zip")
+
+
+def test_configured_update_proxy_prefers_eve_sentry_setting(monkeypatch):
+    for name in (
+        "EVE_SENTRY_HTTP_PROXY",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTP_PROXY", "http://system.example:8080")
+    monkeypatch.setenv("EVE_SENTRY_HTTP_PROXY", "http://user:pass@proxy.example:7890")
+
+    assert configured_update_proxy() == "http://user:pass@proxy.example:7890"
+
+
+def test_network_proxy_from_url_supports_http_and_socks5():
+    http_proxy = network_proxy_from_url("http://user:pass@proxy.example:7890")
+    assert http_proxy is not None
+    assert http_proxy.type().name == "HttpProxy"
+    assert http_proxy.hostName() == "proxy.example"
+    assert http_proxy.port() == 7890
+    assert http_proxy.user() == "user"
+    assert http_proxy.password() == "pass"
+
+    socks_proxy = network_proxy_from_url("socks5://proxy.example")
+    assert socks_proxy is not None
+    assert socks_proxy.type().name == "Socks5Proxy"
+    assert socks_proxy.port() == 1080
+
+
+def test_network_proxy_from_url_rejects_unsupported_or_invalid_values():
+    assert network_proxy_from_url("") is None
+    assert network_proxy_from_url("ftp://proxy.example:21") is None
+    assert network_proxy_from_url("http://:7890") is None
 
 
 def test_parse_release_manifest_accepts_separate_model_component():

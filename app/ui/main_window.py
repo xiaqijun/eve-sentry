@@ -807,6 +807,7 @@ class MainWindow(QMainWindow):
         selected_titles = set(
             _instance_attr(self, "_monitor_selected_titles", set())
         )
+        selected_title_keys = {title.casefold() for title in selected_titles}
         select_all = bool(
             _instance_attr(self, "_monitor_select_all_new_windows", True)
         )
@@ -853,7 +854,7 @@ class MainWindow(QMainWindow):
                     or key in previous_checked_keys
                     or (
                         key not in previous_known_keys
-                        and title in selected_titles
+                        and title.casefold() in selected_title_keys
                     )
                 )
                 action.triggered.connect(self._on_monitor_window_toggled)
@@ -862,20 +863,14 @@ class MainWindow(QMainWindow):
                 titles_by_key[key] = title
                 online_titles.add(title)
 
-        offline_titles = sorted(selected_titles - online_titles, key=str.casefold)
-        if offline_titles:
-            menu.addSeparator()
-            offline_header = menu.addAction("已记住但当前离线")
-            offline_header.setEnabled(False)
-            for title in offline_titles:
-                key = f"offline:{title.casefold()}"
-                action = menu.addAction(title)
-                action.setCheckable(True)
-                action.setChecked(True)
-                action.triggered.connect(self._on_monitor_window_toggled)
-                actions[key] = action
-                titles_by_key[key] = title
-        elif not windows:
+        online_title_keys = {title.casefold() for title in online_titles}
+        cached_status = _instance_attr(self, "_monitor_last_status_by_title", {})
+        self._monitor_last_status_by_title = {
+            title: status
+            for title, status in cached_status.items()
+            if title.casefold() in online_title_keys
+        }
+        if not windows:
             placeholder = menu.addAction("未检测到 EVE 窗口")
             placeholder.setEnabled(False)
 
@@ -886,8 +881,7 @@ class MainWindow(QMainWindow):
         self._syncing_monitor_menu = False
         if select_current and actions:
             self._monitor_select_current_on_first_sync = False
-        if actions:
-            self._persist_monitor_window_selection(update_select_all=False)
+        self._persist_monitor_window_selection(update_select_all=False)
         self._refresh_monitor_window_action_labels()
 
     def _remember_monitor_window_context(self, context: dict | None) -> None:
@@ -996,26 +990,16 @@ class MainWindow(QMainWindow):
             for key in online_keys
             if key in actions and actions[key].isChecked()
         ]
-        offline_keys = [key for key in actions if key not in online_keys]
         text = f"监控窗口 {len(selected_online_keys)}/{len(online_keys)}"
-        if offline_keys:
-            text += f" · 离线{len(offline_keys)}"
         button.setText(text)
 
         selected_titles = [
             titles_by_key.get(key, actions[key].text())
             for key in selected_online_keys
         ]
-        offline_titles = [
-            titles_by_key.get(key, actions[key].text())
-            for key in offline_keys
-        ]
         if selected_titles:
             tooltip = "已选择：" + "、".join(selected_titles)
             selection_state = "ready"
-        elif offline_titles:
-            tooltip = "已选择的窗口当前均离线：" + "、".join(offline_titles)
-            selection_state = "offline"
         elif online_keys:
             tooltip = "尚未选择监控窗口，请打开菜单进行勾选"
             selection_state = "empty"
@@ -1042,16 +1026,9 @@ class MainWindow(QMainWindow):
             "_monitor_window_titles_by_key",
             {},
         )
-        represented_titles = {
-            str(title).strip()
-            for title in titles_by_key.values()
-            if str(title).strip()
-        }
-        selected_titles = set(
-            _instance_attr(self, "_monitor_selected_titles", set())
-        ) - represented_titles
+        selected_titles: set[str] = set()
         for key, action in actions.items():
-            if not action.isChecked():
+            if key not in windows_by_key or not action.isChecked():
                 continue
             title = str(titles_by_key.get(key) or "").strip()
             if title:
@@ -1895,11 +1872,24 @@ class MainWindow(QMainWindow):
             not in names_to_resolve_keys
         )
         if names_to_resolve:
-            identity = client.verify_eve_characters(names_to_resolve)
-            self._identity_scanner.mark_verified(names_to_resolve)
-            remember = getattr(state_store, "remember_character_identities", None)
-            if callable(remember):
-                remember(identity.get("characters", []))
+            ensure = getattr(client, "ensure_eve_character_check", None)
+            identity = (
+                ensure(
+                    names_to_resolve,
+                    client_id=str(_instance_attr(self, "_heartbeat_client_id", "")),
+                )
+                if callable(ensure)
+                else client.verify_eve_characters(names_to_resolve)
+            )
+            if bool(identity.get("verified")):
+                self._identity_scanner.mark_verified(names_to_resolve)
+                remember = getattr(state_store, "remember_character_identities", None)
+                if callable(remember):
+                    remember(identity.get("characters", []))
+            elif not bool(identity.get("pending")):
+                raise IntelApiError(
+                    str(identity.get("reason") or "EVE identity verification failed")
+                )
         else:
             identity = {"verified": scan.identity_verified, "permanent": True}
         state = state_store.load()
@@ -2460,6 +2450,22 @@ class MainWindow(QMainWindow):
             if monitoring_override is None
             else bool(monitoring_override)
         )
+        contexts = list(getattr(self, "_worker_contexts", {}).values())
+        context_errors = [
+            f"{str(context.get('character_name') or context.get('window_title') or 'EVE')}: "
+            f"{str(context.get('last_error') or '').strip()}"
+            for context in contexts
+            if str(context.get("last_error") or "").strip()
+        ]
+        transport_error = str(
+            _instance_attr(self, "_last_heartbeat_error", "") or ""
+        ).strip()
+        reported_errors = list(context_errors)
+        if transport_error:
+            reported_errors.append(f"心跳连接: {transport_error}")
+        heartbeat_error = "；".join(dict.fromkeys(reported_errors))
+        if not heartbeat_error:
+            heartbeat_error = str(self._heartbeat_last_error or "").strip()
         details = build_detector_heartbeat_details(
             monitoring=monitoring,
             system_name=self._intel_system,
@@ -2467,12 +2473,11 @@ class MainWindow(QMainWindow):
             popup_alerts=self._popup_alerts_enabled,
             window_title=self._window_combo.currentText(),
             last_action=self._heartbeat_last_action,
-            last_error=self._heartbeat_last_error,
+            last_error=heartbeat_error,
             client_version=self._heartbeat_runtime["client_version"],
             host=self._heartbeat_runtime["host"],
             last_success_at=self._heartbeat_last_success_at,
         )
-        contexts = list(getattr(self, "_worker_contexts", {}).values())
         if contexts:
             details["targets"] = [
                 {
@@ -2489,6 +2494,16 @@ class MainWindow(QMainWindow):
                     "region": context["region"],
                     "monitoring": monitoring
                     and context["key"] in getattr(self, "_workers", {}),
+                    **(
+                        {"runtime_status": str(context.get("runtime_status") or "")}
+                        if str(context.get("runtime_status") or "").strip()
+                        else {}
+                    ),
+                    **(
+                        {"last_error": str(context.get("last_error") or "")}
+                        if str(context.get("last_error") or "").strip()
+                        else {}
+                    ),
                 }
                 for context in contexts
             ]
@@ -2497,7 +2512,7 @@ class MainWindow(QMainWindow):
             "client_id": self._heartbeat_client_id,
             "client_type": "detector_client",
             "label": "Detector Client",
-            "status": "running" if monitoring else "idle",
+            "status": "error" if heartbeat_error else ("running" if monitoring else "idle"),
             "heartbeat_interval_seconds": self._heartbeat_interval,
             "details": details,
         }
