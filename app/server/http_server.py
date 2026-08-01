@@ -33,6 +33,7 @@ _ACTIVE_EVENT_STREAMS = 0
 SSE_AUTH_RECHECK_SECONDS = 30.0
 MAX_JSON_BODY_BYTES = 1024 * 1024
 MAX_QUERY_LIMIT = 1000
+DEFAULT_QUERY_LIMIT = 100
 MAX_SSE_TIMEOUT_SECONDS = 300.0
 MAX_SSE_HEARTBEAT_SECONDS = 60.0
 MAX_ACCESS_LOG_PATH_CHARS = 512
@@ -539,7 +540,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             reports = self._store().list_reports(
                 system=query.get("system", [""])[0],
                 name=query.get("name", [""])[0],
-                limit=limit,
+                limit=DEFAULT_QUERY_LIMIT if limit is None else limit,
             )
             self._send_json({"reports": reports, "count": len(reports)})
             return
@@ -554,7 +555,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 source=query.get("source", [""])[0],
                 system=query.get("system", [""])[0],
                 name=query.get("name", [""])[0],
-                limit=limit,
+                limit=DEFAULT_QUERY_LIMIT if limit is None else limit,
             )
             self._send_json(
                 {"observations": observations, "count": len(observations)}
@@ -570,7 +571,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 return
             alerts = self._store().list_alerts(
                 since=query.get("since", [""])[0],
-                limit=limit,
+                limit=DEFAULT_QUERY_LIMIT if limit is None else limit,
                 **filters,
             )
             self._send_json({"alerts": alerts, "count": len(alerts)})
@@ -1435,18 +1436,22 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         active_items: list[dict[str, Any]],
         limit: int | None,
     ) -> list[dict[str, Any]]:
-        _ = reports
         active_by_source_id: dict[str, dict[str, Any]] = {}
         for item in active_items:
             for source_id in self._active_item_source_ids(item):
                 active_by_source_id[source_id] = item
 
         alerts = []
-        for alert in store.list_alerts(limit=None):
-            source_id = str(alert.get("source_observation_id") or "")
+        report_items = reports if reports else store._reports_snapshot()
+        for report in report_items:
+            source_id = str(getattr(report, "report_id", "") or "")
             active_item = active_by_source_id.get(source_id)
             if active_item is None:
                 continue
+            alert = store._alert_from_report(report)
+            if alert is None:
+                continue
+            alert = store._alert_to_dict(report, alert)
             if not self._active_alert_is_hostile(alert, active_item):
                 continue
             data = dict(alert)
@@ -1638,7 +1643,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         reports = self._store().list_reports(
             system=query.get("system", [""])[0],
             name=query.get("name", [""])[0],
-            limit=limit,
+            limit=DEFAULT_QUERY_LIMIT if limit is None else limit,
         )
         self._send_json({"reports": reports, "count": len(reports)})
 
@@ -1674,7 +1679,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             source=query.get("source", [""])[0],
             system=query.get("system", [""])[0],
             name=query.get("name", [""])[0],
-            limit=limit,
+            limit=DEFAULT_QUERY_LIMIT if limit is None else limit,
         )
         self._send_json({"observations": observations, "count": len(observations)})
 
@@ -1689,7 +1694,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             source=query.get("source", [""])[0],
             system=query.get("system", [""])[0],
             active=True,
-            limit=limit,
+            limit=DEFAULT_QUERY_LIMIT if limit is None else limit,
         )
         active = self._visible_active_items(self._store(), active)
         self._send_json(
@@ -1712,7 +1717,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             try:
                 alerts = self._active_alert_list(
                     since=query.get("since", [""])[0],
-                    limit=limit,
+                    limit=DEFAULT_QUERY_LIMIT if limit is None else limit,
                     **filters,
                 )
             except ValueError as exc:
@@ -1721,7 +1726,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         else:
             alerts = self._store().list_alerts(
                 since=query.get("since", [""])[0],
-                limit=limit,
+                limit=DEFAULT_QUERY_LIMIT if limit is None else limit,
                 **filters,
             )
         self._send_json({"alerts": alerts, "count": len(alerts)})
@@ -2022,10 +2027,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             location.setdefault("solar_system_name", name)
 
     def _alert_for_observation(self, observation_id: str) -> dict[str, Any] | None:
-        for alert in self._store().list_alerts():
-            if alert.get("source_observation_id") == observation_id:
-                return alert
-        return None
+        return self._store().alert_for_observation(observation_id)
 
     def _add_channel_line(self, payload: dict[str, Any]) -> dict[str, Any]:
         line = str(payload.get("line") or payload.get("raw_line") or "").strip()
@@ -2190,7 +2192,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         payload = fetcher(
             entity_id,
             since=query.get("since", [""])[0],
-            limit=limit,
+            limit=DEFAULT_QUERY_LIMIT if limit is None else limit,
             **filters,
         )
         if payload is None:

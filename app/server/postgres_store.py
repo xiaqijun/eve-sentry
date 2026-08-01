@@ -121,6 +121,17 @@ class PostgreSQLIntelStore(IntelStore):
         include_suppressed: bool = False,
     ) -> list[dict[str, Any]]:
         """Query PostgreSQL history without expanding the startup hot set."""
+        if limit is not None:
+            if limit <= 0:
+                return []
+            report_items, _ = self._report_page_items(
+                cursor="",
+                limit=limit,
+                system=system,
+                name=name,
+                include_suppressed=include_suppressed,
+            )
+            return [report.to_dict() for report in report_items]
         report_items = self._visible_reports(
             self._read_reports(system=system),
             include_suppressed=include_suppressed,
@@ -141,6 +152,18 @@ class PostgreSQLIntelStore(IntelStore):
         include_suppressed: bool = False,
     ) -> list[dict[str, Any]]:
         """Query PostgreSQL observations without expanding the startup hot set."""
+        if limit is not None:
+            if limit <= 0:
+                return []
+            report_items, _ = self._report_page_items(
+                cursor="",
+                limit=limit,
+                source=source,
+                system=system,
+                name=name,
+                include_suppressed=include_suppressed,
+            )
+            return [report.to_observation().to_dict() for report in report_items]
         report_items = self._visible_reports(
             self._read_reports(source=source, system=system),
             include_suppressed=include_suppressed,
@@ -799,6 +822,18 @@ class PostgreSQLIntelStore(IntelStore):
             )
             connection.execute(
                 """
+                CREATE INDEX IF NOT EXISTS idx_intel_reports_system_id
+                ON intel_reports(system_id)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_intel_reports_character_ids
+                ON intel_reports USING GIN ((character_ids_json::jsonb))
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS store_meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -1046,6 +1081,8 @@ class PostgreSQLIntelStore(IntelStore):
         *,
         source: str | None = None,
         system: str | None = None,
+        character_id: int | None = None,
+        system_id: int | None = None,
     ) -> list[IntelReport]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -1055,6 +1092,12 @@ class PostgreSQLIntelStore(IntelStore):
         if system:
             clauses.append("LOWER(system) = ?")
             params.append(system.strip().casefold())
+        if character_id is not None:
+            clauses.append("character_ids_json::jsonb @> ?::jsonb")
+            params.append(json.dumps([int(character_id)]))
+        if system_id is not None:
+            clauses.append("system_id = ?")
+            params.append(int(system_id))
         where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as connection:
             rows = connection.execute(
@@ -1075,6 +1118,19 @@ class PostgreSQLIntelStore(IntelStore):
             if report is not None:
                 reports.append(report)
         return reports
+
+    def _reports_for_character_id(self, character_id: int) -> list[IntelReport]:
+        return self._read_reports(character_id=character_id)
+
+    def _reports_for_system_id(self, system_id: int) -> list[IntelReport]:
+        return self._read_reports(system_id=system_id)
+
+    def alert_for_observation(self, observation_id: str) -> dict[str, Any] | None:
+        report = self._read_report_by_id(str(observation_id or "").strip())
+        if report is None:
+            return None
+        alert = self._alert_from_report(report)
+        return self._alert_to_dict(report, alert) if alert is not None else None
 
     def _read_report_by_id(self, report_id: str) -> IntelReport | None:
         with self._connect() as connection:

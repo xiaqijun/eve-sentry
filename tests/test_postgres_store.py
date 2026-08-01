@@ -127,6 +127,71 @@ def test_postgres_connection_converts_bulk_delete_placeholders():
     ]
 
 
+@pytest.mark.parametrize("method_name", ["list_reports", "list_observations"])
+def test_postgres_limited_history_uses_keyset_query(method_name):
+    report = IntelReport(
+        report_id="report-1",
+        system="Tama",
+        names=["Pilot"],
+        source="manual",
+    )
+    page_calls = []
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._report_page_items = lambda **kwargs: (
+        page_calls.append(kwargs) or ([report], "next")
+    )
+    store._read_reports = lambda **_kwargs: pytest.fail(
+        "limited history must not read the full report table"
+    )
+
+    result = getattr(store, method_name)(limit=1)
+
+    assert len(result) == 1
+    assert page_calls[0]["limit"] == 1
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected_clause", "expected_params"),
+    [
+        (
+            {"character_id": 9001},
+            "character_ids_json::jsonb @> %s::jsonb",
+            ('[9001]',),
+        ),
+        ({"system_id": 30000142}, "system_id = %s", (30000142,)),
+    ],
+)
+def test_postgres_entity_report_queries_filter_in_database(
+    kwargs,
+    expected_clause,
+    expected_params,
+):
+    calls = []
+
+    class EmptyResult:
+        def fetchall(self):
+            return []
+
+    class FakeConnection:
+        def execute(self, query, params):
+            calls.append((" ".join(query.split()), params))
+            return EmptyResult()
+
+    class FakePoolContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._connect = lambda: _PostgresConnection(FakePoolContext())
+
+    assert store._read_reports(**kwargs) == []
+    assert expected_clause in calls[0][0]
+    assert calls[0][1] == expected_params
+
+
 @pytest.mark.parametrize(
     ("returned_row", "deleted"),
     [(None, False), ({"report_id": "report-1"}, True)],

@@ -14,6 +14,64 @@ from app.intel.scoring import ScoringEngine, Watchlist
 from app.server.intel_store import IntelStore, StarSystem
 
 
+def test_list_alerts_stops_scoring_after_reaching_limit(tmp_path, monkeypatch):
+    store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
+    observations = [
+        store.add_observation(
+            {
+                "source": "manual",
+                "system_name": "Tama",
+                "names": [f"Pilot {index}"],
+                "seen_at": f"2026-07-30T12:00:0{index}+00:00",
+                "received_at": f"2026-07-30T12:00:0{index}+00:00",
+            }
+        )
+        for index in range(1, 4)
+    ]
+    scored = []
+    original = store._alert_from_report
+
+    def recording_alert(report):
+        scored.append(report.report_id)
+        return original(report)
+
+    monkeypatch.setattr(store, "_alert_from_report", recording_alert)
+
+    alerts = store.list_alerts(limit=1)
+
+    assert [item["source_observation_id"] for item in alerts] == [
+        observations[-1].observation_id
+    ]
+    assert scored == [observations[-1].observation_id]
+
+
+def test_alert_for_observation_scores_only_requested_report(tmp_path, monkeypatch):
+    store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
+    observations = [
+        store.add_observation(
+            {
+                "source": "manual",
+                "system_name": "Tama",
+                "names": [f"Pilot {index}"],
+            }
+        )
+        for index in range(3)
+    ]
+    scored = []
+    original = store._alert_from_report
+
+    def recording_alert(report):
+        scored.append(report.report_id)
+        return original(report)
+
+    monkeypatch.setattr(store, "_alert_from_report", recording_alert)
+
+    alert = store.alert_for_observation(observations[1].observation_id)
+
+    assert alert["source_observation_id"] == observations[1].observation_id
+    assert scored == [observations[1].observation_id]
+
+
 def test_heartbeat_summary_tracks_types_statuses_and_stale_clients(tmp_path):
     store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
     now = datetime.now(timezone.utc)

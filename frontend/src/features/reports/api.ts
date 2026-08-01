@@ -12,6 +12,7 @@ export async function fetchHostileAlertHistory(
   range: ReportRange,
 ): Promise<HostileAlertHistory> {
   const query = new URLSearchParams();
+  query.set("limit", "1000");
   const startMs = reportRangeStart(range);
   if (startMs !== null) {
     query.set("since", new Date(startMs).toISOString());

@@ -56,7 +56,6 @@ class MonitorWorker(QThread):
         self._interval = 2.0           # seconds between scans
         self._active_interval = self._interval
         self._scan_offset = max(0.0, float(scan_offset))
-        self._unchanged_frames = 0
         self._previous_fingerprint = b""
         self._burst_scans_remaining = 0
         self._running = False
@@ -164,13 +163,10 @@ class MonitorWorker(QThread):
                     frame_changed = fingerprint != self._previous_fingerprint
                     self._previous_fingerprint = fingerprint
                     if frame_changed:
-                        self._unchanged_frames = 0
                         self._burst_scans_remaining = max(
                             self._burst_scans_remaining,
                             2,
                         )
-                    else:
-                        self._unchanged_frames += 1
 
                     # 2. Detect hostile icons before OCR and publish count changes.
                     hostile_icons = find_hostile_icons(img)
@@ -189,13 +185,7 @@ class MonitorWorker(QThread):
                     ):
                         scan_count += 1
                         self.scan_complete.emit(scan_count)
-                        slowdown = 0.25 if hostile_count else 0.5
-                        maximum = 5.0 if hostile_count else 10.0
-                        self._active_interval = min(
-                            maximum,
-                            self._interval
-                            * (1.0 + min(4, self._unchanged_frames) * slowdown),
-                        )
+                        self._active_interval = self._interval
                         self.status_update.emit("画面无变化，已跳过 OCR")
                         self._wait_for_next_scan()
                         continue

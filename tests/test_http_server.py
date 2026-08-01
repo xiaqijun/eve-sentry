@@ -244,6 +244,35 @@ def test_health_does_not_generate_alerts(tmp_path):
         server.stop()
 
 
+def test_v1_active_alerts_do_not_scan_full_alert_history(tmp_path):
+    class GuardedStore(IntelStore):
+        def list_alerts(self, *args, **kwargs):
+            raise AssertionError("active alerts must not scan full alert history")
+
+    store = GuardedStore(tmp_path / "intel.json")
+    for index in range(100):
+        store.add_report("Tama", [f"Historical Pilot {index}"])
+    active = store.add_observation(
+        {
+            "system_name": "Tama",
+            "names": ["Active Pilot"],
+            "source": "intel_channel",
+        }
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/v1/alerts")
+
+        assert status == 200
+        assert payload["count"] == 1
+        assert payload["alerts"][0]["source_observation_id"] == (
+            active.observation_id
+        )
+    finally:
+        server.stop()
+
+
 def test_health_reports_config_and_json_storage(tmp_path):
     config_store = IntelConfigStore(tmp_path / "intel_config.json")
     store = IntelStore(

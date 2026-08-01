@@ -67,8 +67,9 @@ npm run preview
 ## 实时更新
 
 工作台读取 `/api/v1/bootstrap` 获取初始状态，通过 `/api/v1/events` SSE 接收后续
-告警和节点变化。来袭报表当前读取兼容接口 `/api/alerts`。代理层必须为事件流关闭
-buffering 和 cache，并保留较长的读取超时。
+告警和节点变化。来袭报表当前读取兼容接口 `/api/alerts`，显式限制为最多 1000 条；服务端
+普通历史列表默认最多返回 100 条。代理层必须为事件流关闭 buffering 和 cache，并保留较长
+的读取超时。预警客户端不加载完整 Bootstrap，而是通过 SSE 精简快照恢复活跃节点。
 
 静态资源文件名带内容哈希，可以在 `/assets/` 配置长期缓存；`index.html` 不应使用
 同样的 immutable 缓存策略，以免部署后继续引用旧资源。

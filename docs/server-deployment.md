@@ -58,6 +58,9 @@ sudo -u postgres pg_dump -Fc eve_sentry > /var/lib/eve-sentry/eve_sentry.dump
 ```
 
 连接池默认最小 2、最大 8 个连接。不要为每个 SSE 心跳重新创建 PostgreSQL 连接。
+迁移会为 `system_id` 和角色 ID JSON 建立查询索引。历史列表默认最多返回 100 条，最大
+1000 条；批量导出或后台巡检应使用 `/api/v1/reports`、`/api/v1/observations` 的游标分页，
+不要通过省略 `limit` 请求完整历史。
 
 ## 环境配置
 
@@ -94,6 +97,11 @@ EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain
 
 `EVE_SENTRY_SERVER_INACTIVE_INTEL_RETENTION_DAYS` 默认为 `30`。PostgreSQL 启动时只会
 删除超过窗口的 inactive 情报行；活跃情报及其引用的历史报告不会被删除。设为 `0` 可关闭。
+
+`EVE_SENTRY_SERVER_HOT_REPORT_LIMIT` 只控制告警评分使用的内存热集合，不是 HTTP 历史
+查询的分页大小。预警 SSE 仅对活跃情报引用的报告生成事件；兼容 `/api/events` 也会在达到
+单次 `limit` 后停止评分。部署后可用访问日志的耗时字段监控 `/api/v1/events` 首帧和历史
+列表延迟。
 
 认证不依赖 HTTPS 才能启用。HTTP 仅适合可信网络；公网建议配置 TLS，并把回调地址、
 客户端地址和机器人地址统一切换为 HTTPS。

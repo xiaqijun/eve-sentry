@@ -65,7 +65,7 @@ Authorization: Bearer eve_xxx
 | `POST` | `/api/v1/clients/heartbeats` | 上传客户端状态、窗口目标和最近异常 |
 | `GET` | `/api/v1/clients` | 在线客户端和聚合状态 |
 | `GET` | `/api/v1/active-intel` | 当前实时情报 |
-| `GET` | `/api/v1/bootstrap` | Web、机器人和预警客户端初始快照 |
+| `GET` | `/api/v1/bootstrap` | Web 和机器人使用的完整初始快照 |
 | `GET` | `/api/v1/events` | SSE 实时事件流 |
 | `GET` | `/api/v1/alerts` | 当前敌对告警 |
 | `GET` | `/api/v1/alerts/{id}` | 单条告警详情 |
@@ -75,7 +75,8 @@ Authorization: Bearer eve_xxx
 | `POST` | `/api/v1/channel-lines` | 独立频道客户端上传日志行 |
 
 历史报告和观察记录支持显式游标分页。首个请求传 `cursor=start`，后续请求原样传回
-`next_cursor`；`next_cursor` 为 `null` 表示结束。分页默认每页 100 条，`limit` 最大 1000。
+`next_cursor`；`next_cursor` 为 `null` 表示结束。普通列表和分页默认每次最多 100 条，
+`limit` 最大 1000。
 使用后续游标时应保持 `source`、`system` 和 `name` 筛选条件不变。例如：
 
 ```http
@@ -83,8 +84,14 @@ GET /api/v1/observations?cursor=start&limit=100&source=intel_channel
 GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
 ```
 
-未传 `cursor` 时继续使用原列表行为和原响应结构。PostgreSQL 分页直接使用数据库
-键集查询，不会为单次分页请求复制和排序完整历史列表。
+未传 `cursor` 时保留原响应结构，但结果同样有默认上限。PostgreSQL 在收到 `limit` 时
+直接使用数据库键集查询，不会先读取全部历史再在 Python 中截断。需要遍历完整历史时
+必须使用 `cursor=start` 和后续 `next_cursor`，不能依赖无上限列表响应。
+
+兼容接口 `/api/alerts` 和 v1 告警列表也默认最多返回 100 条，显式 `limit` 最大 1000。
+告警生成按接收时间倒序处理，满足 `since`、筛选条件和数量后立即停止，不会为一次历史
+查询重新评分全部热报告。
+`/api/v1/active-intel` 同样默认最多返回 100 条；需要更多活跃项时必须显式传递 `limit`。
 
 SSE 常用查询参数：
 
@@ -94,9 +101,11 @@ SSE 常用查询参数：
 | `limit` | `50` | 单次读取上限 |
 | `timeout` | `30` | 服务端等待秒数 |
 | `heartbeat` | `15` | SSE 心跳秒数 |
-| `bootstrap` | `false` | 首次连接是否发送 Bootstrap |
+| `bootstrap` | `false` | 首次连接是否发送精简活跃状态快照 |
 
 客户端必须保存并推进事件游标，不能在每次重连时反复拉取历史事件。
+预警客户端不调用完整 `/api/v1/bootstrap`；它在 SSE 上请求精简快照，只包含活跃情报、
+活跃告警和监控节点。生成该快照时只处理活跃情报引用的报告。
 
 ## 地图、配置与 ESI
 

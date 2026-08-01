@@ -166,6 +166,35 @@ def test_limit_query_accepts_one_thousand(server):
         assert payload["count"] == 0
 
 
+def test_history_routes_default_to_one_hundred_results(tmp_path):
+    store = IntelStore(tmp_path / "intel.json")
+    for index in range(101):
+        store.add_observation(
+            {
+                "source": "intel_channel",
+                "system_name": "Tama",
+                "names": [f"Pilot {index}"],
+            }
+        )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        for path in (
+            "/api/reports",
+            "/api/observations",
+            "/api/alerts",
+            "/api/v1/reports",
+            "/api/v1/observations",
+            "/api/v1/alerts",
+        ):
+            status, _, payload = _request(server, "GET", path)
+            assert status == 200
+            assert payload["count"] == 100
+    finally:
+        server.stop()
+        store.close()
+
+
 @pytest.mark.parametrize("path", ["/api/events", "/api/v1/events"])
 @pytest.mark.parametrize(
     ("parameter", "value", "expected_error"),

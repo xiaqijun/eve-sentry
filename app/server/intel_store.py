@@ -1401,11 +1401,50 @@ class IntelStore:
         include_since: bool = False,
     ) -> list[dict[str, Any]]:
         """Return generated phase-1 threat events from stored observations."""
+        return self._alerts_from_reports(
+            self._reports_snapshot(),
+            since=since,
+            limit=limit,
+            acknowledged=acknowledged,
+            min_score=min_score,
+            min_level=min_level,
+            include_since=include_since,
+        )
+
+    def _alerts_from_reports(
+        self,
+        reports: list[IntelReport],
+        *,
+        since: str | None = None,
+        limit: int | None = None,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str | None = None,
+        include_since: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Generate recent alerts without scoring reports outside the query window."""
         since_query = since.strip() if since else ""
         min_score_value = self._optional_score(min_score)
         min_level_rank = self._alert_level_rank(min_level)
-        alerts = []
-        for report in self._reports_snapshot():
+        if limit is not None and limit <= 0:
+            return []
+
+        ordered_reports = sorted(
+            reports,
+            key=lambda report: str(report.received_at or report.seen_at),
+            reverse=True,
+        )
+        alerts: list[dict[str, Any]] = []
+        for report in ordered_reports:
+            report_created_at = str(report.received_at or report.seen_at)
+            if since_query:
+                in_window = (
+                    report_created_at >= since_query
+                    if include_since
+                    else report_created_at > since_query
+                )
+                if not in_window:
+                    continue
             alert = self._alert_from_report(report)
             if alert is not None:
                 alert_data = self._alert_to_dict(report, alert)
@@ -1416,23 +1455,21 @@ class IntelStore:
                     min_level_rank=min_level_rank,
                 ):
                     alerts.append(alert_data)
-
-        if since_query:
-            if include_since:
-                alerts = [
-                    alert for alert in alerts
-                    if alert["created_at"] >= since_query
-                ]
-            else:
-                alerts = [
-                    alert for alert in alerts
-                    if alert["created_at"] > since_query
-                ]
-
-        alerts.sort(key=lambda item: item["created_at"], reverse=True)
-        if limit is not None:
-            alerts = alerts[:max(0, limit)]
+                    if limit is not None and len(alerts) >= limit:
+                        break
         return alerts
+
+    def alert_for_observation(self, observation_id: str) -> dict[str, Any] | None:
+        """Return the alert derived from one observation without scanning alerts."""
+        observation_id = str(observation_id or "").strip()
+        if not observation_id:
+            return None
+        for report in reversed(self._reports_snapshot()):
+            if report.report_id != observation_id:
+                continue
+            alert = self._alert_from_report(report)
+            return self._alert_to_dict(report, alert) if alert is not None else None
+        return None
 
     def character_intel(
         self,
@@ -1447,24 +1484,17 @@ class IntelStore:
         character_id = self._optional_int(character_id)
         if character_id is None:
             return None
-        observations = [
-            observation
-            for observation in self.list_observations(limit=None)
-            if character_id in self._normalize_ints(observation.get("character_ids"))
-        ]
-        alerts = [
-            alert
-            for alert in self.list_alerts(
-                since=since,
-                limit=None,
-                acknowledged=acknowledged,
-                min_score=min_score,
-                min_level=min_level,
-            )
-            if character_id in self._normalize_ints(alert.get("character_ids"))
-        ]
+        reports = self._visible_reports(self._reports_for_character_id(character_id))
+        observations = [report.to_observation().to_dict() for report in reports]
+        alerts = self._alerts_from_reports(
+            reports,
+            since=since,
+            limit=limit,
+            acknowledged=acknowledged,
+            min_score=min_score,
+            min_level=min_level,
+        )
         observations = self._limit_recent_items(observations, "seen_at", limit)
-        alerts = self._limit_recent_items(alerts, "created_at", limit)
         profile = self.character_profile(character_id)
         return self._intel_payload(
             entity_type="character",
@@ -1493,24 +1523,17 @@ class IntelStore:
         system_id = self._optional_int(system_id)
         if system_id is None:
             return None
-        observations = [
-            observation
-            for observation in self.list_observations(limit=None)
-            if self._optional_int(observation.get("system_id")) == system_id
-        ]
-        alerts = [
-            alert
-            for alert in self.list_alerts(
-                since=since,
-                limit=None,
-                acknowledged=acknowledged,
-                min_score=min_score,
-                min_level=min_level,
-            )
-            if self._optional_int(alert.get("system_id")) == system_id
-        ]
+        reports = self._visible_reports(self._reports_for_system_id(system_id))
+        observations = [report.to_observation().to_dict() for report in reports]
+        alerts = self._alerts_from_reports(
+            reports,
+            since=since,
+            limit=limit,
+            acknowledged=acknowledged,
+            min_score=min_score,
+            min_level=min_level,
+        )
         observations = self._limit_recent_items(observations, "seen_at", limit)
-        alerts = self._limit_recent_items(alerts, "created_at", limit)
         profile = self.system_profile(system_id)
         return self._intel_payload(
             entity_type="system",
@@ -2072,6 +2095,20 @@ class IntelStore:
     def _reports_snapshot(self) -> list[IntelReport]:
         with self._lock:
             return list(self._reports)
+
+    def _reports_for_character_id(self, character_id: int) -> list[IntelReport]:
+        return [
+            report
+            for report in self._reports_snapshot()
+            if character_id in self._normalize_ints(report.character_ids)
+        ]
+
+    def _reports_for_system_id(self, system_id: int) -> list[IntelReport]:
+        return [
+            report
+            for report in self._reports_snapshot()
+            if self._optional_int(report.system_id) == system_id
+        ]
 
     def _find_duplicate_observation(
         self,

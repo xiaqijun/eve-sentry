@@ -287,6 +287,52 @@ def test_monitor_worker_publishes_each_hostile_count_change_including_clear(
     assert alerts == [2, 1, 0, 1]
 
 
+def test_monitor_worker_keeps_scan_interval_when_unchanged_frames_skip_ocr(
+    monkeypatch,
+):
+    frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
+
+    class FrameCapturer:
+        def __init__(self):
+            self.calls = 0
+
+        def screenshot(self, _x, _y, _w, _h):
+            self.calls += 1
+            if self.calls <= 3:
+                return frame
+            raise TargetWindowClosed("done")
+
+    class WarmUpOnlyOcr:
+        def __init__(self):
+            self.calls = 0
+
+        def warm_up(self):
+            self.calls += 1
+
+        def recognize(self, _image, progress=None):
+            _ = progress
+            raise AssertionError("unchanged frames must skip OCR")
+
+    waits = []
+    monkeypatch.setattr(
+        MonitorWorker,
+        "_wait_for_next_scan",
+        lambda self: waits.append(self._active_interval),
+    )
+    ocr = WarmUpOnlyOcr()
+    worker = MonitorWorker(FrameCapturer(), ocr)
+    worker.set_interval(2)
+    worker.set_region(0, 0, frame.width, frame.height)
+    statuses = []
+    worker.status_update.connect(statuses.append)
+
+    worker.run()
+
+    assert ocr.calls == 1
+    assert waits == [1, 2, 2]
+    assert statuses.count("画面无变化，已跳过 OCR") == 2
+
+
 def test_monitor_worker_stops_when_the_game_window_closes():
     class ClosedCapturer:
         def screenshot(self, _x, _y, _w, _h):
