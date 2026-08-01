@@ -18,7 +18,13 @@ from typing import Any
 
 from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
+from PyQt6.QtNetwork import (
+    QNetworkAccessManager,
+    QNetworkProxy,
+    QNetworkProxyFactory,
+    QNetworkReply,
+    QNetworkRequest,
+)
 
 from app.version import current_version, update_manifest_url
 
@@ -48,6 +54,65 @@ class ReleaseInfo:
     size: int
     filename: str
     models: UpdateComponent | None = None
+
+
+def configured_update_proxy() -> str:
+    """Return the explicit proxy URL for update traffic, if configured."""
+    for name in (
+        "EVE_SENTRY_HTTP_PROXY",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ):
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def network_proxy_from_url(value: str) -> QNetworkProxy | None:
+    """Convert an HTTP or SOCKS proxy URL into a Qt network proxy."""
+    url = QUrl(str(value or "").strip())
+    scheme = url.scheme().casefold()
+    if not url.isValid() or not url.host() or scheme not in {
+        "http",
+        "https",
+        "socks5",
+        "socks5h",
+        "socks",
+    }:
+        return None
+    if scheme in {"socks", "socks5", "socks5h"}:
+        proxy_type = QNetworkProxy.ProxyType.Socks5Proxy
+        default_port = 1080
+    else:
+        proxy_type = QNetworkProxy.ProxyType.HttpProxy
+        default_port = 8080
+    port = url.port(default_port)
+    if port <= 0:
+        return None
+    return QNetworkProxy(
+        proxy_type,
+        url.host(),
+        port,
+        url.userName(),
+        url.password(),
+    )
+
+
+def configure_update_proxy(network: QNetworkAccessManager) -> str:
+    """Apply explicit or Windows system proxy settings to the updater."""
+    proxy_url = configured_update_proxy()
+    proxy = network_proxy_from_url(proxy_url)
+    if proxy is not None:
+        network.setProxy(proxy)
+        return proxy_url
+
+    # Keep credentials out of the application and let Qt read the user's
+    # Windows proxy/PAC configuration when no explicit proxy is configured.
+    QNetworkProxyFactory.setUseSystemConfiguration(True)
+    return ""
 
 
 def version_key(value: str) -> tuple[tuple[int, ...], int, str]:
@@ -361,6 +426,7 @@ class ClientUpdater(QObject):
         )
         self.background_download = bool(background_download)
         self._network = QNetworkAccessManager(self)
+        self._proxy_url = configure_update_proxy(self._network)
         self._release: ReleaseInfo | None = None
         self._download_reply: QNetworkReply | None = None
         self._download_file = None

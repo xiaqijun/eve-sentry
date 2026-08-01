@@ -101,6 +101,32 @@ def migrate_auth_schema(connection: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_auth_audit_created
         ON auth_audit_log(created_at)
         """,
+        """
+        CREATE TABLE IF NOT EXISTS auth_identity_jobs (
+            job_id TEXT PRIMARY KEY,
+            api_key_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            client_id TEXT NOT NULL DEFAULT '',
+            names_hash TEXT NOT NULL,
+            names_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'queued',
+            result_json TEXT NOT NULL DEFAULT '{}',
+            error_code TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT NOT NULL DEFAULT '',
+            lease_owner TEXT NOT NULL DEFAULT '',
+            lease_until TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT NOT NULL DEFAULT '',
+            UNIQUE (api_key_id, names_hash)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_auth_identity_jobs_ready
+        ON auth_identity_jobs(status, next_attempt_at, lease_until)
+        """,
     )
     for statement in statements:
         connection.execute(statement)
@@ -281,10 +307,10 @@ class AuthRepository:
         revoked_at: str,
         reason: str,
         audit: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         """Revoke one API key and persist the identity audit atomically."""
         with self._connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE auth_api_keys
                 SET status = 'revoked', revoked_at = ?, revoked_reason = ?
@@ -292,7 +318,10 @@ class AuthRepository:
                 """,
                 (revoked_at, reason, key_id),
             )
+            if int(getattr(cursor, "rowcount", 0)) != 1:
+                return False
             self._insert_audit(connection, audit)
+        return True
 
     def revoke_desktop_keys_and_audit(
         self,
@@ -511,6 +540,173 @@ class AuthRepository:
             except json.JSONDecodeError:
                 row["details"] = {}
         return rows
+
+    def ensure_identity_job(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Create or return one persistent identity job for a key/name set."""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO auth_identity_jobs (
+                    job_id, api_key_id, user_id, client_id, names_hash, names_json,
+                    status, result_json, error_code, error_message,
+                    attempt_count, next_attempt_at, lease_owner, lease_until,
+                    created_at, updated_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(api_key_id, names_hash) DO NOTHING
+                """,
+                (
+                    record["job_id"], record["api_key_id"], record["user_id"],
+                    record.get("client_id", ""), record["names_hash"],
+                    json.dumps(record.get("names") or [], ensure_ascii=False),
+                    record.get("status", "queued"),
+                    json.dumps(record.get("result") or {}, ensure_ascii=False),
+                    record.get("error_code", ""), record.get("error_message", ""),
+                    int(record.get("attempt_count", 0)),
+                    record.get("next_attempt_at", ""),
+                    record.get("lease_owner", ""), record.get("lease_until", ""),
+                    record["created_at"], record["updated_at"],
+                    record.get("completed_at", ""),
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM auth_identity_jobs
+                WHERE api_key_id = ? AND names_hash = ?
+                """,
+                (str(record["api_key_id"]), str(record["names_hash"])),
+            ).fetchone()
+        return self._identity_job_from_row(dict(row) if row is not None else None) or {}
+
+    def identity_job_for_hash(
+        self,
+        api_key_id: str,
+        names_hash: str,
+    ) -> dict[str, Any] | None:
+        row = self._one(
+            """
+            SELECT * FROM auth_identity_jobs
+            WHERE api_key_id = ? AND names_hash = ?
+            """,
+            (api_key_id, names_hash),
+        )
+        return self._identity_job_from_row(row)
+
+    def claim_identity_job(
+        self,
+        now: str,
+        lease_owner: str,
+        lease_until: str,
+    ) -> dict[str, Any] | None:
+        """Claim one due or lease-expired identity job with optimistic locking."""
+        candidate = self._one(
+            """
+            SELECT * FROM auth_identity_jobs
+            WHERE (
+                status IN ('queued', 'retrying') AND next_attempt_at <= ?
+            ) OR (
+                status = 'processing' AND lease_until <= ?
+            )
+            ORDER BY next_attempt_at ASC, created_at ASC
+            LIMIT 1
+            """,
+            (now, now),
+        )
+        if candidate is None:
+            return None
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE auth_identity_jobs
+                SET status = 'processing', lease_owner = ?, lease_until = ?,
+                    attempt_count = attempt_count + 1, updated_at = ?
+                WHERE job_id = ? AND status = ? AND updated_at = ?
+                """,
+                (
+                    lease_owner, lease_until, now, candidate["job_id"],
+                    candidate["status"], candidate["updated_at"],
+                ),
+            )
+            if int(getattr(cursor, "rowcount", 0)) != 1:
+                return None
+        claimed = self._one(
+            "SELECT * FROM auth_identity_jobs WHERE job_id = ?",
+            (candidate["job_id"],),
+        )
+        return self._identity_job_from_row(claimed)
+
+    def retry_identity_job(
+        self,
+        job_id: str,
+        lease_owner: str,
+        next_attempt_at: str,
+        error_code: str,
+        error_message: str,
+        updated_at: str,
+    ) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE auth_identity_jobs
+                SET status = 'retrying', next_attempt_at = ?,
+                    error_code = ?, error_message = ?, lease_owner = '',
+                    lease_until = '', updated_at = ?
+                WHERE job_id = ? AND status = 'processing' AND lease_owner = ?
+                """,
+                (
+                    next_attempt_at, error_code, error_message, updated_at,
+                    job_id, lease_owner,
+                ),
+            )
+            return int(getattr(cursor, "rowcount", 0)) == 1
+
+    def complete_identity_job(
+        self,
+        job_id: str,
+        lease_owner: str,
+        status: str,
+        result: dict[str, Any],
+        error_code: str,
+        error_message: str,
+        completed_at: str,
+        audit: dict[str, Any] | None = None,
+    ) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE auth_identity_jobs
+                SET status = ?, result_json = ?, error_code = ?,
+                    error_message = ?, lease_owner = '', lease_until = '',
+                    updated_at = ?, completed_at = ?
+                WHERE job_id = ? AND status = 'processing' AND lease_owner = ?
+                """,
+                (
+                    status, json.dumps(result or {}, ensure_ascii=False),
+                    error_code, error_message, completed_at, completed_at,
+                    job_id, lease_owner,
+                ),
+            )
+            if int(getattr(cursor, "rowcount", 0)) != 1:
+                return False
+            if audit is not None:
+                self._insert_audit(connection, audit)
+            return True
+
+    def _identity_job_from_row(
+        self,
+        row: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        item = dict(row)
+        try:
+            item["names"] = json.loads(str(item.pop("names_json", "[]")))
+        except json.JSONDecodeError:
+            item["names"] = []
+        try:
+            item["result"] = json.loads(str(item.pop("result_json", "{}")))
+        except json.JSONDecodeError:
+            item["result"] = {}
+        return item
 
     def _insert_audit(self, connection: Any, record: dict[str, Any]) -> None:
         connection.execute(

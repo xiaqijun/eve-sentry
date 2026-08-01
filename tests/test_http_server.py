@@ -2584,6 +2584,60 @@ def test_auth_enforcement_accepts_valid_key_before_listener_is_discovered(tmp_pa
         server.stop()
 
 
+def test_async_identity_report_acknowledges_before_esi_finishes(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingResolver(AuthTestResolver):
+        def character_profile(self, character_id):
+            started.set()
+            assert release.wait(timeout=3)
+            return super().character_profile(character_id)
+
+    store = AuthTestStore(tmp_path / "intel.json")
+    auth = AuthService(AuthRepository(store._connect), BlockingResolver())
+    member = auth.create_user("pilot", "pilot-password-123", role="member")
+    auth.add_allowed_corporation(9001, member["user_id"])
+    key = auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    headers = {"Authorization": f"Bearer {key['secret']}"}
+    try:
+        request_started = time.monotonic()
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/client/identity-checks",
+            method="POST",
+            payload={"characters": ["Alice"], "client_id": "detector:test"},
+            headers=headers,
+        )
+
+        assert status == 202
+        assert time.monotonic() - request_started < 1
+        assert payload["identity"]["pending"] is True
+        assert started.wait(timeout=1)
+        release.set()
+
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            status, _, payload = authenticated_request(
+                f"{server.url}/api/v1/client/identity-checks",
+                method="POST",
+                payload={"characters": ["Alice"], "client_id": "detector:test"},
+                headers=headers,
+            )
+            if status == 200:
+                break
+            time.sleep(0.02)
+        assert status == 200
+        assert payload["identity"]["verified"] is True
+        assert payload["identity"]["characters"][0]["character_id"] == 101
+    finally:
+        release.set()
+        server.stop()
+        auth.close()
+        store.close()
+
+
 def test_authenticated_business_posts_preserve_their_request_body(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())

@@ -40,7 +40,8 @@ Authorization: Bearer eve_xxx
 | `DELETE` | `/api/v1/me/keys/{id}` | 吊销密钥 |
 | `POST` | `/api/v1/me/keys/{id}/enable` | 重新启用可恢复密钥 |
 | `DELETE` | `/api/v1/me/keys/{id}/record` | 删除密钥记录 |
-| `POST` | `/api/v1/client/identity-check` | 提交 EVE Listener 角色校验 |
+| `POST` | `/api/v1/client/identity-checks` | 幂等提交 Listener 角色并立即返回任务状态；身份校验在服务端异步执行 |
+| `POST` | `/api/v1/client/identity-check` | 旧版同步身份校验，仅用于滚动升级兼容 |
 | `GET/POST` | `/api/v1/admin/users` | 用户列表和创建用户 |
 | `POST` | `/api/v1/admin/users/{id}/status` | 启用或禁用用户 |
 | `POST` | `/api/v1/admin/users/{id}/reset-password` | 重置管理员密码 |
@@ -52,12 +53,16 @@ Authorization: Bearer eve_xxx
 | `DELETE` | `/api/v1/admin/corporations/{corporation_id}` | 删除允许军团 |
 | `GET` | `/api/v1/admin/audit` | 审计日志 |
 
+异步身份接口在任务排队、处理中或等待重试时返回 `202`，已验证时返回 `200` 并携带解析
+后的角色 ID。客户端可用相同角色集合重复提交来读取状态，不需要保存任务 ID；服务端按
+设备密钥和规范化角色集合保证幂等。
+
 ## 监控与事件
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/api/v1/ocr/snapshot` | 上传当前 OCR 名单和红框计数 |
-| `POST` | `/api/v1/clients/heartbeats` | 上传客户端状态 |
+| `POST` | `/api/v1/clients/heartbeats` | 上传客户端状态、窗口目标和最近异常 |
 | `GET` | `/api/v1/clients` | 在线客户端和聚合状态 |
 | `GET` | `/api/v1/active-intel` | 当前实时情报 |
 | `GET` | `/api/v1/bootstrap` | Web、机器人和预警客户端初始快照 |

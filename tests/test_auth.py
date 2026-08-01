@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -66,6 +67,7 @@ def auth(tmp_path):
     try:
         yield service
     finally:
+        service.close()
         store.close()
 
 
@@ -348,6 +350,93 @@ def test_allowed_corporation_permanently_verifies_desktop_key(auth):
     assert auth.authenticate_api_key(created["secret"]).identity_verified is True
 
 
+def test_character_report_is_idempotent_and_returns_completed_result(auth):
+    user = _member(auth)
+    auth.add_allowed_corporation(9001, user["user_id"])
+    created = auth.create_api_key(user["user_id"], "Desktop", user["user_id"])
+    principal = auth.authenticate_api_key(created["secret"], allow_unverified=True)
+
+    first = auth.submit_character_report(principal, ["Alice"], "detector:test")
+    duplicate = auth.submit_character_report(principal, [" alice ", "Alice"], "detector:test")
+
+    assert first["status"] == "queued"
+    assert duplicate["job_id"] == first["job_id"]
+    deadline = time.monotonic() + 3
+    completed = duplicate
+    while time.monotonic() < deadline:
+        completed = auth.submit_character_report(principal, ["Alice"], "detector:test")
+        if completed["status"] == "verified":
+            break
+        time.sleep(0.02)
+
+    assert completed["verified"] is True
+    assert completed["characters"][0]["character_name"] == "Alice"
+    verified_audits = [
+        item for item in auth.repository.list_audit()
+        if item["action"] == "identity.verified"
+    ]
+    assert len(verified_audits) == 1
+    assert verified_audits[0]["details"]["client_id"] == "detector:test"
+
+
+def test_character_report_retries_transient_failures_without_audit_flood(
+    auth,
+    monkeypatch,
+):
+    class FlakyResolver(FakeResolver):
+        def __init__(self):
+            super().__init__()
+            self.failures = 2
+
+        def character_profile(self, character_id):
+            if self.failures:
+                self.failures -= 1
+                raise RuntimeError("Bad Gateway")
+            return super().character_profile(character_id)
+
+    monkeypatch.setattr("app.server.auth.IDENTITY_RETRY_BASE_SECONDS", 0.01)
+    auth.resolver = FlakyResolver()
+    user = _member(auth)
+    auth.add_allowed_corporation(9001, user["user_id"])
+    created = auth.create_api_key(user["user_id"], "Desktop", user["user_id"])
+    principal = auth.authenticate_api_key(created["secret"], allow_unverified=True)
+
+    pending = auth.submit_character_report(principal, ["Alice"])
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        pending = auth.submit_character_report(principal, ["Alice"])
+        if pending["status"] == "verified":
+            break
+        time.sleep(0.05)
+
+    assert pending["status"] == "verified"
+    actions = [item["action"] for item in auth.repository.list_audit()]
+    assert actions.count("identity.check_failed") == 1
+    assert actions.count("identity.verified") == 1
+
+
+def test_identity_worker_does_not_audit_success_after_losing_its_lease(auth):
+    user = _member(auth)
+    auth.add_allowed_corporation(9001, user["user_id"])
+    created = auth.create_api_key(user["user_id"], "Desktop", user["user_id"])
+    key = auth.repository.api_key_by_id(created["key_id"])
+
+    auth._process_identity_job(
+        {
+            "job_id": "expired-job",
+            "api_key_id": key["key_id"],
+            "user_id": user["user_id"],
+            "client_id": "detector:test",
+            "names": ["Alice"],
+            "attempt_count": 1,
+        },
+        "expired-lease",
+    )
+
+    actions = [item["action"] for item in auth.repository.list_audit()]
+    assert "identity.verified" not in actions
+
+
 def test_user_bound_character_whitelist_allows_character(auth):
     user = _member(auth)
     auth.add_whitelist_character(user["user_id"], 202, "alt", user["user_id"])
@@ -366,7 +455,12 @@ def test_confirmed_unauthorized_character_revokes_only_submitting_key(auth):
     with pytest.raises(AuthError) as exc_info:
         auth.verify_characters(pending, ["Mallory"])
 
+    with pytest.raises(AuthError):
+        auth.verify_characters(pending, ["Mallory"])
+
     assert exc_info.value.code == "unauthorized_eve_character"
+    actions = [item["action"] for item in auth.repository.list_audit()]
+    assert actions.count("identity.key_revoked") == 1
     assert auth.repository.user_by_id(user["user_id"])["status"] == "active"
     assert auth.repository.api_key_by_id(first["key_id"])["status"] == "revoked"
     assert auth.repository.api_key_by_id(second["key_id"])["status"] == "active"

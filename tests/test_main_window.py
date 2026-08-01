@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from app.channels.identity_logs import IdentityScanResult
 from app.ui.main_window import MainWindow, PreviewCaptureWorker
 from app.ui.settings import SettingsPanel
 from app.ui.settings import DEFAULT_CHATLOG_DIR
@@ -444,6 +445,62 @@ def test_identity_check_backfills_and_remembers_missing_character_id():
     assert remembered == [
         {"character_id": 101, "character_name": "Alice"},
     ]
+
+
+def test_async_identity_report_keeps_pending_names_until_server_verifies():
+    verified = []
+    remembered = []
+
+    class FakeScanner:
+        def scan(self, _api_key):
+            return IdentityScanResult(
+                characters=["Alice"], pending_characters=["Alice"],
+                pending_files=[], processed_count=0, initial_scan=False,
+                key_validated=True, identity_verified=False,
+            )
+
+        def mark_verified(self, names):
+            verified.append(list(names))
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = 0
+
+        def ensure_eve_character_check(self, names, client_id=""):
+            self.calls += 1
+            assert names == ["Alice"]
+            assert client_id == "detector:test"
+            if self.calls == 1:
+                return {"accepted": True, "status": "processing", "pending": True}
+            return {
+                "accepted": True, "status": "verified", "pending": False,
+                "verified": True,
+                "characters": [{"character_id": 101, "character_name": "Alice"}],
+            }
+
+    class FakeStore:
+        def load(self):
+            return {"characters": ["Alice"], "character_identities": []}
+
+        def remember_character_identities(self, characters):
+            remembered.extend(characters)
+
+    store = FakeStore()
+    window = MainWindow.__new__(MainWindow)
+    window._identity_scanner = FakeScanner()
+    window._heartbeat_client_id = "detector:test"
+    window._settings = SimpleNamespace(auth_state_store=lambda: store)
+    client = FakeClient()
+
+    first = MainWindow._scan_and_validate_identities(window, client, "eve_valid")
+    assert first["identity"]["pending"] is True
+    assert verified == []
+    assert remembered == []
+
+    second = MainWindow._scan_and_validate_identities(window, client, "eve_valid")
+    assert second["identity"]["verified"] is True
+    assert verified == [["Alice"]]
+    assert remembered == [{"character_id": 101, "character_name": "Alice"}]
 
 
 def test_listener_poll_rediscovers_log_path_and_runs_as_silent_task():
@@ -1610,7 +1667,7 @@ def test_monitor_window_change_rebuilds_running_workers(monkeypatch):
     assert starts == [{"identity_checked": True}]
 
 
-def test_monitor_window_menu_shows_status_and_remembered_offline_target():
+def test_monitor_window_menu_drops_closed_window_from_selection_memory():
     qt_app()
     windows = [
         {"hwnd": 1, "title": "EVE - Pilot A"},
@@ -1664,21 +1721,13 @@ def test_monitor_window_menu_shows_status_and_remembered_offline_target():
     assert actions["hwnd:2:eve - pilot b"].text() == (
         "Pilot B · 未知 · 未监控"
     )
-    offline_key = "offline:eve - pilot c"
-    assert actions[offline_key].text() == "Pilot C · 未知 · 离线"
-    assert actions[offline_key].isChecked() is True
-    assert window._monitor_window_button.text() == "监控窗口 1/2 · 离线1"
+    assert "offline:eve - pilot c" not in actions
+    assert window._monitor_window_button.text() == "监控窗口 1/2"
     assert window._monitor_window_button.property("selectionState") == "ready"
-
-    actions[offline_key].setChecked(False)
-    MainWindow._on_monitor_window_toggled(window)
-    MainWindow._sync_monitor_window_menu(window, windows)
-
     assert window._monitor_selected_titles == {"EVE - Pilot A"}
-    assert offline_key not in window._monitor_window_actions
 
 
-def test_monitor_window_button_highlights_empty_and_offline_only_selection():
+def test_monitor_window_button_clears_selection_when_all_windows_close():
     qt_app()
     window = MainWindow.__new__(MainWindow)
     window._monitor_window_menu = QMenu()
@@ -1722,44 +1771,9 @@ def test_monitor_window_button_highlights_empty_and_offline_only_selection():
     window._monitor_selected_titles = {"EVE - Pilot C"}
     MainWindow._sync_monitor_window_menu(window, [])
 
-    assert window._monitor_window_button.text() == "监控窗口 0/0 · 离线1"
-    assert window._monitor_window_button.property("selectionState") == "offline"
-    assert "当前均离线" in window._monitor_window_button.toolTip()
-
-
-def test_offline_only_selection_stops_running_monitor():
-    qt_app()
-    stops = []
-    window = MainWindow.__new__(MainWindow)
-    window._monitor_window_actions = {
-        "offline:eve - pilot c": FakeCheckAction(
-            True,
-            "Pilot C · 未知 · 离线",
-        ),
-    }
-    window._monitor_windows_by_key = {}
-    window._monitor_window_titles_by_key = {
-        "offline:eve - pilot c": "EVE - Pilot C",
-    }
-    window._monitor_selected_titles = {"EVE - Pilot C"}
-    window._syncing_monitor_menu = False
-    window._runtime_settings = type(
-        "Settings",
-        (),
-        {"setValue": lambda self, key, value: None},
-    )()
-    window._monitor_window_button = QToolButton()
-    window._monitor_btn = type(
-        "Button",
-        (),
-        {"isChecked": lambda self: True},
-    )()
-    window._log_message = lambda message: None
-    window._stop_monitor = lambda: stops.append(True)
-
-    MainWindow._on_monitor_window_toggled(window)
-
-    assert stops == [True]
+    assert window._monitor_window_button.text() == "监控窗口 0/0"
+    assert window._monitor_window_button.property("selectionState") == "empty"
+    assert window._monitor_selected_titles == set()
 
 
 def test_monitor_window_action_refreshes_after_status_and_system_change():
@@ -2646,6 +2660,59 @@ def test_stopped_monitor_skips_ocr_but_publishes_idle_heartbeat():
 
     assert window._intel_client.heartbeat["status"] == "idle"
     assert window._intel_client.heartbeat["details"]["monitoring"] is False
+
+
+def test_heartbeat_reports_multi_window_and_recovered_transport_errors():
+    class Client:
+        def __init__(self):
+            self.payload = None
+
+        def post_heartbeat(self, **payload):
+            self.payload = payload
+            return {"client_id": payload["client_id"]}
+
+    class FakeCombo:
+        def currentText(self):
+            return "EVE - Pilot A"
+
+    window = MainWindow.__new__(MainWindow)
+    window._intel_client = Client()
+    window._workers = {"a": object(), "b": object()}
+    window._worker_contexts = {
+        "a": {
+            "key": "a", "client_id": "detector:a", "window_title": "EVE - Pilot A",
+            "source_instance": "EVE - Pilot A", "character_name": "Pilot A",
+            "system_name": "S-KSWL", "system_id": None, "system_source": "chatlog",
+            "region": {}, "runtime_status": "上报异常", "last_error": "OCR timeout",
+        },
+        "b": {
+            "key": "b", "client_id": "detector:b", "window_title": "EVE - Pilot B",
+            "source_instance": "EVE - Pilot B", "character_name": "Pilot B",
+            "system_name": "HB-FSO", "system_id": None, "system_source": "chatlog",
+            "region": {}, "runtime_status": "运行中", "last_error": "",
+        },
+    }
+    window._heartbeat_client_id = "detector:test"
+    window._heartbeat_interval = 15.0
+    window._heartbeat_runtime = {"client_version": "test", "host": "host"}
+    window._heartbeat_last_action = "ocr_snapshot:1"
+    window._heartbeat_last_error = ""
+    window._heartbeat_last_success_at = ""
+    window._last_heartbeat_error = "connection reset"
+    window._intel_system = "S-KSWL"
+    window._intel_system_source = "chatlog"
+    window._popup_alerts_enabled = False
+    window._window_combo = FakeCombo()
+    window._refresh_status_cards = lambda: None
+
+    MainWindow._publish_heartbeat(window, monitoring_override=True)
+
+    assert window._intel_client.payload["status"] == "error"
+    details = window._intel_client.payload["details"]
+    assert "Pilot A: OCR timeout" in details["last_error"]
+    assert "心跳连接: connection reset" in details["last_error"]
+    assert details["targets"][0]["last_error"] == "OCR timeout"
+    assert details["targets"][1]["runtime_status"] == "运行中"
 
 
 def test_stop_monitor_keeps_connection_timer_and_publishes_idle_status():

@@ -193,9 +193,14 @@ def main(argv: list[str] | None = None) -> int:
             if started:
                 server.stop()
         finally:
-            close_store = getattr(store, "close", None)
-            if callable(close_store):
-                close_store()
+            try:
+                close_auth = getattr(auth_service, "close", None)
+                if callable(close_auth):
+                    close_auth()
+            finally:
+                close_store = getattr(store, "close", None)
+                if callable(close_store):
+                    close_store()
     return 0
 
 
@@ -355,6 +360,7 @@ def _build_auth_service(
             "authentication has no users; configure --auth-bootstrap-admin and "
             "--auth-bootstrap-password-file for the first start"
         )
+    service.start_identity_worker()
     return service
 
 

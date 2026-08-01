@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 from app.esi.sso import EsiSsoError
 from app.server.auth_store import AuthRepository
+from app.server.identity_worker import IdentityVerificationWorker
 
 
 SESSION_COOKIE_NAME = "eve_sentry_session"
@@ -23,6 +24,9 @@ LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_FAILURE_LIMIT = 5
 LOGIN_IP_FAILURE_LIMIT = 25
 ESI_LOGIN_STATE_SECONDS = 5 * 60
+IDENTITY_JOB_LEASE_SECONDS = 90
+IDENTITY_RETRY_BASE_SECONDS = 10
+IDENTITY_RETRY_MAX_SECONDS = 5 * 60
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +104,10 @@ class AuthService:
         self._authorization_generation = 0
         self._authorization_change_lock = threading.Lock()
         self._authorization_change_listeners: set[Callable[[], None]] = set()
+        self._identity_worker = IdentityVerificationWorker(
+            self._claim_identity_job,
+            self._process_identity_job,
+        )
 
     @property
     def authorization_generation(self) -> int:
@@ -548,6 +556,10 @@ class AuthService:
         self,
         principal: AuthPrincipal,
         names: list[str],
+        *,
+        audit_failure: bool = True,
+        audit_success: bool = True,
+        audit_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if principal.auth_type != "api_key" or principal.api_key_type != "desktop":
             raise AuthError("desktop API key is required", 403, "desktop_key_required")
@@ -563,17 +575,19 @@ class AuthService:
         try:
             resolved = [self._resolve_character(name) for name in clean_names]
         except AuthError as exc:
-            self._audit(
-                principal.user_id,
-                principal.user_id,
-                "identity.check_failed",
-                {
-                    **key_details,
-                    "characters": clean_names,
-                    "error_code": exc.code,
-                    "reason": str(exc),
-                },
-            )
+            if audit_failure:
+                self._audit(
+                    principal.user_id,
+                    principal.user_id,
+                    "identity.check_failed",
+                    {
+                        **key_details,
+                        **dict(audit_context or {}),
+                        "characters": clean_names,
+                        "error_code": exc.code,
+                        "reason": str(exc),
+                    },
+                )
             raise
         allowed_corps = self.repository.allowed_corporation_ids()
         whitelisted = self.repository.whitelist_ids(principal.user_id)
@@ -618,15 +632,193 @@ class AuthService:
                 "last_seen_at": now,
             })
         self.repository.mark_api_key_verified(principal.api_key_id)
-        self._audit(principal.user_id, principal.user_id, "identity.verified", {
-            **key_details,
-            "characters": resolved,
-        })
+        if audit_success:
+            self._audit(principal.user_id, principal.user_id, "identity.verified", {
+                **key_details,
+                **dict(audit_context or {}),
+                "characters": resolved,
+            })
         return {
             "verified": True,
             "permanent": True,
             "characters": resolved,
         }
+
+    def submit_character_report(
+        self,
+        principal: AuthPrincipal,
+        names: list[str],
+        client_id: str = "",
+    ) -> dict[str, Any]:
+        """Persist an idempotent report and return its current state immediately."""
+        if principal.auth_type != "api_key" or principal.api_key_type != "desktop":
+            raise AuthError("desktop API key is required", 403, "desktop_key_required")
+        clean_names = sorted(_clean_names(names), key=str.casefold)
+        if not clean_names:
+            raise AuthError("at least one EVE Listener is required", 428, "eve_listener_required")
+        names_hash = _identity_names_hash(clean_names)
+        job_id = hashlib.sha256(
+            f"{principal.api_key_id}\0{names_hash}".encode("utf-8")
+        ).hexdigest()
+        now = _now_iso()
+        job = self.repository.ensure_identity_job({
+            "job_id": job_id,
+            "api_key_id": principal.api_key_id,
+            "user_id": principal.user_id,
+            "client_id": str(client_id or "").strip()[:160],
+            "names_hash": names_hash,
+            "names": clean_names,
+            "status": "queued",
+            "next_attempt_at": now,
+            "created_at": now,
+            "updated_at": now,
+        })
+        if not job:
+            raise AuthError("identity report could not be queued", 503, "identity_queue_unavailable")
+        self._identity_worker.start()
+        self._identity_worker.wake()
+        return self._identity_job_response(job, client_id=client_id)
+
+    def start_identity_worker(self) -> None:
+        """Start recovery of queued identity reports after server startup."""
+        self._identity_worker.start()
+        self._identity_worker.wake()
+
+    def wait_for_identity_idle(self, timeout: float | None = None) -> bool:
+        """Wait until the identity worker is not executing a job."""
+        return self._identity_worker.wait_idle(timeout=timeout)
+
+    def close(self, *, wait: bool = True) -> None:
+        """Stop the persistent identity worker before closing the repository."""
+        self._identity_worker.close(wait=wait)
+
+    def _claim_identity_job(self, lease_owner: str) -> dict[str, Any] | None:
+        now = datetime.now(UTC)
+        return self.repository.claim_identity_job(
+            now.isoformat(),
+            lease_owner,
+            (now + timedelta(seconds=IDENTITY_JOB_LEASE_SECONDS)).isoformat(),
+        )
+
+    def _process_identity_job(
+        self,
+        job: dict[str, Any],
+        lease_owner: str,
+    ) -> None:
+        job_id = str(job.get("job_id") or "")
+        key = self.repository.api_key_by_id(str(job.get("api_key_id") or "")) or {}
+        user = self.repository.user_by_id(str(job.get("user_id") or "")) or {}
+        if (
+            not job_id
+            or str(key.get("status") or "") != "active"
+            or str(key.get("user_id") or "") != str(job.get("user_id") or "")
+            or str(user.get("status") or "") != "active"
+        ):
+            self.repository.complete_identity_job(
+                job_id, lease_owner, "cancelled", {}, "inactive_principal",
+                "API key or user is no longer active", _now_iso(),
+            )
+            return
+        principal = AuthPrincipal(
+            user_id=str(user.get("user_id") or ""),
+            username=str(user.get("username") or ""),
+            display_name=str(user.get("display_name") or ""),
+            role=str(user.get("role") or "member"),
+            auth_type="api_key",
+            api_key_id=str(key.get("key_id") or ""),
+            api_key_type=str(key.get("key_type") or "desktop"),
+            identity_verified=bool(key.get("identity_verified")),
+        )
+        names = [str(item) for item in job.get("names") or []]
+        audit_context = {
+            "identity_job_id": job_id,
+            "identity_attempt": int(job.get("attempt_count") or 1),
+        }
+        if str(job.get("client_id") or "").strip():
+            audit_context["client_id"] = str(job.get("client_id") or "").strip()
+        try:
+            result = self.verify_characters(
+                principal,
+                names,
+                audit_failure=int(job.get("attempt_count") or 1) <= 1,
+                audit_success=False,
+                audit_context=audit_context,
+            )
+        except IdentityUnavailableError as exc:
+            attempt = max(1, int(job.get("attempt_count") or 1))
+            delay = min(
+                IDENTITY_RETRY_MAX_SECONDS,
+                IDENTITY_RETRY_BASE_SECONDS * (2 ** min(5, attempt - 1)),
+            )
+            next_attempt = datetime.now(UTC) + timedelta(seconds=delay)
+            self.repository.retry_identity_job(
+                job_id,
+                lease_owner,
+                next_attempt.isoformat(),
+                exc.code,
+                str(exc),
+                _now_iso(),
+            )
+            return
+        except AuthError as exc:
+            self.repository.complete_identity_job(
+                job_id,
+                lease_owner,
+                "rejected",
+                {},
+                exc.code,
+                str(exc),
+                _now_iso(),
+            )
+            return
+        success_details = {
+            "api_key_id": str(key.get("key_id") or ""),
+            "api_key_name": str(key.get("name") or ""),
+            "api_key_prefix": str(key.get("key_prefix") or ""),
+            **audit_context,
+            "characters": list(result.get("characters") or []),
+        }
+        self.repository.complete_identity_job(
+            job_id,
+            lease_owner,
+            "verified",
+            result,
+            "",
+            "",
+            _now_iso(),
+            audit=self._audit_record(
+                principal.user_id,
+                principal.user_id,
+                "identity.verified",
+                success_details,
+            ),
+        )
+
+    def _identity_job_response(
+        self,
+        job: dict[str, Any],
+        client_id: str = "",
+    ) -> dict[str, Any]:
+        status = str(job.get("status") or "queued")
+        result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        verified = status == "verified" and bool(result.get("verified"))
+        response = {
+            "accepted": True,
+            "status": status,
+            "pending": status in {"queued", "processing", "retrying"},
+            "verified": verified,
+            "permanent": True,
+            "job_id": str(job.get("job_id") or ""),
+            "characters": list(result.get("characters") or []),
+        }
+        if client_id:
+            response["client_id"] = str(client_id).strip()[:160]
+        if status == "retrying":
+            response["retry_after"] = str(job.get("next_attempt_at") or "")
+        if status in {"rejected", "cancelled"}:
+            response["error_code"] = str(job.get("error_code") or "identity_rejected")
+            response["reason"] = str(job.get("error_message") or "identity verification failed")
+        return response
 
     def list_users(self) -> list[dict[str, Any]]:
         users = []
@@ -969,3 +1161,8 @@ def _secret_hash(value: str) -> str:
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _identity_names_hash(names: list[str]) -> str:
+    normalized = "\n".join(sorted({name.strip().casefold() for name in names if name.strip()}))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()

@@ -4181,6 +4181,24 @@ body[data-theme="dark"] .arco-drawer-mask {
   grid-column: auto;
 }
 
+.audit-filter-bar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(132px, auto));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.audit-result-meta {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.audit-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
 .audit-page-heading {
   display: flex;
   align-items: center;
@@ -4949,6 +4967,10 @@ body[data-theme="dark"] .arco-drawer-mask {
 
   .audit-page-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .audit-filter-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .admin-detail-sections > section:first-child {

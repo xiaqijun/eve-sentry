@@ -81,6 +81,7 @@ export interface ClientHeartbeatRecord {
   status?: string;
   seen_at: string;
   online?: boolean;
+  age_seconds?: number;
   details?: ClientHeartbeatDetails;
 }
 

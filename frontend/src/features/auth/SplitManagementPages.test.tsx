@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountKeysPage } from "./AccountKeysPage";
-import { AdminAuditPage } from "./AdminAuditPage";
+import { AdminAuditPage, filterAuditRecords } from "./AdminAuditPage";
 import { AdminIdentityPage } from "./AdminIdentityPage";
 import { AdminUsersPage } from "./AdminUsersPage";
 import { AdminWhitelistPage } from "./AdminWhitelistPage";
@@ -309,6 +309,192 @@ describe("split management pages", () => {
     expect(container).toHaveTextContent("客户端状态加载失败");
     expect(container).not.toHaveTextContent("上次异常端");
     expect(container).toHaveTextContent("当前异常客户端0");
+  });
+
+  it("filters audit records by client, category, period and outcome", () => {
+    const now = new Date("2026-08-01T12:00:00Z").getTime();
+    const records = [
+      {
+        action: "identity.check_failed",
+        actor_user_id: "operator-1",
+        audit_id: "audit-failed",
+        created_at: "2026-08-01T11:00:00Z",
+        details: {
+          api_key_name: "主监控端",
+          characters: ["Pilot Alpha"],
+        },
+        target_user_id: "user-1",
+      },
+      {
+        action: "identity.verified",
+        audit_id: "audit-verified",
+        created_at: "2026-08-01T10:00:00Z",
+        details: { characters: ["Pilot Bravo"] },
+        target_user_id: "user-2",
+      },
+      {
+        action: "api_key.created",
+        audit_id: "audit-key",
+        created_at: "2026-07-31T12:00:00Z",
+        details: { key_id: "key-1", name: "备用客户端" },
+        target_user_id: "user-3",
+      },
+      {
+        action: "user.created",
+        audit_id: "audit-old-account",
+        created_at: "2026-07-01T12:00:00Z",
+        target_user_id: "user-4",
+      },
+    ];
+
+    expect(filterAuditRecords(records, {
+      category: "all",
+      outcome: "all",
+      period: "all",
+      search: "pilot alpha",
+    }, now).map((item) => item.audit_id)).toEqual(["audit-failed"]);
+    expect(filterAuditRecords(records, {
+      category: "key",
+      outcome: "all",
+      period: "all",
+      search: "",
+    }, now).map((item) => item.audit_id)).toEqual(["audit-key"]);
+    expect(filterAuditRecords(records, {
+      category: "all",
+      outcome: "exception",
+      period: "7d",
+      search: "",
+    }, now).map((item) => item.audit_id)).toEqual(["audit-failed"]);
+  });
+
+  it("renders labeled audit filters and keeps unknown action codes visible", async () => {
+    apiMocks.listAudit.mockResolvedValue([{
+      action: "custom.security_event",
+      actor_user_id: "operator-1",
+      audit_id: "audit-custom",
+      created_at: "2026-08-01T10:00:00Z",
+      target_user_id: "user-1",
+    }]);
+
+    await render(<AdminAuditPage />);
+
+    expect(container.querySelector('[aria-label="搜索客户端、角色或用户"]')).toBeInTheDocument();
+    expect(container.querySelector('[aria-label="操作类别"]')).toBeInTheDocument();
+    expect(container.querySelector('[aria-label="时间范围"]')).toBeInTheDocument();
+    expect(container.querySelector('[aria-label="审计状态"]')).toBeInTheDocument();
+    expect(container).toHaveTextContent("其他操作（custom.security_event）");
+    expect(container).toHaveTextContent("operator-1 → user-1");
+    expect(container).toHaveTextContent("筛选结果 1 条 / 已加载 1 条");
+  });
+
+  it("paginates audit records and clamps the page after a silent refresh", async () => {
+    const initialRecords = Array.from({ length: 21 }, (_, index) => ({
+      action: "user.created",
+      audit_id: `audit-${index + 1}`,
+      created_at: `2026-08-01T10:${String(index).padStart(2, "0")}:00Z`,
+      target_user_id: `user-${index + 1}`,
+    }));
+    apiMocks.listAudit
+      .mockResolvedValueOnce(initialRecords)
+      .mockResolvedValueOnce([{
+        action: "user.created",
+        audit_id: "audit-new",
+        created_at: "2026-08-01T12:00:00Z",
+        target_user_id: "user-new",
+      }]);
+    apiMocks.fetchClients
+      .mockResolvedValueOnce({
+        count: 1,
+        heartbeats: [{
+          age_seconds: 30,
+          client_id: "detector:offline",
+          label: "短时离线端",
+          online: false,
+          seen_at: "2026-08-01T11:59:30Z",
+          status: "running",
+        }],
+        summary: {},
+      })
+      .mockRejectedValueOnce(new Error("增量客户端刷新失败"));
+
+    const intervalSpy = vi.spyOn(window, "setInterval").mockReturnValue(
+      42 as unknown as ReturnType<typeof window.setInterval>,
+    );
+
+    await render(<AdminAuditPage />);
+    const poll = intervalSpy.mock.calls.find(([, delay]) => delay === 15_000)?.[0] as
+      | (() => void)
+      | undefined;
+    expect(container).toHaveTextContent("筛选结果 21 条 / 已加载 21 条");
+    expect(container).not.toHaveTextContent("user-21");
+
+    const secondPage = Array.from(container.querySelectorAll(".arco-pagination-item"))
+      .find((item) => item.textContent?.trim() === "2") as HTMLElement | undefined;
+    expect(secondPage).toBeDefined();
+    await act(async () => secondPage?.click());
+    expect(container).toHaveTextContent("user-21");
+
+    await act(async () => {
+      poll?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container).toHaveTextContent("user-new");
+    expect(container).not.toHaveTextContent("user-21");
+    expect(container).toHaveTextContent("筛选结果 1 条 / 已加载 1 条");
+    expect(container).toHaveTextContent("增量客户端刷新失败");
+    expect(container).toHaveTextContent("短时离线端");
+    intervalSpy.mockRestore();
+  });
+
+  it("shows recent offline clients separately from stale or intentionally stopped clients", async () => {
+    apiMocks.fetchClients.mockResolvedValue({
+      count: 4,
+      summary: {},
+      heartbeats: [
+        {
+          age_seconds: 60,
+          client_id: "detector:recent-offline",
+          label: "最近离线端",
+          online: false,
+          seen_at: "2026-08-01T11:59:00Z",
+          status: "running",
+        },
+        {
+          age_seconds: 90_000,
+          client_id: "detector:stale-offline",
+          label: "历史离线端",
+          online: false,
+          seen_at: "2026-07-30T10:00:00Z",
+          status: "error",
+        },
+        {
+          age_seconds: 30,
+          client_id: "detector:stopped",
+          label: "主动停止端",
+          online: false,
+          seen_at: "2026-08-01T11:59:30Z",
+          status: "stopped",
+        },
+        {
+          client_id: "detector:error",
+          label: "在线异常端",
+          online: true,
+          seen_at: "2026-08-01T12:00:00Z",
+          status: "error",
+        },
+      ],
+    });
+
+    await render(<AdminAuditPage />);
+
+    expect(container).toHaveTextContent("2 个异常");
+    expect(container).toHaveTextContent("最近离线端");
+    expect(container).toHaveTextContent("客户端心跳超时，当前离线");
+    expect(container).toHaveTextContent("在线异常端");
+    expect(container).not.toHaveTextContent("历史离线端");
+    expect(container).not.toHaveTextContent("主动停止端");
   });
 
   it("keeps device credentials separate from password settings", async () => {
