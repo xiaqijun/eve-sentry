@@ -245,6 +245,51 @@ def test_alert_controller_uses_compact_hostile_and_safe_messages(monkeypatch):
     ]
 
 
+def test_alert_controller_updates_case_variant_system_as_one_tile(monkeypatch):
+    class FakeOverlay:
+        def __init__(self):
+            self.summaries = []
+
+        def show_summaries(self, summaries):
+            self.summaries = [dict(item) for item in summaries]
+
+        def set_status(self, *_args):
+            pass
+
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller._recent_summaries = [
+        {
+            "system_name": "s-kswl",
+            "hostile_count": 0,
+            "active_hostile_count": 0,
+            "active": False,
+        }
+    ]
+    controller._local_hostile_counts = {}
+    controller._last_notified = {}
+    controller._alert_cooldown = 0
+    controller._alert_muted = True
+    controller.overlay = FakeOverlay()
+    controller._notification_callback = lambda *_args: None
+    controller._tray = None
+    monkeypatch.setattr("app.alert_client.play_alert_sound", lambda: None)
+
+    controller._on_alert(
+        {"id": "evt-1", "system_name": "S-KSWL", "hostile_count": 2}
+    )
+
+    assert len(controller._recent_summaries) == 1
+    assert controller.overlay.summaries[0]["hostile_count"] == 2
+    assert controller.overlay.summaries[0]["active_hostile_count"] == 2
+    assert controller.overlay.summaries[0]["active"] is True
+
+    controller._on_safe({"system_name": "s-KsWl", "hostile_count": 0})
+
+    assert len(controller._recent_summaries) == 1
+    assert controller.overlay.summaries[0]["active_hostile_count"] == 0
+    assert controller.overlay.summaries[0]["active"] is False
+
+
 def test_alert_controller_draws_existing_monitoring_systems_without_notification():
     notifications = []
 
