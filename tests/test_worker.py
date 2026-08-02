@@ -329,8 +329,45 @@ def test_monitor_worker_keeps_scan_interval_when_unchanged_frames_skip_ocr(
     worker.run()
 
     assert ocr.calls == 1
-    assert waits == [1, 2, 2]
+    assert waits == [2, 2, 2]
     assert statuses.count("画面无变化，已跳过 OCR") == 2
+
+
+def test_monitor_worker_keeps_configured_interval_for_benign_frame_changes(
+    monkeypatch,
+):
+    frames = [
+        Image.new("RGB", (180, 100), color=color)
+        for color in ((12, 13, 13), (13, 13, 13), (14, 13, 13))
+    ]
+
+    class ChangingFrameCapturer:
+        def screenshot(self, _x, _y, _w, _h):
+            if frames:
+                return frames.pop(0)
+            raise TargetWindowClosed("done")
+
+    class WarmUpOnlyOcr:
+        def warm_up(self):
+            return None
+
+        def recognize(self, _image, progress=None):
+            _ = progress
+            raise AssertionError("benign frames must not run OCR")
+
+    waits = []
+    monkeypatch.setattr(
+        MonitorWorker,
+        "_wait_for_next_scan",
+        lambda self: waits.append(self._active_interval),
+    )
+    worker = MonitorWorker(ChangingFrameCapturer(), WarmUpOnlyOcr())
+    worker.set_interval(3)
+    worker.set_region(0, 0, 180, 100)
+
+    worker.run()
+
+    assert waits == [3, 3, 3]
 
 
 def test_monitor_worker_never_skips_ocr_while_hostiles_remain(monkeypatch):

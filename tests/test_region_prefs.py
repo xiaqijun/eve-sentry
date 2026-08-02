@@ -119,3 +119,77 @@ def test_region_preferences_does_not_reuse_region_for_unknown_window(tmp_path):
     prefs.save_region(saved_window, {"x": 600, "y": 100, "w": 180, "h": 300})
 
     assert prefs.resolve_region(unknown_window) is None
+
+
+def test_default_region_preferences_are_saved_outside_install_directory(
+    tmp_path,
+    monkeypatch,
+):
+    local_app_data = tmp_path / "local-app-data"
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.chdir(install_dir)
+
+    prefs = RegionPreferences()
+    window = {"x": 100, "y": 50, "w": 800, "h": 600}
+    region = {"x": 300, "y": 200, "w": 160, "h": 180}
+    prefs.save_region(window, region)
+
+    saved_path = local_app_data / "EVE Sentry" / "region_prefs.json"
+    assert saved_path.is_file()
+    assert not (install_dir / "region_prefs.json").exists()
+    assert RegionPreferences(saved_path).resolve_region(window) == region
+
+
+def test_default_region_preferences_migrate_from_update_backup(
+    tmp_path,
+    monkeypatch,
+):
+    local_app_data = tmp_path / "local-app-data"
+    backup_path = (
+        local_app_data
+        / "EVE Sentry"
+        / "updates"
+        / "previous-version"
+        / "region_prefs.json"
+    )
+    backup_path.parent.mkdir(parents=True)
+    legacy = RegionPreferences(backup_path)
+    window = {"hwnd": 10, "title": "EVE - Pilot", "x": 0, "y": 0, "w": 1000, "h": 800}
+    region = {"x": 700, "y": 100, "w": 250, "h": 500}
+    legacy.save_region(window, region)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.chdir(tmp_path)
+
+    migrated = RegionPreferences()
+
+    target = local_app_data / "EVE Sentry" / "region_prefs.json"
+    assert target.is_file()
+    assert migrated.resolve_region(window) == region
+
+
+def test_existing_user_region_preferences_win_over_update_backup(
+    tmp_path,
+    monkeypatch,
+):
+    local_app_data = tmp_path / "local-app-data"
+    target = local_app_data / "EVE Sentry" / "region_prefs.json"
+    backup = (
+        local_app_data
+        / "EVE Sentry"
+        / "updates"
+        / "previous-version"
+        / "region_prefs.json"
+    )
+    window = {"hwnd": 10, "title": "EVE - Pilot", "x": 0, "y": 0, "w": 1000, "h": 800}
+    current_region = {"x": 700, "y": 100, "w": 250, "h": 500}
+    stale_region = {"x": 100, "y": 100, "w": 200, "h": 300}
+    RegionPreferences(target).save_region(window, current_region)
+    RegionPreferences(backup).save_region(window, stale_region)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.chdir(tmp_path)
+
+    prefs = RegionPreferences()
+
+    assert prefs.resolve_region(window) == current_region

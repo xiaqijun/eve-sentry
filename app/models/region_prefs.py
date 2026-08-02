@@ -3,27 +3,107 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import sys
 from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
+REGION_PREFERENCES_FILENAME = "region_prefs.json"
+
+
+def _user_state_root() -> Path:
+    base = os.environ.get("LOCALAPPDATA")
+    if base:
+        return Path(base) / "EVE Sentry"
+    return Path.home() / ".eve-sentry"
+
+
+def default_region_preferences_path() -> Path:
+    """Return the update-safe per-user path for capture region settings."""
+    return _user_state_root() / REGION_PREFERENCES_FILENAME
+
+
+def _legacy_region_preferences_paths() -> tuple[Path, ...]:
+    """Return old locations that may still contain update-sensitive settings."""
+    candidates = [
+        _user_state_root()
+        / "updates"
+        / "previous-version"
+        / REGION_PREFERENCES_FILENAME,
+    ]
+    if getattr(sys, "frozen", False):
+        candidates.append(
+            Path(sys.executable).resolve().parent / REGION_PREFERENCES_FILENAME
+        )
+    candidates.append(Path.cwd() / REGION_PREFERENCES_FILENAME)
+
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append(candidate)
+    return tuple(unique)
+
+
+def _read_preferences(path: Path) -> dict | None:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 class RegionPreferences:
     """Store the member-list region as ratios relative to the EVE window."""
 
-    def __init__(self, filepath: str = "region_prefs.json") -> None:
-        self._filepath = Path(filepath)
+    def __init__(self, filepath: str | Path | None = None) -> None:
+        use_default_path = filepath is None
+        self._filepath = (
+            default_region_preferences_path()
+            if use_default_path
+            else Path(filepath)
+        )
+        target_existed = self._filepath.exists()
         self._data = self._load()
+        if use_default_path and not target_existed:
+            self._migrate_legacy_preferences()
 
     def _load(self) -> dict:
-        try:
-            if self._filepath.exists():
-                data = json.loads(self._filepath.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    return data
-        except (OSError, json.JSONDecodeError):
-            pass
-        return {}
+        return _read_preferences(self._filepath) or {}
+
+    def _migrate_legacy_preferences(self) -> None:
+        target = self._filepath.resolve()
+        for candidate in _legacy_region_preferences_paths():
+            if candidate.resolve() == target:
+                continue
+            data = _read_preferences(candidate)
+            if data is None:
+                continue
+            self._data = data
+            try:
+                self._save()
+            except OSError:
+                logger.warning(
+                    "Could not migrate region preferences from %s to %s",
+                    candidate,
+                    self._filepath,
+                    exc_info=True,
+                )
+                return
+            logger.info(
+                "Migrated region preferences from %s to %s",
+                candidate,
+                self._filepath,
+            )
+            return
 
     def _save(self) -> None:
+        self._filepath.parent.mkdir(parents=True, exist_ok=True)
         self._filepath.write_text(
             json.dumps(self._data, ensure_ascii=False, indent=2),
             encoding="utf-8",

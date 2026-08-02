@@ -178,6 +178,18 @@ def test_build_update_script_waits_replaces_and_restarts(tmp_path):
     assert "a" * 64 in script
 
 
+def test_build_update_script_preserves_legacy_region_preferences(tmp_path):
+    script = build_update_script(
+        tmp_path / "client.zip",
+        Path("C:/Apps/EVE Sentry"),
+        "EVE-Sentry-Monitor.exe",
+        4242,
+    )
+
+    assert "$installCopyArgs = @('/XF', 'region_prefs.json')" in script
+    assert "@installCopyArgs" in script
+
+
 def test_client_updater_reports_verified_package_ready_to_install(tmp_path):
     updater = ClientUpdater(
         update_dir=tmp_path / "updates",

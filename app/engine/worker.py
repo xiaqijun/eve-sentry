@@ -162,11 +162,6 @@ class MonitorWorker(QThread):
                     fingerprint = _frame_fingerprint(img)
                     frame_changed = fingerprint != self._previous_fingerprint
                     self._previous_fingerprint = fingerprint
-                    if frame_changed:
-                        self._burst_scans_remaining = max(
-                            self._burst_scans_remaining,
-                            2,
-                        )
 
                     # 2. Detect hostile icons before OCR and publish count changes.
                     hostile_icons = find_hostile_icons(img)
