@@ -4,6 +4,7 @@ import ctypes
 import logging
 import os
 import sys
+from pathlib import Path
 
 from app.diagnostics import configure_client_logging
 
@@ -38,11 +39,30 @@ def configure_windows_dpi_awareness() -> None:
 configure_windows_dpi_awareness()
 
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QTimer, Qt
 
 from app.ui.main_window import MainWindow
 from app.single_instance import SingleInstanceGuard
+from app.updater import UPDATE_HEALTH_STABILITY_SECONDS
 from app.version import current_version
+
+
+def write_update_health_marker(marker_path: str) -> None:
+    """Confirm the running version to the detached installer."""
+    try:
+        Path(marker_path).write_text(current_version(), encoding="ascii")
+    except OSError:
+        logging.getLogger(__name__).exception(
+            "Could not write update startup health marker"
+        )
+
+
+def schedule_update_health_marker(marker_path: str) -> None:
+    """Wait for a stable event loop before confirming startup health."""
+    QTimer.singleShot(
+        UPDATE_HEALTH_STABILITY_SECONDS * 1000,
+        lambda: write_update_health_marker(marker_path),
+    )
 
 
 def main():
@@ -73,14 +93,7 @@ def main():
     instance.activate_requested.connect(window.activate_window)
     app.aboutToQuit.connect(instance.close)
     if health_marker:
-        try:
-            from pathlib import Path
-
-            Path(health_marker).write_text("ok", encoding="ascii")
-        except OSError:
-            logging.getLogger(__name__).exception(
-                "Could not write update startup health marker"
-            )
+        schedule_update_health_marker(health_marker)
     if window.should_start_minimized():
         window.hide()
     else:

@@ -128,6 +128,77 @@ def test_close_event_starts_shutdown_without_accepting_a_blocking_close():
     assert calls == ["shutdown", "ignored"]
 
 
+def test_close_event_installs_ready_update_instead_of_hiding_to_tray():
+    calls = []
+
+    class FakeEvent:
+        def ignore(self):
+            calls.append("ignored")
+
+    class FakeSettings:
+        def get_close_to_tray(self):
+            return True
+
+    class FakeUpdater:
+        ready_to_install = True
+
+    class FakeWindow:
+        def __init__(self):
+            self._settings = FakeSettings()
+            self._updater = FakeUpdater()
+            self._shutdown_in_progress = False
+
+        def _quit_app(self):
+            calls.append("shutdown")
+
+        def hide(self):
+            calls.append("hidden")
+
+    MainWindow.closeEvent(FakeWindow(), FakeEvent())
+
+    assert calls == ["shutdown", "ignored"]
+
+
+def test_close_event_still_hides_to_tray_without_ready_update():
+    calls = []
+
+    class FakeEvent:
+        def ignore(self):
+            calls.append("ignored")
+
+    class FakeSettings:
+        def get_close_to_tray(self):
+            return True
+
+    class FakeUpdater:
+        ready_to_install = False
+
+    class FakeTray:
+        def showMessage(self, title, message):
+            calls.append((title, message))
+
+    class FakeWindow:
+        def __init__(self):
+            self._settings = FakeSettings()
+            self._updater = FakeUpdater()
+            self._tray = FakeTray()
+            self._shutdown_in_progress = False
+
+        def _quit_app(self):
+            calls.append("shutdown")
+
+        def hide(self):
+            calls.append("hidden")
+
+    MainWindow.closeEvent(FakeWindow(), FakeEvent())
+
+    assert calls == [
+        "hidden",
+        ("EVE Sentry", "客户端仍在托盘中运行"),
+        "ignored",
+    ]
+
+
 def test_quit_app_hides_and_starts_non_blocking_worker_shutdown(monkeypatch):
     calls = []
 
@@ -172,6 +243,38 @@ def test_quit_app_hides_and_starts_non_blocking_worker_shutdown(monkeypatch):
         ("timer", 0),
         "poll",
     ]
+
+
+def test_quit_app_stays_open_when_ready_update_cannot_launch():
+    calls = []
+
+    class FakeUpdater:
+        ready_to_install = True
+
+        def install_on_exit(self):
+            calls.append("install")
+            return False
+
+    class FakeWindow:
+        def __init__(self):
+            self._updater = FakeUpdater()
+            self._shutdown_in_progress = False
+
+        def show(self):
+            calls.append("show")
+
+        def raise_(self):
+            calls.append("raise")
+
+        def hide(self):
+            calls.append("hide")
+
+    window = FakeWindow()
+
+    MainWindow._quit_app(window)
+
+    assert calls == ["install", "show", "raise"]
+    assert window._shutdown_in_progress is False
 
 
 def test_shutdown_poll_quits_only_after_qt_workers_exit(monkeypatch):

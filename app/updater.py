@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import base64
 import json
+import logging
 import os
 import re
 import shutil
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,16 @@ from PyQt6.QtNetwork import (
 )
 
 from app.version import current_version, update_manifest_url
+
+
+logger = logging.getLogger(__name__)
+PENDING_UPDATE_FILENAME = "pending-update.json"
+UPDATE_RESULT_FILENAME = "update-result.json"
+UPDATE_LOG_FILENAME = "update.log"
+UPDATE_HEALTH_STABILITY_SECONDS = 8
+UPDATE_RESULT_POLL_ATTEMPTS = 15
+UPDATE_RESULT_POLL_INTERVAL_MS = 1000
+OWNED_EXPANDED_DIRNAME = "EVE-Sentry-Monitor-ONNX"
 
 
 class UpdateError(RuntimeError):
@@ -270,13 +282,286 @@ def default_update_dir() -> Path:
     return Path.home() / ".eve-sentry" / "updates"
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _directory_size(path: Path) -> int:
+    total = 0
+    for candidate in Path(path).rglob("*"):
+        try:
+            if candidate.is_file():
+                total += candidate.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _is_link_or_junction(path: Path) -> bool:
+    """Return whether a directory is a link that cleanup must never traverse."""
+    is_junction = getattr(os.path, "isjunction", lambda _path: False)
+    return path.is_symlink() or bool(is_junction(path))
+
+
+def _safe_zip_members(path: Path) -> tuple[list[str], int]:
+    """Validate archive member paths and return names plus expanded size."""
+    names: list[str] = []
+    expanded_size = 0
+    with zipfile.ZipFile(path) as archive:
+        for entry in archive.infolist():
+            normalized = entry.filename.replace("\\", "/")
+            member = Path(normalized)
+            unix_type = (entry.external_attr >> 16) & 0o170000
+            if (
+                not normalized
+                or normalized.startswith("/")
+                or member.is_absolute()
+                or ".." in member.parts
+                or unix_type == 0o120000
+            ):
+                raise UpdateError(f"更新包包含不安全路径：{entry.filename}")
+            names.append(normalized.rstrip("/"))
+            expanded_size += max(0, int(entry.file_size))
+    return names, expanded_size
+
+
+def _verify_staged_component(path: Path, component: UpdateComponent) -> None:
+    """Revalidate a staged package immediately before starting installation."""
+    package = Path(path)
+    try:
+        actual_size = package.stat().st_size
+    except OSError as exc:
+        raise UpdateError(f"更新包不存在：{package.name}") from exc
+    if package.is_symlink() or actual_size != component.size:
+        raise UpdateError(f"更新包大小校验失败：{package.name}")
+    if _file_sha256(package) != component.sha256:
+        raise UpdateError(f"更新包 SHA256 校验失败：{package.name}")
+
+
+def validate_install_preflight(
+    install_dir: Path,
+    package_paths: list[Path],
+    executable_name: str = "EVE-Sentry-Monitor.exe",
+) -> None:
+    """Fail before shutdown when the current directory cannot be updated safely."""
+    install_root = Path(install_dir)
+    if not install_root.is_dir():
+        raise UpdateError("当前客户端目录不存在")
+    packages = [Path(path) for path in package_paths if path]
+    if not packages:
+        raise UpdateError("没有可安装的更新包")
+
+    expanded_bytes = 0
+    for index, package in enumerate(packages):
+        if not package.is_file() or package.is_symlink():
+            raise UpdateError(f"更新包不存在：{package.name}")
+        try:
+            names, package_expanded_bytes = _safe_zip_members(package)
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise UpdateError(f"更新包无法读取：{package.name}") from exc
+        expanded_bytes += package_expanded_bytes
+        if index == 0 and not any(
+            Path(name).name.casefold() == executable_name.casefold()
+            for name in names
+        ):
+            raise UpdateError(f"程序更新包缺少 {executable_name}")
+
+    probe = install_root / f".eve-sentry-write-test-{os.getpid()}"
+    try:
+        probe.write_bytes(b"ok")
+        probe.unlink()
+    except OSError as exc:
+        probe.unlink(missing_ok=True)
+        raise UpdateError(f"当前客户端目录不可写：{exc}") from exc
+
+    reservations: dict[tuple[str, str], tuple[Path, int]] = {}
+
+    def reserve(location: Path, size: int) -> None:
+        resolved = Path(location).resolve()
+        try:
+            volume_key = ("device", str(os.stat(resolved).st_dev))
+        except OSError:
+            volume_key = ("anchor", resolved.anchor.casefold())
+        previous = reservations.get(volume_key)
+        reservations[volume_key] = (
+            resolved,
+            max(0, int(size)) + (previous[1] if previous else 0),
+        )
+
+    install_bytes = _directory_size(install_root)
+    reserve(install_root, expanded_bytes)
+    reserve(Path(tempfile.gettempdir()), expanded_bytes)
+    reserve(packages[0].parent, install_bytes)
+    safety_margin = 256 * 1024 * 1024
+    for location, reserved_bytes in reservations.values():
+        required = reserved_bytes + safety_margin
+        free = shutil.disk_usage(location).free
+        if free < required:
+            required_gib = required / (1024 ** 3)
+            free_gib = free / (1024 ** 3)
+            raise UpdateError(
+                f"磁盘空间不足，需要约 {required_gib:.1f} GB，当前可用 {free_gib:.1f} GB"
+            )
+
+
+def save_pending_update(
+    update_dir: Path,
+    release: ReleaseInfo,
+    program_path: Path,
+    model_path: Path | None,
+) -> None:
+    """Persist a verified download so a restart does not download it again."""
+    program_path = Path(program_path)
+    model_path = Path(model_path) if model_path is not None else None
+    payload = {
+        "version": release.version,
+        "program": {
+            "filename": program_path.name,
+            "sha256": release.sha256,
+            "size": release.size,
+        },
+        "models": None,
+    }
+    if release.models is not None and model_path is not None:
+        payload["models"] = {
+            "version": release.models.version,
+            "filename": model_path.name,
+            "sha256": release.models.sha256,
+            "size": release.models.size,
+        }
+    root = Path(update_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    destination = root / PENDING_UPDATE_FILENAME
+    temporary = destination.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(destination)
+
+
+def load_pending_update(
+    update_dir: Path,
+    installed_version: str,
+    *,
+    allow_current_version: bool = False,
+) -> tuple[ReleaseInfo, Path, Path | None] | None:
+    """Restore locally verified packages when they still match persisted hashes."""
+    root = Path(update_dir)
+    state_path = root / PENDING_UPDATE_FILENAME
+    if not state_path.is_file() or state_path.is_symlink():
+        return None
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        version = str(payload["version"])
+        is_newer = is_newer_version(version, installed_version)
+        is_current = not is_newer and not is_newer_version(
+            installed_version,
+            version,
+        )
+        if not is_newer and not (allow_current_version and is_current):
+            try:
+                state_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        program = payload["program"]
+        program_filename = str(program["filename"])
+        if Path(program_filename).name != program_filename:
+            raise UpdateError("已下载程序包路径无效")
+        program_path = root / program_filename
+        program_component = UpdateComponent(
+            version,
+            "https://local.invalid/program",
+            str(program["sha256"]),
+            int(program["size"]),
+            program_path.name,
+        )
+        if (
+            not program_path.is_file()
+            or program_path.is_symlink()
+            or program_path.stat().st_size != program_component.size
+            or _file_sha256(program_path) != program_component.sha256
+        ):
+            raise UpdateError("已下载程序包校验失败")
+        model_component = None
+        model_path = None
+        model = payload.get("models")
+        if isinstance(model, dict):
+            model_filename = str(model["filename"])
+            if Path(model_filename).name != model_filename:
+                raise UpdateError("已下载模型包路径无效")
+            model_path = root / model_filename
+            model_component = UpdateComponent(
+                str(model["version"]),
+                "https://local.invalid/models",
+                str(model["sha256"]),
+                int(model["size"]),
+                model_path.name,
+            )
+            if (
+                not model_path.is_file()
+                or model_path.is_symlink()
+                or model_path.stat().st_size != model_component.size
+                or _file_sha256(model_path) != model_component.sha256
+            ):
+                raise UpdateError("已下载模型包校验失败")
+        return (
+            ReleaseInfo(
+                version,
+                "https://local.invalid/program",
+                program_component.sha256,
+                program_component.size,
+                program_component.filename,
+                model_component,
+            ),
+            program_path,
+            model_path,
+        )
+    except (KeyError, TypeError, ValueError, OSError, UpdateError, json.JSONDecodeError):
+        logger.warning("Discarding invalid pending client update", exc_info=True)
+        try:
+            state_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+
+def load_update_result(update_dir: Path) -> dict[str, str] | None:
+    """Consume the previous detached installer's user-visible result."""
+    path = Path(update_dir) / UPDATE_RESULT_FILENAME
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        status = str(payload.get("status") or "")
+        version = str(payload.get("version") or "")
+        message = str(payload.get("message") or "")
+        if status not in {"success", "rolled_back", "failed"}:
+            return None
+        return {"status": status, "version": version, "message": message}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def cleanup_update_artifacts(
     update_dir: Path,
     temp_dir: Path | None = None,
     stale_after_seconds: float = 7 * 24 * 60 * 60,
+    preserved_paths: tuple[Path, ...] = (),
 ) -> None:
     """Remove packages and staging files left by completed or interrupted updates."""
     update_root = Path(update_dir)
+    preserved = {Path(path).resolve() for path in preserved_paths}
     stale_before = time.time() - max(0.0, float(stale_after_seconds))
     for pattern in (
         "EVE-Sentry-Monitor-*.zip",
@@ -287,11 +572,18 @@ def cleanup_update_artifacts(
             try:
                 if (
                     (path.is_file() or path.is_symlink())
+                    and path.resolve() not in preserved
                     and path.stat().st_mtime <= stale_before
                 ):
                     path.unlink()
             except OSError:
                 continue
+    expanded_path = update_root / OWNED_EXPANDED_DIRNAME
+    try:
+        if expanded_path.is_dir() and not _is_link_or_junction(expanded_path):
+            shutil.rmtree(expanded_path)
+    except OSError:
+        pass
     try:
         update_root.rmdir()
     except OSError:
@@ -299,7 +591,7 @@ def cleanup_update_artifacts(
 
     stage_root = Path(temp_dir or tempfile.gettempdir())
     for path in stage_root.glob("eve-sentry-update-*"):
-        if not path.is_dir():
+        if not path.is_dir() or _is_link_or_junction(path):
             continue
         try:
             if path.stat().st_mtime > stale_before:
@@ -315,6 +607,11 @@ def build_update_script(
     executable_name: str,
     process_id: int,
     model_package_path: Path | None = None,
+    target_version: str = "",
+    package_sha256: str = "",
+    package_size: int = 0,
+    model_sha256: str = "",
+    model_size: int = 0,
 ) -> str:
     """Build the PowerShell script that replaces files after client exit."""
     values = {
@@ -322,26 +619,97 @@ def build_update_script(
         "install": str(install_dir),
         "exe": executable_name,
         "models": str(model_package_path or ""),
+        "version": str(target_version),
+        "package_hash": str(package_sha256).lower(),
+        "model_hash": str(model_sha256).lower(),
     }
     escaped = {key: value.replace("'", "''") for key, value in values.items()}
     return f"""$ErrorActionPreference = 'Stop'
 $package = '{escaped['package']}'
 $install = '{escaped['install']}'
 $modelPackage = '{escaped['models']}'
+$targetVersion = '{escaped['version']}'
+$executableName = '{escaped['exe']}'
+$expectedPackageHash = '{escaped['package_hash']}'
+$expectedPackageSize = [int64]{max(0, int(package_size))}
+$expectedModelHash = '{escaped['model_hash']}'
+$expectedModelSize = [int64]{max(0, int(model_size))}
 $updateRoot = Split-Path -Parent $PSCommandPath
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('eve-sentry-update-' + [guid]::NewGuid())
 $backup = Join-Path $updateRoot 'previous-version'
 $healthMarker = Join-Path $updateRoot 'startup-ok.marker'
+$resultPath = Join-Path $updateRoot '{UPDATE_RESULT_FILENAME}'
+$logPath = Join-Path $updateRoot '{UPDATE_LOG_FILENAME}'
+$backupComplete = $false
+$installStarted = $false
 $updated = $false
+$rollbackSucceeded = $false
+$newProcess = $null
+function Write-UpdateLog([string]$message) {{
+    try {{
+        $line = "$(Get-Date -Format o) $message"
+        Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8
+    }} catch {{}}
+}}
+function Write-UpdateResult([string]$status, [string]$message) {{
+    try {{
+        $temporaryResult = "$resultPath.tmp"
+        @{{ status = $status; version = $targetVersion; message = $message; completed_at = [DateTimeOffset]::UtcNow.ToString('o') }} |
+            ConvertTo-Json | Set-Content -LiteralPath $temporaryResult -Encoding UTF8
+        Move-Item -LiteralPath $temporaryResult -Destination $resultPath -Force
+    }} catch {{}}
+}}
+function Start-InstalledClient([bool]$withHealthMarker) {{
+    $executable = Join-Path $install $executableName
+    if ($withHealthMarker) {{
+        $quotedMarker = '"' + $healthMarker.Replace('"', '\"') + '"'
+        return Start-Process -FilePath $executable -WorkingDirectory $install -ArgumentList @('--update-health-marker', $quotedMarker) -PassThru
+    }}
+    Start-Process -FilePath $executable -WorkingDirectory $install | Out-Null
+}}
 try {{
+    New-Item -ItemType Directory -Path $updateRoot -Force | Out-Null
+    Write-UpdateLog "install started for version $targetVersion"
+    if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {{ throw 'program package is missing' }}
+    if (-not (Test-Path -LiteralPath $install -PathType Container)) {{ throw 'install directory is missing' }}
+    $writeProbe = Join-Path $install ('.eve-sentry-write-test-' + $PID)
+    Set-Content -LiteralPath $writeProbe -Value 'ok' -Encoding ASCII
+    Remove-Item -LiteralPath $writeProbe -Force
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($package)
+    try {{
+        $hasExecutable = @($archive.Entries | Where-Object {{ [IO.Path]::GetFileName($_.FullName) -ieq $executableName }}).Count -gt 0
+        if (-not $hasExecutable) {{ throw "program package does not contain $executableName" }}
+    }} finally {{
+        $archive.Dispose()
+    }}
     Wait-Process -Id {int(process_id)} -ErrorAction SilentlyContinue
+    Write-UpdateLog 'previous client exited'
+    if ($expectedPackageSize -gt 0 -and (Get-Item -LiteralPath $package).Length -ne $expectedPackageSize) {{
+        throw 'program package size changed before installation'
+    }}
+    if ($expectedPackageHash -and (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedPackageHash) {{
+        throw 'program package hash changed before installation'
+    }}
+    if ($modelPackage) {{
+        if ($expectedModelSize -gt 0 -and (Get-Item -LiteralPath $modelPackage).Length -ne $expectedModelSize) {{
+            throw 'model package size changed before installation'
+        }}
+        if ($expectedModelHash -and (Get-FileHash -LiteralPath $modelPackage -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedModelHash) {{
+            throw 'model package hash changed before installation'
+        }}
+    }}
     Expand-Archive -LiteralPath $package -DestinationPath $stage -Force
-    $source = Join-Path $stage 'EVE-Sentry-Monitor-ONNX'
+    $source = Join-Path $stage '{OWNED_EXPANDED_DIRNAME}'
     if (-not (Test-Path -LiteralPath $source)) {{
         $directories = @(Get-ChildItem -LiteralPath $stage -Directory)
         if ($directories.Count -eq 1) {{ $source = $directories[0].FullName }} else {{ $source = $stage }}
     }}
-    if ($modelPackage -and (Test-Path -LiteralPath $modelPackage)) {{
+    if (-not (Test-Path -LiteralPath (Join-Path $source $executableName) -PathType Leaf)) {{
+        throw "expanded package does not contain $executableName at its root"
+    }}
+    if ($modelPackage) {{
+        if (-not (Test-Path -LiteralPath $modelPackage -PathType Leaf)) {{ throw 'model package is missing' }}
         $modelStage = Join-Path $stage 'model-component'
         Expand-Archive -LiteralPath $modelPackage -DestinationPath $modelStage -Force
         $modelSource = Join-Path $modelStage 'models'
@@ -356,41 +724,63 @@ try {{
     New-Item -ItemType Directory -Path $backup -Force | Out-Null
     $null = & robocopy $install $backup /MIR /R:2 /W:1
     if ($LASTEXITCODE -ge 8) {{ throw "backup failed with exit code $LASTEXITCODE" }}
+    $backupComplete = $true
+    Write-UpdateLog 'backup completed'
     $modelCopyArgs = @()
     if (-not $modelPackage) {{ $modelCopyArgs = @('/XD', 'models') }}
+    $installStarted = $true
     $null = & robocopy $source $install /MIR /R:3 /W:1 @modelCopyArgs
-    if ($LASTEXITCODE -ge 8) {{ throw "robocopy failed with exit code $LASTEXITCODE" }}
+    if ($LASTEXITCODE -ge 8) {{ throw "install copy failed with exit code $LASTEXITCODE" }}
+    Write-UpdateLog 'new files installed'
     Remove-Item -LiteralPath $healthMarker -Force -ErrorAction SilentlyContinue
-    Start-Process -FilePath (Join-Path $install '{escaped['exe']}') -WorkingDirectory $install -ArgumentList @('--update-health-marker', $healthMarker)
-    for ($attempt = 0; $attempt -lt 30; $attempt++) {{
-        if (Test-Path -LiteralPath $healthMarker) {{ $updated = $true; break }}
+    $newProcess = Start-InstalledClient $true
+    Write-UpdateLog 'new client launched; waiting for {UPDATE_HEALTH_STABILITY_SECONDS}-second stability confirmation'
+    for ($attempt = 0; $attempt -lt 45; $attempt++) {{
+        if ($newProcess.HasExited) {{ break }}
+        if (Test-Path -LiteralPath $healthMarker -PathType Leaf) {{
+            $confirmedVersion = (Get-Content -LiteralPath $healthMarker -Raw -ErrorAction SilentlyContinue).Trim()
+            if ($confirmedVersion -eq $targetVersion) {{ $updated = $true; break }}
+        }}
         Start-Sleep -Seconds 1
     }}
-    if (-not $updated) {{
-        Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension('{escaped['exe']}')) -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-        $null = & robocopy $backup $install /MIR /R:3 /W:1
-        if ($LASTEXITCODE -ge 8) {{ throw "rollback failed with exit code $LASTEXITCODE" }}
-        Start-Process -FilePath (Join-Path $install '{escaped['exe']}') -WorkingDirectory $install
-        throw 'updated client did not confirm startup; previous version restored'
-    }}
+    if (-not $updated) {{ throw 'updated client did not remain healthy or confirm its version' }}
+    Write-UpdateLog 'startup health check passed'
+    Write-UpdateResult 'success' '客户端更新成功'
 }} catch {{
-    if ((Test-Path -LiteralPath $backup) -and -not $updated) {{
+    $failure = $_.Exception.Message
+    Write-UpdateLog "install failed: $failure"
+    if ($null -ne $newProcess -and -not $newProcess.HasExited) {{
+        Stop-Process -Id $newProcess.Id -Force -ErrorAction SilentlyContinue
+    }}
+    if ($backupComplete -and $installStarted) {{
         $null = & robocopy $backup $install /MIR /R:3 /W:1
-        Start-Process -FilePath (Join-Path $install '{escaped['exe']}') -WorkingDirectory $install -ErrorAction SilentlyContinue
+        if ($LASTEXITCODE -lt 8) {{
+            $rollbackSucceeded = $true
+            Write-UpdateLog 'previous version restored'
+            Write-UpdateResult 'rolled_back' "更新失败，已恢复旧版本：$failure"
+            try {{ Start-InstalledClient $false }} catch {{ Write-UpdateLog "restored client could not start: $($_.Exception.Message)" }}
+        }} else {{
+            Write-UpdateLog "rollback failed with exit code $LASTEXITCODE"
+            Write-UpdateResult 'failed' "更新和回滚均失败，备份已保留：$failure"
+        }}
+    }} else {{
+        Write-UpdateResult 'failed' "更新未开始，原版本未改动：$failure"
+        if (Test-Path -LiteralPath (Join-Path $install $executableName) -PathType Leaf) {{
+            try {{ Start-InstalledClient $false }} catch {{ Write-UpdateLog "existing client could not start: $($_.Exception.Message)" }}
+        }}
     }}
 }} finally {{
     Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $package -Force -ErrorAction SilentlyContinue
-    if ($modelPackage) {{ Remove-Item -LiteralPath $modelPackage -Force -ErrorAction SilentlyContinue }}
-    Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $healthMarker -Force -ErrorAction SilentlyContinue
-    Get-ChildItem -LiteralPath $updateRoot -File -ErrorAction SilentlyContinue |
-        Where-Object {{ $_.Name -like 'EVE-Sentry-Monitor-*.zip' -or $_.Name -like '*.zip.part' -or $_.Name -like 'apply-*.ps1' }} |
-        Remove-Item -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
-    if ((Test-Path -LiteralPath $updateRoot) -and -not (Get-ChildItem -LiteralPath $updateRoot -Force -ErrorAction SilentlyContinue)) {{
-        Remove-Item -LiteralPath $updateRoot -Force -ErrorAction SilentlyContinue
+    if ($updated) {{
+        Remove-Item -LiteralPath $package -Force -ErrorAction SilentlyContinue
+        if ($modelPackage) {{ Remove-Item -LiteralPath $modelPackage -Force -ErrorAction SilentlyContinue }}
+        Remove-Item -LiteralPath (Join-Path $updateRoot '{PENDING_UPDATE_FILENAME}') -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+    }} elseif ($rollbackSucceeded) {{
+        Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
     }}
+    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
 }}
 """
 
@@ -414,7 +804,17 @@ class ClientUpdater(QObject):
         self.manifest_url = str(manifest_url or update_manifest_url()).strip()
         self.installed_version = str(installed_version or current_version()).strip()
         self.update_dir = Path(update_dir or default_update_dir())
-        cleanup_update_artifacts(self.update_dir)
+        installer_in_flight = any(self.update_dir.glob("apply-*.ps1"))
+        pending = load_pending_update(
+            self.update_dir,
+            self.installed_version,
+            allow_current_version=installer_in_flight,
+        )
+        preserved_paths = tuple(pending[1:] if pending is not None else ())
+        cleanup_update_artifacts(
+            self.update_dir,
+            preserved_paths=tuple(path for path in preserved_paths if path is not None),
+        )
         self.public_key_path = Path(
             public_key_path or default_update_public_key_path()
         )
@@ -427,19 +827,75 @@ class ClientUpdater(QObject):
         self.background_download = bool(background_download)
         self._network = QNetworkAccessManager(self)
         self._proxy_url = configure_update_proxy(self._network)
-        self._release: ReleaseInfo | None = None
+        restorable = (
+            pending
+            if pending is not None
+            and is_newer_version(pending[0].version, self.installed_version)
+            else None
+        )
+        self._release: ReleaseInfo | None = restorable[0] if restorable else None
         self._download_reply: QNetworkReply | None = None
         self._download_file = None
         self._download_hash = hashlib.sha256()
         self._download_path: Path | None = None
-        self._ready_path: Path | None = None
-        self._program_ready_path: Path | None = None
-        self._model_ready_path: Path | None = None
+        self._ready_path: Path | None = restorable[1] if restorable else None
+        self._program_ready_path: Path | None = restorable[1] if restorable else None
+        self._model_ready_path: Path | None = restorable[2] if restorable else None
         self._current_component: UpdateComponent | None = None
         self._download_kind = "program"
         self._resume_offset = 0
         self._installer_launched = False
         self._busy = False
+        self._result_poll_attempt = 0
+        QTimer.singleShot(0, self._emit_initial_update_state)
+
+    @property
+    def ready_to_install(self) -> bool:
+        """Return whether a verified update is waiting for client shutdown."""
+        return self._ready_path is not None and not self._installer_launched
+
+    def _emit_initial_update_state(self) -> None:
+        """Expose restored downloads and detached installer results after wiring UI."""
+        result = load_update_result(self.update_dir)
+        if result is not None:
+            status = result["status"]
+            version = result["version"]
+            message = result["message"]
+            if status == "success":
+                self.state_changed.emit(
+                    message or f"已更新到 v{version}",
+                    "检查更新",
+                    True,
+                )
+            elif self.ready_to_install:
+                self.state_changed.emit(
+                    message or "更新失败，已恢复旧版本",
+                    "重试安装",
+                    True,
+                )
+            else:
+                self.state_changed.emit(
+                    message or "更新安装失败，请查看 update.log",
+                    "检查更新",
+                    True,
+                )
+            return
+        if self.ready_to_install and self._result_poll_attempt == 0:
+            version = self._release.version if self._release is not None else ""
+            self.state_changed.emit(
+                f"v{version} 更新包已恢复，退出时自动安装",
+                "立即安装",
+                True,
+            )
+        if (
+            self._result_poll_attempt < UPDATE_RESULT_POLL_ATTEMPTS
+            and any(self.update_dir.glob("apply-*.ps1"))
+        ):
+            self._result_poll_attempt += 1
+            QTimer.singleShot(
+                UPDATE_RESULT_POLL_INTERVAL_MS,
+                self._emit_initial_update_state,
+            )
 
     def request_action(self) -> None:
         """Perform the action represented by the current update state."""
@@ -539,40 +995,76 @@ class ClientUpdater(QObject):
 
     def _launch_installer(self) -> bool:
         package = self._ready_path
-        if package is None or self._installer_launched:
+        release = self._release
+        if package is None or release is None or self._installer_launched:
             return False
         if not (sys.platform == "win32" and getattr(sys, "frozen", False)):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(package.parent)))
             self.state_changed.emit("已打开更新包位置", "检查更新", True)
             return False
         install_dir = Path(sys.executable).resolve().parent
-        script_path = self.update_dir / f"apply-{self._release.version}.ps1"
-        script_path.write_text(
-            build_update_script(
-                package,
+        executable_name = Path(sys.executable).name
+        package_paths = [package]
+        if self._model_ready_path is not None:
+            package_paths.append(self._model_ready_path)
+        script_path = self.update_dir / f"apply-{release.version}.ps1"
+        try:
+            program_component = UpdateComponent(
+                release.version,
+                release.url,
+                release.sha256,
+                release.size,
+                release.filename,
+            )
+            _verify_staged_component(package, program_component)
+            if self._model_ready_path is not None:
+                if release.models is None:
+                    raise UpdateError("模型更新包状态不完整")
+                _verify_staged_component(self._model_ready_path, release.models)
+            validate_install_preflight(
                 install_dir,
-                Path(sys.executable).name,
-                os.getpid(),
-                self._model_ready_path,
-            ),
-            encoding="utf-8-sig",
-        )
-        subprocess.Popen(
-            [
-                "powershell.exe",
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-WindowStyle",
-                "Hidden",
-                "-File",
-                str(script_path),
-            ],
-            cwd=str(self.update_dir),
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            close_fds=True,
-        )
+                package_paths,
+                executable_name,
+            )
+            script_path.write_text(
+                build_update_script(
+                    package,
+                    install_dir,
+                    executable_name,
+                    os.getpid(),
+                    self._model_ready_path,
+                    target_version=release.version,
+                    package_sha256=release.sha256,
+                    package_size=release.size,
+                    model_sha256=(release.models.sha256 if release.models else ""),
+                    model_size=(release.models.size if release.models else 0),
+                ),
+                encoding="utf-8-sig",
+            )
+            subprocess.Popen(
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-File",
+                    str(script_path),
+                ],
+                cwd=str(self.update_dir),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                close_fds=True,
+            )
+        except (OSError, UpdateError, zipfile.BadZipFile) as exc:
+            script_path.unlink(missing_ok=True)
+            self.state_changed.emit(
+                f"安装前检查失败：{exc}",
+                "重试安装",
+                True,
+            )
+            return False
         self._installer_launched = True
         self.state_changed.emit("正在安装更新", "安装中", False)
         return True
@@ -694,6 +1186,17 @@ class ClientUpdater(QObject):
             else:
                 self._model_ready_path = target
                 self._ready_path = self._program_ready_path
+            if self._ready_path is None:
+                raise UpdateError("程序更新包状态丢失")
+            try:
+                save_pending_update(
+                    self.update_dir,
+                    release,
+                    self._ready_path,
+                    self._model_ready_path,
+                )
+            except OSError:
+                logger.exception("Could not persist verified pending update")
             self.state_changed.emit("更新包已就绪，退出时自动安装", "立即安装", True)
         except (OSError, UpdateError) as exc:
             transport_failed = (
