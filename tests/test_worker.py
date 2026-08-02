@@ -333,6 +333,42 @@ def test_monitor_worker_keeps_scan_interval_when_unchanged_frames_skip_ocr(
     assert statuses.count("画面无变化，已跳过 OCR") == 2
 
 
+def test_monitor_worker_never_skips_ocr_while_hostiles_remain(monkeypatch):
+    frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
+    ImageDraw.Draw(frame).rectangle((6, 20, 16, 30), fill=(146, 3, 3))
+
+    class FrameCapturer:
+        def __init__(self):
+            self.calls = 0
+
+        def screenshot(self, _x, _y, _w, _h):
+            self.calls += 1
+            if self.calls <= 7:
+                return frame
+            raise TargetWindowClosed("done")
+
+    class RecordingOcr:
+        def __init__(self):
+            self.calls = 0
+
+        def recognize(self, _image, progress=None):
+            _ = progress
+            self.calls += 1
+            return [("Enemy Pilot", 0.99)]
+
+    monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
+    ocr = RecordingOcr()
+    worker = MonitorWorker(FrameCapturer(), ocr)
+    worker.set_region(0, 0, frame.width, frame.height)
+    statuses = []
+    worker.status_update.connect(statuses.append)
+
+    worker.run()
+
+    assert ocr.calls == 7
+    assert "画面无变化，已跳过 OCR" not in statuses
+
+
 def test_monitor_worker_stops_when_the_game_window_closes():
     class ClosedCapturer:
         def screenshot(self, _x, _y, _w, _h):
