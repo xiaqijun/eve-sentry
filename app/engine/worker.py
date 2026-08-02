@@ -176,13 +176,7 @@ class MonitorWorker(QThread):
                         self._burst_scans_remaining = 4
                     previous_hostile_count = hostile_count
 
-                    if (
-                        not frame_changed
-                        and (
-                            hostile_count == 0
-                            or self._burst_scans_remaining <= 0
-                        )
-                    ):
+                    if not frame_changed and hostile_count == 0:
                         scan_count += 1
                         self.scan_complete.emit(scan_count)
                         self._active_interval = self._interval
