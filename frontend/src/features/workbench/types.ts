@@ -85,6 +85,21 @@ export interface ActiveIntelItem {
 export interface VerifiedCharacter {
   character_id: number;
   name: string;
+  zkill?: ZkillStats;
+}
+
+export interface ZkillStats {
+  source?: "zkillboard" | string;
+  character_id?: number;
+  danger_ratio?: number;
+  gang_ratio?: number;
+  solo_ratio?: number;
+  ships_destroyed?: number;
+  ships_lost?: number;
+  isk_destroyed?: number;
+  isk_lost?: number;
+  fetched_at?: string;
+  source_url?: string;
 }
 
 export interface AlertItem {

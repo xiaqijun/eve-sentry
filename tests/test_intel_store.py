@@ -517,6 +517,51 @@ def test_alerts_expose_only_esi_verified_characters(tmp_path):
     assert alerts["OCR noise"]["verified_characters"] == []
 
 
+def test_alerts_expose_persisted_zkill_stats_for_verified_characters(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.add_observation(
+        {
+            "source": "ocr",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+            "character_ids": [123],
+            "metadata": {
+                "esi_resolution": {
+                    "attempted": True,
+                    "resolved_character_names": ["Alice"],
+                },
+                "character_profiles": [
+                    {
+                        "character_id": 123,
+                        "name": "Alice",
+                        "zkill": {
+                            "source": "zkillboard",
+                            "danger_ratio": 84,
+                            "ships_destroyed": 320,
+                            "fetched_at": "2026-08-03T00:00:00Z",
+                        },
+                    }
+                ],
+            },
+        }
+    )
+
+    alert = store.list_alerts()[0]
+
+    assert alert["verified_characters"] == [
+        {
+            "character_id": 123,
+            "name": "Alice",
+            "zkill": {
+                "source": "zkillboard",
+                "danger_ratio": 84,
+                "ships_destroyed": 320,
+                "fetched_at": "2026-08-03T00:00:00Z",
+            },
+        }
+    ]
+
+
 def test_record_ocr_snapshot_does_not_wait_for_esi_resolution(tmp_path):
     class BlockingResolver:
         def __init__(self):

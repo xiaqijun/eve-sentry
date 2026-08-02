@@ -12,7 +12,11 @@ const alerts: AlertItem[] = [
     names: ["Alice", "Rifter", "Bob"],
     character_ids: [101, 102],
     verified_characters: [
-      { character_id: 101, name: "Alice" },
+      {
+        character_id: 101,
+        name: "Alice",
+        zkill: { danger_ratio: 82, ships_destroyed: 320, ships_lost: 18 },
+      },
       { character_id: 102, name: "Bob" },
     ],
     level: "high",
@@ -78,11 +82,15 @@ describe("hostile reporting", () => {
     expect(report.crossSystemTargetCount).toBe(1);
     expect(report.highRiskRate).toBe(50);
     expect(report.averageTargetsPerIncident).toBe(1.5);
+    expect(report.waveCount).toBe(2);
+    expect(report.peakWaveTargets).toBe(2);
+    expect(report.zkillCoverage).toBe(50);
     expect(report.systems.map((item) => item.name)).toEqual(["S-KSWL", "1DQ1-A"]);
     expect(report.targets[0]).toMatchObject({
       name: "Alice",
       incidentCount: 2,
       systems: ["1DQ1-A", "S-KSWL"],
+      dangerRatio: 82,
     });
     expect(report.severity.find((item) => item.level === "high")?.count).toBe(1);
     expect(report.severity.find((item) => item.level === "low")?.count).toBe(1);
@@ -116,6 +124,9 @@ describe("hostile reporting", () => {
     expect(report.crossSystemTargetCount).toBe(0);
     expect(report.highRiskRate).toBe(0);
     expect(report.averageTargetsPerIncident).toBe(0);
+    expect(report.waveCount).toBe(0);
+    expect(report.peakWaveTargets).toBe(0);
+    expect(report.zkillCoverage).toBe(0);
     expect(report.sourceCount).toBe(0);
     expect(report.excludedCount).toBe(0);
     expect(report.verificationRate).toBe(0);

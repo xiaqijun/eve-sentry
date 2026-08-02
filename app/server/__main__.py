@@ -95,7 +95,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--enable-killboard",
         action="store_true",
-        help=argparse.SUPPRESS,
+        help="enable zKillboard character statistics enrichment",
+    )
+    parser.add_argument(
+        "--disable-killboard",
+        action="store_true",
+        help="disable zKillboard enrichment even when public ESI is enabled",
     )
     parser.add_argument("--zkill-cache", default="zkill_cache.json", help=argparse.SUPPRESS)
     return parser
@@ -135,8 +140,15 @@ def main(argv: list[str] | None = None) -> int:
     if resolver is not None or esi_session is not None:
         from app.intel.enrichment import ThreatEnricher
 
+        killboard = None
+        if not args.disable_killboard and (args.enable_killboard or resolver is not None):
+            from app.intel.zkillboard import ZkillboardClient
+
+            killboard = ZkillboardClient()
+
         enricher = ThreatEnricher(
             resolver=resolver,
+            killboard=killboard,
             esi_session=esi_session,
         )
 

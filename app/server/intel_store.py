@@ -514,6 +514,17 @@ class IntelStore:
         observation = self._enrich_observation(observation)
         observation.validate()
         character_profiles = self._character_profiles_for_observation(observation)
+        profile_summaries = [
+            summary
+            for summary in (
+                self._active_character_profile_summary(profile)
+                for profile in character_profiles
+                if isinstance(profile, dict)
+            )
+            if summary
+        ]
+        if profile_summaries:
+            observation.metadata["character_profiles"] = profile_summaries
         suppressed = self._observation_is_suppressed(
             observation,
             character_profiles=character_profiles,
@@ -2183,10 +2194,25 @@ class IntelStore:
         if not character_ids or len(character_ids) != len(resolved_names):
             return []
 
-        return [
-            {"character_id": character_id, "name": name}
-            for character_id, name in zip(character_ids, resolved_names)
-        ]
+        profiles = report.metadata.get("character_profiles")
+        profiles_by_id: dict[int, dict[str, Any]] = {}
+        if isinstance(profiles, list):
+            for profile in profiles:
+                if not isinstance(profile, dict):
+                    continue
+                profile_id = self._optional_int(profile.get("character_id"))
+                if profile_id is not None:
+                    profiles_by_id[profile_id] = profile
+
+        verified = []
+        for character_id, name in zip(character_ids, resolved_names):
+            item: dict[str, Any] = {"character_id": character_id, "name": name}
+            profile = profiles_by_id.get(character_id)
+            zkill = profile.get("zkill") if profile is not None else None
+            if isinstance(zkill, dict) and zkill:
+                item["zkill"] = dict(zkill)
+            verified.append(item)
+        return verified
 
     def _alert_matches(
         self,
@@ -2962,10 +2988,14 @@ class IntelStore:
             "cache_status",
             "cached_at",
             "expires_at",
+            "zkill_danger_ratio",
         ):
             value = profile.get(key)
             if value not in {None, ""}:
                 summary[key] = value
+        zkill = profile.get("zkill")
+        if isinstance(zkill, dict) and zkill:
+            summary["zkill"] = dict(zkill)
         return summary
 
     def _visible_reports(

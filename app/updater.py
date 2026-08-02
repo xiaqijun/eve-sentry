@@ -726,10 +726,10 @@ try {{
     if ($LASTEXITCODE -ge 8) {{ throw "backup failed with exit code $LASTEXITCODE" }}
     $backupComplete = $true
     Write-UpdateLog 'backup completed'
-    $modelCopyArgs = @()
-    if (-not $modelPackage) {{ $modelCopyArgs = @('/XD', 'models') }}
+    $installCopyArgs = @('/XF', 'region_prefs.json')
+    if (-not $modelPackage) {{ $installCopyArgs += @('/XD', 'models') }}
     $installStarted = $true
-    $null = & robocopy $source $install /MIR /R:3 /W:1 @modelCopyArgs
+    $null = & robocopy $source $install /MIR /R:3 /W:1 @installCopyArgs
     if ($LASTEXITCODE -ge 8) {{ throw "install copy failed with exit code $LASTEXITCODE" }}
     Write-UpdateLog 'new files installed'
     Remove-Item -LiteralPath $healthMarker -Force -ErrorAction SilentlyContinue

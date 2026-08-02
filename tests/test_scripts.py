@@ -1951,6 +1951,20 @@ def test_run_server_maps_inactive_intel_retention_environment_option():
     assert argv == ["--inactive-intel-retention-days", "30"]
 
 
+def test_run_server_maps_zkillboard_environment_options():
+    module = _load_script_module("run_server_zkill", "scripts/run_server.py")
+
+    enabled = module.build_server_argv(
+        {"EVE_SENTRY_SERVER_ENABLE_ZKILL": "1"}
+    )
+    disabled = module.build_server_argv(
+        {"EVE_SENTRY_SERVER_DISABLE_ZKILL": "true"}
+    )
+
+    assert enabled == ["--enable-killboard"]
+    assert disabled == ["--disable-killboard"]
+
+
 def test_run_server_main_appends_cli_args(monkeypatch):
     module = _load_script_module("run_server", "scripts/run_server.py")
     recorded = []

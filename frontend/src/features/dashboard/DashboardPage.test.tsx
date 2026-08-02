@@ -58,7 +58,11 @@ describe("DashboardPage", () => {
         system_name: "S-KSWL",
         system_id: 30003615,
         names: ["Alice"],
-        verified_characters: [{ character_id: 101, name: "Alice" }],
+        verified_characters: [{
+          character_id: 101,
+          name: "Alice",
+          zkill: { danger_ratio: 86, ships_destroyed: 420, ships_lost: 23 },
+        }],
         classification: "red",
         level: "high",
         created_at: new Date(now - 5 * 60 * 1000).toISOString(),
@@ -79,22 +83,6 @@ describe("DashboardPage", () => {
       esi: { enabled: true, authenticated: true },
     };
     apiMocks.fetchBootstrap.mockResolvedValue(bootstrap);
-    apiMocks.fetchHostileAlertHistory.mockResolvedValue({
-      alerts: [
-        bootstrap.alerts[0],
-        {
-          id: "ocr-noise",
-          system_name: "S-KSWL",
-          names: ["Noise"],
-          classification: "red",
-          verified_characters: [],
-          level: "low",
-          created_at: new Date(now - 10 * 60 * 1000).toISOString(),
-        },
-      ],
-      count: 2,
-      generatedAt: new Date(now).toISOString(),
-    });
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -113,19 +101,19 @@ describe("DashboardPage", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
 
-    expect(container).toHaveTextContent("仪表盘");
+    expect(container).toHaveTextContent("工作台");
     expect(container).toHaveTextContent("在线监控星系");
     expect(container).toHaveTextContent("当前敌对人数");
     expect(container).toHaveTextContent("待确认告警");
-    expect(container).toHaveTextContent("7 天有效来袭");
-    expect(container).toHaveTextContent("有效数据率");
-    expect(container).toHaveTextContent("50%");
-    expect(container).toHaveTextContent("当前热点星系");
+    expect(container).toHaveTextContent("异常客户端");
+    expect(container).toHaveTextContent("当前敌对星系");
     expect(container).toHaveTextContent("S-KSWL");
-    expect(container).toHaveTextContent("最近有效来袭");
+    expect(container).toHaveTextContent("zKill 86");
+    expect(container).toHaveTextContent("待处置告警");
+    expect(container).toHaveTextContent("监控覆盖");
     expect(container).toHaveTextContent("Alice");
-    expect(container.querySelectorAll('[data-testid="eve-chart"]')).toHaveLength(2);
-    expect(apiMocks.fetchHostileAlertHistory).toHaveBeenCalledWith("7d");
+    expect(container.querySelectorAll('[data-testid="eve-chart"]')).toHaveLength(0);
+    expect(apiMocks.fetchHostileAlertHistory).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
   });

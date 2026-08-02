@@ -6204,6 +6204,10 @@ body {
   margin-bottom: 16px;
 }
 
+.dashboard-live-card {
+  margin-bottom: 16px;
+}
+
 .dashboard-card,
 .hostile-report-card,
 .report-data-quality {
@@ -6252,6 +6256,13 @@ body {
   color: #45514c;
   font-size: 12px;
   border-bottom-color: #edf0ef;
+}
+
+.dashboard-card .arco-table-cell,
+.hostile-report-card .arco-table-cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .dashboard-quality-card .arco-empty,
@@ -6396,6 +6407,65 @@ body {
   margin-top: 6px;
   color: #26332d;
   font-size: 20px;
+}
+
+body[data-theme="dark"] .dashboard-header h4,
+body[data-theme="dark"] .hostile-report-header h4,
+body[data-theme="dark"] .dashboard-header .arco-typography-title,
+body[data-theme="dark"] .hostile-report-header .arco-typography-title,
+body[data-theme="dark"] .dashboard-kpis .arco-statistic-value,
+body[data-theme="dark"] .hostile-report-kpis .arco-statistic-value,
+body[data-theme="dark"] .dashboard-card > .arco-card-header .arco-card-header-title > span,
+body[data-theme="dark"] .hostile-report-card > .arco-card-header .arco-card-header-title > span {
+  color: var(--theme-text);
+}
+
+body[data-theme="dark"] .dashboard-kpis .arco-statistic-title,
+body[data-theme="dark"] .hostile-report-kpis .arco-statistic-title,
+body[data-theme="dark"] .dashboard-card .arco-table-th,
+body[data-theme="dark"] .hostile-report-card .arco-table-th,
+body[data-theme="dark"] .report-quality-main > div,
+body[data-theme="dark"] .report-quality-stats span {
+  color: var(--theme-muted);
+}
+
+body[data-theme="dark"] .dashboard-card .arco-table-td,
+body[data-theme="dark"] .hostile-report-card .arco-table-td,
+body[data-theme="dark"] .report-quality-stats strong {
+  color: var(--theme-text);
+}
+
+body[data-theme="dark"] .dashboard-card,
+body[data-theme="dark"] .hostile-report-card,
+body[data-theme="dark"] .report-data-quality {
+  border-color: var(--theme-border);
+  background: var(--theme-surface);
+}
+
+body[data-theme="dark"] .dashboard-card > .arco-card-header,
+body[data-theme="dark"] .hostile-report-card > .arco-card-header,
+body[data-theme="dark"] .report-data-quality > .arco-card-header,
+body[data-theme="dark"] .dashboard-card .arco-table-td,
+body[data-theme="dark"] .hostile-report-card .arco-table-td {
+  border-color: var(--theme-border);
+}
+
+body[data-theme="dark"] .dashboard-card .arco-table-th,
+body[data-theme="dark"] .hostile-report-card .arco-table-th {
+  background: #142127;
+}
+
+body[data-theme="dark"] .hostile-report-actions .arco-radio-group {
+  border-color: var(--theme-border);
+  background: var(--theme-surface-raised);
+}
+
+body[data-theme="dark"] .report-quality-stats {
+  border-color: var(--theme-border);
+}
+
+body[data-theme="dark"] .report-quality-stats > div {
+  border-color: var(--theme-border);
 }
 
 .hostile-report-recent {
@@ -7128,6 +7198,16 @@ body {
     width: 100%;
   }
 
+  .hostile-report-actions .arco-radio-group {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .hostile-report-actions .arco-radio-button {
+    min-width: 0;
+    text-align: center;
+  }
+
   .report-data-quality > .arco-card-body {
     grid-template-columns: 1fr;
     gap: 18px;
@@ -7333,4 +7413,51 @@ body[data-theme="dark"] .hostile-detail-unresolved {
   border-color: #74433f;
   color: #ffb0a9;
   background: #351d22;
+}
+
+/* Management light-mode rules are declared late for the tactical map. Keep
+   the shared chrome and the two analysis surfaces dark on every route. */
+body[data-theme="dark"] .arco-management-shell,
+body[data-theme="dark"] .management-main,
+body[data-theme="dark"] .management-content {
+  color: var(--theme-text);
+  background: var(--theme-page);
+}
+
+body[data-theme="dark"] .arco-management-shell .management-sidebar {
+  border-right-color: var(--theme-border);
+  background: #0d171b;
+}
+
+body[data-theme="dark"] .arco-management-shell .management-brand,
+body[data-theme="dark"] .arco-management-shell .management-topbar {
+  border-color: var(--theme-border);
+  background: var(--theme-surface);
+}
+
+body[data-theme="dark"] .arco-management-shell .management-brand strong,
+body[data-theme="dark"] .arco-management-shell .management-topbar .arco-typography,
+body[data-theme="dark"] .arco-management-shell .management-topbar-user-copy strong {
+  color: var(--theme-text);
+}
+
+body[data-theme="dark"] .arco-management-shell .management-topbar .arco-breadcrumb-item,
+body[data-theme="dark"] .arco-management-shell .management-topbar .arco-breadcrumb-item:last-child,
+body[data-theme="dark"] .arco-management-shell .management-topbar-user-copy small,
+body[data-theme="dark"] .arco-management-shell .management-account-chevron {
+  color: var(--theme-muted);
+}
+
+body[data-theme="dark"] .dashboard-page .arco-btn,
+body[data-theme="dark"] .hostile-report-page .arco-btn {
+  border-color: #3b555e;
+  color: #d5e4e1;
+  background: #14242b;
+}
+
+body[data-theme="dark"] .dashboard-page .arco-btn:hover,
+body[data-theme="dark"] .hostile-report-page .arco-btn:hover {
+  border-color: #4b9a7b;
+  color: #effaf5;
+  background: #1b4b3b;
 }

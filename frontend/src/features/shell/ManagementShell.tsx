@@ -19,8 +19,8 @@ import { useTheme } from "./ThemeContext";
 
 const PAGE_META: Record<string, { title: string }> = {
   "/": { title: "星图态势" },
-  "/dashboard": { title: "仪表盘" },
-  "/reports": { title: "来袭报表" },
+  "/dashboard": { title: "工作台" },
+  "/reports": { title: "来袭分析" },
   "/account/keys": { title: "设备密钥" },
   "/admin/users": { title: "用户管理" },
   "/admin/identity": { title: "身份记录" },
@@ -59,13 +59,13 @@ export function ManagementShell() {
         >
           <MenuItemGroup key="monitor" title="监控与情报">
             <MenuItem key="/dashboard">
-              <NavLink className={navigationClass} to="/dashboard"><IconDashboard /><span>仪表盘</span></NavLink>
+              <NavLink className={navigationClass} to="/dashboard"><IconDashboard /><span>工作台</span></NavLink>
             </MenuItem>
             <MenuItem key="/">
               <NavLink className={navigationClass} end to="/"><IconApps /><span>星图态势</span></NavLink>
             </MenuItem>
             <MenuItem key="/reports">
-              <NavLink className={navigationClass} to="/reports"><IconBook /><span>来袭报表</span></NavLink>
+              <NavLink className={navigationClass} to="/reports"><IconBook /><span>来袭分析</span></NavLink>
             </MenuItem>
           </MenuItemGroup>
           {user ? (

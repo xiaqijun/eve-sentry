@@ -57,9 +57,9 @@ describe("ManagementShell", () => {
     });
 
     expect(container).toHaveTextContent("EVE Sentry");
-    expect(container).toHaveTextContent("仪表盘");
+    expect(container).toHaveTextContent("工作台");
     expect(container).toHaveTextContent("星图态势");
-    expect(container).toHaveTextContent("来袭报表");
+    expect(container).toHaveTextContent("来袭分析");
     expect(container).toHaveTextContent("设备密钥");
     expect(container).not.toHaveTextContent("账号安全");
     expect(container).toHaveTextContent("用户管理");

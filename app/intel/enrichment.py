@@ -44,6 +44,7 @@ class ThreatEnricher:
         now: Callable[[], float] | None = None,
     ) -> None:
         self.resolver = resolver
+        self.killboard = killboard
         self.esi_session = esi_session
         self.standing_ttl_seconds = max(0.0, float(standing_ttl_seconds))
         self._now = now or time
@@ -64,6 +65,7 @@ class ThreatEnricher:
                 if profile is not None or "contact_standing" in annotated:
                     profile = annotated
             if profile is not None:
+                profile = self._with_killboard_stats(profile, character_id)
                 profiles.append(profile)
                 _add_profile_entity_ids(profile, corporation_ids, alliance_ids)
 
@@ -80,8 +82,8 @@ class ThreatEnricher:
             return None
         contacts = self.contact_standings()
         if contacts:
-            return _apply_contact_or_neutral_standing(profile, contacts)
-        return profile
+            profile = _apply_contact_or_neutral_standing(profile, contacts)
+        return self._with_killboard_stats(profile, character_id)
 
     def contact_standings(self) -> list[ContactStanding]:
         """Return cached authenticated contact standings when configured."""
@@ -129,6 +131,26 @@ class ThreatEnricher:
         except Exception:
             return None
         return profile if isinstance(profile, dict) else None
+
+    def _with_killboard_stats(
+        self,
+        profile: dict[str, Any],
+        character_id: int,
+    ) -> dict[str, Any]:
+        if self.killboard is None or not hasattr(self.killboard, "character_stats"):
+            return profile
+        try:
+            stats = self.killboard.character_stats(int(character_id))
+        except Exception:
+            return profile
+        if not isinstance(stats, dict) or not stats:
+            return profile
+        result = dict(profile)
+        result["zkill"] = dict(stats)
+        danger_ratio = stats.get("danger_ratio")
+        if danger_ratio is not None:
+            result["zkill_danger_ratio"] = danger_ratio
+        return result
 
     def system_profile(self, system_id: int) -> dict[str, Any] | None:
         """Return a cached public ESI solar-system profile when available."""

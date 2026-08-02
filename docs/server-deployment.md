@@ -8,7 +8,7 @@ OpenResty/Nginx :80/:443
   -> /api/ -> Python 127.0.0.1:8765
 Python app.server
   -> PostgreSQL
-  -> ESI / SDE
+  -> ESI / SDE / zKillboard
 ```
 
 ## 目录
@@ -89,6 +89,8 @@ EVE_SENTRY_SERVER_ESI_CLIENT_ID=YOUR_EVE_APP_CLIENT_ID
 EVE_SENTRY_SERVER_ESI_REDIRECT_URI=http://YOUR_SERVER/api/v1/auth/esi/callback
 EVE_SENTRY_SERVER_ESI_TOKEN_FILE=/var/lib/eve-sentry/esi_tokens.json
 EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain
+EVE_SENTRY_SERVER_ENABLE_ZKILL=0
+EVE_SENTRY_SERVER_DISABLE_ZKILL=0
 ```
 
 `EVE_SENTRY_SERVER_REPORT_RETENTION_DAYS` 默认为 `0`，不会自动删除历史。设为正整数后，
@@ -102,6 +104,12 @@ EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain
 查询的分页大小。预警 SSE 仅对活跃情报引用的报告生成事件；兼容 `/api/events` 也会在达到
 单次 `limit` 后停止评分。部署后可用访问日志的耗时字段监控 `/api/v1/events` 首帧和历史
 列表延迟。
+
+启用公共 ESI 后，zKillboard 人员统计默认同时启用；`EVE_SENTRY_SERVER_ENABLE_ZKILL=1`
+可显式开启，`EVE_SENTRY_SERVER_DISABLE_ZKILL=1` 可用于紧急停用，后者优先。服务端对成功
+结果缓存 12 小时，对失败或无数据结果缓存 10 分钟，并限制为至少 1.1 秒一次请求。
+zKillboard 超时或不可用不会阻塞客户端上报确认，也不会改变敌我分类和告警生成结果。
+生产环境需要允许服务端访问 `https://zkillboard.com`；无需配置 zKillboard 密钥。
 
 认证不依赖 HTTPS 才能启用。HTTP 仅适合可信网络；公网建议配置 TLS，并把回调地址、
 客户端地址和机器人地址统一切换为 HTTPS。
@@ -189,7 +197,7 @@ npm run build
 2. 更新代码并安装 `requirements-server.txt`。
 3. 使用 `setup` 模式创建初始管理员。
 4. 配置允许军团和必要的用户角色白名单。
-5. 配置 EVE SSO 和 QQ 机器人只读服务密钥。
+5. 配置 EVE SSO、zKillboard 出站访问和 QQ 机器人只读服务密钥。
 6. 升级桌面客户端并完成身份校验。
 7. 切换到 `enforce`，重启服务并验证健康、登录、OCR、心跳和 SSE。
 

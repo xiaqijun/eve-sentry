@@ -39,7 +39,11 @@ describe("HostileReportPage", () => {
           names: ["Alice", "Bob"],
           character_ids: [101, 102],
           verified_characters: [
-            { character_id: 101, name: "Alice" },
+            {
+              character_id: 101,
+              name: "Alice",
+              zkill: { danger_ratio: 82, ships_destroyed: 320, ships_lost: 18 },
+            },
             { character_id: 102, name: "Bob" },
           ],
           level: "high",
@@ -52,7 +56,11 @@ describe("HostileReportPage", () => {
           system_name: "S-KSWL",
           names: ["Alice"],
           character_ids: [101],
-          verified_characters: [{ character_id: 101, name: "Alice" }],
+          verified_characters: [{
+            character_id: 101,
+            name: "Alice",
+            zkill: { danger_ratio: 82, ships_destroyed: 320, ships_lost: 18 },
+          }],
           level: "low",
           classification: "red",
           created_at: new Date(now - 60 * 60 * 1000).toISOString(),
@@ -82,23 +90,21 @@ describe("HostileReportPage", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
 
-    expect(container).toHaveTextContent("敌对来袭报表");
-    expect(container).toHaveTextContent("仅统计 ESI 已验证敌对角色");
-    expect(container).toHaveTextContent("有效来袭");
-    expect(container).toHaveTextContent("独立敌对");
-    expect(container).toHaveTextContent("高危事件");
-    expect(container).toHaveTextContent("数据有效性");
-    expect(container).toHaveTextContent("有效数据率");
-    expect(container).toHaveTextContent("排除噪声");
-    expect(container).toHaveTextContent("有效来袭趋势");
-    expect(container).toHaveTextContent("风险分布");
-    expect(container).toHaveTextContent("星系来袭排行");
-    expect(container).toHaveTextContent("高频敌对目标");
-    expect(container).toHaveTextContent("最近有效来袭");
+    expect(container).toHaveTextContent("来袭分析");
+    expect(container).toHaveTextContent("历史研判");
+    expect(container).toHaveTextContent("有效来袭事件");
+    expect(container).toHaveTextContent("来袭波次");
+    expect(container).toHaveTextContent("同星系 15 分钟聚合");
+    expect(container).toHaveTextContent("独立敌对人员");
+    expect(container).toHaveTextContent("来袭趋势");
+    expect(container).toHaveTextContent("热点星系");
+    expect(container).toHaveTextContent("人员研判");
+    expect(container).toHaveTextContent("zKill 82");
+    expect(container).toHaveTextContent("最近历史事件");
     expect(container).toHaveTextContent("S-KSWL");
     expect(container).toHaveTextContent("Alice");
     expect(container).toHaveTextContent("Bob");
-    expect(container.querySelectorAll('[data-testid="eve-chart"]')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-testid="eve-chart"]')).toHaveLength(1);
     expect(apiMocks.fetchHostileAlertHistory).toHaveBeenCalledWith("7d");
 
     await act(async () => root.unmount());

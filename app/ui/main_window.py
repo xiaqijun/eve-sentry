@@ -170,7 +170,7 @@ class MainWindow(QMainWindow):
         )
         self._syncing_monitor_menu = False
 
-        self._region_prefs = RegionPreferences("region_prefs.json")
+        self._region_prefs = RegionPreferences()
         self._capturer = Capturer()
         self._ocr = None  # legacy test/tool injection point; models load on monitor start
         self._ocr_scheduler: SharedOCRScheduler | None = None

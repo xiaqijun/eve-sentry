@@ -1,7 +1,7 @@
 # API 参考
 
 默认地址为 `http://127.0.0.1:8765`。桌面客户端和工作台主要使用 `/api/v1`；旧
-`/api/*` 兼容路由仍存在，来袭报表当前仍读取 `/api/alerts`，新接入应优先使用 v1。
+`/api/*` 兼容路由仍存在，来袭分析当前仍读取 `/api/alerts`，新接入应优先使用 v1。
 
 ## 认证
 
@@ -94,6 +94,31 @@ GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
 查询重新评分全部热报告。
 `/api/v1/active-intel` 同样默认最多返回 100 条；需要更多活跃项时必须显式传递 `limit`。
 
+敌对告警的 `verified_characters` 始终保留 `character_id` 和 `name`。取得外部统计时会额外
+包含可选的 `zkill` 对象：
+
+```json
+{
+  "character_id": 443630591,
+  "name": "Example Pilot",
+  "zkill": {
+    "source": "zkillboard",
+    "danger_ratio": 68,
+    "gang_ratio": 99,
+    "solo_ratio": 0,
+    "ships_destroyed": 1043,
+    "ships_lost": 179,
+    "isk_destroyed": 1888837094625,
+    "isk_lost": 14433360680,
+    "fetched_at": "2026-08-03T00:00:00Z"
+  }
+}
+```
+
+`zkill` 缺失表示尚未抓取、角色无统计或外部服务暂不可用。消费者必须把字段视为可选，
+不能使用告警 `score` 推断或回填 `danger_ratio`。zKillboard 数据只用于展示和研判，
+不影响 `classification`、告警生成或确认状态。
+
 SSE 常用查询参数：
 
 | 参数 | 默认值 | 说明 |
@@ -144,7 +169,8 @@ Authorization: Bearer eve_xxx
 | `GET` | `/api/v1/esi/session` | 可选位置和 contacts 快照 |
 | `GET/POST` | `/api/v1/esi/login` | 态势页 ESI 授权状态和启动 |
 
-`/api/v1/kill-activity/*` 仅保留兼容行为；当前未启用 zKillboard 数据时返回 404。
+`/api/v1/kill-activity/*` 仅保留兼容行为；人员 zKillboard 统计通过告警的
+`verified_characters[].zkill` 返回，不新增同步查询接口。
 
 地图源支持 `builtin`、`manual` 和 `sde`。生产推荐使用官方 SDE，并通过
 `scripts/sync_sde.py` 同步到服务端运行目录。
