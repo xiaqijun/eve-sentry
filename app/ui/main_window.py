@@ -2768,7 +2768,16 @@ class MainWindow(QMainWindow):
             settings is not None
             and getattr(settings, "get_close_to_tray", lambda: False)()
         )
-        if close_to_tray and not _instance_attr(self, "_shutdown_in_progress", False):
+        updater = _instance_attr(self, "_updater")
+        update_ready = bool(
+            updater is not None
+            and getattr(updater, "ready_to_install", False)
+        )
+        if (
+            close_to_tray
+            and not update_ready
+            and not _instance_attr(self, "_shutdown_in_progress", False)
+        ):
             self.hide()
             tray = _instance_attr(self, "_tray")
             if tray is not None:
@@ -2781,15 +2790,21 @@ class MainWindow(QMainWindow):
     def _quit_app(self):
         if _instance_attr(self, "_shutdown_in_progress", False):
             return
+        updater = _instance_attr(self, "_updater")
+        if (
+            updater is not None
+            and getattr(updater, "ready_to_install", False)
+            and not updater.install_on_exit()
+        ):
+            self.show()
+            self.raise_()
+            return
         self._shutdown_in_progress = True
         runtime_settings = _instance_attr(self, "_runtime_settings")
         if runtime_settings is not None:
             runtime_settings.setValue("window/geometry", self.saveGeometry())
             runtime_settings.setValue("monitor/was_running", self._is_monitoring())
         self.hide()
-        updater = _instance_attr(self, "_updater")
-        if updater is not None:
-            updater.install_on_exit()
         tray = _instance_attr(self, "_tray")
         if tray is not None:
             tray.hide()
