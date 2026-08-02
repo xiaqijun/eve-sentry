@@ -864,6 +864,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         if path == f"{API_V1_PREFIX}/active-intel":
             self._send_active_intel(parsed.query)
             return
+        if path == f"{API_V1_PREFIX}/integrations/hostile-systems":
+            self._send_hostile_systems()
+            return
         if path == f"{API_V1_PREFIX}/config":
             config_store = self._config_store()
             if config_store is None:
@@ -1702,6 +1705,19 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 "active_intel": active,
                 "count": len(active),
                 "generated_at": utc_now_iso(),
+            }
+        )
+
+    def _send_hostile_systems(self) -> None:
+        """Return a stable, minimal hostile-system feed for integrations."""
+        alerts = self._active_alert_list(limit=None)
+        systems = sorted(_active_hostile_counts(alerts), key=str.casefold)
+        self._send_json(
+            {
+                "schema_version": "hostile_systems.v1",
+                "generated_at": utc_now_iso(),
+                "count": len(systems),
+                "systems": systems,
             }
         )
 

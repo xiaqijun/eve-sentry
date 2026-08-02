@@ -68,6 +68,56 @@ def test_active_hostile_counts_merge_case_variant_system_names():
     assert counts == {"S-KSWL": 3}
 
 
+def test_integration_hostile_systems_returns_only_active_hostile_systems(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:one",
+            "source_instance": "EVE - Pilot One",
+            "system_name": "S-KSWL",
+            "names": ["Enemy One"],
+            "hostile_icon_count": 1,
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:two",
+            "source_instance": "EVE - Pilot Two",
+            "system_name": "Tama",
+            "names": ["Enemy Two"],
+            "hostile_icon_count": 3,
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:three",
+            "source_instance": "EVE - Pilot Three",
+            "system_name": "Jita",
+            "names": ["Friendly Pilot"],
+            "hostile_icon_count": 0,
+        }
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, payload = request_json(
+            f"{server.url}/api/v1/integrations/hostile-systems"
+        )
+
+        assert status == 200
+        assert payload["schema_version"] == "hostile_systems.v1"
+        assert payload["count"] == 2
+        assert payload["systems"] == ["S-KSWL", "Tama"]
+        assert payload["generated_at"]
+    finally:
+        server.stop()
+
+
 class AuthTestSsoClient:
     def create_authorization_session(self, scopes=None):
         return AuthorizationSession(
@@ -3027,6 +3077,32 @@ def test_service_key_is_scoped_to_bootstrap_and_sse(tmp_path):
         )
         assert status == 403
         assert payload["code"] == "service_key_scope_denied"
+    finally:
+        server.stop()
+
+
+def test_service_key_can_read_integration_hostile_systems(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    service_key = auth.create_api_key(
+        admin["user_id"],
+        "External integration",
+        admin["user_id"],
+        key_type="service_readonly",
+    )
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    headers = {"Authorization": f"Bearer {service_key['secret']}"}
+    try:
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/integrations/hostile-systems",
+            headers=headers,
+        )
+
+        assert status == 200
+        assert payload["systems"] == []
+        assert payload["count"] == 0
     finally:
         server.stop()
 

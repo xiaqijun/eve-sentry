@@ -67,6 +67,7 @@ Authorization: Bearer eve_xxx
 | `GET` | `/api/v1/active-intel` | 当前实时情报 |
 | `GET` | `/api/v1/bootstrap` | Web 和机器人使用的完整初始快照 |
 | `GET` | `/api/v1/events` | SSE 实时事件流 |
+| `GET` | `/api/v1/integrations/hostile-systems` | 第三方软件读取当前存在敌对的星系 |
 | `GET` | `/api/v1/alerts` | 当前敌对告警 |
 | `GET` | `/api/v1/alerts/{id}` | 单条告警详情 |
 | `POST` | `/api/v1/alerts/{id}/ack` | 确认告警 |
@@ -106,6 +107,27 @@ SSE 常用查询参数：
 客户端必须保存并推进事件游标，不能在每次重连时反复拉取历史事件。
 预警客户端不调用完整 `/api/v1/bootstrap`；它在 SSE 上请求精简快照，只包含活跃情报、
 活跃告警和监控节点。生成该快照时只处理活跃情报引用的报告。
+
+### 第三方敌对星系接口
+
+第三方软件可使用只读服务密钥轮询当前存在敌对的星系：
+
+```http
+GET /api/v1/integrations/hostile-systems
+Authorization: Bearer eve_xxx
+```
+
+```json
+{
+  "schema_version": "hostile_systems.v1",
+  "generated_at": "2026-08-03T12:00:00+00:00",
+  "count": 2,
+  "systems": ["S-KSWL", "Tama"]
+}
+```
+
+`systems` 只包含当前仍有敌对证据的星系名称，按名称排序；星系清空后会从下一次响应中
+消失。接口不返回角色、客户端、评分或其他内部告警信息。
 
 ## 地图、配置与 ESI
 

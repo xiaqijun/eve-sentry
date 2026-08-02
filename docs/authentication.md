@@ -7,7 +7,7 @@
 | 管理员 | 用户名和密码 | 全部管理页面、账号安全和业务接口 |
 | 普通用户 | EVE SSO | 态势页、报表和自己的设备密钥 |
 | 桌面设备密钥 | `Authorization: Bearer <key>` | 有效密钥可访问客户端 API；Listener 用于持续风控 |
-| 只读服务密钥 | `Authorization: Bearer <key>` | 仅 `GET /api/v1/bootstrap` 和 `GET /api/v1/events` |
+| 只读服务密钥 | `Authorization: Bearer <key>` | 仅 Bootstrap、SSE 和第三方敌对星系接口 |
 
 普通用户只有在 EVE SSO 角色属于管理员配置的允许军团时才能登录。管理员账号不使用
 EVE SSO。EVE SSO 登录和态势页 ESI 授权共用一个应用和回调：

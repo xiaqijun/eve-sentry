@@ -54,9 +54,10 @@ class AuthHttpMixin:
             if principal.is_read_only and path not in {
                 "/api/v1/bootstrap",
                 "/api/v1/events",
+                "/api/v1/integrations/hostile-systems",
             }:
                 raise AuthError(
-                    "service key can only read Bootstrap and SSE",
+                    "service key can only read approved integration endpoints",
                     403,
                     "service_key_scope_denied",
                 )
