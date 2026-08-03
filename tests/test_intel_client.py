@@ -9,6 +9,7 @@ from app.alert_client import (
     AlertEventConsumer,
     AlertOverlay,
     AlertTrayController,
+    LocalStarMapWidget,
     OVERLAY_HOSTILE_COUNT_WIDTH,
     OVERLAY_GRID_SPACING,
     OVERLAY_MIN_WIDTH,
@@ -1276,7 +1277,15 @@ def test_alert_overlay_renders_hostile_system_tile(monkeypatch):
 
 def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtWidgets import QApplication, QListWidget, QPushButton
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import (
+        QApplication,
+        QComboBox,
+        QListWidget,
+        QPushButton,
+        QSpinBox,
+        QToolButton,
+    )
 
     app = QApplication.instance() or QApplication([])
     overlay = AlertOverlay()
@@ -1302,6 +1311,29 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
         assert overlay.findChildren(QListWidget) == []
         assert overlay._account_menu is not None
         assert overlay._account_menu.isVisible() is False
+        assert overlay.findChildren(QComboBox) == []
+        hops_spinbox = overlay.findChild(QSpinBox, "mapHopsSpinBox")
+        assert hops_spinbox is not None
+        assert hops_spinbox.minimum() == 1
+        assert hops_spinbox.maximum() == 5
+        assert hops_spinbox.value() == 3
+        assert hops_spinbox.suffix() == " 跳"
+        assert hops_spinbox.buttonSymbols() == QSpinBox.ButtonSymbols.NoButtons
+        assert hops_spinbox.focusPolicy() == Qt.FocusPolicy.NoFocus
+        assert hops_spinbox.lineEdit().isReadOnly() is True
+        step_buttons = overlay.findChildren(QToolButton, "mapHopsStepButton")
+        assert len(step_buttons) == 2
+        assert [button.arrowType() for button in step_buttons] == [
+            Qt.ArrowType.UpArrow,
+            Qt.ArrowType.DownArrow,
+        ]
+        assert all(button.isVisible() for button in step_buttons)
+        view_buttons = {
+            button.text(): button
+            for button in overlay.findChildren(QPushButton, "overlayViewButton")
+        }
+        assert view_buttons["星图"].isChecked() is True
+        assert view_buttons["列表"].isChecked() is False
 
         overlay._account_actions[1].setChecked(False)
         app.processEvents()
@@ -1309,8 +1341,132 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
         assert account_button.text() == "账号 1/2"
         assert overlay.map_selection() == (["alice"], 3)
         assert changes[-1] == (["alice"], 3)
+
+        step_buttons[0].click()
+        app.processEvents()
+
+        assert overlay.map_selection() == (["alice"], 4)
+        assert changes[-1] == (["alice"], 4)
+
+        step_buttons[1].click()
+        app.processEvents()
+
+        assert overlay.map_selection() == (["alice"], 3)
+        assert changes[-1] == (["alice"], 3)
     finally:
         overlay.close()
+
+
+def test_alert_overlay_keeps_alert_list_hidden_during_map_updates(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    try:
+        overlay.show_summaries([{"system_name": "Tama", "hostile_count": 1}])
+        overlay._set_view(1)
+        overlay.show()
+        app.processEvents()
+
+        assert overlay._view_stack is not None
+        assert overlay._view_stack.currentIndex() == 1
+        assert overlay._scroll is not None
+        assert overlay._scroll.isVisible() is False
+        assert all(not row[0].isVisible() for row in overlay._rows)
+        assert overlay._map_widget is not None
+        assert overlay._map_widget.isVisible() is True
+
+        overlay.show_summaries([{"system_name": "Tama", "hostile_count": 2}])
+        app.processEvents()
+
+        assert overlay._view_stack.currentIndex() == 1
+        assert overlay._scroll.isVisible() is False
+        assert all(not row[0].isVisible() for row in overlay._rows)
+        assert overlay._map_widget.isVisible() is True
+
+        overlay._set_view(0)
+        app.processEvents()
+
+        assert overlay._scroll.isVisible() is True
+        assert overlay._map_widget.isVisible() is False
+    finally:
+        overlay.close()
+
+
+def test_local_star_map_positions_labels_away_from_node_centerline():
+    label = LocalStarMapWidget._label_rect(
+        x=100,
+        y=60,
+        radius=4,
+        text_width=64,
+        line_count=1,
+        line_height=14,
+        canvas_width=220,
+        canvas_height=120,
+    )
+
+    assert label.bottom() < 56 or label.top() > 64
+
+    top_edge_label = LocalStarMapWidget._label_rect(
+        x=100,
+        y=10,
+        radius=4,
+        text_width=64,
+        line_count=2,
+        line_height=14,
+        canvas_width=220,
+        canvas_height=120,
+    )
+
+    assert top_edge_label.top() > 14
+
+
+def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    widget = LocalStarMapWidget()
+    try:
+        widget.resize(300, 160)
+        widget.set_payload(
+            {
+                "systems": [
+                    {"name": "Online", "x": 0, "y": 0},
+                    {"name": "Warning", "x": 1, "y": 0},
+                    {"name": "Both", "x": 2, "y": 0},
+                ],
+                "links": [],
+            }
+        )
+        widget.set_accounts(
+            [
+                {"label": "Alice", "system_name": "Online"},
+                {"label": "Bob", "system_name": "Both"},
+            ]
+        )
+        widget.set_alerts(
+            [
+                {"system_name": "Warning", "active": True, "active_hostile_count": 2},
+                {"system_name": "Both", "active": True, "active_hostile_count": 1},
+            ]
+        )
+        widget.show()
+        app.processEvents()
+
+        image = widget.grab().toImage()
+        online_center = image.pixelColor(26, 80)
+        warning_center = image.pixelColor(150, 80)
+        both_center = image.pixelColor(274, 80)
+        both_ring = image.pixelColor(283, 80)
+
+        assert online_center.green() > online_center.red() * 1.5
+        assert warning_center.red() > warning_center.green() * 1.5
+        assert both_center.red() > both_center.green() * 1.5
+        assert both_ring.green() > both_ring.red()
+    finally:
+        widget.close()
 
 
 def test_overlay_tile_dimensions_follow_available_screen_size():
@@ -1427,6 +1583,28 @@ def test_alert_overlay_manual_resize_keeps_header_at_top(monkeypatch):
         assert press.accepted is True
         assert overlay._title.alignment() & Qt.AlignmentFlag.AlignTop
         assert overlay._status.alignment() & Qt.AlignmentFlag.AlignTop
+    finally:
+        overlay.close()
+
+
+def test_alert_overlay_empty_list_does_not_stretch_view_selector(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication, QFrame
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    try:
+        overlay._user_resized = True
+        overlay.resize(300, 357)
+        overlay._set_view(0)
+        overlay.show()
+        app.processEvents()
+
+        selector = overlay.findChild(QFrame, "overlayViewSelector")
+        assert selector is not None
+        assert selector.size().width() == 86
+        assert selector.size().height() == 26
+        assert selector.mapTo(overlay, selector.rect().topLeft()).y() < 20
     finally:
         overlay.close()
 

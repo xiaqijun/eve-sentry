@@ -17,8 +17,9 @@ from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, Qt, QThread, QUrl
 from PyQt6.QtGui import QAction, QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
-    QComboBox,
+    QButtonGroup,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -26,9 +27,11 @@ from PyQt6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QStackedWidget,
     QStyle,
     QSystemTrayIcon,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -562,11 +565,49 @@ class LocalStarMapWidget(QWidget):
         self._message = str(message or "")
         self.update()
 
+    @staticmethod
+    def _label_rect(
+        x: float,
+        y: float,
+        radius: int,
+        text_width: int,
+        line_count: int,
+        line_height: int,
+        canvas_width: int,
+        canvas_height: int,
+    ) -> QRect:
+        margin = 4
+        gap = 4
+        block_width = min(
+            max(1, text_width + 8),
+            max(1, canvas_width - margin * 2),
+        )
+        block_height = max(1, line_height * max(1, line_count) + 4)
+        block_x = max(
+            margin,
+            min(
+                int(round(x - block_width / 2)),
+                canvas_width - margin - block_width,
+            ),
+        )
+        above_y = int(round(y - radius - gap - block_height))
+        below_y = int(round(y + radius + gap))
+        if above_y >= margin:
+            block_y = above_y
+        elif below_y + block_height <= canvas_height - margin:
+            block_y = below_y
+        else:
+            block_y = max(
+                margin,
+                min(above_y, canvas_height - margin - block_height),
+            )
+        return QRect(block_x, block_y, block_width, block_height)
+
     def paintEvent(self, event) -> None:
         _ = event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor(5, 14, 22, 245))
+        painter.fillRect(self.rect(), QColor(5, 14, 22, 165))
         systems = [item for item in self._payload.get("systems", []) if isinstance(item, dict)]
         links = [item for item in self._payload.get("links", []) if isinstance(item, dict)]
         if not systems:
@@ -647,16 +688,33 @@ class LocalStarMapWidget(QWidget):
             key = name.casefold()
             hostile = hostile_counts.get(key, 0) > 0
             center = key in centers
+            radius = 10 if hostile or center else 4
+            if center:
+                painter.setPen(QPen(QColor(111, 240, 213, 235), 2))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(int(x - 9), int(y - 9), 18, 18)
+            elif hostile:
+                painter.setPen(QPen(QColor(255, 107, 115, 180), 2))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(int(x - 9), int(y - 9), 18, 18)
+
             if hostile:
-                color = QColor("#ff6b73")
+                painter.save()
+                painter.translate(x, y)
+                painter.rotate(45)
+                painter.setPen(QPen(QColor("#ff9aa0"), 1))
+                painter.setBrush(QBrush(QColor("#ff5965")))
+                painter.drawRect(-5, -5, 10, 10)
+                painter.restore()
             elif center:
-                color = QColor("#4fd19a")
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(QColor("#45d4bd")))
+                painter.drawEllipse(int(x - 4), int(y - 4), 8, 8)
             else:
                 color = QColor("#6d8394")
-            radius = 6 if hostile or center else 4
-            painter.setPen(QPen(color, 1))
-            painter.setBrush(QBrush(color))
-            painter.drawEllipse(int(x - radius), int(y - radius), radius * 2, radius * 2)
+                painter.setPen(QPen(color, 1))
+                painter.setBrush(QBrush(color))
+                painter.drawEllipse(int(x - 4), int(y - 4), 8, 8)
             details: list[str] = []
             if center:
                 details.append(" / ".join(account_labels.get(key, [])[:2]))
@@ -670,23 +728,54 @@ class LocalStarMapWidget(QWidget):
                     120,
                 )
             metrics = painter.fontMetrics()
+            name_text = metrics.elidedText(
+                name,
+                Qt.TextElideMode.ElideRight,
+                120,
+            )
             text_width = max(
-                metrics.horizontalAdvance(name),
+                metrics.horizontalAdvance(name_text),
                 metrics.horizontalAdvance(detail) if detail else 0,
             )
-            text_x = x + radius + 3
-            if text_x + text_width > self.width() - 4:
-                text_x = x - radius - 3 - text_width
-            name_y = y + 4
-            detail_y = y + 18
-            if detail and detail_y > self.height() - 4:
-                name_y = y - 10
-                detail_y = y + 4
+            line_height = metrics.height()
+            label_rect = self._label_rect(
+                x,
+                y,
+                radius,
+                text_width,
+                2 if detail else 1,
+                line_height,
+                self.width(),
+                self.height(),
+            )
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(5, 14, 22, 225))
+            painter.drawRoundedRect(label_rect, 3, 3)
+            name_rect = QRect(
+                label_rect.x() + 4,
+                label_rect.y() + 2,
+                max(1, label_rect.width() - 8),
+                line_height,
+            )
             painter.setPen(QColor("#dce8ef"))
-            painter.drawText(int(text_x), int(name_y), name)
+            painter.drawText(
+                name_rect,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                name_text,
+            )
             if detail:
+                detail_rect = QRect(
+                    name_rect.x(),
+                    name_rect.y() + line_height,
+                    name_rect.width(),
+                    line_height,
+                )
                 painter.setPen(QColor("#ff9d96") if hostile else QColor("#7de0bb"))
-                painter.drawText(int(text_x), int(detail_y), detail)
+                painter.drawText(
+                    detail_rect,
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    detail,
+                )
 
 
 class CurrentPageStack(QStackedWidget):
@@ -805,7 +894,8 @@ class AlertOverlay(QWidget):
         self._account_button: QPushButton | None = None
         self._account_menu: QMenu | None = None
         self._account_actions: list[QAction] = []
-        self._hops_combo: QComboBox | None = None
+        self._view_buttons: list[QPushButton] = []
+        self._hops_spinbox: QSpinBox | None = None
         self._map_accounts: list[dict[str, Any]] = []
         self._map_alerts: list[dict[str, Any]] = []
         self._map_selection_initialized = False
@@ -855,14 +945,29 @@ class AlertOverlay(QWidget):
         self._status.installEventFilter(self)
         header.addWidget(self._title)
         header.addStretch(1)
-        list_button = QPushButton("列表")
-        list_button.setFixedHeight(22)
-        list_button.clicked.connect(lambda: self._set_view(0))
-        header.addWidget(list_button)
-        map_button = QPushButton("星图")
-        map_button.setFixedHeight(22)
-        map_button.clicked.connect(lambda: self._set_view(1))
-        header.addWidget(map_button)
+        view_selector = QFrame()
+        view_selector.setObjectName("overlayViewSelector")
+        view_selector.setFixedSize(86, 26)
+        view_layout = QHBoxLayout(view_selector)
+        view_layout.setContentsMargins(2, 2, 2, 2)
+        view_layout.setSpacing(0)
+        view_group = QButtonGroup(self)
+        view_group.setExclusive(True)
+        view_buttons: list[QPushButton] = []
+        for index, text in enumerate(("列表", "星图")):
+            button = QPushButton(text)
+            button.setObjectName("overlayViewButton")
+            button.setCheckable(True)
+            button.setFixedSize(42, 22)
+            button.setToolTip(f"切换到{text}视图")
+            button.clicked.connect(
+                lambda _checked, target=index: self._set_view(target)
+            )
+            view_group.addButton(button, index)
+            view_layout.addWidget(button)
+            view_buttons.append(button)
+        view_buttons[0].setChecked(True)
+        header.addWidget(view_selector, 0, Qt.AlignmentFlag.AlignTop)
         header.addWidget(self._status)
         layout.addLayout(header)
 
@@ -901,28 +1006,78 @@ class AlertOverlay(QWidget):
         map_page = QWidget()
         map_layout = QVBoxLayout(map_page)
         map_layout.setContentsMargins(0, 0, 0, 0)
-        map_layout.setSpacing(4)
-        options = QHBoxLayout()
-        options.setContentsMargins(0, 0, 0, 0)
+        map_layout.setSpacing(6)
+        map_toolbar = QFrame()
+        map_toolbar.setObjectName("mapToolbar")
+        options = QHBoxLayout(map_toolbar)
+        options.setContentsMargins(6, 4, 6, 4)
+        options.setSpacing(4)
         account_button = QPushButton("账号 0/0")
         account_button.setObjectName("mapAccountButton")
         account_button.setFixedHeight(24)
+        account_button.setMinimumWidth(78)
         account_button.setEnabled(False)
         account_menu = QMenu(account_button)
         account_menu.setObjectName("mapAccountMenu")
         account_button.setMenu(account_menu)
         options.addWidget(account_button)
+        online_legend = QLabel("● 在线")
+        online_legend.setObjectName("mapOnlineLegend")
+        warning_legend = QLabel("◆ 预警")
+        warning_legend.setObjectName("mapWarningLegend")
+        options.addWidget(online_legend)
+        options.addWidget(warning_legend)
         options.addStretch(1)
-        hops_label = QLabel("跳")
-        hops_label.setStyleSheet("color: #9fb7c3; font-size: 11px;")
+        hops_label = QLabel("跳数")
+        hops_label.setObjectName("mapToolbarLabel")
         options.addWidget(hops_label)
-        hops_combo = QComboBox()
-        hops_combo.addItems(["1", "2", "3", "5"])
-        hops_combo.setCurrentText("3")
-        hops_combo.setFixedWidth(48)
-        hops_combo.currentTextChanged.connect(lambda _value: self._emit_map_options())
-        options.addWidget(hops_combo)
-        map_layout.addLayout(options)
+        hops_spinbox = QSpinBox()
+        hops_spinbox.setObjectName("mapHopsSpinBox")
+        hops_spinbox.setRange(1, 5)
+        hops_spinbox.setValue(3)
+        hops_spinbox.setSuffix(" 跳")
+        hops_spinbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hops_spinbox.setAccelerated(True)
+        hops_spinbox.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        hops_spinbox.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        hops_spinbox.setFixedSize(52, 24)
+        hops_spinbox.setToolTip("调整所选角色周围显示的跳数")
+        hops_spinbox.lineEdit().setReadOnly(True)
+        hops_spinbox.lineEdit().setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        hops_spinbox.lineEdit().setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
+        )
+        hops_spinbox.valueChanged.connect(lambda _value: self._emit_map_options())
+        hops_control = QFrame()
+        hops_control.setObjectName("mapHopsControl")
+        hops_control.setFixedSize(74, 26)
+        hops_layout = QHBoxLayout(hops_control)
+        hops_layout.setContentsMargins(1, 1, 1, 1)
+        hops_layout.setSpacing(0)
+        hops_layout.addWidget(hops_spinbox)
+        step_layout = QVBoxLayout()
+        step_layout.setContentsMargins(0, 0, 0, 0)
+        step_layout.setSpacing(0)
+        for arrow_type, action, tooltip in (
+            (Qt.ArrowType.UpArrow, hops_spinbox.stepUp, "增加一跳"),
+            (Qt.ArrowType.DownArrow, hops_spinbox.stepDown, "减少一跳"),
+        ):
+            step_button = QToolButton()
+            step_button.setObjectName("mapHopsStepButton")
+            step_button.setArrowType(arrow_type)
+            step_button.setProperty(
+                "stepDirection",
+                "up" if arrow_type == Qt.ArrowType.UpArrow else "down",
+            )
+            step_button.setFixedSize(20, 12)
+            step_button.setAutoRepeat(True)
+            step_button.setToolTip(tooltip)
+            step_button.clicked.connect(action)
+            step_layout.addWidget(step_button)
+        hops_layout.addLayout(step_layout)
+        options.addWidget(hops_control)
+        map_layout.addWidget(map_toolbar)
         map_widget = LocalStarMapWidget()
         map_layout.addWidget(map_widget, 1)
         view_stack.addWidget(map_page)
@@ -932,26 +1087,51 @@ class AlertOverlay(QWidget):
         self._map_widget = map_widget
         self._account_button = account_button
         self._account_menu = account_menu
-        self._hops_combo = hops_combo
+        self._view_buttons = view_buttons
+        self._hops_spinbox = hops_spinbox
 
         self.setStyleSheet(
             """
             QFrame#overlayFrame {
-                background: rgba(4, 12, 18, 210);
-                border: 1px solid rgba(92, 213, 238, 150);
+                background: rgba(4, 12, 18, 155);
+                border: 1px solid rgba(91, 190, 211, 165);
                 border-radius: 8px;
             }
             QLabel#titleLabel {
-                color: #8bdaf1;
+                color: #b8edf7;
                 letter-spacing: 0;
             }
             QLabel#statusLabel {
                 color: #9fb7c3;
                 font-size: 11px;
+                font-weight: 600;
+                padding-left: 4px;
+            }
+            QFrame#overlayViewSelector {
+                background: rgba(12, 29, 39, 175);
+                border: 1px solid rgba(93, 150, 168, 100);
+                border-radius: 4px;
+            }
+            QPushButton#overlayViewButton {
+                color: #8fa7b4;
+                background: transparent;
+                border: 0;
+                border-radius: 2px;
+                padding: 0;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QPushButton#overlayViewButton:hover {
+                color: #d9f4fa;
+                background: rgba(37, 76, 91, 170);
+            }
+            QPushButton#overlayViewButton:checked {
+                color: #f2fcff;
+                background: #21778c;
             }
             QFrame#alertRow {
-                background: rgba(111, 25, 22, 190);
-                border: 1px solid #ff6b5f;
+                background: rgba(91, 25, 27, 220);
+                border: 1px solid #ef746d;
                 border-radius: 4px;
             }
             QFrame#alertRow QLabel {
@@ -960,8 +1140,8 @@ class AlertOverlay(QWidget):
                 border: 0;
             }
             QFrame#alertRow[hostile="false"] {
-                background: rgba(16, 91, 61, 185);
-                border: 1px solid #4fd19a;
+                background: rgba(14, 70, 55, 220);
+                border: 1px solid #55c795;
             }
             QFrame#alertRow[hostile="false"] QLabel {
                 color: #d9fff0;
@@ -991,6 +1171,69 @@ class AlertOverlay(QWidget):
             QPushButton:hover {
                 background: rgba(28, 61, 76, 230);
             }
+            QFrame#mapToolbar {
+                background: rgba(10, 25, 34, 175);
+                border: 1px solid rgba(78, 135, 153, 85);
+                border-radius: 4px;
+            }
+            QLabel#mapToolbarLabel {
+                color: #91a9b6;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QLabel#mapOnlineLegend {
+                color: #6fe8d2;
+                font-size: 10px;
+                font-weight: 700;
+            }
+            QLabel#mapWarningLegend {
+                color: #ff7d86;
+                font-size: 10px;
+                font-weight: 700;
+            }
+            QPushButton#mapAccountButton {
+                color: #d8edf3;
+                background: rgba(18, 43, 55, 185);
+                border: 1px solid rgba(92, 181, 202, 110);
+                border-radius: 3px;
+                padding: 1px 7px;
+                text-align: left;
+                font-weight: 600;
+            }
+            QPushButton#mapAccountButton:hover {
+                background: rgba(29, 66, 81, 235);
+            }
+            QFrame#mapHopsControl {
+                background: rgba(17, 40, 51, 185);
+                border: 1px solid rgba(91, 181, 202, 120);
+                border-radius: 3px;
+            }
+            QFrame#mapHopsControl:hover {
+                border-color: #71d4e8;
+            }
+            QSpinBox#mapHopsSpinBox {
+                color: #f1fbfd;
+                background: transparent;
+                border: 0;
+                padding: 0 3px;
+                font-family: "Segoe UI";
+                font-size: 13px;
+                font-weight: 700;
+            }
+            QToolButton#mapHopsStepButton {
+                color: #dff8fd;
+                background: rgba(39, 91, 108, 225);
+                border: 0;
+                border-left: 1px solid rgba(113, 212, 232, 100);
+                border-radius: 0;
+                padding: 0;
+            }
+            QToolButton#mapHopsStepButton[stepDirection="up"] {
+                border-bottom: 1px solid rgba(113, 212, 232, 70);
+            }
+            QToolButton#mapHopsStepButton:hover {
+                background: #287f94;
+            }
             QMenu#mapAccountMenu {
                 color: #dce8ef;
                 background: rgba(6, 19, 28, 220);
@@ -1003,13 +1246,6 @@ class AlertOverlay(QWidget):
             QMenu#mapAccountMenu::item:selected {
                 background: rgba(28, 61, 76, 230);
             }
-            QComboBox {
-                color: #dce8ef;
-                background: rgba(6, 19, 28, 220);
-                border: 1px solid rgba(92, 213, 238, 80);
-                border-radius: 3px;
-                padding: 1px 3px;
-            }
             """
         )
 
@@ -1017,6 +1253,8 @@ class AlertOverlay(QWidget):
         if self._view_stack is not None:
             target = max(0, min(1, int(index)))
             self._view_stack.setCurrentIndex(target)
+            for button_index, button in enumerate(self._view_buttons):
+                button.setChecked(button_index == target)
             if target == 0:
                 self._layout_rows_for_size()
             else:
@@ -1027,14 +1265,9 @@ class AlertOverlay(QWidget):
             self._resize_to_content()
 
     def _emit_map_options(self) -> None:
-        if self._hops_combo is None:
-            return
         selected = self._selected_map_account_keys()
         self._update_map_account_button()
-        try:
-            hops = int(self._hops_combo.currentText())
-        except (TypeError, ValueError):
-            hops = 3
+        hops = self._hops_spinbox.value() if self._hops_spinbox is not None else 3
         if self._map_widget is not None:
             selected_keys = set(selected)
             self._map_widget.set_accounts(
@@ -1062,13 +1295,8 @@ class AlertOverlay(QWidget):
         self._account_button.setEnabled(total_count > 0)
 
     def map_selection(self) -> tuple[list[str], int]:
-        if self._hops_combo is None:
-            return [], 3
         selected = self._selected_map_account_keys()
-        try:
-            hops = int(self._hops_combo.currentText())
-        except (TypeError, ValueError):
-            hops = 3
+        hops = self._hops_spinbox.value() if self._hops_spinbox is not None else 3
         return selected, hops
 
     def set_map_accounts(self, accounts: list[dict[str, Any]]) -> None:
@@ -1436,7 +1664,11 @@ class AlertOverlay(QWidget):
                 index % columns,
             )
         row_count = max(1, (len(visible_rows) + columns - 1) // columns)
-        self._scroll.setVisible(True)
+        list_view_active = (
+            self._view_stack is None
+            or self._view_stack.currentWidget() is self._scroll
+        )
+        self._scroll.setVisible(list_view_active)
         if self._user_resized:
             self._scroll.setMinimumHeight(0)
             self._scroll.setMaximumHeight(16777215)
