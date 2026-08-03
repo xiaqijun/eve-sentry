@@ -111,10 +111,11 @@ describe("split management pages", () => {
     await act(async () => actionButton?.click());
     expect(container).toHaveTextContent("删除用户");
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    const deleteButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("删除用户"));
+    const deleteButton = Array.from(container.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+      .find((item) => item.textContent?.includes("删除用户"));
+    expect(deleteButton).toBeDefined();
     await act(async () => {
-      deleteButton?.click();
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
     expect(apiMocks.deleteUser).toHaveBeenCalledWith("user-2");
@@ -131,14 +132,14 @@ describe("split management pages", () => {
       .find((button) => button.getAttribute("aria-label") === "查看 侦察员");
     await act(async () => viewScout?.click());
 
-    const header = container.querySelector(".management-drawer-header");
+    const header = container.querySelector(".management-drawer-header-content");
     const body = container.querySelector(".management-drawer-body");
     expect(header?.querySelector('[aria-label="用户操作"]')).toBeInTheDocument();
     expect(body).not.toHaveTextContent("禁用用户");
 
     const actionButton = header?.querySelector('[aria-label="用户操作"]') as HTMLButtonElement | null;
     await act(async () => actionButton?.click());
-    expect(header).toHaveTextContent("禁用用户");
+    expect(container.querySelector('[aria-label="用户操作菜单"]')).toHaveTextContent("禁用用户");
     expect(body).not.toHaveTextContent("禁用用户");
   });
 

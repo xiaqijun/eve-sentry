@@ -579,6 +579,120 @@ def test_v1_hostile_waves_returns_persisted_lifecycles(tmp_path):
         server.stop()
 
 
+def test_v1_alert_history_isolated_from_realtime_alerts(tmp_path):
+    class RoutedStore(IntelStore):
+        def __init__(self, filepath):
+            super().__init__(filepath)
+            self.realtime_calls = []
+            self.history_calls = []
+
+        def list_alerts(self, *args, **kwargs):
+            self.realtime_calls.append(kwargs)
+            return [{"id": "realtime"}]
+
+        def list_alert_history(self, *args, **kwargs):
+            self.history_calls.append(kwargs)
+            return [{"id": "historical"}]
+
+    store = RoutedStore(tmp_path / "intel.json")
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        query = urlencode(
+            {
+                "since": "2026-08-03T00:00:00+00:00",
+                "limit": "25",
+                "min_score": "40",
+                "min_level": "medium",
+            }
+        )
+        history_status, history = request_json(
+            f"{server.url}/api/v1/alert-history?{query}"
+        )
+        realtime_status, realtime = request_json(f"{server.url}/api/alerts")
+
+        assert history_status == 200
+        assert history["schema_version"] == "alert_history.v1"
+        assert history["alerts"] == [{"id": "historical"}]
+        assert history["count"] == 1
+        assert realtime_status == 200
+        assert realtime["alerts"] == [{"id": "realtime"}]
+        assert len(store.history_calls) == 1
+        assert store.history_calls[0]["since"] == "2026-08-03T00:00:00+00:00"
+        assert store.history_calls[0]["limit"] == 25
+        assert store.history_calls[0]["min_score"] == 40
+        assert store.history_calls[0]["min_level"] == "medium"
+        assert len(store.realtime_calls) == 1
+    finally:
+        server.stop()
+
+
+def test_v1_alert_history_falls_back_with_bounded_limit(tmp_path):
+    class FallbackStore(IntelStore):
+        def __init__(self, filepath):
+            super().__init__(filepath)
+            self.calls = []
+
+        def list_alerts(self, *args, **kwargs):
+            self.calls.append(kwargs)
+            return []
+
+    store = FallbackStore(tmp_path / "intel.json")
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/v1/alert-history")
+
+        assert status == 200
+        assert payload["alerts"] == []
+        assert store.calls[0]["limit"] == 100
+        assert len(store.calls) == 1
+    finally:
+        server.stop()
+
+
+def test_v1_alert_history_returns_bad_request_for_invalid_since(tmp_path):
+    class ValidatingStore(IntelStore):
+        def list_alert_history(self, *args, **kwargs):
+            raise ValueError("since must be an ISO timestamp")
+
+    server = IntelHTTPServer(ValidatingStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        try:
+            request_json(f"{server.url}/api/v1/alert-history?since=invalid")
+        except HTTPError as exc:
+            assert exc.code == 400
+            assert json.loads(exc.read())["error"] == (
+                "since must be an ISO timestamp"
+            )
+        else:
+            raise AssertionError("invalid since must return HTTP 400")
+
+    finally:
+        server.stop()
+
+
+def test_legacy_event_stream_never_uses_alert_history(tmp_path):
+    class GuardedStore(IntelStore):
+        def list_alert_history(self, *args, **kwargs):
+            pytest.fail("realtime SSE must not query historical alerts")
+
+    store = GuardedStore(tmp_path / "intel.json")
+    store.add_report("Tama", ["Pilot"])
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, _, body = request_text(
+            f"{server.url}/api/events?{urlencode({'timeout': '0', 'limit': '5'})}"
+        )
+
+        assert status == 200
+        assert any(event["event"] == "alert" for event in sse_events(body))
+    finally:
+        server.stop()
+
+
 def test_remote_alert_count_uses_latest_detector_snapshot_total(tmp_path):
     store = IntelStore(
         tmp_path / "intel.json",

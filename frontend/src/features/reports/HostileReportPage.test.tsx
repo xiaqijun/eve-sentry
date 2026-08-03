@@ -107,8 +107,14 @@ describe("HostileReportPage", () => {
     expect(container).toHaveTextContent("来袭趋势");
     expect(container).toHaveTextContent("热点星系");
     expect(container).toHaveTextContent("人员研判");
-    expect(container).toHaveTextContent("威胁度 82");
-    expect(container).toHaveTextContent("最近历史事件");
+    expect(
+      [...container.querySelectorAll(".arco-tag")].some(
+        (item) => item.textContent?.trim() === "82",
+      ),
+    ).toBe(true);
+    expect(container).not.toHaveTextContent("威胁度 82");
+    expect(container.querySelector(".combat-summary")).toHaveTextContent("320 / 18");
+    expect(container).toHaveTextContent("最近告警记录");
     expect(container).toHaveTextContent("高");
     expect(container).toHaveTextContent("低");
     expect(container).toHaveTextContent("S-KSWL");

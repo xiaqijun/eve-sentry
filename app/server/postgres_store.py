@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
-from datetime import timedelta
+from datetime import timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -15,7 +16,7 @@ from app.core.active_intel import (
     ActiveIntelSnapshotResult,
     DEFAULT_OCR_GRACE_SECONDS,
 )
-from app.core.models import Observation
+from app.core.models import Evidence, Observation, ThreatEvent
 from app.server.auth_store import migrate_auth_schema
 from app.server.intel_store import (
     IntelReport,
@@ -32,6 +33,11 @@ POSTGRES_POOL_MAX_SIZE = 8
 POSTGRES_POOL_TIMEOUT_SECONDS = 5.0
 DEFAULT_HOT_REPORT_LIMIT = 5000
 POSTGRES_ID_LOOKUP_BATCH_SIZE = 1000
+POSTGRES_ALERT_SCAN_BATCH_SIZE = 500
+PERSISTED_ALERT_METADATA_KEY = "generated_alert"
+
+
+logger = logging.getLogger(__name__)
 
 
 class PostgreSQLIntelStore(IntelStore):
@@ -483,7 +489,16 @@ class PostgreSQLIntelStore(IntelStore):
                             confidence = excluded.confidence,
                             note = excluded.note,
                             raw_text = excluded.raw_text,
-                            metadata_json = excluded.metadata_json,
+                            metadata_json = (
+                                COALESCE(NULLIF(excluded.metadata_json, ''), '{}')::jsonb
+                                || jsonb_strip_nulls(jsonb_build_object(
+                                    'generated_alert',
+                                    COALESCE(
+                                        NULLIF(intel_reports.metadata_json, ''),
+                                        '{}'
+                                    )::jsonb -> 'generated_alert'
+                                ))
+                            )::text,
                             seen_at = excluded.seen_at,
                             received_at = excluded.received_at,
                             acknowledged_at = excluded.acknowledged_at,
@@ -1157,6 +1172,12 @@ class PostgreSQLIntelStore(IntelStore):
             )
             connection.execute(
                 """
+                CREATE INDEX IF NOT EXISTS idx_intel_reports_alert_history
+                ON intel_reports(received_at DESC, report_id DESC)
+                """
+            )
+            connection.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_intel_reports_system_history_page
                 ON intel_reports(
                     LOWER(system), seen_at DESC, received_at DESC, report_id DESC
@@ -1509,6 +1530,332 @@ class PostgreSQLIntelStore(IntelStore):
     def _reports_for_system_id(self, system_id: int) -> list[IntelReport]:
         return self._read_reports(system_id=system_id)
 
+    def _alert_from_report(self, report: IntelReport) -> ThreatEvent | None:
+        alert = super()._alert_from_report(report)
+        if alert is not None:
+            self._persist_generated_alert_snapshot(report, alert)
+        return alert
+
+    def _persist_generated_alert_snapshot(
+        self,
+        report: IntelReport,
+        alert: ThreatEvent,
+    ) -> None:
+        snapshot = alert.to_dict()
+        if report.metadata.get(PERSISTED_ALERT_METADATA_KEY) == snapshot:
+            return
+        metadata = dict(report.metadata)
+        metadata[PERSISTED_ALERT_METADATA_KEY] = snapshot
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    UPDATE intel_reports
+                    SET metadata_json = (
+                        COALESCE(NULLIF(metadata_json, ''), '{}')::jsonb
+                        || jsonb_build_object(?, ?::jsonb)
+                    )::text
+                    WHERE report_id = ?
+                    """,
+                    (
+                        PERSISTED_ALERT_METADATA_KEY,
+                        json.dumps(snapshot, ensure_ascii=False),
+                        report.report_id,
+                    ),
+                )
+        except Exception as exc:
+            logger.warning(
+                "failed to persist alert snapshot for report %s: %s",
+                report.report_id,
+                exc,
+            )
+            return
+        report.metadata = metadata
+
+    def list_alert_history(
+        self,
+        since: str | None = None,
+        limit: int | None = None,
+        acknowledged: bool | None = None,
+        min_score: int | None = None,
+        min_level: str | None = None,
+        include_since: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Query and rebuild historical alerts from bounded PostgreSQL pages."""
+        since_query = str(since or "").strip()
+        parsed_since = self._parse_timestamp(since_query) if since_query else None
+        if since_query:
+            if parsed_since is None:
+                raise ValueError("since must be an ISO timestamp")
+            since_query = parsed_since.astimezone(timezone.utc).isoformat()
+        if limit is not None and limit <= 0:
+            return []
+
+        min_score_value = self._optional_score(min_score)
+        min_level_rank = self._alert_level_rank(min_level)
+        scan_anchor: tuple[str, str] | None = None
+        alerts: list[dict[str, Any]] = []
+        target_count = limit if limit is not None else None
+
+        while target_count is None or len(alerts) < target_count:
+            remaining = (
+                POSTGRES_ALERT_SCAN_BATCH_SIZE
+                if target_count is None
+                else max(1, target_count - len(alerts))
+            )
+            batch_limit = max(
+                100,
+                min(POSTGRES_ALERT_SCAN_BATCH_SIZE, remaining * 2),
+            )
+            rows = self._read_alert_report_rows(
+                anchor=scan_anchor,
+                since=since_query,
+                include_since=include_since,
+                limit=batch_limit,
+            )
+            if not rows:
+                break
+
+            for row in rows:
+                report = self._report_from_row(row)
+                if report is None:
+                    continue
+                alert = self._alert_from_persisted_report(report)
+                if alert is None:
+                    continue
+                alert_data = self._alert_to_dict(report, alert)
+                if not self._alert_passes_filters(
+                    alert_data,
+                    acknowledged=acknowledged,
+                    min_score=min_score_value,
+                    min_level_rank=min_level_rank,
+                ):
+                    continue
+                alerts.append(alert_data)
+                if target_count is not None and len(alerts) >= target_count:
+                    break
+
+            last_row = rows[-1]
+            scan_anchor = (
+                str(last_row["received_at"] or ""),
+                str(last_row["report_id"] or ""),
+            )
+            if len(rows) < batch_limit:
+                break
+        return alerts
+
+    def _read_alert_report_rows(
+        self,
+        *,
+        anchor: tuple[str, str] | None,
+        since: str,
+        include_since: bool,
+        limit: int,
+    ) -> list[Any]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if since:
+            clauses.append(f"received_at {'>=' if include_since else '>'} ?")
+            params.append(since)
+        if anchor is not None:
+            received_at, report_id = anchor
+            clauses.append(
+                "(received_at < ? OR (received_at = ? AND report_id < ?))"
+            )
+            params.extend([received_at, received_at, report_id])
+        where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT report_id, system, names_json, source, source_instance,
+                       system_id, character_ids_json, confidence, note, raw_text,
+                       metadata_json, seen_at, received_at, acknowledged_at,
+                       acknowledged_by, acknowledgement_note
+                FROM intel_reports
+                {where_clause}
+                ORDER BY received_at DESC, report_id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return list(rows)
+
+    def _alert_from_persisted_report(
+        self,
+        report: IntelReport,
+    ) -> ThreatEvent | None:
+        persisted_alert = self._threat_event_from_snapshot(report)
+        if persisted_alert is not None:
+            return persisted_alert
+
+        classify = getattr(self._scorer, "classify", None)
+        if not callable(classify):
+            return (
+                ThreatEvent.from_observation(report.to_observation())
+                if self._scorer is None
+                else None
+            )
+
+        character_profiles = self._persisted_character_profiles(report)
+        observation = report.to_observation()
+        names = self._normalize_names(observation.names)
+        if not names and observation.character_ids:
+            names = [str(item) for item in observation.character_ids]
+        if not names and observation.raw_text:
+            names = [observation.raw_text]
+        try:
+            result = classify(
+                observation,
+                names,
+                character_profiles,
+            )
+        except Exception:
+            result = None
+
+        if result is None:
+            alert = None
+        else:
+            classification = str(getattr(result, "classification", "")).strip()
+            score = 100 if classification == "red" else 1
+            alert = ThreatEvent(
+                event_id=f"evt_{observation.observation_id}",
+                system_name=observation.system_name,
+                system_id=observation.system_id,
+                names=names,
+                character_ids=list(observation.character_ids),
+                score=score,
+                level="critical" if classification == "red" else "low",
+                evidence=list(getattr(result, "evidence", None) or []),
+                source_observation_id=observation.observation_id,
+                created_at=observation.received_at,
+                scoring_version=str(
+                    getattr(self._scorer, "scoring_version", "") or ""
+                ),
+                classification=classification,
+                reason=str(getattr(result, "reason", "") or ""),
+            )
+        return alert
+
+    def _threat_event_from_snapshot(
+        self,
+        report: IntelReport,
+    ) -> ThreatEvent | None:
+        snapshot = report.metadata.get(PERSISTED_ALERT_METADATA_KEY)
+        if not isinstance(snapshot, dict):
+            return None
+        source_id = str(snapshot.get("source_observation_id") or "").strip()
+        if source_id and source_id != report.report_id:
+            return None
+        score = self._optional_score(snapshot.get("score"))
+        if score is None:
+            return None
+
+        evidence: list[Evidence] = []
+        raw_evidence = snapshot.get("evidence")
+        if isinstance(raw_evidence, list):
+            for item in raw_evidence:
+                if not isinstance(item, dict):
+                    continue
+                weight = self._optional_score(item.get("weight"))
+                if weight is None:
+                    continue
+                evidence.append(
+                    Evidence(
+                        evidence_type=str(item.get("type") or "persisted_alert"),
+                        weight=weight,
+                        summary=str(item.get("summary") or ""),
+                        rule_id=str(item.get("rule_id") or ""),
+                    )
+                )
+
+        observation = report.to_observation()
+        names = self._normalize_names(snapshot.get("names"))
+        if not names:
+            names = self._normalize_names(observation.names)
+        character_ids = self._normalize_ints(snapshot.get("character_ids"))
+        if not character_ids:
+            character_ids = list(observation.character_ids)
+        return ThreatEvent(
+            event_id=str(snapshot.get("id") or f"evt_{report.report_id}"),
+            system_name=str(
+                snapshot.get("system_name")
+                or snapshot.get("system")
+                or observation.system_name
+            ),
+            system_id=self._optional_int(
+                snapshot.get("system_id")
+                if snapshot.get("system_id") is not None
+                else observation.system_id
+            ),
+            names=names,
+            character_ids=character_ids,
+            score=score,
+            level=str(snapshot.get("level") or ""),
+            evidence=evidence,
+            source_observation_id=source_id or report.report_id,
+            created_at=str(
+                snapshot.get("created_at")
+                or snapshot.get("seen_at")
+                or observation.received_at
+            ),
+            scoring_version=str(snapshot.get("scoring_version") or ""),
+            classification=str(snapshot.get("classification") or ""),
+            reason=str(snapshot.get("reason") or ""),
+        )
+
+    def _persisted_character_profiles(
+        self,
+        report: IntelReport,
+    ) -> list[dict[str, Any]]:
+        """Read historical profile inputs without triggering ESI enrichment."""
+        profiles_by_id: dict[int, dict[str, Any]] = {}
+        unkeyed_profiles: list[dict[str, Any]] = []
+        resolver_cache = getattr(getattr(self, "_resolver", None), "cache", None)
+        for character_id in self._normalize_ints(report.character_ids):
+            disk_profile = None
+            if resolver_cache is not None:
+                read_cached = getattr(resolver_cache, "get", None)
+                if callable(read_cached):
+                    try:
+                        disk_profile = read_cached(f"character:{character_id}")
+                    except Exception:
+                        disk_profile = None
+                if not isinstance(disk_profile, dict):
+                    read_stale = getattr(resolver_cache, "get_stale", None)
+                    if callable(read_stale):
+                        try:
+                            disk_profile = read_stale(f"character:{character_id}")
+                        except Exception:
+                            disk_profile = None
+            profile = dict(disk_profile) if isinstance(disk_profile, dict) else {}
+            with self._lock:
+                memory_profile = self._character_profile_cache.get(character_id)
+            if isinstance(memory_profile, dict):
+                profile.update(memory_profile)
+            if profile:
+                profile.setdefault("character_id", character_id)
+                profiles_by_id[character_id] = profile
+
+        metadata_profiles = report.metadata.get("character_profiles")
+        if isinstance(metadata_profiles, list):
+            for item in metadata_profiles:
+                if not isinstance(item, dict):
+                    continue
+                metadata_profile = dict(item)
+                character_id = self._optional_int(
+                    metadata_profile.get("character_id")
+                )
+                if character_id is None:
+                    unkeyed_profiles.append(metadata_profile)
+                    continue
+                profile = profiles_by_id.setdefault(character_id, {})
+                profile.update(metadata_profile)
+                profile.setdefault("character_id", character_id)
+
+        return [*unkeyed_profiles, *profiles_by_id.values()]
+
     def alert_for_observation(self, observation_id: str) -> dict[str, Any] | None:
         report = self._read_report_by_id(str(observation_id or "").strip())
         if report is None:
@@ -1806,7 +2153,16 @@ class PostgreSQLIntelStore(IntelStore):
                     confidence = excluded.confidence,
                     note = excluded.note,
                     raw_text = excluded.raw_text,
-                    metadata_json = excluded.metadata_json,
+                    metadata_json = (
+                        COALESCE(NULLIF(excluded.metadata_json, ''), '{}')::jsonb
+                        || jsonb_strip_nulls(jsonb_build_object(
+                            'generated_alert',
+                            COALESCE(
+                                NULLIF(intel_reports.metadata_json, ''),
+                                '{}'
+                            )::jsonb -> 'generated_alert'
+                        ))
+                    )::text,
                     seen_at = excluded.seen_at,
                     received_at = excluded.received_at,
                     acknowledged_at = excluded.acknowledged_at,

@@ -150,6 +150,7 @@ def test_auth_json_route_preserves_payload_too_large_status(tmp_path):
         "/api/v1/observations",
         "/api/v1/alerts",
         "/api/v1/events",
+        "/api/v1/alert-history",
         "/api/v1/hostile-waves",
     ],
 )
@@ -187,6 +188,7 @@ def test_history_routes_default_to_one_hundred_results(tmp_path):
             "/api/v1/reports",
             "/api/v1/observations",
             "/api/v1/alerts",
+            "/api/v1/alert-history",
         ):
             status, _, payload = _request(server, "GET", path)
             assert status == 200

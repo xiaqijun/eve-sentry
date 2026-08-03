@@ -6,11 +6,15 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.active_intel import ActiveIntelItem
-from app.server.intel_store import IntelReport
+from app.core.models import Evidence, ThreatEvent
+from app.intel.classification import ClassificationEngine
+from app.intel.scoring import Watchlist
+from app.server.intel_store import IntelReport, IntelStore
 from app.server.postgres_store import (
     POSTGRES_POOL_MAX_SIZE,
     POSTGRES_POOL_MIN_SIZE,
     POSTGRES_POOL_TIMEOUT_SECONDS,
+    PERSISTED_ALERT_METADATA_KEY,
     PostgreSQLIntelStore,
     _PostgresConnection,
     _create_connection_pool,
@@ -273,6 +277,377 @@ def test_postgres_report_page_query_uses_converted_keyset_placeholders():
         "received",
         "report-id",
         25,
+    )
+
+
+def test_postgres_alert_history_uses_bounded_database_page():
+    report = IntelReport(
+        report_id="report-1",
+        system="Tama",
+        names=["Pilot"],
+        source="eve-sentry-detector",
+        seen_at="2026-08-03T10:00:00+00:00",
+        received_at="2026-08-03T10:00:01+00:00",
+    )
+    alert = SimpleNamespace()
+    page_calls = []
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._report_page_items = lambda **_kwargs: pytest.fail(
+        "alert history must not use the in-memory report page"
+    )
+    store._reports_snapshot = lambda: pytest.fail(
+        "alert history must not scan the startup hot set"
+    )
+    store._read_alert_report_rows = lambda **kwargs: (
+        page_calls.append(kwargs) or [{
+            "report_id": report.report_id,
+            "received_at": report.received_at,
+        }]
+    )
+    store._report_from_row = lambda _row: report
+    store._alert_from_persisted_report = lambda _report: alert
+    store._alert_to_dict = lambda _report, _alert: {
+        "id": "evt_report-1",
+        "score": 100,
+        "level": "critical",
+        "acknowledged": False,
+    }
+
+    result = store.list_alert_history(
+        since="2026-08-03T00:00:00+00:00",
+        limit=1,
+    )
+
+    assert result == [{
+        "id": "evt_report-1",
+        "score": 100,
+        "level": "critical",
+        "acknowledged": False,
+    }]
+    assert page_calls == [{
+        "anchor": None,
+        "since": "2026-08-03T00:00:00+00:00",
+        "include_since": False,
+        "limit": 100,
+    }]
+
+
+def test_postgres_alert_history_rejects_invalid_since():
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._read_alert_report_rows = lambda **_kwargs: pytest.fail(
+        "invalid timestamps must fail before querying PostgreSQL"
+    )
+
+    with pytest.raises(ValueError, match="since must be an ISO timestamp"):
+        store.list_alert_history(since="not-a-timestamp", limit=25)
+
+
+def test_postgres_alert_history_continues_after_filtered_database_page():
+    report = IntelReport(
+        report_id="report-found",
+        system="Tama",
+        names=["Pilot"],
+        received_at="2026-08-03T09:59:00+00:00",
+    )
+    first_page = [
+        {
+            "report_id": f"report-filtered-{index:03d}",
+            "received_at": "2026-08-03T10:00:00+00:00",
+        }
+        for index in range(100)
+    ]
+    second_page = [
+        {"report_id": report.report_id, "received_at": report.received_at}
+    ]
+    pages = [first_page, second_page]
+    calls = []
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._read_alert_report_rows = lambda **kwargs: (
+        calls.append(kwargs) or pages.pop(0)
+    )
+    store._report_from_row = lambda row: (
+        report if row["report_id"] == report.report_id else None
+    )
+    store._alert_from_persisted_report = lambda _report: SimpleNamespace()
+    store._alert_to_dict = lambda _report, _alert: {
+        "id": "evt_report-found",
+        "score": 100,
+        "level": "critical",
+        "acknowledged": False,
+    }
+
+    result = store.list_alert_history(limit=1)
+
+    assert [item["id"] for item in result] == ["evt_report-found"]
+    assert len(calls) == 2
+    assert calls[1]["anchor"] == (
+        "2026-08-03T10:00:00+00:00",
+        "report-filtered-099",
+    )
+
+
+def test_postgres_persisted_alert_scoring_does_not_use_live_enrichment():
+    report = IntelReport(
+        report_id="report-1",
+        system="Tama",
+        names=["Pilot"],
+        source="eve-sentry-detector",
+        metadata={
+            "character_profiles": [
+                {"character_id": 9001, "corporation_id": 42}
+            ]
+        },
+    )
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._lock = threading.RLock()
+    store._alert_cache = {}
+    store._character_profile_cache = {}
+    store._resolver = None
+    store._scorer = ClassificationEngine(
+        watchlist=Watchlist(hostile_corporation_ids={42}),
+        cooldown_seconds=60,
+    )
+    store._alert_from_report = lambda _report: pytest.fail(
+        "persisted history must not call the live enrichment scoring path"
+    )
+
+    first = store._alert_from_persisted_report(report)
+    second = store._alert_from_persisted_report(report)
+
+    assert first is not None
+    assert second is not None
+    assert first.classification == "red"
+    assert first.reason == "Hostile corporation id 42"
+    assert store._alert_cache == {}
+
+
+def test_postgres_realtime_alerts_keep_shared_store_behavior():
+    assert PostgreSQLIntelStore.list_alerts is IntelStore.list_alerts
+
+
+def test_postgres_realtime_alert_snapshot_survives_standing_cache_loss():
+    calls = []
+
+    class Result:
+        rowcount = 1
+
+    class FakeConnection:
+        def execute(self, query, params):
+            calls.append((" ".join(query.split()), params))
+            return Result()
+
+    class FakePoolContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    report = IntelReport(
+        report_id="standing-report",
+        system="Tama",
+        names=["Standing Pilot"],
+        character_ids=[9001],
+        source="intel_channel",
+    )
+    alert = ThreatEvent(
+        event_id="evt_standing-report",
+        system_name="Tama",
+        names=["Standing Pilot"],
+        character_ids=[9001],
+        score=100,
+        level="critical",
+        evidence=[Evidence("hostile_standing", 100, "Hostile standing -10")],
+        source_observation_id=report.report_id,
+        classification="red",
+        reason="Hostile standing -10",
+    )
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._lock = threading.RLock()
+    store._alert_cache = {report.report_id: alert}
+    store._connect = lambda: _PostgresConnection(FakePoolContext())
+
+    realtime = store._alert_from_report(report)
+
+    assert realtime is alert
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "jsonb_build_object(%s, %s::jsonb)" in query
+    assert params[0] == PERSISTED_ALERT_METADATA_KEY
+    assert params[2] == report.report_id
+    assert report.metadata[PERSISTED_ALERT_METADATA_KEY]["reason"] == (
+        "Hostile standing -10"
+    )
+
+    store._scorer = ClassificationEngine(watchlist=Watchlist())
+    restored = store._alert_from_persisted_report(report)
+
+    assert restored is not None
+    assert restored.classification == "red"
+    assert restored.reason == "Hostile standing -10"
+    assert restored.evidence[0].evidence_type == "hostile_standing"
+
+
+def test_postgres_report_upsert_preserves_existing_alert_snapshot():
+    calls = []
+
+    class Result:
+        rowcount = 1
+
+    class FakeConnection:
+        def execute(self, query, params):
+            calls.append((" ".join(query.split()), params))
+            return Result()
+
+    class FakePoolContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._connect = lambda: _PostgresConnection(FakePoolContext())
+    report = IntelReport(
+        report_id="report-upsert",
+        system="Tama",
+        names=["Pilot"],
+        metadata={"character_profiles": [{"character_id": 9001}]},
+    )
+
+    store._upsert_report(report)
+
+    query, params = calls[0]
+    assert "jsonb_strip_nulls(jsonb_build_object(" in query
+    assert "-> 'generated_alert'" in query
+    assert params[0] == report.report_id
+
+
+def test_postgres_persisted_alert_scoring_uses_cache_only_profile_fallback():
+    class Cache:
+        def get(self, key):
+            assert key == "character:9001"
+            return {"corporation_id": 42}
+
+        def get_stale(self, _key):
+            pytest.fail("fresh cached profile should be preferred")
+
+    class Resolver:
+        cache = Cache()
+
+        def character_profile(self, _character_id):
+            pytest.fail("historical scoring must not call ESI")
+
+    report = IntelReport(
+        report_id="report-cache-only",
+        system="Tama",
+        names=["Pilot"],
+        character_ids=[9001],
+        source="eve-sentry-detector",
+    )
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._lock = threading.RLock()
+    store._alert_cache = {report.report_id: None}
+    store._character_profile_cache = {}
+    store._resolver = Resolver()
+    store._enricher = SimpleNamespace(
+        enrich=lambda _observation: pytest.fail(
+            "historical scoring must not call the enricher"
+        )
+    )
+    store._scorer = ClassificationEngine(
+        watchlist=Watchlist(hostile_corporation_ids={42}),
+        cooldown_seconds=60,
+    )
+
+    alert = store._alert_from_persisted_report(report)
+
+    assert alert is not None
+    assert alert.classification == "red"
+    assert alert.reason == "Hostile corporation id 42"
+    assert store._alert_cache == {report.report_id: None}
+
+
+def test_postgres_persisted_profiles_merge_cache_layers_with_snapshot_priority():
+    class Cache:
+        def get(self, _key):
+            return {"character_id": 9001, "corporation_id": 1, "alliance_id": 7}
+
+    report = IntelReport(
+        report_id="report-layered-profile",
+        system="Tama",
+        names=["Pilot"],
+        character_ids=[9001],
+        metadata={
+            "character_profiles": [
+                {
+                    "character_id": 9001,
+                    "corporation_id": 42,
+                    "contact_standing": -10.0,
+                }
+            ]
+        },
+    )
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._lock = threading.RLock()
+    store._character_profile_cache = {
+        9001: {"character_id": 9001, "corporation_id": 2, "name": "Pilot"}
+    }
+    store._resolver = SimpleNamespace(cache=Cache())
+
+    profiles = store._persisted_character_profiles(report)
+
+    assert profiles == [
+        {
+            "character_id": 9001,
+            "corporation_id": 42,
+            "alliance_id": 7,
+            "name": "Pilot",
+            "contact_standing": -10.0,
+        }
+    ]
+
+
+def test_postgres_alert_page_query_filters_and_pages_by_received_at():
+    calls = []
+
+    class EmptyResult:
+        def fetchall(self):
+            return []
+
+    class FakeConnection:
+        def execute(self, query, params):
+            calls.append((query, params))
+            return EmptyResult()
+
+    class FakePoolContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._connect = lambda: _PostgresConnection(FakePoolContext())
+
+    rows = store._read_alert_report_rows(
+        anchor=("2026-08-03T10:00:00+00:00", "report-2"),
+        since="2026-08-03T00:00:00+00:00",
+        include_since=True,
+        limit=50,
+    )
+
+    assert rows == []
+    query, params = calls[0]
+    assert "received_at >= %s" in query
+    assert "ORDER BY received_at DESC, report_id DESC" in query
+    assert query.count("%s") == 5
+    assert params == (
+        "2026-08-03T00:00:00+00:00",
+        "2026-08-03T10:00:00+00:00",
+        "2026-08-03T10:00:00+00:00",
+        "report-2",
+        50,
     )
 
 

@@ -1,7 +1,8 @@
 # API 参考
 
 默认地址为 `http://127.0.0.1:8765`。桌面客户端和工作台主要使用 `/api/v1`；旧
-`/api/*` 兼容路由仍存在，来袭分析当前仍读取 `/api/alerts`，新接入应优先使用 v1。
+`/api/*` 兼容路由仍存在；来袭分析读取专用的 `/api/v1/alert-history`，新接入应优先使用
+v1。
 
 ## 认证
 
@@ -65,6 +66,7 @@ Authorization: Bearer eve_xxx
 | `POST` | `/api/v1/clients/heartbeats` | 上传客户端状态、窗口目标和最近异常 |
 | `GET` | `/api/v1/clients` | 在线客户端和聚合状态 |
 | `GET` | `/api/v1/active-intel` | 当前实时情报 |
+| `GET` | `/api/v1/alert-history` | 按时间分页读取报表告警历史；生产 PostgreSQL 使用独立历史路径 |
 | `GET` | `/api/v1/hostile-waves` | 按“出现至清空”记录的敌对星系波次 |
 | `GET` | `/api/v1/bootstrap` | Web 和机器人使用的完整初始快照 |
 | `GET` | `/api/v1/events` | SSE 实时事件流 |
@@ -89,10 +91,14 @@ GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
 直接使用数据库键集查询，不会先读取全部历史再在 Python 中截断。需要遍历完整历史时
 必须使用 `cursor=start` 和后续 `next_cursor`，不能依赖无上限列表响应。
 
-兼容接口 `/api/alerts` 和 v1 告警列表也默认最多返回 100 条，显式 `limit` 最大 1000。
+兼容接口 `/api/alerts`、v1 告警列表和 `/api/v1/alert-history` 默认最多返回 100 条，显式
+`limit` 最大 1000。
 告警生成按接收时间倒序处理，满足 `since`、筛选条件和数量后立即停止，不会为一次历史
 查询重新评分全部热报告。
 `/api/v1/active-intel` 同样默认最多返回 100 条；需要更多活跃项时必须显式传递 `limit`。
+`/api/v1/alert-history` 支持 `since`、`limit`、`min_score` 和 `min_level`。PostgreSQL
+部署会直接按 `received_at` 索引分页，并仅使用报告快照和本地缓存重建分类，避免历史
+查询触发外部 ESI/zKill 请求或污染实时告警缓存。
 `/api/v1/hostile-waves` 支持 `since` 和 `limit`。`since` 会返回结束时间晚于该时刻或仍在
 进行中的波次；每个星系从敌对总数由 0 变为大于 0 时创建波次，回到 0 时写入
 `cleared_at`，之后再次出现会创建新的 `id`。该接口使用独立 PostgreSQL 生命周期表，

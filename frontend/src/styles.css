@@ -6296,6 +6296,31 @@ body {
   line-height: 1.55;
 }
 
+.hostile-report-card .arco-table-col-has-sorter .arco-table-cell-with-sorter {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.hostile-report-card .arco-table-col-has-sorter .arco-table-th-item-title {
+  min-width: 0;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+.hostile-report-card .arco-table-col-has-sorter .arco-table-sorter {
+  flex: 0 0 auto;
+  margin-left: 4px;
+}
+
+.combat-summary {
+  display: inline-block;
+  white-space: nowrap;
+  word-break: keep-all;
+}
+
 .table-token-list {
   display: flex;
   flex-wrap: wrap;
@@ -7522,4 +7547,188 @@ body[data-theme="dark"] .hostile-report-page .arco-btn:hover {
   border-color: #4b9a7b;
   color: #effaf5;
   background: #1b4b3b;
+}
+
+/* Final management theme layer. The light visual-system rules above are
+   intentionally late in the file, so management and account surfaces need a
+   matching late dark layer as well. */
+.management-dialog-form .arco-form-item {
+  margin-bottom: 16px;
+}
+
+.management-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.management-user-drawer .arco-drawer-title {
+  width: 100%;
+}
+
+.management-drawer-header-content {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.management-drawer-header-content .admin-user-heading {
+  min-width: 0;
+  flex: 1;
+}
+
+.management-drawer-header-content .management-icon-button {
+  flex: 0 0 auto;
+}
+
+body[data-theme="dark"] .management-content:not(.management-content-workbench),
+body[data-theme="dark"] .account-shell,
+body[data-theme="dark"] .admin-shell {
+  color: var(--theme-text);
+  background: var(--theme-page);
+}
+
+body[data-theme="dark"] .account-shell .arco-page-header .arco-typography,
+body[data-theme="dark"] .admin-shell .arco-page-header .arco-typography,
+body[data-theme="dark"] .account-shell .arco-statistic-value,
+body[data-theme="dark"] .admin-shell .arco-statistic-value,
+body[data-theme="dark"] .arco-management-card .arco-card-header-title,
+body[data-theme="dark"] .management-user-modal .arco-modal-title,
+body[data-theme="dark"] .management-user-drawer .arco-drawer-title,
+body[data-theme="dark"] .admin-user-heading h2,
+body[data-theme="dark"] .admin-section-heading h3,
+body[data-theme="dark"] .compact-list strong,
+body[data-theme="dark"] .compact-list > div > span:first-child,
+body[data-theme="dark"] .secret-once strong {
+  color: var(--theme-text);
+}
+
+body[data-theme="dark"] .account-shell .arco-statistic-title,
+body[data-theme="dark"] .admin-shell .arco-statistic-title,
+body[data-theme="dark"] .arco-table-subtext,
+body[data-theme="dark"] .arco-key-name small,
+body[data-theme="dark"] .management-user-cell small,
+body[data-theme="dark"] .admin-user-heading p,
+body[data-theme="dark"] .admin-user-heading-meta,
+body[data-theme="dark"] .admin-section-heading span,
+body[data-theme="dark"] .compact-list small,
+body[data-theme="dark"] .arco-empty-description {
+  color: var(--theme-muted);
+}
+
+body[data-theme="dark"] .arco-summary-grid .arco-card,
+body[data-theme="dark"] .arco-management-card,
+body[data-theme="dark"] .management-account-popover,
+body[data-theme="dark"] .management-user-modal .arco-modal,
+body[data-theme="dark"] .management-user-drawer .arco-drawer-content,
+body[data-theme="dark"] .arco-drawer-content,
+body[data-theme="dark"] .arco-modal {
+  border-color: var(--theme-border);
+  color: var(--theme-text);
+  background: var(--theme-surface);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 28%);
+}
+
+body[data-theme="dark"] .arco-management-card > .arco-card-header,
+body[data-theme="dark"] .management-user-drawer .arco-drawer-header,
+body[data-theme="dark"] .arco-drawer-header,
+body[data-theme="dark"] .arco-modal-header,
+body[data-theme="dark"] .arco-list-item,
+body[data-theme="dark"] .management-drawer-status,
+body[data-theme="dark"] .management-drawer-section,
+body[data-theme="dark"] .compact-list > div {
+  border-color: var(--theme-border);
+}
+
+body[data-theme="dark"] .arco-management-card .arco-table-th,
+body[data-theme="dark"] .arco-management-card .arco-table-col-sorted {
+  color: var(--theme-muted);
+  background: #142127;
+}
+
+body[data-theme="dark"] .arco-management-card .arco-table-td {
+  border-bottom-color: var(--theme-border);
+  color: var(--theme-text);
+  background: var(--theme-surface);
+}
+
+body[data-theme="dark"] .arco-management-card .arco-table-tr:hover .arco-table-td {
+  background: #1a3035;
+}
+
+body[data-theme="dark"] .arco-input-inner-wrapper,
+body[data-theme="dark"] .arco-input-wrapper,
+body[data-theme="dark"] .arco-select-view,
+body[data-theme="dark"] .arco-textarea-wrapper,
+body[data-theme="dark"] .management-user-modal .arco-input-inner-wrapper,
+body[data-theme="dark"] .management-user-modal .arco-select-view {
+  border-color: #34505a;
+  color: var(--theme-text);
+  background: #0c171c;
+}
+
+body[data-theme="dark"] .arco-input,
+body[data-theme="dark"] .arco-textarea,
+body[data-theme="dark"] .arco-select-view-value,
+body[data-theme="dark"] .arco-form-label-item,
+body[data-theme="dark"] .arco-checkbox-text,
+body[data-theme="dark"] .arco-radio-text {
+  color: var(--theme-text);
+}
+
+body[data-theme="dark"] .arco-input::placeholder,
+body[data-theme="dark"] .arco-textarea::placeholder {
+  color: #718582;
+}
+
+body[data-theme="dark"] .arco-key-icon,
+body[data-theme="dark"] .arco-user-identity .arco-avatar,
+body[data-theme="dark"] .admin-user-avatar {
+  color: #9ce1c2;
+  background: #18392e;
+}
+
+body[data-theme="dark"] .secret-once,
+body[data-theme="dark"] .management-drawer-status,
+body[data-theme="dark"] .compact-list > div,
+body[data-theme="dark"] .arco-descriptions-bordered .arco-descriptions-item-label,
+body[data-theme="dark"] .arco-descriptions-bordered .arco-descriptions-item-value {
+  border-color: var(--theme-border);
+  color: var(--theme-text);
+  background: var(--theme-surface-raised);
+}
+
+body[data-theme="dark"] .secret-once code {
+  border-color: #34505a;
+  color: #b9e8d5;
+  background: #0c171c;
+}
+
+body[data-theme="dark"] .arco-dropdown-menu,
+body[data-theme="dark"] .arco-dropdown-menu .arco-menu,
+body[data-theme="dark"] .arco-select-popup,
+body[data-theme="dark"] .arco-trigger-popup {
+  border-color: var(--theme-border);
+  color: var(--theme-text);
+  background: var(--theme-surface-raised);
+}
+
+body[data-theme="dark"] .arco-dropdown-menu .arco-menu-item,
+body[data-theme="dark"] .arco-select-option {
+  color: var(--theme-text);
+}
+
+body[data-theme="dark"] .arco-dropdown-menu .arco-menu-item:hover,
+body[data-theme="dark"] .arco-select-option:hover {
+  background: #1a3035;
+}
+
+body[data-theme="dark"] .global-theme-toggle.arco-btn {
+  border-color: #3b5b62;
+  color: #d9eee8;
+  background: #182930;
 }

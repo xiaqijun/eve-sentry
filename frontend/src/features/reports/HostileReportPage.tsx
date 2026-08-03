@@ -62,7 +62,8 @@ function dangerTag(value: number | null | undefined) {
     return <Typography.Text type="secondary">暂无数据</Typography.Text>;
   }
   const color = value >= 80 ? "red" : value >= 60 ? "orangered" : value >= 40 ? "orange" : "green";
-  return <Tag color={color}>威胁度 {Math.round(value)}</Tag>;
+  const roundedValue = Math.round(value);
+  return <Tag color={color} title={`威胁度 ${roundedValue}`}>{roundedValue}</Tag>;
 }
 
 function levelTag(value?: string) {
@@ -156,18 +157,18 @@ export function HostileReportPage() {
     { title: "独立人员", dataIndex: "uniqueTargets", width: 84 },
   ];
   const systemColumns: TableColumnProps<SystemReportRow>[] = [
-    { title: "星系", dataIndex: "name", render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
+    { title: "星系", dataIndex: "name", width: 110, render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
     { title: "来袭事件", dataIndex: "incidentCount", width: 84, sorter: (a, b) => a.incidentCount - b.incidentCount },
     { title: "目标人次", dataIndex: "targetSightings", width: 84 },
     { title: "独立人员", dataIndex: "uniqueTargets", width: 84 },
-    { title: "最后出现", dataIndex: "lastSeen", width: 154, render: (value?: string) => formatTime(value) },
+    { title: "最后出现", dataIndex: "lastSeen", render: (value?: string) => formatTime(value) },
   ];
   const targetColumns: TableColumnProps<TargetReportRow>[] = [
     { title: "已验证人员", dataIndex: "name", render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
     { title: "威胁度", dataIndex: "dangerRatio", width: 104, sorter: (a, b) => (a.dangerRatio ?? -1) - (b.dangerRatio ?? -1), render: (value: number | null) => dangerTag(value) },
     { title: "出现批次", dataIndex: "incidentCount", width: 84, sorter: (a, b) => a.incidentCount - b.incidentCount },
-    { title: "涉及星系", dataIndex: "systems", render: (value: string[]) => textTokens(value) },
-    { title: "击毁/损失", key: "combat", width: 100, render: (_: unknown, row) => `${formatCompactNumber(row.zkill?.ships_destroyed)} / ${formatCompactNumber(row.zkill?.ships_lost)}` },
+    { title: "涉及星系", dataIndex: "systems", width: 122, render: (value: string[]) => textTokens(value) },
+    { title: "击毁/损失", key: "combat", width: 118, render: (_: unknown, row) => <span className="combat-summary">{formatCompactNumber(row.zkill?.ships_destroyed)} / {formatCompactNumber(row.zkill?.ships_lost)}</span> },
     { title: "最后出现", dataIndex: "lastSeen", width: 154, render: (value?: string) => formatTime(value) },
   ];
   const recentColumns: TableColumnProps<AlertItem>[] = [
@@ -233,7 +234,7 @@ export function HostileReportPage() {
         </Grid.Col>
       </Grid.Row>
 
-      <Card className="hostile-report-card hostile-report-recent" title={<span><ShieldAlert size={16} />最近历史事件</span>} extra={<Typography.Text type="secondary">更新于 {formatTime(historyQuery.data?.generatedAt)}</Typography.Text>}>
+      <Card className="hostile-report-card hostile-report-recent" title={<span><ShieldAlert size={16} />最近告警记录</span>} extra={<Typography.Text type="secondary">更新于 {formatTime(historyQuery.data?.generatedAt)}</Typography.Text>}>
         <Table<AlertItem> border={false} columns={recentColumns} data={report.recent} pagination={false} rowKey="id" />
       </Card>
     </div>

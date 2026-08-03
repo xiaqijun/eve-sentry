@@ -1,12 +1,25 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Button, Card, Input, Select, Space, Table, Tag, Typography } from "@arco-design/web-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Button,
+  Card,
+  Drawer,
+  Dropdown,
+  Form,
+  Input,
+  Menu,
+  Modal,
+  Select,
+  Space,
+  Table,
+  Tag,
+  Typography,
+} from "@arco-design/web-react";
 import { IconEye, IconMore, IconPlus, IconUserAdd, IconUserGroup } from "@arco-design/web-react/icon";
 import {
   Ban,
   KeyRound,
   RotateCcw,
   Trash2,
-  X,
 } from "lucide-react";
 
 import {
@@ -86,17 +99,17 @@ export function AdminUsersPage() {
     }
   };
 
-  const submitUser = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const data = new FormData(form);
+  const submitUser = (values: {
+    username?: string;
+    display_name?: string;
+    password?: string;
+  }) => {
     void run(() => createUser({
-      username: String(data.get("username") || ""),
-      display_name: String(data.get("display_name") || ""),
-      password: String(data.get("password") || ""),
+      username: String(values.username || ""),
+      display_name: String(values.display_name || ""),
+      password: String(values.password || ""),
       role: createRole,
     })).then(() => {
-      form.reset();
       setCreateRole("member");
       setCreateOpen(false);
     });
@@ -137,6 +150,31 @@ export function AdminUsersPage() {
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "删除用户失败");
+    }
+  };
+
+  const runSelectedUserAction = (action: string) => {
+    if (!selectedUser) return;
+    setActionsOpen(false);
+    if (action === "toggle-status") {
+      void run(() => setUserActive(
+        selectedUser.user_id,
+        selectedUser.status !== "active",
+        "管理员操作",
+      ));
+      return;
+    }
+    if (action === "reset-password") {
+      const password = window.prompt("输入至少 12 位的新密码");
+      if (password) void run(() => resetUserPassword(selectedUser.user_id, password));
+      return;
+    }
+    if (action === "create-key") {
+      void createReadonlyKey();
+      return;
+    }
+    if (action === "delete-user") {
+      void deleteSelectedUser();
     }
   };
 
@@ -182,56 +220,87 @@ export function AdminUsersPage() {
         <Table<AdminUser> border={false} columns={columns} data={filteredUsers} loading={loading} noDataElement="没有符合条件的用户" pagination={false} rowKey="user_id" />
       </Card>
 
-      {createOpen ? (
-        <div className="management-modal-backdrop" role="presentation" onMouseDown={() => setCreateOpen(false)}>
-          <section aria-labelledby="create-user-title" aria-modal="true" className="management-modal" role="dialog" onMouseDown={(event) => event.stopPropagation()}>
-            <header><div><span>新建账号</span><h2 id="create-user-title">创建平台用户</h2></div><button aria-label="关闭" className="management-close-button" type="button" onClick={() => setCreateOpen(false)}><X size={17} /></button></header>
-            <form className="management-dialog-form" onSubmit={submitUser}>
-              <label><span>用户名</span><Input name="username" placeholder="用于登录" required /></label>
-              <label><span>显示名称</span><Input name="display_name" placeholder="页面展示名称" /></label>
-              <label><span>权限角色</span><Select value={createRole} onChange={(value) => setCreateRole(value === "admin" ? "admin" : "member")}><Select.Option value="member">普通用户</Select.Option><Select.Option value="admin">管理员</Select.Option></Select></label>
-              {createRole === "admin" ? <label><span>初始密码</span><Input.Password minLength={12} name="password" placeholder="至少 12 位" required /></label> : null}
-              <footer><Button type="secondary" onClick={() => setCreateOpen(false)}>取消</Button><Button htmlType="submit" icon={<IconUserAdd />} type="primary">创建用户</Button></footer>
-            </form>
-          </section>
-        </div>
-      ) : null}
+      <Modal
+        className="management-user-modal"
+        footer={null}
+        getPopupContainer={() => document.querySelector(".admin-shell") || document.body}
+        title="创建平台用户"
+        unmountOnExit
+        visible={createOpen}
+        onCancel={() => { setCreateRole("member"); setCreateOpen(false); }}
+      >
+        <Form className="management-dialog-form" layout="vertical" onSubmit={submitUser}>
+          <Form.Item field="username" label="用户名" rules={[{ required: true, message: "请输入用户名" }]}>
+            <Input placeholder="用于登录" />
+          </Form.Item>
+          <Form.Item field="display_name" label="显示名称">
+            <Input placeholder="页面展示名称" />
+          </Form.Item>
+          <Form.Item label="权限角色">
+            <Select value={createRole} onChange={(value) => setCreateRole(value === "admin" ? "admin" : "member")}>
+              <Select.Option value="member">普通用户</Select.Option>
+              <Select.Option value="admin">管理员</Select.Option>
+            </Select>
+          </Form.Item>
+          {createRole === "admin" ? (
+            <Form.Item field="password" label="初始密码" rules={[{ required: true, minLength: 12, message: "请输入至少 12 位密码" }]}>
+              <Input.Password placeholder="至少 12 位" />
+            </Form.Item>
+          ) : null}
+          <div className="management-dialog-actions">
+            <Button type="secondary" onClick={() => { setCreateRole("member"); setCreateOpen(false); }}>取消</Button>
+            <Button htmlType="submit" icon={<IconUserAdd />} type="primary">创建用户</Button>
+          </div>
+        </Form>
+      </Modal>
 
-      {selectedUser ? (
-        <div className="management-drawer-backdrop" role="presentation" onMouseDown={() => setSelectedUserId("")}>
-          <aside aria-labelledby="user-detail-title" aria-modal="true" className="management-drawer" role="dialog" onMouseDown={(event) => event.stopPropagation()}>
-            <header className="management-drawer-header">
-              <div className="admin-user-heading">
-                <span className="admin-user-avatar">{(selectedUser.display_name || selectedUser.username).slice(0, 1).toUpperCase()}</span>
-                <div><span className="admin-user-heading-meta">用户详情</span><h2 id="user-detail-title">{selectedUser.display_name || selectedUser.username}</h2><p>@{selectedUser.username} · {selectedUser.role === "admin" ? "管理员" : "普通用户"}</p></div>
-              </div>
-              <div className="management-drawer-header-actions">
-                <Button aria-expanded={actionsOpen} aria-label="用户操作" className="management-icon-button" icon={<IconMore />} shape="circle" title="用户操作" type="text" onClick={() => setActionsOpen((current) => !current)} />
-                <Button aria-label="关闭详情" className="management-close-button" icon={<X size={17} />} shape="circle" type="text" onClick={() => { setActionsOpen(false); setSelectedUserId(""); }} />
-                {actionsOpen ? (
-                  <div aria-label="用户操作菜单" className="management-actions-menu" role="menu">
-                    <Button role="menuitem" type="text" onClick={() => { setActionsOpen(false); void run(() => setUserActive(selectedUser.user_id, selectedUser.status !== "active", "管理员操作")); }}>{selectedUser.status === "active" ? "禁用用户" : "解禁用户"}</Button>
-                    {selectedUser.role === "admin" ? <Button role="menuitem" type="text" onClick={() => { setActionsOpen(false); const password = window.prompt("输入至少 12 位的新密码"); if (password) void run(() => resetUserPassword(selectedUser.user_id, password)); }}>重置密码</Button> : null}
-                    <Button icon={<KeyRound size={14} />} role="menuitem" type="text" onClick={() => { setActionsOpen(false); void createReadonlyKey(); }}>创建只读密钥</Button>
-                    {selectedUser.user_id !== currentUser?.user_id ? <Button className="danger-action" icon={<Trash2 size={14} />} role="menuitem" status="danger" type="text" onClick={() => { setActionsOpen(false); void deleteSelectedUser(); }}>删除用户</Button> : null}
-                  </div>
-                ) : null}
-              </div>
-            </header>
-            <div className="management-drawer-body">
+      <Drawer
+        className="management-user-drawer"
+        footer={null}
+        title={selectedUser ? (
+          <div className="management-drawer-header-content">
+            <div className="admin-user-heading">
+              <span className="admin-user-avatar">{(selectedUser.display_name || selectedUser.username).slice(0, 1).toUpperCase()}</span>
+              <div><span className="admin-user-heading-meta">用户详情</span><h2>{selectedUser.display_name || selectedUser.username}</h2><p>@{selectedUser.username} · {selectedUser.role === "admin" ? "管理员" : "普通用户"}</p></div>
+            </div>
+            <Dropdown
+              droplist={(
+                <Menu aria-label="用户操作菜单" selectable={false}>
+                  <Menu.Item key="toggle-status" onClick={() => runSelectedUserAction("toggle-status")}>{selectedUser.status === "active" ? "禁用用户" : "解禁用户"}</Menu.Item>
+                  {selectedUser.role === "admin" ? <Menu.Item key="reset-password" onClick={() => runSelectedUserAction("reset-password")}>重置密码</Menu.Item> : null}
+                  <Menu.Item key="create-key" onClick={() => runSelectedUserAction("create-key")}><KeyRound size={14} />创建只读密钥</Menu.Item>
+                  {selectedUser.user_id !== currentUser?.user_id ? <Menu.Item key="delete-user" onClick={() => runSelectedUserAction("delete-user")}><span className="danger-text"><Trash2 size={14} />删除用户</span></Menu.Item> : null}
+                </Menu>
+              )}
+              popupVisible={actionsOpen}
+              position="br"
+              trigger="click"
+              getPopupContainer={(node) => node.parentElement || document.body}
+              onVisibleChange={setActionsOpen}
+            >
+              <Button aria-expanded={actionsOpen} aria-label="用户操作" className="management-icon-button" icon={<IconMore />} shape="circle" title="用户操作" type="text" />
+            </Dropdown>
+          </div>
+        ) : "用户详情"}
+        getPopupContainer={() => document.querySelector(".admin-shell") || document.body}
+        visible={Boolean(selectedUser)}
+        width={520}
+        onCancel={() => { setActionsOpen(false); setSelectedUserId(""); }}
+      >
+        {selectedUser ? (
+          <div className="management-drawer-body">
               <div className="management-drawer-status"><span>账号状态</span><AccountStatusTag status={selectedUser.status} /></div>
               {serviceSecret ? <div className="secret-once"><strong>服务密钥只显示这一次</strong><code>{serviceSecret}</code></div> : null}
               <section className="management-drawer-section">
                 <div className="admin-section-heading"><h3>设备与服务密钥</h3><span>{selectedUser.keys.length} 个</span></div>
                 <div className="compact-list">
-                  {selectedUser.keys.map((key) => <div key={key.key_id}><span>{key.name}<small>{key.key_prefix}… · {key.key_type}</small></span><span className="compact-key-actions"><em className={`status-text ${key.status}`}>{key.status === "active" ? "有效" : "已吊销"}</em>{key.status === "active" ? <button className="icon-button" title="吊销密钥" type="button" onClick={() => void run(() => revokeKey(key.key_id))}><Ban size={14} /></button> : null}{key.status === "revoked" && canEnableKey(key) ? <button className="icon-button" title="重新启用密钥" type="button" onClick={() => void run(() => enableKey(key.key_id))}><RotateCcw size={14} /></button> : null}{key.status === "revoked" ? <button className="icon-button danger-text" title="永久删除密钥" type="button" onClick={() => { if (window.confirm(`确定永久删除密钥“${key.name}”吗？`)) void run(() => deleteKey(key.key_id)); }}><Trash2 size={14} /></button> : null}</span></div>)}
+                  {selectedUser.keys.map((key) => <div key={key.key_id}><span>{key.name}<small>{key.key_prefix}… · {key.key_type}</small></span><span className="compact-key-actions"><em className={`status-text ${key.status}`}>{key.status === "active" ? "有效" : "已吊销"}</em>{key.status === "active" ? <Button aria-label={`吊销 ${key.name}`} icon={<Ban size={14} />} shape="circle" size="mini" title="吊销密钥" type="text" onClick={() => void run(() => revokeKey(key.key_id))} /> : null}{key.status === "revoked" && canEnableKey(key) ? <Button aria-label={`重新启用 ${key.name}`} icon={<RotateCcw size={14} />} shape="circle" size="mini" title="重新启用密钥" type="text" onClick={() => void run(() => enableKey(key.key_id))} /> : null}{key.status === "revoked" ? <Button aria-label={`删除 ${key.name}`} icon={<Trash2 size={14} />} shape="circle" size="mini" status="danger" title="永久删除密钥" type="text" onClick={() => { if (window.confirm(`确定永久删除密钥“${key.name}”吗？`)) void run(() => deleteKey(key.key_id)); }} /> : null}</span></div>)}
                   {selectedUser.keys.length === 0 ? <p className="admin-empty">暂无密钥</p> : null}
                 </div>
               </section>
-            </div>
-          </aside>
-        </div>
-      ) : null}
+          </div>
+        ) : null}
+      </Drawer>
     </div>
   );
 }

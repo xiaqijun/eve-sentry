@@ -836,6 +836,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         if path == f"{API_V1_PREFIX}/active-intel":
             self._send_active_intel(parsed.query)
             return
+        if path == f"{API_V1_PREFIX}/alert-history":
+            self._send_alert_history(parsed.query)
+            return
         if path == f"{API_V1_PREFIX}/hostile-waves":
             self._send_hostile_waves(parsed.query)
             return
@@ -1654,6 +1657,31 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 "active_intel": active,
                 "count": len(active),
                 "generated_at": utc_now_iso(),
+            }
+        )
+
+    def _send_alert_history(self, raw_query: str = "") -> None:
+        query = parse_qs(raw_query)
+        try:
+            limit = self._parse_optional_int(query.get("limit", [""])[0])
+            filters = self._parse_alert_filters(query)
+            store = self._store()
+            list_history = getattr(store, "list_alert_history", None)
+            if not callable(list_history):
+                list_history = store.list_alerts
+            alerts = list_history(
+                since=query.get("since", [""])[0],
+                limit=DEFAULT_QUERY_LIMIT if limit is None else limit,
+                **filters,
+            )
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json(
+            {
+                "schema_version": "alert_history.v1",
+                "alerts": alerts,
+                "count": len(alerts),
             }
         )
 

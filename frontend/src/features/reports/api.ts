@@ -28,7 +28,7 @@ export async function fetchHostileAlertHistory(
       alerts?: AlertItem[];
       count?: number;
       error?: string;
-    }>(`/api/alerts${suffix}`),
+    }>(`/api/v1/alert-history${suffix}`),
     apiRequest<{
       waves?: HostileWaveLifecycle[];
       count?: number;
