@@ -1395,6 +1395,8 @@ def test_alert_overlay_keeps_alert_list_hidden_during_map_updates(monkeypatch):
 
 
 def test_local_star_map_positions_labels_away_from_node_centerline():
+    assert LocalStarMapWidget.LABEL_FONT_PIXEL_SIZE == 10
+
     label = LocalStarMapWidget._label_rect(
         x=100,
         y=60,
