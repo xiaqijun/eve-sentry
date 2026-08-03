@@ -115,6 +115,8 @@ class RecordingClient(IntelApiClient):
             return {"config": {"schema_version": "scoring_config.v1"}}
         if path.endswith("/bootstrap"):
             return {"bootstrap": {"schema_version": "intel_bootstrap.v1"}}
+        if path.endswith("/map/neighborhood"):
+            return {"map": {"systems": [], "links": [], "centers": []}}
         if path.endswith("/map"):
             return {"map": {"systems": [], "links": [], "summary": {}}}
         if "/map/systems/" in path:
@@ -153,6 +155,7 @@ def test_intel_api_client_targets_v1_routes_for_http_requests():
     api.alert_detail("evt-1")
     api.bootstrap()
     api.map_snapshot()
+    api.map_neighborhood(["Tama"], [30002813], hops=2)
     api.map_system(30002813)
 
     assert [call["path"] for call in api.calls] == [
@@ -173,8 +176,14 @@ def test_intel_api_client_targets_v1_routes_for_http_requests():
         "/api/v1/alerts/evt-1",
         "/api/v1/bootstrap",
         "/api/v1/map",
+        "/api/v1/map/neighborhood",
         "/api/v1/map/systems/30002813",
     ]
+    assert api.calls[-2]["params"] == {
+        "systems": "Tama",
+        "system_ids": "30002813",
+        "hops": "2",
+    }
 
 
 def test_intel_api_client_can_defer_channel_line_enrichment():

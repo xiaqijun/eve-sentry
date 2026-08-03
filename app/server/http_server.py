@@ -161,6 +161,71 @@ def _active_hostile_counts(alerts: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+def _split_query_values(values: list[str]) -> list[str]:
+    """Normalize repeated or comma-separated query values."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        for item in str(raw or "").split(","):
+            value = item.strip()
+            if value and value.casefold() not in seen:
+                seen.add(value.casefold())
+                result.append(value)
+    return result
+
+
+def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
+    """Return stable online account/location fields for SSE change detection."""
+    if not isinstance(client_snapshot, dict):
+        return []
+    heartbeats = client_snapshot.get("heartbeats")
+    if not isinstance(heartbeats, list):
+        return []
+    state: list[dict[str, Any]] = []
+    for heartbeat in heartbeats:
+        if not isinstance(heartbeat, dict):
+            continue
+        if str(heartbeat.get("client_type") or "") != "detector_client":
+            continue
+        if not bool(heartbeat.get("online")):
+            continue
+        details = heartbeat.get("details")
+        if not isinstance(details, dict) or not bool(details.get("monitoring")):
+            continue
+        targets = details.get("targets")
+        if not isinstance(targets, list) or not targets:
+            targets = [details]
+        for target in targets:
+            if not isinstance(target, dict) or not bool(
+                target.get("monitoring", True)
+            ):
+                continue
+            state.append(
+                {
+                    "heartbeat_client_id": str(
+                        heartbeat.get("client_id") or ""
+                    ).strip(),
+                    "client_id": str(target.get("client_id") or "").strip(),
+                    "character_name": str(
+                        target.get("character_name") or ""
+                    ).strip(),
+                    "source_instance": str(
+                        target.get("source_instance")
+                        or target.get("window_title")
+                        or ""
+                    ).strip(),
+                    "system_name": str(
+                        target.get("system_name") or target.get("system") or ""
+                    ).strip(),
+                    "system_id": target.get("system_id"),
+                }
+            )
+    return sorted(
+        state,
+        key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True),
+    )
+
+
 class IntelHTTPServer:
     """Small background HTTP server for local intel sharing."""
 
@@ -830,6 +895,28 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         if path == f"{API_V1_PREFIX}/map":
             self._send_json({"map": self._map_snapshot_payload()})
             return
+        if path == f"{API_V1_PREFIX}/map/neighborhood":
+            query = parse_qs(parsed.query)
+            try:
+                hops = self._parse_optional_int_param(
+                    query.get("hops", [""])[0],
+                    "hops",
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            system_names = _split_query_values(query.get("systems", []))
+            system_ids = _split_query_values(query.get("system_ids", []))
+            self._send_json(
+                {
+                    "map": self._map_neighborhood_payload(
+                        system_names=system_names,
+                        system_ids=system_ids,
+                        hops=3 if hops is None else hops,
+                    )
+                }
+            )
+            return
         if path == f"{API_V1_PREFIX}/clients":
             self._send_json({"clients": self._store().heartbeat_snapshot()})
             return
@@ -1262,6 +1349,92 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         return self._map_snapshot_from_snapshot(
             self._runtime_snapshot(include_reports=False, include_alerts=False)
         )
+
+    def _map_neighborhood_payload(
+        self,
+        *,
+        system_names: list[str],
+        system_ids: list[str],
+        hops: int,
+    ) -> dict[str, Any]:
+        """Return only the configured map nodes within a few jumps of centers."""
+        snapshot = self._map_snapshot_payload()
+        systems = [
+            item for item in snapshot.get("systems", []) if isinstance(item, dict)
+        ]
+        links = [
+            item for item in snapshot.get("links", []) if isinstance(item, dict)
+        ]
+        max_hops = max(0, min(5, int(hops)))
+        by_name = {
+            str(item.get("name") or "").strip().casefold(): item
+            for item in systems
+            if str(item.get("name") or "").strip()
+        }
+        by_id = {
+            str(item.get("system_id")): item
+            for item in systems
+            if self._optional_positive_int(item.get("system_id")) is not None
+        }
+        center_names: set[str] = set()
+        for name in system_names:
+            item = by_name.get(str(name or "").strip().casefold())
+            if item is not None:
+                center_names.add(str(item["name"]).strip())
+        for system_id in system_ids:
+            item = by_id.get(str(system_id or "").strip())
+            if item is not None:
+                center_names.add(str(item["name"]).strip())
+
+        adjacency: dict[str, set[str]] = {
+            str(item["name"]): set() for item in systems
+        }
+        for link in links:
+            source = str(link.get("from") or "").strip()
+            target = str(link.get("to") or "").strip()
+            if source not in adjacency or target not in adjacency:
+                continue
+            adjacency[source].add(target)
+            adjacency[target].add(source)
+
+        included = set(center_names)
+        frontier = set(center_names)
+        for _ in range(max_hops):
+            next_frontier = {
+                neighbor
+                for name in frontier
+                for neighbor in adjacency.get(name, set())
+                if neighbor not in included
+            }
+            included.update(next_frontier)
+            frontier = next_frontier
+            if not frontier:
+                break
+
+        return {
+            "schema_version": "map_neighborhood.v1",
+            "generated_at": snapshot.get("generated_at", ""),
+            "hops": max_hops,
+            "centers": sorted(center_names),
+            "systems": [
+                item for item in systems if str(item.get("name")) in included
+            ],
+            "links": [
+                item
+                for item in links
+                if str(item.get("from") or "").strip() in included
+                and str(item.get("to") or "").strip() in included
+            ],
+            "summary": {
+                "system_count": len(included),
+                "link_count": sum(
+                    1
+                    for item in links
+                    if str(item.get("from") or "").strip() in included
+                    and str(item.get("to") or "").strip() in included
+                ),
+            },
+        }
 
     def _runtime_snapshot(
         self,
@@ -2457,7 +2630,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             {
                 "active_intel": payload.get("active_intel"),
                 "alerts": payload.get("alerts"),
-                "monitoring_systems": monitored_system_names(
+                "monitoring_targets": _monitoring_target_state(
                     payload.get("clients")
                 ),
             }

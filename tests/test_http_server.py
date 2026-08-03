@@ -509,6 +509,23 @@ def test_v1_bootstrap_and_map_routes_expose_workbench_payload(tmp_path):
         assert status == 200
         assert map_payload["map"]["summary"]["system_count"] == 2
         assert map_payload["map"]["links"] == [{"from": "Tama", "to": "Kedama"}]
+
+        status, local_payload = request_json(
+            f"{server.url}/api/v1/map/neighborhood?systems=Tama&hops=0"
+        )
+        assert status == 200
+        assert [item["name"] for item in local_payload["map"]["systems"]] == ["Tama"]
+        assert local_payload["map"]["links"] == []
+
+        status, local_payload = request_json(
+            f"{server.url}/api/v1/map/neighborhood?system_ids=30002813&hops=1"
+        )
+        assert status == 200
+        assert {item["name"] for item in local_payload["map"]["systems"]} == {
+            "Tama",
+            "Kedama",
+        }
+        assert local_payload["map"]["links"] == [{"from": "Tama", "to": "Kedama"}]
     finally:
         server.stop()
 
@@ -906,6 +923,44 @@ def test_bootstrap_event_fingerprint_changes_with_monitoring_systems():
 
     assert handler._bootstrap_event_fingerprint(payload("S-KSWL")) != (
         handler._bootstrap_event_fingerprint(payload("8-4GQM"))
+    )
+
+
+def test_bootstrap_event_fingerprint_tracks_account_location_mapping():
+    handler = object.__new__(IntelRequestHandler)
+
+    def payload(alice_system, bob_system):
+        return {
+            "active_intel": [],
+            "alerts": [],
+            "clients": {
+                "heartbeats": [
+                    {
+                        "client_id": "detector-client:test",
+                        "client_type": "detector_client",
+                        "online": True,
+                        "details": {
+                            "monitoring": True,
+                            "targets": [
+                                {
+                                    "client_id": "detector-client:test:alice",
+                                    "character_name": "Alice",
+                                    "system_name": alice_system,
+                                },
+                                {
+                                    "client_id": "detector-client:test:bob",
+                                    "character_name": "Bob",
+                                    "system_name": bob_system,
+                                },
+                            ],
+                        },
+                    }
+                ]
+            },
+        }
+
+    assert handler._bootstrap_event_fingerprint(payload("Tama", "Jita")) != (
+        handler._bootstrap_event_fingerprint(payload("Jita", "Tama"))
     )
 
 

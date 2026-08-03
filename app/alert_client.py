@@ -13,17 +13,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from PyQt6.QtCore import QEvent, QPoint, QRect, QTimer, Qt, QThread, QUrl, pyqtSignal
-from PyQt6.QtGui import QAction, QFont
+from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtGui import QAction, QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
+    QPushButton,
     QScrollArea,
+    QStackedWidget,
     QStyle,
     QSystemTrayIcon,
     QVBoxLayout,
@@ -481,6 +486,227 @@ def sync_alert_summaries_from_bootstrap(
     return ordered
 
 
+def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract selectable online detector accounts and their current systems."""
+    clients = bootstrap.get("clients") if isinstance(bootstrap, dict) else None
+    heartbeats = clients.get("heartbeats") if isinstance(clients, dict) else None
+    if not isinstance(heartbeats, list):
+        return []
+    accounts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for heartbeat in heartbeats:
+        if not isinstance(heartbeat, dict):
+            continue
+        if str(heartbeat.get("client_type") or "") != "detector_client":
+            continue
+        if not bool(heartbeat.get("online")):
+            continue
+        details = heartbeat.get("details")
+        if not isinstance(details, dict) or not bool(details.get("monitoring")):
+            continue
+        targets = details.get("targets")
+        if not isinstance(targets, list) or not targets:
+            targets = [details]
+        for target in targets:
+            if not isinstance(target, dict) or not bool(target.get("monitoring", True)):
+                continue
+            client_id = str(target.get("client_id") or heartbeat.get("client_id") or "").strip()
+            character_name = str(target.get("character_name") or "").strip()
+            source_instance = str(
+                target.get("source_instance") or target.get("window_title") or ""
+            ).strip()
+            system_name = str(target.get("system_name") or target.get("system") or "").strip()
+            if not system_name or system_name.casefold() == "unknown":
+                continue
+            key = "|".join((client_id, character_name, source_instance)).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            label = character_name or source_instance or client_id or system_name
+            accounts.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "character_name": character_name,
+                    "client_id": client_id,
+                    "system_name": system_name,
+                    "system_id": target.get("system_id"),
+                }
+            )
+    return accounts
+
+
+class LocalStarMapWidget(QWidget):
+    """Small, dependency-free renderer for the selected map neighborhood."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._payload: dict[str, Any] = {}
+        self._accounts: list[dict[str, Any]] = []
+        self._alerts: list[dict[str, Any]] = []
+        self._message = "选择账号加载局部星图"
+        self.setMinimumHeight(150)
+
+    def set_payload(self, payload: dict[str, Any]) -> None:
+        self._payload = dict(payload or {})
+        self._message = ""
+        self.update()
+
+    def set_accounts(self, accounts: list[dict[str, Any]]) -> None:
+        self._accounts = [dict(item) for item in accounts]
+        self.update()
+
+    def set_alerts(self, alerts: list[dict[str, Any]]) -> None:
+        self._alerts = [dict(item) for item in alerts]
+        self.update()
+
+    def set_message(self, message: str) -> None:
+        self._message = str(message or "")
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        _ = event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor(5, 14, 22, 245))
+        systems = [item for item in self._payload.get("systems", []) if isinstance(item, dict)]
+        links = [item for item in self._payload.get("links", []) if isinstance(item, dict)]
+        if not systems:
+            painter.setPen(QColor("#93a4b4"))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._message or "暂无局部星图数据")
+            return
+        names = {str(item.get("name") or "").strip() for item in systems}
+        positions = {
+            str(item.get("name") or "").strip(): (
+                float(item.get("x") or 0),
+                float(item.get("y") or 0),
+            )
+            for item in systems
+            if str(item.get("name") or "").strip()
+        }
+        if not positions:
+            return
+        min_x = min(point[0] for point in positions.values())
+        max_x = max(point[0] for point in positions.values())
+        min_y = min(point[1] for point in positions.values())
+        max_y = max(point[1] for point in positions.values())
+        padding = 18.0
+        raw_width = max_x - min_x
+        raw_height = max_y - min_y
+        width = max(1.0, raw_width)
+        height = max(1.0, raw_height)
+        scale = min(
+            (self.width() - padding * 2) / width,
+            (self.height() - padding * 2) / height,
+        )
+        scale = max(0.1, scale)
+        offset_x = (self.width() - raw_width * scale) / 2
+        offset_y = (self.height() - raw_height * scale) / 2
+
+        def point(name: str) -> tuple[float, float]:
+            x, y = positions[name]
+            return (
+                offset_x + (x - min_x) * scale,
+                offset_y + (max_y - y) * scale,
+            )
+
+        painter.setPen(QPen(QColor(66, 103, 125, 170), 1))
+        for link in links:
+            source = str(link.get("from") or "").strip()
+            target = str(link.get("to") or "").strip()
+            if source in names and target in names:
+                source_x, source_y = point(source)
+                target_x, target_y = point(target)
+                painter.drawLine(
+                    int(source_x),
+                    int(source_y),
+                    int(target_x),
+                    int(target_y),
+                )
+
+        centers = {
+            str(item.get("system_name") or "").strip().casefold()
+            for item in self._accounts
+        }
+        account_labels: dict[str, list[str]] = {}
+        for account in self._accounts:
+            system_key = str(account.get("system_name") or "").strip().casefold()
+            label = str(account.get("label") or "").strip()
+            if system_key and label and label not in account_labels.setdefault(system_key, []):
+                account_labels[system_key].append(label)
+        hostile_counts: dict[str, int] = {}
+        for alert in self._alerts:
+            if not bool(alert.get("active", True)):
+                continue
+            name = str(alert.get("system_name") or "").strip().casefold()
+            try:
+                count = int(alert.get("active_hostile_count", alert.get("hostile_count", 0)) or 0)
+            except (TypeError, ValueError):
+                count = 0
+            hostile_counts[name] = max(hostile_counts.get(name, 0), count)
+        for name in names:
+            x, y = point(name)
+            key = name.casefold()
+            hostile = hostile_counts.get(key, 0) > 0
+            center = key in centers
+            if hostile:
+                color = QColor("#ff6b73")
+            elif center:
+                color = QColor("#4fd19a")
+            else:
+                color = QColor("#6d8394")
+            radius = 6 if hostile or center else 4
+            painter.setPen(QPen(color, 1))
+            painter.setBrush(QBrush(color))
+            painter.drawEllipse(int(x - radius), int(y - radius), radius * 2, radius * 2)
+            details: list[str] = []
+            if center:
+                details.append(" / ".join(account_labels.get(key, [])[:2]))
+            if hostile:
+                details.append(f"预警 {hostile_counts[key]}")
+            detail = " · ".join(item for item in details if item)
+            if detail:
+                detail = painter.fontMetrics().elidedText(
+                    detail,
+                    Qt.TextElideMode.ElideRight,
+                    120,
+                )
+            metrics = painter.fontMetrics()
+            text_width = max(
+                metrics.horizontalAdvance(name),
+                metrics.horizontalAdvance(detail) if detail else 0,
+            )
+            text_x = x + radius + 3
+            if text_x + text_width > self.width() - 4:
+                text_x = x - radius - 3 - text_width
+            name_y = y + 4
+            detail_y = y + 18
+            if detail and detail_y > self.height() - 4:
+                name_y = y - 10
+                detail_y = y + 4
+            painter.setPen(QColor("#dce8ef"))
+            painter.drawText(int(text_x), int(name_y), name)
+            if detail:
+                painter.setPen(QColor("#ff9d96") if hostile else QColor("#7de0bb"))
+                painter.drawText(int(text_x), int(detail_y), detail)
+
+
+class CurrentPageStack(QStackedWidget):
+    """Let the compact overlay size itself from only the visible view."""
+
+    def sizeHint(self) -> QSize:
+        widget = self.currentWidget()
+        return widget.sizeHint() if widget is not None else super().sizeHint()
+
+    def minimumSizeHint(self) -> QSize:
+        widget = self.currentWidget()
+        return (
+            widget.minimumSizeHint()
+            if widget is not None
+            else super().minimumSizeHint()
+        )
+
+
 def build_heartbeat_details(
     last_action: str,
     last_error: str = "",
@@ -564,6 +790,7 @@ class AlertOverlay(QWidget):
     """Always-on-top compact alert overlay."""
 
     ACTIVE_SOUNDS: list[QSoundEffect] = []
+    map_options_changed = pyqtSignal(list, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -575,6 +802,13 @@ class AlertOverlay(QWidget):
         self._content_layout: QVBoxLayout | None = None
         self._row_layout: QGridLayout | None = None
         self._scroll: QScrollArea | None = None
+        self._view_stack: QStackedWidget | None = None
+        self._map_widget: LocalStarMapWidget | None = None
+        self._account_list: QListWidget | None = None
+        self._hops_combo = None
+        self._map_accounts: list[dict[str, Any]] = []
+        self._map_alerts: list[dict[str, Any]] = []
+        self._map_selection_initialized = False
         self._anchor_rect: dict[str, Any] | None = None
         self._tile_width = OVERLAY_TILE_WIDTH
         self._tile_height = OVERLAY_TILE_HEIGHT
@@ -621,6 +855,14 @@ class AlertOverlay(QWidget):
         self._status.installEventFilter(self)
         header.addWidget(self._title)
         header.addStretch(1)
+        list_button = QPushButton("列表")
+        list_button.setFixedHeight(22)
+        list_button.clicked.connect(lambda: self._set_view(0))
+        header.addWidget(list_button)
+        map_button = QPushButton("星图")
+        map_button.setFixedHeight(22)
+        map_button.clicked.connect(lambda: self._set_view(1))
+        header.addWidget(map_button)
         header.addWidget(self._status)
         layout.addLayout(header)
 
@@ -652,8 +894,45 @@ class AlertOverlay(QWidget):
         )
         scroll.viewport().setMouseTracking(True)
         scroll.viewport().installEventFilter(self)
-        layout.addWidget(scroll)
         self._scroll = scroll
+
+        view_stack = CurrentPageStack()
+        view_stack.addWidget(scroll)
+        map_page = QWidget()
+        map_layout = QVBoxLayout(map_page)
+        map_layout.setContentsMargins(0, 0, 0, 0)
+        map_layout.setSpacing(4)
+        options = QHBoxLayout()
+        options.setContentsMargins(0, 0, 0, 0)
+        account_label = QLabel("账号")
+        account_label.setStyleSheet("color: #9fb7c3; font-size: 11px;")
+        options.addWidget(account_label)
+        account_list = QListWidget()
+        account_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        account_list.setMaximumHeight(46)
+        account_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        account_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        account_list.itemChanged.connect(lambda _item: self._emit_map_options())
+        options.addWidget(account_list, 1)
+        hops_label = QLabel("跳")
+        hops_label.setStyleSheet("color: #9fb7c3; font-size: 11px;")
+        options.addWidget(hops_label)
+        hops_combo = QComboBox()
+        hops_combo.addItems(["1", "2", "3", "5"])
+        hops_combo.setCurrentText("3")
+        hops_combo.setFixedWidth(48)
+        hops_combo.currentTextChanged.connect(lambda _value: self._emit_map_options())
+        options.addWidget(hops_combo)
+        map_layout.addLayout(options)
+        map_widget = LocalStarMapWidget()
+        map_layout.addWidget(map_widget, 1)
+        view_stack.addWidget(map_page)
+        view_stack.setFixedHeight(0)
+        layout.addWidget(view_stack)
+        self._view_stack = view_stack
+        self._map_widget = map_widget
+        self._account_list = account_list
+        self._hops_combo = hops_combo
 
         self.setStyleSheet(
             """
@@ -702,8 +981,131 @@ class AlertOverlay(QWidget):
             QScrollArea#alertScroll QWidget#rowContainer {
                 background: transparent;
             }
+            QPushButton {
+                color: #b9d1dd;
+                background: rgba(17, 36, 48, 210);
+                border: 1px solid rgba(92, 213, 238, 100);
+                border-radius: 3px;
+                padding: 1px 5px;
+            }
+            QPushButton:hover {
+                background: rgba(28, 61, 76, 230);
+            }
+            QListWidget {
+                color: #dce8ef;
+                background: rgba(6, 19, 28, 220);
+                border: 1px solid rgba(92, 213, 238, 80);
+                border-radius: 3px;
+            }
+            QComboBox {
+                color: #dce8ef;
+                background: rgba(6, 19, 28, 220);
+                border: 1px solid rgba(92, 213, 238, 80);
+                border-radius: 3px;
+                padding: 1px 3px;
+            }
             """
         )
+
+    def _set_view(self, index: int) -> None:
+        if self._view_stack is not None:
+            target = max(0, min(1, int(index)))
+            self._view_stack.setCurrentIndex(target)
+            if target == 0:
+                self._layout_rows_for_size()
+            else:
+                if self._content_layout is not None:
+                    self._content_layout.setSpacing(8)
+                self._view_stack.setMinimumHeight(196)
+                self._view_stack.setMaximumHeight(16777215)
+            self._resize_to_content()
+
+    def _emit_map_options(self) -> None:
+        if self._account_list is None or self._hops_combo is None:
+            return
+        selected = [
+            str(item.data(Qt.ItemDataRole.UserRole) or "")
+            for index in range(self._account_list.count())
+            for item in [self._account_list.item(index)]
+            if item.checkState() == Qt.CheckState.Checked
+        ]
+        try:
+            hops = int(self._hops_combo.currentText())
+        except (TypeError, ValueError):
+            hops = 3
+        if self._map_widget is not None:
+            selected_keys = set(selected)
+            self._map_widget.set_accounts(
+                [
+                    item
+                    for item in self._map_accounts
+                    if str(item.get("key") or "") in selected_keys
+                ]
+            )
+        self.map_options_changed.emit(selected, hops)
+
+    def map_selection(self) -> tuple[list[str], int]:
+        if self._account_list is None or self._hops_combo is None:
+            return [], 3
+        selected = [
+            str(item.data(Qt.ItemDataRole.UserRole) or "")
+            for index in range(self._account_list.count())
+            for item in [self._account_list.item(index)]
+            if item.checkState() == Qt.CheckState.Checked
+        ]
+        try:
+            hops = int(self._hops_combo.currentText())
+        except (TypeError, ValueError):
+            hops = 3
+        return selected, hops
+
+    def set_map_accounts(self, accounts: list[dict[str, Any]]) -> None:
+        self._map_accounts = [dict(item) for item in accounts]
+        if self._account_list is None:
+            return
+        previous, _ = self.map_selection()
+        self._account_list.blockSignals(True)
+        self._account_list.clear()
+        default_all = not self._map_selection_initialized
+        for account in self._map_accounts:
+            key = str(account.get("key") or "")
+            label = str(account.get("label") or account.get("system_name") or key)
+            system = str(account.get("system_name") or "")
+            item = QListWidgetItem(f"{label} · {system}")
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if default_all or key in previous
+                else Qt.CheckState.Unchecked
+            )
+            self._account_list.addItem(item)
+        self._account_list.blockSignals(False)
+        if self._map_accounts:
+            self._map_selection_initialized = True
+        if self._map_widget is not None:
+            selected, _ = self.map_selection()
+            selected_keys = set(selected)
+            self._map_widget.set_accounts(
+                [
+                    item
+                    for item in self._map_accounts
+                    if str(item.get("key") or "") in selected_keys
+                ]
+            )
+
+    def set_map_payload(self, payload: dict[str, Any]) -> None:
+        if self._map_widget is not None:
+            self._map_widget.set_payload(payload)
+
+    def set_map_alerts(self, alerts: list[dict[str, Any]]) -> None:
+        self._map_alerts = [dict(item) for item in alerts]
+        if self._map_widget is not None:
+            self._map_widget.set_alerts(self._map_alerts)
+
+    def set_map_message(self, message: str) -> None:
+        if self._map_widget is not None:
+            self._map_widget.set_message(message)
 
     def set_status(self, text: str, tone: str = "idle") -> None:
         color = {
@@ -878,6 +1280,7 @@ class AlertOverlay(QWidget):
         if screen is not None:
             self._apply_screen_metrics(screen)
         rows = aggregate_alert_summaries(summaries)
+        self.set_map_alerts(rows)
         self._ensure_row_count(len(rows))
         for index, (frame, system_label, hostile_label, state_label) in enumerate(
             self._rows
@@ -991,10 +1394,17 @@ class AlertOverlay(QWidget):
         for frame, *_labels in self._rows:
             self._row_layout.removeWidget(frame)
         if not visible_rows:
+            if self._content_layout is not None:
+                self._content_layout.setSpacing(0)
             self._scroll.setVisible(False)
             self._scroll.setMinimumHeight(0)
             self._scroll.setMaximumHeight(16777215)
+            if self._view_stack is not None and self._view_stack.currentIndex() == 0:
+                self._view_stack.setFixedHeight(0)
             return
+
+        if self._content_layout is not None:
+            self._content_layout.setSpacing(8)
 
         if self._user_resized:
             available_width = max(1, self.width() - 28)
@@ -1020,6 +1430,9 @@ class AlertOverlay(QWidget):
         if self._user_resized:
             self._scroll.setMinimumHeight(0)
             self._scroll.setMaximumHeight(16777215)
+            if self._view_stack is not None and self._view_stack.currentIndex() == 0:
+                self._view_stack.setMinimumHeight(0)
+                self._view_stack.setMaximumHeight(16777215)
         else:
             visible_row_limit = max(1, (MAX_OVERLAY_ROWS + columns - 1) // columns)
             visible_row_count = min(row_count, visible_row_limit)
@@ -1028,6 +1441,8 @@ class AlertOverlay(QWidget):
                 + OVERLAY_GRID_SPACING * max(0, visible_row_count - 1)
             )
             self._scroll.setFixedHeight(content_height)
+            if self._view_stack is not None and self._view_stack.currentIndex() == 0:
+                self._view_stack.setFixedHeight(content_height)
         self._row_layout.invalidate()
 
     def set_anchor_rect(self, rect: dict[str, Any] | None) -> None:
@@ -1225,6 +1640,47 @@ class AlertEventWorker(QThread):
             logger.warning("Heartbeat update failed: %s", exc)
 
 
+class AlertMapWorker(QThread):
+    """Fetch one bounded map neighborhood without blocking the overlay UI."""
+
+    map_received = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        server: str,
+        *,
+        system_names: list[str],
+        system_ids: list[int],
+        hops: int,
+        api_key: str = "",
+        api_factory: Callable[..., IntelApiClient] = IntelApiClient,
+    ) -> None:
+        super().__init__()
+        self.server = server
+        self.system_names = list(system_names)
+        self.system_ids = list(system_ids)
+        self.hops = max(0, min(5, int(hops)))
+        self.api_key = str(api_key or "").strip()
+        self.api_factory = api_factory
+
+    def run(self) -> None:
+        api = self.api_factory(self.server, timeout=5.0, api_key=self.api_key)
+        try:
+            payload = api.map_neighborhood(
+                system_names=self.system_names,
+                system_ids=self.system_ids,
+                hops=self.hops,
+            )
+            self.map_received.emit(payload)
+        except Exception as exc:
+            self.failed.emit(summarize_heartbeat_error(str(exc)))
+        finally:
+            close = getattr(api, "close", None)
+            if callable(close):
+                close()
+
+
 class AlertTrayController:
     """Wire the overlay, tray menu, sound, and SSE worker together."""
 
@@ -1245,11 +1701,16 @@ class AlertTrayController:
         self._tray_enabled = bool(tray_enabled)
         self._notification_callback = notification_callback
         self.overlay = AlertOverlay()
+        self.overlay.map_options_changed.connect(self._on_map_options_changed)
         self.overlay.set_status("连接中", "warn")
         self.overlay.show()
         self.overlay.move_to_default_position()
         self._recent_summaries: list[dict[str, Any]] = []
         self._local_hostile_counts: dict[str, tuple[str, int]] = {}
+        self._map_accounts: list[dict[str, Any]] = []
+        self._map_worker: AlertMapWorker | None = None
+        self._pending_map_request: dict[str, Any] | None = None
+        self._map_request_signature: tuple[Any, ...] | None = None
         self._alert_volume = max(0.0, min(1.0, float(getattr(args, "alert_volume", 1.0))))
         self._alert_muted = bool(getattr(args, "alert_muted", False))
         self._alert_cooldown = max(0.0, float(getattr(args, "alert_cooldown", 15.0)))
@@ -1297,6 +1758,9 @@ class AlertTrayController:
             sound_timer.stop()
         self._remaining_sound_plays = 0
         self._worker.stop()
+        map_worker = getattr(self, "_map_worker", None)
+        if map_worker is not None and map_worker.isRunning() and wait_for_worker:
+            map_worker.wait(6000)
         self.overlay.hide()
         if self._tray is not None:
             self._tray.hide()
@@ -1406,6 +1870,99 @@ class AlertTrayController:
                     "active": True,
                 }
             )
+
+    def _on_map_options_changed(self, selected_keys: list[str], hops: int) -> None:
+        self._refresh_local_map(selected_keys=selected_keys, hops=hops)
+
+    def _refresh_local_map(
+        self,
+        *,
+        selected_keys: list[str] | None = None,
+        hops: int | None = None,
+    ) -> None:
+        if selected_keys is None or hops is None:
+            selection = getattr(self.overlay, "map_selection", None)
+            selected_keys, hops = selection() if callable(selection) else ([], 3)
+        selected_set = {str(item) for item in selected_keys or [] if str(item)}
+        accounts = [
+            item
+            for item in getattr(self, "_map_accounts", [])
+            if str(item.get("key") or "") in selected_set
+        ]
+        if not accounts:
+            setter = getattr(self.overlay, "set_map_payload", None)
+            if callable(setter):
+                setter({"systems": [], "links": [], "centers": []})
+            message = getattr(self.overlay, "set_map_message", None)
+            if callable(message):
+                message("请选择至少一个在线账号")
+            self._map_request_signature = None
+            return
+
+        system_names = list(
+            dict.fromkeys(
+                str(item.get("system_name") or "").strip()
+                for item in accounts
+                if str(item.get("system_name") or "").strip()
+            )
+        )
+        system_ids: list[int] = []
+        for item in accounts:
+            try:
+                system_id = int(item.get("system_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if system_id > 0 and system_id not in system_ids:
+                system_ids.append(system_id)
+        request = {
+            "system_names": system_names,
+            "system_ids": system_ids,
+            "hops": max(1, min(5, int(hops or 3))),
+        }
+        signature = (tuple(system_names), tuple(system_ids), request["hops"])
+        if signature == getattr(self, "_map_request_signature", None):
+            return
+        self._map_request_signature = signature
+        worker = getattr(self, "_map_worker", None)
+        if worker is not None and worker.isRunning():
+            self._pending_map_request = request
+            return
+        self._start_map_worker(request)
+
+    def _start_map_worker(self, request: dict[str, Any]) -> None:
+        message = getattr(self.overlay, "set_map_message", None)
+        if callable(message):
+            message("正在加载局部星图...")
+        worker = AlertMapWorker(
+            self.args.server,
+            system_names=request["system_names"],
+            system_ids=request["system_ids"],
+            hops=request["hops"],
+            api_key=str(getattr(self.args, "api_key", "") or ""),
+            api_factory=self.api_factory,
+        )
+        self._map_worker = worker
+        worker.map_received.connect(self._on_map_received)
+        worker.failed.connect(self._on_map_failed)
+        worker.finished.connect(self._on_map_worker_finished)
+        worker.start()
+
+    def _on_map_received(self, payload: dict[str, Any]) -> None:
+        setter = getattr(self.overlay, "set_map_payload", None)
+        if callable(setter):
+            setter(payload)
+
+    def _on_map_failed(self, message: str) -> None:
+        setter = getattr(self.overlay, "set_map_message", None)
+        if callable(setter):
+            setter(message or "局部星图加载失败")
+
+    def _on_map_worker_finished(self) -> None:
+        self._map_worker = None
+        pending = self._pending_map_request
+        self._pending_map_request = None
+        if pending is not None:
+            self._start_map_worker(pending)
 
     def _setup_tray(self) -> None:
         icon = self.overlay.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
@@ -1585,6 +2142,33 @@ class AlertTrayController:
         )
         self._apply_local_hostile_counts()
         self.overlay.show_summaries(self._recent_summaries)
+        accounts = monitored_accounts_from_bootstrap(bootstrap)
+        previous_signature = tuple(
+            (
+                str(item.get("key") or ""),
+                str(item.get("system_name") or ""),
+                item.get("system_id"),
+            )
+            for item in getattr(self, "_map_accounts", [])
+        )
+        current_signature = tuple(
+            (
+                str(item.get("key") or ""),
+                str(item.get("system_name") or ""),
+                item.get("system_id"),
+            )
+            for item in accounts
+        )
+        self._map_accounts = accounts
+        set_accounts = getattr(self.overlay, "set_map_accounts", None)
+        if callable(set_accounts):
+            set_accounts(accounts)
+        if (
+            current_signature != previous_signature
+            or getattr(self, "_map_request_signature", None) is None
+        ):
+            self._map_request_signature = None
+            self._refresh_local_map()
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)

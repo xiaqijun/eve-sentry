@@ -169,6 +169,7 @@ Authorization: Bearer eve_xxx
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/v1/map` | 当前地图快照 |
+| `GET` | `/api/v1/map/neighborhood` | 按中心星系和跳数返回局部地图拓扑 |
 | `GET` | `/api/v1/map/systems/{system_id}` | 星系节点详情 |
 | `GET/PUT` | `/api/v1/config` | 敌我分类配置 |
 | `GET` | `/api/v1/characters/{character_id}` | 角色资料 |
@@ -181,6 +182,9 @@ Authorization: Bearer eve_xxx
 
 `/api/v1/kill-activity/*` 仅保留兼容行为；人员 zKillboard 统计通过告警的
 `verified_characters[].zkill` 返回，不新增同步查询接口。
+`/api/v1/map/neighborhood` 接受逗号分隔的 `systems`、`system_ids` 和 `hops` 参数，
+`hops` 默认 `3` 且最大为 `5`。响应只包含任一中心星系指定跳数内的节点和节点间连线；
+预警浮窗使用该接口，避免传输完整地图。
 
 地图源支持 `builtin`、`manual` 和 `sde`。生产推荐使用官方 SDE，并通过
 `scripts/sync_sde.py` 同步到服务端运行目录。
