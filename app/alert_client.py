@@ -540,6 +540,8 @@ def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[st
 class LocalStarMapWidget(QWidget):
     """Small, dependency-free renderer for the selected map neighborhood."""
 
+    LABEL_FONT_PIXEL_SIZE = 10
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._payload: dict[str, Any] = {}
@@ -607,6 +609,7 @@ class LocalStarMapWidget(QWidget):
         _ = event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         painter.fillRect(self.rect(), QColor(5, 14, 22, 165))
         systems = [item for item in self._payload.get("systems", []) if isinstance(item, dict)]
         links = [item for item in self._payload.get("links", []) if isinstance(item, dict)]
@@ -683,6 +686,11 @@ class LocalStarMapWidget(QWidget):
             except (TypeError, ValueError):
                 count = 0
             hostile_counts[name] = max(hostile_counts.get(name, 0), count)
+        label_font = QFont("Segoe UI")
+        label_font.setPixelSize(self.LABEL_FONT_PIXEL_SIZE)
+        label_font.setWeight(QFont.Weight.Medium)
+        label_font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
+        painter.setFont(label_font)
         for name in names:
             x, y = point(name)
             key = name.casefold()
