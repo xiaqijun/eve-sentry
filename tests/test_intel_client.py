@@ -1274,6 +1274,45 @@ def test_alert_overlay_renders_hostile_system_tile(monkeypatch):
         overlay.close()
 
 
+def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication, QListWidget, QPushButton
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    changes = []
+    overlay.map_options_changed.connect(
+        lambda selected, hops: changes.append((selected, hops))
+    )
+    try:
+        overlay.set_map_accounts(
+            [
+                {"key": "alice", "label": "Alice", "system_name": "Tama"},
+                {"key": "bob", "label": "Bob", "system_name": "Kedama"},
+            ]
+        )
+        overlay._set_view(1)
+        overlay.show()
+        app.processEvents()
+
+        account_button = overlay.findChild(QPushButton, "mapAccountButton")
+        assert account_button is not None
+        assert account_button.text() == "账号 2/2"
+        assert account_button.isVisible()
+        assert overlay.findChildren(QListWidget) == []
+        assert overlay._account_menu is not None
+        assert overlay._account_menu.isVisible() is False
+
+        overlay._account_actions[1].setChecked(False)
+        app.processEvents()
+
+        assert account_button.text() == "账号 1/2"
+        assert overlay.map_selection() == (["alice"], 3)
+        assert changes[-1] == (["alice"], 3)
+    finally:
+        overlay.close()
+
+
 def test_overlay_tile_dimensions_follow_available_screen_size():
     assert overlay_tile_dimensions(1366, 768) == (88, 58)
     assert overlay_tile_dimensions(1920, 1080) == (92, 62)
