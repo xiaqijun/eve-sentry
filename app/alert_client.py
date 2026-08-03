@@ -23,8 +23,6 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMenu,
     QPushButton,
     QScrollArea,
@@ -804,8 +802,10 @@ class AlertOverlay(QWidget):
         self._scroll: QScrollArea | None = None
         self._view_stack: QStackedWidget | None = None
         self._map_widget: LocalStarMapWidget | None = None
-        self._account_list: QListWidget | None = None
-        self._hops_combo = None
+        self._account_button: QPushButton | None = None
+        self._account_menu: QMenu | None = None
+        self._account_actions: list[QAction] = []
+        self._hops_combo: QComboBox | None = None
         self._map_accounts: list[dict[str, Any]] = []
         self._map_alerts: list[dict[str, Any]] = []
         self._map_selection_initialized = False
@@ -904,16 +904,15 @@ class AlertOverlay(QWidget):
         map_layout.setSpacing(4)
         options = QHBoxLayout()
         options.setContentsMargins(0, 0, 0, 0)
-        account_label = QLabel("账号")
-        account_label.setStyleSheet("color: #9fb7c3; font-size: 11px;")
-        options.addWidget(account_label)
-        account_list = QListWidget()
-        account_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-        account_list.setMaximumHeight(46)
-        account_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        account_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        account_list.itemChanged.connect(lambda _item: self._emit_map_options())
-        options.addWidget(account_list, 1)
+        account_button = QPushButton("账号 0/0")
+        account_button.setObjectName("mapAccountButton")
+        account_button.setFixedHeight(24)
+        account_button.setEnabled(False)
+        account_menu = QMenu(account_button)
+        account_menu.setObjectName("mapAccountMenu")
+        account_button.setMenu(account_menu)
+        options.addWidget(account_button)
+        options.addStretch(1)
         hops_label = QLabel("跳")
         hops_label.setStyleSheet("color: #9fb7c3; font-size: 11px;")
         options.addWidget(hops_label)
@@ -931,7 +930,8 @@ class AlertOverlay(QWidget):
         layout.addWidget(view_stack)
         self._view_stack = view_stack
         self._map_widget = map_widget
-        self._account_list = account_list
+        self._account_button = account_button
+        self._account_menu = account_menu
         self._hops_combo = hops_combo
 
         self.setStyleSheet(
@@ -991,11 +991,17 @@ class AlertOverlay(QWidget):
             QPushButton:hover {
                 background: rgba(28, 61, 76, 230);
             }
-            QListWidget {
+            QMenu#mapAccountMenu {
                 color: #dce8ef;
                 background: rgba(6, 19, 28, 220);
                 border: 1px solid rgba(92, 213, 238, 80);
                 border-radius: 3px;
+            }
+            QMenu#mapAccountMenu::item {
+                padding: 5px 20px 5px 8px;
+            }
+            QMenu#mapAccountMenu::item:selected {
+                background: rgba(28, 61, 76, 230);
             }
             QComboBox {
                 color: #dce8ef;
@@ -1021,14 +1027,10 @@ class AlertOverlay(QWidget):
             self._resize_to_content()
 
     def _emit_map_options(self) -> None:
-        if self._account_list is None or self._hops_combo is None:
+        if self._hops_combo is None:
             return
-        selected = [
-            str(item.data(Qt.ItemDataRole.UserRole) or "")
-            for index in range(self._account_list.count())
-            for item in [self._account_list.item(index)]
-            if item.checkState() == Qt.CheckState.Checked
-        ]
+        selected = self._selected_map_account_keys()
+        self._update_map_account_button()
         try:
             hops = int(self._hops_combo.currentText())
         except (TypeError, ValueError):
@@ -1044,15 +1046,25 @@ class AlertOverlay(QWidget):
             )
         self.map_options_changed.emit(selected, hops)
 
-    def map_selection(self) -> tuple[list[str], int]:
-        if self._account_list is None or self._hops_combo is None:
-            return [], 3
-        selected = [
-            str(item.data(Qt.ItemDataRole.UserRole) or "")
-            for index in range(self._account_list.count())
-            for item in [self._account_list.item(index)]
-            if item.checkState() == Qt.CheckState.Checked
+    def _selected_map_account_keys(self) -> list[str]:
+        return [
+            str(action.data() or "")
+            for action in self._account_actions
+            if action.isChecked()
         ]
+
+    def _update_map_account_button(self) -> None:
+        if self._account_button is None:
+            return
+        selected_count = len(self._selected_map_account_keys())
+        total_count = len(self._account_actions)
+        self._account_button.setText(f"账号 {selected_count}/{total_count}")
+        self._account_button.setEnabled(total_count > 0)
+
+    def map_selection(self) -> tuple[list[str], int]:
+        if self._hops_combo is None:
+            return [], 3
+        selected = self._selected_map_account_keys()
         try:
             hops = int(self._hops_combo.currentText())
         except (TypeError, ValueError):
@@ -1061,28 +1073,26 @@ class AlertOverlay(QWidget):
 
     def set_map_accounts(self, accounts: list[dict[str, Any]]) -> None:
         self._map_accounts = [dict(item) for item in accounts]
-        if self._account_list is None:
+        if self._account_menu is None:
             return
         previous, _ = self.map_selection()
-        self._account_list.blockSignals(True)
-        self._account_list.clear()
+        self._account_menu.clear()
+        self._account_actions.clear()
         default_all = not self._map_selection_initialized
         for account in self._map_accounts:
             key = str(account.get("key") or "")
             label = str(account.get("label") or account.get("system_name") or key)
             system = str(account.get("system_name") or "")
-            item = QListWidgetItem(f"{label} · {system}")
-            item.setData(Qt.ItemDataRole.UserRole, key)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(
-                Qt.CheckState.Checked
-                if default_all or key in previous
-                else Qt.CheckState.Unchecked
-            )
-            self._account_list.addItem(item)
-        self._account_list.blockSignals(False)
+            text = f"{label} · {system}" if system else label
+            action = self._account_menu.addAction(text)
+            action.setData(key)
+            action.setCheckable(True)
+            action.setChecked(default_all or key in previous)
+            action.toggled.connect(lambda _checked: self._emit_map_options())
+            self._account_actions.append(action)
         if self._map_accounts:
             self._map_selection_initialized = True
+        self._update_map_account_button()
         if self._map_widget is not None:
             selected, _ = self.map_selection()
             selected_keys = set(selected)
