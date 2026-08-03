@@ -1380,6 +1380,14 @@ class IntelStore:
             filtered = filtered[:max(0, limit)]
         return filtered
 
+    def list_hostile_waves(
+        self,
+        since: str = "",
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return persisted hostile-system wave lifecycles when supported."""
+        return []
+
     def expire_active_intel(self, now: str | None = None) -> int:
         """Mark active TTL-based intel inactive once its expiry passes."""
         left_at = str(now or utc_now_iso()).strip()

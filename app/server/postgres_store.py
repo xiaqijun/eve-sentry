@@ -8,6 +8,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
 from app.core.active_intel import (
     ActiveIntelItem,
@@ -87,6 +88,7 @@ class PostgreSQLIntelStore(IntelStore):
     def _load_reports(self) -> list[IntelReport]:
         self._migrate()
         self._startup_active_intel = self._read_active_intel()
+        self._reconcile_hostile_waves(self._startup_active_intel.values())
         if not self._has_reports() and self._import_json_path is not None:
             if (
                 self._meta_value("legacy_json_imported") != "1"
@@ -234,16 +236,35 @@ class PostgreSQLIntelStore(IntelStore):
         )
         with self._lock:
             active_before = self._active_rows_snapshot()
+            hostile_before = self._hostile_system_state()
             duplicate = self._find_duplicate_observation(report)
             if duplicate is not None:
                 self._apply_channel_active_state(duplicate)
-                self._persist_active_intel_changes(active_before)
+                hostile_waves = self._hostile_wave_changes(
+                    hostile_before,
+                    duplicate.seen_at or duplicate.received_at or utc_now_iso(),
+                )
+                with self._connect() as connection:
+                    self._upsert_active_intel_rows(
+                        connection,
+                        self._changed_active_rows(active_before),
+                    )
+                    self._persist_hostile_wave_changes(connection, hostile_waves)
                 return duplicate.to_observation()
             self._ensure_system(report.system)
             self._reports.append(report)
             self._apply_channel_active_state(report)
             self._upsert_report(report)
-            self._persist_active_intel_changes(active_before)
+            hostile_waves = self._hostile_wave_changes(
+                hostile_before,
+                report.seen_at or report.received_at or utc_now_iso(),
+            )
+            with self._connect() as connection:
+                self._upsert_active_intel_rows(
+                    connection,
+                    self._changed_active_rows(active_before),
+                )
+                self._persist_hostile_wave_changes(connection, hostile_waves)
         return report.to_observation()
 
     def record_ocr_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -287,6 +308,7 @@ class PostgreSQLIntelStore(IntelStore):
         with self._lock:
             new_reports: list[IntelReport] = []
             changed_active_ids: set[str] = set()
+            hostile_before = self._hostile_system_state()
             accepted, moved_items = self._transition_ocr_client_system(
                 client_id,
                 system_name,
@@ -439,6 +461,7 @@ class PostgreSQLIntelStore(IntelStore):
                 for active_id in sorted(changed_active_ids)
                 if active_id in self._active_intel
             ]
+            hostile_waves = self._hostile_wave_changes(hostile_before, seen_at)
             with self._connect() as connection:
                 if report_rows:
                     connection.executemany(
@@ -470,6 +493,7 @@ class PostgreSQLIntelStore(IntelStore):
                         report_rows,
                     )
                 self._upsert_active_intel_rows(connection, active_rows)
+                self._persist_hostile_wave_changes(connection, hostile_waves)
         for task in esi_tasks:
             self._esi_worker.submit(task.active_id, task)
         return result.to_dict(include_active=False)
@@ -483,6 +507,13 @@ class PostgreSQLIntelStore(IntelStore):
     ) -> None:
         self._upsert_report(report)
         with self._connect() as connection:
+            system_key = str(
+                item.system_name if item is not None else report.system
+            ).strip().casefold()
+            hostile_before = self._database_hostile_system_state(
+                connection,
+                system_key,
+            )
             if item is not None and previous_active_id != item.active_id:
                 connection.execute(
                     "DELETE FROM active_intel WHERE active_id = ?",
@@ -490,10 +521,27 @@ class PostgreSQLIntelStore(IntelStore):
                 )
             if item is not None:
                 self._upsert_active_intel_rows(connection, [self._active_row(item)])
+            hostile_after = {
+                key: value
+                for key, value in self._hostile_system_state().items()
+                if key == system_key
+            }
+            self._persist_hostile_wave_changes(
+                connection,
+                self._hostile_wave_changes(
+                    hostile_before,
+                    str(
+                        (item.last_seen_at if item is not None else report.seen_at)
+                        or utc_now_iso()
+                    ),
+                    after=hostile_after,
+                ),
+            )
 
     def expire_active_intel(self, now: str | None = None) -> int:
         """Expire TTL-based active intel and persist changed rows."""
         with self._lock:
+            hostile_before = self._hostile_system_state()
             active_before = {
                 active_id
                 for active_id, item in self._active_intel.items()
@@ -508,7 +556,316 @@ class PostgreSQLIntelStore(IntelStore):
             if changed_rows:
                 with self._connect() as connection:
                     self._upsert_active_intel_rows(connection, changed_rows)
+                    self._persist_hostile_wave_changes(
+                        connection,
+                        self._hostile_wave_changes(
+                            hostile_before,
+                            str(now or utc_now_iso()).strip() or utc_now_iso(),
+                        ),
+                    )
             return expired
+
+    def list_hostile_waves(
+        self,
+        since: str = "",
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query exact hostile-system wave lifecycles from PostgreSQL."""
+        clean_since = str(since or "").strip()
+        if clean_since and self._parse_timestamp(clean_since) is None:
+            raise ValueError("since must be a valid ISO-8601 timestamp")
+        if limit is not None and limit <= 0:
+            return []
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if clean_since:
+            clauses.append(
+                "COALESCE(NULLIF(cleared_at, ''), NULLIF(last_seen_at, ''), "
+                "started_at)::timestamptz >= ?::timestamptz"
+            )
+            params.append(clean_since)
+        where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            params.append(limit)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT wave_id, system_name, system_id, started_at,
+                       last_seen_at, cleared_at, active
+                FROM hostile_waves
+                {where_clause}
+                ORDER BY started_at DESC, wave_id DESC
+                {limit_clause}
+                """,
+                tuple(params),
+            ).fetchall()
+        return [self._hostile_wave_from_row(row) for row in rows]
+
+    def _changed_active_rows(
+        self,
+        before: dict[str, tuple[Any, ...]],
+    ) -> list[tuple[Any, ...]]:
+        return [
+            row
+            for active_id, item in self._active_intel.items()
+            if (row := self._active_row(item)) != before.get(active_id)
+        ]
+
+    def _hostile_system_state(
+        self,
+        items: Any | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        source_items = self._active_intel.values() if items is None else items
+        systems: dict[str, dict[str, Any]] = {}
+        for item in source_items:
+            if not item.active:
+                continue
+            system_name = str(item.system_name or "").strip()
+            if not system_name:
+                continue
+            system_key = system_name.casefold()
+            state = systems.get(system_key)
+            first_seen_at = str(item.first_seen_at or item.last_seen_at or "").strip()
+            last_seen_at = str(item.last_seen_at or item.first_seen_at or "").strip()
+            if state is None:
+                systems[system_key] = {
+                    "system_key": system_key,
+                    "system_name": system_name,
+                    "system_id": item.system_id,
+                    "first_seen_at": first_seen_at,
+                    "last_seen_at": last_seen_at,
+                }
+                continue
+            state["first_seen_at"] = self._earlier_iso(
+                str(state.get("first_seen_at") or ""),
+                first_seen_at,
+            )
+            state["last_seen_at"] = self._later_iso(
+                str(state.get("last_seen_at") or ""),
+                last_seen_at,
+            )
+            if state.get("system_id") is None and item.system_id is not None:
+                state["system_id"] = item.system_id
+        return systems
+
+    def _database_hostile_system_state(
+        self,
+        connection: Any,
+        system_key: str,
+    ) -> dict[str, dict[str, Any]]:
+        if not system_key:
+            return {}
+        rows = connection.execute(
+            """
+            SELECT active_id, source, source_instance, system, system_id,
+                   target_type, name, character_id, raw_text, metadata_json,
+                   first_seen_at, last_seen_at, expires_at, left_at,
+                   cleared_at, active, seen_count, confidence,
+                   source_observation_ids_json
+            FROM active_intel
+            WHERE active = 1 AND LOWER(system) = ?
+            """,
+            (system_key,),
+        ).fetchall()
+        items = [
+            item
+            for row in rows
+            if (item := self._active_item_from_row(row)) is not None
+        ]
+        return self._hostile_system_state(items)
+
+    def _hostile_wave_changes(
+        self,
+        before: dict[str, dict[str, Any]],
+        observed_at: str,
+        *,
+        after: dict[str, dict[str, Any]] | None = None,
+        recover: bool = False,
+    ) -> list[dict[str, Any]]:
+        after_state = self._hostile_system_state() if after is None else after
+        clean_observed_at = str(observed_at or utc_now_iso()).strip() or utc_now_iso()
+        changes: list[dict[str, Any]] = []
+        for system_key in sorted(set(before) | set(after_state)):
+            previous = before.get(system_key)
+            current = after_state.get(system_key)
+            if current is not None:
+                started_at = str(current.get("first_seen_at") or clean_observed_at)
+                if previous is None and not recover:
+                    started_at = clean_observed_at
+                changes.append(
+                    {
+                        "action": "touch",
+                        **current,
+                        "started_at": started_at,
+                        "last_seen_at": str(
+                            current.get("last_seen_at") or clean_observed_at
+                        ),
+                    }
+                )
+                continue
+            if previous is not None:
+                changes.append(
+                    {
+                        "action": "clear",
+                        **previous,
+                        "started_at": str(
+                            previous.get("first_seen_at") or clean_observed_at
+                        ),
+                        "last_seen_at": str(
+                            previous.get("last_seen_at") or clean_observed_at
+                        ),
+                        "cleared_at": clean_observed_at,
+                    }
+                )
+        return changes
+
+    def _persist_hostile_wave_changes(
+        self,
+        connection: Any,
+        changes: list[dict[str, Any]],
+    ) -> None:
+        for change in changes:
+            if change["action"] == "touch":
+                connection.execute(
+                    """
+                    INSERT INTO hostile_waves (
+                        wave_id, system_key, system_name, system_id,
+                        started_at, last_seen_at, cleared_at, active
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, '', 1)
+                    ON CONFLICT (system_key) WHERE active = 1 DO UPDATE SET
+                        system_name = excluded.system_name,
+                        system_id = COALESCE(excluded.system_id, hostile_waves.system_id),
+                        last_seen_at = CASE
+                            WHEN hostile_waves.last_seen_at::timestamptz
+                               >= excluded.last_seen_at::timestamptz
+                            THEN hostile_waves.last_seen_at
+                            ELSE excluded.last_seen_at
+                        END
+                    """,
+                    (
+                        uuid4().hex,
+                        change["system_key"],
+                        change["system_name"],
+                        change.get("system_id"),
+                        change["started_at"],
+                        change["last_seen_at"],
+                    ),
+                )
+                continue
+
+            result = connection.execute(
+                """
+                UPDATE hostile_waves
+                SET last_seen_at = CASE
+                        WHEN last_seen_at::timestamptz >= ?::timestamptz
+                        THEN last_seen_at
+                        ELSE ?
+                    END,
+                    cleared_at = ?,
+                    active = 0
+                WHERE system_key = ? AND active = 1
+                """,
+                (
+                    change["last_seen_at"],
+                    change["last_seen_at"],
+                    change["cleared_at"],
+                    change["system_key"],
+                ),
+            )
+            if max(0, int(result.rowcount)) > 0:
+                continue
+            connection.execute(
+                """
+                INSERT INTO hostile_waves (
+                    wave_id, system_key, system_name, system_id,
+                    started_at, last_seen_at, cleared_at, active
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    uuid4().hex,
+                    change["system_key"],
+                    change["system_name"],
+                    change.get("system_id"),
+                    change["started_at"],
+                    change["last_seen_at"],
+                    change["cleared_at"],
+                ),
+            )
+
+    def _reconcile_hostile_waves(self, items: Any) -> None:
+        now = utc_now_iso()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT system_key, system_name, system_id, started_at,
+                       last_seen_at
+                FROM hostile_waves
+                WHERE active = 1
+                """
+            ).fetchall()
+            before = {
+                str(row["system_key"]): {
+                    "system_key": str(row["system_key"]),
+                    "system_name": str(row["system_name"]),
+                    "system_id": self._optional_int(row["system_id"]),
+                    "first_seen_at": str(row["started_at"]),
+                    "last_seen_at": str(row["last_seen_at"]),
+                }
+                for row in rows
+            }
+            after = self._hostile_system_state(items)
+            self._persist_hostile_wave_changes(
+                connection,
+                self._hostile_wave_changes(
+                    before,
+                    now,
+                    after=after,
+                    recover=True,
+                ),
+            )
+
+    def _hostile_wave_from_row(self, row: Any) -> dict[str, Any]:
+        return {
+            "id": str(row["wave_id"]),
+            "system_name": str(row["system_name"]),
+            "system_id": self._optional_int(row["system_id"]),
+            "started_at": str(row["started_at"]),
+            "last_seen_at": str(row["last_seen_at"]),
+            "cleared_at": str(row["cleared_at"] or ""),
+            "active": bool(self._strict_int(row["active"])),
+        }
+
+    def _earlier_iso(self, left: str, right: str) -> str:
+        if not left:
+            return right
+        if not right:
+            return left
+        left_at = self._parse_timestamp(left)
+        right_at = self._parse_timestamp(right)
+        if left_at is None:
+            return right
+        if right_at is None:
+            return left
+        return left if left_at <= right_at else right
+
+    def _later_iso(self, left: str, right: str) -> str:
+        if not left:
+            return right
+        if not right:
+            return left
+        left_at = self._parse_timestamp(left)
+        right_at = self._parse_timestamp(right)
+        if left_at is None:
+            return right
+        if right_at is None:
+            return left
+        return left if left_at >= right_at else right
 
     def alert_detail(self, alert_id: str) -> dict[str, Any] | None:
         """Return hot or historical alert details from PostgreSQL."""
@@ -984,6 +1341,33 @@ class PostgreSQLIntelStore(IntelStore):
                 CREATE INDEX IF NOT EXISTS idx_active_intel_active_last_seen
                 ON active_intel(last_seen_at)
                 WHERE active = 1
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hostile_waves (
+                    wave_id TEXT PRIMARY KEY,
+                    system_key TEXT NOT NULL,
+                    system_name TEXT NOT NULL,
+                    system_id BIGINT,
+                    started_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    cleared_at TEXT NOT NULL DEFAULT '',
+                    active INTEGER NOT NULL DEFAULT 1
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_hostile_waves_open_system
+                ON hostile_waves(system_key)
+                WHERE active = 1
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hostile_waves_started_at
+                ON hostile_waves(started_at DESC)
                 """
             )
             connection.execute(

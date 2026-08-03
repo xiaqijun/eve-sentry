@@ -54,11 +54,10 @@ class FakeApi:
     def list_alerts(
         self,
         limit=50,
-        acknowledged=None,
         min_score=None,
         min_level="",
     ):
-        self.alert_filters.append((acknowledged, min_score, min_level))
+        self.alert_filters.append((min_score, min_level))
         return self.list_reports(limit=limit)
 
     def stream_alerts(
@@ -67,24 +66,18 @@ class FakeApi:
         last_event_id="",
         limit=50,
         timeout=30.0,
-        acknowledged=None,
         min_score=None,
         min_level="",
     ):
         _ = timeout
         self.stream_since.append(since)
         self.stream_last_event_ids.append(last_event_id)
-        self.alert_filters.append((acknowledged, min_score, min_level))
+        self.alert_filters.append((min_score, min_level))
         return self.list_reports(limit=limit)
 
     def iter_alert_events(self, **kwargs):
         for alert in self.stream_alerts(**kwargs):
             yield alert
-
-    def ack_alert(self, alert_id, acknowledged_by="", note=""):
-        _ = alert_id, acknowledged_by, note
-        return {}
-
 
 class RecordingClient(IntelApiClient):
     def __init__(self):
@@ -108,8 +101,6 @@ class RecordingClient(IntelApiClient):
             return {"enabled": False, "authenticated": False}
         if path.endswith("/esi/session"):
             return {"snapshot": {"location": None}}
-        if "/alerts/" in path and path.endswith("/ack"):
-            return {"alert": {"id": "evt-1"}}
         if "/alerts/" in path:
             return {"detail": {"alert": {"id": "evt-1"}}}
         if path.endswith("/reports"):
@@ -160,7 +151,6 @@ def test_intel_api_client_targets_v1_routes_for_http_requests():
     api.list_observations()
     api.list_alerts()
     api.alert_detail("evt-1")
-    api.ack_alert("evt-1")
     api.bootstrap()
     api.map_snapshot()
     api.map_system(30002813)
@@ -181,7 +171,6 @@ def test_intel_api_client_targets_v1_routes_for_http_requests():
         "/api/v1/observations",
         "/api/v1/alerts",
         "/api/v1/alerts/evt-1",
-        "/api/v1/alerts/evt-1/ack",
         "/api/v1/bootstrap",
         "/api/v1/map",
         "/api/v1/map/systems/30002813",
@@ -426,13 +415,6 @@ def test_intel_api_client_posts_observations(tmp_path):
         assert created["alert"]["score"] == 30
         assert created["observation"]["metadata"]["sender"] == "Scout A"
 
-        acked = api.ack_alert(
-            f"evt_{observation_id}",
-            acknowledged_by="client",
-            note="handled",
-        )
-        assert acked["acknowledged"] is True
-        assert acked["acknowledged_by"] == "client"
     finally:
         server.stop()
 
@@ -556,7 +538,7 @@ def test_intel_api_client_posts_and_lists_heartbeats(tmp_path):
         server.stop()
 
 
-def test_intel_api_client_filters_alerts(tmp_path):
+def test_intel_api_client_filters_alerts_by_score_and_level(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
     try:
@@ -570,14 +552,6 @@ def test_intel_api_client_filters_alerts(tmp_path):
             f"[ {eve_chat_timestamp(1)} ] Scout B > Tama +3 reds",
             channel="Alliance Intel",
         )
-        api.ack_alert(medium["alert"]["id"], acknowledged_by="client")
-
-        assert [item["id"] for item in api.list_alerts(acknowledged=False)] == [
-            low["alert"]["id"]
-        ]
-        assert [item["id"] for item in api.list_alerts(acknowledged=True)] == [
-            medium["alert"]["id"]
-        ]
         assert {item["id"] for item in api.list_alerts(min_score=20)} == {
             low["alert"]["id"],
             medium["alert"]["id"],

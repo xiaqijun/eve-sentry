@@ -65,12 +65,12 @@ Authorization: Bearer eve_xxx
 | `POST` | `/api/v1/clients/heartbeats` | 上传客户端状态、窗口目标和最近异常 |
 | `GET` | `/api/v1/clients` | 在线客户端和聚合状态 |
 | `GET` | `/api/v1/active-intel` | 当前实时情报 |
+| `GET` | `/api/v1/hostile-waves` | 按“出现至清空”记录的敌对星系波次 |
 | `GET` | `/api/v1/bootstrap` | Web 和机器人使用的完整初始快照 |
 | `GET` | `/api/v1/events` | SSE 实时事件流 |
 | `GET` | `/api/v1/integrations/hostile-systems` | 第三方软件读取当前存在敌对的星系 |
 | `GET` | `/api/v1/alerts` | 当前敌对告警 |
 | `GET` | `/api/v1/alerts/{id}` | 单条告警详情 |
-| `POST` | `/api/v1/alerts/{id}/ack` | 确认告警 |
 | `GET/POST` | `/api/v1/reports` | 历史上报读取和写入 |
 | `GET/POST` | `/api/v1/observations` | 规范化观察记录读取和写入 |
 | `POST` | `/api/v1/channel-lines` | 独立频道客户端上传日志行 |
@@ -93,6 +93,10 @@ GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
 告警生成按接收时间倒序处理，满足 `since`、筛选条件和数量后立即停止，不会为一次历史
 查询重新评分全部热报告。
 `/api/v1/active-intel` 同样默认最多返回 100 条；需要更多活跃项时必须显式传递 `limit`。
+`/api/v1/hostile-waves` 支持 `since` 和 `limit`。`since` 会返回结束时间晚于该时刻或仍在
+进行中的波次；每个星系从敌对总数由 0 变为大于 0 时创建波次，回到 0 时写入
+`cleared_at`，之后再次出现会创建新的 `id`。该接口使用独立 PostgreSQL 生命周期表，
+不会恢复启动时的全量 active-intel 历史加载。
 
 敌对告警的 `verified_characters` 始终保留 `character_id` 和 `name`。取得外部统计时会额外
 包含可选的 `zkill` 对象：

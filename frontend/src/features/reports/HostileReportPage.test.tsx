@@ -49,7 +49,6 @@ describe("HostileReportPage", () => {
           level: "high",
           classification: "red",
           created_at: new Date(now - 10 * 60 * 1000).toISOString(),
-          acknowledged: false,
         },
         {
           id: "alert-2",
@@ -64,7 +63,16 @@ describe("HostileReportPage", () => {
           level: "low",
           classification: "red",
           created_at: new Date(now - 60 * 60 * 1000).toISOString(),
-          acknowledged: true,
+        },
+      ],
+      waves: [
+        {
+          id: "wave-1",
+          system_name: "S-KSWL",
+          started_at: new Date(now - 70 * 60 * 1000).toISOString(),
+          last_seen_at: new Date(now - 10 * 60 * 1000).toISOString(),
+          cleared_at: new Date(now - 5 * 60 * 1000).toISOString(),
+          active: false,
         },
       ],
       count: 2,
@@ -94,18 +102,20 @@ describe("HostileReportPage", () => {
     expect(container).toHaveTextContent("历史研判");
     expect(container).toHaveTextContent("有效来袭事件");
     expect(container).toHaveTextContent("来袭波次");
-    expect(container).toHaveTextContent("同星系 15 分钟聚合");
+    expect(container).toHaveTextContent("敌对出现至清空为一波");
     expect(container).toHaveTextContent("独立敌对人员");
     expect(container).toHaveTextContent("来袭趋势");
     expect(container).toHaveTextContent("热点星系");
     expect(container).toHaveTextContent("人员研判");
-    expect(container).toHaveTextContent("zKill 82");
+    expect(container).toHaveTextContent("威胁度 82");
     expect(container).toHaveTextContent("最近历史事件");
+    expect(container).toHaveTextContent("高");
+    expect(container).toHaveTextContent("低");
     expect(container).toHaveTextContent("S-KSWL");
     expect(container).toHaveTextContent("Alice");
     expect(container).toHaveTextContent("Bob");
     expect(container.querySelectorAll('[data-testid="eve-chart"]')).toHaveLength(1);
-    expect(apiMocks.fetchHostileAlertHistory).toHaveBeenCalledWith("7d");
+    expect(apiMocks.fetchHostileAlertHistory).toHaveBeenCalledWith("24h");
 
     await act(async () => root.unmount());
   });

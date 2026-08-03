@@ -62,7 +62,34 @@ function dangerTag(value: number | null | undefined) {
     return <Typography.Text type="secondary">暂无数据</Typography.Text>;
   }
   const color = value >= 80 ? "red" : value >= 60 ? "orangered" : value >= 40 ? "orange" : "green";
-  return <Tag color={color}>zKill {Math.round(value)}</Tag>;
+  return <Tag color={color}>威胁度 {Math.round(value)}</Tag>;
+}
+
+function levelTag(value?: string) {
+  const normalized = String(value || "").toLowerCase();
+  const labels: Record<string, string> = {
+    critical: "紧急",
+    high: "高",
+    medium: "中",
+    low: "低",
+  };
+  const colors: Record<string, string> = {
+    critical: "red",
+    high: "orangered",
+    medium: "orange",
+    low: "blue",
+  };
+  return <Tag color={colors[normalized] || "gray"}>{labels[normalized] || "未知"}</Tag>;
+}
+
+function textTokens(values: string[], fallback: string = "-") {
+  const clean = values.map((value) => String(value).trim()).filter(Boolean);
+  if (clean.length === 0) return fallback;
+  return (
+    <span className="table-token-list">
+      {clean.map((value, index) => <span key={`${value}:${index}`}>{value}</span>)}
+    </span>
+  );
 }
 
 function trendOption(labels: string[], values: number[], theme: ThemeMode): EChartsOption {
@@ -102,7 +129,7 @@ function trendOption(labels: string[], values: number[], theme: ThemeMode): ECha
 
 export function HostileReportPage() {
   const { theme } = useTheme();
-  const [range, setRange] = useState<ReportRange>("7d");
+  const [range, setRange] = useState<ReportRange>("24h");
   const historyQuery = useQuery({
     queryKey: ["hostile-alert-history", range],
     queryFn: () => fetchHostileAlertHistory(range),
@@ -111,38 +138,43 @@ export function HostileReportPage() {
     refetchOnWindowFocus: true,
   });
   const report = useMemo(
-    () => buildHostileReport(historyQuery.data?.alerts || [], range),
-    [historyQuery.data?.alerts, range],
+    () => buildHostileReport(
+      historyQuery.data?.alerts || [],
+      range,
+      Date.now(),
+      historyQuery.data?.waves || [],
+    ),
+    [historyQuery.data?.alerts, historyQuery.data?.waves, range],
   );
-  const activeRange = RANGE_OPTIONS.find((item) => item.value === range)?.label || "7 天";
+  const activeRange = RANGE_OPTIONS.find((item) => item.value === range)?.label || "24 小时";
 
   const waveColumns: TableColumnProps<WaveReportRow>[] = [
-    { title: "星系", dataIndex: "systemName", width: 120, render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
-    { title: "开始", dataIndex: "startedAt", width: 168, render: (value?: string) => formatTime(value) },
-    { title: "结束", dataIndex: "lastSeen", width: 168, render: (value?: string) => formatTime(value) },
-    { title: "事件", dataIndex: "incidentCount", width: 82 },
-    { title: "独立人员", dataIndex: "uniqueTargets", width: 92 },
+    { title: "星系", dataIndex: "systemName", render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
+    { title: "开始", dataIndex: "startedAt", width: 154, render: (value?: string) => formatTime(value) },
+    { title: "结束", dataIndex: "endedAt", width: 154, render: (value: string | undefined, row) => row.active ? <Tag color="red">进行中</Tag> : formatTime(value) },
+    { title: "事件", dataIndex: "incidentCount", width: 70 },
+    { title: "独立人员", dataIndex: "uniqueTargets", width: 84 },
   ];
   const systemColumns: TableColumnProps<SystemReportRow>[] = [
     { title: "星系", dataIndex: "name", render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
-    { title: "来袭事件", dataIndex: "incidentCount", width: 96, sorter: (a, b) => a.incidentCount - b.incidentCount },
-    { title: "目标人次", dataIndex: "targetSightings", width: 96 },
-    { title: "独立人员", dataIndex: "uniqueTargets", width: 96 },
-    { title: "最后出现", dataIndex: "lastSeen", width: 168, render: (value?: string) => formatTime(value) },
+    { title: "来袭事件", dataIndex: "incidentCount", width: 84, sorter: (a, b) => a.incidentCount - b.incidentCount },
+    { title: "目标人次", dataIndex: "targetSightings", width: 84 },
+    { title: "独立人员", dataIndex: "uniqueTargets", width: 84 },
+    { title: "最后出现", dataIndex: "lastSeen", width: 154, render: (value?: string) => formatTime(value) },
   ];
   const targetColumns: TableColumnProps<TargetReportRow>[] = [
     { title: "已验证人员", dataIndex: "name", render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
-    { title: "zKill 危险度", dataIndex: "dangerRatio", width: 128, sorter: (a, b) => (a.dangerRatio ?? -1) - (b.dangerRatio ?? -1), render: (value: number | null) => dangerTag(value) },
-    { title: "出现批次", dataIndex: "incidentCount", width: 96, sorter: (a, b) => a.incidentCount - b.incidentCount },
-    { title: "涉及星系", dataIndex: "systems", render: (value: string[]) => value.join("、") || "-" },
-    { title: "击毁/损失", key: "combat", width: 116, render: (_: unknown, row) => `${formatCompactNumber(row.zkill?.ships_destroyed)} / ${formatCompactNumber(row.zkill?.ships_lost)}` },
-    { title: "最后出现", dataIndex: "lastSeen", width: 168, render: (value?: string) => formatTime(value) },
+    { title: "威胁度", dataIndex: "dangerRatio", width: 104, sorter: (a, b) => (a.dangerRatio ?? -1) - (b.dangerRatio ?? -1), render: (value: number | null) => dangerTag(value) },
+    { title: "出现批次", dataIndex: "incidentCount", width: 84, sorter: (a, b) => a.incidentCount - b.incidentCount },
+    { title: "涉及星系", dataIndex: "systems", render: (value: string[]) => textTokens(value) },
+    { title: "击毁/损失", key: "combat", width: 100, render: (_: unknown, row) => `${formatCompactNumber(row.zkill?.ships_destroyed)} / ${formatCompactNumber(row.zkill?.ships_lost)}` },
+    { title: "最后出现", dataIndex: "lastSeen", width: 154, render: (value?: string) => formatTime(value) },
   ];
   const recentColumns: TableColumnProps<AlertItem>[] = [
-    { title: "时间", dataIndex: "created_at", width: 168, render: (value?: string) => formatTime(value) },
-    { title: "星系", dataIndex: "system_name", width: 120, render: (value?: string) => value || "未知星系" },
-    { title: "已验证人员", dataIndex: "verified_characters", render: (value?: VerifiedCharacter[]) => (value || []).map((item) => item.name).join("、") || "-" },
-    { title: "状态", dataIndex: "acknowledged", width: 92, render: (value?: boolean) => value ? <Tag color="green">已确认</Tag> : <Tag color="orange">未确认</Tag> },
+    { title: "时间", dataIndex: "created_at", width: 154, render: (value?: string) => formatTime(value) },
+    { title: "星系", dataIndex: "system_name", width: 110, render: (value?: string) => value || "未知星系" },
+    { title: "已验证人员", dataIndex: "verified_characters", render: (value?: VerifiedCharacter[]) => textTokens((value || []).map((item) => item.name)) },
+    { title: "级别", dataIndex: "level", width: 76, render: (value?: string) => levelTag(value) },
   ];
 
   return (
@@ -166,43 +198,43 @@ export function HostileReportPage() {
 
       <Grid.Row className="arco-summary-grid hostile-report-kpis" gutter={16}>
         <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<ShieldAlert size={17} />} title="有效来袭事件" value={report.incidentCount} extra={<Typography.Text type="secondary">{activeRange}内已验证敌对</Typography.Text>} /></Card></Grid.Col>
-        <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<RadioTower size={17} />} title="来袭波次" value={report.waveCount} extra={<Typography.Text type="secondary">同星系 15 分钟聚合</Typography.Text>} /></Card></Grid.Col>
+        <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<RadioTower size={17} />} title="来袭波次" value={report.waveCount} extra={<Typography.Text type="secondary">敌对出现至清空为一波</Typography.Text>} /></Card></Grid.Col>
         <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<Users size={17} />} title="独立敌对人员" value={report.uniqueTargets} extra={<Typography.Text type="secondary">zKill 覆盖 {report.zkillCoverage.toFixed(0)}%</Typography.Text>} /></Card></Grid.Col>
         <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<MapPinned size={17} />} title="涉及星系" value={report.systemCount} extra={<Typography.Text type="secondary">跨星系人员 {report.crossSystemTargetCount}</Typography.Text>} /></Card></Grid.Col>
       </Grid.Row>
 
       <Grid.Row className="hostile-report-chart-grid" gutter={16}>
-        <Grid.Col lg={15} xs={24}>
+        <Grid.Col xl={14} lg={24} xs={24}>
           <Card className="hostile-report-card" title={<span><Activity size={16} />来袭趋势</span>} extra={<Tag color="green">{activeRange}</Tag>}>
             {report.incidentCount > 0 ? (
               <EveChart height={280} option={trendOption(report.trend.map((item) => item.label), report.trend.map((item) => item.count), theme)} />
             ) : <Empty description="所选范围内没有已验证敌对来袭" />}
           </Card>
         </Grid.Col>
-        <Grid.Col lg={9} xs={24}>
+        <Grid.Col xl={10} lg={24} xs={24}>
           <Card className="hostile-report-card" title={<span><RadioTower size={16} />最近来袭波次</span>} extra={<Typography.Text type="secondary">峰值 {report.peakWaveTargets} 人</Typography.Text>}>
             {report.waves.length > 0 ? (
-              <Table<WaveReportRow> border={false} columns={waveColumns} data={report.waves.slice(0, 6)} pagination={false} rowKey="id" scroll={{ x: 630 }} />
+              <Table<WaveReportRow> border={false} columns={waveColumns} data={report.waves.slice(0, 6)} pagination={false} rowKey="id" />
             ) : <Empty description="暂无可聚合波次" />}
           </Card>
         </Grid.Col>
       </Grid.Row>
 
       <Grid.Row className="hostile-report-ranking-grid" gutter={16}>
-        <Grid.Col lg={10} xs={24}>
+        <Grid.Col xl={10} lg={24} xs={24}>
           <Card className="hostile-report-card" title={<span><MapPinned size={16} />热点星系</span>}>
-            <Table<SystemReportRow> border={false} columns={systemColumns} data={report.systems.slice(0, 10)} pagination={false} rowKey="name" scroll={{ x: 650 }} />
+            <Table<SystemReportRow> border={false} columns={systemColumns} data={report.systems.slice(0, 10)} pagination={false} rowKey="name" />
           </Card>
         </Grid.Col>
-        <Grid.Col lg={14} xs={24}>
-          <Card className="hostile-report-card" title={<span><Crosshair size={16} />人员研判</span>} extra={<Typography.Text type="secondary">危险度来自 zKillboard</Typography.Text>}>
-            <Table<TargetReportRow> border={false} columns={targetColumns} data={report.targets.slice(0, 12)} pagination={false} rowKey="characterId" scroll={{ x: 850 }} />
+        <Grid.Col xl={14} lg={24} xs={24}>
+          <Card className="hostile-report-card" title={<span><Crosshair size={16} />人员研判</span>} extra={<Typography.Text type="secondary">威胁度数据来自 zKillboard</Typography.Text>}>
+            <Table<TargetReportRow> border={false} columns={targetColumns} data={report.targets.slice(0, 12)} pagination={false} rowKey="characterId" />
           </Card>
         </Grid.Col>
       </Grid.Row>
 
       <Card className="hostile-report-card hostile-report-recent" title={<span><ShieldAlert size={16} />最近历史事件</span>} extra={<Typography.Text type="secondary">更新于 {formatTime(historyQuery.data?.generatedAt)}</Typography.Text>}>
-        <Table<AlertItem> border={false} columns={recentColumns} data={report.recent} pagination={false} rowKey="id" scroll={{ x: 650 }} />
+        <Table<AlertItem> border={false} columns={recentColumns} data={report.recent} pagination={false} rowKey="id" />
       </Card>
     </div>
   );

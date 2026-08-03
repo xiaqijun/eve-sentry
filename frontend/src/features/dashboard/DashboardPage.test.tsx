@@ -57,21 +57,27 @@ describe("DashboardPage", () => {
         id: "live-alert",
         system_name: "S-KSWL",
         system_id: 30003615,
-        names: ["Alice"],
-        verified_characters: [{
-          character_id: 101,
-          name: "Alice",
-          zkill: { danger_ratio: 86, ships_destroyed: 420, ships_lost: 23 },
-        }],
+        names: ["Alice", "Bob", "Carol", "Dave", "Eve Long Name"],
+        verified_characters: [
+          {
+            character_id: 101,
+            name: "Alice",
+            zkill: { danger_ratio: 86, ships_destroyed: 420, ships_lost: 23 },
+          },
+          { character_id: 102, name: "Bob" },
+          { character_id: 103, name: "Carol" },
+          { character_id: 104, name: "Dave" },
+          { character_id: 105, name: "Eve Long Name" },
+        ],
         classification: "red",
         level: "high",
         created_at: new Date(now - 5 * 60 * 1000).toISOString(),
-        acknowledged: false,
       }],
       clients: {
         count: 1,
         heartbeats: [{
           client_id: "monitor-1",
+          label: "监控客户端 · 不应被省略的完整名称",
           client_type: "alert_client",
           online: true,
           system_id: 30003615,
@@ -104,14 +110,17 @@ describe("DashboardPage", () => {
     expect(container).toHaveTextContent("工作台");
     expect(container).toHaveTextContent("在线监控星系");
     expect(container).toHaveTextContent("当前敌对人数");
-    expect(container).toHaveTextContent("待确认告警");
+    expect(container).toHaveTextContent("当前告警事件");
     expect(container).toHaveTextContent("异常客户端");
     expect(container).toHaveTextContent("当前敌对星系");
     expect(container).toHaveTextContent("S-KSWL");
-    expect(container).toHaveTextContent("zKill 86");
-    expect(container).toHaveTextContent("待处置告警");
+    expect(container).toHaveTextContent("威胁度 86");
+    expect(container).toHaveTextContent("最新告警事件");
+    expect(container).toHaveTextContent("高");
     expect(container).toHaveTextContent("监控覆盖");
     expect(container).toHaveTextContent("Alice");
+    expect(container).toHaveTextContent("Eve Long Name");
+    expect(container).toHaveTextContent("监控客户端 · 不应被省略的完整名称");
     expect(container.querySelectorAll('[data-testid="eve-chart"]')).toHaveLength(0);
     expect(apiMocks.fetchHostileAlertHistory).not.toHaveBeenCalled();
 

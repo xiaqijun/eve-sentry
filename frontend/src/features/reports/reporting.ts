@@ -38,6 +38,18 @@ export interface WaveReportRow {
   uniqueTargets: number;
   startedAt?: string;
   lastSeen?: string;
+  endedAt?: string;
+  active: boolean;
+}
+
+export interface HostileWaveLifecycle {
+  id: string;
+  system_name?: string;
+  system_id?: number | null;
+  started_at?: string;
+  last_seen_at?: string;
+  cleared_at?: string;
+  active?: boolean;
 }
 
 export interface SeverityReportRow {
@@ -50,7 +62,6 @@ export interface HostileReport {
   incidentCount: number;
   excludedCount: number;
   verificationRate: number;
-  unacknowledgedCount: number;
   targetSightings: number;
   uniqueTargets: number;
   systemCount: number;
@@ -164,47 +175,70 @@ function cleanZkillStats(value: unknown): ZkillStats | undefined {
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
-function buildWaves(alerts: AlertItem[]): WaveReportRow[] {
-  const waveGapMs = 15 * 60 * 1000;
-  const ascending = [...alerts].sort((left, right) => (
-    (parsedTime(left.created_at) || 0) - (parsedTime(right.created_at) || 0)
-  ));
-  const waves: Array<WaveReportRow & { targetIds: Set<number> }> = [];
-  const latestBySystem = new Map<string, typeof waves[number]>();
-
-  ascending.forEach((alert) => {
-    const timestamp = parsedTime(alert.created_at);
-    if (timestamp === null) return;
-    const systemName = cleanSystem(alert);
-    const previous = latestBySystem.get(systemName);
-    const previousTimestamp = parsedTime(previous?.lastSeen);
-    let wave = previous;
-    if (!wave || previousTimestamp === null || timestamp - previousTimestamp > waveGapMs) {
-      wave = {
-        id: `${systemName}:${timestamp}`,
+function buildWaves(
+  alerts: AlertItem[],
+  lifecycles: HostileWaveLifecycle[],
+  nowMs: number,
+): WaveReportRow[] {
+  const seenIds = new Set<string>();
+  const waves = lifecycles
+    .map((item) => {
+      const id = String(item.id || "").trim();
+      const systemName = String(item.system_name || "未知星系").trim() || "未知星系";
+      const startedAt = String(item.started_at || "").trim();
+      const startedMs = parsedTime(startedAt);
+      const endedAt = String(item.cleared_at || "").trim();
+      const endedMs = parsedTime(endedAt);
+      if (
+        !id
+        || seenIds.has(id)
+        || startedMs === null
+        || startedMs > nowMs
+        || (endedAt && (endedMs === null || endedMs < startedMs))
+      ) {
+        return null;
+      }
+      seenIds.add(id);
+      return {
+        id,
         systemName,
         incidentCount: 0,
         uniqueTargets: 0,
-        startedAt: alert.created_at,
-        lastSeen: alert.created_at,
+        startedAt,
+        lastSeen: String(item.last_seen_at || startedAt),
+        endedAt: endedAt || undefined,
+        active: Boolean(item.active) && !endedAt,
         targetIds: new Set<number>(),
+        startedMs,
+        endedMs,
       };
-      waves.push(wave);
-      latestBySystem.set(systemName, wave);
-    }
+    })
+    .filter((item): item is NonNullable<typeof item> => item !== null)
+    .sort((left, right) => right.startedMs - left.startedMs);
+
+  alerts.forEach((alert) => {
+    const timestamp = parsedTime(alert.created_at);
+    if (timestamp === null) return;
+    const systemKey = cleanSystem(alert).toLocaleLowerCase();
+    const wave = waves.find((item) => (
+      item.systemName.toLocaleLowerCase() === systemKey
+      && timestamp >= item.startedMs
+      && (item.endedMs === null || timestamp <= item.endedMs)
+    ));
+    if (!wave) return;
     wave.incidentCount += 1;
-    wave.lastSeen = alert.created_at;
     cleanVerifiedCharacters(alert).forEach((character) => {
-      wave?.targetIds.add(character.character_id);
+      wave.targetIds.add(character.character_id);
     });
     wave.uniqueTargets = wave.targetIds.size;
   });
 
-  return waves
-    .sort((left, right) => (
-      (parsedTime(right.lastSeen) || 0) - (parsedTime(left.lastSeen) || 0)
-    ))
-    .map(({ targetIds: _targetIds, ...wave }) => wave);
+  return waves.map(({
+    targetIds: _targetIds,
+    startedMs: _startedMs,
+    endedMs: _endedMs,
+    ...wave
+  }) => wave);
 }
 
 function verifiedAlert(alert: AlertItem): AlertItem | null {
@@ -352,6 +386,7 @@ export function buildHostileReport(
   sourceAlerts: AlertItem[],
   range: ReportRange,
   nowMs: number = Date.now(),
+  sourceWaves: HostileWaveLifecycle[] = [],
 ): HostileReport {
   const startMs = reportRangeStart(range, nowMs);
   const rangedSourceAlerts = sourceAlerts.filter((alert) => {
@@ -485,7 +520,18 @@ export function buildHostileReport(
     .filter((item) => item.incidents > 1).length;
   const crossSystemTargetCount = [...targetMap.values()]
     .filter((item) => item.systems.size > 1).length;
-  const waves = buildWaves(alerts);
+  const rangedWaves = sourceWaves.filter((wave) => {
+    const startedAt = parsedTime(wave.started_at);
+    if (startedAt === null || startedAt > nowMs) {
+      return false;
+    }
+    if (startMs === null) {
+      return true;
+    }
+    const endedAt = parsedTime(wave.cleared_at || wave.last_seen_at);
+    return endedAt === null || endedAt >= startMs;
+  });
+  const waves = buildWaves(alerts, rangedWaves, nowMs);
   const targetsWithZkill = [...targetMap.values()].filter(
     (item) => item.zkill?.danger_ratio !== undefined,
   ).length;
@@ -497,7 +543,6 @@ export function buildHostileReport(
     verificationRate: rangedSourceAlerts.length > 0
       ? (alerts.length / rangedSourceAlerts.length) * 100
       : 0,
-    unacknowledgedCount: alerts.filter((alert) => !alert.acknowledged).length,
     targetSightings,
     uniqueTargets: uniqueTargets.size,
     systemCount: systemMap.size,

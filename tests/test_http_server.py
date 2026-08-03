@@ -541,6 +541,44 @@ def test_v1_ocr_snapshot_endpoint_updates_active_intel(tmp_path):
         server.stop()
 
 
+def test_v1_hostile_waves_returns_persisted_lifecycles(tmp_path):
+    store = IntelStore(tmp_path / "intel.json")
+    calls = []
+
+    def list_hostile_waves(since="", limit=None):
+        calls.append((since, limit))
+        return [
+            {
+                "id": "wave-1",
+                "system_name": "S-KSWL",
+                "system_id": 30004759,
+                "started_at": "2026-08-03T10:00:00+00:00",
+                "last_seen_at": "2026-08-03T10:04:00+00:00",
+                "cleared_at": "2026-08-03T10:05:00+00:00",
+                "active": False,
+            }
+        ]
+
+    store.list_hostile_waves = list_hostile_waves
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        query = urlencode(
+            {"since": "2026-08-03T00:00:00+00:00", "limit": "25"}
+        )
+        status, payload = request_json(
+            f"{server.url}/api/v1/hostile-waves?{query}"
+        )
+
+        assert status == 200
+        assert payload["schema_version"] == "hostile_waves.v1"
+        assert payload["count"] == 1
+        assert payload["waves"][0]["id"] == "wave-1"
+        assert calls == [("2026-08-03T00:00:00+00:00", 25)]
+    finally:
+        server.stop()
+
+
 def test_remote_alert_count_uses_latest_detector_snapshot_total(tmp_path):
     store = IntelStore(
         tmp_path / "intel.json",
@@ -2173,56 +2211,25 @@ def test_create_channel_line_keeps_ambiguous_system_candidates_in_metadata(tmp_p
         server.stop()
 
 
-def test_ack_alert_route_marks_alert(tmp_path):
+def test_ack_alert_routes_are_not_available(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
     try:
-        status, created = request_json(
-            f"{server.url}/api/observations",
-            method="POST",
-            payload={
-                "system_name": "Tama",
-                "names": ["Alice"],
-                "source": "intel_channel",
-            },
-        )
-        assert status == 201
-        alert_id = created["alert"]["id"]
-
-        status, acked = request_json(
-            f"{server.url}/api/alerts/{alert_id}/ack",
-            method="POST",
-            payload={"acknowledged_by": "tester", "note": "handled"},
-        )
-
-        assert status == 200
-        assert acked["ok"] is True
-        assert acked["alert"]["id"] == alert_id
-        assert acked["alert"]["acknowledged"] is True
-        assert acked["alert"]["acknowledged_by"] == "tester"
-        assert acked["alert"]["acknowledgement_note"] == "handled"
-
-        status, alerts = request_json(f"{server.url}/api/alerts")
-        assert status == 200
-        assert alerts["alerts"][0]["acknowledged"] is True
-
-        try:
-            request_json(
-                f"{server.url}/api/alerts/missing/ack",
-                method="POST",
-                payload={},
-            )
-        except HTTPError as exc:
-            assert exc.code == 404
-            payload = json.loads(exc.read().decode("utf-8"))
-            assert "alert" in payload["error"]
-        else:
-            raise AssertionError("expected HTTP 404")
+        for path in (
+            "/api/alerts/evt-1/ack",
+            "/api/v1/alerts/evt-1/ack",
+        ):
+            try:
+                request_json(f"{server.url}{path}", method="POST", payload={})
+            except HTTPError as exc:
+                assert exc.code == 404
+            else:
+                raise AssertionError("expected HTTP 404")
     finally:
         server.stop()
 
 
-def test_alert_route_filters_by_acknowledgement_score_and_level(tmp_path):
+def test_alert_route_filters_by_score_and_level(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
     try:
@@ -2251,28 +2258,6 @@ def test_alert_route_filters_by_acknowledgement_score_and_level(tmp_path):
         assert status == 200
         assert default_alerts["count"] == 2
 
-        request_json(
-            f"{server.url}/api/alerts/{medium_created['alert']['id']}/ack",
-            method="POST",
-            payload={"acknowledged_by": "tester"},
-        )
-
-        status, unacknowledged = request_json(
-            f"{server.url}/api/alerts?{urlencode({'acknowledged': 'false'})}"
-        )
-        assert status == 200
-        assert [alert["id"] for alert in unacknowledged["alerts"]] == [
-            low_created["alert"]["id"]
-        ]
-
-        status, acknowledged = request_json(
-            f"{server.url}/api/alerts?{urlencode({'acknowledged': 'true'})}"
-        )
-        assert status == 200
-        assert [alert["id"] for alert in acknowledged["alerts"]] == [
-            medium_created["alert"]["id"]
-        ]
-
         status, min_score = request_json(
             f"{server.url}/api/alerts?{urlencode({'min_score': '40'})}"
         )
@@ -2290,7 +2275,6 @@ def test_alert_route_filters_by_acknowledgement_score_and_level(tmp_path):
         ]
 
         for query in (
-            {"acknowledged": "maybe"},
             {"min_score": "-1"},
             {"min_level": "urgent"},
         ):
@@ -3549,7 +3533,7 @@ def test_events_stream_since_parameter_remains_exclusive(tmp_path):
         server.stop()
 
 
-def test_json_server_restart_preserves_ack_and_event_resume(tmp_path):
+def test_json_server_restart_preserves_event_resume(tmp_path):
     data_path = tmp_path / "intel.json"
     first_server = IntelHTTPServer(
         IntelStore(data_path, systems={}, links=[]),
@@ -3570,14 +3554,6 @@ def test_json_server_restart_preserves_ack_and_event_resume(tmp_path):
         )
         first_alert_id = first_created["alert"]["id"]
 
-        status, acked = request_json(
-            f"{first_server.url}/api/alerts/{first_alert_id}/ack",
-            method="POST",
-            payload={"acknowledged_by": "alert-client", "note": "sent"},
-        )
-
-        assert status == 200
-        assert acked["alert"]["acknowledged"] is True
     finally:
         first_server.stop()
 
@@ -3587,13 +3563,6 @@ def test_json_server_restart_preserves_ack_and_event_resume(tmp_path):
     )
     second_server.start()
     try:
-        status, acknowledged = request_json(
-            f"{second_server.url}/api/alerts?{urlencode({'acknowledged': 'true'})}"
-        )
-        assert status == 200
-        assert [alert["id"] for alert in acknowledged["alerts"]] == [first_alert_id]
-        assert acknowledged["alerts"][0]["acknowledged_by"] == "alert-client"
-
         _, second_created = request_json(
             f"{second_server.url}/api/observations",
             method="POST",

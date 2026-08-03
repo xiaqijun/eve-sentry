@@ -624,34 +624,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         if path.startswith(API_V1_PREFIX):
             self._handle_v1_post(path)
             return
-        ack_prefix = "/api/alerts/"
-        if path.startswith(ack_prefix) and path.endswith("/ack"):
-            alert_id = unquote(path[len(ack_prefix):-len("/ack")]).strip()
-            if not alert_id:
-                self._send_json(
-                    {"error": "alert id is required"},
-                    HTTPStatus.BAD_REQUEST,
-                )
-                return
-            try:
-                payload = self._read_optional_json()
-            except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"error": str(exc)}, _request_error_status(exc))
-                return
-
-            alert = self._store().ack_alert(
-                alert_id,
-                acknowledged_by=str(
-                    payload.get("acknowledged_by") or payload.get("by") or ""
-                ),
-                note=str(payload.get("note") or ""),
-            )
-            if alert is None:
-                self._send_json({"error": "alert not found"}, HTTPStatus.NOT_FOUND)
-                return
-            self._send_json({"ok": True, "alert": alert})
-            return
-
         if path == "/api/channel-lines":
             try:
                 result = self._add_channel_line(self._read_json())
@@ -863,6 +835,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         if path == f"{API_V1_PREFIX}/active-intel":
             self._send_active_intel(parsed.query)
+            return
+        if path == f"{API_V1_PREFIX}/hostile-waves":
+            self._send_hostile_waves(parsed.query)
             return
         if path == f"{API_V1_PREFIX}/integrations/hostile-systems":
             self._send_hostile_systems()
@@ -1114,32 +1089,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             self._send_json({"ok": True, "login": login})
             return
 
-        ack_prefix = f"{API_V1_PREFIX}/alerts/"
-        if path.startswith(ack_prefix) and path.endswith("/ack"):
-            alert_id = unquote(path[len(ack_prefix):-len("/ack")]).strip()
-            if not alert_id:
-                self._send_json(
-                    {"error": "alert id is required"},
-                    HTTPStatus.BAD_REQUEST,
-                )
-                return
-            try:
-                payload = self._read_optional_json()
-            except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"error": str(exc)}, _request_error_status(exc))
-                return
-            alert = self._store().ack_alert(
-                alert_id,
-                acknowledged_by=str(
-                    payload.get("acknowledged_by") or payload.get("by") or ""
-                ),
-                note=str(payload.get("note") or ""),
-            )
-            if alert is None:
-                self._send_json({"error": "alert not found"}, HTTPStatus.NOT_FOUND)
-                return
-            self._send_json({"ok": True, "alert": alert})
-            return
         if path == f"{API_V1_PREFIX}/channel-lines":
             try:
                 result = self._add_channel_line(self._read_json())
@@ -1708,6 +1657,26 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             }
         )
 
+    def _send_hostile_waves(self, raw_query: str = "") -> None:
+        query = parse_qs(raw_query)
+        try:
+            limit = self._parse_optional_int(query.get("limit", [""])[0])
+            waves = self._store().list_hostile_waves(
+                since=query.get("since", [""])[0],
+                limit=DEFAULT_QUERY_LIMIT if limit is None else limit,
+            )
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json(
+            {
+                "schema_version": "hostile_waves.v1",
+                "waves": waves,
+                "count": len(waves),
+                "generated_at": utc_now_iso(),
+            }
+        )
+
     def _send_hostile_systems(self) -> None:
         """Return a stable, minimal hostile-system feed for integrations."""
         alerts = self._active_alert_list(limit=None)
@@ -1751,7 +1720,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         self,
         since: str | None = None,
         limit: int | None = None,
-        acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str | None = None,
         include_since: bool = False,
@@ -1786,7 +1754,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             alert for alert in alerts
             if store._alert_passes_filters(
                 alert,
-                acknowledged=acknowledged,
+                acknowledged=None,
                 min_score=min_score_value,
                 min_level_rank=min_level_rank,
             )
@@ -2168,10 +2136,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 "min_level must be one of low, medium, high, or critical"
             )
         return {
-            "acknowledged": self._parse_optional_bool(
-                query.get("acknowledged", [""])[0],
-                "acknowledged",
-            ),
             "min_score": self._parse_optional_int_param(
                 query.get("min_score", [""])[0],
                 "min_score",
@@ -2288,7 +2252,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         limit: int = 50,
         timeout_seconds: float = 30.0,
         heartbeat_seconds: float = 15.0,
-        acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str | None = None,
         active_only: bool = False,
@@ -2348,7 +2311,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         since=last_seen,
                         limit=limit,
                         include_since=current_include_since,
-                        acknowledged=acknowledged,
                         min_score=min_score,
                         min_level=min_level,
                         active_items=active_items,
@@ -2358,7 +2320,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         since=last_seen,
                         limit=limit,
                         include_since=current_include_since,
-                        acknowledged=acknowledged,
                         min_score=min_score,
                         min_level=min_level,
                     )

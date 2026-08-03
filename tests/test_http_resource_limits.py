@@ -55,7 +55,7 @@ def server(tmp_path):
 )
 @pytest.mark.parametrize(
     "path",
-    ["/api/observations", "/api/alerts/missing/ack"],
+    ["/api/observations", "/api/channel-lines"],
 )
 def test_json_routes_reject_missing_or_invalid_content_length(
     server,
@@ -72,7 +72,7 @@ def test_json_routes_reject_missing_or_invalid_content_length(
 
 @pytest.mark.parametrize(
     "path",
-    ["/api/observations", "/api/alerts/missing/ack"],
+    ["/api/observations", "/api/channel-lines"],
 )
 def test_json_routes_reject_bodies_larger_than_one_mebibyte(server, path):
     status, _, payload = _request(
@@ -87,21 +87,21 @@ def test_json_routes_reject_bodies_larger_than_one_mebibyte(server, path):
 
 
 def test_json_route_accepts_body_at_one_mebibyte_limit(server):
-    prefix = b'{"note":"'
+    prefix = b'{"system_name":"Tama","names":["Alice"],"raw_text":"'
     suffix = b'"}'
     body = prefix + (b"x" * (MAX_JSON_BODY_BYTES - len(prefix) - len(suffix))) + suffix
 
     status, _, payload = _request(
         server,
         "POST",
-        "/api/alerts/missing/ack",
+        "/api/observations",
         {"Content-Length": str(len(body)), "Content-Type": "application/json"},
         body,
     )
 
     assert len(body) == MAX_JSON_BODY_BYTES
-    assert status == 404
-    assert payload == {"error": "alert not found"}
+    assert status == 201
+    assert payload["observation"]["system_name"] == "Tama"
 
 
 def test_invalid_utf8_body_returns_json_error_and_server_remains_available(server):
@@ -150,6 +150,7 @@ def test_auth_json_route_preserves_payload_too_large_status(tmp_path):
         "/api/v1/observations",
         "/api/v1/alerts",
         "/api/v1/events",
+        "/api/v1/hostile-waves",
     ],
 )
 def test_all_limit_queries_reject_values_above_one_thousand(server, path):

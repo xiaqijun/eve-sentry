@@ -161,7 +161,24 @@ function dangerTag(value: number | null | undefined) {
     return <Typography.Text type="secondary">暂无数据</Typography.Text>;
   }
   const color = value >= 80 ? "red" : value >= 60 ? "orangered" : value >= 40 ? "orange" : "green";
-  return <Tag color={color}>zKill {Math.round(value)}</Tag>;
+  return <Tag color={color}>威胁度 {Math.round(value)}</Tag>;
+}
+
+function levelTag(value?: string) {
+  const normalized = String(value || "").toLowerCase();
+  const labels: Record<string, string> = {
+    critical: "紧急",
+    high: "高",
+    medium: "中",
+    low: "低",
+  };
+  const colors: Record<string, string> = {
+    critical: "red",
+    high: "orangered",
+    medium: "orange",
+    low: "blue",
+  };
+  return <Tag color={colors[normalized] || "gray"}>{labels[normalized] || "未知"}</Tag>;
 }
 
 export function DashboardPage() {
@@ -187,8 +204,7 @@ export function DashboardPage() {
     () => bootstrapQuery.data ? clientStatusRows(bootstrapQuery.data) : [],
     [bootstrapQuery.data],
   );
-  const pendingAlerts = (bootstrapQuery.data ? currentRedAlerts(bootstrapQuery.data) : [])
-    .filter((alert) => !alert.acknowledged)
+  const liveAlerts = (bootstrapQuery.data ? currentRedAlerts(bootstrapQuery.data) : [])
     .sort((left, right) => (
       new Date(right.created_at || 0).getTime() - new Date(left.created_at || 0).getTime()
     ));
@@ -197,32 +213,32 @@ export function DashboardPage() {
   const abnormalClients = clients.filter((client) => !client.online || client.stale).length;
 
   const systemColumns: TableColumnProps<LiveSystemRow>[] = [
-    { title: "星系", dataIndex: "name", width: 130, render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
-    { title: "当前敌对", dataIndex: "hostileCount", width: 92 },
-    { title: "已验证人员", dataIndex: "names", render: (value: string[]) => value.length > 0 ? value.slice(0, 4).join("、") : "等待身份补全" },
-    { title: "最高危险度", dataIndex: "maxDangerRatio", width: 118, render: (value: number | null) => dangerTag(value) },
-    { title: "在线节点", dataIndex: "monitorOnlineCount", width: 92 },
-    { title: "最后变化", dataIndex: "lastSeen", width: 168, render: (value?: string) => formatTime(value) },
+    { title: "星系", dataIndex: "name", width: 110, render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
+    { title: "当前敌对", dataIndex: "hostileCount", width: 78 },
+    { title: "已验证人员", dataIndex: "names", render: (value: string[]) => value.length > 0 ? <span className="table-token-list">{value.map((name, index) => <span key={`${name}:${index}`}>{name}</span>)}</span> : "等待身份补全" },
+    { title: "最高威胁度", dataIndex: "maxDangerRatio", width: 108, render: (value: number | null) => dangerTag(value) },
+    { title: "在线节点", dataIndex: "monitorOnlineCount", width: 78 },
+    { title: "最后变化", dataIndex: "lastSeen", width: 154, render: (value?: string) => formatTime(value) },
   ];
   const alertColumns: TableColumnProps<AlertItem>[] = [
-    { title: "时间", dataIndex: "created_at", width: 168, render: (value?: string) => formatTime(value) },
-    { title: "星系", dataIndex: "system_name", width: 120, render: (value?: string) => value || "未知星系" },
-    { title: "已验证人员", dataIndex: "verified_characters", render: (value?: VerifiedCharacter[]) => (value || []).map((item) => item.name).join("、") || "等待身份补全" },
-    { title: "处置", dataIndex: "acknowledged", width: 90, render: () => <Tag color="red">待确认</Tag> },
+    { title: "时间", dataIndex: "created_at", width: 154, render: (value?: string) => formatTime(value) },
+    { title: "星系", dataIndex: "system_name", width: 110, render: (value?: string) => value || "未知星系" },
+    { title: "已验证人员", dataIndex: "verified_characters", render: (value?: VerifiedCharacter[]) => (value || []).length > 0 ? <span className="table-token-list">{(value || []).map((item) => <span key={item.character_id}>{item.name}</span>)}</span> : "等待身份补全" },
+    { title: "级别", dataIndex: "level", width: 76, render: (value?: string) => levelTag(value) },
   ];
   const clientColumns: TableColumnProps<ClientStatusRow>[] = [
-    { title: "客户端", dataIndex: "label", render: (value: string) => <Typography.Text bold ellipsis={{ showTooltip: true }}>{value}</Typography.Text> },
-    { title: "类型", dataIndex: "clientType", width: 112 },
-    { title: "星系", dataIndex: "systemName", width: 112 },
-    { title: "状态", dataIndex: "online", width: 90, render: (_: boolean, row) => row.online && !row.stale ? <Tag color="green">在线</Tag> : <Tag color="red">异常</Tag> },
-    { title: "最后上报", dataIndex: "lastSeen", width: 168, render: (value?: string) => formatTime(value) },
+    { title: "客户端", dataIndex: "label", render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
+    { title: "类型", dataIndex: "clientType", width: 96 },
+    { title: "星系", dataIndex: "systemName", width: 110 },
+    { title: "状态", dataIndex: "online", width: 76, render: (_: boolean, row) => row.online && !row.stale ? <Tag color="green">在线</Tag> : <Tag color="red">异常</Tag> },
+    { title: "最后上报", dataIndex: "lastSeen", width: 154, render: (value?: string) => formatTime(value) },
   ];
 
   return (
     <div className="dashboard-page">
       <header className="arco-page-header dashboard-header">
         <div>
-          <Typography.Text className="content-page-kicker">实时处置</Typography.Text>
+          <Typography.Text className="content-page-kicker">实时监控</Typography.Text>
           <Typography.Title heading={4}>工作台</Typography.Title>
         </div>
         <Button icon={<IconRefresh />} loading={bootstrapQuery.isFetching} type="outline" onClick={() => void bootstrapQuery.refetch()}>刷新实时数据</Button>
@@ -235,28 +251,28 @@ export function DashboardPage() {
       <Grid.Row className="arco-summary-grid dashboard-kpis" gutter={16}>
         <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<MonitorCheck size={17} />} title="在线监控星系" value={onlineSystems} /></Card></Grid.Col>
         <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<Skull size={17} />} title="当前敌对人数" value={currentHostiles} /></Card></Grid.Col>
-        <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<BellRing size={17} />} title="待确认告警" value={pendingAlerts.length} /></Card></Grid.Col>
+        <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<BellRing size={17} />} title="当前告警事件" value={liveAlerts.length} /></Card></Grid.Col>
         <Grid.Col lg={6} sm={12} xs={24}><Card><Statistic prefix={<WifiOff size={17} />} title="异常客户端" value={abnormalClients} /></Card></Grid.Col>
       </Grid.Row>
 
       <Card className="dashboard-card dashboard-live-card" title={<span><Radar size={16} />当前敌对星系</span>} extra={<Tag color="red">实时</Tag>}>
         {systems.length > 0 ? (
-          <Table<LiveSystemRow> border={false} columns={systemColumns} data={systems} pagination={false} rowKey="id" scroll={{ x: 820 }} />
-        ) : <Empty description="当前监控范围内没有已确认敌对" />}
+          <Table<LiveSystemRow> border={false} columns={systemColumns} data={systems} pagination={false} rowKey="id" />
+        ) : <Empty description="当前监控范围内没有敌对" />}
       </Card>
 
       <Grid.Row className="dashboard-secondary-grid" gutter={16}>
-        <Grid.Col lg={14} xs={24}>
-          <Card className="dashboard-card" title={<span><ShieldAlert size={16} />待处置告警</span>} extra={<Typography.Text type="secondary">仅显示未确认敌对</Typography.Text>}>
-            {pendingAlerts.length > 0 ? (
-              <Table<AlertItem> border={false} columns={alertColumns} data={pendingAlerts.slice(0, 8)} pagination={false} rowKey="id" scroll={{ x: 640 }} />
-            ) : <Empty description="没有待确认告警" />}
+        <Grid.Col xl={12} lg={24} xs={24}>
+          <Card className="dashboard-card" title={<span><ShieldAlert size={16} />最新告警事件</span>} extra={<Typography.Text type="secondary">当前敌对</Typography.Text>}>
+            {liveAlerts.length > 0 ? (
+              <Table<AlertItem> border={false} columns={alertColumns} data={liveAlerts.slice(0, 8)} pagination={false} rowKey="id" />
+            ) : <Empty description="没有实时敌对告警" />}
           </Card>
         </Grid.Col>
-        <Grid.Col lg={10} xs={24}>
+        <Grid.Col xl={12} lg={24} xs={24}>
           <Card className="dashboard-card" title={<span><MonitorCheck size={16} />监控覆盖</span>} extra={<Typography.Text type="secondary">{clients.length} 个客户端</Typography.Text>}>
             {clients.length > 0 ? (
-              <Table<ClientStatusRow> border={false} columns={clientColumns} data={clients.slice(0, 8)} pagination={false} rowKey="id" scroll={{ x: 600 }} />
+              <Table<ClientStatusRow> border={false} columns={clientColumns} data={clients.slice(0, 8)} pagination={false} rowKey="id" />
             ) : <Empty description="暂无客户端心跳" />}
           </Card>
         </Grid.Col>

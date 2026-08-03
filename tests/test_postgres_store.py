@@ -369,6 +369,112 @@ def test_postgres_startup_reads_only_active_intel_rows():
     assert "WHERE active = 1" in calls[0][0]
 
 
+def test_postgres_hostile_wave_state_uses_appearance_to_clear_lifecycle():
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._active_intel = {}
+
+    def item(active_id, name, first_seen, last_seen, active=True):
+        return ActiveIntelItem(
+            active_id=active_id,
+            source="eve-sentry-detector",
+            source_instance=active_id,
+            system_name="S-KSWL",
+            name=name,
+            first_seen_at=first_seen,
+            last_seen_at=last_seen,
+            active=active,
+        )
+
+    first = item(
+        "ocr:first",
+        "Alice",
+        "2026-08-03T10:00:00+00:00",
+        "2026-08-03T10:01:00+00:00",
+    )
+    second = item(
+        "ocr:second",
+        "Bob",
+        "2026-08-03T10:00:30+00:00",
+        "2026-08-03T10:01:30+00:00",
+    )
+    both = store._hostile_system_state([first, second])
+    one = store._hostile_system_state([second])
+
+    opened = store._hostile_wave_changes(
+        {},
+        "2026-08-03T10:00:00+00:00",
+        after=both,
+    )
+    still_open = store._hostile_wave_changes(
+        both,
+        "2026-08-03T10:02:00+00:00",
+        after=one,
+    )
+    cleared = store._hostile_wave_changes(
+        one,
+        "2026-08-03T10:03:00+00:00",
+        after={},
+    )
+    reopened = store._hostile_wave_changes(
+        {},
+        "2026-08-03T10:03:30+00:00",
+        after=one,
+    )
+
+    assert len(opened) == 1
+    assert opened[0]["action"] == "touch"
+    assert opened[0]["started_at"] == "2026-08-03T10:00:00+00:00"
+    assert still_open[0]["action"] == "touch"
+    assert cleared[0]["action"] == "clear"
+    assert cleared[0]["cleared_at"] == "2026-08-03T10:03:00+00:00"
+    assert reopened[0]["action"] == "touch"
+    assert reopened[0]["started_at"] == "2026-08-03T10:03:30+00:00"
+
+
+def test_postgres_hostile_wave_query_filters_overlapping_lifecycles():
+    calls = []
+
+    class Result:
+        def fetchall(self):
+            return [
+                {
+                    "wave_id": "wave-1",
+                    "system_name": "Tama",
+                    "system_id": 30045339,
+                    "started_at": "2026-08-03T09:00:00+00:00",
+                    "last_seen_at": "2026-08-03T09:05:00+00:00",
+                    "cleared_at": "2026-08-03T09:06:00+00:00",
+                    "active": 0,
+                }
+            ]
+
+    class FakeConnection:
+        def execute(self, query, params):
+            calls.append((" ".join(query.split()), params))
+            return Result()
+
+    class FakePoolContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._connect = lambda: _PostgresConnection(FakePoolContext())
+
+    waves = store.list_hostile_waves(
+        since="2026-08-03T00:00:00+00:00",
+        limit=25,
+    )
+
+    assert waves[0]["id"] == "wave-1"
+    assert waves[0]["active"] is False
+    assert "COALESCE(NULLIF(cleared_at, '')" in calls[0][0]
+    assert "LIMIT %s" in calls[0][0]
+    assert calls[0][1] == ("2026-08-03T00:00:00+00:00", 25)
+
+
 def test_postgres_ocr_snapshot_persists_old_system_as_inactive():
     persisted_rows = []
 
@@ -378,6 +484,9 @@ def test_postgres_ocr_snapshot_persists_old_system_as_inactive():
 
         def __exit__(self, exc_type, exc_value, traceback):
             return False
+
+        def execute(self, query, params):
+            return SimpleNamespace(rowcount=1)
 
     old_item = ActiveIntelItem(
         active_id="old-active",
