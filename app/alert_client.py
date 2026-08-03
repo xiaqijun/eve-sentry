@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QStyle,
     QSystemTrayIcon,
+    QToolTip,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -537,6 +538,19 @@ def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[st
     return accounts
 
 
+def is_local_monitored_account(client_id: Any, alert_client_id: Any) -> bool:
+    """Return whether a detector target belongs to this installation."""
+    detector_id = str(client_id or "").strip().casefold()
+    current_id = str(alert_client_id or "").strip().casefold()
+    _, separator, installation_id = current_id.partition(":")
+    if not separator or not installation_id:
+        return False
+    detector_prefix = f"detector-client:{installation_id}"
+    return detector_id == detector_prefix or detector_id.startswith(
+        f"{detector_prefix}:"
+    )
+
+
 class LocalStarMapWidget(QWidget):
     """Small, dependency-free renderer for the selected map neighborhood."""
 
@@ -547,8 +561,11 @@ class LocalStarMapWidget(QWidget):
         self._payload: dict[str, Any] = {}
         self._accounts: list[dict[str, Any]] = []
         self._alerts: list[dict[str, Any]] = []
+        self._node_tooltips: list[tuple[QRect, str]] = []
+        self._active_tooltip = ""
         self._message = "选择账号加载局部星图"
         self.setMinimumHeight(150)
+        self.setMouseTracking(True)
 
     def set_payload(self, payload: dict[str, Any]) -> None:
         self._payload = dict(payload or {})
@@ -605,17 +622,70 @@ class LocalStarMapWidget(QWidget):
             )
         return QRect(block_x, block_y, block_width, block_height)
 
+    @staticmethod
+    def _node_annotation(
+        system_name: str,
+        accounts: list[dict[str, Any]],
+        hostile_count: int,
+    ) -> tuple[str, str]:
+        """Build the compact label and full hover details for one key node."""
+        selected = [item for item in accounts if bool(item.get("selected", True))]
+        if not selected and hostile_count <= 0:
+            return "", ""
+
+        local_selected = [item for item in selected if bool(item.get("local"))]
+        primary = (local_selected or selected)[0] if selected else None
+        label = (
+            str(
+                primary.get("label")
+                or primary.get("character_name")
+                or system_name
+            ).strip()
+            if primary is not None
+            else system_name
+        )
+
+        primary_key = str(primary.get("key") or "") if primary is not None else ""
+        details = [f"星系：{system_name}"]
+        if primary is not None:
+            account_kind = "本地账号" if bool(primary.get("local")) else "监控账号"
+            details.append(f"{account_kind}：{label}")
+        remaining = [
+            str(item.get("label") or item.get("character_name") or "").strip()
+            for item in accounts
+            if str(item.get("key") or "") != primary_key
+        ]
+        remaining = list(dict.fromkeys(item for item in remaining if item))
+        if remaining:
+            details.append(f"其他账号：{'、'.join(remaining)}")
+        if hostile_count > 0:
+            details.append(f"预警：{hostile_count} 人")
+        return label or system_name, "\n".join(details)
+
     def paintEvent(self, event) -> None:
         _ = event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         painter.fillRect(self.rect(), QColor(5, 14, 22, 165))
-        systems = [item for item in self._payload.get("systems", []) if isinstance(item, dict)]
-        links = [item for item in self._payload.get("links", []) if isinstance(item, dict)]
+        self._node_tooltips = []
+        systems = [
+            item
+            for item in self._payload.get("systems", [])
+            if isinstance(item, dict)
+        ]
+        links = [
+            item
+            for item in self._payload.get("links", [])
+            if isinstance(item, dict)
+        ]
         if not systems:
             painter.setPen(QColor("#93a4b4"))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._message or "暂无局部星图数据")
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                self._message or "暂无局部星图数据",
+            )
             return
         names = {str(item.get("name") or "").strip() for item in systems}
         positions = {
@@ -666,16 +736,16 @@ class LocalStarMapWidget(QWidget):
                     int(target_y),
                 )
 
-        centers = {
-            str(item.get("system_name") or "").strip().casefold()
-            for item in self._accounts
-        }
-        account_labels: dict[str, list[str]] = {}
+        accounts_by_system: dict[str, list[dict[str, Any]]] = {}
         for account in self._accounts:
             system_key = str(account.get("system_name") or "").strip().casefold()
-            label = str(account.get("label") or "").strip()
-            if system_key and label and label not in account_labels.setdefault(system_key, []):
-                account_labels[system_key].append(label)
+            if system_key:
+                accounts_by_system.setdefault(system_key, []).append(account)
+        centers = {
+            system_key
+            for system_key, accounts in accounts_by_system.items()
+            if any(bool(item.get("selected", True)) for item in accounts)
+        }
         hostile_counts: dict[str, int] = {}
         for alert in self._alerts:
             if not bool(alert.get("active", True)):
@@ -696,15 +766,27 @@ class LocalStarMapWidget(QWidget):
             key = name.casefold()
             hostile = hostile_counts.get(key, 0) > 0
             center = key in centers
-            radius = 10 if hostile or center else 4
+            radius = 12 if hostile and center else 10 if hostile or center else 4
+            if hostile:
+                outer_radius = 11 if center else 9
+                painter.setPen(QPen(QColor(255, 107, 115, 225), 2))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(
+                    int(x - outer_radius),
+                    int(y - outer_radius),
+                    outer_radius * 2,
+                    outer_radius * 2,
+                )
             if center:
+                inner_radius = 8 if hostile else 9
                 painter.setPen(QPen(QColor(111, 240, 213, 235), 2))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawEllipse(int(x - 9), int(y - 9), 18, 18)
-            elif hostile:
-                painter.setPen(QPen(QColor(255, 107, 115, 180), 2))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawEllipse(int(x - 9), int(y - 9), 18, 18)
+                painter.drawEllipse(
+                    int(x - inner_radius),
+                    int(y - inner_radius),
+                    inner_radius * 2,
+                    inner_radius * 2,
+                )
 
             if hostile:
                 painter.save()
@@ -723,40 +805,34 @@ class LocalStarMapWidget(QWidget):
                 painter.setPen(QPen(color, 1))
                 painter.setBrush(QBrush(color))
                 painter.drawEllipse(int(x - 4), int(y - 4), 8, 8)
-            details: list[str] = []
-            if center:
-                details.append(" / ".join(account_labels.get(key, [])[:2]))
-            if hostile:
-                details.append(f"预警 {hostile_counts[key]}")
-            detail = " · ".join(item for item in details if item)
-            if detail:
-                detail = painter.fontMetrics().elidedText(
-                    detail,
-                    Qt.TextElideMode.ElideRight,
-                    120,
-                )
-            metrics = painter.fontMetrics()
-            name_text = metrics.elidedText(
+            if not center and not hostile:
+                continue
+
+            label, tooltip = self._node_annotation(
                 name,
+                accounts_by_system.get(key, []),
+                hostile_counts.get(key, 0),
+            )
+            metrics = painter.fontMetrics()
+            label_text = metrics.elidedText(
+                label,
                 Qt.TextElideMode.ElideRight,
                 120,
             )
-            text_width = max(
-                metrics.horizontalAdvance(name_text),
-                metrics.horizontalAdvance(detail) if detail else 0,
-            )
+            text_width = metrics.horizontalAdvance(label_text)
             line_height = metrics.height()
             label_rect = self._label_rect(
                 x,
                 y,
                 radius,
                 text_width,
-                2 if detail else 1,
+                1,
                 line_height,
                 self.width(),
                 self.height(),
             )
-            painter.setPen(Qt.PenStyle.NoPen)
+            border_color = QColor("#ff6b73") if hostile else QColor("#6ff0d5")
+            painter.setPen(QPen(border_color, 1))
             painter.setBrush(QColor(5, 14, 22, 225))
             painter.drawRoundedRect(label_rect, 3, 3)
             name_rect = QRect(
@@ -765,25 +841,41 @@ class LocalStarMapWidget(QWidget):
                 max(1, label_rect.width() - 8),
                 line_height,
             )
-            painter.setPen(QColor("#dce8ef"))
+            painter.setPen(QColor("#8ff4df") if center else QColor("#ffd2d5"))
             painter.drawText(
                 name_rect,
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                name_text,
+                label_text,
             )
-            if detail:
-                detail_rect = QRect(
-                    name_rect.x(),
-                    name_rect.y() + line_height,
-                    name_rect.width(),
-                    line_height,
-                )
-                painter.setPen(QColor("#ff9d96") if hostile else QColor("#7de0bb"))
-                painter.drawText(
-                    detail_rect,
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                    detail,
-                )
+            node_rect = QRect(
+                int(x - radius),
+                int(y - radius),
+                radius * 2,
+                radius * 2,
+            )
+            self._node_tooltips.append((label_rect.united(node_rect), tooltip))
+
+    def mouseMoveEvent(self, event) -> None:
+        tooltip = next(
+            (
+                text
+                for rect, text in self._node_tooltips
+                if rect.contains(event.position().toPoint())
+            ),
+            "",
+        )
+        if tooltip and tooltip != self._active_tooltip:
+            self._active_tooltip = tooltip
+            QToolTip.showText(event.globalPosition().toPoint(), tooltip, self)
+        elif not tooltip and self._active_tooltip:
+            self._active_tooltip = ""
+            QToolTip.hideText()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._active_tooltip = ""
+        QToolTip.hideText()
+        super().leaveEvent(event)
 
 
 class CurrentPageStack(QStackedWidget):
@@ -1280,9 +1372,11 @@ class AlertOverlay(QWidget):
             selected_keys = set(selected)
             self._map_widget.set_accounts(
                 [
-                    item
+                    {
+                        **item,
+                        "selected": str(item.get("key") or "") in selected_keys,
+                    }
                     for item in self._map_accounts
-                    if str(item.get("key") or "") in selected_keys
                 ]
             )
         self.map_options_changed.emit(selected, hops)
@@ -1334,9 +1428,11 @@ class AlertOverlay(QWidget):
             selected_keys = set(selected)
             self._map_widget.set_accounts(
                 [
-                    item
+                    {
+                        **item,
+                        "selected": str(item.get("key") or "") in selected_keys,
+                    }
                     for item in self._map_accounts
-                    if str(item.get("key") or "") in selected_keys
                 ]
             )
 
@@ -2393,6 +2489,13 @@ class AlertTrayController:
         self._apply_local_hostile_counts()
         self.overlay.show_summaries(self._recent_summaries)
         accounts = monitored_accounts_from_bootstrap(bootstrap)
+        worker = getattr(self, "_worker", None)
+        alert_client_id = str(getattr(worker, "client_id", "") or "")
+        for account in accounts:
+            account["local"] = is_local_monitored_account(
+                account.get("client_id"),
+                alert_client_id,
+            )
         previous_signature = tuple(
             (
                 str(item.get("key") or ""),

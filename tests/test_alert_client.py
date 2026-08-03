@@ -4,6 +4,7 @@ from app.alert_client import (
     AlertClientState,
     AlertEventWorker,
     AlertTrayController,
+    is_local_monitored_account,
     monitored_accounts_from_bootstrap,
 )
 
@@ -58,6 +59,21 @@ def test_monitored_accounts_from_bootstrap_keeps_online_monitoring_targets():
             "system_id": 30002813,
         }
     ]
+
+
+def test_local_monitored_account_matches_shared_installation_identity():
+    alert_client_id = "alert-client:abc123"
+
+    assert is_local_monitored_account(
+        "detector-client:abc123:alice",
+        alert_client_id,
+    )
+    assert is_local_monitored_account("detector-client:abc123", alert_client_id)
+    assert not is_local_monitored_account(
+        "detector-client:other:bob",
+        alert_client_id,
+    )
+    assert not is_local_monitored_account("", alert_client_id)
 
 
 def test_alert_worker_connects_sse_before_posting_heartbeat(tmp_path):

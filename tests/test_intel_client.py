@@ -1341,6 +1341,12 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
         assert account_button.text() == "账号 1/2"
         assert overlay.map_selection() == (["alice"], 3)
         assert changes[-1] == (["alice"], 3)
+        assert overlay._map_widget is not None
+        assert len(overlay._map_widget._accounts) == 2
+        assert {
+            str(item.get("key")): bool(item.get("selected"))
+            for item in overlay._map_widget._accounts
+        } == {"alice": True, "bob": False}
 
         step_buttons[0].click()
         app.processEvents()
@@ -1424,6 +1430,41 @@ def test_local_star_map_positions_labels_away_from_node_centerline():
     assert top_edge_label.top() > 14
 
 
+def test_local_star_map_only_labels_key_nodes_and_prefers_local_account():
+    label, tooltip = LocalStarMapWidget._node_annotation(
+        "Tama",
+        [
+            {
+                "key": "remote",
+                "label": "Remote Scout",
+                "selected": True,
+                "local": False,
+            },
+            {
+                "key": "local",
+                "label": "Alice",
+                "selected": True,
+                "local": True,
+            },
+            {
+                "key": "other",
+                "label": "Other Pilot",
+                "selected": False,
+                "local": False,
+            },
+        ],
+        3,
+    )
+
+    assert label == "Alice"
+    assert "星系：Tama" in tooltip
+    assert "本地账号：Alice" in tooltip
+    assert "其他账号：Remote Scout、Other Pilot" in tooltip
+    assert "预警：3 人" in tooltip
+    assert LocalStarMapWidget._node_annotation("Kedama", [], 0) == ("", "")
+    assert LocalStarMapWidget._node_annotation("Kedama", [], 2)[0] == "Kedama"
+
+
 def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtWidgets import QApplication
@@ -1444,8 +1485,27 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
         )
         widget.set_accounts(
             [
-                {"label": "Alice", "system_name": "Online"},
-                {"label": "Bob", "system_name": "Both"},
+                {
+                    "key": "alice",
+                    "label": "Alice",
+                    "system_name": "Online",
+                    "selected": True,
+                    "local": True,
+                },
+                {
+                    "key": "bob",
+                    "label": "Bob",
+                    "system_name": "Both",
+                    "selected": True,
+                    "local": True,
+                },
+                {
+                    "key": "remote",
+                    "label": "Remote Scout",
+                    "system_name": "Both",
+                    "selected": False,
+                    "local": False,
+                },
             ]
         )
         widget.set_alerts(
@@ -1461,12 +1521,20 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
         online_center = image.pixelColor(26, 80)
         warning_center = image.pixelColor(150, 80)
         both_center = image.pixelColor(274, 80)
-        both_ring = image.pixelColor(283, 80)
+        both_monitor_ring = image.pixelColor(282, 80)
+        both_warning_ring = image.pixelColor(285, 80)
 
         assert online_center.green() > online_center.red() * 1.5
         assert warning_center.red() > warning_center.green() * 1.5
         assert both_center.red() > both_center.green() * 1.5
-        assert both_ring.green() > both_ring.red()
+        assert both_monitor_ring.green() > both_monitor_ring.red()
+        assert both_warning_ring.red() > both_warning_ring.green()
+        assert any(
+            "本地账号：Bob" in tooltip
+            and "其他账号：Remote Scout" in tooltip
+            and "预警：1 人" in tooltip
+            for _rect, tooltip in widget._node_tooltips
+        )
     finally:
         widget.close()
 
