@@ -417,7 +417,6 @@ class IntelApiClient:
         self,
         since: str = "",
         limit: int = 50,
-        acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str = "",
     ) -> list[dict[str, Any]]:
@@ -425,8 +424,6 @@ class IntelApiClient:
         params = {"limit": str(limit)}
         if since:
             params["since"] = since
-        if acknowledged is not None:
-            params["acknowledged"] = "true" if acknowledged else "false"
         if min_score is not None:
             params["min_score"] = str(min_score)
         if min_level:
@@ -451,39 +448,12 @@ class IntelApiClient:
             raise IntelApiError("server returned an invalid alert detail payload")
         return detail
 
-    def ack_alert(
-        self,
-        alert_id: str,
-        acknowledged_by: str = "",
-        note: str = "",
-    ) -> dict[str, Any]:
-        """Mark one alert as acknowledged on the intel server."""
-        alert_id = str(alert_id or "").strip()
-        if not alert_id:
-            raise IntelApiError("alert_id is required")
-
-        payload: dict[str, Any] = {}
-        if acknowledged_by:
-            payload["acknowledged_by"] = acknowledged_by
-        if note:
-            payload["note"] = note
-        response = self._request(
-            "POST",
-            self._v1_path(f"/alerts/{quote(alert_id, safe='')}/ack"),
-            payload=payload,
-        )
-        alert = response.get("alert")
-        if not isinstance(alert, dict):
-            raise IntelApiError("server returned an invalid alert payload")
-        return alert
-
     def stream_alerts(
         self,
         since: str = "",
         last_event_id: str = "",
         limit: int = 50,
         timeout: float = 30.0,
-        acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str = "",
     ) -> list[dict[str, Any]]:
@@ -494,7 +464,6 @@ class IntelApiClient:
                 last_event_id=last_event_id,
                 limit=limit,
                 timeout=timeout,
-                acknowledged=acknowledged,
                 min_score=min_score,
                 min_level=min_level,
             )
@@ -506,7 +475,6 @@ class IntelApiClient:
         last_event_id: str = "",
         limit: int = 50,
         timeout: float = 30.0,
-        acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str = "",
     ):
@@ -516,7 +484,6 @@ class IntelApiClient:
             last_event_id=last_event_id,
             limit=limit,
             timeout=timeout,
-            acknowledged=acknowledged,
             min_score=min_score,
             min_level=min_level,
         ):
@@ -532,7 +499,6 @@ class IntelApiClient:
         heartbeat: float | None = None,
         should_stop: Callable[[], bool] | None = None,
         include_bootstrap: bool = False,
-        acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str = "",
     ):
@@ -544,8 +510,6 @@ class IntelApiClient:
             params["bootstrap"] = "true"
         if since:
             params["since"] = since
-        if acknowledged is not None:
-            params["acknowledged"] = "true" if acknowledged else "false"
         if min_score is not None:
             params["min_score"] = str(min_score)
         if min_level:
@@ -755,14 +719,12 @@ class AlertPoller:
         self,
         api: IntelApiClient,
         limit: int = 50,
-        acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str = "",
         seen_ids: list[str] | None = None,
     ) -> None:
         self.api = api
         self.limit = limit
-        self.acknowledged = acknowledged
         self.min_score = min_score
         self.min_level = min_level
         self._seen_ids: set[str] = {
@@ -778,7 +740,6 @@ class AlertPoller:
         seeded = []
         for alert in self.api.list_alerts(
             limit=self.limit,
-            acknowledged=self.acknowledged,
             min_score=self.min_score,
             min_level=self.min_level,
         ):
@@ -793,7 +754,6 @@ class AlertPoller:
         """Return alerts that were not returned by previous polls."""
         alerts = self.api.list_alerts(
             limit=self.limit,
-            acknowledged=self.acknowledged,
             min_score=self.min_score,
             min_level=self.min_level,
         )
@@ -808,7 +768,6 @@ class AlertPoller:
             last_event_id=self._stream_last_event_id,
             limit=self.limit,
             timeout=timeout,
-            acknowledged=self.acknowledged,
             min_score=self.min_score,
             min_level=self.min_level,
         )
@@ -823,7 +782,6 @@ class AlertPoller:
             last_event_id=self._stream_last_event_id,
             limit=self.limit,
             timeout=timeout,
-            acknowledged=self.acknowledged,
             min_score=self.min_score,
             min_level=self.min_level,
         ):

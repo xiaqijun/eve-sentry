@@ -75,7 +75,6 @@ class PersistentIntelApiClient(IntelApiClient):
         heartbeat: float | None = None,
         should_stop=None,
         include_bootstrap: bool = False,
-        acknowledged: bool | None = None,
         min_score: int | None = None,
         min_level: str = "",
     ):
@@ -87,8 +86,6 @@ class PersistentIntelApiClient(IntelApiClient):
             params["bootstrap"] = "true"
         if since:
             params["since"] = since
-        if acknowledged is not None:
-            params["acknowledged"] = "true" if acknowledged else "false"
         if min_score is not None:
             params["min_score"] = str(min_score)
         if min_level:
