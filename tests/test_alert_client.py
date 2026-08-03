@@ -1,6 +1,63 @@
 from argparse import Namespace
 
-from app.alert_client import AlertClientState, AlertEventWorker, AlertTrayController
+from app.alert_client import (
+    AlertClientState,
+    AlertEventWorker,
+    AlertTrayController,
+    monitored_accounts_from_bootstrap,
+)
+
+
+def test_monitored_accounts_from_bootstrap_keeps_online_monitoring_targets():
+    accounts = monitored_accounts_from_bootstrap(
+        {
+            "clients": {
+                "heartbeats": [
+                    {
+                        "client_id": "detector-client:one",
+                        "client_type": "detector_client",
+                        "online": True,
+                        "details": {
+                            "monitoring": True,
+                            "targets": [
+                                {
+                                    "client_id": "detector-client:one:alice",
+                                    "character_name": "Alice",
+                                    "source_instance": "EVE - Alice",
+                                    "system_name": "Tama",
+                                    "system_id": 30002813,
+                                    "monitoring": True,
+                                },
+                                {
+                                    "client_id": "detector-client:one:bob",
+                                    "character_name": "Bob",
+                                    "system_name": "Kedama",
+                                    "monitoring": False,
+                                },
+                            ],
+                        },
+                    },
+                    {
+                        "client_id": "detector-client:offline",
+                        "client_type": "detector_client",
+                        "online": False,
+                        "details": {"monitoring": True, "system": "Jita"},
+                    },
+                ]
+            }
+        }
+    )
+
+    assert accounts == [
+        {
+            "key": "detector-client:one:alice|alice|eve - alice",
+            "label": "Alice",
+            "character_name": "Alice",
+            "client_id": "detector-client:one:alice",
+            "system_name": "Tama",
+            "system_id": 30002813,
+        }
+    ]
 
 
 def test_alert_worker_connects_sse_before_posting_heartbeat(tmp_path):

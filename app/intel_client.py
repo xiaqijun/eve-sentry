@@ -332,6 +332,41 @@ class IntelApiClient:
             raise IntelApiError("server returned an invalid map payload")
         return snapshot
 
+    def map_neighborhood(
+        self,
+        system_names: list[str] | None = None,
+        system_ids: list[int] | None = None,
+        hops: int = 3,
+    ) -> dict[str, Any]:
+        """Fetch only the map neighborhood around selected monitored systems."""
+        names = [
+            str(item).strip()
+            for item in system_names or []
+            if str(item).strip()
+        ]
+        ids: list[int] = []
+        for item in system_ids or []:
+            try:
+                system_id = int(item)
+            except (TypeError, ValueError):
+                continue
+            if system_id > 0 and system_id not in ids:
+                ids.append(system_id)
+        params = {
+            "systems": ",".join(names),
+            "system_ids": ",".join(str(item) for item in ids),
+            "hops": str(max(0, min(5, int(hops)))),
+        }
+        payload = self._request(
+            "GET",
+            self._v1_path("/map/neighborhood"),
+            params=params,
+        )
+        snapshot = payload.get("map")
+        if not isinstance(snapshot, dict):
+            raise IntelApiError("server returned an invalid map neighborhood payload")
+        return snapshot
+
     def map_system(self, system_id: int) -> dict[str, Any]:
         """Fetch one system with both profile and related intel context."""
         system_id = int(system_id)
