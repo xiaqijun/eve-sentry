@@ -5,6 +5,8 @@ from app.alert_client import (
     AlertEventWorker,
     AlertTrayController,
     is_local_monitored_account,
+    local_accounts_from_windows,
+    merge_map_accounts,
     monitored_accounts_from_bootstrap,
 )
 
@@ -59,6 +61,69 @@ def test_monitored_accounts_from_bootstrap_keeps_online_monitoring_targets():
             "system_id": 30002813,
         }
     ]
+
+
+def test_local_accounts_from_windows_uses_stable_character_identity():
+    accounts = local_accounts_from_windows(
+        [
+            {"hwnd": 11, "title": "EVE - Alice"},
+            {"hwnd": 22, "title": "EVE - Bob"},
+            {"hwnd": 33, "title": "EVE - Alice"},
+            {"hwnd": 44, "title": ""},
+        ],
+        {"alice": "Tama", "bob": "Kedama"},
+    )
+
+    assert [item["character_name"] for item in accounts] == ["Alice", "Bob"]
+    assert [item["key"] for item in accounts] == [
+        "local-account:alice",
+        "local-account:bob",
+    ]
+    assert [item["system_name"] for item in accounts] == [
+        "Tama",
+        "Kedama",
+    ]
+
+
+def test_merge_map_accounts_enriches_local_window_without_duplicate():
+    local = local_accounts_from_windows(
+        [
+            {"hwnd": 11, "title": "EVE - Alice"},
+            {"hwnd": 12, "title": "EVE - Alice"},
+        ],
+    )
+    remote = [
+        {
+            "key": "remote-alice",
+            "label": "Alice",
+            "character_name": "Alice",
+            "client_id": "detector-client:one:alice",
+            "system_name": "Tama",
+            "system_id": 30002813,
+        },
+        {
+            "key": "remote-bob",
+            "label": "Bob",
+            "character_name": "Bob",
+            "system_name": "Kedama",
+            "system_id": 30002814,
+        },
+        {
+            "key": "stale-local-charlie",
+            "label": "Charlie",
+            "character_name": "Charlie",
+            "system_name": "Jita",
+            "local": True,
+        },
+    ]
+
+    merged = merge_map_accounts(local, remote)
+
+    assert len(merged) == 2
+    assert merged[0]["key"] == "local-account:alice"
+    assert merged[0]["system_name"] == "Tama"
+    assert merged[0]["system_id"] == 30002813
+    assert merged[1]["character_name"] == "Bob"
 
 
 def test_local_monitored_account_matches_shared_installation_identity():
@@ -248,6 +313,106 @@ def test_alert_controller_stop_waits_during_application_shutdown():
         "overlay_hide",
         ("worker_wait", 34000),
     ]
+
+
+def test_unknown_local_account_does_not_request_empty_map():
+    class FakeOverlay:
+        def __init__(self):
+            self.payload = None
+            self.message = ""
+
+        def set_map_payload(self, payload):
+            self.payload = payload
+
+        def set_map_message(self, message):
+            self.message = message
+
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller.overlay = FakeOverlay()
+    controller._map_accounts = [
+        {
+            "key": "local-account:alice",
+            "character_name": "Alice",
+            "system_name": "Unknown",
+            "system_id": None,
+        }
+    ]
+    controller._map_request_signature = ("old",)
+    controller._map_worker = None
+
+    controller._refresh_local_map(
+        selected_keys=["local-account:alice"],
+        hops=3,
+    )
+
+    assert controller.overlay.payload == {
+        "systems": [],
+        "links": [],
+        "centers": [],
+    }
+    assert controller.overlay.message == "所选账号尚未识别当前星系"
+    assert controller._map_request_signature is None
+
+
+def test_stale_map_result_is_ignored_after_selection_changes():
+    class FakeOverlay:
+        def __init__(self):
+            self.payloads = []
+
+        def set_map_payload(self, payload):
+            self.payloads.append(payload)
+
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller.overlay = FakeOverlay()
+    controller._stopped = False
+    controller._active_map_request_signature = (("Tama",), (), 3)
+    controller._map_request_signature = None
+
+    controller._on_map_received({"systems": [{"name": "Tama"}]})
+
+    assert controller.overlay.payloads == []
+
+
+def test_alert_controller_is_running_while_map_worker_unwinds():
+    class FakeWorker:
+        def __init__(self, running):
+            self.running = running
+
+        def isRunning(self):
+            return self.running
+
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller._worker = FakeWorker(False)
+    controller._map_worker = FakeWorker(True)
+
+    assert controller.is_running() is True
+
+
+def test_unchanged_account_snapshot_does_not_rebuild_menu():
+    class FakeOverlay:
+        def __init__(self):
+            self.calls = []
+
+        def set_map_accounts(self, accounts):
+            self.calls.append(accounts)
+
+    account = {
+        "key": "local-account:alice",
+        "character_name": "Alice",
+        "system_name": "Tama",
+        "system_id": None,
+        "local": True,
+    }
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller.overlay = FakeOverlay()
+    controller._map_accounts = [dict(account)]
+    controller._local_map_accounts = [dict(account)]
+    controller._remote_map_accounts = []
+    controller._map_request_signature = (("Tama",), (), 3)
+
+    controller._sync_map_accounts()
+
+    assert controller.overlay.calls == []
 
 
 def test_alert_sound_sequence_uses_configured_interval_and_count(monkeypatch):
