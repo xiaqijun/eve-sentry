@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, Qt, QThread, QUrl, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QColor, QFont, QPainter, QPen
+from PyQt6.QtGui import QAction, QBrush, QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
@@ -551,10 +552,19 @@ def is_local_monitored_account(client_id: Any, alert_client_id: Any) -> bool:
     )
 
 
+class MultiSelectMenu(QMenu):
+    """Keep the popup open while alert targets are toggled."""
+
+    def mouseReleaseEvent(self, event) -> None:
+        action = self.actionAt(event.position().toPoint())
+        if action is not None and action.isEnabled() and action.isCheckable():
+            action.trigger()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class LocalStarMapWidget(QWidget):
     """Small, dependency-free renderer for the selected map neighborhood."""
-
-    LABEL_FONT_PIXEL_SIZE = 10
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -585,42 +595,20 @@ class LocalStarMapWidget(QWidget):
         self.update()
 
     @staticmethod
-    def _label_rect(
-        x: float,
-        y: float,
-        radius: int,
-        text_width: int,
-        line_count: int,
-        line_height: int,
-        canvas_width: int,
-        canvas_height: int,
-    ) -> QRect:
-        margin = 4
-        gap = 4
-        block_width = min(
-            max(1, text_width + 8),
-            max(1, canvas_width - margin * 2),
-        )
-        block_height = max(1, line_height * max(1, line_count) + 4)
-        block_x = max(
-            margin,
-            min(
-                int(round(x - block_width / 2)),
-                canvas_width - margin - block_width,
-            ),
-        )
-        above_y = int(round(y - radius - gap - block_height))
-        below_y = int(round(y + radius + gap))
-        if above_y >= margin:
-            block_y = above_y
-        elif below_y + block_height <= canvas_height - margin:
-            block_y = below_y
-        else:
-            block_y = max(
-                margin,
-                min(above_y, canvas_height - margin - block_height),
-            )
-        return QRect(block_x, block_y, block_width, block_height)
+    def _star_path(x: float, y: float, radius: float = 7.0) -> QPainterPath:
+        path = QPainterPath()
+        inner_radius = radius * 0.46
+        for index in range(10):
+            angle = -math.pi / 2 + index * math.pi / 5
+            point_radius = radius if index % 2 == 0 else inner_radius
+            point_x = x + math.cos(angle) * point_radius
+            point_y = y + math.sin(angle) * point_radius
+            if index == 0:
+                path.moveTo(point_x, point_y)
+            else:
+                path.lineTo(point_x, point_y)
+        path.closeSubpath()
+        return path
 
     @staticmethod
     def _node_annotation(
@@ -628,7 +616,7 @@ class LocalStarMapWidget(QWidget):
         accounts: list[dict[str, Any]],
         hostile_count: int,
     ) -> tuple[str, str]:
-        """Build the compact label and full hover details for one key node."""
+        """Build the preferred account identity and full hover details."""
         selected = [item for item in accounts if bool(item.get("selected", True))]
         if not accounts and hostile_count <= 0:
             return "", ""
@@ -761,18 +749,13 @@ class LocalStarMapWidget(QWidget):
             except (TypeError, ValueError):
                 count = 0
             hostile_counts[name] = max(hostile_counts.get(name, 0), count)
-        label_font = QFont("Segoe UI")
-        label_font.setPixelSize(self.LABEL_FONT_PIXEL_SIZE)
-        label_font.setWeight(QFont.Weight.Medium)
-        label_font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
-        painter.setFont(label_font)
         for name in names:
             x, y = point(name)
             key = name.casefold()
             hostile = hostile_counts.get(key, 0) > 0
             monitoring = key in accounts_by_system
             focused = key in centers
-            radius = 12 if hostile else 11 if focused else 9 if monitoring else 4
+            radius = 12 if hostile else 10 if focused else 9 if monitoring else 4
             if hostile:
                 outer_radius = 11
                 painter.setPen(QPen(QColor(255, 107, 115, 225), 2))
@@ -783,18 +766,8 @@ class LocalStarMapWidget(QWidget):
                     outer_radius * 2,
                     outer_radius * 2,
                 )
-            elif focused:
-                outer_radius = 10
-                painter.setPen(QPen(QColor(103, 180, 255, 235), 2))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawEllipse(
-                    int(x - outer_radius),
-                    int(y - outer_radius),
-                    outer_radius * 2,
-                    outer_radius * 2,
-                )
             if monitoring and not hostile:
-                inner_radius = 7 if focused else 8
+                inner_radius = 8
                 painter.setPen(QPen(QColor(111, 240, 213, 235), 2))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawEllipse(
@@ -804,7 +777,12 @@ class LocalStarMapWidget(QWidget):
                     inner_radius * 2,
                 )
 
-            if hostile:
+            if focused:
+                star_color = QColor("#ff5965") if hostile else QColor("#ffd166")
+                painter.setPen(QPen(star_color.lighter(125), 1))
+                painter.setBrush(QBrush(star_color))
+                painter.drawPath(self._star_path(x, y))
+            elif hostile:
                 painter.save()
                 painter.translate(x, y)
                 painter.rotate(45)
@@ -824,64 +802,19 @@ class LocalStarMapWidget(QWidget):
             if not monitoring and not hostile:
                 continue
 
-            label, tooltip = self._node_annotation(
+            _label, tooltip = self._node_annotation(
                 name,
                 accounts_by_system.get(key, []),
                 hostile_counts.get(key, 0),
             )
-            metrics = painter.fontMetrics()
-            label_text = metrics.elidedText(
-                label,
-                Qt.TextElideMode.ElideRight,
-                120,
-            )
-            text_width = metrics.horizontalAdvance(label_text)
-            line_height = metrics.height()
-            label_rect = self._label_rect(
-                x,
-                y,
-                radius,
-                text_width,
-                1,
-                line_height,
-                self.width(),
-                self.height(),
-            )
-            border_color = (
-                QColor("#ff5965")
-                if hostile
-                else QColor("#67b4ff")
-                if focused
-                else QColor("#6ff0d5")
-            )
-            painter.setPen(QPen(border_color, 1))
-            painter.setBrush(QColor(5, 14, 22, 225))
-            painter.drawRoundedRect(label_rect, 3, 3)
-            name_rect = QRect(
-                label_rect.x() + 4,
-                label_rect.y() + 2,
-                max(1, label_rect.width() - 8),
-                line_height,
-            )
-            painter.setPen(
-                QColor("#ff9aa0")
-                if hostile
-                else QColor("#9ed1ff")
-                if focused
-                else QColor("#8ff4df")
-            )
-            painter.drawText(
-                name_rect,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                label_text,
-            )
+            hit_radius = max(12, radius)
             node_rect = QRect(
-                int(x - radius),
-                int(y - radius),
-                radius * 2,
-                radius * 2,
+                int(x - hit_radius),
+                int(y - hit_radius),
+                hit_radius * 2,
+                hit_radius * 2,
             )
-            self._node_tooltips.append((label_rect.united(node_rect), tooltip))
+            self._node_tooltips.append((node_rect, tooltip))
 
     def mouseMoveEvent(self, event) -> None:
         tooltip = next(
@@ -1145,16 +1078,16 @@ class AlertOverlay(QWidget):
         account_button.setFixedHeight(24)
         account_button.setMinimumWidth(78)
         account_button.setEnabled(False)
-        account_menu = QMenu(account_button)
+        account_menu = MultiSelectMenu(account_button)
         account_menu.setObjectName("mapAccountMenu")
         account_button.setMenu(account_menu)
         options.addWidget(account_button)
         online_legend = QLabel("● 监控")
         online_legend.setObjectName("mapOnlineLegend")
         online_legend.setToolTip("青色节点：监控账号在线")
-        warning_legend = QLabel("◎ 关注")
+        warning_legend = QLabel("★ 预警")
         warning_legend.setObjectName("mapWarningLegend")
-        warning_legend.setToolTip("蓝色外环：当前预警端已关注")
+        warning_legend.setToolTip("金色星形：当前预警端已选账号")
         hostile_legend = QLabel("◆ 来敌")
         hostile_legend.setObjectName("mapHostileLegend")
         hostile_legend.setToolTip("红色节点：当前存在敌对预警")
@@ -1321,7 +1254,7 @@ class AlertOverlay(QWidget):
                 font-weight: 700;
             }
             QLabel#mapWarningLegend {
-                color: #79bcff;
+                color: #ffd166;
                 font-size: 10px;
                 font-weight: 700;
             }
