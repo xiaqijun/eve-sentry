@@ -94,6 +94,9 @@ EVE_SENTRY_API_KEY=eve_创建时显示的完整密钥
 EVE_SENTRY_PUBLIC_URL=http://YOUR_SERVER
 ```
 
+第三方程序接收 `bootstrap`、`alert` 和 `safe` 事件的完整方式见
+[预警消息 API 接入指南](alert-api.md)。
+
 轮换时先创建新密钥并更新机器人，确认 SSE 已重连后再吊销旧密钥。
 
 ## 安全控制

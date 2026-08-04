@@ -4,5 +4,7 @@
 
 1. [客户端操作指南](client.md)：下载安装、连接服务端、选择 EVE 窗口、开始监控、开启预警和常见问题。
 2. [服务端部署](server-deployment.md)：安装服务端、配置 PostgreSQL、部署前端和反向代理、启动服务及上线验证。
+3. [预警消息 API 接入指南](alert-api.md)：第三方软件通过 SSE 或 JSON 获取实时预警和当前敌对星系。
+4. [完整 API 参考](api-reference.md)：服务端全部 HTTP 接口、参数和数据约定。
 
 客户端用户不需要阅读服务端部署文档，也不需要配置 Python、OCR 模型或环境变量。
