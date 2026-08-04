@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -11,6 +12,22 @@ from urllib.request import Request, urlopen
 
 class IntelApiError(RuntimeError):
     """Raised when the intel server cannot satisfy an API request."""
+
+
+INVALID_API_KEY_MESSAGE = "设备密钥格式无效，请重新复制完整密钥"
+_API_KEY_PATTERN = re.compile(r"eve_[A-Za-z0-9_-]+\Z", re.ASCII)
+_MAX_API_KEY_LENGTH = 128
+
+
+def is_valid_api_key(value: Any, *, allow_empty: bool = False) -> bool:
+    """Return whether a value can be safely used as an API bearer token."""
+    api_key = str(value or "").strip()
+    if not api_key:
+        return allow_empty
+    return (
+        len(api_key) <= _MAX_API_KEY_LENGTH
+        and _API_KEY_PATTERN.fullmatch(api_key) is not None
+    )
 
 
 def _is_transient_transport_error(exc: IntelApiError) -> bool:
@@ -613,6 +630,8 @@ class IntelApiClient:
     def _authorization_headers(self) -> dict[str, str]:
         if not self.api_key:
             return {}
+        if not is_valid_api_key(self.api_key):
+            raise IntelApiError(INVALID_API_KEY_MESSAGE)
         return {"Authorization": f"Bearer {self.api_key}"}
 
     def _v1_path(self, suffix: str) -> str:

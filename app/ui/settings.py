@@ -7,7 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import QRegularExpression, pyqtSignal
+from PyQt6.QtGui import QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QCheckBox,
     QGroupBox,
@@ -22,6 +23,7 @@ from PyQt6.QtWidgets import (
 
 from app.channels.log_watcher import DEFAULT_CHATLOG_DIR, resolve_chatlog_dir
 from app.channels.identity_logs import ClientAuthStateStore
+from app.intel_client import INVALID_API_KEY_MESSAGE
 from app.version import current_version
 
 
@@ -33,6 +35,7 @@ SETTINGS_INPUT_HEIGHT = 30
 SETTINGS_LONG_INPUT_WIDTH = 198
 SETTINGS_INLINE_INPUT_WIDTH = 136
 SETTINGS_NUMBER_INPUT_WIDTH = 60
+MAX_AUTH_STATUS_LENGTH = 160
 
 
 def normalize_server_url(value: Any) -> str:
@@ -107,8 +110,18 @@ class SettingsPanel(QWidget):
         )
         self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_key_edit.setPlaceholderText("eve_...")
+        self._api_key_edit.setMaxLength(128)
+        self._api_key_edit.setValidator(
+            QRegularExpressionValidator(
+                QRegularExpression(r"(?:eve_[A-Za-z0-9_-]*)?"),
+                self._api_key_edit,
+            )
+        )
+        self._api_key_edit.inputRejected.connect(
+            lambda: self.set_auth_status(INVALID_API_KEY_MESSAGE, error=True)
+        )
         server_layout.addWidget(self._api_key_edit)
-        self._auth_status_label = QLabel("未配置认证密钥")
+        self._auth_status_label = QLabel("未启用认证")
         self._auth_status_label.setObjectName("authStatus")
         self._auth_status_label.setWordWrap(True)
         server_layout.addWidget(self._auth_status_label)
@@ -305,8 +318,14 @@ class SettingsPanel(QWidget):
 
     def set_auth_status(self, message: str, error: bool = False) -> None:
         color = "#ff6b73" if error else "#37d6b0"
+        text = " ".join(str(message or "").split())
+        lowered = text.casefold()
+        if "illegal header value" in lowered and "bearer" in lowered:
+            text = INVALID_API_KEY_MESSAGE
+        elif len(text) > MAX_AUTH_STATUS_LENGTH:
+            text = f"{text[:MAX_AUTH_STATUS_LENGTH - 3]}..."
         self._auth_status_label.setStyleSheet(f"color: {color};")
-        self._auth_status_label.setText(str(message or ""))
+        self._auth_status_label.setText(text)
 
     def set_update_state(
         self,
@@ -339,8 +358,15 @@ class SettingsPanel(QWidget):
 
     def _on_api_key_changed(self) -> None:
         api_key = self.get_api_key()
-        changed = self._auth_state_store.set_api_key(api_key)
-        self.set_auth_status("等待身份校验" if api_key else "未配置认证密钥")
+        if api_key and not self._api_key_edit.hasAcceptableInput():
+            self.set_auth_status(INVALID_API_KEY_MESSAGE, error=True)
+            return
+        try:
+            changed = self._auth_state_store.set_api_key(api_key)
+        except ValueError:
+            self.set_auth_status(INVALID_API_KEY_MESSAGE, error=True)
+            return
+        self.set_auth_status("等待身份校验" if api_key else "未启用认证")
         if changed:
             self.api_key_changed.emit(api_key)
 

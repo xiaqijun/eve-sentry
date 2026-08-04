@@ -13,6 +13,7 @@ from typing import Any
 from app.channels.local_system import parse_listener_line
 from app.channels.log_watcher import detect_encoding
 from app.esi.sso import default_token_protector, token_protector_from_name
+from app.intel_client import INVALID_API_KEY_MESSAGE, is_valid_api_key
 
 
 def default_client_auth_state_path() -> Path:
@@ -81,10 +82,13 @@ class ClientAuthStateStore:
         )
 
     def api_key(self) -> str:
-        return str(self.load().get("api_key") or "").strip()
+        api_key = str(self.load().get("api_key") or "").strip()
+        return api_key if is_valid_api_key(api_key, allow_empty=True) else ""
 
     def set_api_key(self, api_key: str) -> bool:
         api_key = str(api_key or "").strip()
+        if not is_valid_api_key(api_key, allow_empty=True):
+            raise ValueError(INVALID_API_KEY_MESSAGE)
         state = self.load()
         previous = str(state.get("api_key") or "").strip()
         if previous == api_key:

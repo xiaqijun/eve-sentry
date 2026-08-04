@@ -722,6 +722,48 @@ def test_cached_key_validation_starts_monitor_without_network_wait():
     assert window._identity_wants_monitor is False
 
 
+def test_empty_key_starts_monitor_and_alert_without_authentication():
+    class FakeSettings:
+        def __init__(self):
+            self.auth_status = ""
+
+        def get_api_key(self):
+            return ""
+
+        def set_auth_status(self, message, error=False):
+            assert error is False
+            self.auth_status = message
+
+    class FailingNetworkTasks:
+        def submit_latest(self, *_args, **_kwargs):
+            raise AssertionError("empty credentials must not start identity validation")
+
+    window = MainWindow.__new__(MainWindow)
+    window._settings = FakeSettings()
+    window._intel_client = object()
+    window._network_tasks = FailingNetworkTasks()
+    window._identity_check_running = False
+    window._identity_wants_monitor = False
+    window._identity_wants_alert = False
+    window._api_key_validated = True
+    started = []
+    window._start_monitor = (
+        lambda identity_checked=False: started.append(("monitor", identity_checked))
+    )
+    window._start_alert = (
+        lambda identity_checked=False: started.append(("alert", identity_checked))
+    )
+
+    MainWindow._begin_identity_check(window, "monitor")
+    MainWindow._begin_identity_check(window, "alert")
+
+    assert started == [("monitor", True), ("alert", True)]
+    assert window._settings.auth_status == "未启用认证"
+    assert window._api_key_validated is False
+    assert window._identity_wants_monitor is False
+    assert window._identity_wants_alert is False
+
+
 def test_auth_rejection_clears_cached_key_validation():
     class FakeButton:
         def setChecked(self, _checked):
@@ -1140,6 +1182,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
     )
     assert panel._server_url_edit.width() == SETTINGS_LONG_INPUT_WIDTH
     assert panel._api_key_edit.width() == SETTINGS_LONG_INPUT_WIDTH
+    assert panel._api_key_edit.maxLength() == 128
     assert panel._keyword_edit.width() == SETTINGS_INLINE_INPUT_WIDTH
     assert all(
         widget.width() == SETTINGS_NUMBER_INPUT_WIDTH
@@ -1167,6 +1210,26 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
         "repeat_count": 3,
     }
     assert panel._behavior_group.isHidden()
+
+
+def test_settings_panel_rejects_multiline_key_and_redacts_header_error(tmp_path):
+    qt_app()
+    panel = SettingsPanel(config_path=tmp_path / "channel_settings.json")
+    validator = panel._api_key_edit.validator()
+
+    valid_state, _, _ = validator.validate("eve_valid_key-123", 0)
+    invalid_state, _, _ = validator.validate("Vargur\tCargo Hold\nDrone Bay", 0)
+
+    assert valid_state == validator.State.Acceptable
+    assert invalid_state == validator.State.Invalid
+
+    panel.set_auth_status(
+        "Illegal header value b'Bearer eve_secret\\nCargo Hold'",
+        error=True,
+    )
+
+    assert panel._auth_status_label.text() == "设备密钥格式无效，请重新复制完整密钥"
+    assert "eve_secret" not in panel._auth_status_label.text()
 
 
 def test_settings_panel_environment_overrides_saved_chatlog_dir(

@@ -2080,3 +2080,40 @@ def test_intel_api_client_sends_api_key_for_json_and_identity_requests(monkeypat
 def test_intel_api_client_allows_api_key_over_configured_http_server():
     client = IntelApiClient("http://114.132.167.239:8765", api_key="eve_secret")
     assert client.api_key == "eve_secret"
+
+
+def test_intel_api_client_omits_authorization_when_api_key_is_empty(monkeypatch):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"user":{"user_id":"anonymous"}}'
+
+    def fake_urlopen(request, timeout):
+        requests.append(request)
+        return Response()
+
+    monkeypatch.setattr("app.intel_client.urlopen", fake_urlopen)
+    client = IntelApiClient("https://sentry.test", api_key="")
+
+    assert client.validate_api_key()["user_id"] == "anonymous"
+    assert requests[0].get_header("Authorization") is None
+
+
+def test_intel_api_client_rejects_invalid_api_key_before_building_header():
+    client = IntelApiClient(
+        "https://sentry.test",
+        api_key="Vargur\tCargo Hold\nRepublic Fleet Phased Plasma",
+    )
+
+    with pytest.raises(IntelApiError) as exc_info:
+        client.validate_api_key()
+
+    assert str(exc_info.value) == "设备密钥格式无效，请重新复制完整密钥"
+    assert "Vargur" not in str(exc_info.value)

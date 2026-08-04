@@ -34,7 +34,7 @@ flowchart LR
 
     esi["EVE ESI"] --> intel
     sde["EVE SDE"] --> intel
-    monitor -->|"设备密钥 · 快照"| api
+    monitor -->|"可选设备密钥 · 快照"| api
     stream --> overlay
     stream --> web
     stream --> bot
@@ -73,13 +73,18 @@ flowchart LR
     admin["管理员"] --> password["密码登录"]
     password --> session
 
-    session --> key["创建桌面设备密钥"]
-    key --> access["有效密钥立即开启客户端"]
-    key --> listener["客户端扫描 Chatlogs Listener"]
+    session --> key["可选：创建桌面设备密钥"]
+    client["桌面客户端"] --> configured{"已填写设备密钥？"}
+    configured -->|"否"| anonymous["跳过认证预检与 Listener 身份扫描<br/>不发送 Authorization"]
+    configured -->|"是"| keycheck["验证设备密钥"]
+    key --> configured
+    keycheck --> access["开启经过认证的客户端访问"]
+    keycheck --> listener["客户端扫描 Chatlogs Listener"]
     listener -->|"发现角色"| check["服务端身份风控"]
     check --> rule{"允许军团或角色白名单？"}
     rule -->|"是"| access
     rule -->|"否"| revoke["禁用用户并吊销会话和密钥"]
+    anonymous -.-> policy["enforce 模式仍会拒绝未认证的受保护请求"]
 ```
 
 ## 当前能力
@@ -94,7 +99,9 @@ flowchart LR
 - Web 管理系统直接使用 `@arco-design/web-react` 统一标准业务控件，并支持全局明暗主题
   切换；个人账号、系统管理、星图 Canvas、ECharts 和 Arco 组件会同步更新，选择会保存
   在浏览器中。项目未使用 Arco Design Pro 脚手架，星图和图表保留专用实现。
-- 管理员使用密码登录，普通用户使用 EVE SSO；桌面客户端使用设备密钥。
+- 管理员使用密码登录，普通用户使用 EVE SSO；桌面客户端可选使用设备密钥。密钥留空时
+  不进行认证预检、Listener 身份扫描，也不发送 `Authorization`；服务端 `enforce` 模式
+  仍会拒绝未认证的受保护请求。
 
 ## 本地启动
 
