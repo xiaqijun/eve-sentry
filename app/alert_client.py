@@ -630,11 +630,13 @@ class LocalStarMapWidget(QWidget):
     ) -> tuple[str, str]:
         """Build the compact label and full hover details for one key node."""
         selected = [item for item in accounts if bool(item.get("selected", True))]
-        if not selected and hostile_count <= 0:
+        if not accounts and hostile_count <= 0:
             return "", ""
 
         local_selected = [item for item in selected if bool(item.get("local"))]
-        primary = (local_selected or selected)[0] if selected else None
+        local_accounts = [item for item in accounts if bool(item.get("local"))]
+        primary_candidates = local_selected or selected or local_accounts or accounts
+        primary = primary_candidates[0] if primary_candidates else None
         label = (
             str(
                 primary.get("label")
@@ -650,6 +652,9 @@ class LocalStarMapWidget(QWidget):
         if primary is not None:
             account_kind = "本地账号" if bool(primary.get("local")) else "监控账号"
             details.append(f"{account_kind}：{label}")
+            details.append("监控：在线")
+            if selected:
+                details.append("预警：已关注")
         remaining = [
             str(item.get("label") or item.get("character_name") or "").strip()
             for item in accounts
@@ -659,7 +664,7 @@ class LocalStarMapWidget(QWidget):
         if remaining:
             details.append(f"其他账号：{'、'.join(remaining)}")
         if hostile_count > 0:
-            details.append(f"预警：{hostile_count} 人")
+            details.append(f"来敌：{hostile_count} 人")
         return label or system_name, "\n".join(details)
 
     def paintEvent(self, event) -> None:
@@ -765,11 +770,22 @@ class LocalStarMapWidget(QWidget):
             x, y = point(name)
             key = name.casefold()
             hostile = hostile_counts.get(key, 0) > 0
-            center = key in centers
-            radius = 12 if hostile and center else 10 if hostile or center else 4
+            monitoring = key in accounts_by_system
+            focused = key in centers
+            radius = 12 if hostile else 11 if focused else 9 if monitoring else 4
             if hostile:
-                outer_radius = 11 if center else 9
+                outer_radius = 11
                 painter.setPen(QPen(QColor(255, 107, 115, 225), 2))
+                painter.setBrush(QBrush(QColor(104, 19, 28, 210)))
+                painter.drawEllipse(
+                    int(x - outer_radius),
+                    int(y - outer_radius),
+                    outer_radius * 2,
+                    outer_radius * 2,
+                )
+            elif focused:
+                outer_radius = 10
+                painter.setPen(QPen(QColor(103, 180, 255, 235), 2))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawEllipse(
                     int(x - outer_radius),
@@ -777,8 +793,8 @@ class LocalStarMapWidget(QWidget):
                     outer_radius * 2,
                     outer_radius * 2,
                 )
-            if center:
-                inner_radius = 8 if hostile else 9
+            if monitoring and not hostile:
+                inner_radius = 7 if focused else 8
                 painter.setPen(QPen(QColor(111, 240, 213, 235), 2))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawEllipse(
@@ -796,7 +812,7 @@ class LocalStarMapWidget(QWidget):
                 painter.setBrush(QBrush(QColor("#ff5965")))
                 painter.drawRect(-5, -5, 10, 10)
                 painter.restore()
-            elif center:
+            elif monitoring:
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(QColor("#45d4bd")))
                 painter.drawEllipse(int(x - 4), int(y - 4), 8, 8)
@@ -805,7 +821,7 @@ class LocalStarMapWidget(QWidget):
                 painter.setPen(QPen(color, 1))
                 painter.setBrush(QBrush(color))
                 painter.drawEllipse(int(x - 4), int(y - 4), 8, 8)
-            if not center and not hostile:
+            if not monitoring and not hostile:
                 continue
 
             label, tooltip = self._node_annotation(
@@ -831,7 +847,13 @@ class LocalStarMapWidget(QWidget):
                 self.width(),
                 self.height(),
             )
-            border_color = QColor("#ff6b73") if hostile else QColor("#6ff0d5")
+            border_color = (
+                QColor("#ff5965")
+                if hostile
+                else QColor("#67b4ff")
+                if focused
+                else QColor("#6ff0d5")
+            )
             painter.setPen(QPen(border_color, 1))
             painter.setBrush(QColor(5, 14, 22, 225))
             painter.drawRoundedRect(label_rect, 3, 3)
@@ -841,7 +863,13 @@ class LocalStarMapWidget(QWidget):
                 max(1, label_rect.width() - 8),
                 line_height,
             )
-            painter.setPen(QColor("#8ff4df") if center else QColor("#ffd2d5"))
+            painter.setPen(
+                QColor("#ff9aa0")
+                if hostile
+                else QColor("#9ed1ff")
+                if focused
+                else QColor("#8ff4df")
+            )
             painter.drawText(
                 name_rect,
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
@@ -1121,12 +1149,18 @@ class AlertOverlay(QWidget):
         account_menu.setObjectName("mapAccountMenu")
         account_button.setMenu(account_menu)
         options.addWidget(account_button)
-        online_legend = QLabel("● 在线")
+        online_legend = QLabel("● 监控")
         online_legend.setObjectName("mapOnlineLegend")
-        warning_legend = QLabel("◆ 预警")
+        online_legend.setToolTip("青色节点：监控账号在线")
+        warning_legend = QLabel("◎ 关注")
         warning_legend.setObjectName("mapWarningLegend")
+        warning_legend.setToolTip("蓝色外环：当前预警端已关注")
+        hostile_legend = QLabel("◆ 来敌")
+        hostile_legend.setObjectName("mapHostileLegend")
+        hostile_legend.setToolTip("红色节点：当前存在敌对预警")
         options.addWidget(online_legend)
         options.addWidget(warning_legend)
+        options.addWidget(hostile_legend)
         options.addStretch(1)
         hops_label = QLabel("跳数")
         hops_label.setObjectName("mapToolbarLabel")
@@ -1287,6 +1321,11 @@ class AlertOverlay(QWidget):
                 font-weight: 700;
             }
             QLabel#mapWarningLegend {
+                color: #79bcff;
+                font-size: 10px;
+                font-weight: 700;
+            }
+            QLabel#mapHostileLegend {
                 color: #ff7d86;
                 font-size: 10px;
                 font-weight: 700;
