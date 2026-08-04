@@ -1336,7 +1336,7 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
             if label.objectName().startswith("map")
         }
         assert legends["mapOnlineLegend"].text() == "● 监控"
-        assert legends["mapWarningLegend"].text() == "★ 预警"
+        assert legends["mapWarningLegend"].text() == "★ 账号位置"
         assert legends["mapHostileLegend"].text() == "◆ 来敌"
         assert "青色节点" in legends["mapOnlineLegend"].toolTip()
         assert "金色星形" in legends["mapWarningLegend"].toolTip()
@@ -1452,7 +1452,6 @@ def test_local_star_map_only_labels_key_nodes_and_prefers_local_account():
     assert "星系：Tama" in tooltip
     assert "本地账号：Alice" in tooltip
     assert "其他账号：Remote Scout、Other Pilot" in tooltip
-    assert "预警：已关注" in tooltip
     assert "来敌：3 人" in tooltip
     assert LocalStarMapWidget._node_annotation("Kedama", [], 0) == ("", "")
     assert LocalStarMapWidget._node_annotation("Kedama", [], 2)[0] == "Kedama"
@@ -1464,7 +1463,6 @@ def test_local_star_map_only_labels_key_nodes_and_prefers_local_account():
     )
     assert monitor_label == "Remote Scout"
     assert "监控：在线" in monitor_tooltip
-    assert "预警：已关注" not in monitor_tooltip
 
 
 def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypatch):
