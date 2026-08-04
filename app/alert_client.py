@@ -641,8 +641,6 @@ class LocalStarMapWidget(QWidget):
             account_kind = "本地账号" if bool(primary.get("local")) else "监控账号"
             details.append(f"{account_kind}：{label}")
             details.append("监控：在线")
-            if selected:
-                details.append("预警：已关注")
         remaining = [
             str(item.get("label") or item.get("character_name") or "").strip()
             for item in accounts
@@ -1085,9 +1083,9 @@ class AlertOverlay(QWidget):
         online_legend = QLabel("● 监控")
         online_legend.setObjectName("mapOnlineLegend")
         online_legend.setToolTip("青色节点：监控账号在线")
-        warning_legend = QLabel("★ 预警")
+        warning_legend = QLabel("★ 账号位置")
         warning_legend.setObjectName("mapWarningLegend")
-        warning_legend.setToolTip("金色星形：当前预警端已选账号")
+        warning_legend.setToolTip("金色星形：所选账号所在星系")
         hostile_legend = QLabel("◆ 来敌")
         hostile_legend.setObjectName("mapHostileLegend")
         hostile_legend.setToolTip("红色节点：当前存在敌对预警")
