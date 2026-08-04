@@ -70,8 +70,8 @@ export function LoginPage() {
         <section className="auth-brand-panel">
           <span className="auth-brand-mark"><ShieldCheck size={24} /></span>
           <div>
-            <Typography.Text>EVE Sentry</Typography.Text>
-            <Typography.Title heading={2}>预警管理平台</Typography.Title>
+            <Typography.Text className="auth-brand-eyebrow">EVE Sentry</Typography.Text>
+            <Typography.Title className="auth-brand-title" heading={2}>预警管理平台</Typography.Title>
           </div>
           <Tag className="auth-brand-status" color="green">情报服务在线</Tag>
         </section>

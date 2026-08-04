@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Button, Card, Descriptions, Drawer, Empty, Input, List, Space, Table, Typography } from "@arco-design/web-react";
+import { Button, Card, Descriptions, Drawer, Empty, Input, List, Space, Table, Tooltip, Typography } from "@arco-design/web-react";
 import { IconEye, IconIdcard } from "@arco-design/web-react/icon";
 
 import {
@@ -47,8 +47,11 @@ export function AdminIdentityPage() {
     { title: "账号状态", dataIndex: "status", render: (status: AdminUser["status"]) => <AccountStatusTag status={status} /> },
     {
       title: "操作",
+      width: 72,
       render: (_: unknown, user: AdminUser) => (
-        <Button aria-label={`查看 ${user.display_name || user.username} 身份`} icon={<IconEye />} size="small" type="text" onClick={() => setSelectedUserId(user.user_id)}>查看</Button>
+        <Tooltip content="查看身份详情">
+          <Button aria-label={`查看 ${user.display_name || user.username} 身份`} icon={<IconEye />} shape="square" size="mini" type="text" onClick={() => setSelectedUserId(user.user_id)} />
+        </Tooltip>
       ),
     },
   ];

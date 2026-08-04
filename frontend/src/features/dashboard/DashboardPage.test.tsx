@@ -74,16 +74,29 @@ describe("DashboardPage", () => {
         created_at: new Date(now - 5 * 60 * 1000).toISOString(),
       }],
       clients: {
-        count: 1,
+        count: 2,
         heartbeats: [{
           client_id: "monitor-1",
           label: "监控客户端 · 不应被省略的完整名称",
-          client_type: "alert_client",
+          client_type: "detector_client",
           online: true,
-          system_id: 30003615,
-          details: { monitoring: true },
+          seen_at: new Date(now - 30_000).toISOString(),
+          details: {
+            client_version: "1.0.19",
+            monitoring: true,
+            targets: [
+              { character_name: "Scout One", client_id: "target-1", monitoring: true, system_name: "S-KSWL" },
+              { character_name: "Scout Two", client_id: "target-2", monitoring: true, system_name: "Kedama" },
+            ],
+          },
+        }, {
+          client_id: "alert-1",
+          client_type: "alert_client",
+          label: "预警端不属于监控覆盖",
+          online: true,
+          seen_at: new Date(now - 30_000).toISOString(),
         }],
-        summary: { count: 1, online_count: 1, stale_count: 0 },
+        summary: { count: 2, online_count: 2, stale_count: 0 },
       },
       config: null,
       esi: { enabled: true, authenticated: true },
@@ -118,9 +131,17 @@ describe("DashboardPage", () => {
     expect(container).toHaveTextContent("最新告警事件");
     expect(container).toHaveTextContent("高");
     expect(container).toHaveTextContent("监控覆盖");
+    expect(container).toHaveTextContent("2 个账号 · 2 个星系");
+    expect(container).toHaveTextContent("监控账号");
+    expect(container).toHaveTextContent("所在星系");
+    expect(container).toHaveTextContent("Scout One");
+    expect(container).toHaveTextContent("Scout Two");
+    expect(container).toHaveTextContent("Kedama");
+    expect(container).toHaveTextContent("监控中");
     expect(container).toHaveTextContent("Alice");
     expect(container).toHaveTextContent("Eve Long Name");
-    expect(container).toHaveTextContent("监控客户端 · 不应被省略的完整名称");
+    expect(container).toHaveTextContent("监控客户端 · 不应被省略的完整名称 · 1.0.19");
+    expect(container).not.toHaveTextContent("预警端不属于监控覆盖");
     expect(container.querySelectorAll('[data-testid="eve-chart"]')).toHaveLength(0);
     expect(apiMocks.fetchHostileAlertHistory).not.toHaveBeenCalled();
 

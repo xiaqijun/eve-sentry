@@ -12,6 +12,7 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from "@arco-design/web-react";
 import { IconEye, IconMore, IconPlus, IconUserAdd, IconUserGroup } from "@arco-design/web-react/icon";
@@ -186,8 +187,11 @@ export function AdminUsersPage() {
     { title: "已验证角色", dataIndex: "verified_characters", render: (items: AdminUser["verified_characters"]) => items.length },
     {
       title: "操作",
+      width: 72,
       render: (_: unknown, user: AdminUser) => (
-        <Button aria-label={`查看 ${user.display_name || user.username}`} icon={<IconEye />} size="small" title="查看详情" type="text" onClick={() => openUser(user.user_id)}>查看</Button>
+        <Tooltip content="查看用户详情">
+          <Button aria-label={`查看 ${user.display_name || user.username}`} icon={<IconEye />} shape="square" size="mini" type="text" onClick={() => openUser(user.user_id)} />
+        </Tooltip>
       ),
     },
   ];

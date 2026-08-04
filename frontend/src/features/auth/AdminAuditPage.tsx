@@ -17,6 +17,7 @@ import {
   ManagementPageHeader,
   ManagementSummary,
 } from "../../components/ManagementPage";
+import { deriveClientHealth } from "../clients/clientHealth";
 import { fetchClients, listAudit } from "./api";
 import type { AuditRecord, ClientHeartbeatRecord } from "./types";
 
@@ -159,21 +160,8 @@ export function filterAuditRecords(
   });
 }
 
-const CLIENT_ERROR_STATUSES = new Set(["error", "failed", "failure", "exception"]);
-
 function hasClientException(client: ClientHeartbeatRecord): boolean {
-  const lastError = String(client.details?.last_error || "").trim();
-  const status = String(client.status || "").trim().toLowerCase();
-  if (status === "stopped") return false;
-  const ageSeconds = Number(client.age_seconds);
-  const seenAt = new Date(client.seen_at).getTime();
-  const recentlyOffline = client.online === false && (
-    (Number.isFinite(ageSeconds) && ageSeconds <= 24 * 60 * 60)
-    || (!Number.isFinite(ageSeconds) && Number.isFinite(seenAt)
-      && seenAt >= Date.now() - 24 * 60 * 60 * 1000)
-  );
-  if (client.online === false) return recentlyOffline;
-  return Boolean(lastError) || CLIENT_ERROR_STATUSES.has(status);
+  return deriveClientHealth(client).isException;
 }
 
 function clientIdentity(client: ClientHeartbeatRecord): string {
@@ -185,11 +173,28 @@ function clientIdentity(client: ClientHeartbeatRecord): string {
 
 function clientExceptionSummary(client: ClientHeartbeatRecord): string {
   const details = client.details || {};
-  const offline = client.online === false;
+  const health = deriveClientHealth(client);
+  const targetError = Array.isArray(details.targets)
+    ? details.targets
+      .map((target) => target && typeof target === "object"
+        ? String((target as Record<string, unknown>).last_error || "").trim()
+        : "")
+      .find(Boolean)
+    : "";
   const lastError = String(details.last_error || "").trim()
-    || (offline ? "客户端心跳超时，当前离线" : "客户端状态异常");
+    || targetError
+    || (health.state === "offline_recent"
+      ? "客户端心跳超时，当前离线"
+      : health.state === "healthy" ? "运行正常" : "客户端状态异常");
   const lastAction = String(details.last_action || "").trim();
   return `${lastError}${lastAction ? `｜最后操作 ${lastAction}` : ""}`;
+}
+
+function clientHealthTag(client: ClientHeartbeatRecord) {
+  const state = deriveClientHealth(client).state;
+  if (state === "offline_recent") return <Tag color="orange">离线</Tag>;
+  if (state === "warning") return <Tag color="red">异常</Tag>;
+  return <Tag color="green">正常</Tag>;
 }
 
 const AUDIT_PAGE_SIZE = 20;
@@ -197,6 +202,7 @@ const AUDIT_PAGE_SIZE = 20;
 export function AdminAuditPage() {
   const [audit, setAudit] = useState<AuditRecord[]>([]);
   const [clients, setClients] = useState<ClientHeartbeatRecord[]>([]);
+  const [clientsLoadFailed, setClientsLoadFailed] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -222,8 +228,9 @@ export function AdminAuditPage() {
     }
     if (clientsResult.status === "fulfilled") {
       setClients(clientsResult.value.heartbeats || []);
+      setClientsLoadFailed(false);
     } else {
-      if (showLoading) setClients([]);
+      setClientsLoadFailed(true);
       errors.push(clientsResult.reason instanceof Error
         ? clientsResult.reason.message
         : "客户端状态加载失败");
@@ -245,6 +252,10 @@ export function AdminAuditPage() {
   const affectedUsers = new Set(audit.map((item) => item.target_user_id).filter(Boolean)).size;
   const exceptionClients = useMemo(
     () => clients.filter(hasClientException),
+    [clients],
+  );
+  const visibleClients = useMemo(
+    () => clients.filter((client) => deriveClientHealth(client).isRelevant),
     [clients],
   );
   const filteredAudit = useMemo(
@@ -336,20 +347,16 @@ export function AdminAuditPage() {
         </Card>
         <Card
           className="account-panel audit-panel audit-page-panel arco-management-card"
-          extra={<Tag color={exceptionClients.length ? "red" : "green"}>{exceptionClients.length} 个异常</Tag>}
+          extra={<Space><Tag color={exceptionClients.length ? "red" : "green"}>{exceptionClients.length} 个异常</Tag><Typography.Text type="secondary">{visibleClients.length} 个已检查</Typography.Text></Space>}
           title={<Space><IconExclamationCircle />客户端异常检测</Space>}
         >
-          {exceptionClients.length ? (
+          {visibleClients.length ? (
             <List
-              dataSource={exceptionClients}
+              dataSource={visibleClients}
               render={(client) => (
                 <List.Item
                   key={client.client_id}
-                  extra={(
-                    <Tag color={client.online === false ? "orange" : "red"}>
-                      {client.online === false ? "离线" : "异常"}
-                    </Tag>
-                  )}
+                  extra={clientHealthTag(client)}
                 >
                   <List.Item.Meta
                     description={<Space direction="vertical" size={2}><Typography.Text>{clientExceptionSummary(client)}</Typography.Text><Typography.Text type="secondary"><time dateTime={client.seen_at}>{new Date(client.seen_at).toLocaleString("zh-CN", { hour12: false })}</time></Typography.Text></Space>}
@@ -358,7 +365,14 @@ export function AdminAuditPage() {
                 </List.Item>
               )}
             />
-          ) : <Empty description="暂无客户端异常" />}
+          ) : (
+            <Empty description={clientsLoadFailed
+              ? "客户端状态加载失败，暂时无法判断异常"
+              : clients.length === 0
+                ? "尚未收到任何客户端心跳，无法判断运行状态"
+                : "当前只有主动停止或历史离线客户端"}
+            />
+          )}
         </Card>
       </section>
     </div>

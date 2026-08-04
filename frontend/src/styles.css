@@ -2525,21 +2525,22 @@ button {
   align-self: center;
 }
 
-.auth-brand-panel p {
+.auth-brand-eyebrow.arco-typography {
+  display: block;
   margin: 0 0 8px;
   color: #75d7b2;
   font-size: 13px;
   font-weight: 800;
 }
 
-.auth-brand-panel h1 {
+.auth-brand-title.arco-typography {
   margin: 0;
   color: #ffffff;
   font-size: 24px;
   letter-spacing: 0;
 }
 
-.auth-brand-status {
+.auth-brand-status.arco-tag {
   display: inline-flex;
   align-items: center;
   justify-self: start;
@@ -3243,14 +3244,12 @@ body[data-theme="dark"] .auth-loading {
   background: #0b1115;
 }
 
-body[data-theme="dark"] .auth-brand-panel,
 body[data-theme="dark"] .auth-login-panel {
   border-color: var(--theme-border);
   color: var(--theme-text);
   background: var(--theme-surface);
 }
 
-body[data-theme="dark"] .auth-brand-panel p,
 body[data-theme="dark"] .auth-login-panel label,
 body[data-theme="dark"] .auth-login-heading p {
   color: var(--theme-muted);
@@ -3807,6 +3806,45 @@ body[data-theme="dark"] .arco-drawer-mask {
 
 .account-key-form {
   max-width: 720px;
+}
+
+.account-key-controls {
+  padding: 16px 18px;
+  border-bottom: 1px solid #e7ebe9;
+}
+
+.account-key-controls .account-key-form {
+  margin: 0;
+}
+
+.account-key-controls .secret-once {
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin: 14px 0 0;
+}
+
+.account-key-controls .secret-once strong {
+  grid-column: 1 / -1;
+}
+
+.account-key-controls .secret-once code {
+  min-width: 0;
+  align-self: center;
+}
+
+.account-shell .account-key-copy.arco-btn-icon-only {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+}
+
+.admin-shell .arco-btn-icon-only {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
 }
 
 .security-grid {
@@ -5244,6 +5282,38 @@ body[data-theme="dark"] .arco-drawer-mask {
 .admin-login-form .arco-input-wrapper,
 .admin-login-form .arco-input-inner-wrapper {
   min-height: 38px;
+  border: 1px solid #cfd6da;
+  background: #ffffff;
+}
+
+.admin-login-form .arco-input-wrapper:focus-within,
+.admin-login-form .arco-input-inner-wrapper:focus-within {
+  border-color: #46886f;
+  box-shadow: 0 0 0 2px rgba(70, 136, 111, 0.12);
+}
+
+.admin-login-form label > .arco-input {
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid #cfd6da;
+  color: #202428;
+  background: #ffffff;
+}
+
+.admin-login-form label > .arco-input:focus {
+  border-color: #46886f;
+  box-shadow: 0 0 0 2px rgba(70, 136, 111, 0.12);
+}
+
+.admin-login-form .arco-input-inner-wrapper .arco-input,
+.admin-login-form .arco-input-inner-wrapper .arco-input:focus {
+  height: auto;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: #202428;
+  background: transparent;
+  box-shadow: none;
 }
 
 .arco-page-header {
@@ -7683,6 +7753,16 @@ body[data-theme="dark"] .arco-radio-text {
 body[data-theme="dark"] .arco-input::placeholder,
 body[data-theme="dark"] .arco-textarea::placeholder {
   color: #718582;
+}
+
+body[data-theme="dark"] .admin-login-form label > .arco-input {
+  border-color: #34505a;
+  color: var(--theme-text);
+  background: #0c171c;
+}
+
+body[data-theme="dark"] .admin-login-form .arco-input-inner-wrapper .arco-input {
+  color: var(--theme-text);
 }
 
 body[data-theme="dark"] .arco-key-icon,

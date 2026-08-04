@@ -16,6 +16,33 @@ function formatTime(value?: string): string {
   return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "从未";
 }
 
+async function copyText(value: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // Some WebViews expose Clipboard API but reject it outside a secure context.
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, value.length);
+  try {
+    return document.execCommand?.("copy") === true;
+  } catch {
+    return false;
+  } finally {
+    textarea.remove();
+  }
+}
+
 export function AccountKeysPage() {
   const [keys, setKeys] = useState<ApiKeyRecord[]>([]);
   const [newKeyName, setNewKeyName] = useState("");
@@ -92,18 +119,32 @@ export function AccountKeysPage() {
       ]} />
 
       <section className="account-grid account-grid-single">
-        <Card className="account-panel arco-management-card" title={<Space><KeyRound size={17} />客户端访问凭据</Space>}>
-          <form className="inline-form account-key-form" onSubmit={createKey}>
-            <Input maxLength={80} placeholder="设备名称" value={newKeyName} onChange={setNewKeyName} />
-            <Button htmlType="submit" icon={<IconPlus />} type="primary">创建设备密钥</Button>
-          </form>
-          {createdSecret ? (
-            <div className="secret-once" role="status">
-              <strong>密钥只显示这一次</strong>
-              <code>{createdSecret}</code>
-              <Button icon={<IconCopy />} size="small" type="outline" onClick={() => void navigator.clipboard.writeText(createdSecret).then(() => Message.success("密钥已复制"))}>复制密钥</Button>
-            </div>
-          ) : null}
+        <Card className="account-key-card arco-management-card" title={<Space><KeyRound size={17} />客户端访问凭据</Space>}>
+          <div className="account-key-controls">
+            <form className="inline-form account-key-form" onSubmit={createKey}>
+              <Input maxLength={80} placeholder="设备名称" value={newKeyName} onChange={setNewKeyName} />
+              <Button htmlType="submit" icon={<IconPlus />} type="primary">创建设备密钥</Button>
+            </form>
+            {createdSecret ? (
+              <div className="secret-once" role="status">
+                <strong>密钥只显示这一次</strong>
+                <code>{createdSecret}</code>
+                <Button
+                  aria-label="复制设备密钥"
+                  className="account-key-copy"
+                  icon={<IconCopy />}
+                  shape="square"
+                  size="small"
+                  title="复制密钥"
+                  type="outline"
+                  onClick={() => void copyText(createdSecret).then((copied) => {
+                    if (copied) Message.success("密钥已复制");
+                    else Message.error("复制失败，请手动选择密钥复制");
+                  })}
+                />
+              </div>
+            ) : null}
+          </div>
           <Table<ApiKeyRecord> border={false} columns={columns} data={keys} noDataElement="尚未创建设备密钥" pagination={false} rowKey="key_id" />
         </Card>
       </section>

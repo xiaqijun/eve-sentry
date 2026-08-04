@@ -211,7 +211,7 @@ describe("split management pages", () => {
     expect(container).not.toHaveTextContent("identity.check_failed");
   });
 
-  it("shows only real client heartbeat exceptions", async () => {
+  it("shows current client health while counting only real exceptions", async () => {
     apiMocks.fetchClients.mockResolvedValue({
       count: 5,
       summary: {},
@@ -268,8 +268,10 @@ describe("split management pages", () => {
     expect(container).toHaveTextContent("snapshot upload timed out｜最后操作 OCR 上报");
     expect(container).toHaveTextContent("频道客户端｜SERVER-01 · 未知版本");
     expect(container).toHaveTextContent("客户端状态异常");
+    expect(container).toHaveTextContent("3 个已检查");
+    expect(container).toHaveTextContent("等待日志端｜未知主机 · 未知版本");
+    expect(container).toHaveTextContent("运行正常｜最后操作 等待新日志 Listener");
     expect(container).not.toHaveTextContent("主动停止端");
-    expect(container).not.toHaveTextContent("等待日志端");
     expect(container).not.toHaveTextContent("离线旧异常端");
   });
 
@@ -308,8 +310,8 @@ describe("split management pages", () => {
     });
 
     expect(container).toHaveTextContent("客户端状态加载失败");
-    expect(container).not.toHaveTextContent("上次异常端");
-    expect(container).toHaveTextContent("当前异常客户端0");
+    expect(container).toHaveTextContent("上次异常端");
+    expect(container).toHaveTextContent("当前异常客户端1");
   });
 
   it("filters audit records by client, category, period and outcome", () => {
@@ -515,6 +517,86 @@ describe("split management pages", () => {
     expect(container).toHaveTextContent("密钥前缀");
     expect(container).toHaveTextContent("主监控端");
     expect(container).not.toHaveTextContent("当前密码");
+  });
+
+  it("falls back when Clipboard API rejects and keeps a square icon-only action", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+    apiMocks.createMyKey.mockResolvedValue({
+      identity_verified: false,
+      key_id: "key-created",
+      key_prefix: "eve_created",
+      key_type: "desktop",
+      name: "监控客户端",
+      secret: "eve_secret_once",
+      status: "active",
+      user_id: "user-1",
+    });
+    await render(<AccountKeysPage />);
+
+    await act(async () => {
+      container.querySelector<HTMLFormElement>(".account-key-form")?.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const copyButton = container.querySelector<HTMLButtonElement>('[aria-label="复制设备密钥"]');
+    expect(copyButton).toBeInTheDocument();
+    expect(copyButton).toHaveClass("arco-btn-icon-only");
+    expect(copyButton).toHaveTextContent("");
+    await act(async () => {
+      copyButton?.click();
+      await Promise.resolve();
+    });
+    expect(writeText).toHaveBeenCalledWith("eve_secret_once");
+    expect(execCommand).toHaveBeenCalledWith("copy");
+  });
+
+  it("selects an unlisted verified character when adding a whitelist entry", async () => {
+    apiMocks.listAdminUsers.mockResolvedValue([{
+      ...user,
+      verified_characters: [
+        { character_id: 101, character_name: "Pilot Alpha", corporation_name: "Alpha Corp", user_id: "user-1" },
+        { character_id: 102, character_name: "Pilot Bravo", corporation_name: "Bravo Corp", user_id: "user-1" },
+      ],
+      whitelist: [{ character_id: 101, character_name: "Pilot Alpha", user_id: "user-1" }],
+    }]);
+    apiMocks.addWhitelistCharacter.mockResolvedValue({});
+    await render(<AdminWhitelistPage />);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="管理 舰队管理员 白名单"]')?.click();
+    });
+    const select = document.body.querySelector<HTMLElement>('[aria-label="选择已验证上报角色"]');
+    expect(select).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("角色 ID");
+
+    await act(async () => {
+      select?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      select?.click();
+    });
+    expect(document.body).toHaveTextContent("Pilot Bravo · Bravo Corp");
+    expect(document.body).not.toHaveTextContent("Pilot Alpha · Alpha Corp");
+    const option = Array.from(document.body.querySelectorAll<HTMLElement>(".arco-select-option"))
+      .find((item) => item.textContent?.includes("Pilot Bravo"));
+    await act(async () => option?.click());
+    await act(async () => {
+      document.body.querySelector<HTMLFormElement>(".identity-character-form")?.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
+      await Promise.resolve();
+    });
+    expect(apiMocks.addWhitelistCharacter).toHaveBeenCalledWith("user-1", 102, "");
   });
 
   it("allows manually revoked keys to be enabled or deleted", async () => {

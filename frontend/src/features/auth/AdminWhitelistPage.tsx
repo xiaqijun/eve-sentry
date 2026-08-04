@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Button, Card, Drawer, Empty, Input, List, Space, Table, Typography } from "@arco-design/web-react";
-import { IconDelete, IconEye, IconPlus, IconSafe, IconUserGroup } from "@arco-design/web-react/icon";
+import { Button, Card, Drawer, Empty, Input, List, Select, Space, Table, Tooltip, Typography } from "@arco-design/web-react";
+import { IconDelete, IconPlus, IconSafe, IconSettings, IconUserGroup } from "@arco-design/web-react/icon";
 
 import {
   ManagementError,
@@ -46,6 +46,13 @@ export function AdminWhitelistPage() {
   useEffect(() => { void load(); }, []);
 
   const selectedUser = users.find((item) => item.user_id === selectedUserId);
+  const availableCharacters = useMemo(() => {
+    if (!selectedUser) return [];
+    const whitelistedIds = new Set(selectedUser.whitelist.map((item) => item.character_id));
+    return selectedUser.verified_characters.filter(
+      (character) => !whitelistedIds.has(character.character_id),
+    );
+  }, [selectedUser]);
   const filteredUsers = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     if (!query) return users;
@@ -98,8 +105,11 @@ export function AdminWhitelistPage() {
     { title: "白名单角色", dataIndex: "whitelist", render: (items: AdminUser["whitelist"]) => items.length },
     {
       title: "操作",
+      width: 72,
       render: (_: unknown, user: AdminUser) => (
-        <Button aria-label={`管理 ${user.display_name || user.username} 白名单`} icon={<IconEye />} size="small" type="text" onClick={() => setSelectedUserId(user.user_id)}>管理</Button>
+        <Tooltip content="管理白名单">
+          <Button aria-label={`管理 ${user.display_name || user.username} 白名单`} icon={<IconSettings />} shape="square" size="mini" type="text" onClick={() => setSelectedUserId(user.user_id)} />
+        </Tooltip>
       ),
     },
   ];
@@ -134,11 +144,25 @@ export function AdminWhitelistPage() {
         {selectedUser ? (
           <Space direction="vertical" size={18} style={{ width: "100%" }}>
             <Typography.Title heading={6}>角色白名单 · {selectedUser.whitelist.length}</Typography.Title>
-                <form className="identity-character-form" onSubmit={submitCharacter}>
-              <Input aria-label="角色 ID" inputMode="numeric" placeholder="角色 ID" required value={characterId} onChange={setCharacterId} />
+            <form className="identity-character-form" onSubmit={submitCharacter}>
+              <Select
+                aria-label="选择已验证上报角色"
+                allowClear
+                disabled={availableCharacters.length === 0}
+                placeholder={availableCharacters.length ? "从已验证上报角色中选择" : "没有可加白的已验证角色"}
+                showSearch
+                value={characterId || undefined}
+                onChange={(value) => setCharacterId(String(value || ""))}
+              >
+                {availableCharacters.map((character) => (
+                  <Select.Option key={character.character_id} value={String(character.character_id)}>
+                    {character.character_name} · {character.corporation_name || "未知军团"}
+                  </Select.Option>
+                ))}
+              </Select>
               <Input aria-label="备注" placeholder="备注（可选）" value={characterNote} onChange={setCharacterNote} />
-              <Button htmlType="submit" icon={<IconPlus />} type="primary">添加</Button>
-                </form>
+              <Button disabled={!characterId} htmlType="submit" icon={<IconPlus />} type="primary">加白</Button>
+            </form>
             {selectedUser.whitelist.length ? (
               <List
                 dataSource={selectedUser.whitelist}

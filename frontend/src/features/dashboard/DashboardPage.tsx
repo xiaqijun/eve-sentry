@@ -33,6 +33,7 @@ import type {
   VerifiedCharacter,
   ZkillStats,
 } from "../workbench/types";
+import { deriveClientHealth } from "../clients/clientHealth";
 
 const REFRESH_INTERVAL_MS = 15000;
 
@@ -48,11 +49,10 @@ interface LiveSystemRow {
 
 interface ClientStatusRow {
   id: string;
-  label: string;
-  clientType: string;
+  accountName: string;
+  clientLabel: string;
   systemName: string;
-  online: boolean;
-  stale: boolean;
+  status: "monitoring" | "warning" | "offline" | "incomplete";
   lastSeen?: string;
 }
 
@@ -129,31 +129,66 @@ function liveSystemRows(
 
 function clientStatusRows(bootstrap: BootstrapPayload): ClientStatusRow[] {
   return (bootstrap.clients?.heartbeats || [])
-    .map((heartbeat, index) => {
+    .filter((heartbeat) => String(heartbeat.client_type || "") === "detector_client")
+    .flatMap((heartbeat, heartbeatIndex) => {
       const details = typeof heartbeat.details === "object" && heartbeat.details !== null
         ? heartbeat.details as Record<string, unknown>
         : {};
-      const id = String(heartbeat.client_id || `client-${index}`);
+      const id = String(heartbeat.client_id || `client-${heartbeatIndex}`);
       const online = heartbeat.online === true;
-      const status = String(heartbeat.status || details.status || "").toLowerCase();
-      return {
-        id,
-        label: String(heartbeat.label || details.label || id),
-        clientType: String(heartbeat.client_type || "unknown"),
-        systemName: String(
-          heartbeat.system_name || details.system_name || details.system || "-",
-        ),
-        online,
-        stale: heartbeat.stale === true || status === "stale" || status === "error",
-        lastSeen: String(
-          heartbeat.last_seen_at || heartbeat.received_at || details.last_success_at || "",
-        ) || undefined,
-      };
+      const health = deriveClientHealth(heartbeat);
+      const rawTargets = Array.isArray(details.targets) ? details.targets : [];
+      const targets = rawTargets.length > 0
+        ? rawTargets
+        : details.monitoring !== false ? [{}] : [];
+      const clientVersion = String(details.client_version || "").trim();
+      const clientLabel = String(details.host || heartbeat.label || id).trim();
+      const lastSeen = String(
+        heartbeat.seen_at
+        || heartbeat.last_seen_at
+        || heartbeat.received_at
+        || details.last_success_at
+        || "",
+      ) || undefined;
+      return targets.flatMap((target, targetIndex) => {
+        const value = target && typeof target === "object"
+          ? target as Record<string, unknown>
+          : {};
+        if (value.monitoring === false) return [];
+        const accountName = String(
+          value.character_name || value.source_instance || value.window_title || "",
+        ).trim();
+        const systemName = String(
+          value.system_name || heartbeat.system_name || details.system_name || details.system || "",
+        ).trim();
+        const runtimeStatus = String(value.runtime_status || "").trim().toLowerCase();
+        const targetHasError = Boolean(String(value.last_error || "").trim())
+          || ["error", "failed", "failure", "exception"].includes(runtimeStatus);
+        return [{
+          id: `${id}:${String(value.client_id || targetIndex)}`,
+          accountName: accountName || "未上报账号",
+          clientLabel: `${clientLabel || id}${clientVersion ? ` · ${clientVersion}` : ""}`,
+          systemName: systemName || "未知星系",
+          status: !online
+            ? "offline"
+            : targetHasError || health.state === "warning"
+              ? "warning"
+              : accountName && systemName ? "monitoring" : "incomplete",
+          lastSeen,
+        } satisfies ClientStatusRow];
+      });
     })
     .sort((left, right) => (
-      Number(left.online && !left.stale) - Number(right.online && !right.stale)
-      || left.label.localeCompare(right.label)
+      Number(left.status === "monitoring") - Number(right.status === "monitoring")
+      || left.accountName.localeCompare(right.accountName)
     ));
+}
+
+function coverageStatusTag(status: ClientStatusRow["status"]) {
+  if (status === "monitoring") return <Tag color="green">监控中</Tag>;
+  if (status === "warning") return <Tag color="red">运行异常</Tag>;
+  if (status === "offline") return <Tag color="orange">客户端离线</Tag>;
+  return <Tag color="gray">信息待补全</Tag>;
 }
 
 function dangerTag(value: number | null | undefined) {
@@ -204,13 +239,19 @@ export function DashboardPage() {
     () => bootstrapQuery.data ? clientStatusRows(bootstrapQuery.data) : [],
     [bootstrapQuery.data],
   );
+  const allHeartbeats = bootstrapQuery.data?.clients?.heartbeats || [];
   const liveAlerts = (bootstrapQuery.data ? currentRedAlerts(bootstrapQuery.data) : [])
     .sort((left, right) => (
       new Date(right.created_at || 0).getTime() - new Date(left.created_at || 0).getTime()
     ));
   const currentHostiles = systemNodes.reduce((sum, node) => sum + node.hostileCount, 0);
   const onlineSystems = systemNodes.filter((node) => node.monitorOnlineCount > 0).length;
-  const abnormalClients = clients.filter((client) => !client.online || client.stale).length;
+  const abnormalClients = allHeartbeats.filter(
+    (client) => deriveClientHealth(client).isException,
+  ).length;
+  const coveredSystems = new Set(
+    clients.map((client) => client.systemName).filter((name) => name !== "未知星系"),
+  ).size;
 
   const systemColumns: TableColumnProps<LiveSystemRow>[] = [
     { title: "星系", dataIndex: "name", width: 110, render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
@@ -227,10 +268,10 @@ export function DashboardPage() {
     { title: "级别", dataIndex: "level", width: 76, render: (value?: string) => levelTag(value) },
   ];
   const clientColumns: TableColumnProps<ClientStatusRow>[] = [
-    { title: "客户端", dataIndex: "label", render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
-    { title: "类型", dataIndex: "clientType", width: 96 },
-    { title: "星系", dataIndex: "systemName", width: 110 },
-    { title: "状态", dataIndex: "online", width: 76, render: (_: boolean, row) => row.online && !row.stale ? <Tag color="green">在线</Tag> : <Tag color="red">异常</Tag> },
+    { title: "监控账号", dataIndex: "accountName", width: 112, render: (value: string) => <Typography.Text bold ellipsis={{ showTooltip: true }}>{value}</Typography.Text> },
+    { title: "所在星系", dataIndex: "systemName", width: 96 },
+    { title: "监控客户端", dataIndex: "clientLabel", render: (value: string) => <Typography.Text ellipsis={{ showTooltip: true }}>{value}</Typography.Text> },
+    { title: "状态", dataIndex: "status", width: 92, render: (value: ClientStatusRow["status"]) => coverageStatusTag(value) },
     { title: "最后上报", dataIndex: "lastSeen", width: 154, render: (value?: string) => formatTime(value) },
   ];
 
@@ -270,10 +311,10 @@ export function DashboardPage() {
           </Card>
         </Grid.Col>
         <Grid.Col xl={12} lg={24} xs={24}>
-          <Card className="dashboard-card" title={<span><MonitorCheck size={16} />监控覆盖</span>} extra={<Typography.Text type="secondary">{clients.length} 个客户端</Typography.Text>}>
+          <Card className="dashboard-card" title={<span><MonitorCheck size={16} />监控覆盖</span>} extra={<Typography.Text type="secondary">{clients.length} 个账号 · {coveredSystems} 个星系</Typography.Text>}>
             {clients.length > 0 ? (
-              <Table<ClientStatusRow> border={false} columns={clientColumns} data={clients.slice(0, 8)} pagination={false} rowKey="id" />
-            ) : <Empty description="暂无客户端心跳" />}
+              <Table<ClientStatusRow> border={false} columns={clientColumns} data={clients} pagination={clients.length > 8 ? { pageSize: 8, size: "mini" } : false} rowKey="id" />
+            ) : <Empty description="尚未收到监控账号覆盖信息" />}
           </Card>
         </Grid.Col>
       </Grid.Row>
