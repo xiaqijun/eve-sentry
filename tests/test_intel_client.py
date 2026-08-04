@@ -1952,6 +1952,11 @@ def test_alert_overlay_can_drag_from_child_rows(monkeypatch):
         overlay.close()
 
 
+def test_alert_client_parse_args_requires_server():
+    with pytest.raises(SystemExit):
+        parse_args([])
+
+
 def test_alert_client_parse_args_supports_sse_overlay_mode():
     args = parse_args(
         [
@@ -2078,8 +2083,16 @@ def test_intel_api_client_sends_api_key_for_json_and_identity_requests(monkeypat
 
 
 def test_intel_api_client_allows_api_key_over_configured_http_server():
-    client = IntelApiClient("http://114.132.167.239:8765", api_key="eve_secret")
+    client = IntelApiClient("http://sentry.test:8765", api_key="eve_secret")
     assert client.api_key == "eve_secret"
+
+
+def test_intel_api_client_requires_an_explicit_server_url():
+    with pytest.raises(TypeError):
+        IntelApiClient()
+
+    with pytest.raises(IntelApiError, match="服务端地址未配置"):
+        IntelApiClient("")
 
 
 def test_intel_api_client_omits_authorization_when_api_key_is_empty(monkeypatch):

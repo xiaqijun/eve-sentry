@@ -16,9 +16,9 @@ import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtNetwork import (
     QNetworkAccessManager,
@@ -66,6 +66,25 @@ class ReleaseInfo:
     size: int
     filename: str
     models: UpdateComponent | None = None
+
+
+class _UpdaterFileTask(QThread):
+    """Run one disk-heavy updater operation outside the Qt event loop."""
+
+    succeeded = pyqtSignal(object)
+    failed = pyqtSignal(object)
+
+    def __init__(self, task: Callable[[], object], parent: QObject) -> None:
+        super().__init__(parent)
+        self._task = task
+
+    def run(self) -> None:
+        try:
+            result = self._task()
+        except Exception as exc:
+            self.failed.emit(exc)
+            return
+        self.succeeded.emit(result)
 
 
 def configured_update_proxy() -> str:
@@ -799,22 +818,17 @@ class ClientUpdater(QObject):
         update_dir: Path | None = None,
         public_key_path: Path | None = None,
         background_download: bool = True,
+        asynchronous_file_tasks: bool | None = None,
     ) -> None:
         super().__init__(parent)
+        self._asynchronous_file_tasks = (
+            parent is not None
+            if asynchronous_file_tasks is None
+            else bool(asynchronous_file_tasks)
+        )
         self.manifest_url = str(manifest_url or update_manifest_url()).strip()
         self.installed_version = str(installed_version or current_version()).strip()
         self.update_dir = Path(update_dir or default_update_dir())
-        installer_in_flight = any(self.update_dir.glob("apply-*.ps1"))
-        pending = load_pending_update(
-            self.update_dir,
-            self.installed_version,
-            allow_current_version=installer_in_flight,
-        )
-        preserved_paths = tuple(pending[1:] if pending is not None else ())
-        cleanup_update_artifacts(
-            self.update_dir,
-            preserved_paths=tuple(path for path in preserved_paths if path is not None),
-        )
         self.public_key_path = Path(
             public_key_path or default_update_public_key_path()
         )
@@ -827,32 +841,119 @@ class ClientUpdater(QObject):
         self.background_download = bool(background_download)
         self._network = QNetworkAccessManager(self)
         self._proxy_url = configure_update_proxy(self._network)
-        restorable = (
-            pending
-            if pending is not None
-            and is_newer_version(pending[0].version, self.installed_version)
-            else None
-        )
-        self._release: ReleaseInfo | None = restorable[0] if restorable else None
+        self._release: ReleaseInfo | None = None
         self._download_reply: QNetworkReply | None = None
         self._download_file = None
         self._download_hash = hashlib.sha256()
         self._download_path: Path | None = None
-        self._ready_path: Path | None = restorable[1] if restorable else None
-        self._program_ready_path: Path | None = restorable[1] if restorable else None
-        self._model_ready_path: Path | None = restorable[2] if restorable else None
+        self._ready_path: Path | None = None
+        self._program_ready_path: Path | None = None
+        self._model_ready_path: Path | None = None
         self._current_component: UpdateComponent | None = None
         self._download_kind = "program"
         self._resume_offset = 0
         self._installer_launched = False
         self._busy = False
+        self._restoring = True
+        self._preflight_ready = False
+        self._preflight_signatures: dict[Path, tuple[int, int]] = {}
+        self._preflight_after_restore = False
+        self._pending_check_manual: bool | None = None
+        self._file_tasks: set[_UpdaterFileTask] = set()
         self._result_poll_attempt = 0
-        QTimer.singleShot(0, self._emit_initial_update_state)
+        self._run_file_task(
+            self._load_local_update_state,
+            self._finish_local_update_state,
+            self._fail_local_update_state,
+        )
+
+    def _run_file_task(
+        self,
+        task: Callable[[], object],
+        on_success: Callable[[object], None],
+        on_error: Callable[[Exception], None],
+    ) -> None:
+        if not self._asynchronous_file_tasks:
+            try:
+                on_success(task())
+            except Exception as exc:
+                on_error(exc)
+            return
+        worker = _UpdaterFileTask(task, self)
+        self._file_tasks.add(worker)
+        worker.succeeded.connect(on_success)
+        worker.failed.connect(on_error)
+        worker.finished.connect(
+            lambda worker=worker: self._release_file_task(worker)
+        )
+        worker.start()
+
+    def _release_file_task(self, worker: _UpdaterFileTask) -> None:
+        self._file_tasks.discard(worker)
+        worker.deleteLater()
+
+    def _load_local_update_state(self) -> tuple[ReleaseInfo, Path, Path | None] | None:
+        installer_in_flight = any(self.update_dir.glob("apply-*.ps1"))
+        pending = load_pending_update(
+            self.update_dir,
+            self.installed_version,
+            allow_current_version=installer_in_flight,
+        )
+        preserved_paths = tuple(pending[1:] if pending is not None else ())
+        cleanup_update_artifacts(
+            self.update_dir,
+            preserved_paths=tuple(
+                path for path in preserved_paths if path is not None
+            ),
+        )
+        if pending is None or not is_newer_version(
+            pending[0].version,
+            self.installed_version,
+        ):
+            return None
+        return pending
+
+    def _finish_local_update_state(self, pending: object) -> None:
+        restored = pending if isinstance(pending, tuple) else None
+        if restored is not None:
+            self._release = restored[0]
+            self._ready_path = restored[1]
+            self._program_ready_path = restored[1]
+            self._model_ready_path = restored[2]
+        self._restoring = False
+        if restored is not None and self._asynchronous_file_tasks:
+            self._prepare_ready_update(after_restore=True)
+        else:
+            self._emit_initial_update_state()
+            pending_manual = self._pending_check_manual
+            self._pending_check_manual = None
+            if pending_manual is not None:
+                self.check(manual=pending_manual)
+
+    def _fail_local_update_state(self, exc: Exception) -> None:
+        logger.warning("Could not restore local update state: %s", exc)
+        self._restoring = False
+        self._emit_initial_update_state()
+        pending_manual = self._pending_check_manual
+        self._pending_check_manual = None
+        if pending_manual is not None:
+            self.check(manual=pending_manual)
 
     @property
     def ready_to_install(self) -> bool:
         """Return whether a verified update is waiting for client shutdown."""
-        return self._ready_path is not None and not self._installer_launched
+        preflight_ready = (
+            not self._asynchronous_file_tasks or self._preflight_ready
+        )
+        return (
+            self._ready_path is not None
+            and not self._installer_launched
+            and preflight_ready
+        )
+
+    @property
+    def has_running_file_tasks(self) -> bool:
+        return any(worker.isRunning() for worker in self._file_tasks)
 
     def _emit_initial_update_state(self) -> None:
         """Expose restored downloads and detached installer results after wiring UI."""
@@ -910,6 +1011,9 @@ class ClientUpdater(QObject):
 
     def check(self, manual: bool = False) -> None:
         """Fetch the latest release manifest without blocking the UI."""
+        if self._restoring:
+            self._pending_check_manual = bool(manual)
+            return
         if self._busy:
             return
         url = QUrl(self.manifest_url)
@@ -948,24 +1052,58 @@ class ClientUpdater(QObject):
         self.update_dir.mkdir(parents=True, exist_ok=True)
         target = self.update_dir / component.filename
         partial = target.with_suffix(target.suffix + ".part")
-        if partial.exists() and partial.stat().st_size > component.size:
+        self._busy = True
+        self._current_component = component
+        self._download_kind = str(kind)
+        self.state_changed.emit("正在校验下载断点", "准备下载", False)
+        self._run_file_task(
+            lambda: self._load_partial_download_state(partial, component.size),
+            lambda result: self._start_component_download(
+                component,
+                kind,
+                target,
+                partial,
+                result,
+            ),
+            self._fail_component_download_prepare,
+        )
+
+    @staticmethod
+    def _load_partial_download_state(
+        partial: Path,
+        expected_size: int,
+    ) -> tuple[int, object]:
+        if partial.exists() and partial.stat().st_size > expected_size:
             partial.unlink(missing_ok=True)
-        self._resume_offset = partial.stat().st_size if partial.exists() else 0
+        resume_offset = partial.stat().st_size if partial.exists() else 0
+        digest = hashlib.sha256()
+        if resume_offset:
+            with partial.open("rb") as existing:
+                for chunk in iter(lambda: existing.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        return resume_offset, digest
+
+    def _start_component_download(
+        self,
+        component: UpdateComponent,
+        kind: str,
+        target: Path,
+        partial: Path,
+        prepared: object,
+    ) -> None:
+        resume_offset, digest = prepared
         try:
             file_handle = partial.open("ab")
         except OSError as exc:
+            self._busy = False
             self.state_changed.emit(f"无法保存更新包：{exc}", "重试", True)
             return
-        self._busy = True
+        self._resume_offset = int(resume_offset)
         self._current_component = component
         self._download_kind = str(kind)
         self._download_path = partial
         self._download_file = file_handle
-        self._download_hash = hashlib.sha256()
-        if self._resume_offset:
-            with partial.open("rb") as existing:
-                for chunk in iter(lambda: existing.read(1024 * 1024), b""):
-                    self._download_hash.update(chunk)
+        self._download_hash = digest
         initial_percent = round(self._resume_offset * 100 / component.size)
         self.state_changed.emit(
             f"正在下载 {initial_percent}%",
@@ -984,6 +1122,100 @@ class ClientUpdater(QObject):
         reply.downloadProgress.connect(self._on_download_progress)
         reply.finished.connect(lambda: self._finish_download(reply, target))
 
+    def _fail_component_download_prepare(self, exc: Exception) -> None:
+        self._busy = False
+        self.state_changed.emit(f"准备下载失败：{exc}", "重试", True)
+
+    def _prepare_ready_update(self, *, after_restore: bool = False) -> None:
+        if self._busy:
+            return
+        package = self._ready_path
+        release = self._release
+        if package is None or release is None:
+            return
+        self._busy = True
+        self._preflight_ready = False
+        self.state_changed.emit("正在校验更新包", "校验中", False)
+        self._run_file_task(
+            self._validate_ready_update_files,
+            lambda result: self._finish_ready_update_preflight(
+                result,
+                after_restore=after_restore,
+            ),
+            lambda exc: self._fail_ready_update_preflight(
+                exc,
+                after_restore=after_restore,
+            ),
+        )
+
+    def _validate_ready_update_files(self) -> dict[Path, tuple[int, int]]:
+        package = self._ready_path
+        release = self._release
+        if package is None or release is None:
+            raise UpdateError("更新包状态不完整")
+        program_component = UpdateComponent(
+            release.version,
+            release.url,
+            release.sha256,
+            release.size,
+            release.filename,
+        )
+        _verify_staged_component(package, program_component)
+        package_paths = [package]
+        if self._model_ready_path is not None:
+            if release.models is None:
+                raise UpdateError("模型更新包状态不完整")
+            _verify_staged_component(self._model_ready_path, release.models)
+            package_paths.append(self._model_ready_path)
+        if sys.platform == "win32" and getattr(sys, "frozen", False):
+            install_dir = Path(sys.executable).resolve().parent
+            validate_install_preflight(
+                install_dir,
+                package_paths,
+                Path(sys.executable).name,
+            )
+        return {
+            path: (path.stat().st_size, path.stat().st_mtime_ns)
+            for path in package_paths
+        }
+
+    def _finish_ready_update_preflight(
+        self,
+        result: object,
+        *,
+        after_restore: bool,
+    ) -> None:
+        self._busy = False
+        self._preflight_signatures = dict(result)
+        self._preflight_ready = True
+        if after_restore:
+            self._emit_initial_update_state()
+            pending_manual = self._pending_check_manual
+            self._pending_check_manual = None
+            if pending_manual is not None:
+                self.check(manual=pending_manual)
+            return
+        self.state_changed.emit(
+            "更新包已就绪，退出时自动安装",
+            "立即安装",
+            True,
+        )
+
+    def _fail_ready_update_preflight(
+        self,
+        exc: Exception,
+        *,
+        after_restore: bool,
+    ) -> None:
+        self._busy = False
+        self._preflight_ready = False
+        self.state_changed.emit(f"安装前检查失败：{exc}", "重试安装", True)
+        if after_restore:
+            pending_manual = self._pending_check_manual
+            self._pending_check_manual = None
+            if pending_manual is not None:
+                self.check(manual=pending_manual)
+
     def install_and_restart(self) -> None:
         """Launch the detached updater and ask the application to exit."""
         if self._launch_installer():
@@ -998,6 +1230,14 @@ class ClientUpdater(QObject):
         release = self._release
         if package is None or release is None or self._installer_launched:
             return False
+        asynchronous_preflight = self._asynchronous_file_tasks
+        if asynchronous_preflight and not self._preflight_ready:
+            self._prepare_ready_update()
+            return False
+        if asynchronous_preflight and not self._ready_file_signatures_match():
+            self._preflight_ready = False
+            self._prepare_ready_update()
+            return False
         if not (sys.platform == "win32" and getattr(sys, "frozen", False)):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(package.parent)))
             self.state_changed.emit("已打开更新包位置", "检查更新", True)
@@ -1009,23 +1249,24 @@ class ClientUpdater(QObject):
             package_paths.append(self._model_ready_path)
         script_path = self.update_dir / f"apply-{release.version}.ps1"
         try:
-            program_component = UpdateComponent(
-                release.version,
-                release.url,
-                release.sha256,
-                release.size,
-                release.filename,
-            )
-            _verify_staged_component(package, program_component)
-            if self._model_ready_path is not None:
-                if release.models is None:
-                    raise UpdateError("模型更新包状态不完整")
-                _verify_staged_component(self._model_ready_path, release.models)
-            validate_install_preflight(
-                install_dir,
-                package_paths,
-                executable_name,
-            )
+            if not asynchronous_preflight:
+                program_component = UpdateComponent(
+                    release.version,
+                    release.url,
+                    release.sha256,
+                    release.size,
+                    release.filename,
+                )
+                _verify_staged_component(package, program_component)
+                if self._model_ready_path is not None:
+                    if release.models is None:
+                        raise UpdateError("模型更新包状态不完整")
+                    _verify_staged_component(self._model_ready_path, release.models)
+                validate_install_preflight(
+                    install_dir,
+                    package_paths,
+                    executable_name,
+                )
             script_path.write_text(
                 build_update_script(
                     package,
@@ -1068,6 +1309,18 @@ class ClientUpdater(QObject):
         self._installer_launched = True
         self.state_changed.emit("正在安装更新", "安装中", False)
         return True
+
+    def _ready_file_signatures_match(self) -> bool:
+        signatures = self._preflight_signatures
+        if not signatures:
+            return False
+        try:
+            return all(
+                (path.stat().st_size, path.stat().st_mtime_ns) == signature
+                for path, signature in signatures.items()
+            )
+        except OSError:
+            return False
 
     def _request(self, url: QUrl, timeout_ms: int = 15000) -> QNetworkRequest:
         request = QNetworkRequest(url)
@@ -1197,7 +1450,14 @@ class ClientUpdater(QObject):
                 )
             except OSError:
                 logger.exception("Could not persist verified pending update")
-            self.state_changed.emit("更新包已就绪，退出时自动安装", "立即安装", True)
+            if self._asynchronous_file_tasks:
+                QTimer.singleShot(0, self._prepare_ready_update)
+            else:
+                self.state_changed.emit(
+                    "更新包已就绪，退出时自动安装",
+                    "立即安装",
+                    True,
+                )
         except (OSError, UpdateError) as exc:
             transport_failed = (
                 reply.error() != QNetworkReply.NetworkError.NoError

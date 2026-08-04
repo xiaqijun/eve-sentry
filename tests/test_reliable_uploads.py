@@ -99,6 +99,42 @@ def test_reliable_uploader_reports_authentication_failure_without_retrying():
         manager.shutdown()
 
 
+def test_reliable_uploader_nonblocking_shutdown_closes_after_request_returns():
+    started = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+
+    class Client:
+        def post_ocr_snapshot(self, **_payload):
+            started.set()
+            assert release.wait(2)
+            return {"ok": True}
+
+        def post_heartbeat(self, **_payload):
+            return {"ok": True}
+
+        def close(self):
+            closed.set()
+
+    manager = ReliableUploadManager(Client())
+    manager.submit_snapshot(
+        "window-1",
+        {
+            "client_id": "window-1",
+            "source_instance": "EVE - A",
+            "system_name": "Tama",
+            "names": [],
+        },
+    )
+    assert started.wait(1)
+
+    manager.shutdown(timeout=0)
+
+    assert not closed.is_set()
+    release.set()
+    assert closed.wait(1)
+
+
 def test_reliable_uploader_restores_latest_snapshot_after_restart(tmp_path):
     state_path = tmp_path / "offline-snapshots.json"
     failed = threading.Event()

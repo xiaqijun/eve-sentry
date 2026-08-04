@@ -27,7 +27,6 @@ from app.intel_client import INVALID_API_KEY_MESSAGE
 from app.version import current_version
 
 
-DEFAULT_INTEL_URL = "http://114.132.167.239:8765"
 DEFAULT_ALERT_VOLUME = 1.0
 DEFAULT_ALERT_REPEAT_INTERVAL = 2
 DEFAULT_ALERT_REPEAT_COUNT = 3
@@ -40,7 +39,9 @@ MAX_AUTH_STATUS_LENGTH = 160
 
 def normalize_server_url(value: Any) -> str:
     """Return a normalized HTTP server URL for the desktop clients."""
-    url = str(value or "").strip() or DEFAULT_INTEL_URL
+    url = str(value or "").strip()
+    if not url:
+        return ""
     if "://" not in url:
         url = f"http://{url}"
     return url.rstrip("/")
@@ -98,7 +99,7 @@ class SettingsPanel(QWidget):
             SETTINGS_LONG_INPUT_WIDTH,
             SETTINGS_INPUT_HEIGHT,
         )
-        self._server_url_edit.setPlaceholderText(DEFAULT_INTEL_URL)
+        self._server_url_edit.setPlaceholderText("请输入服务端地址")
         server_layout.addWidget(self._server_url_edit)
         key_label = QLabel("设备密钥")
         key_label.setObjectName("fieldLabel")
@@ -407,7 +408,7 @@ class SettingsPanel(QWidget):
         server_url = normalize_server_url(
             os.environ.get(
                 "EVE_SENTRY_INTEL_URL",
-                payload.get("server_url", DEFAULT_INTEL_URL),
+                payload.get("server_url", ""),
             )
         )
         return {

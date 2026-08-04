@@ -149,6 +149,16 @@ def test_parse_args_supports_dry_run_json_mode():
     assert args.json is True
     assert args.ignore_existing is False
     assert args.all_channels is True
+    assert args.server == ""
+
+
+def test_parse_args_requires_server_outside_dry_run():
+    try:
+        parse_args(["--once"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("expected --server to be required outside dry-run")
 
 
 def test_parse_args_rejects_removed_client_parse_option():

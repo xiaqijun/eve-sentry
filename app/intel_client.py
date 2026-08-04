@@ -43,11 +43,14 @@ class IntelApiClient:
 
     def __init__(
         self,
-        base_url: str = "http://127.0.0.1:8765",
+        base_url: str,
         timeout: float = 3.0,
         api_key: str = "",
     ):
-        self.base_url = base_url.rstrip("/")
+        normalized_url = str(base_url or "").strip().rstrip("/")
+        if not normalized_url:
+            raise IntelApiError("服务端地址未配置")
+        self.base_url = normalized_url
         self.timeout = timeout
         self.api_key = str(api_key or "").strip()
 
