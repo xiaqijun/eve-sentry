@@ -1,4 +1,4 @@
-"""Local tray alert client that consumes server-side SSE alerts only."""
+"""Local tray alert client that consumes server alerts and local EVE windows."""
 
 from __future__ import annotations
 
@@ -45,6 +45,9 @@ from app.core.heartbeat import (
     summarize_heartbeat_error,
 )
 from app.core.client_identity import persistent_client_id
+from app.channels.local_system import find_latest_local_system
+from app.channels.log_watcher import DEFAULT_CHATLOG_DIR
+from app.engine.capturer import Capturer
 from app.intel_client import IntelApiClient, IntelApiError
 
 logger = logging.getLogger(__name__)
@@ -537,6 +540,85 @@ def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[st
                 }
             )
     return accounts
+
+
+def local_accounts_from_windows(
+    windows: list[dict[str, Any]],
+    systems_by_character: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Build selectable local accounts from every currently running EVE window."""
+    systems = systems_by_character or {}
+    accounts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for window in windows:
+        title = str(window.get("title") or "").strip()
+        prefix, separator, character_name = title.partition(" - ")
+        if not separator or prefix.strip().casefold() != "eve":
+            character_name = str(window.get("character_name") or "").strip()
+        else:
+            character_name = character_name.strip()
+        if not character_name:
+            continue
+        identity = character_name.casefold()
+        key = f"local-account:{identity}"
+        if key in seen:
+            continue
+        seen.add(key)
+        system_name = str(systems.get(character_name.casefold()) or "Unknown").strip()
+        accounts.append(
+            {
+                "key": key,
+                "label": character_name or title or "EVE 窗口",
+                "character_name": character_name,
+                "source_instance": title,
+                "window_title": title,
+                "window_hwnd": window.get("hwnd"),
+                "system_name": system_name or "Unknown",
+                "system_id": None,
+                "local": True,
+            }
+        )
+    return accounts
+
+
+def merge_map_accounts(
+    local_accounts: list[dict[str, Any]],
+    remote_accounts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge local windows with matching server accounts without duplicates."""
+    remote_by_character: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    for index, account in enumerate(remote_accounts):
+        character = str(account.get("character_name") or "").strip().casefold()
+        if character:
+            remote_by_character.setdefault(character, []).append((index, account))
+
+    merged: list[dict[str, Any]] = []
+    consumed_remote: set[int] = set()
+    for local in local_accounts:
+        item = dict(local)
+        character = str(item.get("character_name") or "").strip().casefold()
+        matches = remote_by_character.get(character, [])
+        match = next(
+            ((index, remote) for index, remote in matches if index not in consumed_remote),
+            matches[0] if matches else None,
+        )
+        if match is not None:
+            index, remote = match
+            consumed_remote.add(index)
+            local_system = str(item.get("system_name") or "").strip()
+            remote_system = str(remote.get("system_name") or "").strip()
+            if not local_system or local_system.casefold() == "unknown":
+                item["system_name"] = remote_system or "Unknown"
+                item["system_id"] = remote.get("system_id")
+            item["client_id"] = remote.get("client_id")
+        merged.append(item)
+
+    merged.extend(
+        dict(account)
+        for index, account in enumerate(remote_accounts)
+        if index not in consumed_remote and not bool(account.get("local"))
+    )
+    return merged
 
 
 def is_local_monitored_account(client_id: Any, alert_client_id: Any) -> bool:
@@ -2008,6 +2090,8 @@ class AlertTrayController:
         api_factory: Callable[..., IntelApiClient] = IntelApiClient,
         tray_enabled: bool = True,
         notification_callback: Callable[[str, str], None] | None = None,
+        window_provider: Callable[[], list[dict[str, Any]]] | None = None,
+        system_resolver: Callable[[str], Any] | None = None,
     ) -> None:
         self.app = app
         self.args = args
@@ -2024,9 +2108,27 @@ class AlertTrayController:
         self._recent_summaries: list[dict[str, Any]] = []
         self._local_hostile_counts: dict[str, tuple[str, int]] = {}
         self._map_accounts: list[dict[str, Any]] = []
+        self._local_map_accounts: list[dict[str, Any]] = []
+        self._remote_map_accounts: list[dict[str, Any]] = []
+        self._local_system_cache: dict[str, tuple[float, str]] = {}
+        self._local_window_capturer: Capturer | None = None
+        if window_provider is None:
+            self._local_window_capturer = Capturer()
+            window_provider = lambda: self._local_window_capturer.list_eve_windows(
+                "EVE -"
+            )
+        self._window_provider = window_provider
+        self._system_resolver = system_resolver or (
+            lambda character_name: find_latest_local_system(
+                DEFAULT_CHATLOG_DIR,
+                character_name=character_name,
+            )
+        )
         self._map_worker: AlertMapWorker | None = None
+        self._active_map_request_signature: tuple[Any, ...] | None = None
         self._pending_map_request: dict[str, Any] | None = None
         self._map_request_signature: tuple[Any, ...] | None = None
+        self._stopped = False
         self._alert_volume = max(0.0, min(1.0, float(getattr(args, "alert_volume", 1.0))))
         self._alert_muted = bool(getattr(args, "alert_muted", False))
         self._alert_cooldown = max(0.0, float(getattr(args, "alert_cooldown", 15.0)))
@@ -2060,6 +2162,11 @@ class AlertTrayController:
         self._worker.safe_received.connect(self._on_safe)
         self._worker.bootstrap_received.connect(self._on_bootstrap)
         self._worker.status_changed.connect(self._on_status)
+        self._local_account_timer = QTimer(self.overlay)
+        self._local_account_timer.setInterval(3000)
+        self._local_account_timer.timeout.connect(self._refresh_local_accounts)
+        self._local_account_timer.start()
+        self._refresh_local_accounts()
 
     def start(self) -> None:
         """Start the tray icon and SSE worker."""
@@ -2069,6 +2176,12 @@ class AlertTrayController:
 
     def stop(self, *, wait_for_worker: bool = True) -> None:
         """Request shutdown, optionally waiting for the SSE worker to exit."""
+        self._stopped = True
+        self._pending_map_request = None
+        self._map_request_signature = None
+        local_account_timer = getattr(self, "_local_account_timer", None)
+        if local_account_timer is not None:
+            local_account_timer.stop()
         sound_timer = getattr(self, "_sound_repeat_timer", None)
         if sound_timer is not None:
             sound_timer.stop()
@@ -2082,10 +2195,92 @@ class AlertTrayController:
             self._tray.hide()
         if wait_for_worker and self._worker.isRunning():
             self._worker.wait(int((self.args.timeout + 4.0) * 1000))
+        local_capturer = getattr(self, "_local_window_capturer", None)
+        if local_capturer is not None:
+            local_capturer.close()
+
+    def _refresh_local_accounts(self) -> None:
+        """Refresh local account choices independently from monitor workers."""
+        provider = getattr(self, "_window_provider", None)
+        if not callable(provider):
+            return
+        try:
+            windows = provider()
+        except Exception as exc:
+            logger.debug("Local EVE window discovery unavailable: %s", exc)
+            return
+        if not isinstance(windows, list):
+            windows = []
+
+        now = time.monotonic()
+        resolver = getattr(self, "_system_resolver", None)
+        cache = getattr(self, "_local_system_cache", {})
+        systems: dict[str, str] = {}
+        for window in windows:
+            title = str(window.get("title") or "").strip()
+            prefix, separator, character_name = title.partition(" - ")
+            if not separator or prefix.strip().casefold() != "eve":
+                character_name = str(window.get("character_name") or "").strip()
+            else:
+                character_name = character_name.strip()
+            character_key = character_name.casefold()
+            if not character_key:
+                continue
+            expires_at, cached_system = cache.get(character_key, (0.0, "Unknown"))
+            if now >= expires_at and callable(resolver):
+                try:
+                    resolved = resolver(character_name)
+                    cached_system = str(
+                        getattr(resolved, "system_name", resolved) or "Unknown"
+                    ).strip() or "Unknown"
+                except Exception as exc:
+                    logger.debug("Local system lookup unavailable for %s: %s", character_name, exc)
+                cache[character_key] = (now + 5.0, cached_system)
+            systems[character_key] = cached_system
+        self._local_system_cache = {
+            key: value for key, value in cache.items() if key in systems
+        }
+        self._local_map_accounts = local_accounts_from_windows(windows, systems)
+        self._sync_map_accounts()
+
+    def _sync_map_accounts(self) -> None:
+        """Apply the merged local and remote account list to the overlay."""
+        accounts = merge_map_accounts(
+            getattr(self, "_local_map_accounts", []),
+            getattr(self, "_remote_map_accounts", []),
+        )
+        previous_signature = tuple(
+            (
+                str(item.get("key") or ""),
+                str(item.get("system_name") or ""),
+                item.get("system_id"),
+            )
+            for item in getattr(self, "_map_accounts", [])
+        )
+        current_signature = tuple(
+            (
+                str(item.get("key") or ""),
+                str(item.get("system_name") or ""),
+                item.get("system_id"),
+            )
+            for item in accounts
+        )
+        changed = current_signature != previous_signature
+        self._map_accounts = accounts
+        if changed:
+            set_accounts = getattr(self.overlay, "set_map_accounts", None)
+            if callable(set_accounts):
+                set_accounts(accounts)
+        if changed or getattr(self, "_map_request_signature", None) is None:
+            self._map_request_signature = None
+            self._refresh_local_map()
 
     def is_running(self) -> bool:
-        """Return whether the SSE worker is still unwinding."""
-        return self._worker.isRunning()
+        """Return whether any controller worker is still unwinding."""
+        map_worker = getattr(self, "_map_worker", None)
+        return self._worker.isRunning() or bool(
+            map_worker is not None and map_worker.isRunning()
+        )
 
     def show_monitoring_systems(self, system_names: list[str]) -> None:
         """Ensure monitored systems are visible before the first SSE refresh."""
@@ -2206,12 +2401,13 @@ class AlertTrayController:
             if str(item.get("key") or "") in selected_set
         ]
         if not accounts:
+            self._pending_map_request = None
             setter = getattr(self.overlay, "set_map_payload", None)
             if callable(setter):
                 setter({"systems": [], "links": [], "centers": []})
             message = getattr(self.overlay, "set_map_message", None)
             if callable(message):
-                message("请选择至少一个在线账号")
+                message("请选择至少一个运行中的账号")
             self._map_request_signature = None
             return
 
@@ -2220,6 +2416,8 @@ class AlertTrayController:
                 str(item.get("system_name") or "").strip()
                 for item in accounts
                 if str(item.get("system_name") or "").strip()
+                and str(item.get("system_name") or "").strip().casefold()
+                != "unknown"
             )
         )
         system_ids: list[int] = []
@@ -2230,6 +2428,16 @@ class AlertTrayController:
                 continue
             if system_id > 0 and system_id not in system_ids:
                 system_ids.append(system_id)
+        if not system_names and not system_ids:
+            self._pending_map_request = None
+            setter = getattr(self.overlay, "set_map_payload", None)
+            if callable(setter):
+                setter({"systems": [], "links": [], "centers": []})
+            message = getattr(self.overlay, "set_map_message", None)
+            if callable(message):
+                message("所选账号尚未识别当前星系")
+            self._map_request_signature = None
+            return
         request = {
             "system_names": system_names,
             "system_ids": system_ids,
@@ -2246,6 +2454,8 @@ class AlertTrayController:
         self._start_map_worker(request)
 
     def _start_map_worker(self, request: dict[str, Any]) -> None:
+        if bool(getattr(self, "_stopped", False)):
+            return
         message = getattr(self.overlay, "set_map_message", None)
         if callable(message):
             message("正在加载局部星图...")
@@ -2258,26 +2468,40 @@ class AlertTrayController:
             api_factory=self.api_factory,
         )
         self._map_worker = worker
+        self._active_map_request_signature = (
+            tuple(request["system_names"]),
+            tuple(request["system_ids"]),
+            request["hops"],
+        )
         worker.map_received.connect(self._on_map_received)
         worker.failed.connect(self._on_map_failed)
         worker.finished.connect(self._on_map_worker_finished)
         worker.start()
 
     def _on_map_received(self, payload: dict[str, Any]) -> None:
+        if bool(getattr(self, "_stopped", False)) or getattr(
+            self, "_active_map_request_signature", None
+        ) != getattr(self, "_map_request_signature", None):
+            return
         setter = getattr(self.overlay, "set_map_payload", None)
         if callable(setter):
             setter(payload)
 
     def _on_map_failed(self, message: str) -> None:
+        if bool(getattr(self, "_stopped", False)) or getattr(
+            self, "_active_map_request_signature", None
+        ) != getattr(self, "_map_request_signature", None):
+            return
         setter = getattr(self.overlay, "set_map_message", None)
         if callable(setter):
             setter(message or "局部星图加载失败")
 
     def _on_map_worker_finished(self) -> None:
         self._map_worker = None
+        self._active_map_request_signature = None
         pending = self._pending_map_request
         self._pending_map_request = None
-        if pending is not None:
+        if pending is not None and not bool(getattr(self, "_stopped", False)):
             self._start_map_worker(pending)
 
     def _setup_tray(self) -> None:
@@ -2466,32 +2690,8 @@ class AlertTrayController:
                 account.get("client_id"),
                 alert_client_id,
             )
-        previous_signature = tuple(
-            (
-                str(item.get("key") or ""),
-                str(item.get("system_name") or ""),
-                item.get("system_id"),
-            )
-            for item in getattr(self, "_map_accounts", [])
-        )
-        current_signature = tuple(
-            (
-                str(item.get("key") or ""),
-                str(item.get("system_name") or ""),
-                item.get("system_id"),
-            )
-            for item in accounts
-        )
-        self._map_accounts = accounts
-        set_accounts = getattr(self.overlay, "set_map_accounts", None)
-        if callable(set_accounts):
-            set_accounts(accounts)
-        if (
-            current_signature != previous_signature
-            or getattr(self, "_map_request_signature", None) is None
-        ):
-            self._map_request_signature = None
-            self._refresh_local_map()
+        self._remote_map_accounts = accounts
+        self._sync_map_accounts()
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)

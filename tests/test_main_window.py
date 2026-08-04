@@ -1685,6 +1685,32 @@ def test_monitor_window_menu_only_auto_selects_new_windows_in_all_mode():
     assert window._monitor_window_button.text() == "监控窗口 4/4"
 
 
+def test_monitor_window_menu_handles_untitled_process_window():
+    qt_app()
+    window = MainWindow.__new__(MainWindow)
+    window._monitor_window_menu = QMenu()
+    window._monitor_window_button = QToolButton()
+    window._monitor_window_actions = {}
+    window._monitor_windows_by_key = {}
+    window._monitor_known_window_keys = set()
+    window._monitor_selected_titles = set()
+    window._monitor_select_all_new_windows = True
+    window._syncing_monitor_menu = False
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: 99},
+    )()
+
+    MainWindow._sync_monitor_window_menu(
+        window,
+        [{"hwnd": 99, "title": ""}],
+    )
+
+    assert list(window._monitor_window_actions) == ["hwnd:99"]
+    assert window._monitor_window_titles_by_key == {"hwnd:99": "EVE 窗口"}
+
+
 def test_monitor_window_menu_can_select_only_current_calibration_window():
     qt_app()
     windows = [
@@ -2526,6 +2552,140 @@ def test_window_status_table_lists_worker_contexts():
         ["Pilot B", "HB-FSO", "EVE - Pilot B", "220x420 @ 760,190", "扫描中", "OCR 名单 2"],
     ]
     assert table.resized is False
+
+
+def test_window_status_table_lists_all_detected_windows_before_monitoring():
+    table = FakeStatusTable()
+    window = MainWindow.__new__(MainWindow)
+    window._window_status_table = table
+    window._worker_contexts = {}
+    window._detected_window_contexts = {
+        "first": {
+            "character_name": "Pilot A",
+            "system_name": "S-KSWL",
+            "window_title": "EVE - Pilot A",
+            "region": {"x": 600, "y": 0, "w": 200, "h": 600},
+            "runtime_status": "待启动",
+            "last_action": "窗口已选择，监控尚未启动",
+        },
+        "second": {
+            "character_name": "Pilot B",
+            "system_name": "HB-FSO",
+            "window_title": "EVE - Pilot B",
+            "region": {"x": 760, "y": 190, "w": 220, "h": 420},
+            "runtime_status": "未选择",
+            "last_action": "未选择为监控窗口",
+        },
+    }
+
+    MainWindow._refresh_window_status_table(window)
+
+    assert table_text(table) == [
+        [
+            "Pilot A",
+            "S-KSWL",
+            "EVE - Pilot A",
+            "200x600 @ 600,0",
+            "待启动",
+            "窗口已选择，监控尚未启动",
+        ],
+        [
+            "Pilot B",
+            "HB-FSO",
+            "EVE - Pilot B",
+            "220x420 @ 760,190",
+            "未选择",
+            "未选择为监控窗口",
+        ],
+    ]
+
+
+def test_detected_context_keeps_idle_state_separate_from_worker_state():
+    key = "hwnd:1:eve - pilot a"
+    running = {
+        "key": key,
+        "character_name": "Pilot A",
+        "system_name": "S-KSWL",
+        "window_title": "EVE - Pilot A",
+        "runtime_status": "运行中",
+        "last_action": "扫描中",
+    }
+    window = MainWindow.__new__(MainWindow)
+    window._worker_contexts = {key: running}
+    window._detected_window_contexts = {}
+    window._monitor_last_status_by_title = {}
+    window._monitor_window_actions = {key: FakeCheckAction(True)}
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: 1},
+    )()
+    window._region_prefs = type(
+        "Prefs",
+        (),
+        {"resolve_region": lambda self, _item: None},
+    )()
+    window._capturer = type(
+        "Capturer",
+        (),
+        {
+            "get_member_list_region": lambda self, _item: {
+                "x": 600,
+                "y": 0,
+                "w": 200,
+                "h": 600,
+            }
+        },
+    )()
+    window._use_local_system_log = False
+    window._refresh_monitor_window_action_labels = lambda: None
+    window._refresh_window_status_table = lambda: None
+
+    MainWindow._refresh_detected_window_contexts(
+        window,
+        [{"hwnd": 1, "title": "EVE - Pilot A"}],
+    )
+
+    detected = window._detected_window_contexts[key]
+    assert detected is not running
+    assert detected["system_name"] == "S-KSWL"
+    assert detected["runtime_status"] == "待启动"
+    assert detected["last_action"] == "窗口已选择，监控尚未启动"
+
+
+def test_idle_monitor_selection_refreshes_detected_contexts_immediately():
+    calls = []
+    windows = [{"hwnd": 1, "title": "EVE - Pilot A"}]
+    window = MainWindow.__new__(MainWindow)
+    window._syncing_monitor_menu = False
+    window._monitor_windows_by_key = {"first": windows[0]}
+    window._monitor_btn = type(
+        "Button",
+        (),
+        {"isChecked": lambda self: False},
+    )()
+    window._persist_monitor_window_selection = lambda: calls.append("persist")
+    window._refresh_detected_window_contexts = (
+        lambda items: calls.append(("refresh", items))
+    )
+
+    MainWindow._on_monitor_window_toggled(window)
+
+    assert calls == ["persist", ("refresh", windows)]
+
+
+def test_detected_system_for_character_reuses_local_context():
+    window = MainWindow.__new__(MainWindow)
+    window._detected_window_contexts = {
+        "first": {
+            "character_name": "Pilot A",
+            "system_name": "S-KSWL",
+        }
+    }
+    window._worker_contexts = {}
+
+    assert MainWindow._detected_system_for_character(window, "pilot a") == "S-KSWL"
+    assert MainWindow._detected_system_for_character(window, "Pilot B") == "Unknown"
 
 
 def test_update_window_status_records_last_action():

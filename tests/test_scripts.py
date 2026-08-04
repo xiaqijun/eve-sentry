@@ -447,11 +447,11 @@ def test_monitor_ui_smoke_can_render_detected_window_offscreen():
     assert payload["window_status_rows"] == [
         [
             "Smoke Pilot",
-            "未知",
+            "Smoke",
             "EVE - Smoke Pilot",
             "200x600 @ 1160,160",
             "待启动",
-            "选择窗口并点击开始监控",
+            "窗口已选择，监控尚未启动",
         ]
     ]
     assert payload["monitor_button"] == "开始监控"
@@ -511,12 +511,20 @@ def test_monitor_ui_smoke_can_render_multiple_detected_windows_offscreen():
     assert payload["window_status_rows"] == [
         [
             "Smoke Pilot",
-            "未知",
+            "Smoke",
             "EVE - Smoke Pilot",
             "200x600 @ 1160,160",
             "待启动",
-            "选择窗口并点击开始监控",
-        ]
+            "窗口已选择，监控尚未启动",
+        ],
+        [
+            "Smoke Pilot 2",
+            "Smoke",
+            "EVE - Smoke Pilot 2",
+            "200x600 @ 1192,184",
+            "待启动",
+            "窗口已选择，监控尚未启动",
+        ],
     ]
     assert payload["status_card_values"]["window"] == "EVE - Smoke Pilot"
     assert payload["status_card_values"]["region"] == "200x600"
