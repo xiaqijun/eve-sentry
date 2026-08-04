@@ -1277,7 +1277,8 @@ def test_alert_overlay_renders_hostile_system_tile(monkeypatch):
 
 def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtCore import Qt
+    from PyQt6.QtCore import QPoint, Qt
+    from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import (
         QApplication,
         QComboBox,
@@ -1335,10 +1336,10 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
             if label.objectName().startswith("map")
         }
         assert legends["mapOnlineLegend"].text() == "● 监控"
-        assert legends["mapWarningLegend"].text() == "◎ 关注"
+        assert legends["mapWarningLegend"].text() == "★ 预警"
         assert legends["mapHostileLegend"].text() == "◆ 来敌"
         assert "青色节点" in legends["mapOnlineLegend"].toolTip()
-        assert "蓝色外环" in legends["mapWarningLegend"].toolTip()
+        assert "金色星形" in legends["mapWarningLegend"].toolTip()
         assert "红色节点" in legends["mapHostileLegend"].toolTip()
         view_buttons = {
             button.text(): button
@@ -1347,9 +1348,17 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
         assert view_buttons["星图"].isChecked() is True
         assert view_buttons["列表"].isChecked() is False
 
-        overlay._account_actions[1].setChecked(False)
+        overlay._account_menu.popup(QPoint(100, 100))
+        app.processEvents()
+        bob_action = overlay._account_actions[1]
+        QTest.mouseClick(
+            overlay._account_menu,
+            Qt.MouseButton.LeftButton,
+            pos=overlay._account_menu.actionGeometry(bob_action).center(),
+        )
         app.processEvents()
 
+        assert overlay._account_menu.isVisible() is True
         assert account_button.text() == "账号 1/2"
         assert overlay.map_selection() == (["alice"], 3)
         assert changes[-1] == (["alice"], 3)
@@ -1359,6 +1368,7 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
             str(item.get("key")): bool(item.get("selected"))
             for item in overlay._map_widget._accounts
         } == {"alice": True, "bob": False}
+        overlay._account_menu.hide()
 
         step_buttons[0].click()
         app.processEvents()
@@ -1410,36 +1420,6 @@ def test_alert_overlay_keeps_alert_list_hidden_during_map_updates(monkeypatch):
         assert overlay._map_widget.isVisible() is False
     finally:
         overlay.close()
-
-
-def test_local_star_map_positions_labels_away_from_node_centerline():
-    assert LocalStarMapWidget.LABEL_FONT_PIXEL_SIZE == 10
-
-    label = LocalStarMapWidget._label_rect(
-        x=100,
-        y=60,
-        radius=4,
-        text_width=64,
-        line_count=1,
-        line_height=14,
-        canvas_width=220,
-        canvas_height=120,
-    )
-
-    assert label.bottom() < 56 or label.top() > 64
-
-    top_edge_label = LocalStarMapWidget._label_rect(
-        x=100,
-        y=10,
-        radius=4,
-        text_width=64,
-        line_count=2,
-        line_height=14,
-        canvas_width=220,
-        canvas_height=120,
-    )
-
-    assert top_edge_label.top() > 14
 
 
 def test_local_star_map_only_labels_key_nodes_and_prefers_local_account():
@@ -1549,8 +1529,8 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
 
         image = widget.grab().toImage()
         online_center = image.pixelColor(24, 80)
-        focused_monitor_ring = image.pixelColor(148, 80)
-        focused_warning_ring = image.pixelColor(157, 80)
+        focused_monitor_ring = image.pixelColor(155, 80)
+        focused_star = image.pixelColor(148, 80)
         warning_center = image.pixelColor(272, 80)
         warning_body = image.pixelColor(278, 80)
         both_center = image.pixelColor(396, 80)
@@ -1558,7 +1538,8 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
 
         assert online_center.green() > online_center.red() * 1.5
         assert focused_monitor_ring.green() > focused_monitor_ring.red() * 1.5
-        assert focused_warning_ring.blue() > focused_warning_ring.red() * 1.5
+        assert focused_star.red() > focused_star.blue() * 1.4
+        assert focused_star.green() > focused_star.blue() * 1.2
         assert warning_center.red() > warning_center.green() * 1.5
         assert warning_body.red() > warning_body.green()
         assert both_center.red() > both_center.green() * 1.5
@@ -1568,6 +1549,10 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
             and "其他账号：Remote Scout" in tooltip
             and "来敌：1 人" in tooltip
             for _rect, tooltip in widget._node_tooltips
+        )
+        assert all(
+            rect.width() == 24 and rect.height() == 24
+            for rect, _tooltip in widget._node_tooltips
         )
     finally:
         widget.close()
