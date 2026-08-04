@@ -213,7 +213,7 @@ def test_postgres_heartbeat_attribution_migrates_and_roundtrips() -> None:
                     status TEXT NOT NULL,
                     seen_at TEXT NOT NULL,
                     heartbeat_interval_seconds REAL NOT NULL DEFAULT 0,
-                    details_json TEXT NOT NULL DEFAULT '{}'
+                    details_json TEXT NOT NULL DEFAULT '{{}}'
                 )
                 """
             ).format(sql.Identifier(schema_name))
