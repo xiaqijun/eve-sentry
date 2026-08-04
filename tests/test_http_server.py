@@ -2,10 +2,13 @@ import json
 import http.client
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
+
+import pytest
 
 from app.core.models import Evidence, ThreatEvent
 from app.core.heartbeat import monitored_system_names
@@ -2928,6 +2931,244 @@ def test_authenticated_business_posts_preserve_their_request_body(tmp_path):
         )
         assert status == 200
         assert payload["created"] == 0
+    finally:
+        server.stop()
+
+
+def test_heartbeat_credential_binding_is_server_owned_and_private(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    member = auth.create_user("pilot", "pilot-password-123", role="member")
+    key = auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    headers = {
+        "Authorization": f"Bearer {key['secret']}",
+        "X-Real-IP": "203.0.113.18",
+    }
+    try:
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/clients/heartbeats",
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "client_type": "detector_client",
+                "user_id": "spoofed-user",
+                "api_key_id": "spoofed-key",
+                "remote_ip": "198.51.100.99",
+            },
+            headers=headers,
+        )
+
+        assert status == 201
+        assert "user_id" not in payload["heartbeat"]
+        assert "api_key_id" not in payload["heartbeat"]
+        assert "remote_ip" not in payload["heartbeat"]
+
+        managed = store.management_heartbeat_snapshot()["heartbeats"][0]
+        assert managed["user_id"] == member["user_id"]
+        assert managed["api_key_id"] == key["key_id"]
+        assert managed["remote_ip"] == "203.0.113.18"
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/clients",
+            headers={"Authorization": f"Bearer {key['secret']}"},
+        )
+        assert status == 200
+        public = payload["clients"]["heartbeats"][0]
+        assert "user_id" not in public
+        assert "api_key_id" not in public
+        assert "remote_ip" not in public
+        assert "owner" not in public
+        assert "key" not in public
+    finally:
+        server.stop()
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/api/v1/clients/heartbeats", "/api/heartbeats"],
+)
+def test_heartbeat_routes_replace_client_time_and_attribution(tmp_path, path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    member = auth.create_user("pilot", "pilot-password-123", role="member")
+    key = auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    before = datetime.now(timezone.utc) - timedelta(seconds=1)
+    try:
+        status, _, _ = authenticated_request(
+            f"{server.url}{path}",
+            method="POST",
+            payload={
+                "client_id": f"detector:{path.rsplit('/', 1)[-1]}",
+                "seen_at": "2999-01-01T00:00:00+00:00",
+                "user_id": "spoofed-user",
+                "api_key_id": "spoofed-key",
+                "remote_ip": "198.51.100.99",
+            },
+            headers={
+                "Authorization": f"Bearer {key['secret']}",
+                "X-Real-IP": "203.0.113.30",
+            },
+        )
+
+        assert status == 201
+        managed = store.management_heartbeat_snapshot()["heartbeats"][0]
+        seen_at = datetime.fromisoformat(managed["seen_at"])
+        assert before <= seen_at <= datetime.now(timezone.utc) + timedelta(seconds=1)
+        assert managed["seen_at"] != "2999-01-01T00:00:00+00:00"
+        assert managed["user_id"] == member["user_id"]
+        assert managed["api_key_id"] == key["key_id"]
+        assert managed["remote_ip"] == "203.0.113.30"
+    finally:
+        server.stop()
+
+
+def test_heartbeat_rejects_cross_user_takeover_and_allows_same_user_new_key(
+    tmp_path,
+):
+    store = AuthTestStore(tmp_path / "intel.json")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    first = auth.create_user("pilot-one", "pilot-password-123", role="member")
+    second = auth.create_user("pilot-two", "pilot-password-123", role="member")
+    first_key = auth.create_api_key(first["user_id"], "First", first["user_id"])
+    replacement_key = auth.create_api_key(
+        first["user_id"], "Replacement", first["user_id"]
+    )
+    second_key = auth.create_api_key(second["user_id"], "Second", second["user_id"])
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    client_id = "detector:shared"
+    try:
+        for key, expected_status in (
+            (first_key, 201),
+            (second_key, 409),
+            (replacement_key, 201),
+        ):
+            status, _, _ = authenticated_request(
+                f"{server.url}/api/v1/clients/heartbeats",
+                method="POST",
+                payload={"client_id": client_id},
+                headers={"Authorization": f"Bearer {key['secret']}"},
+            )
+            assert status == expected_status
+
+        managed = store.management_heartbeat_snapshot()["heartbeats"][0]
+        assert managed["user_id"] == first["user_id"]
+        assert managed["api_key_id"] == replacement_key["key_id"]
+    finally:
+        server.stop()
+
+
+def test_heartbeat_rejects_browser_session_when_auth_is_enforced(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    auth.create_user("admin", "admin-password-123", role="admin")
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    try:
+        status, response_headers, payload = authenticated_request(
+            f"{server.url}/api/v1/auth/login",
+            method="POST",
+            payload={"username": "admin", "password": "admin-password-123"},
+        )
+        assert status == 200
+        cookie = response_headers["Set-Cookie"].split(";", 1)[0]
+        csrf_token = payload["csrf_token"]
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/clients/heartbeats",
+            method="POST",
+            payload={"client_id": "browser:invalid"},
+            headers={"Cookie": cookie, "X-CSRF-Token": csrf_token},
+        )
+        assert status == 403
+        assert payload["error"] == "desktop API key is required"
+        assert store.management_heartbeat_snapshot()["count"] == 0
+    finally:
+        server.stop()
+
+
+def test_admin_clients_aggregates_all_key_usage_and_rejects_members(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    member = auth.create_user("pilot", "pilot-password-123", role="member")
+    admin_key = auth.create_api_key(admin["user_id"], "Admin", admin["user_id"])
+    member_key = auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
+    unused_key = auth.create_api_key(member["user_id"], "Spare", member["user_id"])
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    member_headers = {"Authorization": f"Bearer {member_key['secret']}"}
+    try:
+        for client_id, seen_at, remote_ip in (
+            ("detector-client:one", "2999-01-01T00:00:01+00:00", "203.0.113.21"),
+            ("alert-client:one", "2999-01-01T00:00:02+00:00", "203.0.113.22"),
+        ):
+            status, _, _ = authenticated_request(
+                f"{server.url}/api/v1/clients/heartbeats",
+                method="POST",
+                payload={
+                    "client_id": client_id,
+                    "client_type": client_id.split("-", 1)[0] + "_client",
+                    "seen_at": seen_at,
+                },
+                headers={**member_headers, "X-Real-IP": remote_ip},
+            )
+            assert status == 201
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/clients",
+            headers=member_headers,
+        )
+        assert status == 403
+        assert payload["code"] == "forbidden"
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/clients",
+            headers={"Authorization": f"Bearer {admin_key['secret']}"},
+        )
+        assert status == 200
+        assert set(payload) == {"clients", "keys"}
+        assert payload["clients"]["count"] == 2
+        assert "items" not in payload["clients"]["summary"]
+
+        clients_by_id = {
+            item["client_id"]: item
+            for item in payload["clients"]["heartbeats"]
+        }
+        assert set(clients_by_id) == {
+            "alert-client:one",
+            "detector-client:one",
+        }
+        for client in clients_by_id.values():
+            assert client["user_id"] == member["user_id"]
+            assert client["api_key_id"] == member_key["key_id"]
+            assert client["owner"]["username"] == "pilot"
+            assert client["key"]["name"] == "Desktop"
+        assert clients_by_id["alert-client:one"]["remote_ip"] == "203.0.113.22"
+        assert clients_by_id["detector-client:one"]["remote_ip"] == "203.0.113.21"
+
+        usage_by_key = {item["key"]["key_id"]: item for item in payload["keys"]}
+        assert set(usage_by_key) == {
+            admin_key["key_id"],
+            member_key["key_id"],
+            unused_key["key_id"],
+        }
+        usage = usage_by_key[member_key["key_id"]]
+        assert usage["owner"]["username"] == "pilot"
+        assert usage["client_count"] == 2
+        assert usage["online_count"] == 2
+        assert {item["client_id"] for item in usage["linked_clients"]} == {
+            "alert-client:one",
+            "detector-client:one",
+        }
+        assert usage["last_client"]["client_id"] in clients_by_id
+        assert usage["last_ip"] in {"203.0.113.21", "203.0.113.22"}
+        assert usage_by_key[unused_key["key_id"]]["linked_clients"] == []
+        assert usage_by_key[unused_key["key_id"]]["last_client"] is None
     finally:
         server.stop()
 

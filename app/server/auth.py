@@ -830,6 +830,20 @@ class AuthService:
             users.append(user)
         return users
 
+    def list_users_with_api_keys(self) -> list[dict[str, Any]]:
+        """Return only public user and API-key fields for client management."""
+        user_rows, key_rows = self.repository.list_users_and_api_keys()
+        keys_by_user: dict[str, list[dict[str, Any]]] = {}
+        for item in key_rows:
+            user_id = str(item.get("user_id") or "")
+            keys_by_user.setdefault(user_id, []).append(_public_api_key(item))
+        users = []
+        for item in user_rows:
+            user = _public_user(item)
+            user["keys"] = keys_by_user.get(str(item.get("user_id") or ""), [])
+            users.append(user)
+        return users
+
     def set_user_status(
         self,
         user_id: str,

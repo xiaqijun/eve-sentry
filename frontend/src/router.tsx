@@ -5,6 +5,7 @@ import { DashboardPage } from "./features/dashboard/DashboardPage";
 import { WorkbenchPage } from "./features/workbench/WorkbenchPage";
 import { AccountKeysPage } from "./features/auth/AccountKeysPage";
 import { AdminAuditPage } from "./features/auth/AdminAuditPage";
+import { AdminClientsPage } from "./features/auth/AdminClientsPage";
 import { AdminIdentityPage } from "./features/auth/AdminIdentityPage";
 import { AdminUsersPage } from "./features/auth/AdminUsersPage";
 import { AdminWhitelistPage } from "./features/auth/AdminWhitelistPage";
@@ -25,6 +26,7 @@ export const router = createBrowserRouter([
       { path: "account/security", element: <Navigate replace to="/account/keys" /> },
       { path: "admin", element: <Navigate replace to="/admin/users" /> },
       { path: "admin/users", element: <ProtectedRoute admin><AdminUsersPage /></ProtectedRoute> },
+      { path: "admin/clients", element: <ProtectedRoute admin><AdminClientsPage /></ProtectedRoute> },
       { path: "admin/identity", element: <ProtectedRoute admin><AdminIdentityPage /></ProtectedRoute> },
       { path: "admin/whitelist", element: <ProtectedRoute admin><AdminWhitelistPage /></ProtectedRoute> },
       { path: "admin/audit", element: <ProtectedRoute admin><AdminAuditPage /></ProtectedRoute> },

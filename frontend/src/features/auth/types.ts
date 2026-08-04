@@ -85,8 +85,41 @@ export interface ClientHeartbeatRecord {
   details?: ClientHeartbeatDetails;
 }
 
+export interface AdminClientOwner {
+  user_id: string;
+  username: string;
+  display_name: string;
+  role: UserRole;
+  status: "active" | "disabled";
+}
+
+export interface AdminClientHeartbeatRecord extends ClientHeartbeatRecord {
+  owner?: AdminClientOwner | null;
+  key?: ApiKeyRecord | null;
+  user_id?: string;
+  api_key_id?: string;
+  remote_ip?: string;
+}
+
 export interface ClientsSnapshot {
   count: number;
   heartbeats: ClientHeartbeatRecord[];
   summary?: Record<string, unknown>;
+}
+
+export interface AdminClientKeyUsage {
+  key: ApiKeyRecord;
+  owner: AdminClientOwner;
+  client_count: number;
+  linked_clients: AdminClientHeartbeatRecord[];
+  online_count: number;
+  last_client: AdminClientHeartbeatRecord | null;
+  last_ip: string;
+}
+
+export interface AdminClientsSnapshot {
+  clients: Omit<ClientsSnapshot, "heartbeats"> & {
+    heartbeats: AdminClientHeartbeatRecord[];
+  };
+  keys: AdminClientKeyUsage[];
 }

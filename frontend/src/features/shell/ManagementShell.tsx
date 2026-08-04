@@ -3,6 +3,7 @@ import {
   IconApps,
   IconBook,
   IconDashboard,
+  IconDesktop,
   IconFile,
   IconIdcard,
   IconLock,
@@ -23,6 +24,7 @@ const PAGE_META: Record<string, { title: string }> = {
   "/reports": { title: "来袭分析" },
   "/account/keys": { title: "设备密钥" },
   "/admin/users": { title: "用户管理" },
+  "/admin/clients": { title: "客户端管理" },
   "/admin/identity": { title: "身份记录" },
   "/admin/whitelist": { title: "白名单管理" },
   "/admin/audit": { title: "审计日志" },
@@ -79,6 +81,9 @@ export function ManagementShell() {
             <MenuItemGroup key="admin" title="系统管理">
               <MenuItem key="/admin/users">
                 <NavLink className={navigationClass} to="/admin/users"><IconUserGroup /><span>用户管理</span></NavLink>
+              </MenuItem>
+              <MenuItem key="/admin/clients">
+                <NavLink className={navigationClass} to="/admin/clients"><IconDesktop /><span>客户端管理</span></NavLink>
               </MenuItem>
               <MenuItem key="/admin/identity">
                 <NavLink className={navigationClass} to="/admin/identity"><IconIdcard /><span>身份记录</span></NavLink>

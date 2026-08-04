@@ -11,7 +11,11 @@ from app.esi.cache import EsiCache
 from app.esi.resolver import EsiResolver
 from app.intel.enrichment import ThreatEnricher, ThreatEnrichment
 from app.intel.scoring import ScoringEngine, Watchlist
-from app.server.intel_store import IntelStore, StarSystem
+from app.server.intel_store import (
+    HeartbeatOwnershipConflict,
+    IntelStore,
+    StarSystem,
+)
 
 
 def test_list_alerts_stops_scoring_after_reaching_limit(tmp_path, monkeypatch):
@@ -116,6 +120,79 @@ def test_heartbeat_summary_tracks_types_statuses_and_stale_clients(tmp_path):
         "idle": 1,
     }
     assert summary["latest_seen_at"] == payload["heartbeats"][0]["seen_at"]
+
+
+def test_heartbeat_management_attribution_stays_out_of_public_snapshots(tmp_path):
+    store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
+
+    response = store.record_heartbeat(
+        {
+            "client_id": "detector:test",
+            "client_type": "detector_client",
+            "user_id": "user-1",
+            "api_key_id": "key-1",
+            "remote_ip": "203.0.113.9",
+        }
+    )
+    store.record_heartbeat(
+        {
+            "client_id": "legacy:test",
+            "client_type": "alert_client",
+        }
+    )
+
+    assert "user_id" not in response
+    public = store.heartbeat_snapshot()
+    assert all("user_id" not in item for item in public["heartbeats"])
+    assert all("api_key_id" not in item for item in public["summary"]["items"])
+    assert all("remote_ip" not in item for item in public["heartbeats"])
+
+    managed = {
+        item["client_id"]: item
+        for item in store.management_heartbeat_snapshot()["heartbeats"]
+    }
+    assert managed["detector:test"]["user_id"] == "user-1"
+    assert managed["detector:test"]["api_key_id"] == "key-1"
+    assert managed["detector:test"]["remote_ip"] == "203.0.113.9"
+    assert managed["legacy:test"]["user_id"] == ""
+    assert managed["legacy:test"]["api_key_id"] == ""
+    assert managed["legacy:test"]["remote_ip"] == ""
+
+
+def test_heartbeat_client_id_cannot_move_between_users(tmp_path):
+    store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
+    client_id = "detector:shared"
+
+    store.record_heartbeat(
+        {
+            "client_id": client_id,
+            "user_id": "user-1",
+            "api_key_id": "key-1",
+        }
+    )
+
+    with pytest.raises(HeartbeatOwnershipConflict):
+        store.record_heartbeat(
+            {
+                "client_id": client_id,
+                "user_id": "user-2",
+                "api_key_id": "key-2",
+            }
+        )
+
+    with pytest.raises(HeartbeatOwnershipConflict):
+        store.record_heartbeat({"client_id": client_id})
+
+    store.record_heartbeat(
+        {
+            "client_id": client_id,
+            "user_id": "user-1",
+            "api_key_id": "key-3",
+        }
+    )
+    managed = store.management_heartbeat_snapshot()["heartbeats"][0]
+    assert managed["user_id"] == "user-1"
+    assert managed["api_key_id"] == "key-3"
 
 
 def test_add_report_persists_and_snapshot_aggregates(tmp_path):

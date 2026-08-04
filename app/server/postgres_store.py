@@ -1400,7 +1400,10 @@ class PostgreSQLIntelStore(IntelStore):
                     status TEXT NOT NULL,
                     seen_at TEXT NOT NULL,
                     heartbeat_interval_seconds REAL NOT NULL DEFAULT 0,
-                    details_json TEXT NOT NULL DEFAULT '{}'
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    user_id TEXT NOT NULL DEFAULT '',
+                    api_key_id TEXT NOT NULL DEFAULT '',
+                    remote_ip TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
@@ -1415,6 +1418,24 @@ class PostgreSQLIntelStore(IntelStore):
                 "client_heartbeats",
                 "details_json",
                 "TEXT NOT NULL DEFAULT '{}'",
+            )
+            self._ensure_column(
+                connection,
+                "client_heartbeats",
+                "user_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                "client_heartbeats",
+                "api_key_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                "client_heartbeats",
+                "remote_ip",
+                "TEXT NOT NULL DEFAULT ''",
             )
             connection.execute(
                 """
@@ -2208,15 +2229,9 @@ class PostgreSQLIntelStore(IntelStore):
     def record_heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Persist heartbeats while keeping the base in-memory cache."""
         heartbeat = super().record_heartbeat(payload)
-        raw = {
-            "client_id": heartbeat["client_id"],
-            "client_type": heartbeat["client_type"],
-            "label": heartbeat["label"],
-            "status": heartbeat["status"],
-            "seen_at": heartbeat["seen_at"],
-            "heartbeat_interval_seconds": heartbeat["heartbeat_interval_seconds"],
-            "details": dict(heartbeat.get("details") or {}),
-        }
+        with self._lock:
+            raw = dict(self._heartbeats[heartbeat["client_id"]])
+            raw["details"] = dict(raw.get("details") or {})
         self._write_heartbeat(raw)
         return heartbeat
 
@@ -2225,7 +2240,8 @@ class PostgreSQLIntelStore(IntelStore):
             rows = connection.execute(
                 """
                 SELECT client_id, client_type, label, status, seen_at,
-                       heartbeat_interval_seconds, details_json
+                       heartbeat_interval_seconds, details_json,
+                       user_id, api_key_id, remote_ip
                 FROM client_heartbeats
                 ORDER BY seen_at DESC
                 """
@@ -2249,16 +2265,22 @@ class PostgreSQLIntelStore(IntelStore):
                     status,
                     seen_at,
                     heartbeat_interval_seconds,
-                    details_json
+                    details_json,
+                    user_id,
+                    api_key_id,
+                    remote_ip
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(client_id) DO UPDATE SET
                     client_type = excluded.client_type,
                     label = excluded.label,
                     status = excluded.status,
                     seen_at = excluded.seen_at,
                     heartbeat_interval_seconds = excluded.heartbeat_interval_seconds,
-                    details_json = excluded.details_json
+                    details_json = excluded.details_json,
+                    user_id = excluded.user_id,
+                    api_key_id = excluded.api_key_id,
+                    remote_ip = excluded.remote_ip
                 """,
                 self._heartbeat_row(heartbeat),
             )
@@ -2467,6 +2489,9 @@ class PostgreSQLIntelStore(IntelStore):
                 row["heartbeat_interval_seconds"] or 0
             ),
             "details": details,
+            "user_id": str(row.get("user_id") or "").strip(),
+            "api_key_id": str(row.get("api_key_id") or "").strip(),
+            "remote_ip": str(row.get("remote_ip") or "").strip(),
         }
 
     def _heartbeat_row(self, heartbeat: dict[str, Any]) -> tuple[Any, ...]:
@@ -2478,6 +2503,9 @@ class PostgreSQLIntelStore(IntelStore):
             heartbeat["seen_at"],
             heartbeat["heartbeat_interval_seconds"],
             json.dumps(heartbeat.get("details") or {}, ensure_ascii=False),
+            str(heartbeat.get("user_id") or "").strip(),
+            str(heartbeat.get("api_key_id") or "").strip(),
+            str(heartbeat.get("remote_ip") or "").strip(),
         )
 
 

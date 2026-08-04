@@ -201,6 +201,22 @@ class AuthRepository:
             "SELECT * FROM auth_users ORDER BY username_key ASC",
         )
 
+    def list_users_and_api_keys(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Return management identity and key rows without EVE relationship data."""
+        with self._connect() as connection:
+            user_rows = connection.execute(
+                "SELECT * FROM auth_users ORDER BY username_key ASC"
+            ).fetchall()
+            key_rows = connection.execute(
+                "SELECT * FROM auth_api_keys ORDER BY created_at DESC"
+            ).fetchall()
+        return (
+            [dict(row) for row in user_rows],
+            [dict(row) for row in key_rows],
+        )
+
     def update_user(self, user_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
         allowed = {
             "display_name", "role", "status", "password_hash",

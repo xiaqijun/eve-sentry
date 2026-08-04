@@ -13,6 +13,129 @@ from app.esi.sso import EsiSsoError
 from app.server.auth import AuthError, AuthPrincipal, AuthService, SESSION_COOKIE_NAME
 
 
+_PUBLIC_USER_FIELDS = (
+    "user_id",
+    "username",
+    "display_name",
+    "role",
+    "status",
+)
+_PUBLIC_KEY_FIELDS = (
+    "key_id",
+    "user_id",
+    "name",
+    "key_prefix",
+    "key_type",
+    "status",
+    "identity_verified",
+    "created_at",
+    "last_used_at",
+    "revoked_at",
+    "revoked_reason",
+)
+_USAGE_CLIENT_FIELDS = (
+    "client_id",
+    "client_type",
+    "label",
+    "status",
+    "online",
+    "seen_at",
+    "remote_ip",
+)
+
+
+def build_admin_clients_payload(
+    client_snapshot: dict[str, Any],
+    users: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Enrich private heartbeat attribution and aggregate API-key usage."""
+    owners: dict[str, dict[str, Any]] = {}
+    keys: dict[str, dict[str, Any]] = {}
+    ordered_keys: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for user in users:
+        owner = {field: user.get(field) for field in _PUBLIC_USER_FIELDS}
+        user_id = str(owner.get("user_id") or "").strip()
+        if user_id:
+            owners[user_id] = owner
+        user_keys = user.get("keys")
+        if not isinstance(user_keys, list):
+            continue
+        for value in user_keys:
+            if not isinstance(value, dict):
+                continue
+            key = {field: value.get(field) for field in _PUBLIC_KEY_FIELDS}
+            key_id = str(key.get("key_id") or "").strip()
+            if not key_id:
+                continue
+            keys[key_id] = key
+            ordered_keys.append((owner, key))
+
+    raw_heartbeats = client_snapshot.get("heartbeats")
+    if not isinstance(raw_heartbeats, list):
+        raw_heartbeats = []
+    heartbeats: list[dict[str, Any]] = []
+    for value in raw_heartbeats:
+        if not isinstance(value, dict):
+            continue
+        heartbeat = dict(value)
+        user_id = str(heartbeat.get("user_id") or "").strip()
+        key_id = str(heartbeat.get("api_key_id") or "").strip()
+        heartbeat["owner"] = owners.get(user_id)
+        heartbeat["key"] = keys.get(key_id)
+        heartbeats.append(heartbeat)
+    heartbeats.sort(
+        key=lambda item: str(item.get("seen_at") or ""),
+        reverse=True,
+    )
+
+    heartbeats_by_key: dict[str, list[dict[str, Any]]] = {}
+    for heartbeat in heartbeats:
+        key_id = str(heartbeat.get("api_key_id") or "").strip()
+        if key_id:
+            heartbeats_by_key.setdefault(key_id, []).append(heartbeat)
+
+    summary = dict(client_snapshot.get("summary") or {})
+    summary.pop("items", None)
+    clients = {
+        **client_snapshot,
+        "heartbeats": heartbeats,
+        "count": len(heartbeats),
+        "summary": summary,
+    }
+
+    usage_records: list[dict[str, Any]] = []
+    for owner, key in ordered_keys:
+        key_id = str(key.get("key_id") or "").strip()
+        linked = heartbeats_by_key.get(key_id, [])
+        linked_clients = [
+            {field: heartbeat.get(field) for field in _USAGE_CLIENT_FIELDS}
+            for heartbeat in linked
+        ]
+        last_ip = next(
+            (
+                str(heartbeat.get("remote_ip") or "").strip()
+                for heartbeat in linked
+                if str(heartbeat.get("remote_ip") or "").strip()
+            ),
+            "",
+        )
+        usage_records.append(
+            {
+                "owner": owner,
+                "key": key,
+                "linked_clients": linked_clients,
+                "client_count": len(linked_clients),
+                "online_count": sum(
+                    1 for heartbeat in linked if bool(heartbeat.get("online"))
+                ),
+                "last_client": linked_clients[0] if linked_clients else None,
+                "last_ip": last_ip,
+            }
+        )
+
+    return {"clients": clients, "keys": usage_records}
+
+
 class AuthHttpMixin:
     """Mixin used by the standard-library request handler."""
 
@@ -137,6 +260,7 @@ class AuthHttpMixin:
             "/api/v1/auth/me",
             "/api/v1/me/keys",
             "/api/v1/admin/users",
+            "/api/v1/admin/clients",
             "/api/v1/admin/corporations",
             "/api/v1/admin/audit",
         }
@@ -155,6 +279,15 @@ class AuthHttpMixin:
             return True
         if path == "/api/v1/admin/users":
             self._send_json({"users": service.list_users()})
+            return True
+        if path == "/api/v1/admin/clients":
+            snapshot = self._store().management_heartbeat_snapshot()
+            self._send_json(
+                build_admin_clients_payload(
+                    snapshot,
+                    service.list_users_with_api_keys(),
+                )
+            )
             return True
         if path == "/api/v1/admin/corporations":
             self._send_json({"corporations": service.repository.list_allowed_corporations()})

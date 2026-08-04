@@ -131,6 +131,60 @@ def test_postgres_connection_converts_bulk_delete_placeholders():
     ]
 
 
+def test_postgres_migration_adds_heartbeat_attribution_columns():
+    queries = []
+
+    class EmptyResult:
+        def fetchone(self):
+            return None
+
+    class FakeConnection:
+        def execute(self, query, params=None):
+            queries.append((" ".join(query.split()), params))
+            return EmptyResult()
+
+    class FakeContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._connect = lambda: FakeContext()
+
+    store._migrate()
+
+    migration_sql = "\n".join(query for query, _params in queries)
+    assert "ALTER TABLE client_heartbeats ADD COLUMN user_id" in migration_sql
+    assert "ALTER TABLE client_heartbeats ADD COLUMN api_key_id" in migration_sql
+    assert "ALTER TABLE client_heartbeats ADD COLUMN remote_ip" in migration_sql
+
+
+def test_postgres_heartbeat_row_accepts_legacy_empty_attribution():
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    heartbeat = store._heartbeat_from_row(
+        {
+            "client_id": "legacy-client",
+            "client_type": "detector_client",
+            "label": "Legacy",
+            "status": "running",
+            "seen_at": "2026-08-04T00:00:00+00:00",
+            "heartbeat_interval_seconds": 15,
+            "details_json": "{}",
+            "user_id": None,
+            "api_key_id": None,
+            "remote_ip": None,
+        }
+    )
+
+    assert heartbeat is not None
+    assert heartbeat["user_id"] == ""
+    assert heartbeat["api_key_id"] == ""
+    assert heartbeat["remote_ip"] == ""
+    assert store._heartbeat_row(heartbeat)[-3:] == ("", "", "")
+
+
 @pytest.mark.parametrize("method_name", ["list_reports", "list_observations"])
 def test_postgres_limited_history_uses_keyset_query(method_name):
     report = IntelReport(

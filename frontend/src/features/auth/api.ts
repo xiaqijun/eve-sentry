@@ -1,5 +1,6 @@
 import type {
   AdminUser,
+  AdminClientsSnapshot,
   AllowedCorporation,
   ApiKeyRecord,
   AuditRecord,
@@ -205,4 +206,8 @@ export async function listAudit(): Promise<AuditRecord[]> {
 
 export async function fetchClients(): Promise<ClientsSnapshot> {
   return (await apiRequest<{ clients: ClientsSnapshot }>("/api/v1/clients")).clients;
+}
+
+export async function listAdminClients(): Promise<AdminClientsSnapshot> {
+  return apiRequest<AdminClientsSnapshot>("/api/v1/admin/clients");
 }

@@ -187,3 +187,76 @@ def test_postgres_schema_persistence_and_retention_contract() -> None:
                     sql.Identifier(schema_name)
                 )
             )
+
+
+def test_postgres_heartbeat_attribution_migrates_and_roundtrips() -> None:
+    suffix = uuid.uuid4().hex
+    schema_name = f"eve_sentry_heartbeat_{suffix}"
+    isolated_dsn = make_conninfo(
+        POSTGRES_DSN,
+        options=f"-csearch_path={schema_name}",
+    )
+    client_id = f"ci-heartbeat-{suffix}"
+    store: PostgreSQLIntelStore | None = None
+
+    with psycopg.connect(POSTGRES_DSN) as connection:
+        connection.execute(
+            sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema_name))
+        )
+        connection.execute(
+            sql.SQL(
+                """
+                CREATE TABLE {}.client_heartbeats (
+                    client_id TEXT PRIMARY KEY,
+                    client_type TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    seen_at TEXT NOT NULL,
+                    heartbeat_interval_seconds REAL NOT NULL DEFAULT 0,
+                    details_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            ).format(sql.Identifier(schema_name))
+        )
+
+    try:
+        store = PostgreSQLIntelStore(isolated_dsn, systems={}, links=[])
+        store.record_heartbeat(
+            {
+                "client_id": client_id,
+                "client_type": "detector_client",
+                "user_id": "ci-user",
+                "api_key_id": "ci-key",
+                "remote_ip": "203.0.113.40",
+            }
+        )
+        store.close()
+        store = PostgreSQLIntelStore(isolated_dsn, systems={}, links=[])
+
+        managed = store.management_heartbeat_snapshot()["heartbeats"][0]
+        assert managed["client_id"] == client_id
+        assert managed["user_id"] == "ci-user"
+        assert managed["api_key_id"] == "ci-key"
+        assert managed["remote_ip"] == "203.0.113.40"
+
+        with store._connect() as connection:
+            columns = connection.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'client_heartbeats'
+                """
+            ).fetchall()
+        assert {row["column_name"] for row in columns}.issuperset(
+            {"user_id", "api_key_id", "remote_ip"}
+        )
+    finally:
+        if store is not None:
+            store.close()
+        with psycopg.connect(POSTGRES_DSN) as connection:
+            connection.execute(
+                sql.SQL("DROP SCHEMA {} CASCADE").format(
+                    sql.Identifier(schema_name)
+                )
+            )

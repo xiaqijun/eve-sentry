@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { apiRequest, deleteKey, enableKey, login, setCsrfToken } from "./api";
+import { apiRequest, deleteKey, enableKey, listAdminClients, login, setCsrfToken } from "./api";
 
 describe("authenticated API client", () => {
   beforeEach(() => {
@@ -66,5 +66,21 @@ describe("authenticated API client", () => {
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
     expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/me/keys/key%2F1/record");
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "DELETE" });
+  });
+
+  it("loads the dedicated administrator client inventory", async () => {
+    const payload = {
+      clients: { count: 0, heartbeats: [] },
+      keys: [],
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(payload), { status: 200 }),
+    );
+
+    await expect(listAdminClients()).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/admin/clients",
+      expect.objectContaining({ credentials: "include" }),
+    );
   });
 });

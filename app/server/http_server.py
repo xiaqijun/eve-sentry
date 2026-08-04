@@ -704,7 +704,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         if path == "/api/heartbeats":
             try:
-                heartbeat = self._store().record_heartbeat(self._read_json())
+                heartbeat = self._store().record_heartbeat(
+                    self._attributed_heartbeat_payload(self._read_json())
+                )
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
@@ -1204,7 +1206,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         if path == f"{API_V1_PREFIX}/clients/heartbeats":
             try:
-                heartbeat = self._store().record_heartbeat(self._read_json())
+                heartbeat = self._store().record_heartbeat(
+                    self._attributed_heartbeat_payload(self._read_json())
+                )
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
@@ -1215,6 +1219,31 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             self._handle_v1_ingest(path)
             return
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    def _attributed_heartbeat_payload(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Replace client-supplied heartbeat trust fields with request state."""
+        service = self._auth_service()
+        principal = self._auth_principal
+        if service is not None and service.enforce_requests and (
+            principal is None
+            or principal.auth_type != "api_key"
+            or principal.api_key_type != "desktop"
+        ):
+            raise RequestBodyError(
+                "desktop API key is required",
+                HTTPStatus.FORBIDDEN,
+            )
+        attributed = dict(payload)
+        attributed["user_id"] = principal.user_id if principal is not None else ""
+        attributed["api_key_id"] = (
+            principal.api_key_id if principal is not None else ""
+        )
+        attributed["remote_ip"] = self._login_client_ip()
+        attributed["seen_at"] = utc_now_iso()
+        return attributed
 
     def _handle_v1_put(self, path: str) -> None:
         if path != f"{API_V1_PREFIX}/config":

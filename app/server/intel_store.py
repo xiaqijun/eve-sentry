@@ -10,6 +10,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -46,6 +47,12 @@ ALERT_LEVEL_RANKS = {
     "critical": 4,
 }
 STALE_HEARTBEAT_STARTUP_GRACE_SECONDS = 45.0
+
+
+class HeartbeatOwnershipConflict(ValueError):
+    """Raised when a client ID is already bound to another platform user."""
+
+    status = HTTPStatus.CONFLICT
 
 
 def utc_now_iso() -> str:
@@ -1847,8 +1854,20 @@ class IntelStore:
             "seen_at": seen_at,
             "heartbeat_interval_seconds": interval_seconds,
             "details": dict(details or {}),
+            "user_id": str(payload.get("user_id") or "").strip(),
+            "api_key_id": str(payload.get("api_key_id") or "").strip(),
+            "remote_ip": str(payload.get("remote_ip") or "").strip(),
         }
         with self._lock:
+            existing = self._heartbeats.get(client_id)
+            existing_user_id = str(
+                (existing or {}).get("user_id") or ""
+            ).strip()
+            new_user_id = str(heartbeat.get("user_id") or "").strip()
+            if existing_user_id and existing_user_id != new_user_id:
+                raise HeartbeatOwnershipConflict(
+                    "client_id is already owned by another user"
+                )
             self._heartbeats[client_id] = heartbeat
         return self._heartbeat_view(heartbeat)
 
@@ -1861,6 +1880,34 @@ class IntelStore:
     def heartbeat_snapshot(self) -> dict[str, Any]:
         """Return heartbeat list plus aggregate summary for runtime diagnostics."""
         items = self.list_heartbeats()
+        return {
+            "heartbeats": items,
+            "count": len(items),
+            "summary": self._heartbeat_summary_from_items(items),
+        }
+
+    def management_heartbeat_snapshot(self) -> dict[str, Any]:
+        """Return heartbeat state with server-owned credential attribution."""
+        with self._lock:
+            items = []
+            for heartbeat in self._heartbeats.values():
+                item = self._heartbeat_view(heartbeat)
+                item.update(
+                    {
+                        "user_id": str(heartbeat.get("user_id") or "").strip(),
+                        "api_key_id": str(
+                            heartbeat.get("api_key_id") or ""
+                        ).strip(),
+                        "remote_ip": str(
+                            heartbeat.get("remote_ip") or ""
+                        ).strip(),
+                    }
+                )
+                items.append(item)
+        items.sort(
+            key=lambda item: str(item.get("seen_at") or ""),
+            reverse=True,
+        )
         return {
             "heartbeats": items,
             "count": len(items),
