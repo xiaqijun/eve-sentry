@@ -143,30 +143,34 @@ class ReliableUploadManager(QObject):
             self._persist_snapshots_locked()
             self._heartbeat = None
             self._condition.notify_all()
-        self._thread.join(max(0.0, float(timeout)))
-        close = getattr(self._client, "close", None)
-        if callable(close):
-            close()
+        wait_seconds = max(0.0, float(timeout))
+        if wait_seconds:
+            self._thread.join(wait_seconds)
 
     def pending_snapshot_count(self) -> int:
         with self._condition:
             return len(self._snapshots)
 
     def _run(self) -> None:
-        while True:
-            with self._condition:
-                if not self._running:
-                    return
-                now = self._clock()
-                self._drop_expired(now)
-                if now < self._retry_at:
-                    self._condition.wait(min(0.5, self._retry_at - now))
-                    continue
-                upload = self._next_upload()
-                if upload is None:
-                    self._condition.wait(0.5)
-                    continue
-            self._send(upload)
+        try:
+            while True:
+                with self._condition:
+                    if not self._running:
+                        return
+                    now = self._clock()
+                    self._drop_expired(now)
+                    if now < self._retry_at:
+                        self._condition.wait(min(0.5, self._retry_at - now))
+                        continue
+                    upload = self._next_upload()
+                    if upload is None:
+                        self._condition.wait(0.5)
+                        continue
+                self._send(upload)
+        finally:
+            close = getattr(self._client, "close", None)
+            if callable(close):
+                close()
 
     def _send(self, upload: _PendingUpload) -> None:
         try:

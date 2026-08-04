@@ -20,7 +20,6 @@ from app.channels.identity_logs import IdentityScanResult
 from app.ui.main_window import MainWindow, PreviewCaptureWorker
 from app.ui.settings import SettingsPanel
 from app.ui.settings import DEFAULT_CHATLOG_DIR
-from app.ui.settings import DEFAULT_INTEL_URL
 from app.ui.settings import SETTINGS_INLINE_INPUT_WIDTH
 from app.ui.settings import SETTINGS_INPUT_HEIGHT
 from app.ui.settings import SETTINGS_LONG_INPUT_WIDTH
@@ -764,6 +763,38 @@ def test_empty_key_starts_monitor_and_alert_without_authentication():
     assert window._identity_wants_alert is False
 
 
+def test_empty_server_starts_local_monitor_without_identity_request():
+    class FakeSettings:
+        def __init__(self):
+            self.auth_status = ""
+
+        def get_api_key(self):
+            return "eve_configured"
+
+        def set_auth_status(self, message, error=False):
+            assert error is False
+            self.auth_status = message
+
+    window = MainWindow.__new__(MainWindow)
+    window._settings = FakeSettings()
+    window._intel_url = ""
+    window._intel_client = None
+    window._identity_check_running = False
+    window._identity_wants_monitor = False
+    window._identity_wants_alert = False
+    window._api_key_validated = True
+    started = []
+    window._start_monitor = (
+        lambda identity_checked=False: started.append(identity_checked)
+    )
+
+    MainWindow._begin_identity_check(window, "monitor")
+
+    assert started == [True]
+    assert window._settings.auth_status == "未配置服务端"
+    assert window._api_key_validated is False
+
+
 def test_auth_rejection_clears_cached_key_validation():
     class FakeButton:
         def setChecked(self, _checked):
@@ -1155,7 +1186,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
         "chatlog_dir": "C:/EVE/Chatlogs",
         "scan_interval": 5,
         "window_keyword": "EVE - Pilot",
-        "server_url": DEFAULT_INTEL_URL,
+        "server_url": "",
         "start_with_windows": False,
         "start_minimized": False,
         "close_to_tray": True,
@@ -1314,6 +1345,16 @@ def test_settings_panel_persists_normalized_server_url(tmp_path, monkeypatch):
     assert reloaded.get_server_url() == "http://intel.example:8765"
 
 
+def test_settings_panel_does_not_supply_a_default_server_url(tmp_path, monkeypatch):
+    monkeypatch.delenv("EVE_SENTRY_INTEL_URL", raising=False)
+    qt_app()
+    panel = SettingsPanel(config_path=tmp_path / "channel_settings.json")
+
+    assert panel.get_server_url() == ""
+    assert "127.0.0.1" not in panel._server_url_edit.placeholderText()
+    assert "114.132.167.239" not in panel._server_url_edit.placeholderText()
+
+
 def test_settings_panel_environment_overrides_saved_server_url(
     tmp_path,
     monkeypatch,
@@ -1351,6 +1392,26 @@ def test_apply_server_url_rebuilds_intel_client():
     assert window._intel_client is replacement_client
     assert window._last_heartbeat_error == ""
     assert window._heartbeat_last_error == ""
+
+
+def test_apply_server_url_allows_clearing_the_configured_server():
+    window = MainWindow.__new__(MainWindow)
+    window._intel_url = "http://old.example"
+    window._intel_client = object()
+    window._alert_controller = None
+    window._uploads_enabled = False
+    window._create_intel_client = lambda: None
+    window._last_heartbeat_error = "old"
+    window._heartbeat_last_error = "old"
+    window._log_messages = []
+    window._log_message = lambda message: window._log_messages.append(message)
+    window._refresh_status_cards = lambda: None
+
+    MainWindow._apply_server_url(window, "")
+
+    assert window._intel_url == ""
+    assert window._intel_client is None
+    assert window._log_messages == ["服务端地址已清除，网络功能已停用"]
 
 
 def test_spinbox_buttons_match_visible_right_edge(tmp_path):

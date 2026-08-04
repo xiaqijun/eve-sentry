@@ -2550,9 +2550,32 @@ class AlertTrayController:
         self.overlay.move_to_default_position()
 
     def _restart_worker(self) -> None:
-        if self._worker.isRunning():
-            self._worker.stop()
-            self._worker.wait(int((self.args.timeout + 4.0) * 1000))
+        if bool(getattr(self, "_worker_restart_pending", False)):
+            return
+        self._worker_restart_pending = True
+        set_status = getattr(getattr(self, "overlay", None), "set_status", None)
+        if callable(set_status):
+            set_status("重连中", "warn")
+        worker = self._worker
+        if worker.isRunning():
+            finished = getattr(worker, "finished", None)
+            connect = getattr(finished, "connect", None)
+            if callable(connect):
+                connect(
+                    lambda worker=worker: self._complete_worker_restart(worker)
+                )
+                worker.stop()
+                return
+            worker.stop()
+        self._complete_worker_restart(worker)
+
+    def _complete_worker_restart(self, previous_worker: AlertEventWorker) -> None:
+        """Start a replacement SSE worker after the previous one has exited."""
+        if self._worker is not previous_worker:
+            return
+        if bool(getattr(self, "_stopped", False)):
+            self._worker_restart_pending = False
+            return
         self._worker = AlertEventWorker(
             self.args.server,
             self.state,
@@ -2567,6 +2590,7 @@ class AlertTrayController:
         self._worker.bootstrap_received.connect(self._on_bootstrap)
         self._worker.status_changed.connect(self._on_status)
         self._worker.start()
+        self._worker_restart_pending = False
 
     def _on_status(self, status: str, message: str) -> None:
         if status == "connected":
@@ -2695,7 +2719,7 @@ class AlertTrayController:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--server", default="http://127.0.0.1:8765")
+    parser.add_argument("--server", required=True)
     parser.add_argument("--state", default=default_state_path())
     parser.add_argument("--timeout", type=float, default=DEFAULT_EVENT_TIMEOUT)
     parser.add_argument(

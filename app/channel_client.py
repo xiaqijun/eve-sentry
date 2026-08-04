@@ -234,7 +234,7 @@ def emit_channel_line(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--server", default="http://127.0.0.1:8765")
+    parser.add_argument("--server", default="")
     parser.add_argument("--log-dir", default=str(DEFAULT_CHATLOG_DIR))
     parser.add_argument(
         "--channel",
@@ -267,7 +267,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="ignore_existing",
         help="post existing chatlog lines when the client starts",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if not args.dry_run and not str(args.server or "").strip():
+        parser.error("--server is required unless --dry-run is used")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:

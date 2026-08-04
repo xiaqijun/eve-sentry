@@ -4,11 +4,14 @@ import json
 import os
 import shutil
 import subprocess
+import threading
+import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PyQt6.QtCore import QCoreApplication, QObject
 
 from app.updater import (
     ClientUpdater,
@@ -202,6 +205,39 @@ def test_client_updater_reports_verified_package_ready_to_install(tmp_path):
 
     updater._installer_launched = True
     assert updater.ready_to_install is False
+
+
+def test_client_updater_restores_large_local_state_off_qt_thread(
+    tmp_path,
+    monkeypatch,
+):
+    app = QCoreApplication.instance() or QCoreApplication([])
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_restore(*_args, **_kwargs):
+        entered.set()
+        assert release.wait(2)
+        return None
+
+    monkeypatch.setattr("app.updater.load_pending_update", blocking_restore)
+    parent = QObject()
+    started_at = time.monotonic()
+    updater = ClientUpdater(
+        parent=parent,
+        update_dir=tmp_path / "updates",
+        background_download=False,
+    )
+
+    assert time.monotonic() - started_at < 0.2
+    assert entered.wait(1)
+    release.set()
+    deadline = time.monotonic() + 2
+    while updater.has_running_file_tasks and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    app.processEvents()
+    assert not updater.has_running_file_tasks
 
 
 def test_pending_update_is_restored_after_client_restart(tmp_path):

@@ -3,6 +3,7 @@
 import io
 import logging
 import os
+import threading
 import time
 from argparse import Namespace
 from concurrent.futures import Future
@@ -70,6 +71,17 @@ from app.updater import ClientUpdater
 from app.version import current_version
 
 logger = logging.getLogger(__name__)
+
+
+def _force_exit_if_shutdown_stalls(
+    completed: threading.Event,
+    timeout: float,
+) -> None:
+    """Guarantee process exit when a native worker ignores cancellation."""
+    if completed.wait(max(1.0, float(timeout))):
+        return
+    logger.critical("Client shutdown exceeded %.1f seconds; forcing exit", timeout)
+    os._exit(0)
 
 
 class PreviewCaptureWorker(QThread):
@@ -207,6 +219,8 @@ class MainWindow(QMainWindow):
         )
         self._location_next_check = 0.0
         self._last_local_system_error = ""
+        self._local_system_cache: dict[str, tuple[float, object | None]] = {}
+        self._local_system_pending: set[str] = set()
         self._heartbeat_interval = _env_float(
             "EVE_SENTRY_HEARTBEAT_INTERVAL",
             default=15.0,
@@ -1701,6 +1715,10 @@ class MainWindow(QMainWindow):
         """Start the server-side warning consumer inside the monitor client."""
         if self._alert_controller is not None:
             return
+        if _instance_attr(self, "_intel_url", None) == "":
+            self._settings.set_auth_status("请先填写服务端地址", error=True)
+            self._alert_btn.setChecked(False)
+            return
         if not identity_checked:
             self._begin_identity_check("alert")
             return
@@ -1823,21 +1841,28 @@ class MainWindow(QMainWindow):
     def _apply_server_url(self, server_url: str) -> None:
         """Rebuild server-backed clients after the saved URL changes."""
         server_url = str(server_url or "").strip().rstrip("/")
-        if not server_url or server_url == self._intel_url:
+        if server_url == self._intel_url:
             return
 
         restart_alert = self._alert_controller is not None
+        if restart_alert:
+            self._stop_alert()
         self._intel_url = server_url
         self._intel_client = self._create_intel_client()
         self._reset_upload_manager()
         self._api_key_validated = False
         self._last_heartbeat_error = ""
         self._heartbeat_last_error = ""
-        self._log_message(f"服务端地址已更新：{server_url}")
+        self._log_message(
+            f"服务端地址已更新：{server_url}"
+            if server_url
+            else "服务端地址已清除，网络功能已停用"
+        )
 
-        if restart_alert:
-            self._stop_alert()
+        if restart_alert and server_url:
             self._start_alert()
+        elif restart_alert:
+            self._alert_btn.setChecked(False)
         if self._uploads_enabled:
             self._refresh_intel_location(force=True)
             self._publish_heartbeat()
@@ -1927,6 +1952,16 @@ class MainWindow(QMainWindow):
             return
 
         api_key = self._settings.get_api_key()
+        if _instance_attr(self, "_intel_url", None) == "":
+            self._api_key_validated = False
+            self._identity_wants_monitor = False
+            self._identity_wants_alert = False
+            self._settings.set_auth_status("未配置服务端")
+            if action == "monitor":
+                self._start_monitor(identity_checked=True)
+            elif action == "alert":
+                self._alert_btn.setChecked(False)
+            return
         if not api_key:
             self._api_key_validated = False
             self._identity_wants_monitor = False
@@ -2137,6 +2172,8 @@ class MainWindow(QMainWindow):
                 self._handle_identity_check_error(exc, metadata)
             elif kind == "listener":
                 self._handle_listener_scan_error(exc)
+            elif kind == "local_system":
+                self._handle_local_system_error(exc, metadata)
         else:
             if kind == "ocr":
                 self._handle_ocr_publish_success(metadata)
@@ -2147,6 +2184,8 @@ class MainWindow(QMainWindow):
                 self._handle_identity_check_success(result, metadata)
             elif kind == "listener":
                 self._handle_listener_scan_success()
+            elif kind == "local_system":
+                self._handle_local_system_result(result, metadata)
         finally:
             runner = _instance_attr(self, "_network_tasks")
             if runner is not None:
@@ -2180,6 +2219,81 @@ class MainWindow(QMainWindow):
             self._log_message(f"Heartbeat update failed: {message}")
         self._refresh_status_cards()
 
+    def _handle_local_system_error(self, exc: Exception, metadata: dict) -> None:
+        key = str(metadata.get("cache_key") or "")
+        pending = _instance_attr(self, "_local_system_pending", set())
+        pending.discard(key)
+        self._local_system_pending = pending
+        message = str(exc)
+        if message != self._last_local_system_error:
+            self._last_local_system_error = message
+            self._log_message(f"Local chatlog system sync unavailable: {message}")
+
+    def _handle_local_system_result(self, result: object, metadata: dict) -> None:
+        cache_key = str(metadata.get("cache_key") or "")
+        pending = _instance_attr(self, "_local_system_pending", set())
+        pending.discard(cache_key)
+        self._local_system_pending = pending
+        detection = result
+        cache = _instance_attr(self, "_local_system_cache", {})
+        cache[cache_key] = (
+            time.monotonic() + self._location_refresh_ttl,
+            detection,
+        )
+        self._local_system_cache = cache
+        if detection is None:
+            return
+        context = metadata.get("context")
+        if isinstance(context, dict):
+            self._apply_local_system_detection(context, detection)
+        character_key = str(metadata.get("character_name") or "").strip().casefold()
+        for collection_name in ("_detected_window_contexts", "_worker_contexts"):
+            collection = _instance_attr(self, collection_name, {})
+            for candidate in collection.values():
+                if not isinstance(candidate, dict):
+                    continue
+                if str(candidate.get("character_name") or "").strip().casefold() == character_key:
+                    self._apply_local_system_detection(candidate, detection)
+        if context is None:
+            self._apply_local_system_detection(self, detection)
+        self._last_local_system_error = ""
+        controller = _instance_attr(self, "_alert_controller")
+        if controller is not None:
+            show_systems = getattr(controller, "show_monitoring_systems", None)
+            if callable(show_systems):
+                show_systems(self._monitoring_system_names())
+        for method_name in (
+            "_refresh_monitor_window_action_labels",
+            "_refresh_window_status_table",
+            "_refresh_status_cards",
+        ):
+            method = getattr(self, method_name, None)
+            if callable(method):
+                method()
+
+    def _apply_local_system_detection(self, target, detection: object) -> None:
+        system_name = str(getattr(detection, "system_name", "") or "").strip()
+        if not system_name:
+            return
+        if isinstance(target, dict):
+            previous = str(target.get("system_name") or "Unknown")
+            target["system_name"] = system_name
+            target["system_id"] = None
+            target["system_source"] = "chatlog"
+            if previous != system_name:
+                self._log_message(
+                    f"{target.get('window_title') or target.get('character_name') or 'EVE'}: "
+                    f"Current system from local chatlog: {system_name}"
+                )
+            return
+        previous = str(_instance_attr(self, "_intel_system", "Unknown"))
+        self._intel_system = system_name
+        self._intel_system_id = None
+        self._intel_system_source = "chatlog"
+        if previous != system_name:
+            self._heartbeat_last_action = "local_system_sync"
+            self._heartbeat_last_success_at = heartbeat_now_iso()
+
     def _start_monitor(self, *, identity_checked: bool = False) -> None:
         self._monitor_reconnect_scheduled = False
         if not identity_checked:
@@ -2207,6 +2321,21 @@ class MainWindow(QMainWindow):
             self._monitor_btn.setChecked(False)
             return
 
+        existing_workers = list(_instance_attr(self, "_workers", {}).values())
+        existing_workers.extend(
+            worker
+            for worker in _instance_attr(self, "_stopping_monitor_workers", set())
+            if worker not in existing_workers
+        )
+        if existing_workers:
+            self._monitor_restart_pending = True
+            self._status_label.setText("正在重建监控")
+            self._status_label.setStyleSheet(
+                "color: #f0b35a; font-weight: bold;"
+            )
+            self._stop_monitor_workers(timeout_ms=0)
+            return
+
         for target in targets:
             self._refresh_intel_location(force=True, context=target)
         primary_target = targets[0]
@@ -2215,15 +2344,6 @@ class MainWindow(QMainWindow):
         self._intel_system_source = str(
             primary_target.get("system_source") or "default"
         )
-
-        if not self._stop_monitor_workers(timeout_ms=5000):
-            self._monitor_btn.setChecked(False)
-            QMessageBox.critical(
-                self,
-                "错误",
-                "无法停止上一轮监控线程。",
-            )
-            return
 
         self._workers = {}
         self._worker_contexts = {}
@@ -2376,9 +2496,16 @@ class MainWindow(QMainWindow):
         )
         self._monitor_btn.setText("开始监控")
         self._monitor_btn.setStyleSheet(monitor_button_style(active=False))
-        self._status_label.setText("已停止")
-        self._status_label.setStyleSheet("color: #888;")
-        self._log_message("监控已停止")
+        if _instance_attr(self, "_stopping_monitor_workers", set()):
+            self._status_label.setText("正在停止")
+            self._status_label.setStyleSheet(
+                "color: #f0b35a; font-weight: bold;"
+            )
+            self._log_message("正在停止监控线程...")
+        else:
+            self._status_label.setText("已停止")
+            self._status_label.setStyleSheet("color: #888;")
+            self._log_message("监控已停止")
         self._refresh_status_cards()
 
     def _stop_monitor_workers(self, timeout_ms: int | None) -> bool:
@@ -2459,6 +2586,22 @@ class MainWindow(QMainWindow):
         self._monitor_restart_pending = False
         if restart_pending and self._monitor_btn.isChecked():
             self._start_monitor(identity_checked=True)
+            return
+        if not _instance_attr(self, "_shutdown_in_progress", False):
+            set_text = getattr(self._monitor_btn, "setText", None)
+            if callable(set_text):
+                set_text("开始监控")
+            set_style = getattr(self._monitor_btn, "setStyleSheet", None)
+            if callable(set_style):
+                set_style(monitor_button_style(active=False))
+            status_label = _instance_attr(self, "_status_label")
+            set_status = getattr(status_label, "setText", None)
+            if callable(set_status):
+                set_status("已停止")
+            set_status_style = getattr(status_label, "setStyleSheet", None)
+            if callable(set_status_style):
+                set_status_style("color: #888;")
+            self._log_message("监控线程已停止")
 
     def _create_intel_client(self) -> IntelApiClient | None:
         enabled = (
@@ -2693,7 +2836,7 @@ class MainWindow(QMainWindow):
         """Rebuild reliable uploads after server URL or credentials change."""
         previous = _instance_attr(self, "_upload_manager")
         if previous is not None:
-            previous.shutdown(timeout=1.0)
+            previous.shutdown(timeout=0.0)
         self._upload_manager = None
         client = _instance_attr(self, "_intel_client")
         if client is None or not callable(getattr(client, "post_ocr_snapshot", None)):
@@ -2766,6 +2909,40 @@ class MainWindow(QMainWindow):
             character_name = str(context.get("character_name") or "").strip()
             if not character_name:
                 return False
+        cache_key = character_name.casefold() or "*"
+        cache = _instance_attr(self, "_local_system_cache", {})
+        cached = cache.get(cache_key)
+        if cached is not None:
+            expires_at, detection = cached
+            if time.monotonic() < float(expires_at):
+                if detection is not None:
+                    self._apply_local_system_detection(
+                        context if context is not None else self,
+                        detection,
+                    )
+                return detection is not None
+
+        runner = _instance_attr(self, "_network_tasks")
+        if runner is not None:
+            pending = _instance_attr(self, "_local_system_pending", set())
+            if cache_key not in pending:
+                pending.add(cache_key)
+                self._local_system_pending = pending
+                log_dir = settings.get_channel_log_dir()
+                runner.submit_once(
+                    f"local-system:{cache_key}",
+                    lambda log_dir=log_dir, character_name=character_name: find_latest_local_system(
+                        log_dir,
+                        character_name=character_name,
+                    ),
+                    {
+                        "kind": "local_system",
+                        "cache_key": cache_key,
+                        "character_name": character_name,
+                        "context": context,
+                    },
+                )
+            return False
         try:
             detection = find_latest_local_system(
                 settings.get_channel_log_dir(),
@@ -2926,6 +3103,21 @@ class MainWindow(QMainWindow):
             self.raise_()
             return
         self._shutdown_in_progress = True
+        shutdown_timeout = _env_float(
+            "EVE_SENTRY_SHUTDOWN_TIMEOUT",
+            default=10.0,
+            minimum=2.0,
+        )
+        self._shutdown_deadline = time.monotonic() + shutdown_timeout
+        if isinstance(self, MainWindow):
+            completed = threading.Event()
+            self._shutdown_complete = completed
+            threading.Thread(
+                target=_force_exit_if_shutdown_stalls,
+                args=(completed, shutdown_timeout + 0.5),
+                name="eve-sentry-shutdown-watchdog",
+                daemon=True,
+            ).start()
         runtime_settings = _instance_attr(self, "_runtime_settings")
         if runtime_settings is not None:
             runtime_settings.setValue("window/geometry", self.saveGeometry())
@@ -2942,7 +3134,7 @@ class MainWindow(QMainWindow):
             network_tasks.shutdown()
         upload_manager = _instance_attr(self, "_upload_manager")
         if upload_manager is not None:
-            upload_manager.shutdown(timeout=1.5)
+            upload_manager.shutdown(timeout=0.0)
             self._upload_manager = None
         QTimer.singleShot(0, self._finish_quit_when_workers_stop)
 
@@ -2966,9 +3158,30 @@ class MainWindow(QMainWindow):
         preview_running = (
             preview_worker is not None and preview_worker.isRunning()
         )
-        if monitor_running or alert_running or preview_running:
+        updater = _instance_attr(self, "_updater")
+        updater_running = bool(
+            updater is not None
+            and getattr(updater, "has_running_file_tasks", False)
+        )
+        if monitor_running or alert_running or preview_running or updater_running:
+            deadline = float(
+                _instance_attr(self, "_shutdown_deadline", float("inf"))
+            )
+            if time.monotonic() >= deadline:
+                logger.error(
+                    "Shutdown deadline reached: monitor=%s alert=%s preview=%s updater=%s",
+                    monitor_running,
+                    alert_running,
+                    preview_running,
+                    updater_running,
+                )
+                QApplication.quit()
+                return
             QTimer.singleShot(50, self._finish_quit_when_workers_stop)
             return
+        completed = _instance_attr(self, "_shutdown_complete")
+        if completed is not None:
+            completed.set()
         QApplication.quit()
 
 
