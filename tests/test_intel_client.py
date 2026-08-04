@@ -1281,6 +1281,7 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
     from PyQt6.QtWidgets import (
         QApplication,
         QComboBox,
+        QLabel,
         QListWidget,
         QPushButton,
         QSpinBox,
@@ -1328,6 +1329,17 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
             Qt.ArrowType.DownArrow,
         ]
         assert all(button.isVisible() for button in step_buttons)
+        legends = {
+            label.objectName(): label
+            for label in overlay.findChildren(QLabel)
+            if label.objectName().startswith("map")
+        }
+        assert legends["mapOnlineLegend"].text() == "● 监控"
+        assert legends["mapWarningLegend"].text() == "◎ 关注"
+        assert legends["mapHostileLegend"].text() == "◆ 来敌"
+        assert "青色节点" in legends["mapOnlineLegend"].toolTip()
+        assert "蓝色外环" in legends["mapWarningLegend"].toolTip()
+        assert "红色节点" in legends["mapHostileLegend"].toolTip()
         view_buttons = {
             button.text(): button
             for button in overlay.findChildren(QPushButton, "overlayViewButton")
@@ -1460,9 +1472,19 @@ def test_local_star_map_only_labels_key_nodes_and_prefers_local_account():
     assert "星系：Tama" in tooltip
     assert "本地账号：Alice" in tooltip
     assert "其他账号：Remote Scout、Other Pilot" in tooltip
-    assert "预警：3 人" in tooltip
+    assert "预警：已关注" in tooltip
+    assert "来敌：3 人" in tooltip
     assert LocalStarMapWidget._node_annotation("Kedama", [], 0) == ("", "")
     assert LocalStarMapWidget._node_annotation("Kedama", [], 2)[0] == "Kedama"
+
+    monitor_label, monitor_tooltip = LocalStarMapWidget._node_annotation(
+        "Kedama",
+        [{"key": "remote", "label": "Remote Scout", "selected": False}],
+        0,
+    )
+    assert monitor_label == "Remote Scout"
+    assert "监控：在线" in monitor_tooltip
+    assert "预警：已关注" not in monitor_tooltip
 
 
 def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypatch):
@@ -1472,13 +1494,14 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
     app = QApplication.instance() or QApplication([])
     widget = LocalStarMapWidget()
     try:
-        widget.resize(300, 160)
+        widget.resize(420, 160)
         widget.set_payload(
             {
                 "systems": [
                     {"name": "Online", "x": 0, "y": 0},
-                    {"name": "Warning", "x": 1, "y": 0},
-                    {"name": "Both", "x": 2, "y": 0},
+                    {"name": "Focused", "x": 1, "y": 0},
+                    {"name": "Warning", "x": 2, "y": 0},
+                    {"name": "Both", "x": 3, "y": 0},
                 ],
                 "links": [],
             }
@@ -1489,8 +1512,15 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
                     "key": "alice",
                     "label": "Alice",
                     "system_name": "Online",
-                    "selected": True,
+                    "selected": False,
                     "local": True,
+                },
+                {
+                    "key": "carol",
+                    "label": "Carol",
+                    "system_name": "Focused",
+                    "selected": True,
+                    "local": False,
                 },
                 {
                     "key": "bob",
@@ -1518,21 +1548,25 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
         app.processEvents()
 
         image = widget.grab().toImage()
-        online_center = image.pixelColor(26, 80)
-        warning_center = image.pixelColor(150, 80)
-        both_center = image.pixelColor(274, 80)
-        both_monitor_ring = image.pixelColor(282, 80)
-        both_warning_ring = image.pixelColor(285, 80)
+        online_center = image.pixelColor(24, 80)
+        focused_monitor_ring = image.pixelColor(148, 80)
+        focused_warning_ring = image.pixelColor(157, 80)
+        warning_center = image.pixelColor(272, 80)
+        warning_body = image.pixelColor(278, 80)
+        both_center = image.pixelColor(396, 80)
+        both_body = image.pixelColor(402, 80)
 
         assert online_center.green() > online_center.red() * 1.5
+        assert focused_monitor_ring.green() > focused_monitor_ring.red() * 1.5
+        assert focused_warning_ring.blue() > focused_warning_ring.red() * 1.5
         assert warning_center.red() > warning_center.green() * 1.5
+        assert warning_body.red() > warning_body.green()
         assert both_center.red() > both_center.green() * 1.5
-        assert both_monitor_ring.green() > both_monitor_ring.red()
-        assert both_warning_ring.red() > both_warning_ring.green()
+        assert both_body.red() > both_body.green()
         assert any(
             "本地账号：Bob" in tooltip
             and "其他账号：Remote Scout" in tooltip
-            and "预警：1 人" in tooltip
+            and "来敌：1 人" in tooltip
             for _rect, tooltip in widget._node_tooltips
         )
     finally:
