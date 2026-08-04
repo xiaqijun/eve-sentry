@@ -1,3 +1,5 @@
+import pytest
+
 from app.channels.identity_logs import ClientAuthStateStore, EveIdentityLogScanner
 
 
@@ -111,3 +113,22 @@ def test_character_identities_are_normalized_merged_and_reset_with_key(tmp_path)
 
     store.set_api_key("eve_second")
     assert store.load()["character_identities"] == []
+
+
+def test_invalid_api_key_is_not_persisted_or_restored(tmp_path):
+    store = ClientAuthStateStore(
+        tmp_path / "auth.json",
+        protector=FakeProtector(),
+    )
+    invalid_key = "Vargur\tCargo Hold\nRepublic Fleet Phased Plasma"
+
+    with pytest.raises(ValueError, match="设备密钥格式无效"):
+        store.set_api_key(invalid_key)
+
+    assert store.api_key() == ""
+
+    state = store.empty_state()
+    state["api_key"] = invalid_key
+    store.save(state)
+
+    assert store.api_key() == ""

@@ -1862,7 +1862,7 @@ class MainWindow(QMainWindow):
         self._identity_wants_monitor = False
         self._identity_wants_alert = False
         self._settings.set_auth_status(
-            "等待身份校验" if self._settings.get_api_key() else "未配置认证密钥"
+            "等待身份校验" if self._settings.get_api_key() else "未启用认证"
         )
         if self._settings.get_api_key():
             QTimer.singleShot(0, self._begin_identity_check)
@@ -1918,7 +1918,7 @@ class MainWindow(QMainWindow):
         self._log_message(f"诊断包已导出：{bundle}")
 
     def _begin_identity_check(self, action: str = "runtime") -> None:
-        """Validate the API key before enabling an authenticated feature."""
+        """Validate a configured API key or continue without authentication."""
         if action == "monitor":
             self._identity_wants_monitor = True
         elif action == "alert":
@@ -1928,11 +1928,14 @@ class MainWindow(QMainWindow):
 
         api_key = self._settings.get_api_key()
         if not api_key:
-            self._settings.set_auth_status("请先填写客户端认证密钥", error=True)
+            self._api_key_validated = False
+            self._identity_wants_monitor = False
+            self._identity_wants_alert = False
+            self._settings.set_auth_status("未启用认证")
             if action == "monitor":
-                self._monitor_btn.setChecked(False)
+                self._start_monitor(identity_checked=True)
             elif action == "alert":
-                self._alert_btn.setChecked(False)
+                self._start_alert(identity_checked=True)
             return
         if self._intel_client is None:
             self._settings.set_auth_status("认证客户端不可用，请检查服务端地址", error=True)
