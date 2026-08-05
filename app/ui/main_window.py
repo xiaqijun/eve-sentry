@@ -210,6 +210,7 @@ class MainWindow(QMainWindow):
         self._api_key_validated = False
         self._identity_wants_monitor = False
         self._identity_wants_alert = False
+        self._monitor_start_state = "idle"
         self._intel_url = self._settings.get_server_url()
         configured_system = os.environ.get("EVE_SENTRY_SYSTEM", "").strip()
         self._intel_system = configured_system or "Unknown"
@@ -583,14 +584,34 @@ class MainWindow(QMainWindow):
 
         monitoring = self._is_monitoring()
         worker_count = len(self._running_workers())
+        actions = _instance_attr(self, "_monitor_window_actions", {})
+        online_keys = set(
+            _instance_attr(self, "_monitor_windows_by_key", {})
+        )
+        selected_count = sum(
+            1
+            for key, action in actions.items()
+            if key in online_keys and action.isChecked()
+        )
+        online_count = len(online_keys)
         self._set_status_card(
             "ocr",
-            f"{worker_count} 窗口监控中" if monitoring else "待启动",
-            "active" if monitoring else "idle",
+            (
+                f"{worker_count} 窗口监控中"
+                if monitoring
+                else ("等待启动" if selected_count else "未选择窗口")
+            ),
+            "active" if monitoring else ("idle" if selected_count else "warn"),
         )
 
         if monitoring:
             self._set_status_card("window", f"{worker_count} 个窗口", "active")
+        elif online_count:
+            self._set_status_card(
+                "window",
+                f"已选 {selected_count}/{online_count}",
+                "ok" if selected_count else "warn",
+            )
         else:
             window_combo = getattr(self, "_window_combo", None)
             window_title = window_combo.currentText().strip() if window_combo else ""
@@ -838,9 +859,6 @@ class MainWindow(QMainWindow):
             _instance_attr(self, "_monitor_selected_titles", set())
         )
         selected_title_keys = {title.casefold() for title in selected_titles}
-        select_all = bool(
-            _instance_attr(self, "_monitor_select_all_new_windows", True)
-        )
         select_current = bool(
             _instance_attr(self, "_monitor_select_current_on_first_sync", False)
         )
@@ -880,8 +898,7 @@ class MainWindow(QMainWindow):
                 )
                 action.setCheckable(True)
                 action.setChecked(
-                    select_all
-                    or (select_current and window.get("hwnd") == current_hwnd)
+                    (select_current and window.get("hwnd") == current_hwnd)
                     or key in previous_checked_keys
                     or (
                         key not in previous_known_keys
@@ -1057,13 +1074,25 @@ class MainWindow(QMainWindow):
             "_monitor_window_titles_by_key",
             {},
         )
-        selected_titles: set[str] = set()
+        # Keep selections for temporarily offline windows. They are restored
+        # when the same character window reappears; only an explicit uncheck
+        # removes a title from the checkpoint.
+        selected_titles: set[str] = set(
+            _instance_attr(self, "_monitor_selected_titles", set())
+        )
         for key, action in actions.items():
-            if key not in windows_by_key or not action.isChecked():
+            if key not in windows_by_key:
                 continue
             title = str(titles_by_key.get(key) or "").strip()
-            if title:
+            if not title:
+                continue
+            matching_titles = {
+                item for item in selected_titles if item.casefold() == title.casefold()
+            }
+            if action.isChecked():
                 selected_titles.add(title)
+            else:
+                selected_titles.difference_update(matching_titles)
         self._monitor_selected_titles = selected_titles
         online_keys = set(windows_by_key)
         select_all_new_windows = bool(
@@ -1099,6 +1128,7 @@ class MainWindow(QMainWindow):
         else:
             self._refresh_monitor_window_action_labels()
             self._refresh_window_status_table()
+        self._refresh_status_cards()
         monitor_btn = _instance_attr(self, "_monitor_btn")
         if monitor_btn is None or not monitor_btn.isChecked():
             return
@@ -1663,8 +1693,11 @@ class MainWindow(QMainWindow):
 
     def _toggle_monitor(self, checked: bool) -> None:
         if checked:
+            if _instance_attr(self, "_monitor_start_state", "idle") == "failed":
+                self._monitor_start_state = "idle"
             self._start_monitor()
         else:
+            self._monitor_start_state = "idle"
             self._stop_monitor()
 
     def _toggle_alert(self, checked: bool) -> None:
@@ -1973,6 +2006,7 @@ class MainWindow(QMainWindow):
             self._settings.set_auth_status("认证客户端不可用，请检查服务端地址", error=True)
             if action == "monitor":
                 self._monitor_btn.setChecked(False)
+                self._monitor_start_state = "failed"
             elif action == "alert":
                 self._alert_btn.setChecked(False)
             return
@@ -2110,6 +2144,7 @@ class MainWindow(QMainWindow):
         self._identity_wants_alert = False
         if action == "monitor" and not self._is_monitoring():
             self._monitor_btn.setChecked(False)
+            self._monitor_start_state = "failed"
         if action == "alert" and self._alert_controller is None:
             self._alert_btn.setChecked(False)
         self._settings.set_auth_status(message, error=True)
@@ -2136,6 +2171,7 @@ class MainWindow(QMainWindow):
             self._stop_alert()
         self._monitor_btn.setChecked(False)
         self._alert_btn.setChecked(False)
+        self._monitor_start_state = "idle"
         self._settings.set_auth_status(message, error=True)
         self._log_message(f"客户端认证失效：{message}")
 
@@ -2292,6 +2328,15 @@ class MainWindow(QMainWindow):
             self._heartbeat_last_success_at = heartbeat_now_iso()
 
     def _start_monitor(self, *, identity_checked: bool = False) -> None:
+        start_state = _instance_attr(self, "_monitor_start_state", "idle")
+        if not identity_checked:
+            if start_state != "idle":
+                return
+            self._monitor_start_state = "awaiting_identity"
+        elif start_state in {"starting", "failed"}:
+            return
+        else:
+            self._monitor_start_state = "starting"
         self._monitor_reconnect_scheduled = False
         if not identity_checked:
             self._begin_identity_check("monitor")
@@ -2313,6 +2358,7 @@ class MainWindow(QMainWindow):
                 "已选择监控窗口，但尚未选择监控区域，请先点击“选择区域”。",
             )
             self._monitor_btn.setChecked(False)
+            self._monitor_start_state = "failed"
             return
 
         if not targets:
@@ -2330,6 +2376,7 @@ class MainWindow(QMainWindow):
                 ),
             )
             self._monitor_btn.setChecked(False)
+            self._monitor_start_state = "failed"
             return
 
         existing_workers = list(_instance_attr(self, "_workers", {}).values())
@@ -2345,6 +2392,7 @@ class MainWindow(QMainWindow):
                 "color: #f0b35a; font-weight: bold;"
             )
             self._stop_monitor_workers(timeout_ms=0)
+            self._monitor_start_state = "idle"
             return
 
         for target in targets:
@@ -2424,6 +2472,7 @@ class MainWindow(QMainWindow):
         self._publish_heartbeat()
         self._refresh_status_cards()
         self._refresh_window_status_table()
+        self._monitor_start_state = "idle"
 
     def _on_worker_status_update(self, message: str, context: dict) -> None:
         """Record one worker status update in log and the per-window table."""

@@ -1,5 +1,5 @@
 param(
-    [string]$Server = $(if ($env:EVE_SENTRY_MONITOR_SERVER) { $env:EVE_SENTRY_MONITOR_SERVER } elseif ($env:EVE_SENTRY_INTEL_URL) { $env:EVE_SENTRY_INTEL_URL } else { "http://127.0.0.1:8765" }),
+    [string]$Server = $(if ($env:EVE_SENTRY_MONITOR_SERVER) { $env:EVE_SENTRY_MONITOR_SERVER } elseif ($env:EVE_SENTRY_INTEL_URL) { $env:EVE_SENTRY_INTEL_URL } else { "" }),
     [string]$ChatlogDir = $(if ($env:EVE_SENTRY_CHATLOG_DIR) { $env:EVE_SENTRY_CHATLOG_DIR } else { "" }),
     [string]$System = $(if ($env:EVE_SENTRY_SYSTEM) { $env:EVE_SENTRY_SYSTEM } else { "" }),
     [string]$OcrDevice = $(if ($env:EVE_SENTRY_OCR_DEVICE) { $env:EVE_SENTRY_OCR_DEVICE } else { "" }),
@@ -26,11 +26,11 @@ if (-not $Python) {
 }
 
 $envUpdates = [ordered]@{
-    EVE_SENTRY_INTEL_URL = $Server
     EVE_SENTRY_HEARTBEAT_INTERVAL = [string]$HeartbeatInterval
     EVE_SENTRY_INTEL_TIMEOUT = [string]$Timeout
 }
 
+if ($Server) { $envUpdates["EVE_SENTRY_INTEL_URL"] = $Server }
 if ($ChatlogDir) { $envUpdates["EVE_SENTRY_CHATLOG_DIR"] = $ChatlogDir }
 if ($System) { $envUpdates["EVE_SENTRY_SYSTEM"] = $System }
 if ($OcrDevice) { $envUpdates["EVE_SENTRY_OCR_DEVICE"] = $OcrDevice }
