@@ -1115,6 +1115,7 @@ def test_window_system_change_refreshes_local_alert_systems(monkeypatch):
     context = {
         "key": "pilot-a",
         "character_name": "Pilot A",
+        "window": {"hwnd": 7},
         "system_name": "S-KSWL",
         "system_source": "chatlog",
         "_location_next_check": 0.0,
@@ -1131,6 +1132,14 @@ def test_window_system_change_refreshes_local_alert_systems(monkeypatch):
     window._heartbeat_last_action = ""
     window._heartbeat_last_success_at = ""
     window._heartbeat_last_error = ""
+    window._intel_system = "S-KSWL"
+    window._intel_system_id = None
+    window._intel_system_source = "chatlog"
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: 7},
+    )()
     window._worker_contexts = {"pilot-a": context}
     window._workers = {"pilot-a": object()}
     window._alert_controller = Controller()
@@ -1144,7 +1153,57 @@ def test_window_system_change_refreshes_local_alert_systems(monkeypatch):
     ) is True
 
     assert context["system_name"] == "HB-FSO"
+    assert window._intel_system == "HB-FSO"
     assert window._alert_controller.systems == [["HB-FSO"]]
+
+
+def test_initial_local_system_promotes_first_detected_window(monkeypatch):
+    class Detection:
+        system_name = "Jita"
+
+    monkeypatch.setattr(
+        "app.ui.main_window.find_latest_local_system",
+        lambda _log_dir, character_name="": Detection()
+        if character_name == "Pilot A"
+        else None,
+    )
+    context = {
+        "character_name": "Pilot A",
+        "window": {"hwnd": 7},
+        "system_name": "Unknown",
+        "system_source": "default",
+        "_location_next_check": 0.0,
+    }
+    window = MainWindow.__new__(MainWindow)
+    window._use_local_system_log = True
+    window._settings = type(
+        "Settings",
+        (),
+        {"get_channel_log_dir": lambda self: "C:/EVE/Chatlogs"},
+    )()
+    window._location_refresh_ttl = 5.0
+    window._last_local_system_error = ""
+    window._heartbeat_last_action = ""
+    window._heartbeat_last_success_at = ""
+    window._heartbeat_last_error = ""
+    window._intel_system = "Unknown"
+    window._intel_system_source = "default"
+    window._window_combo = type(
+        "Combo",
+        (),
+        {"currentData": lambda self: None},
+    )()
+    window._alert_controller = None
+    window._log_message = lambda _message: None
+    window._refresh_status_cards = lambda: None
+
+    assert MainWindow._refresh_intel_location(
+        window,
+        force=True,
+        context=context,
+    ) is True
+    assert window._intel_system == "Jita"
+    assert window._intel_system_source == "chatlog"
 
 
 def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
