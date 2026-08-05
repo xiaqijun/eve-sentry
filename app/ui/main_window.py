@@ -164,12 +164,9 @@ class MainWindow(QMainWindow):
                 )
             )
         )
-        has_monitor_selection = self._runtime_settings.contains(
-            "monitor/select_all"
-        )
         legacy_monitor_all = self._runtime_settings.value(
             "monitor/all_windows",
-            True,
+            False,
             type=bool,
         )
         self._monitor_select_all_new_windows = self._runtime_settings.value(
@@ -177,9 +174,19 @@ class MainWindow(QMainWindow):
             legacy_monitor_all,
             type=bool,
         )
-        self._monitor_select_current_on_first_sync = bool(
-            not has_monitor_selection and not legacy_monitor_all
+        selection_policy_version = self._runtime_settings.value(
+            "monitor/selection_policy_version",
+            0,
+            type=int,
         )
+        if int(selection_policy_version or 0) < 1:
+            self._monitor_selected_titles = set()
+            self._monitor_select_all_new_windows = False
+            self._runtime_settings.setValue(
+                "monitor/selection_policy_version",
+                1,
+            )
+        self._monitor_select_current_on_first_sync = False
         self._syncing_monitor_menu = False
 
         self._region_prefs = RegionPreferences()
@@ -331,6 +338,7 @@ class MainWindow(QMainWindow):
 
         self._window_combo = QComboBox()
         self._window_combo.setMinimumHeight(34)
+        self._window_combo.setPlaceholderText("请选择 EVE 窗口")
         self._window_combo.currentIndexChanged.connect(self._on_window_selected)
         target_row.addWidget(self._window_combo, 1)
 
@@ -758,16 +766,11 @@ class MainWindow(QMainWindow):
         targets: list[dict] = []
         for window in windows:
             region_prefs = _instance_attr(self, "_region_prefs")
-            capturer = _instance_attr(self, "_capturer")
             region = (
                 region_prefs.resolve_region(window)
                 if region_prefs is not None
                 else None
             )
-            if region is None and callable(
-                getattr(capturer, "get_member_list_region", None)
-            ):
-                region = capturer.get_member_list_region(window)
             key = self._window_monitor_key(window)
             window_title = str(window.get("title") or key)
             character_name = _character_name_from_window_title(window_title)
@@ -786,7 +789,7 @@ class MainWindow(QMainWindow):
                     "character_id": character_id,
                     "character_name": character_name,
                     "source_instance": self._window_combo_label(window),
-                    "region": dict(region),
+                    "region": dict(region) if region else None,
                     "system_name": configured_system,
                     "system_id": None,
                     "system_source": (
@@ -1158,12 +1161,6 @@ class MainWindow(QMainWindow):
     def _detect_window(self, windows: list[dict] | None = None) -> None:
         """Find all EVE windows and populate the window selector."""
         previous_hwnd = self._window_combo.currentData()
-        runtime_settings = _instance_attr(self, "_runtime_settings")
-        preferred_title = (
-            str(runtime_settings.value("monitor/window_title", "") or "")
-            if runtime_settings is not None
-            else ""
-        )
         if windows is None or isinstance(windows, bool):
             keyword = self._settings.get_keyword()
             windows = self._capturer.list_eve_windows(keyword)
@@ -1171,7 +1168,7 @@ class MainWindow(QMainWindow):
         self._window_signature = _window_list_signature(windows)
         self._window_combo.blockSignals(True)
         self._window_combo.clear()
-        selected_index = 0
+        selected_index = -1
         if windows:
             title_counts: dict[str, int] = {}
             for window in windows:
@@ -1190,10 +1187,6 @@ class MainWindow(QMainWindow):
                     window["hwnd"],
                 )
                 if window["hwnd"] == previous_hwnd:
-                    selected_index = index
-                elif previous_hwnd is None and preferred_title and (
-                    str(window.get("title") or "") == preferred_title
-                ):
                     selected_index = index
         self._window_combo.blockSignals(False)
 
@@ -1249,16 +1242,11 @@ class MainWindow(QMainWindow):
             previous = dict(running or previous_contexts.get(key) or {})
             cached = cached_status.get(title) or {}
             region_prefs = _instance_attr(self, "_region_prefs")
-            capturer = _instance_attr(self, "_capturer")
             region = (
                 region_prefs.resolve_region(window)
                 if region_prefs is not None
                 else None
             )
-            if region is None and callable(
-                getattr(capturer, "get_member_list_region", None)
-            ):
-                region = capturer.get_member_list_region(window)
             action = actions.get(key)
             selected = (
                 action.isChecked()
@@ -1410,6 +1398,14 @@ class MainWindow(QMainWindow):
     def _on_window_selected(self, index: int) -> None:
         """Update the detected region when the user picks an EVE window."""
         if index < 0:
+            self._manual_region = None
+            self._detected_region = None
+            close = getattr(self._capturer, "close", None)
+            if callable(close):
+                close()
+            self._window_label.setText("窗口：未选择")
+            self._refresh_status_cards()
+            self._refresh_window_status_table()
             return
         self._manual_region = None
 
@@ -1428,13 +1424,16 @@ class MainWindow(QMainWindow):
             start_capture=False,
         )
         member = self._region_prefs.resolve_region(info)
-        if member is None:
-            member = self._capturer.get_member_list_region(info)
         self._detected_region = member
         self._set_alert_anchor(info)
-        self._window_label.setText(
-            f"窗口：{self._window_combo.currentText()} -> 成员列表 {member['w']}x{member['h']}"
-        )
+        if member:
+            self._window_label.setText(
+                f"窗口：{self._window_combo.currentText()} -> 成员列表 {member['w']}x{member['h']}"
+            )
+        else:
+            self._window_label.setText(
+                f"窗口：{self._window_combo.currentText()} -> 未选择区域"
+            )
         runtime_settings = _instance_attr(self, "_runtime_settings")
         if runtime_settings is not None:
             runtime_settings.setValue("monitor/window_title", info.get("title", ""))
@@ -1461,9 +1460,7 @@ class MainWindow(QMainWindow):
 
         info = self._current_window_info()
         if info is None:
-            info = self._capturer.find_eve_window(keyword=self._settings.get_keyword())
-        if info is None:
-            QMessageBox.critical(self, "错误", "未找到 EVE 窗口。")
+            QMessageBox.warning(self, "选择区域", "请先在窗口下拉框中选择 EVE 窗口。")
             return
 
         self._capturer.activate_window(info["hwnd"])
@@ -2303,6 +2300,20 @@ class MainWindow(QMainWindow):
         if not targets:
             self._detect_window()
             targets = self._build_monitor_targets()
+
+        missing_regions = [
+            target
+            for target in targets
+            if not isinstance(target.get("region"), dict)
+        ]
+        if missing_regions:
+            QMessageBox.critical(
+                self,
+                "错误",
+                "已选择监控窗口，但尚未选择监控区域，请先点击“选择区域”。",
+            )
+            self._monitor_btn.setChecked(False)
+            return
 
         if not targets:
             actions = _instance_attr(self, "_monitor_window_actions")

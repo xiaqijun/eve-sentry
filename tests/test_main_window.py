@@ -1554,7 +1554,12 @@ def test_start_monitor_creates_worker_for_each_eve_window(monkeypatch):
         def resolve_region(self, window):
             if window["title"] == "EVE - Pilot B":
                 return {"x": 760, "y": 190, "w": 220, "h": 420}
-            return None
+            return {
+                "x": window["x"] + window["w"] - 200,
+                "y": window["y"],
+                "w": 200,
+                "h": window["h"],
+            }
 
     monkeypatch.setattr("app.ui.main_window.MonitorWorker", FakeWorker)
     monkeypatch.setattr("app.ui.main_window.Capturer", lambda: object())
@@ -1675,7 +1680,12 @@ def test_build_monitor_targets_uses_only_selected_window():
 
     class FakeRegionPrefs:
         def resolve_region(self, window):
-            return None
+            return {
+                "x": window["x"] + window["w"] - 200,
+                "y": window["y"],
+                "w": 200,
+                "h": window["h"],
+            }
 
     class FakeStore:
         def load(self):
@@ -2159,9 +2169,7 @@ def test_detect_window_handles_button_signal_and_labels_duplicate_titles():
         ("EVE - Pilot #1 · hwnd 1 · 800x600", 1),
         ("EVE - Pilot #2 · hwnd 2 · 1000x800", 2),
     ]
-    assert window._window_label.text == (
-        "窗口：EVE - Pilot #1 · hwnd 1 · 800x600 -> 成员列表 200x600"
-    )
+    assert window._window_label.text == "窗口：未选择"
 
 
 def test_refresh_detected_windows_adds_new_window_and_keeps_selection():

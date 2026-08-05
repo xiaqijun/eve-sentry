@@ -521,7 +521,13 @@ def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[st
             source_instance = str(
                 target.get("source_instance") or target.get("window_title") or ""
             ).strip()
-            system_name = str(target.get("system_name") or target.get("system") or "").strip()
+            system_name = str(
+                target.get("system_name")
+                or target.get("system")
+                or details.get("system_name")
+                or details.get("system")
+                or ""
+            ).strip()
             if not system_name or system_name.casefold() == "unknown":
                 continue
             key = "|".join((client_id, character_name, source_instance)).casefold()
@@ -705,7 +711,7 @@ class LocalStarMapWidget(QWidget):
 
         local_selected = [item for item in selected if bool(item.get("local"))]
         local_accounts = [item for item in accounts if bool(item.get("local"))]
-        primary_candidates = local_selected or selected or local_accounts or accounts
+        primary_candidates = local_selected or local_accounts
         primary = primary_candidates[0] if primary_candidates else None
         label = (
             str(
@@ -723,10 +729,21 @@ class LocalStarMapWidget(QWidget):
             account_kind = "本地账号" if bool(primary.get("local")) else "监控账号"
             details.append(f"{account_kind}：{label}")
             details.append("监控：在线")
+        remote_accounts = [item for item in accounts if not bool(item.get("local"))]
+        remote_labels = list(
+            dict.fromkeys(
+                str(item.get("label") or item.get("character_name") or "").strip()
+                for item in remote_accounts
+            )
+        )
+        remote_labels = [item for item in remote_labels if item]
+        if remote_labels:
+            details.append(f"监控节点：{'、'.join(remote_labels)}")
         remaining = [
             str(item.get("label") or item.get("character_name") or "").strip()
             for item in accounts
             if str(item.get("key") or "") != primary_key
+            and bool(item.get("local", True))
         ]
         remaining = list(dict.fromkeys(item for item in remaining if item))
         if remaining:
@@ -1457,11 +1474,16 @@ class AlertOverlay(QWidget):
         self._map_accounts = [dict(item) for item in accounts]
         if self._account_menu is None:
             return
+        selectable_accounts = [
+            item
+            for item in self._map_accounts
+            if bool(item.get("local", True))
+        ]
         previous, _ = self.map_selection()
         self._account_menu.clear()
         self._account_actions.clear()
         default_all = not self._map_selection_initialized
-        for account in self._map_accounts:
+        for account in selectable_accounts:
             key = str(account.get("key") or "")
             label = str(account.get("label") or account.get("system_name") or key)
             system = str(account.get("system_name") or "")
@@ -1472,7 +1494,7 @@ class AlertOverlay(QWidget):
             action.setChecked(default_all or key in previous)
             action.toggled.connect(lambda _checked: self._emit_map_options())
             self._account_actions.append(action)
-        if self._map_accounts:
+        if selectable_accounts:
             self._map_selection_initialized = True
         self._update_map_account_button()
         if self._map_widget is not None:
