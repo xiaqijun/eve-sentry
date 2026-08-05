@@ -12,6 +12,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+WORKER_IDLE_TIMEOUT_SECONDS = 0.5
+
+
 class EsiWorker:
     """Run deduplicated ESI tasks on one lazily started daemon thread."""
 
@@ -68,9 +71,21 @@ class EsiWorker:
 
     def _run(self) -> None:
         while True:
-            task = self._queue.get()
+            try:
+                task = self._queue.get(timeout=WORKER_IDLE_TIMEOUT_SECONDS)
+            except queue.Empty:
+                with self._lock:
+                    if self._closed or not self._pending_keys:
+                        if self._thread is threading.current_thread():
+                            self._thread = None
+                        self._idle.set()
+                        return
+                continue
             if task is None:
                 self._queue.task_done()
+                with self._lock:
+                    if self._thread is threading.current_thread():
+                        self._thread = None
                 return
             key, payload = task
             try:
