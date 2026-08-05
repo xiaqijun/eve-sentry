@@ -452,6 +452,52 @@ describe("buildTacticalGraph", () => {
     });
   });
 
+  it("maps online multi-window targets to each reported system", () => {
+    const graph = buildTacticalGraph({
+      ...bootstrap,
+      clients: {
+        count: 1,
+        heartbeats: [
+          {
+            client_id: "detector-client:multi",
+            client_type: "detector_client",
+            label: "Multi-window monitor",
+            online: true,
+            details: {
+              monitoring: true,
+              targets: [
+                {
+                  client_id: "detector-client:multi:user-a",
+                  character_name: "Pilot A",
+                  system_name: "0-UVHJ",
+                  monitoring: true,
+                },
+                {
+                  client_id: "detector-client:multi:user-b",
+                  character_name: "Pilot B",
+                  system_name: "NCG-PW",
+                  monitoring: true,
+                },
+              ],
+            },
+          },
+        ],
+        summary: { count: 1, online_count: 1, stale_count: 0 },
+      },
+    });
+
+    expect(graph.nodes.find((node) => node.name === "0-UVHJ")).toMatchObject({
+      monitorCount: 1,
+      monitorOnlineCount: 1,
+      monitorLabels: ["Pilot A"],
+    });
+    expect(graph.nodes.find((node) => node.name === "NCG-PW")).toMatchObject({
+      monitorCount: 1,
+      monitorOnlineCount: 1,
+      monitorLabels: ["Pilot B"],
+    });
+  });
+
   it("treats a legacy bootstrap without clients as having no monitors", () => {
     const graph = buildTacticalGraph({
       ...bootstrap,

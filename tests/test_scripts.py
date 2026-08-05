@@ -426,37 +426,37 @@ def test_monitor_ui_smoke_can_render_detected_window_offscreen():
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["window_combo_count"] == 1
-    assert payload["monitor_selection_text"] == "监控窗口 1/1"
-    assert payload["monitor_selected_count"] == 1
+    assert payload["monitor_selection_text"] == "监控窗口 0/1"
+    assert payload["monitor_selected_count"] == 0
     assert payload["monitor_offline_count"] == 0
-    assert payload["monitor_selection_state"] == "ready"
-    assert payload["monitor_selection_tooltip"] == "已选择：EVE - Smoke Pilot"
+    assert payload["monitor_selection_state"] == "empty"
+    assert payload["monitor_selection_tooltip"] == "尚未选择监控窗口，请打开菜单进行勾选"
     assert payload["monitor_menu_items"] == [
         {
-            "text": "Smoke Pilot · 未知 · 待启动",
-            "checked": True,
+            "text": "Smoke Pilot · 未知 · 未监控",
+            "checked": False,
             "online": True,
             "character": "Smoke Pilot",
             "system": "未知",
-            "status": "待启动",
+            "status": "未监控",
         }
     ]
     assert payload["window_combo_items"] == ["EVE - Smoke Pilot"]
-    assert payload["selected_window"] == "EVE - Smoke Pilot"
-    assert payload["window_label"] == "窗口：EVE - Smoke Pilot -> 成员列表 200x600"
+    assert payload["selected_window"] == ""
+    assert payload["window_label"] == "窗口：未选择"
     assert payload["window_status_rows"] == [
         [
             "Smoke Pilot",
             "Smoke",
             "EVE - Smoke Pilot",
-            "200x600 @ 1160,160",
-            "待启动",
-            "窗口已选择，监控尚未启动",
+            "-",
+            "未选择",
+            "未选择为监控窗口",
         ]
     ]
     assert payload["monitor_button"] == "开始监控"
     assert payload["layout_checks"]["right_controls_do_not_overlap"] is True
-    assert payload["side_effects"]["select_window_calls"] == 1
+    assert payload["side_effects"]["select_window_calls"] == 0
     assert payload["side_effects"]["screenshot_calls"] == 0
     assert payload["side_effects"]["network_requests"] == 0
 
@@ -480,55 +480,56 @@ def test_monitor_ui_smoke_can_render_multiple_detected_windows_offscreen():
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["window_combo_count"] == 2
-    assert payload["monitor_selection_text"] == "监控窗口 2/2"
-    assert payload["monitor_selected_count"] == 2
+    assert payload["monitor_selection_text"] == "监控窗口 0/2"
+    assert payload["monitor_selected_count"] == 0
     assert payload["monitor_offline_count"] == 0
-    assert payload["monitor_selection_state"] == "ready"
+    assert payload["monitor_selection_state"] == "empty"
+    assert payload["monitor_selection_tooltip"] == "尚未选择监控窗口，请打开菜单进行勾选"
     assert payload["monitor_menu_items"] == [
         {
-            "text": "Smoke Pilot · 未知 · 待启动",
-            "checked": True,
+            "text": "Smoke Pilot · 未知 · 未监控",
+            "checked": False,
             "online": True,
             "character": "Smoke Pilot",
             "system": "未知",
-            "status": "待启动",
+            "status": "未监控",
         },
         {
-            "text": "Smoke Pilot 2 · 未知 · 待启动",
-            "checked": True,
+            "text": "Smoke Pilot 2 · 未知 · 未监控",
+            "checked": False,
             "online": True,
             "character": "Smoke Pilot 2",
             "system": "未知",
-            "status": "待启动",
+            "status": "未监控",
         },
     ]
     assert payload["window_combo_items"] == [
         "EVE - Smoke Pilot",
         "EVE - Smoke Pilot 2",
     ]
-    assert payload["selected_window"] == "EVE - Smoke Pilot"
-    assert payload["window_label"] == "窗口：EVE - Smoke Pilot -> 成员列表 200x600"
+    assert payload["selected_window"] == ""
+    assert payload["window_label"] == "窗口：未选择"
     assert payload["window_status_rows"] == [
         [
             "Smoke Pilot",
             "Smoke",
             "EVE - Smoke Pilot",
-            "200x600 @ 1160,160",
-            "待启动",
-            "窗口已选择，监控尚未启动",
+            "-",
+            "未选择",
+            "未选择为监控窗口",
         ],
         [
             "Smoke Pilot 2",
             "Smoke",
             "EVE - Smoke Pilot 2",
-            "200x600 @ 1192,184",
-            "待启动",
-            "窗口已选择，监控尚未启动",
+            "-",
+            "未选择",
+            "未选择为监控窗口",
         ],
     ]
-    assert payload["status_card_values"]["window"] == "EVE - Smoke Pilot"
-    assert payload["status_card_values"]["region"] == "200x600"
-    assert payload["side_effects"]["select_window_calls"] == 1
+    assert payload["status_card_values"]["window"] == "未检测到"
+    assert payload["status_card_values"]["region"] == "未配置"
+    assert payload["side_effects"]["select_window_calls"] == 0
     assert payload["side_effects"]["screenshot_calls"] == 0
     assert payload["side_effects"]["network_requests"] == 0
 

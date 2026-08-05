@@ -167,44 +167,60 @@ function summarizeMonitors(
     if (heartbeat.online !== true || details.monitoring !== true) {
       continue;
     }
-    const systemId = firstNumber(
-      heartbeat.system_id,
-      heartbeat.solar_system_id,
-      details.system_id,
-      details.solar_system_id,
-    );
-    const systemName = firstString(
-      heartbeat.system_name,
-      heartbeat.system,
-      heartbeat.current_system,
-      details.system_name,
-      details.system,
-      details.current_system,
-      details.location,
-    );
-    const nodeName =
-      (systemId !== null ? systemsById.get(systemId) : undefined) ||
-      systemsByName.get(systemName.toLowerCase());
-    if (!nodeName) {
-      continue;
-    }
+    const rawTargets = Array.isArray(details.targets) ? details.targets : [];
+    const targets = rawTargets.length > 0 ? rawTargets : [details];
+    for (const rawTarget of targets) {
+      const target = asRecord(rawTarget);
+      if (target.monitoring === false) {
+        continue;
+      }
+      const systemId = firstNumber(
+        target.system_id,
+        target.solar_system_id,
+        heartbeat.system_id,
+        heartbeat.solar_system_id,
+        details.system_id,
+        details.solar_system_id,
+      );
+      const systemName = firstString(
+        target.system_name,
+        target.system,
+        target.current_system,
+        heartbeat.system_name,
+        heartbeat.system,
+        heartbeat.current_system,
+        details.system_name,
+        details.system,
+        details.current_system,
+        details.location,
+      );
+      const nodeName =
+        (systemId !== null ? systemsById.get(systemId) : undefined) ||
+        systemsByName.get(systemName.toLowerCase());
+      if (!nodeName) {
+        continue;
+      }
 
-    const summary = summaries.get(nodeName) || {
-      count: 0,
-      onlineCount: 0,
-      labels: [],
-    };
-    const label = firstString(
-      heartbeat.label,
-      heartbeat.client_type,
-      heartbeat.client_id,
-    );
-    summary.count += 1;
-    summary.onlineCount += 1;
-    if (label && !summary.labels.includes(label)) {
-      summary.labels.push(label);
+      const summary = summaries.get(nodeName) || {
+        count: 0,
+        onlineCount: 0,
+        labels: [],
+      };
+      const label = firstString(
+        target.character_name,
+        target.source_instance,
+        target.window_title,
+        heartbeat.label,
+        heartbeat.client_type,
+        heartbeat.client_id,
+      );
+      summary.count += 1;
+      summary.onlineCount += 1;
+      if (label && !summary.labels.includes(label)) {
+        summary.labels.push(label);
+      }
+      summaries.set(nodeName, summary);
     }
-    summaries.set(nodeName, summary);
   }
   return summaries;
 }

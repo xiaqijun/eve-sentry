@@ -1298,8 +1298,24 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
     try:
         overlay.set_map_accounts(
             [
-                {"key": "alice", "label": "Alice", "system_name": "Tama"},
-                {"key": "bob", "label": "Bob", "system_name": "Kedama"},
+                {
+                    "key": "alice",
+                    "label": "Alice",
+                    "system_name": "Tama",
+                    "local": True,
+                },
+                {
+                    "key": "bob",
+                    "label": "Bob",
+                    "system_name": "Kedama",
+                    "local": True,
+                },
+                {
+                    "key": "remote",
+                    "label": "Remote Scout",
+                    "system_name": "Jita",
+                    "local": False,
+                },
             ]
         )
         overlay._set_view(1)
@@ -1309,6 +1325,7 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
         account_button = overlay.findChild(QPushButton, "mapAccountButton")
         assert account_button is not None
         assert account_button.text() == "账号 2/2"
+        assert len(overlay._account_actions) == 2
         assert account_button.isVisible()
         assert overlay.findChildren(QListWidget) == []
         assert overlay._account_menu is not None
@@ -1363,11 +1380,11 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
         assert overlay.map_selection() == (["alice"], 3)
         assert changes[-1] == (["alice"], 3)
         assert overlay._map_widget is not None
-        assert len(overlay._map_widget._accounts) == 2
+        assert len(overlay._map_widget._accounts) == 3
         assert {
             str(item.get("key")): bool(item.get("selected"))
             for item in overlay._map_widget._accounts
-        } == {"alice": True, "bob": False}
+            } == {"alice": True, "bob": False, "remote": False}
         overlay._account_menu.hide()
 
         step_buttons[0].click()
@@ -1451,7 +1468,7 @@ def test_local_star_map_only_labels_key_nodes_and_prefers_local_account():
     assert label == "Alice"
     assert "星系：Tama" in tooltip
     assert "本地账号：Alice" in tooltip
-    assert "其他账号：Remote Scout、Other Pilot" in tooltip
+    assert "监控节点：Remote Scout、Other Pilot" in tooltip
     assert "来敌：3 人" in tooltip
     assert LocalStarMapWidget._node_annotation("Kedama", [], 0) == ("", "")
     assert LocalStarMapWidget._node_annotation("Kedama", [], 2)[0] == "Kedama"
@@ -1461,8 +1478,8 @@ def test_local_star_map_only_labels_key_nodes_and_prefers_local_account():
         [{"key": "remote", "label": "Remote Scout", "selected": False}],
         0,
     )
-    assert monitor_label == "Remote Scout"
-    assert "监控：在线" in monitor_tooltip
+    assert monitor_label == "Kedama"
+    assert "监控节点：Remote Scout" in monitor_tooltip
 
 
 def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypatch):
@@ -1544,7 +1561,7 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
         assert both_body.red() > both_body.green()
         assert any(
             "本地账号：Bob" in tooltip
-            and "其他账号：Remote Scout" in tooltip
+            and "监控节点：Remote Scout" in tooltip
             and "来敌：1 人" in tooltip
             for _rect, tooltip in widget._node_tooltips
         )
