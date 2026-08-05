@@ -170,7 +170,7 @@ def test_monitor_worker_discards_ocr_names_when_no_red_icon_exists():
     assert alerts == []
 
 
-def test_monitor_worker_falls_back_after_two_consecutive_red_row_mismatches():
+def test_monitor_worker_does_not_publish_full_list_after_red_row_mismatches():
     frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
     draw = ImageDraw.Draw(frame)
     draw.rectangle((6, 20, 16, 30), fill=(146, 3, 3))
@@ -193,9 +193,7 @@ def test_monitor_worker_falls_back_after_two_consecutive_red_row_mismatches():
         def recognize(self, image, progress=None):
             _ = progress
             self.images.append(image)
-            if len(self.images) <= 2:
-                return [("Only One Red Name", 0.99)]
-            return [("Friendly Pilot", 0.99), ("Enemy Pilot", 0.99)]
+            return [("Only One Red Name", 0.99)]
 
     ocr = MismatchedOcr()
     worker = MonitorWorker(FrameCapturer(), ocr)
@@ -207,11 +205,10 @@ def test_monitor_worker_falls_back_after_two_consecutive_red_row_mismatches():
 
     worker.run()
 
-    assert snapshots == [(["Friendly Pilot", "Enemy Pilot"], 0)]
-    assert len(ocr.images) == 3
+    assert snapshots == [([], 0)]
+    assert len(ocr.images) == 2
     assert ocr.images[0].height < frame.height
     assert ocr.images[1].height < frame.height
-    assert ocr.images[2].size == frame.size
 
 
 def test_monitor_worker_resets_fallback_after_a_matching_red_row_frame():
