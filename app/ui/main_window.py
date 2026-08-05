@@ -2313,6 +2313,27 @@ class MainWindow(QMainWindow):
             target["system_name"] = system_name
             target["system_id"] = None
             target["system_source"] = "chatlog"
+            window_combo = _instance_attr(self, "_window_combo")
+            current_hwnd = (
+                window_combo.currentData()
+                if window_combo is not None
+                else None
+            )
+            target_window = target.get("window") or {}
+            if (
+                (
+                    current_hwnd is not None
+                    and target_window.get("hwnd") == current_hwnd
+                )
+                or (
+                    current_hwnd is None
+                    and self._intel_system_source == "default"
+                    and self._intel_system in {"", "Unknown"}
+                )
+            ):
+                self._intel_system = system_name
+                self._intel_system_id = None
+                self._intel_system_source = "chatlog"
             if previous != system_name:
                 self._log_message(
                     f"{target.get('window_title') or target.get('character_name') or 'EVE'}: "
@@ -3027,6 +3048,27 @@ class MainWindow(QMainWindow):
             context["system_name"] = detection.system_name
             context["system_id"] = None
             context["system_source"] = "chatlog"
+            window_combo = _instance_attr(self, "_window_combo")
+            current_hwnd = (
+                window_combo.currentData()
+                if window_combo is not None
+                else None
+            )
+            target_window = context.get("window") or {}
+            if (
+                (
+                    current_hwnd is not None
+                    and target_window.get("hwnd") == current_hwnd
+                )
+                or (
+                    current_hwnd is None
+                    and self._intel_system_source == "default"
+                    and self._intel_system in {"", "Unknown"}
+                )
+            ):
+                self._intel_system = detection.system_name
+                self._intel_system_id = None
+                self._intel_system_source = "chatlog"
         self._last_local_system_error = ""
         self._heartbeat_last_error = ""
         if detection.system_name != previous:
