@@ -217,16 +217,16 @@ class MonitorWorker(QThread):
                             if red_row_mismatch_count < 2:
                                 # A contact-menu overlay or list repaint can corrupt
                                 # one frame. Keep the last server state until confirmed.
-                                ocr_results = hostile_ocr_results
+                                ocr_results = []
                                 names = []
                                 verified_hostile_count = 0
                                 publish_snapshot = False
                                 fallback_deferred = True
                             else:
-                                # Do not assign a red marker to the wrong pilot. Fall
-                                # back to the complete list after a confirmed mismatch.
-                                ocr_results = self._recognize(img)
-                                names = build_ocr_snapshot_names(ocr_results)
+                                # The complete list also contains friendly pilots and
+                                # UI text, so never publish it as hostile evidence.
+                                ocr_results = []
+                                names = []
                                 verified_hostile_count = 0
                     if not ocr_ready:
                         ocr_ready = True
@@ -255,10 +255,8 @@ class MonitorWorker(QThread):
                         )
                     elif verified_hostile_count:
                         self.status_update.emit(f"敌对名单已上报: {len(names)} 个")
-                    elif names and hostile_rows is not None:
-                        self.status_update.emit(
-                            f"红框姓名定位不可靠，已回退完整名单: {len(names)} 个"
-                        )
+                    elif hostile_rows is not None and red_row_mismatch_count >= 2:
+                        self.status_update.emit("红框姓名定位连续失败，暂不上报人员名单")
                     elif hostile_rows is None:
                         self.status_update.emit("未检测到敌对图标")
                     else:

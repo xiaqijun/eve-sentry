@@ -1587,6 +1587,23 @@ def test_record_ocr_snapshot_filters_numeric_member_count_noise(tmp_path):
     assert [item["name"] for item in store.list_active_intel()] == ["Alice"]
 
 
+def test_record_ocr_snapshot_filters_distance_and_location_marker_noise(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+
+    result = store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-07-03T10:00:00+00:00",
+            "names": ["527 m", "95 km", "0.8 AU", "R-YWID*", "Alice"],
+        }
+    )
+
+    assert result["created"] == 1
+    assert [item["name"] for item in store.list_active_intel()] == ["Alice"]
+
+
 def test_record_ocr_snapshot_case_change_does_not_mark_name_missing(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
     payload = {

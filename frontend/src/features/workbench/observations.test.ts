@@ -282,6 +282,32 @@ describe("buildPilotObservations", () => {
     expect(items[0].repeatCount).toBe(3);
   });
 
+  it("keeps detector names visible when hostility is confirmed by a red icon", () => {
+    const payload = {
+      ...bootstrap,
+      reports: [],
+      observations: [],
+      alerts: [],
+      active_intel: [
+        {
+          id: "active-icon-only",
+          source: "eve-sentry-detector",
+          system_name: "S-KSWL",
+          name: "Obi Augurey",
+          active: true,
+          metadata: {
+            hostile_icon_detected: true,
+            hostile_icon_count: 1,
+          },
+        },
+      ],
+    } satisfies BootstrapPayload;
+
+    expect(buildPilotObservations(payload).map((item) => item.pilotName)).toEqual([
+      "Obi Augurey",
+    ]);
+  });
+
   it("does not fall back to stale history when active intel is empty", () => {
     const payload = {
       ...bootstrap,

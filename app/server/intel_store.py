@@ -34,6 +34,7 @@ from app.core.active_intel import (
     contains_clear_signal,
 )
 from app.core.models import Observation, ThreatEvent
+from app.engine.ocr_names import is_plausible_ocr_name
 from app.intel.scoring import ChannelMention
 from app.server.esi_worker import EsiWorker
 
@@ -3346,12 +3347,16 @@ class IntelStore:
         seen: set[str] = set()
         result: list[str] = []
         for name in self._normalize_names(names):
+            if not is_plausible_ocr_name(name):
+                continue
             if "".join(name.split()).isnumeric():
                 continue
             if resolve:
                 name = self._canonicalize_ocr_name(name)
             else:
                 name = self._ocr_name_corrections.get(name.casefold(), name)
+            if not is_plausible_ocr_name(name):
+                continue
             key = name.casefold()
             if key in seen:
                 continue

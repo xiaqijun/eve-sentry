@@ -244,6 +244,10 @@ function activeIntelIsHostile(item: Record<string, unknown>): boolean {
   if (hostileCount !== null && hostileCount > 0) {
     return true;
   }
+  const hostileIconCount = firstNumber(metadata.hostile_icon_count);
+  if (hostileIconCount !== null && hostileIconCount > 0) {
+    return true;
+  }
 
   const source = String(item.source || "").trim().toLowerCase();
   if (CHANNEL_SOURCES.has(source)) {

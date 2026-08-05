@@ -204,6 +204,32 @@ describe("buildTacticalGraph", () => {
     });
   });
 
+  it("shows a hostile count when a detector name is confirmed by a red icon", () => {
+    const graph = buildTacticalGraph({
+      ...bootstrap,
+      active_intel: [
+        {
+          id: "ocr-red-icon",
+          source: "eve-sentry-detector",
+          system_name: "0-UVHJ",
+          system_id: 30003615,
+          name: "Obi Augurey",
+          active: true,
+          metadata: {
+            hostile_icon_detected: true,
+            hostile_icon_count: 1,
+          },
+        },
+      ],
+    });
+
+    expect(graph.nodes.find((node) => node.name === "0-UVHJ")).toMatchObject({
+      hostileCount: 1,
+      observationCount: 1,
+      hasAlerts: true,
+    });
+  });
+
   it("groups every hostile in a system into one connected summary", () => {
     const graph = buildTacticalGraph({
       ...bootstrap,

@@ -3,15 +3,30 @@
 import re
 
 _LEADING_ICON_RE = re.compile(r"^[^\w]+(?=\s*\w)")
+_DISTANCE_RE = re.compile(
+    r"^\s*\d+(?:[.,]\d+)?\s*(?:m|km|au)\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_plausible_ocr_name(text: str) -> bool:
+    """Return whether OCR text looks like a pilot name rather than UI noise."""
+    value = str(text or "").strip()
+    if not value or "\ufffd" in value or "*" in value or _DISTANCE_RE.fullmatch(value):
+        return False
+    # EVE character names use the Latin alphabet; non-Latin OCR glyphs are
+    # typically localized UI labels or replacement-character noise.
+    if not re.search(r"[A-Za-z]", value):
+        return False
+    if re.search(r"\d\s*(?:m|km|au)\b", value, flags=re.IGNORECASE):
+        return False
+    return True
 
 
 def _clean_ocr_name(text: str) -> str:
     """Remove OCR noise from member-list icons before pilot names."""
     cleaned = _LEADING_ICON_RE.sub("", text.strip()).strip()
-    if not re.search(r"\w", cleaned):
-        return ""
-    compact = "".join(cleaned.split())
-    if compact.isnumeric():
+    if not is_plausible_ocr_name(cleaned):
         return ""
     return cleaned
 
