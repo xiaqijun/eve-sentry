@@ -405,11 +405,11 @@ class SettingsPanel(QWidget):
                 payload.get("window_keyword", "EVE -"),
             )
         ).strip() or "EVE -"
+        # An explicitly configured environment value may override the file,
+        # but an empty variable must not erase a previously saved address.
+        env_server_url = os.environ.get("EVE_SENTRY_INTEL_URL", "").strip()
         server_url = normalize_server_url(
-            os.environ.get(
-                "EVE_SENTRY_INTEL_URL",
-                payload.get("server_url", ""),
-            )
+            env_server_url or payload.get("server_url", "")
         )
         return {
             "chatlog_dir": chatlog_dir or str(DEFAULT_CHATLOG_DIR),

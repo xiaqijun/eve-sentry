@@ -527,7 +527,7 @@ def test_monitor_ui_smoke_can_render_multiple_detected_windows_offscreen():
             "未选择为监控窗口",
         ],
     ]
-    assert payload["status_card_values"]["window"] == "未检测到"
+    assert payload["status_card_values"]["window"] == "已选 0/2"
     assert payload["status_card_values"]["region"] == "未配置"
     assert payload["side_effects"]["select_window_calls"] == 0
     assert payload["side_effects"]["screenshot_calls"] == 0
@@ -1769,7 +1769,7 @@ def test_start_monitor_client_powershell_script_wraps_detector_client():
     payload = json.loads(result.stdout)
     assert payload["args"] == ["-m", "app.detector_client"]
     assert payload["cwd"].endswith("eve-sentry")
-    assert payload["env"]["EVE_SENTRY_INTEL_URL"] == "http://127.0.0.1:8765"
+    assert "EVE_SENTRY_INTEL_URL" not in payload["env"]
     assert payload["env"]["EVE_SENTRY_HEARTBEAT_INTERVAL"] == "15"
     assert payload["env"]["EVE_SENTRY_INTEL_TIMEOUT"] == "10"
 

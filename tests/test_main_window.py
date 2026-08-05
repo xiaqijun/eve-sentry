@@ -1372,6 +1372,23 @@ def test_settings_panel_environment_overrides_saved_server_url(
     assert panel.get_server_url() == "https://env.example"
 
 
+def test_settings_panel_empty_environment_keeps_saved_server_url(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("EVE_SENTRY_INTEL_URL", "   ")
+    config_path = tmp_path / "channel_settings.json"
+    config_path.write_text(
+        json.dumps({"server_url": "http://saved.example:8765/"}),
+        encoding="utf-8",
+    )
+
+    qt_app()
+    panel = SettingsPanel(config_path=config_path)
+
+    assert panel.get_server_url() == "http://saved.example:8765"
+
+
 def test_apply_server_url_rebuilds_intel_client():
     replacement_client = object()
     window = MainWindow.__new__(MainWindow)
@@ -1754,7 +1771,7 @@ def test_selected_monitor_windows_supports_arbitrary_subset():
     ]
 
 
-def test_monitor_window_menu_only_auto_selects_new_windows_in_all_mode():
+def test_monitor_window_menu_does_not_auto_select_new_windows_in_legacy_all_mode():
     qt_app()
 
     class FakeRuntimeSettings:
@@ -1790,7 +1807,7 @@ def test_monitor_window_menu_only_auto_selects_new_windows_in_all_mode():
     )()
 
     MainWindow._sync_monitor_window_menu(window, windows)
-    assert all(action.isChecked() for action in window._monitor_window_actions.values())
+    assert not any(action.isChecked() for action in window._monitor_window_actions.values())
 
     window._monitor_window_actions["hwnd:2:eve - pilot b"].setChecked(False)
     MainWindow._on_monitor_window_toggled(window)
@@ -1805,18 +1822,26 @@ def test_monitor_window_menu_only_auto_selects_new_windows_in_all_mode():
         key: action.isChecked()
         for key, action in window._monitor_window_actions.items()
     } == {
-        "hwnd:11:eve - pilot a": True,
+        "hwnd:11:eve - pilot a": False,
         "hwnd:2:eve - pilot b": False,
         "hwnd:3:eve - pilot c": False,
     }
-    assert window._monitor_window_button.text() == "监控窗口 1/3"
+    assert window._monitor_window_button.text() == "监控窗口 0/3"
 
     MainWindow._select_all_monitor_windows(window)
     windows.append({"hwnd": 4, "title": "EVE - Pilot D"})
     MainWindow._sync_monitor_window_menu(window, windows)
 
-    assert all(action.isChecked() for action in window._monitor_window_actions.values())
-    assert window._monitor_window_button.text() == "监控窗口 4/4"
+    assert {
+        key: action.isChecked()
+        for key, action in window._monitor_window_actions.items()
+    } == {
+        "hwnd:11:eve - pilot a": True,
+        "hwnd:2:eve - pilot b": True,
+        "hwnd:3:eve - pilot c": True,
+        "hwnd:4:eve - pilot d": False,
+    }
+    assert window._monitor_window_button.text() == "监控窗口 3/4"
 
 
 def test_monitor_window_menu_handles_untitled_process_window():
@@ -1930,7 +1955,7 @@ def test_monitor_window_change_rebuilds_running_workers(monkeypatch):
     assert starts == [{"identity_checked": True}]
 
 
-def test_monitor_window_menu_drops_closed_window_from_selection_memory():
+def test_monitor_window_menu_retains_offline_window_selection_memory():
     qt_app()
     windows = [
         {"hwnd": 1, "title": "EVE - Pilot A"},
@@ -1987,10 +2012,13 @@ def test_monitor_window_menu_drops_closed_window_from_selection_memory():
     assert "offline:eve - pilot c" not in actions
     assert window._monitor_window_button.text() == "监控窗口 1/2"
     assert window._monitor_window_button.property("selectionState") == "ready"
-    assert window._monitor_selected_titles == {"EVE - Pilot A"}
+    assert window._monitor_selected_titles == {
+        "EVE - Pilot A",
+        "EVE - Pilot C",
+    }
 
 
-def test_monitor_window_button_clears_selection_when_all_windows_close():
+def test_monitor_window_button_preserves_selection_when_all_windows_close():
     qt_app()
     window = MainWindow.__new__(MainWindow)
     window._monitor_window_menu = QMenu()
@@ -2036,7 +2064,24 @@ def test_monitor_window_button_clears_selection_when_all_windows_close():
 
     assert window._monitor_window_button.text() == "监控窗口 0/0"
     assert window._monitor_window_button.property("selectionState") == "empty"
-    assert window._monitor_selected_titles == set()
+    assert window._monitor_selected_titles == {"EVE - Pilot C"}
+
+    MainWindow._sync_monitor_window_menu(
+        window,
+        [
+            {"hwnd": 30, "title": "EVE - Pilot C"},
+            {"hwnd": 40, "title": "EVE - Pilot D"},
+        ],
+    )
+
+    assert {
+        key: action.isChecked()
+        for key, action in window._monitor_window_actions.items()
+    } == {
+        "hwnd:30:eve - pilot c": True,
+        "hwnd:40:eve - pilot d": False,
+    }
+    assert window._monitor_selected_titles == {"EVE - Pilot C"}
 
 
 def test_monitor_window_action_refreshes_after_status_and_system_change():
@@ -2800,10 +2845,43 @@ def test_idle_monitor_selection_refreshes_detected_contexts_immediately():
     window._refresh_detected_window_contexts = (
         lambda items: calls.append(("refresh", items))
     )
+    window._refresh_status_cards = lambda: calls.append("status")
 
     MainWindow._on_monitor_window_toggled(window)
 
-    assert calls == ["persist", ("refresh", windows)]
+    assert calls == ["persist", ("refresh", windows), "status"]
+
+
+def test_status_cards_show_idle_monitor_selection_count():
+    window = MainWindow.__new__(MainWindow)
+    window._status_cards = {"enabled": object()}
+    window._intel_client = object()
+    window._last_heartbeat_error = ""
+    window._intel_system = "Unknown"
+    window._intel_system_id = None
+    window._intel_system_source = "default"
+    window._workers = {}
+    window._worker = None
+    window._worker_contexts = {}
+    window._monitor_window_actions = {
+        "first": FakeCheckAction(True),
+        "second": FakeCheckAction(False),
+    }
+    window._monitor_windows_by_key = {
+        "first": {"title": "EVE - Pilot A"},
+        "second": {"title": "EVE - Pilot B"},
+    }
+    window._manual_region = None
+    window._detected_region = None
+    values = {}
+    window._set_status_card = (
+        lambda key, value, tone="idle": values.__setitem__(key, (value, tone))
+    )
+
+    MainWindow._refresh_status_cards(window)
+
+    assert values["ocr"] == ("等待启动", "idle")
+    assert values["window"] == ("已选 1/2", "ok")
 
 
 def test_detected_system_for_character_reuses_local_context():
@@ -2864,6 +2942,30 @@ def test_start_monitor_rejects_missing_eve_windows(monkeypatch):
 
     assert window._monitor_btn.checked is False
     assert messages == ["当前没有可用的 EVE 窗口。"]
+
+
+def test_start_monitor_deduplicates_repeated_start_request(monkeypatch):
+    class FakeButton:
+        def __init__(self):
+            self.checked = True
+
+        def setChecked(self, value):
+            self.checked = value
+
+    messages = []
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.critical",
+        lambda _parent, _title, message: messages.append(message),
+    )
+    window = MainWindow.__new__(MainWindow)
+    window._build_monitor_targets = lambda: []
+    window._detect_window = lambda: None
+    window._monitor_btn = FakeButton()
+
+    MainWindow._start_monitor(window, identity_checked=True)
+    MainWindow._start_monitor(window, identity_checked=True)
+
+    assert len(messages) == 1
 
 
 def test_auto_start_monitor_checks_button_and_starts_once():

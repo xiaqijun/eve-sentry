@@ -189,7 +189,7 @@ def test_build_update_script_preserves_legacy_region_preferences(tmp_path):
         4242,
     )
 
-    assert "$installCopyArgs = @('/XF', 'region_prefs.json')" in script
+    assert "$installCopyArgs = @('/XF', 'region_prefs.json', 'channel_settings.json')" in script
     assert "@installCopyArgs" in script
 
 

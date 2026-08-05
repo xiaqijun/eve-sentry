@@ -745,7 +745,8 @@ try {{
     if ($LASTEXITCODE -ge 8) {{ throw "backup failed with exit code $LASTEXITCODE" }}
     $backupComplete = $true
     Write-UpdateLog 'backup completed'
-    $installCopyArgs = @('/XF', 'region_prefs.json')
+    # Keep user-owned configuration in place while mirroring the program files.
+    $installCopyArgs = @('/XF', 'region_prefs.json', 'channel_settings.json')
     if (-not $modelPackage) {{ $installCopyArgs += @('/XD', 'models') }}
     $installStarted = $true
     $null = & robocopy $source $install /MIR /R:3 /W:1 @installCopyArgs
