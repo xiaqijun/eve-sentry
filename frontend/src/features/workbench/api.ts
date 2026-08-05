@@ -68,7 +68,9 @@ export function connectAlerts(
   onBootstrap?: (bootstrap: BootstrapPayload) => void,
 ): EventSource {
   const query = new URLSearchParams({
-    bootstrap: "0",
+    // The workbench needs active-intel snapshots, not only alert events, so
+    // the server can push live star-map changes when a hostile appears.
+    bootstrap: "1",
     limit: "50",
     timeout: "30",
   });
