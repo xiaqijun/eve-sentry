@@ -42,6 +42,7 @@ class ReliableUploadManager(QObject):
     """Keep only current client state and retry it without blocking Qt."""
 
     state_changed = pyqtSignal(str, str)
+    presence_uploaded = pyqtSignal(object)
     snapshot_uploaded = pyqtSignal(object)
     heartbeat_uploaded = pyqtSignal(object)
 
@@ -62,6 +63,7 @@ class ReliableUploadManager(QObject):
         self._random = random_source
         self._state_path = Path(state_path) if state_path is not None else default_snapshot_state_path()
         self._condition = threading.Condition()
+        self._presence: dict[str, _PendingUpload] = {}
         self._snapshots: dict[str, _PendingUpload] = {}
         self._heartbeat: _PendingUpload | None = None
         self._generation: dict[str, int] = {}
@@ -69,7 +71,11 @@ class ReliableUploadManager(QObject):
         self._retry_at = 0.0
         self._running = True
         self._load_snapshots()
-        self._state = "offline_cached" if self._snapshots else "reconnecting"
+        self._state = (
+            "offline_cached"
+            if self._presence or self._snapshots
+            else "reconnecting"
+        )
         self._thread = threading.Thread(
             target=self._run,
             name="eve-sentry-upload",
@@ -116,6 +122,42 @@ class ReliableUploadManager(QObject):
             self._condition.notify_all()
         return generation
 
+    def submit_presence(
+        self,
+        key: str,
+        payload: dict[str, Any],
+        metadata: dict[str, Any] | None = None,
+        ttl: float = 60.0,
+    ) -> int:
+        """Replace the latest visual hostile count for one monitored window."""
+        normalized_key = str(key or payload.get("client_id") or "window")
+        generation_key = f"presence:{normalized_key}"
+        with self._condition:
+            generation = self._generation.get(generation_key, 0) + 1
+            self._generation[generation_key] = generation
+            captured_at = datetime.now(timezone.utc).isoformat()
+            ttl_seconds = max(1.0, float(ttl))
+            enriched = dict(payload)
+            enriched.update(
+                {
+                    "snapshot_id": str(uuid.uuid4()),
+                    "sequence": generation,
+                    "captured_at": captured_at,
+                    "seen_at": captured_at,
+                }
+            )
+            self._presence[normalized_key] = _PendingUpload(
+                key=generation_key,
+                payload=enriched,
+                metadata=dict(metadata or {}),
+                expires_at=self._clock() + ttl_seconds,
+                generation=generation,
+                expires_wall_at=time.time() + ttl_seconds,
+            )
+            self._persist_snapshots_locked()
+            self._condition.notify_all()
+        return generation
+
     def submit_heartbeat(
         self,
         payload: dict[str, Any],
@@ -151,6 +193,10 @@ class ReliableUploadManager(QObject):
         with self._condition:
             return len(self._snapshots)
 
+    def pending_presence_count(self) -> int:
+        with self._condition:
+            return len(self._presence)
+
     def _run(self) -> None:
         try:
             while True:
@@ -176,6 +222,8 @@ class ReliableUploadManager(QObject):
         try:
             if upload.key == "heartbeat":
                 self._client.post_heartbeat(**upload.payload)
+            elif upload.key.startswith("presence:"):
+                self._client.post_hostile_presence(**upload.payload)
             else:
                 self._client.post_ocr_snapshot(**upload.payload)
         except IntelApiError as exc:
@@ -192,7 +240,7 @@ class ReliableUploadManager(QObject):
                 self._retry_index += 1
                 jitter = 0.8 + self._random() * 0.4
                 self._retry_at = self._clock() + base * jitter
-                cached = bool(self._snapshots)
+                cached = bool(self._presence or self._snapshots)
             self._set_state(
                 "offline_cached" if cached else "reconnecting",
                 "离线缓存" if cached else "重连中",
@@ -207,6 +255,8 @@ class ReliableUploadManager(QObject):
         metadata["generation"] = upload.generation
         if upload.key == "heartbeat":
             self.heartbeat_uploaded.emit(metadata)
+        elif upload.key.startswith("presence:"):
+            self.presence_uploaded.emit(metadata)
         else:
             self.snapshot_uploaded.emit(metadata)
 
@@ -216,24 +266,42 @@ class ReliableUploadManager(QObject):
                 if self._heartbeat is upload:
                     self._heartbeat = None
                 return
+            if upload.key.startswith("presence:"):
+                normalized_key = upload.key.removeprefix("presence:")
+                current = self._presence.get(normalized_key)
+                if current is upload:
+                    self._presence.pop(normalized_key, None)
+                    self._persist_snapshots_locked()
+                return
             current = self._snapshots.get(upload.key)
             if current is upload:
                 self._snapshots.pop(upload.key, None)
                 self._persist_snapshots_locked()
 
     def _next_upload(self) -> _PendingUpload | None:
+        if self._presence:
+            return min(self._presence.values(), key=lambda item: item.expires_at)
         if self._snapshots:
             return min(self._snapshots.values(), key=lambda item: item.expires_at)
         return self._heartbeat
 
     def _drop_expired(self, now: float) -> None:
+        previous_presence_count = len(self._presence)
+        self._presence = {
+            key: upload
+            for key, upload in self._presence.items()
+            if upload.expires_at > now
+        }
         previous_count = len(self._snapshots)
         self._snapshots = {
             key: upload
             for key, upload in self._snapshots.items()
             if upload.expires_at > now
         }
-        if len(self._snapshots) != previous_count:
+        if (
+            len(self._presence) != previous_presence_count
+            or len(self._snapshots) != previous_count
+        ):
             self._persist_snapshots_locked()
         if self._heartbeat is not None and self._heartbeat.expires_at <= now:
             self._heartbeat = None
@@ -245,7 +313,11 @@ class ReliableUploadManager(QObject):
         except (FileNotFoundError, OSError, json.JSONDecodeError):
             return
         records = raw.get("snapshots") if isinstance(raw, dict) else None
-        if not isinstance(records, dict):
+        presence_records = raw.get("presence") if isinstance(raw, dict) else None
+        has_record_maps = isinstance(records, dict) or isinstance(presence_records, dict)
+        records = records if isinstance(records, dict) else {}
+        presence_records = presence_records if isinstance(presence_records, dict) else {}
+        if not has_record_maps:
             return
         now_wall = time.time()
         now_mono = self._clock()
@@ -268,7 +340,27 @@ class ReliableUploadManager(QObject):
                 expires_wall_at=expires_wall_at,
             )
             self._generation[normalized_key] = generation
-        if not self._snapshots:
+        for key, record in presence_records.items():
+            if not isinstance(record, dict):
+                continue
+            payload = record.get("payload")
+            expires_wall_at = _as_positive_float(record.get("expires_at"))
+            if not isinstance(payload, dict) or expires_wall_at <= now_wall:
+                continue
+            remaining = expires_wall_at - now_wall
+            generation = _as_positive_int(record.get("generation")) or 1
+            normalized_key = str(key or payload.get("client_id") or "window")
+            generation_key = f"presence:{normalized_key}"
+            self._presence[normalized_key] = _PendingUpload(
+                key=generation_key,
+                payload=_redact_sensitive(payload),
+                metadata={},
+                expires_at=now_mono + remaining,
+                generation=generation,
+                expires_wall_at=expires_wall_at,
+            )
+            self._generation[generation_key] = generation
+        if not self._presence and not self._snapshots:
             try:
                 self._state_path.unlink(missing_ok=True)
             except OSError:
@@ -276,6 +368,15 @@ class ReliableUploadManager(QObject):
 
     def _persist_snapshots_locked(self) -> None:
         """Atomically persist only current snapshots and their wall-clock TTL."""
+        valid_presence = {
+            key: {
+                "payload": _redact_sensitive(upload.payload),
+                "expires_at": upload.expires_wall_at,
+                "generation": upload.generation,
+            }
+            for key, upload in self._presence.items()
+            if upload.expires_wall_at > time.time()
+        }
         valid = {
             key: {
                 "payload": _redact_sensitive(upload.payload),
@@ -285,7 +386,7 @@ class ReliableUploadManager(QObject):
             for key, upload in self._snapshots.items()
             if upload.expires_wall_at > time.time()
         }
-        if not valid:
+        if not valid_presence and not valid:
             try:
                 self._state_path.unlink(missing_ok=True)
             except OSError:
@@ -295,7 +396,14 @@ class ReliableUploadManager(QObject):
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             temporary.write_text(
-                json.dumps({"version": 1, "snapshots": valid}, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "version": 2,
+                        "presence": valid_presence,
+                        "snapshots": valid,
+                    },
+                    ensure_ascii=False,
+                ),
                 encoding="utf-8",
             )
             os.replace(temporary, self._state_path)

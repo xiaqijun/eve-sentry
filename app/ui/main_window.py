@@ -487,6 +487,9 @@ class MainWindow(QMainWindow):
 
     def _preload_ocr_runtime(self) -> None:
         """Warm Python OCR imports off the UI thread while keeping models lazy."""
+        get_ocr_enabled = getattr(self._settings, "get_ocr_enabled", None)
+        if callable(get_ocr_enabled) and not get_ocr_enabled():
+            return
         runner = _instance_attr(self, "_network_tasks")
         if runner is None:
             return
@@ -1648,6 +1651,10 @@ class MainWindow(QMainWindow):
         label = _instance_attr(self, "_ocr_health_label")
         if label is None:
             return
+        get_ocr_enabled = getattr(self._settings, "get_ocr_enabled", None)
+        if callable(get_ocr_enabled) and not get_ocr_enabled():
+            label.setText("OCR 已关闭")
+            return
         scheduler = _instance_attr(self, "_ocr_scheduler")
         if scheduler is None:
             label.setText("OCR 未加载")
@@ -1859,13 +1866,21 @@ class MainWindow(QMainWindow):
         self._tray.showMessage(title, message)
 
     def _apply_scan_settings(self) -> None:
-        """Apply the current scan interval without restarting active workers."""
+        """Apply scan and OCR settings without restarting active workers."""
         interval = self._settings.get_interval()
+        get_ocr_enabled = getattr(self._settings, "get_ocr_enabled", None)
+        ocr_enabled = get_ocr_enabled() if callable(get_ocr_enabled) else True
         workers = self._running_workers()
         for worker in workers:
             worker.set_interval(interval)
+            set_ocr_enabled = getattr(worker, "set_ocr_enabled", None)
+            if callable(set_ocr_enabled):
+                set_ocr_enabled(ocr_enabled)
         if workers:
-            self._log_message(f"扫描间隔已实时更新为 {interval:g} 秒")
+            ocr_label = "开启" if ocr_enabled else "关闭"
+            self._log_message(
+                f"扫描间隔已实时更新为 {interval:g} 秒，OCR 已{ocr_label}"
+            )
         self._refresh_status_cards()
 
     def _apply_server_url(self, server_url: str) -> None:
@@ -2428,10 +2443,13 @@ class MainWindow(QMainWindow):
         self._workers = {}
         self._worker_contexts = {}
         interval = self._settings.get_interval()
+        get_ocr_enabled = getattr(self._settings, "get_ocr_enabled", None)
+        ocr_enabled = get_ocr_enabled() if callable(get_ocr_enabled) else True
         ocr_engine = _instance_attr(self, "_ocr")
         if ocr_engine is None:
             self._ocr_scheduler = SharedOCRScheduler()
-            self._ocr_scheduler.warm_up()
+            if ocr_enabled:
+                self._ocr_scheduler.warm_up()
             ocr_engine = self._ocr_scheduler
         for index, target in enumerate(targets):
             worker = MonitorWorker(
@@ -2443,6 +2461,7 @@ class MainWindow(QMainWindow):
             worker.set_window(window)
             worker.set_region(region["x"], region["y"], region["w"], region["h"])
             worker.set_interval(interval)
+            worker.set_ocr_enabled(ocr_enabled)
             set_scan_offset = getattr(worker, "set_scan_offset", None)
             if callable(set_scan_offset):
                 set_scan_offset(index * interval / max(1, len(targets)))
@@ -2467,7 +2486,9 @@ class MainWindow(QMainWindow):
             )
             worker.scan_complete.connect(self._update_scan_count)
             target["runtime_status"] = "准备中"
-            target["last_action"] = "等待 OCR 初始化"
+            target["last_action"] = (
+                "等待 OCR 初始化" if ocr_enabled else "仅检测敌对图标"
+            )
             self._workers[target["key"]] = worker
             self._worker_contexts[target["key"]] = target
 
@@ -2517,12 +2538,13 @@ class MainWindow(QMainWindow):
 
     def _on_hostile_icon_detected(self, count: int, context: dict) -> None:
         """Update the local system alert as soon as its red-icon count changes."""
+        hostile_count = max(0, int(count))
+        self._publish_hostile_presence(hostile_count, context)
         controller = _instance_attr(self, "_alert_controller")
         if controller is None:
             return
         window_title = str(context.get("window_title") or "EVE").strip() or "EVE"
         system_name = str(context.get("system_name") or "Unknown").strip()
-        hostile_count = max(0, int(count))
         if hostile_count == 0:
             message = f"✅ {system_name} 清空"
             self._log_message(f"{window_title}: {message}")
@@ -2533,6 +2555,46 @@ class MainWindow(QMainWindow):
         self._log_message(f"{window_title}: {message}")
         self._update_window_status(context, "敌对告警", message)
         controller.update_local_hostile_count(system_name, hostile_count)
+
+    def _publish_hostile_presence(self, count: int, context: dict) -> None:
+        """Queue the latest visual hostile count independently from name OCR."""
+        client = _instance_attr(self, "_intel_client")
+        if client is None or not _instance_attr(self, "_uploads_enabled", True):
+            return
+
+        self._refresh_intel_location(context=context)
+        client_id = str(
+            context.get("client_id") or self._heartbeat_client_id
+        ).strip()
+        source_instance = str(
+            context.get("source_instance")
+            or context.get("window_title")
+            or "EVE"
+        ).strip()
+        payload = {
+            "client_id": client_id,
+            "source_instance": source_instance,
+            "system_name": str(context.get("system_name") or "Unknown"),
+            "system_id": context.get("system_id"),
+            "hostile_icon_count": max(0, int(count)),
+        }
+        metadata = {
+            "kind": "hostile_presence",
+            "context": context,
+            "hostile_icon_count": payload["hostile_icon_count"],
+        }
+        upload_manager = _instance_attr(self, "_upload_manager")
+        if upload_manager is not None:
+            upload_manager.submit_presence(client_id, payload, metadata)
+            return
+        runner = _instance_attr(self, "_network_tasks")
+        post_presence = getattr(client, "post_hostile_presence", None)
+        if runner is not None and callable(post_presence):
+            runner.submit_latest(
+                f"presence:{client_id}",
+                lambda: post_presence(**payload),
+                metadata,
+            )
 
     def _disconnect_worker_signals(self, worker: MonitorWorker | None = None) -> None:
         """Safely disconnect all signals from the current worker."""

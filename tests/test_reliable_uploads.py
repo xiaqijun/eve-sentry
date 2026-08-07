@@ -218,3 +218,115 @@ def test_reliable_uploader_drops_expired_disk_snapshot(tmp_path):
         assert restored.pending_snapshot_count() == 0
     finally:
         restored.shutdown()
+
+
+def test_reliable_uploader_prioritizes_presence_without_replacing_ocr(tmp_path):
+    first_failed = threading.Event()
+    calls = []
+
+    class Client:
+        def __init__(self):
+            self.online = False
+
+        def post_ocr_snapshot(self, **payload):
+            calls.append(("ocr", payload))
+            if not self.online:
+                first_failed.set()
+                raise transient_error()
+            return {"ok": True}
+
+        def post_hostile_presence(self, **payload):
+            calls.append(("presence", payload))
+            if not self.online:
+                raise transient_error()
+            return {"ok": True}
+
+    client = Client()
+    manager = ReliableUploadManager(
+        client,
+        state_path=tmp_path / "uploads.json",
+        random_source=lambda: 0.5,
+    )
+    try:
+        manager.submit_snapshot(
+            "window-1",
+            {
+                "client_id": "window-1",
+                "source_instance": "EVE - A",
+                "system_name": "Tama",
+                "names": ["Enemy Pilot"],
+            },
+        )
+        assert first_failed.wait(1)
+        assert wait_until(lambda: manager.state == "offline_cached")
+
+        manager.submit_presence(
+            "window-1",
+            {
+                "client_id": "window-1",
+                "source_instance": "EVE - A",
+                "system_name": "Tama",
+                "hostile_icon_count": 0,
+            },
+        )
+        client.online = True
+        with manager._condition:
+            manager._retry_at = 0.0
+            manager._condition.notify_all()
+
+        assert wait_until(
+            lambda: manager.pending_presence_count() == 0
+            and manager.pending_snapshot_count() == 0
+        )
+        assert [kind for kind, _payload in calls] == ["ocr", "presence", "ocr"]
+        presence_payload = calls[1][1]
+        snapshot_payload = calls[2][1]
+        assert presence_payload["hostile_icon_count"] == 0
+        assert presence_payload["sequence"] == 1
+        assert snapshot_payload["names"] == ["Enemy Pilot"]
+        assert snapshot_payload["sequence"] == 1
+        assert presence_payload["snapshot_id"] != snapshot_payload["snapshot_id"]
+    finally:
+        manager.shutdown()
+
+
+def test_reliable_uploader_coalesces_presence_to_one_item_per_eight_windows(tmp_path):
+    first_failed = threading.Event()
+
+    class OfflineClient:
+        def post_hostile_presence(self, **_payload):
+            first_failed.set()
+            raise transient_error()
+
+        def post_ocr_snapshot(self, **_payload):
+            raise transient_error()
+
+    manager = ReliableUploadManager(
+        OfflineClient(),
+        state_path=tmp_path / "uploads.json",
+        random_source=lambda: 0.5,
+    )
+    try:
+        for generation in range(5):
+            for window_index in range(8):
+                client_id = f"window-{window_index}"
+                manager.submit_presence(
+                    client_id,
+                    {
+                        "client_id": client_id,
+                        "source_instance": f"EVE - Pilot {window_index}",
+                        "system_name": "Tama",
+                        "hostile_icon_count": generation,
+                    },
+                )
+
+        assert first_failed.wait(1)
+        assert wait_until(lambda: manager.state == "offline_cached")
+        assert manager.pending_presence_count() == 8
+        assert manager.pending_snapshot_count() == 0
+        assert {
+            upload.payload["hostile_icon_count"]
+            for upload in manager._presence.values()
+        } == {4}
+    finally:
+        manager.shutdown()
