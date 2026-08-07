@@ -50,6 +50,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["off", "setup", "enforce"],
         default="off",
     )
+    parser.add_argument(
+        "--key-risk-control",
+        choices=["on", "off"],
+        default="on",
+        help="enable ESI-backed desktop-key identity risk control",
+    )
     parser.add_argument("--auth-bootstrap-admin", default="")
     parser.add_argument("--auth-bootstrap-password-file", default="")
     parser.add_argument("--auth-esi-client-id", default="")
@@ -340,13 +346,14 @@ def _build_auth_service(
     store: IntelStore,
     resolver: Any | None,
 ) -> Any | None:
+    key_risk_control = str(getattr(args, "key_risk_control", "on") or "on")
     if args.auth_mode == "off":
         return None
     connect = getattr(store, "_connect", None)
     if not callable(connect):
         raise RuntimeError("authentication requires a SQL-backed store")
-    if resolver is None:
-        raise RuntimeError("authentication requires public ESI")
+    if resolver is None and key_risk_control == "on":
+        raise RuntimeError("key risk control requires public ESI")
 
     from app.server.auth import AuthService
     from app.server.auth_store import AuthRepository
@@ -356,6 +363,7 @@ def _build_auth_service(
         resolver,
         enforce_requests=args.auth_mode == "enforce",
         esi_sso_client=_build_auth_esi_sso_client(args),
+        key_risk_control=key_risk_control == "on",
     )
     username = str(args.auth_bootstrap_admin or "").strip()
     if username:

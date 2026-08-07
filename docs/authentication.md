@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 管理员 | 用户名和密码 | 全部管理页面、账号安全和业务接口 |
 | 普通用户 | EVE SSO | 态势页、报表和自己的设备密钥 |
-| 桌面设备密钥（可选） | 填写后使用 `Authorization: Bearer <key>` | 有效密钥可访问客户端 API 并启用 Listener 持续风控；留空时客户端不认证 |
+| 桌面设备密钥（可选） | 填写后使用 `Authorization: Bearer <key>` | 有效密钥可访问客户端 API；开启密钥风控时同时启用 Listener 持续校验 |
 | 只读服务密钥 | `Authorization: Bearer <key>` | 仅 Bootstrap、SSE 和第三方敌对星系接口 |
 
 普通用户只有在 EVE SSO 角色属于管理员配置的允许军团时才能登录。管理员账号不使用
@@ -18,12 +18,22 @@ EVE SSO。EVE SSO 登录和态势页 ESI 授权共用一个应用和回调：
 
 密码使用 Argon2id。会话和 API 密钥只保存哈希，完整密钥只在创建时显示一次。设备
 密钥可吊销、重新启用或删除记录；已被用户禁用流程吊销的旧密钥不会因解禁自动恢复。
+管理员可以直接为任意已启用用户签发设备密钥，目标用户无需先通过 EVE SSO 登录。
 
 ## 认证模式
 
 - `off`：认证服务关闭，旧业务接口保持开放。
 - `setup`：认证和管理接口受保护，现有业务接口暂不强制认证，供上线迁移使用。
 - `enforce`：除 `/api/health`、管理员登录和 EVE SSO 起止接口外均要求认证。
+
+密钥风控由 `EVE_SENTRY_SERVER_KEY_RISK_CONTROL` 独立控制，默认 `on`：
+管理员也可以在 Web 的“系统管理 → 安全设置”中切换；保存后的 Web 设置优先于启动环境变量，
+并在服务重启后保留。
+
+- `on`：客户端上报 Listener 角色，服务端通过公共 ESI、允许军团和角色白名单持续校验。
+- `off`：所有有效设备密钥直接可信；身份上报立即返回 `skipped=true`，不访问 ESI、
+  不创建身份任务，也不会因角色判定吊销密钥。密钥本身的认证、吊销、账号禁用和权限范围
+  仍然生效。
 
 客户端允许设备密钥留空。留空时不会调用 `/api/v1/auth/me` 预检，不会扫描或上报
 Listener 身份，也不会发送 `Authorization` 请求头。这只是客户端行为，不会绕过服务端
@@ -45,6 +55,7 @@ sudo sh -c 'printf "%s" "请替换为至少12位随机密码" > /etc/eve-sentry/
 
 ```dotenv
 EVE_SENTRY_SERVER_AUTH_MODE=setup
+EVE_SENTRY_SERVER_KEY_RISK_CONTROL=on
 EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_ADMIN=admin
 EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_PASSWORD_FILE=/etc/eve-sentry/admin-password
 ```
@@ -53,6 +64,9 @@ EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_PASSWORD_FILE=/etc/eve-sentry/admin-password
 变量并删除密码文件。
 
 ## 桌面身份验证
+
+以下流程仅在 `EVE_SENTRY_SERVER_KEY_RISK_CONTROL=on` 时执行。关闭风控时，管理员可在
+用户管理中直接签发设备密钥，客户端无需 EVE SSO，Listener 上报也不会进入 ESI 校验队列。
 
 1. 设备密钥是可选配置；用户可以从网页创建并填入，也可以保持为空。
 2. 密钥为空时，客户端不调用 `/api/v1/auth/me`，不执行 Listener 身份扫描，也不发送

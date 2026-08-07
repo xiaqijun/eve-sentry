@@ -6,12 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountKeysPage } from "./AccountKeysPage";
 import { AdminAuditPage, filterAuditRecords } from "./AdminAuditPage";
 import { AdminIdentityPage } from "./AdminIdentityPage";
+import { AdminSecurityPage } from "./AdminSecurityPage";
 import { AdminUsersPage } from "./AdminUsersPage";
 import { AdminWhitelistPage } from "./AdminWhitelistPage";
 
 const apiMocks = vi.hoisted(() => ({
   addCorporation: vi.fn(),
   addWhitelistCharacter: vi.fn(),
+  createAdminKey: vi.fn(),
   createMyKey: vi.fn(),
   createServiceKey: vi.fn(),
   createUser: vi.fn(),
@@ -19,6 +21,7 @@ const apiMocks = vi.hoisted(() => ({
   deleteUser: vi.fn(),
   enableKey: vi.fn(),
   fetchClients: vi.fn(),
+  fetchSecuritySettings: vi.fn(),
   listAdminUsers: vi.fn(),
   listAudit: vi.fn(),
   listCorporations: vi.fn(),
@@ -28,6 +31,7 @@ const apiMocks = vi.hoisted(() => ({
   resetUserPassword: vi.fn(),
   revokeKey: vi.fn(),
   setUserActive: vi.fn(),
+  updateSecuritySettings: vi.fn(),
 }));
 
 vi.mock("./api", () => apiMocks);
@@ -71,6 +75,7 @@ describe("split management pages", () => {
     apiMocks.listAdminUsers.mockResolvedValue([user]);
     apiMocks.listAudit.mockResolvedValue([]);
     apiMocks.fetchClients.mockResolvedValue({ count: 0, heartbeats: [], summary: {} });
+    apiMocks.fetchSecuritySettings.mockResolvedValue({ key_risk_control: true });
     apiMocks.listCorporations.mockResolvedValue([]);
     apiMocks.listMyKeys.mockResolvedValue([]);
   });
@@ -143,6 +148,54 @@ describe("split management pages", () => {
     expect(body).not.toHaveTextContent("禁用用户");
   });
 
+  it("lets an administrator issue a desktop key for a member", async () => {
+    const member = {
+      ...user,
+      display_name: "侦察员",
+      role: "member" as const,
+      user_id: "user-2",
+      username: "scout",
+    };
+    apiMocks.listAdminUsers.mockResolvedValue([user, member]);
+    apiMocks.createAdminKey.mockResolvedValue({
+      key_id: "key-created",
+      user_id: "user-2",
+      name: "监控客户端",
+      key_prefix: "eve_created",
+      key_type: "desktop",
+      status: "active",
+      identity_verified: true,
+      created_at: "2026-08-07T00:00:00Z",
+      secret: "eve_admin_issued",
+    });
+    await render(<AdminUsersPage />);
+
+    const viewMember = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.getAttribute("aria-label") === "查看 侦察员");
+    await act(async () => viewMember?.click());
+    const actionButton = container.querySelector(
+      '[aria-label="用户操作"]',
+    ) as HTMLButtonElement | null;
+    await act(async () => actionButton?.click());
+    const createButton = Array.from(
+      container.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent?.includes("创建设备密钥"));
+    await act(async () => {
+      createButton?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.createAdminKey).toHaveBeenCalledWith(
+      "user-2",
+      "监控客户端",
+      "desktop",
+    );
+    expect(container).toHaveTextContent("设备密钥只显示这一次");
+    expect(container).toHaveTextContent("eve_admin_issued");
+  });
+
   it("keeps verified identities on the identity page", async () => {
     await render(<AdminIdentityPage />);
     expect(container).toHaveTextContent("身份记录");
@@ -152,6 +205,17 @@ describe("split management pages", () => {
     expect(container).not.toHaveTextContent("角色白名单");
     expect(apiMocks.listCorporations).not.toHaveBeenCalled();
     expect(container).not.toHaveTextContent("创建只读服务密钥");
+  });
+
+  it("allows administrators to switch key risk control", async () => {
+    apiMocks.updateSecuritySettings.mockResolvedValue({ key_risk_control: false });
+    await render(<AdminSecurityPage />);
+    expect(container).toHaveTextContent("设备密钥风控");
+    const toggle = container.querySelector('[aria-label="设备密钥风控"]') as HTMLButtonElement | null;
+    expect(toggle).toBeInTheDocument();
+    await act(async () => toggle?.click());
+    expect(apiMocks.updateSecuritySettings).toHaveBeenCalledWith({ key_risk_control: false });
+    expect(container).toHaveTextContent("当前为关闭状态");
   });
 
   it("keeps corporation and character allowlists on the whitelist page", async () => {

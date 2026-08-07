@@ -1,6 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { apiRequest, deleteKey, enableKey, listAdminClients, login, setCsrfToken } from "./api";
+import {
+  apiRequest,
+  createAdminKey,
+  deleteKey,
+  enableKey,
+  fetchSecuritySettings,
+  listAdminClients,
+  login,
+  setCsrfToken,
+  updateSecuritySettings,
+} from "./api";
 
 describe("authenticated API client", () => {
   beforeEach(() => {
@@ -82,5 +92,49 @@ describe("authenticated API client", () => {
       "/api/v1/admin/clients",
       expect.objectContaining({ credentials: "include" }),
     );
+  });
+
+  it("creates a desktop key for a selected user", async () => {
+    const created = {
+      key_id: "key-1",
+      user_id: "user/1",
+      name: "监控客户端",
+      key_prefix: "eve_example",
+      key_type: "desktop" as const,
+      status: "active" as const,
+      identity_verified: true,
+      created_at: "2026-08-07T00:00:00Z",
+      secret: "eve_secret",
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ key: created }), { status: 201 }),
+    );
+
+    await expect(
+      createAdminKey("user/1", "监控客户端", "desktop"),
+    ).resolves.toEqual(created);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/v1/admin/users/user%2F1/keys",
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      name: "监控客户端",
+      key_type: "desktop",
+    });
+  });
+
+  it("loads and updates administrator security settings", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        settings: { key_risk_control: true },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        settings: { key_risk_control: false },
+      }), { status: 200 }));
+
+    await expect(fetchSecuritySettings()).resolves.toEqual({ key_risk_control: true });
+    await expect(updateSecuritySettings({ key_risk_control: false }))
+      .resolves.toEqual({ key_risk_control: false });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/admin/security-settings");
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
   });
 });

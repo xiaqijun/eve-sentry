@@ -22,6 +22,7 @@ import { fetchClients, listAudit } from "./api";
 import type { AuditRecord, ClientHeartbeatRecord } from "./types";
 
 const AUDIT_ACTION_LABELS: Record<string, string> = {
+  "security.key_risk_control_changed": "切换密钥风控",
   "api_key.created": "创建密钥",
   "api_key.deleted": "删除密钥",
   "api_key.enabled": "启用密钥",

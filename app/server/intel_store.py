@@ -1324,6 +1324,8 @@ class IntelStore:
                     continue
                 if item.source != source:
                     continue
+                if item.target_type != "character":
+                    continue
                 if item.metadata.get("client_id") != client_id:
                     continue
                 if item.system_name.casefold() != system_name.casefold():
@@ -1358,6 +1360,153 @@ class IntelStore:
         for task in esi_tasks:
             self._esi_worker.submit(task.active_id, task)
         return result.to_dict(include_active=False)
+
+    def record_hostile_presence(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Record the latest visual hostile count without creating pilot reports."""
+        client_id = str(payload.get("client_id") or "").strip()
+        if not client_id:
+            raise ValueError("client_id is required")
+        if "hostile_icon_count" not in payload:
+            raise ValueError("hostile_icon_count is required")
+        try:
+            hostile_count = max(0, int(payload.get("hostile_icon_count")))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("hostile_icon_count must be an integer") from exc
+
+        source = "eve-sentry-detector"
+        source_instance = (
+            str(payload.get("source_instance") or client_id).strip() or client_id
+        )
+        system_name = self._normalize_system(
+            str(payload.get("system_name") or payload.get("system") or "")
+        )
+        system_id = self._optional_int(payload.get("system_id"))
+        seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
+        active_id = self._active_hostile_presence_id(client_id, system_name)
+        result = ActiveIntelSnapshotResult()
+
+        with self._lock:
+            accepted, moved_items = self._transition_ocr_client_system(
+                client_id,
+                system_name,
+                seen_at,
+            )
+            if not accepted:
+                response = result.to_dict(include_active=False)
+                response.update(
+                    {
+                        "accepted": False,
+                        "hostile_icon_count": hostile_count,
+                        "seen_at": seen_at,
+                    }
+                )
+                return response
+            result.expired += len(moved_items)
+
+            item = self._active_intel.get(active_id)
+            if item is not None and self._channel_seen_after(item.last_seen_at, seen_at):
+                response = result.to_dict(include_active=False)
+                response.update(
+                    {
+                        "accepted": False,
+                        "hostile_icon_count": hostile_count,
+                        "seen_at": seen_at,
+                    }
+                )
+                return response
+
+            metadata = {
+                "client_id": client_id,
+                "presence_only": True,
+                "hostile_icon_detected": hostile_count > 0,
+                "hostile_icon_count": hostile_count,
+                "hostile_icon_seen_at": seen_at,
+            }
+            if hostile_count == 0:
+                for candidate in self._active_intel.values():
+                    if not candidate.active or candidate.source != source:
+                        continue
+                    if candidate.metadata.get("client_id") != client_id:
+                        continue
+                    if candidate.system_name.casefold() != system_name.casefold():
+                        continue
+                    if self._channel_seen_after(candidate.last_seen_at, seen_at):
+                        continue
+                    candidate.active = False
+                    candidate.left_at = seen_at
+                    self._ocr_missing_counts.pop(candidate.active_id, None)
+                    self._reset_ocr_alert_cooldown(candidate)
+                    result.expired += 1
+
+                if item is None:
+                    self._active_intel[active_id] = ActiveIntelItem(
+                        active_id=active_id,
+                        source=source,
+                        source_instance=source_instance,
+                        system_name=system_name,
+                        system_id=system_id,
+                        target_type="system",
+                        metadata=metadata,
+                        first_seen_at=seen_at,
+                        last_seen_at=seen_at,
+                        left_at=seen_at,
+                        active=False,
+                    )
+                else:
+                    item.source_instance = source_instance
+                    item.system_id = system_id
+                    item.metadata = metadata
+                    item.last_seen_at = seen_at
+                    item.left_at = seen_at
+                    item.active = False
+                response = result.to_dict(include_active=False)
+                response.update(
+                    {
+                        "accepted": True,
+                        "hostile_icon_count": 0,
+                        "seen_at": seen_at,
+                    }
+                )
+                return response
+
+            self._ensure_system(system_name)
+            if item is None:
+                self._active_intel[active_id] = ActiveIntelItem(
+                    active_id=active_id,
+                    source=source,
+                    source_instance=source_instance,
+                    system_name=system_name,
+                    system_id=system_id,
+                    target_type="system",
+                    metadata=metadata,
+                    first_seen_at=seen_at,
+                    last_seen_at=seen_at,
+                    active=True,
+                )
+                result.created = 1
+            else:
+                was_active = item.active
+                item.source_instance = source_instance
+                item.system_id = system_id
+                item.metadata = metadata
+                if not was_active:
+                    item.first_seen_at = seen_at
+                item.last_seen_at = seen_at
+                item.left_at = ""
+                item.cleared_at = ""
+                item.active = True
+                item.seen_count = item.seen_count + 1 if was_active else 1
+                result.refreshed = 1
+
+            response = result.to_dict(include_active=False)
+            response.update(
+                {
+                    "accepted": True,
+                    "hostile_icon_count": hostile_count,
+                    "seen_at": seen_at,
+                }
+            )
+            return response
 
     def list_active_intel(
         self,
@@ -3176,6 +3325,16 @@ class IntelStore:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return f"ocr:{digest}"
 
+    def _active_hostile_presence_id(self, client_id: str, system: str) -> str:
+        key = "\x1f".join(
+            [
+                client_id.strip().casefold(),
+                system.strip().casefold(),
+            ]
+        )
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return f"presence:{digest}"
+
     def _transition_ocr_client_system(
         self,
         client_id: str,
@@ -3184,10 +3343,25 @@ class IntelStore:
     ) -> tuple[bool, list[ActiveIntelItem]]:
         """Expire one detector target's old system state before a location change."""
         normalized_system = str(system_name or "").strip()
+        incoming_seen_at = self._parse_timestamp(seen_at)
+        for item in self._active_intel.values():
+            if item.source != "eve-sentry-detector":
+                continue
+            if not item.metadata.get("presence_only"):
+                continue
+            if item.metadata.get("client_id") != client_id:
+                continue
+            item_seen_at = self._parse_timestamp(item.last_seen_at)
+            if (
+                incoming_seen_at is not None
+                and item_seen_at is not None
+                and item_seen_at > incoming_seen_at
+            ):
+                return False, []
+
         if not normalized_system or normalized_system.casefold() == "unknown":
             return True, []
 
-        incoming_seen_at = self._parse_timestamp(seen_at)
         moved_items: list[ActiveIntelItem] = []
         for item in self._active_intel.values():
             if not item.active or item.source != "eve-sentry-detector":

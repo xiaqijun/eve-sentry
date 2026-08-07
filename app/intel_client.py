@@ -168,6 +168,43 @@ class IntelApiClient:
                 raise
         return self._request("POST", path, payload=payload)
 
+    def post_hostile_presence(
+        self,
+        client_id: str,
+        source_instance: str,
+        system_name: str,
+        hostile_icon_count: int,
+        seen_at: str = "",
+        system_id: int | None = None,
+        snapshot_id: str = "",
+        sequence: int | None = None,
+        captured_at: str = "",
+    ) -> dict[str, Any]:
+        """Publish visual hostile-count state without waiting for name OCR."""
+        payload: dict[str, Any] = {
+            "client_id": client_id,
+            "source_instance": source_instance,
+            "system_name": system_name,
+            "hostile_icon_count": max(0, int(hostile_icon_count)),
+        }
+        if seen_at:
+            payload["seen_at"] = seen_at
+        if system_id is not None:
+            payload["system_id"] = system_id
+        if snapshot_id:
+            payload["snapshot_id"] = str(snapshot_id)
+        if sequence is not None:
+            payload["sequence"] = int(sequence)
+        if captured_at:
+            payload["captured_at"] = str(captured_at)
+        path = self._v1_path("/hostile-presence")
+        try:
+            return self._request("POST", path, payload=payload)
+        except IntelApiError as exc:
+            if not _is_transient_transport_error(exc):
+                raise
+        return self._request("POST", path, payload=payload)
+
     def get_active_intel(self, **params: Any) -> dict[str, Any]:
         """Fetch realtime active intel rows from the server."""
         return self._request("GET", self._v1_path("/active-intel"), params=params)

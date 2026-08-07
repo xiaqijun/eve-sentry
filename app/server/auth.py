@@ -29,6 +29,7 @@ IDENTITY_RETRY_BASE_SECONDS = 10
 IDENTITY_RETRY_MAX_SECONDS = 5 * 60
 
 logger = logging.getLogger(__name__)
+KEY_RISK_CONTROL_SETTING = "key_risk_control"
 
 
 class AuthError(RuntimeError):
@@ -92,11 +93,19 @@ class AuthService:
         resolver: Any,
         enforce_requests: bool = True,
         esi_sso_client: Any | None = None,
+        key_risk_control: bool = True,
     ) -> None:
         self.repository = repository
         self.resolver = resolver
         self.enforce_requests = bool(enforce_requests)
         self.esi_sso_client = esi_sso_client
+        self._key_risk_control_lock = threading.Lock()
+        stored_risk_control = self.repository.setting(KEY_RISK_CONTROL_SETTING)
+        self._key_risk_control = (
+            stored_risk_control == "on"
+            if stored_risk_control in {"on", "off"}
+            else bool(key_risk_control)
+        )
         self._login_failures: dict[str, list[float]] = {}
         self._login_lock = threading.Lock()
         self._esi_login_states: dict[str, dict[str, Any]] = {}
@@ -108,6 +117,48 @@ class AuthService:
             self._claim_identity_job,
             self._process_identity_job,
         )
+
+    @property
+    def key_risk_control(self) -> bool:
+        with self._key_risk_control_lock:
+            return self._key_risk_control
+
+    def security_settings(self) -> dict[str, Any]:
+        return {"key_risk_control": self.key_risk_control}
+
+    def set_key_risk_control(
+        self,
+        enabled: bool,
+        actor_user_id: str,
+    ) -> dict[str, Any]:
+        enabled = bool(enabled)
+        if enabled and self.resolver is None:
+            raise AuthError(
+                "public ESI is required to enable key risk control",
+                409,
+                "key_risk_control_unavailable",
+            )
+        with self._key_risk_control_lock:
+            previous = self._key_risk_control
+            if previous == enabled:
+                return {"key_risk_control": enabled}
+            now = _now_iso()
+            self.repository.set_setting(
+                KEY_RISK_CONTROL_SETTING,
+                "on" if enabled else "off",
+                now,
+            )
+            self._key_risk_control = enabled
+        self._audit(
+            actor_user_id,
+            actor_user_id,
+            "security.key_risk_control_changed",
+            {"previous": previous, "enabled": enabled},
+        )
+        if enabled:
+            self._identity_worker.start()
+            self._identity_worker.wake()
+        return {"key_risk_control": enabled}
 
     @property
     def authorization_generation(self) -> int:
@@ -403,7 +454,11 @@ class AuthService:
         if user is None or str(user.get("status")) != "active":
             raise AuthError("user is disabled", 403, "user_disabled")
         key_type = str(key.get("key_type") or "desktop")
-        verified = bool(key.get("identity_verified")) or key_type == "service_readonly"
+        verified = (
+            not self.key_risk_control
+            or bool(key.get("identity_verified"))
+            or key_type == "service_readonly"
+        )
         if not verified and not allow_unverified:
             raise AuthError(
                 "EVE character validation is required",
@@ -479,7 +534,9 @@ class AuthService:
             "key_hash": _secret_hash(secret),
             "key_type": key_type,
             "status": "active",
-            "identity_verified": key_type == "service_readonly",
+            "identity_verified": (
+                key_type == "service_readonly" or not self.key_risk_control
+            ),
             "created_at": now,
             "last_used_at": "",
             "revoked_at": "",
@@ -489,7 +546,7 @@ class AuthService:
         self._audit(actor_user_id, user_id, "api_key.created", {
             "key_id": record["key_id"], "key_type": key_type, "name": record["name"],
         })
-        return {**_public_api_key(key), "secret": secret}
+        return {**self._public_api_key_record(key), "secret": secret}
 
     def revoke_api_key(self, key_id: str, principal: AuthPrincipal) -> None:
         key = self.repository.api_key_by_id(key_id)
@@ -550,7 +607,10 @@ class AuthService:
         self._audit(principal.user_id, str(key["user_id"]), "api_key.deleted", {"key_id": key_id})
 
     def list_api_keys(self, user_id: str) -> list[dict[str, Any]]:
-        return [_public_api_key(item) for item in self.repository.list_api_keys(user_id)]
+        return [
+            self._public_api_key_record(item)
+            for item in self.repository.list_api_keys(user_id)
+        ]
 
     def verify_characters(
         self,
@@ -563,6 +623,13 @@ class AuthService:
     ) -> dict[str, Any]:
         if principal.auth_type != "api_key" or principal.api_key_type != "desktop":
             raise AuthError("desktop API key is required", 403, "desktop_key_required")
+        if not self.key_risk_control:
+            return {
+                "verified": True,
+                "permanent": True,
+                "skipped": True,
+                "characters": [],
+            }
         clean_names = _clean_names(names)
         if not clean_names:
             raise AuthError("at least one EVE Listener is required", 428, "eve_listener_required")
@@ -589,6 +656,13 @@ class AuthService:
                     },
                 )
             raise
+        if not self.key_risk_control:
+            return {
+                "verified": True,
+                "permanent": True,
+                "skipped": True,
+                "characters": [],
+            }
         allowed_corps = self.repository.allowed_corporation_ids()
         whitelisted = self.repository.whitelist_ids(principal.user_id)
         unauthorized = [
@@ -653,6 +727,20 @@ class AuthService:
         """Persist an idempotent report and return its current state immediately."""
         if principal.auth_type != "api_key" or principal.api_key_type != "desktop":
             raise AuthError("desktop API key is required", 403, "desktop_key_required")
+        if not self.key_risk_control:
+            response = {
+                "accepted": True,
+                "status": "verified",
+                "pending": False,
+                "verified": True,
+                "permanent": True,
+                "skipped": True,
+                "job_id": "",
+                "characters": [],
+            }
+            if client_id:
+                response["client_id"] = str(client_id).strip()[:160]
+            return response
         clean_names = sorted(_clean_names(names), key=str.casefold)
         if not clean_names:
             raise AuthError("at least one EVE Listener is required", 428, "eve_listener_required")
@@ -681,6 +769,8 @@ class AuthService:
 
     def start_identity_worker(self) -> None:
         """Start recovery of queued identity reports after server startup."""
+        if not self.key_risk_control:
+            return
         self._identity_worker.start()
         self._identity_worker.wake()
 
@@ -693,6 +783,8 @@ class AuthService:
         self._identity_worker.close(wait=wait)
 
     def _claim_identity_job(self, lease_owner: str) -> dict[str, Any] | None:
+        if not self.key_risk_control:
+            return None
         now = datetime.now(UTC)
         return self.repository.claim_identity_job(
             now.isoformat(),
@@ -778,6 +870,14 @@ class AuthService:
             **audit_context,
             "characters": list(result.get("characters") or []),
         }
+        audit = None
+        if not result.get("skipped"):
+            audit = self._audit_record(
+                principal.user_id,
+                principal.user_id,
+                "identity.verified",
+                success_details,
+            )
         self.repository.complete_identity_job(
             job_id,
             lease_owner,
@@ -786,12 +886,7 @@ class AuthService:
             "",
             "",
             _now_iso(),
-            audit=self._audit_record(
-                principal.user_id,
-                principal.user_id,
-                "identity.verified",
-                success_details,
-            ),
+            audit=audit,
         )
 
     def _identity_job_response(
@@ -836,13 +931,21 @@ class AuthService:
         keys_by_user: dict[str, list[dict[str, Any]]] = {}
         for item in key_rows:
             user_id = str(item.get("user_id") or "")
-            keys_by_user.setdefault(user_id, []).append(_public_api_key(item))
+            keys_by_user.setdefault(user_id, []).append(
+                self._public_api_key_record(item)
+            )
         users = []
         for item in user_rows:
             user = _public_user(item)
             user["keys"] = keys_by_user.get(str(item.get("user_id") or ""), [])
             users.append(user)
         return users
+
+    def _public_api_key_record(self, key: dict[str, Any]) -> dict[str, Any]:
+        result = _public_api_key(key)
+        if not self.key_risk_control and result.get("key_type") == "desktop":
+            result["identity_verified"] = True
+        return result
 
     def set_user_status(
         self,

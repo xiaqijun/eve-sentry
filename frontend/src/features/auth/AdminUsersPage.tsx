@@ -31,6 +31,7 @@ import {
   UserIdentity,
 } from "../../components/ManagementPage";
 import {
+  createAdminKey,
   createServiceKey,
   createUser,
   deleteKey,
@@ -54,7 +55,8 @@ export function AdminUsersPage() {
   const [statusFilter, setStatusFilter] = useState<UserStatusFilter>("all");
   const [createRole, setCreateRole] = useState<"admin" | "member">("member");
   const [createOpen, setCreateOpen] = useState(false);
-  const [serviceSecret, setServiceSecret] = useState("");
+  const [createdSecret, setCreatedSecret] = useState("");
+  const [createdSecretLabel, setCreatedSecretLabel] = useState("");
   const [actionsOpen, setActionsOpen] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -120,16 +122,30 @@ export function AdminUsersPage() {
     if (!selectedUserId) return;
     try {
       const key: ApiKeyRecord = await createServiceKey(selectedUserId, "QQ 机器人");
-      setServiceSecret(key.secret || "");
+      setCreatedSecret(key.secret || "");
+      setCreatedSecretLabel("只读服务密钥");
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "服务密钥创建失败");
     }
   };
 
+  const createDesktopKey = async () => {
+    if (!selectedUserId) return;
+    try {
+      const key = await createAdminKey(selectedUserId, "监控客户端", "desktop");
+      setCreatedSecret(key.secret || "");
+      setCreatedSecretLabel("设备密钥");
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "设备密钥创建失败");
+    }
+  };
+
   const openUser = (userId: string) => {
     setSelectedUserId(userId);
-    setServiceSecret("");
+    setCreatedSecret("");
+    setCreatedSecretLabel("");
     setActionsOpen(false);
   };
 
@@ -170,7 +186,11 @@ export function AdminUsersPage() {
       if (password) void run(() => resetUserPassword(selectedUser.user_id, password));
       return;
     }
-    if (action === "create-key") {
+    if (action === "create-desktop-key") {
+      void createDesktopKey();
+      return;
+    }
+    if (action === "create-service-key") {
       void createReadonlyKey();
       return;
     }
@@ -272,7 +292,8 @@ export function AdminUsersPage() {
                 <Menu aria-label="用户操作菜单" selectable={false}>
                   <Menu.Item key="toggle-status" onClick={() => runSelectedUserAction("toggle-status")}>{selectedUser.status === "active" ? "禁用用户" : "解禁用户"}</Menu.Item>
                   {selectedUser.role === "admin" ? <Menu.Item key="reset-password" onClick={() => runSelectedUserAction("reset-password")}>重置密码</Menu.Item> : null}
-                  <Menu.Item key="create-key" onClick={() => runSelectedUserAction("create-key")}><KeyRound size={14} />创建只读密钥</Menu.Item>
+                  <Menu.Item key="create-desktop-key" onClick={() => runSelectedUserAction("create-desktop-key")}><KeyRound size={14} />创建设备密钥</Menu.Item>
+                  <Menu.Item key="create-service-key" onClick={() => runSelectedUserAction("create-service-key")}><KeyRound size={14} />创建只读服务密钥</Menu.Item>
                   {selectedUser.user_id !== currentUser?.user_id ? <Menu.Item key="delete-user" onClick={() => runSelectedUserAction("delete-user")}><span className="danger-text"><Trash2 size={14} />删除用户</span></Menu.Item> : null}
                 </Menu>
               )}
@@ -294,7 +315,7 @@ export function AdminUsersPage() {
         {selectedUser ? (
           <div className="management-drawer-body">
               <div className="management-drawer-status"><span>账号状态</span><AccountStatusTag status={selectedUser.status} /></div>
-              {serviceSecret ? <div className="secret-once"><strong>服务密钥只显示这一次</strong><code>{serviceSecret}</code></div> : null}
+              {createdSecret ? <div className="secret-once"><strong>{createdSecretLabel}只显示这一次</strong><code>{createdSecret}</code></div> : null}
               <section className="management-drawer-section">
                 <div className="admin-section-heading"><h3>设备与服务密钥</h3><span>{selectedUser.keys.length} 个</span></div>
                 <div className="compact-list">

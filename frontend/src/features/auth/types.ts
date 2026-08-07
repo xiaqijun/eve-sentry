@@ -12,6 +12,10 @@ export interface AuthUser {
   updated_at?: string;
 }
 
+export interface SecuritySettings {
+  key_risk_control: boolean;
+}
+
 export interface ApiKeyRecord {
   key_id: string;
   user_id: string;

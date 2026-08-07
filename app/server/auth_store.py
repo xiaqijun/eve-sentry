@@ -127,6 +127,13 @@ def migrate_auth_schema(connection: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_auth_identity_jobs_ready
         ON auth_identity_jobs(status, next_attempt_at, lease_until)
         """,
+        """
+        CREATE TABLE IF NOT EXISTS auth_settings (
+            setting_key TEXT PRIMARY KEY,
+            setting_value TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT ''
+        )
+        """,
     )
     for statement in statements:
         connection.execute(statement)
@@ -142,6 +149,26 @@ class AuthRepository:
         with self._connect() as connection:
             row = connection.execute("SELECT COUNT(*) AS count FROM auth_users").fetchone()
         return int(row["count"] if row is not None else 0)
+
+    def setting(self, key: str) -> str | None:
+        row = self._one(
+            "SELECT setting_value FROM auth_settings WHERE setting_key = ?",
+            (str(key),),
+        )
+        return str(row["setting_value"]) if row is not None else None
+
+    def set_setting(self, key: str, value: str, updated_at: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO auth_settings (setting_key, setting_value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(setting_key) DO UPDATE SET
+                    setting_value = excluded.setting_value,
+                    updated_at = excluded.updated_at
+                """,
+                (str(key), str(value), str(updated_at)),
+            )
 
     def create_user(self, record: dict[str, Any]) -> dict[str, Any]:
         with self._connect() as connection:

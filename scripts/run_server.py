@@ -46,6 +46,11 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
     _append_option(argv, "--auth-mode", values.get("EVE_SENTRY_SERVER_AUTH_MODE", ""))
     _append_option(
         argv,
+        "--key-risk-control",
+        values.get("EVE_SENTRY_SERVER_KEY_RISK_CONTROL", ""),
+    )
+    _append_option(
+        argv,
         "--auth-bootstrap-admin",
         values.get("EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_ADMIN", ""),
     )

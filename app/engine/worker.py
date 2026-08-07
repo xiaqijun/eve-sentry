@@ -1,6 +1,5 @@
 """Background worker thread for the monitor loop."""
 
-import hashlib
 import logging
 from typing import Optional
 
@@ -56,12 +55,12 @@ class MonitorWorker(QThread):
         self._interval = 2.0           # seconds between scans
         self._active_interval = self._interval
         self._scan_offset = max(0.0, float(scan_offset))
-        self._previous_fingerprint = b""
         self._burst_scans_remaining = 0
         self._running = False
         self._region: Optional[dict] = None  # {x, y, w, h}
         self._window: Optional[dict] = None  # {hwnd, title, w, h}
         self._ocr_request_key: str | None = None
+        self._ocr_enabled = True
 
     def set_region(self, x: int, y: int, w: int, h: int) -> None:
         """Set the screen region to capture."""
@@ -98,6 +97,10 @@ class MonitorWorker(QThread):
         """Delay the first scan so multiple windows do not capture together."""
         self._scan_offset = max(0.0, float(seconds))
 
+    def set_ocr_enabled(self, enabled: bool) -> None:
+        """Enable or disable name OCR without stopping visual threat detection."""
+        self._ocr_enabled = bool(enabled)
+
     def stop(self) -> None:
         """Request the current scan and the monitor loop to stop."""
         self._running = False
@@ -120,8 +123,7 @@ class MonitorWorker(QThread):
         self._running = True
         scan_count = 0
         ocr_ready = False  # track whether OCR has been lazy-initialised
-        previous_hostile_count = 0
-        red_row_mismatch_count = 0
+        previous_hostile_count: int | None = None
         capturer = self._capturer
         owns_capturer = False
 
@@ -159,46 +161,48 @@ class MonitorWorker(QThread):
                     if self._stop_requested():
                         break
 
-                    fingerprint = _frame_fingerprint(img)
-                    frame_changed = fingerprint != self._previous_fingerprint
-                    self._previous_fingerprint = fingerprint
-
-                    # 2. Detect hostile icons before OCR and publish count changes.
+                    # 2. Publish visual evidence first. OCR is optional enrichment.
                     hostile_icons = find_hostile_icons(img)
                     hostile_count = len(hostile_icons)
-                    if hostile_count != previous_hostile_count:
+                    count_changed = hostile_count != previous_hostile_count
+                    if count_changed:
                         self.hostile_detected.emit(hostile_count)
-                        self._burst_scans_remaining = 4
+                        self._burst_scans_remaining = 2 if hostile_count > 0 else 0
                     previous_hostile_count = hostile_count
 
-                    if not frame_changed and hostile_count == 0:
+                    should_run_ocr = (
+                        self._ocr_enabled and count_changed and hostile_count > 0
+                    )
+                    if not should_run_ocr:
                         scan_count += 1
                         self.scan_complete.emit(scan_count)
-                        self._active_interval = self._interval
-                        self.status_update.emit("画面无变化，已跳过 OCR")
+                        if count_changed:
+                            if not self._ocr_enabled and hostile_count > 0:
+                                self.status_update.emit(
+                                    f"已上报 {hostile_count} 个敌对图标，OCR 已关闭"
+                                )
+                            elif hostile_count == 0:
+                                self.status_update.emit("未检测到敌对图标")
+                        self._active_interval = (
+                            max(1.0, self._interval * 0.5)
+                            if self._burst_scans_remaining > 0
+                            else self._interval
+                        )
+                        self._burst_scans_remaining = max(
+                            0,
+                            self._burst_scans_remaining - 1,
+                        )
                         self._wait_for_next_scan()
                         continue
 
                     hostile_rows = (
                         extract_hostile_name_rows(img) if hostile_icons else None
                     )
-                    publish_snapshot = True
-                    fallback_deferred = False
                     if hostile_rows is None:
-                        red_row_mismatch_count = 0
-                        if not ocr_ready:
-                            warm_up = getattr(self._ocr, "warm_up", None)
-                            if callable(warm_up):
-                                warm_up()
-                            else:
-                                # Preserve direct engine compatibility for tools/tests.
-                                self._recognize(
-                                    img,
-                                    progress=self.status_update.emit,
-                                )
                         ocr_results = []
-                        names = []
-                        verified_hostile_count = 0
+                        self.status_update.emit(
+                            "敌对图标已上报，姓名区域定位失败"
+                        )
                     else:
                         progress = None if ocr_ready else self.status_update.emit
                         hostile_ocr_results = self._recognize(
@@ -208,59 +212,31 @@ class MonitorWorker(QThread):
                         )
                         hostile_names = build_ocr_snapshot_names(hostile_ocr_results)
                         if len(hostile_names) == hostile_count:
-                            red_row_mismatch_count = 0
                             ocr_results = hostile_ocr_results
-                            names = hostile_names
-                            verified_hostile_count = hostile_count
+                            self.ocr_snapshot.emit(hostile_names, hostile_count)
                         else:
-                            red_row_mismatch_count += 1
-                            if red_row_mismatch_count < 2:
-                                # A contact-menu overlay or list repaint can corrupt
-                                # one frame. Keep the last server state until confirmed.
-                                ocr_results = []
-                                names = []
-                                verified_hostile_count = 0
-                                publish_snapshot = False
-                                fallback_deferred = True
-                            else:
-                                # The complete list also contains friendly pilots and
-                                # UI text, so never publish it as hostile evidence.
-                                ocr_results = []
-                                names = []
-                                verified_hostile_count = 0
-                    if not ocr_ready:
-                        ocr_ready = True
+                            ocr_results = []
+                            self.status_update.emit(
+                                "敌对图标已上报，姓名数量不匹配，本轮不发布姓名"
+                            )
+                    ocr_ready = True
                     if self._stop_requested():
                         break
 
-                    # 3. Publish names and independent visual-hostility evidence.
-                    if publish_snapshot:
-                        self.ocr_snapshot.emit(names, verified_hostile_count)
+                    # 3. Name OCR is best-effort; visual count has already been sent.
                     scan_count += 1
                     self.scan_complete.emit(scan_count)
-                    self.status_update.emit(build_scan_status(ocr_results))
+                    if ocr_results:
+                        self.status_update.emit(build_scan_status(ocr_results))
 
-                    if hostile_count > 0 or self._burst_scans_remaining > 0:
-                        self._active_interval = max(0.5, self._interval * 0.5)
+                    if self._burst_scans_remaining > 0:
+                        self._active_interval = max(1.0, self._interval * 0.5)
                         self._burst_scans_remaining = max(
                             0,
                             self._burst_scans_remaining - 1,
                         )
                     else:
                         self._active_interval = self._interval
-
-                    if fallback_deferred:
-                        self.status_update.emit(
-                            "红框姓名定位失败 1/2，等待下一帧确认"
-                        )
-                    elif verified_hostile_count:
-                        self.status_update.emit(f"敌对名单已上报: {len(names)} 个")
-                    elif hostile_rows is not None and red_row_mismatch_count >= 2:
-                        self.status_update.emit("红框姓名定位连续失败，暂不上报人员名单")
-                    elif hostile_rows is None:
-                        self.status_update.emit("未检测到敌对图标")
-                    else:
-                        self.status_update.emit("敌对图标行未识别到姓名")
 
                 except OCRRequestSuperseded:
                     logger.debug("Discarded superseded OCR frame")
@@ -281,9 +257,3 @@ class MonitorWorker(QThread):
         finally:
             if owns_capturer:
                 capturer.close()
-
-
-def _frame_fingerprint(image) -> bytes:
-    """Return a cheap frame fingerprint for OCR change detection."""
-    reduced = image.convert("L").resize((32, 32))
-    return hashlib.blake2b(reduced.tobytes(), digest_size=12).digest()

@@ -1244,6 +1244,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
     assert json.loads(config_path.read_text(encoding="utf-8")) == {
         "chatlog_dir": "C:/EVE/Chatlogs",
         "scan_interval": 5,
+        "ocr_enabled": True,
         "window_keyword": "EVE - Pilot",
         "server_url": "",
         "start_with_windows": False,
@@ -1572,6 +1573,7 @@ def test_start_monitor_creates_worker_for_each_eve_window(monkeypatch):
             self.window = None
             self.region = None
             self.interval = None
+            self.ocr_enabled = None
             self.running = False
             created_workers.append(self)
 
@@ -1583,6 +1585,9 @@ def test_start_monitor_creates_worker_for_each_eve_window(monkeypatch):
 
         def set_interval(self, seconds):
             self.interval = seconds
+
+        def set_ocr_enabled(self, enabled):
+            self.ocr_enabled = enabled
 
         def start(self):
             self.running = True
@@ -1649,6 +1654,7 @@ def test_start_monitor_creates_worker_for_each_eve_window(monkeypatch):
         {
             "get_keyword": lambda self: "EVE -",
             "get_interval": lambda self: 2.0,
+            "get_ocr_enabled": lambda self: True,
         },
     )()
     window._region_prefs = FakeRegionPrefs()
@@ -1707,6 +1713,7 @@ def test_start_monitor_creates_worker_for_each_eve_window(monkeypatch):
         {"x": 810, "y": 20, "w": 200, "h": 800},
     ]
     assert all(worker.interval == 2.0 for worker in created_workers)
+    assert all(worker.ocr_enabled is True for worker in created_workers)
     assert set(window._workers) == {
         "hwnd:1:eve - pilot a",
         "hwnd:2:eve - pilot b",
@@ -3057,9 +3064,19 @@ def test_scan_interval_changes_apply_to_running_workers():
         def set_interval(self, value):
             self.interval = value
 
+        def set_ocr_enabled(self, enabled):
+            self.ocr_enabled = enabled
+
     worker = FakeWorker()
     window = MainWindow.__new__(MainWindow)
-    window._settings = type("Settings", (), {"get_interval": lambda self: 5.0})()
+    window._settings = type(
+        "Settings",
+        (),
+        {
+            "get_interval": lambda self: 5.0,
+            "get_ocr_enabled": lambda self: False,
+        },
+    )()
     window._running_workers = lambda: [worker]
     window._log_messages = []
     window._log_message = lambda message: window._log_messages.append(message)
@@ -3068,7 +3085,50 @@ def test_scan_interval_changes_apply_to_running_workers():
     MainWindow._apply_scan_settings(window)
 
     assert worker.interval == 5.0
-    assert window._log_messages == ["扫描间隔已实时更新为 5 秒"]
+    assert worker.ocr_enabled is False
+    assert window._log_messages == ["扫描间隔已实时更新为 5 秒，OCR 已关闭"]
+
+
+def test_hostile_count_upload_does_not_depend_on_local_alert_controller():
+    qt_app()
+
+    class UploadManager:
+        def __init__(self):
+            self.calls = []
+
+        def submit_presence(self, key, payload, metadata):
+            self.calls.append((key, payload, metadata))
+
+    manager = UploadManager()
+    window = MainWindow.__new__(MainWindow)
+    window._intel_client = object()
+    window._uploads_enabled = True
+    window._upload_manager = manager
+    window._alert_controller = None
+    window._heartbeat_client_id = "detector:device"
+    window._refresh_intel_location = lambda context: True
+    context = {
+        "client_id": "detector:device:pilot-a",
+        "source_instance": "EVE - Pilot A",
+        "window_title": "EVE - Pilot A",
+        "system_name": "Tama",
+        "system_id": 30002813,
+    }
+
+    MainWindow._on_hostile_icon_detected(window, 2, context)
+
+    assert len(manager.calls) == 1
+    key, payload, metadata = manager.calls[0]
+    assert key == "detector:device:pilot-a"
+    assert payload == {
+        "client_id": "detector:device:pilot-a",
+        "source_instance": "EVE - Pilot A",
+        "system_name": "Tama",
+        "system_id": 30002813,
+        "hostile_icon_count": 2,
+    }
+    assert metadata["kind"] == "hostile_presence"
+    assert metadata["context"] is context
 
 
 def test_publish_heartbeat_includes_multi_window_targets():

@@ -47,6 +47,8 @@ def test_monitor_worker_uses_bound_window_capture_session(monkeypatch):
 
         def screenshot(self, x, y, w, h):
             self.screenshots.append({"x": x, "y": y, "w": w, "h": h})
+            if len(self.screenshots) > 1:
+                raise TargetWindowClosed("done")
             return Image.new("RGB", (w, h), color=(0, 0, 0))
 
         def close(self):
@@ -57,14 +59,9 @@ def test_monitor_worker_uses_bound_window_capture_session(monkeypatch):
             raise AssertionError("worker should use the window-owned capturer")
 
     class FakeOcr:
-        def __init__(self):
-            self.calls = 0
-
         def recognize(self, image, progress=None):
             _ = image, progress
-            self.calls += 1
-            worker.stop()
-            return []
+            raise AssertionError("a clear first frame must not run OCR")
 
     monkeypatch.setattr("app.engine.worker.Capturer", FakeOwnedCapturer)
     monkeypatch.setattr(MonitorWorker, "msleep", staticmethod(lambda _ms: None))
@@ -73,7 +70,9 @@ def test_monitor_worker_uses_bound_window_capture_session(monkeypatch):
     worker.set_window({"hwnd": 42, "title": "EVE - Window", "w": 1280, "h": 720})
     worker.set_region(1000, 80, 260, 620)
     snapshots = []
+    alerts = []
     worker.ocr_snapshot.connect(snapshots.append)
+    worker.hostile_detected.connect(alerts.append)
 
     worker.run()
 
@@ -85,9 +84,13 @@ def test_monitor_worker_uses_bound_window_capture_session(monkeypatch):
         "w": 1280,
         "h": 720,
     }
-    assert owned.screenshots == [{"x": 1000, "y": 80, "w": 260, "h": 620}]
+    assert owned.screenshots == [
+        {"x": 1000, "y": 80, "w": 260, "h": 620},
+        {"x": 1000, "y": 80, "w": 260, "h": 620},
+    ]
     assert owned.closed is True
     assert snapshots == []
+    assert alerts == [0]
 
 
 def test_monitor_worker_only_sends_verified_red_icon_rows_to_ocr():
@@ -153,7 +156,7 @@ def test_monitor_worker_discards_ocr_names_when_no_red_icon_exists():
     class FriendlyOcr:
         def recognize(self, image, progress=None):
             _ = image, progress
-            return [("Friendly Pilot", 0.99)]
+            raise AssertionError("a frame without red icons must not run OCR")
 
     worker = MonitorWorker(FrameCapturer(), FriendlyOcr())
     worker.set_region(0, 0, frame.width, frame.height)
@@ -166,8 +169,8 @@ def test_monitor_worker_discards_ocr_names_when_no_red_icon_exists():
 
     worker.run()
 
-    assert snapshots == [([], 0)]
-    assert alerts == []
+    assert snapshots == []
+    assert alerts == [0]
 
 
 def test_monitor_worker_does_not_publish_full_list_after_red_row_mismatches():
@@ -205,17 +208,19 @@ def test_monitor_worker_does_not_publish_full_list_after_red_row_mismatches():
 
     worker.run()
 
-    assert snapshots == [([], 0)]
-    assert len(ocr.images) == 2
+    assert snapshots == []
+    assert len(ocr.images) == 1
     assert ocr.images[0].height < frame.height
-    assert ocr.images[1].height < frame.height
 
 
 def test_monitor_worker_resets_fallback_after_a_matching_red_row_frame():
-    frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
-    draw = ImageDraw.Draw(frame)
+    two_hostiles = Image.new("RGB", (180, 100), color=(12, 13, 13))
+    draw = ImageDraw.Draw(two_hostiles)
     draw.rectangle((6, 20, 16, 30), fill=(146, 3, 3))
     draw.rectangle((6, 50, 16, 60), fill=(149, 8, 9))
+    three_hostiles = two_hostiles.copy()
+    ImageDraw.Draw(three_hostiles).rectangle((6, 75, 16, 85), fill=(152, 9, 8))
+    frames = [two_hostiles, two_hostiles, three_hostiles]
 
     class FrameCapturer:
         def __init__(self):
@@ -223,8 +228,8 @@ def test_monitor_worker_resets_fallback_after_a_matching_red_row_frame():
 
         def screenshot(self, _x, _y, _w, _h):
             self.calls += 1
-            if self.calls <= 3:
-                return frame
+            if frames:
+                return frames.pop(0)
             raise TargetWindowClosed("done")
 
     class RecoveringOcr:
@@ -234,13 +239,17 @@ def test_monitor_worker_resets_fallback_after_a_matching_red_row_frame():
         def recognize(self, _image, progress=None):
             _ = progress
             self.calls += 1
-            if self.calls == 2:
-                return [("First Red", 0.99), ("Second Red", 0.99)]
-            return [("Only One Red Name", 0.99)]
+            if self.calls == 1:
+                return [("Only One Red Name", 0.99)]
+            return [
+                ("First Red", 0.99),
+                ("Second Red", 0.99),
+                ("Third Red", 0.99),
+            ]
 
     ocr = RecoveringOcr()
     worker = MonitorWorker(FrameCapturer(), ocr)
-    worker.set_region(0, 0, frame.width, frame.height)
+    worker.set_region(0, 0, two_hostiles.width, two_hostiles.height)
     snapshots = []
     worker.ocr_snapshot.connect(
         lambda names, hostile_count: snapshots.append((names, hostile_count))
@@ -248,40 +257,89 @@ def test_monitor_worker_resets_fallback_after_a_matching_red_row_frame():
 
     worker.run()
 
-    assert snapshots == [(["First Red", "Second Red"], 2)]
-    assert ocr.calls == 3
+    assert snapshots == [(["First Red", "Second Red", "Third Red"], 3)]
+    assert ocr.calls == 2
 
 
 def test_monitor_worker_publishes_each_hostile_count_change_including_clear(
     monkeypatch,
 ):
-    clear = Image.new("RGB", (180, 100), color=(12, 13, 13))
-    hostile = clear.copy()
-    ImageDraw.Draw(hostile).rectangle((6, 20, 16, 30), fill=(146, 3, 3))
-    two_hostiles = hostile.copy()
-    ImageDraw.Draw(two_hostiles).rectangle((6, 50, 16, 60), fill=(149, 8, 9))
-    frames = [two_hostiles, hostile, hostile, clear, hostile]
+    counts = iter([0, 2, 2, 1, 3, 3, 0])
 
     class FrameCapturer:
         def screenshot(self, _x, _y, _w, _h):
-            if frames:
-                return frames.pop(0)
-            raise TargetWindowClosed("done")
+            try:
+                return next(counts)
+            except StopIteration:
+                raise TargetWindowClosed("done") from None
 
     class StableOcr:
+        def __init__(self):
+            self.calls = 0
+
         def recognize(self, image, progress=None):
-            _ = image, progress
-            return [("Enemy Pilot", 0.99)]
+            _ = progress
+            self.calls += 1
+            return [
+                (f"Enemy Pilot {index}", 0.99)
+                for index in range(1, image + 1)
+            ]
 
     monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
-    worker = MonitorWorker(FrameCapturer(), StableOcr())
-    worker.set_region(0, 0, hostile.width, hostile.height)
+    monkeypatch.setattr(
+        "app.engine.worker.find_hostile_icons",
+        lambda count: [object()] * count,
+    )
+    monkeypatch.setattr(
+        "app.engine.worker.extract_hostile_name_rows",
+        lambda image: image,
+    )
+    ocr = StableOcr()
+    worker = MonitorWorker(FrameCapturer(), ocr)
+    worker.set_region(0, 0, 180, 100)
+    alerts = []
+    snapshots = []
+    worker.hostile_detected.connect(alerts.append)
+    worker.ocr_snapshot.connect(
+        lambda names, hostile_count: snapshots.append((names, hostile_count))
+    )
+
+    worker.run()
+
+    assert alerts == [0, 2, 1, 3, 0]
+    assert ocr.calls == 3
+    assert [hostile_count for _names, hostile_count in snapshots] == [2, 1, 3]
+
+
+def test_monitor_worker_reports_counts_without_ocr_when_disabled(monkeypatch):
+    counts = iter([0, 2, 2, 3, 0])
+
+    class FrameCapturer:
+        def screenshot(self, _x, _y, _w, _h):
+            try:
+                return next(counts)
+            except StopIteration:
+                raise TargetWindowClosed("done") from None
+
+    class ForbiddenOcr:
+        def recognize(self, image, progress=None):
+            _ = image, progress
+            raise AssertionError("disabled OCR must never recognize a frame")
+
+    monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
+    monkeypatch.setattr(
+        "app.engine.worker.find_hostile_icons",
+        lambda count: [object()] * count,
+    )
+    worker = MonitorWorker(FrameCapturer(), ForbiddenOcr())
+    worker.set_region(0, 0, 180, 100)
+    worker.set_ocr_enabled(False)
     alerts = []
     worker.hostile_detected.connect(alerts.append)
 
     worker.run()
 
-    assert alerts == [2, 1, 0, 1]
+    assert alerts == [0, 2, 3, 0]
 
 
 def test_monitor_worker_keeps_scan_interval_when_unchanged_frames_skip_ocr(
@@ -325,9 +383,9 @@ def test_monitor_worker_keeps_scan_interval_when_unchanged_frames_skip_ocr(
 
     worker.run()
 
-    assert ocr.calls == 1
+    assert ocr.calls == 0
     assert waits == [2, 2, 2]
-    assert statuses.count("画面无变化，已跳过 OCR") == 2
+    assert not any("OCR" in status for status in statuses)
 
 
 def test_monitor_worker_keeps_configured_interval_for_benign_frame_changes(
@@ -367,7 +425,7 @@ def test_monitor_worker_keeps_configured_interval_for_benign_frame_changes(
     assert waits == [3, 3, 3]
 
 
-def test_monitor_worker_never_skips_ocr_while_hostiles_remain(monkeypatch):
+def test_monitor_worker_runs_ocr_once_while_hostile_count_remains_stable(monkeypatch):
     frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
     ImageDraw.Draw(frame).rectangle((6, 20, 16, 30), fill=(146, 3, 3))
 
@@ -399,7 +457,7 @@ def test_monitor_worker_never_skips_ocr_while_hostiles_remain(monkeypatch):
 
     worker.run()
 
-    assert ocr.calls == 7
+    assert ocr.calls == 1
     assert "画面无变化，已跳过 OCR" not in statuses
 
 

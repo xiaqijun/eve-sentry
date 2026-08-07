@@ -561,6 +561,65 @@ def test_v1_ocr_snapshot_endpoint_updates_active_intel(tmp_path):
         server.stop()
 
 
+def test_v1_hostile_presence_updates_bootstrap_without_fabricating_alerts(tmp_path):
+    server = IntelHTTPServer(
+        IntelStore(tmp_path / "intel.json", systems={}, links=[]),
+        port=0,
+    )
+    server.start()
+    try:
+        first_status, first = request_json(
+            f"{server.url}/api/v1/hostile-presence",
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "source_instance": "EVE - Pilot",
+                "system_name": "S-KSWL",
+                "system_id": 30004759,
+                "hostile_icon_count": 2,
+                "seen_at": "2026-08-07T10:00:00+00:00",
+            },
+        )
+        second_status, second = request_json(
+            f"{server.url}/api/v1/hostile-presence",
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "source_instance": "EVE - Pilot",
+                "system_name": "S-KSWL",
+                "system_id": 30004759,
+                "hostile_icon_count": 4,
+                "seen_at": "2026-08-07T10:00:01+00:00",
+            },
+        )
+        bootstrap_status, bootstrap_payload = request_json(
+            f"{server.url}/api/v1/bootstrap"
+        )
+        alerts_status, alerts_payload = request_json(
+            f"{server.url}/api/v1/alerts"
+        )
+
+        system = next(
+            item
+            for item in bootstrap_payload["bootstrap"]["map"]["systems"]
+            if item["name"] == "S-KSWL"
+        )
+        active = bootstrap_payload["bootstrap"]["active_intel"]
+        assert first_status == 201
+        assert first["created"] == 1
+        assert second_status == 200
+        assert second["refreshed"] == 1
+        assert bootstrap_status == 200
+        assert system["hostile_count"] == 4
+        assert len(active) == 1
+        assert active[0]["target_type"] == "system"
+        assert active[0]["metadata"]["presence_only"] is True
+        assert alerts_status == 200
+        assert alerts_payload["alerts"] == []
+    finally:
+        server.stop()
+
+
 def test_v1_hostile_waves_returns_persisted_lifecycles(tmp_path):
     store = IntelStore(tmp_path / "intel.json")
     calls = []
@@ -2840,6 +2899,86 @@ def test_auth_enforcement_accepts_valid_key_before_listener_is_discovered(tmp_pa
         assert "bootstrap" in payload
     finally:
         server.stop()
+
+
+def test_admin_can_issue_desktop_key_without_member_esi_login(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    auth = AuthService(
+        AuthRepository(store._connect),
+        resolver=None,
+        key_risk_control=False,
+    )
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    member = auth.create_user("pilot", "", role="member")
+    admin_key = auth.create_api_key(admin["user_id"], "Admin", admin["user_id"])
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    try:
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/users/{member['user_id']}/keys",
+            method="POST",
+            payload={"name": "Remote monitor", "key_type": "desktop"},
+            headers={"Authorization": f"Bearer {admin_key['secret']}"},
+        )
+
+        assert status == 201
+        issued = payload["key"]
+        assert issued["key_type"] == "desktop"
+        assert issued["identity_verified"] is True
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/bootstrap",
+            headers={"Authorization": f"Bearer {issued['secret']}"},
+        )
+        assert status == 200
+        assert "bootstrap" in payload
+        principal = auth.authenticate_api_key(issued["secret"])
+        assert principal.user_id == member["user_id"]
+    finally:
+        server.stop()
+        auth.close()
+        store.close()
+
+
+def test_admin_can_toggle_key_risk_control_from_web(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    admin_key = auth.create_api_key(admin["user_id"], "Admin", admin["user_id"])
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    headers = {"Authorization": f"Bearer {admin_key['secret']}"}
+    try:
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/security-settings",
+            headers=headers,
+        )
+        assert status == 200
+        assert payload["settings"] == {"key_risk_control": True}
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/security-settings",
+            method="POST",
+            payload={"key_risk_control": False},
+            headers=headers,
+        )
+        assert status == 200
+        assert payload["settings"] == {"key_risk_control": False}
+        assert auth.security_settings()["key_risk_control"] is False
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/security-settings",
+            method="POST",
+            payload={"key_risk_control": "on"},
+            headers=headers,
+        )
+        assert status == 400
+        assert payload["code"] == "invalid_key_risk_control"
+        assert auth.security_settings()["key_risk_control"] is False
+    finally:
+        server.stop()
+        auth.close()
+        store.close()
 
 
 def test_async_identity_report_acknowledges_before_esi_finishes(tmp_path):

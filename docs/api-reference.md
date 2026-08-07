@@ -44,9 +44,11 @@ Authorization: Bearer eve_xxx
 | `POST` | `/api/v1/client/identity-checks` | 幂等提交 Listener 角色并立即返回任务状态；身份校验在服务端异步执行 |
 | `POST` | `/api/v1/client/identity-check` | 旧版同步身份校验，仅用于滚动升级兼容 |
 | `GET/POST` | `/api/v1/admin/users` | 用户列表和创建用户 |
+| `GET/POST` | `/api/v1/admin/security-settings` | 查看或切换服务端密钥风控 |
 | `POST` | `/api/v1/admin/users/{id}/status` | 启用或禁用用户 |
 | `POST` | `/api/v1/admin/users/{id}/reset-password` | 重置管理员密码 |
 | `DELETE` | `/api/v1/admin/users/{id}` | 删除用户 |
+| `POST` | `/api/v1/admin/users/{id}/keys` | 管理员为用户创建设备或只读服务密钥；目标用户无需先登录 ESI |
 | `POST` | `/api/v1/admin/users/{id}/service-keys` | 创建只读服务密钥 |
 | `POST` | `/api/v1/admin/users/{id}/characters` | 添加用户角色白名单 |
 | `DELETE` | `/api/v1/admin/users/{id}/characters/{character_id}` | 删除角色白名单 |
@@ -57,6 +59,8 @@ Authorization: Bearer eve_xxx
 异步身份接口在任务排队、处理中或等待重试时返回 `202`，已验证时返回 `200` 并携带解析
 后的角色 ID。客户端可用相同角色集合重复提交来读取状态，不需要保存任务 ID；服务端按
 设备密钥和规范化角色集合保证幂等。
+关闭服务端密钥风控时，这两个身份接口直接返回已确认状态和 `skipped=true`，不会访问 ESI
+或创建后台任务。
 
 ## 监控与事件
 
@@ -65,7 +69,8 @@ Authorization: Bearer eve_xxx
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/api/v1/ocr/snapshot` | 上传当前 OCR 名单和红框计数 |
+| `POST` | `/api/v1/hostile-presence` | 立即上传当前红色敌对图标数量，`0` 表示清空 |
+| `POST` | `/api/v1/ocr/snapshot` | 上传非零数量变化时识别到的 OCR 人员名单；兼容旧客户端红框计数 |
 | `POST` | `/api/v1/clients/heartbeats` | 上传客户端状态、窗口目标和最近异常 |
 | `GET` | `/api/v1/clients` | 在线客户端和聚合状态 |
 | `GET` | `/api/v1/active-intel` | 当前实时情报 |
@@ -79,6 +84,11 @@ Authorization: Bearer eve_xxx
 | `GET/POST` | `/api/v1/reports` | 历史上报读取和写入 |
 | `GET/POST` | `/api/v1/observations` | 规范化观察记录读取和写入 |
 | `POST` | `/api/v1/channel-lines` | 独立频道客户端上传日志行 |
+
+`POST /api/v1/hostile-presence` 的请求体包含 `client_id`、`source_instance`、
+`system_name`、`hostile_icon_count`，并可带 `system_id`、`seen_at`、`snapshot_id`、
+`sequence` 和 `captured_at`。该接口只维护当前星系数量状态，不创建虚假人员报告；同一
+客户端的旧时间戳不会覆盖新状态。
 
 历史报告和观察记录支持显式游标分页。首个请求传 `cursor=start`，后续请求原样传回
 `next_cursor`；`next_cursor` 为 `null` 表示结束。普通列表和分页默认每次最多 100 条，

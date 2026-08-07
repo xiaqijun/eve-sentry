@@ -82,6 +82,7 @@ EVE_SENTRY_SERVER_REPORT_RETENTION_DAYS=0
 EVE_SENTRY_SERVER_INACTIVE_INTEL_RETENTION_DAYS=30
 EVE_SENTRY_SERVER_CONFIG=/var/lib/eve-sentry/intel_config.json
 EVE_SENTRY_SERVER_AUTH_MODE=setup
+EVE_SENTRY_SERVER_KEY_RISK_CONTROL=on
 EVE_SENTRY_SERVER_MAP_SOURCE=sde
 EVE_SENTRY_SERVER_MAP_SDE_PATH=/var/lib/eve-sentry/sde/BUILD_NUMBER
 EVE_SENTRY_SERVER_MAP_REGION_IDS=10000045
@@ -104,6 +105,12 @@ EVE_SENTRY_SERVER_DISABLE_ZKILL=0
 查询的分页大小。预警 SSE 仅对活跃情报引用的报告生成事件；兼容 `/api/events` 也会在达到
 单次 `limit` 后停止评分。部署后可用访问日志的耗时字段监控 `/api/v1/events` 首帧和历史
 列表延迟。
+
+`EVE_SENTRY_SERVER_KEY_RISK_CONTROL` 默认为 `on`，设备密钥会经过 Listener、公共 ESI、
+允许军团和角色白名单校验。设为 `off` 后，有效设备密钥直接获得客户端权限，管理员可为
+未登录 EVE SSO 的用户签发密钥；身份检查接口直接确认并跳过 ESI。管理员也可以在 Web 的
+“系统管理 → 安全设置”中切换，Web 保存的值会写入 PostgreSQL 并覆盖启动默认值。该开关不
+关闭密钥认证、账号禁用、吊销或只读密钥权限限制。
 
 启用公共 ESI 后，zKillboard 人员统计默认同时启用；`EVE_SENTRY_SERVER_ENABLE_ZKILL=1`
 可显式开启，`EVE_SENTRY_SERVER_DISABLE_ZKILL=1` 可用于紧急停用，后者优先。服务端对成功

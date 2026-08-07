@@ -89,6 +89,69 @@ def test_login_session_and_api_key_secrets_are_not_returned_from_lists(auth):
     assert principal.identity_verified is False
 
 
+def test_disabled_key_risk_control_trusts_desktop_keys_without_esi(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    service = AuthService(
+        AuthRepository(store._connect),
+        resolver=None,
+        key_risk_control=False,
+    )
+    try:
+        user = service.create_user("pilot", "", role="member")
+        created = service.create_api_key(
+            user["user_id"], "Admin-issued", "admin-user"
+        )
+
+        assert created["identity_verified"] is True
+        principal = service.authenticate_api_key(
+            created["secret"], allow_unverified=False
+        )
+        assert principal.identity_verified is True
+        assert service.list_api_keys(user["user_id"])[0]["identity_verified"] is True
+
+        direct = service.verify_characters(principal, [])
+        queued = service.submit_character_report(
+            principal, [], client_id="detector:test"
+        )
+        assert direct == {
+            "verified": True,
+            "permanent": True,
+            "skipped": True,
+            "characters": [],
+        }
+        assert queued["status"] == "verified"
+        assert queued["pending"] is False
+        assert queued["skipped"] is True
+        assert queued["client_id"] == "detector:test"
+        assert service.repository.list_audit()[0]["action"] == "api_key.created"
+    finally:
+        service.close()
+        store.close()
+
+
+def test_key_risk_control_setting_is_persistent_and_pauses_identity_queue(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    repository = AuthRepository(store._connect)
+    first = AuthService(repository, FakeResolver(), key_risk_control=True)
+    admin = first.create_user("admin", "admin-password-123", role="admin")
+    assert first.security_settings() == {"key_risk_control": True}
+
+    updated = first.set_key_risk_control(False, admin["user_id"])
+    assert updated == {"key_risk_control": False}
+    assert first.security_settings() == {"key_risk_control": False}
+    first.close()
+
+    second = AuthService(repository, FakeResolver(), key_risk_control=True)
+    try:
+        assert second.security_settings() == {"key_risk_control": False}
+        assert second._claim_identity_job("test-worker") is None
+        actions = [item["action"] for item in repository.list_audit()]
+        assert "security.key_risk_control_changed" in actions
+    finally:
+        second.close()
+        store.close()
+
+
 def test_manually_revoked_api_key_can_be_enabled_then_deleted(auth):
     user = auth.create_user("admin", "a-strong-password", role="admin")
     login = auth.login("admin", "a-strong-password", "test")

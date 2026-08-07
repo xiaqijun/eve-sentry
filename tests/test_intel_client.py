@@ -502,6 +502,47 @@ def test_intel_api_client_posts_hostile_icon_count():
     assert api.payload["hostile_icon_count"] == 1
 
 
+def test_intel_api_client_posts_zero_hostile_presence_to_clear_state():
+    class RecordingPresenceClient(IntelApiClient):
+        def __init__(self):
+            super().__init__("http://example.invalid")
+            self.call = None
+
+        def _request(self, method, path, payload=None, params=None):
+            self.call = (method, path, payload, params)
+            return {"hostile_icon_count": 0}
+
+    api = RecordingPresenceClient()
+
+    result = api.post_hostile_presence(
+        client_id="detector-client:test",
+        source_instance="EVE - Hajimi6",
+        system_name="S-KSWL",
+        system_id=30000001,
+        hostile_icon_count=0,
+        snapshot_id="presence-1",
+        sequence=7,
+        captured_at="2026-08-07T00:00:00+00:00",
+    )
+
+    assert result == {"hostile_icon_count": 0}
+    assert api.call == (
+        "POST",
+        "/api/v1/hostile-presence",
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "hostile_icon_count": 0,
+            "system_id": 30000001,
+            "snapshot_id": "presence-1",
+            "sequence": 7,
+            "captured_at": "2026-08-07T00:00:00+00:00",
+        },
+        None,
+    )
+
+
 def test_intel_api_client_does_not_retry_non_transport_ocr_snapshot_failure():
     class RejectingClient(IntelApiClient):
         def __init__(self):

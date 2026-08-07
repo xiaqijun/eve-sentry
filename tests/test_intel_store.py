@@ -456,6 +456,164 @@ def test_record_ocr_snapshot_red_icon_is_persisted_as_direct_alert_evidence(tmp_
     ]
 
 
+def test_hostile_presence_creates_system_state_without_report_or_alert(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+
+    result = store.record_hostile_presence(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Pilot",
+            "system_name": "S-KSWL",
+            "system_id": 30004759,
+            "hostile_icon_count": 2,
+            "seen_at": "2026-08-07T10:00:00+00:00",
+        }
+    )
+
+    active = store.list_active_intel(source="eve-sentry-detector")
+    assert result["accepted"] is True
+    assert result["created"] == 1
+    assert len(active) == 1
+    assert active[0]["target_type"] == "system"
+    assert active[0]["name"] == ""
+    assert active[0]["metadata"]["presence_only"] is True
+    assert active[0]["metadata"]["hostile_icon_count"] == 2
+    assert store.list_reports() == []
+    assert store.list_alerts() == []
+
+
+def test_hostile_presence_rejects_stale_updates_and_zero_clears_client_state(
+    tmp_path,
+):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    base = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Pilot",
+        "system_name": "S-KSWL",
+        "system_id": 30004759,
+    }
+
+    store.record_hostile_presence(
+        {
+            **base,
+            "hostile_icon_count": 1,
+            "seen_at": "2026-08-07T10:00:00+00:00",
+        }
+    )
+    updated = store.record_hostile_presence(
+        {
+            **base,
+            "hostile_icon_count": 3,
+            "seen_at": "2026-08-07T10:00:10+00:00",
+        }
+    )
+    stale = store.record_hostile_presence(
+        {
+            **base,
+            "hostile_icon_count": 0,
+            "seen_at": "2026-08-07T10:00:05+00:00",
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            **base,
+            "names": ["Alice"],
+            "hostile_icon_count": 3,
+            "seen_at": "2026-08-07T10:00:11+00:00",
+        }
+    )
+    cleared = store.record_hostile_presence(
+        {
+            **base,
+            "hostile_icon_count": 0,
+            "seen_at": "2026-08-07T10:00:20+00:00",
+        }
+    )
+
+    inactive = store.list_active_intel(
+        source="eve-sentry-detector",
+        active=False,
+    )
+    assert updated["refreshed"] == 1
+    assert stale["accepted"] is False
+    assert cleared["accepted"] is True
+    assert cleared["expired"] == 2
+    assert store.list_active_intel(source="eve-sentry-detector") == []
+    assert {item["target_type"] for item in inactive} == {"system", "character"}
+    assert all(item["left_at"] == "2026-08-07T10:00:20+00:00" for item in inactive)
+
+
+def test_ocr_missing_confirmations_do_not_clear_presence_state(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    base = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Pilot",
+        "system_name": "S-KSWL",
+    }
+    store.record_hostile_presence(
+        {
+            **base,
+            "hostile_icon_count": 2,
+            "seen_at": "2026-08-07T10:00:00+00:00",
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            **base,
+            "names": ["Alice"],
+            "seen_at": "2026-08-07T10:00:01+00:00",
+        }
+    )
+    for seconds in (9, 17, 25):
+        store.record_ocr_snapshot(
+            {
+                **base,
+                "names": [],
+                "seen_at": f"2026-08-07T10:00:{seconds:02d}+00:00",
+            }
+        )
+
+    active = store.list_active_intel(source="eve-sentry-detector")
+    assert len(active) == 1
+    assert active[0]["target_type"] == "system"
+    assert active[0]["metadata"]["hostile_icon_count"] == 2
+
+
+def test_map_does_not_double_count_presence_and_ocr_for_same_client(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    base = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Pilot",
+        "system_name": "S-KSWL",
+    }
+    store.record_hostile_presence(
+        {
+            **base,
+            "hostile_icon_count": 3,
+            "seen_at": "2026-08-07T10:00:00+00:00",
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            **base,
+            "names": ["Alice"],
+            "hostile_icon_count": 3,
+            "seen_at": "2026-08-07T10:00:01+00:00",
+        }
+    )
+
+    system = next(
+        item for item in store.snapshot()["systems"] if item["name"] == "S-KSWL"
+    )
+    assert system["hostile_count"] == 3
+    assert system["hostiles"] == ["Alice"]
+
+
 def test_later_red_icon_promotes_an_existing_ocr_sighting_to_alert(tmp_path):
     store = IntelStore(
         tmp_path / "intel.json",

@@ -6,6 +6,7 @@ import type {
   AuditRecord,
   AuthUser,
   ClientsSnapshot,
+  SecuritySettings,
 } from "./types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "";
@@ -126,6 +127,21 @@ export async function listAdminUsers(): Promise<AdminUser[]> {
   return (await apiRequest<{ users: AdminUser[] }>("/api/v1/admin/users")).users;
 }
 
+export async function fetchSecuritySettings(): Promise<SecuritySettings> {
+  return (await apiRequest<{ settings: SecuritySettings }>(
+    "/api/v1/admin/security-settings",
+  )).settings;
+}
+
+export async function updateSecuritySettings(
+  settings: SecuritySettings,
+): Promise<SecuritySettings> {
+  return (await apiRequest<{ settings: SecuritySettings }>(
+    "/api/v1/admin/security-settings",
+    { method: "POST", body: JSON.stringify(settings) },
+  )).settings;
+}
+
 export async function createUser(input: {
   username: string;
   display_name: string;
@@ -159,6 +175,17 @@ export async function createServiceKey(userId: string, name: string): Promise<Ap
   return (await apiRequest<{ key: ApiKeyRecord }>(
     `/api/v1/admin/users/${encodeURIComponent(userId)}/service-keys`,
     { method: "POST", body: JSON.stringify({ name }) },
+  )).key;
+}
+
+export async function createAdminKey(
+  userId: string,
+  name: string,
+  keyType: ApiKeyRecord["key_type"] = "desktop",
+): Promise<ApiKeyRecord> {
+  return (await apiRequest<{ key: ApiKeyRecord }>(
+    `/api/v1/admin/users/${encodeURIComponent(userId)}/keys`,
+    { method: "POST", body: JSON.stringify({ name, key_type: keyType }) },
   )).key;
 }
 

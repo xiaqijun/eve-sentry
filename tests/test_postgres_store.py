@@ -1,3 +1,4 @@
+import json
 import sys
 import threading
 import types
@@ -957,6 +958,65 @@ def test_postgres_ocr_snapshot_persists_old_system_as_inactive():
     assert old_item.left_at == "2026-07-03T10:00:10+00:00"
     assert old_item.metadata["left_reason"] == "system_changed"
     assert persisted_rows == [old_item.to_dict()]
+
+
+def test_postgres_hostile_presence_persists_active_rows_and_wave_changes(tmp_path):
+    persisted_rows = []
+    persisted_waves = []
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._load_reports = lambda: []
+    IntelStore.__init__(store, tmp_path / "intel.json", systems={}, links=[])
+    store._connect = FakeConnection
+    store._upsert_active_intel_rows = (
+        lambda _connection, rows: persisted_rows.append(list(rows))
+    )
+    store._persist_hostile_wave_changes = (
+        lambda _connection, changes: persisted_waves.append(list(changes))
+    )
+    payload = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Pilot",
+        "system_name": "S-KSWL",
+        "system_id": 30004759,
+    }
+
+    try:
+        created = store.record_hostile_presence(
+            {
+                **payload,
+                "hostile_icon_count": 2,
+                "seen_at": "2026-08-07T10:00:00+00:00",
+            }
+        )
+        cleared = store.record_hostile_presence(
+            {
+                **payload,
+                "hostile_icon_count": 0,
+                "seen_at": "2026-08-07T10:00:10+00:00",
+            }
+        )
+    finally:
+        IntelStore.close(store)
+
+    assert created["created"] == 1
+    assert cleared["expired"] == 1
+    assert len(persisted_rows) == 2
+    assert persisted_rows[0][0][5] == "system"
+    assert json.loads(persisted_rows[0][0][9])["hostile_icon_count"] == 2
+    assert persisted_rows[0][0][15] == 1
+    assert persisted_rows[1][0][15] == 0
+    assert persisted_waves[0][0]["action"] == "touch"
+    assert persisted_waves[0][0]["system_name"] == "S-KSWL"
+    assert persisted_waves[1][0]["action"] == "clear"
+    assert persisted_waves[1][0]["cleared_at"] == "2026-08-07T10:00:10+00:00"
 
 
 def test_postgres_retention_deletes_in_database_without_loading_history():

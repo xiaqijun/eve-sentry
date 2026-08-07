@@ -151,6 +151,10 @@ class SettingsPanel(QWidget):
         interval_row.addWidget(interval_unit)
         scan_layout.addLayout(interval_row)
 
+        self._ocr_enabled_check = QCheckBox("OCR 姓名识别")
+        self._ocr_enabled_check.setChecked(bool(config["ocr_enabled"]))
+        scan_layout.addWidget(self._ocr_enabled_check)
+
         keyword_row = QHBoxLayout()
         keyword_label = QLabel("窗口关键字")
         keyword_label.setObjectName("fieldLabel")
@@ -255,6 +259,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(diagnostics_button)
 
         self._interval_spin.valueChanged.connect(self._on_scan_settings_changed)
+        self._ocr_enabled_check.toggled.connect(self._on_scan_settings_changed)
         self._keyword_edit.editingFinished.connect(self._on_scan_settings_changed)
         self._server_url_edit.editingFinished.connect(self._on_server_url_changed)
         self._api_key_edit.editingFinished.connect(self._on_api_key_changed)
@@ -264,6 +269,9 @@ class SettingsPanel(QWidget):
 
     def get_keyword(self) -> str:
         return self._keyword_edit.text().strip()
+
+    def get_ocr_enabled(self) -> bool:
+        return self._ocr_enabled_check.isChecked()
 
     def get_server_url(self) -> str:
         return normalize_server_url(self._server_url_edit.text())
@@ -414,6 +422,7 @@ class SettingsPanel(QWidget):
         return {
             "chatlog_dir": chatlog_dir or str(DEFAULT_CHATLOG_DIR),
             "scan_interval": scan_interval,
+            "ocr_enabled": bool(payload.get("ocr_enabled", True)),
             "window_keyword": window_keyword,
             "server_url": server_url,
             "start_with_windows": bool(payload.get("start_with_windows", False)),
@@ -440,6 +449,7 @@ class SettingsPanel(QWidget):
         return {
             "chatlog_dir": self.get_channel_log_dir(),
             "scan_interval": int(self._interval_spin.value()),
+            "ocr_enabled": self.get_ocr_enabled(),
             "window_keyword": self.get_keyword(),
             "server_url": self.get_server_url(),
             "start_with_windows": self.get_start_with_windows(),

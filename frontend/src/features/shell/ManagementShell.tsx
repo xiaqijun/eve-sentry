@@ -8,6 +8,7 @@ import {
   IconIdcard,
   IconLock,
   IconSafe,
+  IconSettings,
   IconUserGroup,
 } from "@arco-design/web-react/icon";
 import { ShieldCheck } from "lucide-react";
@@ -26,6 +27,7 @@ const PAGE_META: Record<string, { title: string }> = {
   "/admin/users": { title: "用户管理" },
   "/admin/clients": { title: "客户端管理" },
   "/admin/identity": { title: "身份记录" },
+  "/admin/security": { title: "安全设置" },
   "/admin/whitelist": { title: "白名单管理" },
   "/admin/audit": { title: "审计日志" },
 };
@@ -87,6 +89,9 @@ export function ManagementShell() {
               </MenuItem>
               <MenuItem key="/admin/identity">
                 <NavLink className={navigationClass} to="/admin/identity"><IconIdcard /><span>身份记录</span></NavLink>
+              </MenuItem>
+              <MenuItem key="/admin/security">
+                <NavLink className={navigationClass} to="/admin/security"><IconSettings /><span>安全设置</span></NavLink>
               </MenuItem>
               <MenuItem key="/admin/whitelist">
                 <NavLink className={navigationClass} to="/admin/whitelist"><IconSafe /><span>白名单管理</span></NavLink>

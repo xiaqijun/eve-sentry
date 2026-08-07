@@ -22,6 +22,7 @@ def test_server_cli_defaults_to_postgres_storage():
     assert args.esi_client_id == ""
     assert args.auth_esi_client_id == ""
     assert args.auth_esi_redirect_uri == ""
+    assert args.key_risk_control == "on"
     assert args.esi_redirect_uri == "http://127.0.0.1:8766/callback"
     assert args.esi_token_file == "esi_tokens.json"
     assert args.esi_token_storage == "auto"
@@ -422,6 +423,15 @@ def test_server_cli_login_implies_esi_for_server_start():
         ["--esi-login", "--esi-client-id", "client-id"]
     )
 
+    assert server_main._should_enable_esi(args) is True
+
+
+def test_server_cli_can_disable_key_risk_control_while_auth_keeps_esi_available():
+    args = build_arg_parser().parse_args(
+        ["--auth-mode", "setup", "--key-risk-control", "off"]
+    )
+
+    assert args.key_risk_control == "off"
     assert server_main._should_enable_esi(args) is True
 
 

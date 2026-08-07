@@ -1947,6 +1947,16 @@ def test_run_server_maps_report_retention_environment_option():
     assert argv == ["--report-retention-days", "90"]
 
 
+def test_run_server_maps_key_risk_control_environment_option():
+    module = _load_script_module("run_server_key_risk", "scripts/run_server.py")
+
+    argv = module.build_server_argv(
+        {"EVE_SENTRY_SERVER_KEY_RISK_CONTROL": "off"}
+    )
+
+    assert argv == ["--key-risk-control", "off"]
+
+
 def test_run_server_maps_inactive_intel_retention_environment_option():
     module = _load_script_module(
         "run_server_inactive_intel_retention",

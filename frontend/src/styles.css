@@ -5,6 +5,58 @@
   color: #e7f2f7;
 }
 
+.security-settings-card {
+  max-width: 860px;
+}
+
+.security-setting-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+}
+
+.security-setting-icon {
+  display: grid;
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  color: #28735d;
+  border: 1px solid #b9d8cc;
+  border-radius: 8px;
+  background: #eef8f3;
+}
+
+.security-setting-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.security-setting-copy .arco-typography-title {
+  margin: 0 0 4px;
+}
+
+.security-setting-copy .arco-typography-paragraph {
+  max-width: 680px;
+  margin: 0;
+}
+
+.security-setting-row .arco-switch {
+  flex: 0 0 auto;
+  margin-top: 6px;
+}
+
+.security-setting-alert {
+  margin-top: 18px;
+}
+
+body[data-theme="dark"] .security-setting-icon {
+  color: #b9e8d5;
+  border-color: #34505a;
+  background: #1b3031;
+}
+
 * {
   box-sizing: border-box;
 }

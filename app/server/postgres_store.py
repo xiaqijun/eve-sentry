@@ -431,6 +431,8 @@ class PostgreSQLIntelStore(IntelStore):
                     continue
                 if item.source != source:
                     continue
+                if item.target_type != "character":
+                    continue
                 if item.metadata.get("client_id") != client_id:
                     continue
                 if item.system_name.casefold() != system_name.casefold():
@@ -512,6 +514,25 @@ class PostgreSQLIntelStore(IntelStore):
         for task in esi_tasks:
             self._esi_worker.submit(task.active_id, task)
         return result.to_dict(include_active=False)
+
+    def record_hostile_presence(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Record and persist the latest detector visual-count state."""
+        with self._lock:
+            active_before = self._active_rows_snapshot()
+            hostile_before = self._hostile_system_state()
+            result = super().record_hostile_presence(payload)
+            if not result.get("accepted", True):
+                return result
+            active_rows = self._changed_active_rows(active_before)
+            hostile_waves = self._hostile_wave_changes(
+                hostile_before,
+                str(result.get("seen_at") or utc_now_iso()),
+            )
+            if active_rows or hostile_waves:
+                with self._connect() as connection:
+                    self._upsert_active_intel_rows(connection, active_rows)
+                    self._persist_hostile_wave_changes(connection, hostile_waves)
+            return result
 
     def _persist_ocr_esi_result(
         self,

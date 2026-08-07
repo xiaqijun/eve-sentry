@@ -263,6 +263,7 @@ class AuthHttpMixin:
             "/api/v1/admin/clients",
             "/api/v1/admin/corporations",
             "/api/v1/admin/audit",
+            "/api/v1/admin/security-settings",
         }
         if path not in auth_paths:
             return False
@@ -279,6 +280,9 @@ class AuthHttpMixin:
             return True
         if path == "/api/v1/admin/users":
             self._send_json({"users": service.list_users()})
+            return True
+        if path == "/api/v1/admin/security-settings":
+            self._send_json({"settings": service.security_settings()})
             return True
         if path == "/api/v1/admin/clients":
             snapshot = self._store().management_heartbeat_snapshot()
@@ -310,6 +314,7 @@ class AuthHttpMixin:
             "/api/v1/client/identity-checks",
             "/api/v1/admin/users",
             "/api/v1/admin/corporations",
+            "/api/v1/admin/security-settings",
         }
         user_action = self._admin_user_action(path)
         key_action = self._api_key_action(path)
@@ -403,6 +408,20 @@ class AuthHttpMixin:
                 )
                 self._send_json({"ok": True, "corporation": corporation}, HTTPStatus.CREATED)
                 return True
+            if path == "/api/v1/admin/security-settings":
+                key_risk_control = payload.get("key_risk_control")
+                if not isinstance(key_risk_control, bool):
+                    raise AuthError(
+                        "key_risk_control must be a boolean",
+                        400,
+                        "invalid_key_risk_control",
+                    )
+                settings = service.set_key_risk_control(
+                    key_risk_control,
+                    principal.user_id,
+                )
+                self._send_json({"ok": True, "settings": settings})
+                return True
 
             if user_action is None:
                 return False
@@ -437,6 +456,15 @@ class AuthHttpMixin:
                     str(payload.get("name") or "Service"),
                     principal.user_id,
                     key_type="service_readonly",
+                )
+                self._send_json({"ok": True, "key": key}, HTTPStatus.CREATED)
+                return True
+            if action == "keys":
+                key = service.create_api_key(
+                    user_id,
+                    str(payload.get("name") or "Device"),
+                    principal.user_id,
+                    key_type=str(payload.get("key_type") or "desktop"),
                 )
                 self._send_json({"ok": True, "key": key}, HTTPStatus.CREATED)
                 return True
@@ -513,7 +541,7 @@ class AuthHttpMixin:
         suffix = path[len(prefix):].strip("/")
         user_id, separator, action = suffix.partition("/")
         if not separator or action not in {
-            "status", "reset-password", "characters", "service-keys",
+            "status", "reset-password", "characters", "keys", "service-keys",
         }:
             return None
         return user_id, action

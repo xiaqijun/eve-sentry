@@ -65,6 +65,7 @@ describe("ManagementShell", () => {
     expect(container).toHaveTextContent("用户管理");
     expect(container).toHaveTextContent("客户端管理");
     expect(container).toHaveTextContent("身份记录");
+    expect(container).toHaveTextContent("安全设置");
     expect(container).toHaveTextContent("白名单管理");
     expect(container).toHaveTextContent("审计日志");
     expect(container).toHaveTextContent("报表内容");
@@ -72,6 +73,7 @@ describe("ManagementShell", () => {
     expect(container.querySelector('a[href="/dashboard"]')).toBeInTheDocument();
     expect(container.querySelector('a[href="/admin/whitelist"]')).toBeInTheDocument();
     expect(container.querySelector('a[href="/admin/clients"]')).toBeInTheDocument();
+    expect(container.querySelector('a[href="/admin/security"]')).toBeInTheDocument();
     expect(container.querySelector('a[href="/account/security"]')).not.toBeInTheDocument();
 
     const accountButton = container.querySelector('[aria-label="账号设置"]') as HTMLButtonElement;
@@ -103,6 +105,7 @@ describe("ManagementShell", () => {
     expect(container).not.toHaveTextContent("用户管理");
     expect(container).not.toHaveTextContent("客户端管理");
     expect(container).not.toHaveTextContent("身份记录");
+    expect(container).not.toHaveTextContent("安全设置");
     expect(container).not.toHaveTextContent("白名单管理");
     expect(container).not.toHaveTextContent("审计日志");
     expect(container.querySelector('[aria-label="账号设置"]')).not.toBeInTheDocument();

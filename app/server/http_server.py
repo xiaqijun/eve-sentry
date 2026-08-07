@@ -1204,6 +1204,17 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             status = HTTPStatus.CREATED if result.get("created") else HTTPStatus.OK
             self._send_json(result, status)
             return
+        if path == f"{API_V1_PREFIX}/hostile-presence":
+            try:
+                result = self._store().record_hostile_presence(self._read_json())
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, _request_error_status(exc))
+                return
+            if result.get("accepted", True):
+                _notify_event_streams()
+            status = HTTPStatus.CREATED if result.get("created") else HTTPStatus.OK
+            self._send_json(result, status)
+            return
         if path == f"{API_V1_PREFIX}/clients/heartbeats":
             try:
                 heartbeat = self._store().record_heartbeat(
