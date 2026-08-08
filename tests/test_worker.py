@@ -311,6 +311,47 @@ def test_monitor_worker_publishes_each_hostile_count_change_including_clear(
     assert [hostile_count for _names, hostile_count in snapshots] == [2, 1, 3]
 
 
+def test_monitor_worker_republishes_unchanged_count_after_presence_refresh(
+    monkeypatch,
+):
+    counts = iter([1, 1])
+    worker = None
+
+    class FrameCapturer:
+        def screenshot(self, _x, _y, _w, _h):
+            nonlocal worker
+            try:
+                count = next(counts)
+            except StopIteration:
+                raise TargetWindowClosed("done") from None
+            if count == 1 and worker is not None and worker._burst_scans_remaining:
+                worker.request_presence_refresh()
+            return count
+
+    class StableOcr:
+        def recognize(self, image, progress=None):
+            _ = progress
+            return [("Enemy Pilot", 0.99)] * image
+
+    monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
+    monkeypatch.setattr(
+        "app.engine.worker.find_hostile_icons",
+        lambda count: [object()] * count,
+    )
+    monkeypatch.setattr(
+        "app.engine.worker.extract_hostile_name_rows",
+        lambda image: image,
+    )
+    worker = MonitorWorker(FrameCapturer(), StableOcr())
+    worker.set_region(0, 0, 180, 100)
+    alerts = []
+    worker.hostile_detected.connect(alerts.append)
+
+    worker.run()
+
+    assert alerts == [1, 1]
+
+
 def test_monitor_worker_reports_counts_without_ocr_when_disabled(monkeypatch):
     counts = iter([0, 2, 2, 3, 0])
 

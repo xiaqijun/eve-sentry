@@ -918,6 +918,72 @@ def test_hostile_icon_detection_is_silent_when_alerts_are_disabled():
     assert window._updates == []
 
 
+def test_system_change_clears_old_presence_and_refreshes_current_frame():
+    class UploadManager:
+        def __init__(self):
+            self.calls = []
+
+        def submit_presence(self, key, payload, metadata):
+            self.calls.append((key, payload, metadata))
+
+    class AlertController:
+        def __init__(self):
+            self.counts = []
+
+        def update_local_hostile_count(self, system_name, count):
+            self.counts.append((system_name, count))
+
+    class Worker:
+        def __init__(self):
+            self.refresh_calls = 0
+
+        def request_presence_refresh(self):
+            self.refresh_calls += 1
+
+    worker = Worker()
+    manager = UploadManager()
+    controller = AlertController()
+    context = {
+        "key": "eve-pilot-a",
+        "client_id": "detector:device:pilot-a",
+        "source_instance": "EVE - Pilot A",
+        "window_title": "EVE - Pilot A",
+        "system_name": "Tama",
+        "system_id": 30002813,
+        "_hostile_icon_count": 1,
+    }
+    detection = SimpleNamespace(system_name="Nourvukaiken")
+    window = MainWindow.__new__(MainWindow)
+    window._intel_client = object()
+    window._uploads_enabled = True
+    window._upload_manager = manager
+    window._alert_controller = controller
+    window._workers = {"eve-pilot-a": worker}
+    window._window_combo = None
+    window._intel_system = "Unknown"
+    window._intel_system_source = "default"
+    window._log_message = lambda _message: None
+
+    MainWindow._apply_local_system_detection(window, context, detection)
+
+    assert context["system_name"] == "Nourvukaiken"
+    assert context["system_id"] is None
+    assert context["_hostile_icon_count"] == 0
+    assert controller.counts == [("Tama", 0)]
+    assert worker.refresh_calls == 1
+    assert len(manager.calls) == 1
+    key, payload, metadata = manager.calls[0]
+    assert key == "detector:device:pilot-a"
+    assert payload == {
+        "client_id": "detector:device:pilot-a",
+        "source_instance": "EVE - Pilot A",
+        "system_name": "Tama",
+        "system_id": 30002813,
+        "hostile_icon_count": 0,
+    }
+    assert metadata["hostile_icon_count"] == 0
+
+
 def test_publish_ocr_snapshot_uses_window_context_client_id():
     class FakeClient:
         def __init__(self):
