@@ -19,18 +19,21 @@ class PersistentIntelApiClient(IntelApiClient):
         self.proxy = str(
             proxy or os.environ.get("EVE_SENTRY_HTTP_PROXY") or ""
         ).strip() or None
-        self._http = httpx.Client(
-            base_url=self.base_url,
-            timeout=httpx.Timeout(self.timeout),
-            limits=httpx.Limits(
-                max_connections=4,
-                max_keepalive_connections=2,
-                keepalive_expiry=60.0,
-            ),
-            headers={"User-Agent": "EVE-Sentry-Detector/1.0"},
-            proxy=self.proxy,
-            trust_env=self.proxy is None,
-        )
+        try:
+            self._http = httpx.Client(
+                base_url=self.base_url,
+                timeout=httpx.Timeout(self.timeout),
+                limits=httpx.Limits(
+                    max_connections=4,
+                    max_keepalive_connections=2,
+                    keepalive_expiry=60.0,
+                ),
+                headers={"User-Agent": "EVE-Sentry-Detector/1.0"},
+                proxy=self.proxy,
+                trust_env=self.proxy is None,
+            )
+        except httpx.InvalidURL as exc:
+            raise _api_error("服务端地址格式无效，请检查主机和端口") from exc
 
     def close(self) -> None:
         """Release pooled connections."""

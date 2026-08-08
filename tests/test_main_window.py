@@ -1405,6 +1405,24 @@ def test_settings_panel_persists_normalized_server_url(tmp_path, monkeypatch):
     assert reloaded.get_server_url() == "http://intel.example:8765"
 
 
+def test_settings_panel_rejects_invalid_server_port(tmp_path, monkeypatch):
+    monkeypatch.delenv("EVE_SENTRY_INTEL_URL", raising=False)
+    config_path = tmp_path / "channel_settings.json"
+    qt_app()
+    panel = SettingsPanel(config_path=config_path)
+    changes = []
+    panel.server_url_changed.connect(changes.append)
+
+    panel._server_url_edit.setText("127.0.0.1:8765a")
+    panel._server_url_edit.editingFinished.emit()
+
+    assert changes == []
+    assert not config_path.exists()
+    assert panel._auth_status_label.text() == (
+        "服务端地址端口无效，请填写 1-65535 的数字端口"
+    )
+
+
 def test_settings_panel_does_not_supply_a_default_server_url(tmp_path, monkeypatch):
     monkeypatch.delenv("EVE_SENTRY_INTEL_URL", raising=False)
     qt_app()
@@ -1447,6 +1465,29 @@ def test_settings_panel_empty_environment_keeps_saved_server_url(
     panel = SettingsPanel(config_path=config_path)
 
     assert panel.get_server_url() == "http://saved.example:8765"
+
+
+def test_create_intel_client_ignores_invalid_saved_server_url(monkeypatch):
+    statuses = []
+
+    class FakeSettings:
+        @staticmethod
+        def get_api_key():
+            return ""
+
+        @staticmethod
+        def set_auth_status(message, error=False):
+            statuses.append((message, error))
+
+    monkeypatch.setenv("EVE_SENTRY_PUBLISH_INTEL", "1")
+    window = MainWindow.__new__(MainWindow)
+    window._intel_url = "http://127.0.0.1:8765a"
+    window._settings = FakeSettings()
+
+    client = MainWindow._create_intel_client(window)
+
+    assert client is None
+    assert statuses == [("服务端地址格式无效，请检查主机和端口", True)]
 
 
 def test_apply_server_url_rebuilds_intel_client():
