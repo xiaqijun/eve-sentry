@@ -242,7 +242,7 @@ function drawHostileCard(
   const score = threatScore === null
     ? threat.label
     : `${threat.label} ${Math.round(threatScore)}`;
-  const hostileCount = Math.max(node.hostileCount, node.hostileMembers?.length || 0);
+  const hostileCount = Math.max(0, node.hostileCount);
   const extraCount = Math.max(0, hostileCount - 1);
   const pilotName = intel?.name || "身份待解析";
   const corporation = intel?.corporation || "未解析军团";

@@ -74,6 +74,7 @@ interface MonitorSummary {
 }
 
 interface ActiveIntelSummary {
+  detectorHostileCount: number | null;
   ocrCount: number;
   channelCount: number;
   reportCount: number;
@@ -304,10 +305,24 @@ function summarizeActiveIntel(
       continue;
     }
     const summary = summaries.get(nodeName) || {
+      detectorHostileCount: null,
       ocrCount: 0,
       channelCount: 0,
       reportCount: 0,
     };
+    const metadata = asRecord(item.metadata);
+    if (
+      OCR_SOURCES.has(source) &&
+      Object.prototype.hasOwnProperty.call(metadata, "hostile_icon_count")
+    ) {
+      const iconCount = firstNumber(metadata.hostile_icon_count);
+      if (iconCount !== null) {
+        summary.detectorHostileCount = Math.max(
+          summary.detectorHostileCount ?? 0,
+          Math.max(0, iconCount),
+        );
+      }
+    }
     if (!activeIntelIsHostile(item)) {
       summaries.set(nodeName, summary);
       continue;
@@ -501,6 +516,7 @@ export function buildTacticalGraph(
       const x = Number(system.x || 0);
       const y = Number(system.y || 0);
       const activeSummary = activeIntelBySystem.get(system.name) || {
+        detectorHostileCount: null,
         ocrCount: 0,
         channelCount: 0,
         reportCount: 0,
@@ -508,9 +524,11 @@ export function buildTacticalGraph(
       const reportCount = hasActiveIntelPayload
         ? activeSummary.reportCount
         : Number(system.report_count || 0);
-      const hostileCount = hasActiveIntelPayload
-        ? activeSummary.ocrCount
-        : Number(system.hostile_count || 0);
+      const hostileCount = activeSummary.detectorHostileCount ?? (
+        hasActiveIntelPayload
+          ? activeSummary.ocrCount
+          : Number(system.hostile_count || 0)
+      );
       const channelIntelCount = hasActiveIntelPayload
         ? activeSummary.channelCount
         : 0;
@@ -571,7 +589,13 @@ export function buildTacticalGraph(
     if (systemNode.hostileCount <= 0) {
       return;
     }
-    const hostiles = hostileIntelBySystem.get(systemNode.name) || [];
+    const allHostiles = hostileIntelBySystem.get(systemNode.name) || [];
+    const hasDetectorCount =
+      activeIntelBySystem.get(systemNode.name)?.detectorHostileCount !== null &&
+      activeIntelBySystem.get(systemNode.name)?.detectorHostileCount !== undefined;
+    const hostiles = hasDetectorCount
+      ? allHostiles.slice(0, systemNode.hostileCount)
+      : allHostiles;
     const direction = systemNode.x >= centerX ? 1 : -1;
     const leadHostile = hostiles[0];
     const nodeId = `hostile-summary:${systemNode.id}`;
@@ -587,7 +611,9 @@ export function buildTacticalGraph(
       fx: x,
       fy: y,
       security: null,
-      hostileCount: Math.max(systemNode.hostileCount, hostiles.length),
+      hostileCount: hasDetectorCount
+        ? systemNode.hostileCount
+        : Math.max(systemNode.hostileCount, hostiles.length),
       reportCount: systemNode.reportCount,
       observationCount: systemNode.observationCount,
       channelIntelCount: systemNode.channelIntelCount,

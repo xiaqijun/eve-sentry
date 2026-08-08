@@ -244,6 +244,42 @@ describe("buildTacticalGraph", () => {
     });
   });
 
+  it("does not inflate one visual hostile from multiple OCR items", () => {
+    const graph = buildTacticalGraph({
+      ...bootstrap,
+      active_intel: [
+        {
+          id: "ocr-current",
+          source: "eve-sentry-detector",
+          system_name: "0-UVHJ",
+          system_id: 30003615,
+          character_id: 90000001,
+          name: "Current Enemy",
+          active: true,
+          metadata: { hostile_icon_count: 1 },
+        },
+        {
+          id: "ocr-stale",
+          source: "eve-sentry-detector",
+          system_name: "0-UVHJ",
+          system_id: 30003615,
+          character_id: 90000002,
+          name: "Stale Enemy",
+          active: true,
+          metadata: { hostile_icon_count: 1 },
+        },
+      ],
+    }, null, { includeHostileCards: true });
+
+    expect(graph.nodes.find((node) => node.kind === "system")).toMatchObject({
+      hostileCount: 1,
+    });
+    expect(graph.nodes.find((node) => node.kind === "hostile-summary")).toMatchObject({
+      hostileCount: 1,
+      hostileMembers: [expect.objectContaining({ name: "Current Enemy" })],
+    });
+  });
+
   it("groups every hostile in a system into one connected summary", () => {
     const graph = buildTacticalGraph({
       ...bootstrap,
