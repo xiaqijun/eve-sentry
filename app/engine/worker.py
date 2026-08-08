@@ -1,6 +1,7 @@
 """Background worker thread for the monitor loop."""
 
 import logging
+import threading
 from typing import Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -61,6 +62,7 @@ class MonitorWorker(QThread):
         self._window: Optional[dict] = None  # {hwnd, title, w, h}
         self._ocr_request_key: str | None = None
         self._ocr_enabled = True
+        self._presence_refresh_requested = threading.Event()
 
     def set_region(self, x: int, y: int, w: int, h: int) -> None:
         """Set the screen region to capture."""
@@ -100,6 +102,10 @@ class MonitorWorker(QThread):
     def set_ocr_enabled(self, enabled: bool) -> None:
         """Enable or disable name OCR without stopping visual threat detection."""
         self._ocr_enabled = bool(enabled)
+
+    def request_presence_refresh(self) -> None:
+        """Re-publish the current visual count after the monitored system changes."""
+        self._presence_refresh_requested.set()
 
     def stop(self) -> None:
         """Request the current scan and the monitor loop to stop."""
@@ -164,7 +170,13 @@ class MonitorWorker(QThread):
                     # 2. Publish visual evidence first. OCR is optional enrichment.
                     hostile_icons = find_hostile_icons(img)
                     hostile_count = len(hostile_icons)
-                    count_changed = hostile_count != previous_hostile_count
+                    force_presence_refresh = self._presence_refresh_requested.is_set()
+                    if force_presence_refresh:
+                        self._presence_refresh_requested.clear()
+                    count_changed = (
+                        force_presence_refresh
+                        or hostile_count != previous_hostile_count
+                    )
                     if count_changed:
                         self.hostile_detected.emit(hostile_count)
                         self._burst_scans_remaining = 2 if hostile_count > 0 else 0

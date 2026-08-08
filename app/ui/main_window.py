@@ -2325,6 +2325,25 @@ class MainWindow(QMainWindow):
             return
         if isinstance(target, dict):
             previous = str(target.get("system_name") or "Unknown")
+            if previous.casefold() != system_name.casefold():
+                previous_context = dict(target)
+                previous_context["system_name"] = previous
+                previous_context["system_id"] = target.get("system_id")
+                if previous.casefold() != "unknown":
+                    self._publish_hostile_presence(
+                        0,
+                        previous_context,
+                        refresh_location=False,
+                    )
+                    controller = _instance_attr(self, "_alert_controller")
+                    if controller is not None:
+                        controller.update_local_hostile_count(previous, 0)
+                target["_hostile_icon_count"] = 0
+                worker_key = str(target.get("key") or "")
+                worker = _instance_attr(self, "_workers", {}).get(worker_key)
+                request_refresh = getattr(worker, "request_presence_refresh", None)
+                if callable(request_refresh):
+                    request_refresh()
             target["system_name"] = system_name
             target["system_id"] = None
             target["system_source"] = "chatlog"
@@ -2539,6 +2558,7 @@ class MainWindow(QMainWindow):
     def _on_hostile_icon_detected(self, count: int, context: dict) -> None:
         """Update the local system alert as soon as its red-icon count changes."""
         hostile_count = max(0, int(count))
+        context["_hostile_icon_count"] = hostile_count
         self._publish_hostile_presence(hostile_count, context)
         controller = _instance_attr(self, "_alert_controller")
         if controller is None:
@@ -2556,13 +2576,20 @@ class MainWindow(QMainWindow):
         self._update_window_status(context, "敌对告警", message)
         controller.update_local_hostile_count(system_name, hostile_count)
 
-    def _publish_hostile_presence(self, count: int, context: dict) -> None:
+    def _publish_hostile_presence(
+        self,
+        count: int,
+        context: dict,
+        *,
+        refresh_location: bool = True,
+    ) -> None:
         """Queue the latest visual hostile count independently from name OCR."""
         client = _instance_attr(self, "_intel_client")
         if client is None or not _instance_attr(self, "_uploads_enabled", True):
             return
 
-        self._refresh_intel_location(context=context)
+        if refresh_location:
+            self._refresh_intel_location(context=context)
         client_id = str(
             context.get("client_id") or self._heartbeat_client_id
         ).strip()

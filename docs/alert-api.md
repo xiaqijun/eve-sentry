@@ -83,7 +83,9 @@ data: {"schema_version":"intel_bootstrap.v1","generated_at":"2026-08-04T12:00:00
 
 ```
 
-建议使用 `map.systems` 初始化或重新校准当前预警状态：
+建议使用 `map.systems` 初始化或重新校准当前预警状态。红色图标数量是当前预警的权威状态，
+OCR 人员名单只是额外信息；因此即使尚未生成 OCR 告警记录，`map.systems` 也可能已经包含
+即时的红色星系：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -97,7 +99,8 @@ data: {"schema_version":"intel_bootstrap.v1","generated_at":"2026-08-04T12:00:00
 | `active_intel` | array | 当前活动情报 |
 | `clients` | object | 在线客户端和监控位置快照 |
 
-`hostile_count` 已由服务端按监控客户端去重和聚合。调用方不应自行累加 `alerts` 来替代该值。
+`hostile_count` 已由服务端按监控客户端去重和聚合。调用方不应自行累加 `alerts` 或
+`active_intel` 来替代该值；`alerts` 可能要等 OCR 增效信息到达后才出现。
 
 ### `alert` 事件
 

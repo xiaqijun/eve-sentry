@@ -102,7 +102,8 @@ EVE_SENTRY_SERVER_DISABLE_ZKILL=0
 删除超过窗口的 inactive 情报行；活跃情报及其引用的历史报告不会被删除。设为 `0` 可关闭。
 
 `EVE_SENTRY_SERVER_HOT_REPORT_LIMIT` 只控制告警评分使用的内存热集合，不是 HTTP 历史
-查询的分页大小。预警 SSE 仅对活跃情报引用的报告生成事件；兼容 `/api/events` 也会在达到
+查询的分页大小。预警 SSE 的 `alert` 事件仅对活跃情报引用的报告生成；`bootstrap.map.systems`
+同时包含红色图标的即时 Presence 状态，因此无需等待 OCR 报告。兼容 `/api/events` 也会在达到
 单次 `limit` 后停止评分。部署后可用访问日志的耗时字段监控 `/api/v1/events` 首帧和历史
 列表延迟。
 
