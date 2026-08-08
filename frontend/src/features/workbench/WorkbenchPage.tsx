@@ -80,14 +80,69 @@ function summarizeVerifiedHostiles(alerts: AlertItem[]): VerifiedHostileSummary 
 }
 
 type BootstrapStreamUpdate = Partial<Omit<BootstrapPayload, "map">> & {
-  map?: Partial<MapSnapshotPayload>;
+  map?: Partial<Omit<MapSnapshotPayload, "systems">> & {
+    systems?: Array<Partial<MapSystem>>;
+  };
 };
+
+function mapSystemKey(system: Partial<MapSystem>): string {
+  const systemId = Number(system.system_id);
+  if (Number.isInteger(systemId) && systemId > 0) {
+    return `id:${systemId}`;
+  }
+  return `name:${String(system.name || system.system_name || "")
+    .trim()
+    .toLowerCase()}`;
+}
+
+function mapSystemNameKey(system: Partial<MapSystem>): string {
+  return `name:${String(system.name || system.system_name || "")
+    .trim()
+    .toLowerCase()}`;
+}
+
+function mergeMapSystemState(
+  current: MapSystem[],
+  update: Array<Partial<MapSystem>>,
+): MapSystem[] {
+  if (update.length === 0) {
+    return current.map((system) => ({ ...system, hostile_count: 0 }));
+  }
+  const updates = new Map<string, Partial<MapSystem>>();
+  update.forEach((system) => {
+    updates.set(mapSystemKey(system), system);
+    updates.set(mapSystemNameKey(system), system);
+  });
+  const hasCompleteTopology = update.every(
+    (system) =>
+      typeof system.name === "string" &&
+      typeof system.x === "number" &&
+      typeof system.y === "number",
+  );
+  if (hasCompleteTopology && update.length >= current.length) {
+    return update as MapSystem[];
+  }
+  return current.map((system) => {
+    const next = updates.get(mapSystemKey(system)) || updates.get(mapSystemNameKey(system));
+    return next
+      ? { ...system, hostile_count: Number(next.hostile_count || 0) }
+      : { ...system, hostile_count: 0 };
+  });
+}
 
 export function mergeBootstrapStreamUpdate(
   current: BootstrapPayload,
   update: BootstrapStreamUpdate,
 ): BootstrapPayload {
   const mapUpdate = update.map;
+  const compactSystems = Array.isArray(mapUpdate?.systems) &&
+    (mapUpdate.systems.length === 0 ||
+      !mapUpdate.systems.every(
+        (system) =>
+          typeof system.name === "string" &&
+          typeof system.x === "number" &&
+          typeof system.y === "number",
+      ));
   return {
     ...current,
     ...update,
@@ -95,10 +150,12 @@ export function mergeBootstrapStreamUpdate(
       ...current.map,
       ...mapUpdate,
       systems: Array.isArray(mapUpdate?.systems)
-        ? mapUpdate.systems
+        ? mergeMapSystemState(current.map.systems, mapUpdate.systems)
         : current.map.systems,
       links: Array.isArray(mapUpdate?.links)
-        ? mapUpdate.links
+        ? compactSystems
+          ? current.map.links
+          : mapUpdate.links
         : current.map.links,
       summary: {
         ...current.map.summary,

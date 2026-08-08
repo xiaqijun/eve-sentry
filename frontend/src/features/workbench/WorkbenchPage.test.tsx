@@ -192,6 +192,87 @@ describe("WorkbenchPage", () => {
     expect(merged.config).toEqual(current.config);
   });
 
+  test("merges compact hostile systems without dropping the rest of the map", () => {
+    const current = {
+      ...bootstrap,
+      map: {
+        ...bootstrap.map,
+        systems: [
+          ...bootstrap.map.systems,
+          {
+            name: "NCG-PW",
+            system_id: 30003616,
+            x: 160,
+            y: 180,
+            hostile_count: 3,
+          },
+        ],
+      },
+    };
+
+    const merged = mergeBootstrapStreamUpdate(current, {
+      map: {
+        systems: [{ name: "0-UVHJ", hostile_count: 2 }],
+        summary: { alert_count: 1 },
+      },
+      active_intel: [],
+      alerts: [],
+    });
+
+    expect(merged.map.systems).toHaveLength(2);
+    expect(merged.map.systems.map((system) => system.hostile_count)).toEqual([2, 0]);
+    expect(merged.map.systems.map((system) => system.name)).toEqual(["0-UVHJ", "NCG-PW"]);
+  });
+
+  test("keeps gate links when a compact update includes an empty links array", () => {
+    const current = {
+      ...bootstrap,
+      map: {
+        ...bootstrap.map,
+        systems: [
+          ...bootstrap.map.systems,
+          {
+            name: "NCG-PW",
+            system_id: 30003616,
+            x: 160,
+            y: 180,
+          },
+        ],
+        links: [{ from: "0-UVHJ", to: "NCG-PW" }],
+      },
+    };
+
+    const merged = mergeBootstrapStreamUpdate(current, {
+      map: {
+        systems: [{ name: "0-UVHJ", hostile_count: 1 }],
+        links: [],
+      },
+    });
+
+    expect(merged.map.links).toEqual([{ from: "0-UVHJ", to: "NCG-PW" }]);
+  });
+
+  test("keeps gate links when an empty hostile update clears counts", () => {
+    const current = {
+      ...bootstrap,
+      map: {
+        ...bootstrap.map,
+        systems: bootstrap.map.systems.map((system) => ({
+          ...system,
+          hostile_count: 2,
+        })),
+        links: [{ from: "0-UVHJ", to: "NCG-PW" }],
+      },
+    };
+
+    const merged = mergeBootstrapStreamUpdate(current, {
+      map: { systems: [], links: [] },
+    });
+
+    expect(merged.map.systems.map((system) => system.hostile_count)).toEqual([0]);
+    expect(merged.map.links).toEqual([{ from: "0-UVHJ", to: "NCG-PW" }]);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
