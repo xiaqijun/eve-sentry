@@ -4,7 +4,7 @@ import { act, forwardRef } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import { WorkbenchPage } from "./WorkbenchPage";
+import { mergeBootstrapStreamUpdate, WorkbenchPage } from "./WorkbenchPage";
 import type { AlertItem, BootstrapPayload } from "./types";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -161,6 +161,37 @@ vi.mock("./api", () => ({
 }));
 
 describe("WorkbenchPage", () => {
+  test("preserves the full map when a compact stream update omits links", () => {
+    const current = {
+      ...bootstrap,
+      map: {
+        ...bootstrap.map,
+        links: [{ from: "0-UVHJ", to: "NCG-PW" }],
+      },
+    };
+
+    const merged = mergeBootstrapStreamUpdate(current, {
+      generated_at: "2026-07-02T12:02:00Z",
+      map: {
+        systems: [{
+          name: "0-UVHJ",
+          system_id: 30003615,
+          x: 100,
+          y: 120,
+          hostile_count: 2,
+        }],
+        summary: { hostile_count: 2 },
+      },
+      alerts: [],
+      active_intel: [],
+    });
+
+    expect(merged.map.links).toEqual(current.map.links);
+    expect(merged.map.systems[0].hostile_count).toBe(2);
+    expect(merged.reports).toEqual(current.reports);
+    expect(merged.config).toEqual(current.config);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });

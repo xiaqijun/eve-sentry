@@ -469,8 +469,17 @@ export function buildTacticalGraph(
   selectedSystemId?: number | null,
   options: TacticalGraphOptions = {},
 ): TacticalGraphData {
+  const graphBootstrap: BootstrapPayload = {
+    ...bootstrap,
+    alerts: Array.isArray(bootstrap.alerts) ? bootstrap.alerts : [],
+    map: {
+      ...bootstrap.map,
+      systems: Array.isArray(bootstrap.map?.systems) ? bootstrap.map.systems : [],
+      links: Array.isArray(bootstrap.map?.links) ? bootstrap.map.links : [],
+    },
+  };
   const alertsBySystem = new Map<number, AlertItem[]>();
-  for (const alert of bootstrap.alerts) {
+  for (const alert of graphBootstrap.alerts) {
     if (typeof alert.system_id !== "number") {
       continue;
     }
@@ -479,11 +488,11 @@ export function buildTacticalGraph(
       alert,
       ]);
   }
-  const monitorsBySystem = summarizeMonitors(bootstrap);
-  const activeIntelBySystem = summarizeActiveIntel(bootstrap);
+  const monitorsBySystem = summarizeMonitors(graphBootstrap);
+  const activeIntelBySystem = summarizeActiveIntel(graphBootstrap);
   const hasActiveIntelPayload = Array.isArray(bootstrap.active_intel);
 
-  const systemNodes = bootstrap.map.systems.map((system) => {
+  const systemNodes = graphBootstrap.map.systems.map((system) => {
       const systemAlerts =
         typeof system.system_id === "number"
           ? alertsBySystem.get(system.system_id) || []
@@ -542,7 +551,7 @@ export function buildTacticalGraph(
         threatScore: hasRealtimeIntel ? alertSummary.score : null,
       };
     });
-  const gateLinks: TacticalGraphLink[] = bootstrap.map.links.map((link) => ({
+  const gateLinks: TacticalGraphLink[] = graphBootstrap.map.links.map((link) => ({
       source: link.from,
       target: link.to,
     }));
@@ -551,7 +560,7 @@ export function buildTacticalGraph(
     return { links: gateLinks, nodes: systemNodes };
   }
 
-  const hostileIntelBySystem = summarizeHostileIntel(bootstrap);
+  const hostileIntelBySystem = summarizeHostileIntel(graphBootstrap);
   const centerX = systemNodes.length > 0
     ? systemNodes.reduce((sum, node) => sum + node.x, 0) / systemNodes.length
     : 0;

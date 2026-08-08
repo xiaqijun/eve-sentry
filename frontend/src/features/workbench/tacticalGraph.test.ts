@@ -61,6 +61,20 @@ const bootstrap: BootstrapPayload = {
 };
 
 describe("buildTacticalGraph", () => {
+  it("treats missing map arrays as empty for compact stream payloads", () => {
+    const graph = buildTacticalGraph({
+      ...bootstrap,
+      alerts: undefined,
+      map: {
+        ...bootstrap.map,
+        systems: undefined,
+        links: undefined,
+      },
+    } as unknown as BootstrapPayload);
+
+    expect(graph).toEqual({ nodes: [], links: [] });
+  });
+
   it("keeps SDE coordinates fixed for the tactical star map", () => {
     const graph = buildTacticalGraph(bootstrap, 30003615);
 

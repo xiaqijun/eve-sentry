@@ -9,6 +9,7 @@ import { TacticalStarMap } from "./TacticalStarMap";
 import type {
   AlertItem,
   BootstrapPayload,
+  MapSnapshotPayload,
   MapSystem,
 } from "./types";
 
@@ -36,7 +37,8 @@ function selectedSystem(
   if (!bootstrap || typeof selectedSystemId !== "number") {
     return null;
   }
-  return bootstrap.map.systems.find((item) => item.system_id === selectedSystemId) || null;
+  const systems = Array.isArray(bootstrap.map?.systems) ? bootstrap.map.systems : [];
+  return systems.find((item) => item.system_id === selectedSystemId) || null;
 }
 
 interface VerifiedHostileSummary {
@@ -74,6 +76,43 @@ function summarizeVerifiedHostiles(alerts: AlertItem[]): VerifiedHostileSummary 
   return {
     hostileCount: characterIds.size,
     systemCount: systems.size,
+  };
+}
+
+type BootstrapStreamUpdate = Partial<Omit<BootstrapPayload, "map">> & {
+  map?: Partial<MapSnapshotPayload>;
+};
+
+export function mergeBootstrapStreamUpdate(
+  current: BootstrapPayload,
+  update: BootstrapStreamUpdate,
+): BootstrapPayload {
+  const mapUpdate = update.map;
+  return {
+    ...current,
+    ...update,
+    map: {
+      ...current.map,
+      ...mapUpdate,
+      systems: Array.isArray(mapUpdate?.systems)
+        ? mapUpdate.systems
+        : current.map.systems,
+      links: Array.isArray(mapUpdate?.links)
+        ? mapUpdate.links
+        : current.map.links,
+      summary: {
+        ...current.map.summary,
+        ...(mapUpdate?.summary || {}),
+      },
+    },
+    reports: Array.isArray(update.reports) ? update.reports : current.reports,
+    observations: Array.isArray(update.observations)
+      ? update.observations
+      : current.observations,
+    alerts: Array.isArray(update.alerts) ? update.alerts : current.alerts,
+    active_intel: Array.isArray(update.active_intel)
+      ? update.active_intel
+      : current.active_intel,
   };
 }
 
@@ -118,8 +157,12 @@ export function WorkbenchPage() {
       },
       bootstrap?.generated_at,
       undefined,
-      (nextBootstrap: BootstrapPayload) => {
-        queryClient.setQueryData<BootstrapPayload>(["bootstrap"], nextBootstrap);
+      (nextBootstrap) => {
+        queryClient.setQueryData<BootstrapPayload>(["bootstrap"], (current) => (
+          current
+            ? mergeBootstrapStreamUpdate(current, nextBootstrap)
+            : nextBootstrap as BootstrapPayload
+        ));
       },
     );
     return () => {

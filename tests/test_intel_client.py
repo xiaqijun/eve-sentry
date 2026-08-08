@@ -1316,6 +1316,27 @@ def test_alert_overlay_renders_hostile_system_tile(monkeypatch):
         overlay.close()
 
 
+def test_alert_overlay_hides_unresolved_system_rows(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    try:
+        overlay.show_summaries(
+            [
+                {"system_name": "Unknown", "hostile_count": 1},
+                {"system_name": "", "hostile_count": 2},
+            ]
+        )
+        app.processEvents()
+
+        assert overlay._map_alerts == []
+        assert all(not frame.isVisible() for frame, *_labels in overlay._rows)
+    finally:
+        overlay.close()
+
+
 def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtCore import QPoint, Qt
@@ -1356,6 +1377,12 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
                     "label": "Remote Scout",
                     "system_name": "Jita",
                     "local": False,
+                },
+                {
+                    "key": "unresolved",
+                    "label": "Starting Client",
+                    "system_name": "Unknown",
+                    "local": True,
                 },
             ]
         )
@@ -1422,6 +1449,10 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
         assert changes[-1] == (["alice"], 3)
         assert overlay._map_widget is not None
         assert len(overlay._map_widget._accounts) == 3
+        assert all(
+            str(item.get("system_name") or "").casefold() != "unknown"
+            for item in overlay._map_widget._accounts
+        )
         assert {
             str(item.get("key")): bool(item.get("selected"))
             for item in overlay._map_widget._accounts

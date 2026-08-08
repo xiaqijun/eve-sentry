@@ -6,6 +6,10 @@ import type {
   EsiLoginPayload,
   MapSnapshotPayload,
 } from "./types";
+
+type BootstrapStreamPayload = Partial<Omit<BootstrapPayload, "map">> & {
+  map?: Partial<MapSnapshotPayload>;
+};
 import { apiPath, apiRequest } from "../auth/api";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -65,7 +69,7 @@ export function connectAlerts(
   onAlert: (alert: AlertItem) => void,
   since?: string,
   onError?: () => void,
-  onBootstrap?: (bootstrap: BootstrapPayload) => void,
+  onBootstrap?: (bootstrap: BootstrapStreamPayload) => void,
 ): EventSource {
   const query = new URLSearchParams({
     // The workbench needs active-intel snapshots, not only alert events, so
@@ -85,7 +89,7 @@ export function connectAlerts(
     onAlert(JSON.parse(event.data) as AlertItem);
   });
   stream.addEventListener("bootstrap", (event) => {
-    onBootstrap?.(JSON.parse(event.data) as BootstrapPayload);
+    onBootstrap?.(JSON.parse(event.data) as BootstrapStreamPayload);
   });
   stream.addEventListener("error", () => {
     onError?.();
