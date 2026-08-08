@@ -128,11 +128,26 @@ def _next_monitoring_heartbeat_stale_in(client_snapshot: Any) -> float | None:
     return min(remaining) + 0.01
 
 
-def _active_hostile_counts(alerts: list[dict[str, Any]]) -> dict[str, int]:
-    """Count active hostile alerts by solar system."""
+def _active_hostile_counts(
+    alerts: list[dict[str, Any]],
+    active_items: list[dict[str, Any]] | None = None,
+) -> dict[str, int]:
+    """Count active hostile alerts and detector presence by solar system."""
     counts: dict[str, int] = {}
-    detector_counts: dict[str, dict[str, int]] = {}
+    detector_counts: dict[str, dict[str, tuple[str, int]]] = {}
     display_names: dict[str, str] = {}
+
+    def remember_detector(
+        system_name: str,
+        client_id: str,
+        hostile_count: int,
+        seen_at: str,
+    ) -> None:
+        system_key = system_name.casefold()
+        current = detector_counts.setdefault(system_key, {}).get(client_id)
+        if current is None or seen_at >= current[0]:
+            detector_counts[system_key][client_id] = (seen_at, hostile_count)
+
     for alert in alerts:
         system_name = str(
             alert.get("system_name") or alert.get("system") or "Unknown"
@@ -145,15 +160,56 @@ def _active_hostile_counts(alerts: list[dict[str, Any]]) -> dict[str, int]:
                 hostile_count = max(0, int(alert.get("hostile_count") or 0))
             except (TypeError, ValueError):
                 hostile_count = 0
-            detector_counts.setdefault(system_key, {})[
-                detector_client_id
-            ] = hostile_count
+            remember_detector(
+                system_name,
+                detector_client_id,
+                hostile_count,
+                str(
+                    alert.get("hostile_icon_seen_at")
+                    or alert.get("created_at")
+                    or ""
+                ),
+            )
             continue
         counts[system_key] = counts.get(system_key, 0) + 1
+
+    for item in active_items or []:
+        if not isinstance(item, dict) or not bool(item.get("active", True)):
+            continue
+        source = str(item.get("source") or "").strip().casefold()
+        metadata = item.get("metadata")
+        if source != "eve-sentry-detector" or not isinstance(metadata, dict):
+            continue
+        if "hostile_icon_count" not in metadata:
+            continue
+        system_name = str(
+            item.get("system_name") or item.get("system") or "Unknown"
+        ).strip() or "Unknown"
+        display_names.setdefault(system_name.casefold(), system_name)
+        try:
+            hostile_count = max(0, int(metadata.get("hostile_icon_count") or 0))
+        except (TypeError, ValueError):
+            hostile_count = 0
+        client_id = str(
+            metadata.get("client_id")
+            or item.get("source_instance")
+            or "unknown"
+        ).strip() or "unknown"
+        remember_detector(
+            system_name,
+            client_id,
+            hostile_count,
+            str(
+                metadata.get("hostile_icon_seen_at")
+                or item.get("last_seen_at")
+                or ""
+            ),
+        )
+
     for system_key, node_counts in detector_counts.items():
         if node_counts:
             counts[system_key] = counts.get(system_key, 0) + max(
-                node_counts.values()
+                count for _, count in node_counts.values()
             )
     return {
         display_names.get(system_key, system_key): count
@@ -1361,7 +1417,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         alerts: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Build the compact state required by alert SSE consumers."""
-        hostile_counts = _active_hostile_counts(alerts)
+        hostile_counts = _active_hostile_counts(alerts, active_items)
         systems = [
             {
                 "name": system_name,
@@ -1920,8 +1976,13 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
 
     def _send_hostile_systems(self) -> None:
         """Return a stable, minimal hostile-system feed for integrations."""
-        alerts = self._active_alert_list(limit=None)
-        systems = sorted(_active_hostile_counts(alerts), key=str.casefold)
+        store = self._store()
+        active_items = self._visible_active_items(store, store.list_active_intel())
+        alerts = self._active_alert_list(limit=None, active_items=active_items)
+        systems = sorted(
+            _active_hostile_counts(alerts, active_items),
+            key=str.casefold,
+        )
         self._send_json(
             {
                 "schema_version": "hostile_systems.v1",
@@ -2576,7 +2637,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         active_items=active_items,
                     )
                     current_hostile_counts = _active_hostile_counts(
-                        active_snapshot_alerts
+                        active_snapshot_alerts,
+                        active_items,
                     )
                     if active_hostile_counts is not None:
                         for system_name in sorted(

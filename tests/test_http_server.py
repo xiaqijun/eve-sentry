@@ -71,6 +71,35 @@ def test_active_hostile_counts_merge_case_variant_system_names():
     assert counts == {"S-KSWL": 3}
 
 
+def test_active_hostile_counts_include_latest_presence_without_double_counting():
+    counts = _active_hostile_counts(
+        [
+            {
+                "system_name": "S-KSWL",
+                "detector_client_id": "detector:a",
+                "hostile_count": 2,
+                "hostile_icon_seen_at": "2026-08-08T10:00:00+00:00",
+            }
+        ],
+        [
+            {
+                "active": True,
+                "source": "eve-sentry-detector",
+                "source_instance": "EVE - Pilot",
+                "system_name": "S-KSWL",
+                "last_seen_at": "2026-08-08T10:00:01+00:00",
+                "metadata": {
+                    "client_id": "detector:a",
+                    "hostile_icon_count": 1,
+                    "hostile_icon_seen_at": "2026-08-08T10:00:01+00:00",
+                },
+            }
+        ],
+    )
+
+    assert counts == {"S-KSWL": 1}
+
+
 def test_integration_hostile_systems_returns_only_active_hostile_systems(tmp_path):
     store = IntelStore(
         tmp_path / "intel.json",
@@ -616,6 +645,23 @@ def test_v1_hostile_presence_updates_bootstrap_without_fabricating_alerts(tmp_pa
         assert active[0]["metadata"]["presence_only"] is True
         assert alerts_status == 200
         assert alerts_payload["alerts"] == []
+
+        events_status, _, events_body = request_text(
+            f"{server.url}/api/v1/events?"
+            f"{urlencode({'timeout': '0', 'bootstrap': '1'})}"
+        )
+        assert events_status == 200
+        bootstrap_event = next(
+            item["data"]
+            for item in sse_events(events_body)
+            if item.get("event") == "bootstrap"
+        )
+        event_system = next(
+            item
+            for item in bootstrap_event["map"]["systems"]
+            if item["name"] == "S-KSWL"
+        )
+        assert event_system["hostile_count"] == 4
     finally:
         server.stop()
 
@@ -2772,6 +2818,73 @@ def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
         assert node_removed.wait(timeout=0.75)
         assert time.monotonic() - started_at < 0.75
         assert snapshots == [[], ["S-KSWL"], []]
+        stream_thread.join(timeout=1)
+    finally:
+        server.stop()
+
+
+def test_v1_events_push_hostile_presence_immediately(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    stream_ready = threading.Event()
+    hostile_received = threading.Event()
+    snapshots = []
+
+    def read_bootstraps():
+        query = urlencode(
+            {
+                "timeout": "2",
+                "heartbeat": "0",
+                "bootstrap": "1",
+                "since": "9999-01-01T00:00:00+00:00",
+            }
+        )
+        request = Request(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Accept": "text/event-stream"},
+        )
+        with urlopen(request, timeout=3) as response:
+            event_name = ""
+            for raw_line in response:
+                line = raw_line.decode("utf-8").strip()
+                if line.startswith("event:"):
+                    event_name = line[len("event:"):].strip()
+                elif line.startswith("data:") and event_name == "bootstrap":
+                    payload = json.loads(line[len("data:"):].strip())
+                    counts = {
+                        str(item.get("name") or item.get("system_name") or ""):
+                        int(item.get("hostile_count") or 0)
+                        for item in payload.get("map", {}).get("systems", [])
+                    }
+                    snapshots.append(counts)
+                    if len(snapshots) == 1:
+                        stream_ready.set()
+                    if counts.get("S-KSWL") == 1:
+                        hostile_received.set()
+                        return
+
+    stream_thread = threading.Thread(target=read_bootstraps, daemon=True)
+    try:
+        stream_thread.start()
+        assert stream_ready.wait(timeout=1)
+        assert snapshots == [{}]
+
+        started_at = time.monotonic()
+        status, _ = request_json(
+            f"{server.url}/api/v1/hostile-presence",
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "source_instance": "EVE - Pilot",
+                "system_name": "S-KSWL",
+                "hostile_icon_count": 1,
+            },
+        )
+
+        assert status == 201
+        assert hostile_received.wait(timeout=0.75)
+        assert time.monotonic() - started_at < 0.75
+        assert snapshots == [{}, {"S-KSWL": 1}]
         stream_thread.join(timeout=1)
     finally:
         server.stop()
