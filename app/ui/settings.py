@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from PyQt6.QtCore import QRegularExpression, pyqtSignal
 from PyQt6.QtGui import QRegularExpressionValidator
@@ -45,6 +46,25 @@ def normalize_server_url(value: Any) -> str:
     if "://" not in url:
         url = f"http://{url}"
     return url.rstrip("/")
+
+
+def server_url_validation_error(value: Any) -> str:
+    """Return a user-facing validation error for a configured server URL."""
+    url = normalize_server_url(value)
+    if not url:
+        return ""
+    try:
+        parsed = urlsplit(url)
+        _ = parsed.port
+    except ValueError:
+        return "服务端地址端口无效，请填写 1-65535 的数字端口"
+    if parsed.scheme.casefold() not in {"http", "https"}:
+        return "服务端地址仅支持 http:// 或 https://"
+    if not parsed.hostname:
+        return "服务端地址缺少有效的主机名或 IP 地址"
+    if parsed.username or parsed.password:
+        return "服务端地址不能包含用户名或密码"
+    return ""
 
 
 def default_channel_settings_path() -> Path:
@@ -361,6 +381,10 @@ class SettingsPanel(QWidget):
 
     def _on_server_url_changed(self) -> None:
         server_url = self.get_server_url()
+        validation_error = server_url_validation_error(server_url)
+        if validation_error:
+            self.set_auth_status(validation_error, error=True)
+            return
         self._server_url_edit.setText(server_url)
         self.save_channel_config()
         self.server_url_changed.emit(server_url)

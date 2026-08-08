@@ -1,6 +1,13 @@
 import httpx
+import pytest
 
+from app.intel_client import IntelApiError
 from app.persistent_intel_client import PersistentIntelApiClient
+
+
+def test_persistent_client_reports_invalid_server_url_without_httpx_traceback():
+    with pytest.raises(IntelApiError, match="服务端地址格式无效"):
+        PersistentIntelApiClient("http://127.0.0.1:8765a")
 
 
 def test_persistent_client_reuses_httpx_transport_for_json_requests():
