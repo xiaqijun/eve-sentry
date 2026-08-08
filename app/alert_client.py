@@ -1471,7 +1471,12 @@ class AlertOverlay(QWidget):
         return selected, hops
 
     def set_map_accounts(self, accounts: list[dict[str, Any]]) -> None:
-        self._map_accounts = [dict(item) for item in accounts]
+        self._map_accounts = [
+            dict(item)
+            for item in accounts
+            if str(item.get("system_name") or "").strip().casefold()
+            not in {"", "unknown"}
+        ]
         if self._account_menu is None:
             return
         selectable_accounts = [
@@ -1695,7 +1700,14 @@ class AlertOverlay(QWidget):
         screen = self._screen_for_anchor()
         if screen is not None:
             self._apply_screen_metrics(screen)
-        rows = aggregate_alert_summaries(summaries)
+        rows = aggregate_alert_summaries(
+            [
+                item
+                for item in summaries
+                if str(item.get("system_name") or "").strip().casefold()
+                not in {"", "unknown"}
+            ]
+        )
         self.set_map_alerts(rows)
         self._ensure_row_count(len(rows))
         for index, (frame, system_label, hostile_label, state_label) in enumerate(
