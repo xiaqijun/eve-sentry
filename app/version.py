@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 
-APP_VERSION = "1.0.31"
+APP_VERSION = "1.0.32"
 DEFAULT_UPDATE_MANIFEST_URL = (
     "https://evesentrydownload.kisectool.com/latest.json"
 )
