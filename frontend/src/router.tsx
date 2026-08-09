@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate } from "react-router-dom";
 
 import { HostileReportPage } from "./features/reports/HostileReportPage";
+import { HostileHistoryPage } from "./features/reports/HostileHistoryPage";
 import { DashboardPage } from "./features/dashboard/DashboardPage";
 import { WorkbenchPage } from "./features/workbench/WorkbenchPage";
 import { AccountKeysPage } from "./features/auth/AccountKeysPage";
@@ -22,6 +23,7 @@ export const router = createBrowserRouter([
       { index: true, element: <WorkbenchPage /> },
       { path: "dashboard", element: <DashboardPage /> },
       { path: "reports", element: <HostileReportPage /> },
+      { path: "reports/history", element: <HostileHistoryPage /> },
       { path: "account", element: <Navigate replace to="/account/keys" /> },
       { path: "account/keys", element: <ProtectedRoute><AccountKeysPage /></ProtectedRoute> },
       { path: "account/security", element: <Navigate replace to="/account/keys" /> },

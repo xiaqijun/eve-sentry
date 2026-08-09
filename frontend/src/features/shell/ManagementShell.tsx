@@ -5,6 +5,7 @@ import {
   IconDashboard,
   IconDesktop,
   IconFile,
+  IconHistory,
   IconIdcard,
   IconLock,
   IconSafe,
@@ -23,6 +24,7 @@ const PAGE_META: Record<string, { title: string }> = {
   "/": { title: "星图态势" },
   "/dashboard": { title: "工作台" },
   "/reports": { title: "来袭分析" },
+  "/reports/history": { title: "来袭历史" },
   "/account/keys": { title: "设备密钥" },
   "/admin/users": { title: "用户管理" },
   "/admin/clients": { title: "客户端管理" },
@@ -70,6 +72,9 @@ export function ManagementShell() {
             </MenuItem>
             <MenuItem key="/reports">
               <NavLink className={navigationClass} to="/reports"><IconBook /><span>来袭分析</span></NavLink>
+            </MenuItem>
+            <MenuItem key="/reports/history">
+              <NavLink className={navigationClass} to="/reports/history"><IconHistory /><span>来袭历史</span></NavLink>
             </MenuItem>
           </MenuItemGroup>
           {user ? (

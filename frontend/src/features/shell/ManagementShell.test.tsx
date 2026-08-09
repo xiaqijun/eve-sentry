@@ -60,6 +60,7 @@ describe("ManagementShell", () => {
     expect(container).toHaveTextContent("工作台");
     expect(container).toHaveTextContent("星图态势");
     expect(container).toHaveTextContent("来袭分析");
+    expect(container).toHaveTextContent("来袭历史");
     expect(container).toHaveTextContent("设备密钥");
     expect(container).not.toHaveTextContent("账号安全");
     expect(container).toHaveTextContent("用户管理");
@@ -70,6 +71,7 @@ describe("ManagementShell", () => {
     expect(container).toHaveTextContent("审计日志");
     expect(container).toHaveTextContent("报表内容");
     expect(container.querySelector('a[href="/reports"]')).toHaveClass("active");
+    expect(container.querySelector('a[href="/reports/history"]')).toBeInTheDocument();
     expect(container.querySelector('a[href="/dashboard"]')).toBeInTheDocument();
     expect(container.querySelector('a[href="/admin/whitelist"]')).toBeInTheDocument();
     expect(container.querySelector('a[href="/admin/clients"]')).toBeInTheDocument();
