@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from PyQt6.QtCore import QCoreApplication, QObject
+from PyQt6.QtNetwork import QNetworkReply, QNetworkRequest
 
 from app.updater import (
     ClientUpdater,
@@ -205,6 +206,112 @@ def test_client_updater_reports_verified_package_ready_to_install(tmp_path):
 
     updater._installer_launched = True
     assert updater.ready_to_install is False
+
+
+def test_http_error_body_is_not_saved_as_a_resumable_update(tmp_path):
+    class FakeReply:
+        def __init__(self):
+            self.read_calls = 0
+            self.deleted = False
+
+        def attribute(self, attribute):
+            assert attribute == QNetworkRequest.Attribute.HttpStatusCodeAttribute
+            return 500
+
+        def error(self):
+            return QNetworkReply.NetworkError.InternalServerError
+
+        def errorString(self):
+            return "Internal Server Error"
+
+        def readAll(self):
+            self.read_calls += 1
+            return b"error code: 1101"
+
+        def deleteLater(self):
+            self.deleted = True
+
+    update_dir = tmp_path / "updates"
+    update_dir.mkdir()
+    partial = update_dir / "program.zip.part"
+    partial.write_bytes(b"valid-prefix")
+    release = ReleaseInfo(
+        "1.2.0",
+        "https://download.example/program.zip",
+        "a" * 64,
+        100,
+        "program.zip",
+    )
+    reply = FakeReply()
+    updater = ClientUpdater(update_dir=update_dir, background_download=False)
+    updater._release = release
+    updater._current_component = release
+    updater._download_path = partial
+    updater._download_file = partial.open("ab")
+    updater._download_reply = reply
+    updater._download_hash = hashlib.sha256(partial.read_bytes())
+    updater._resume_offset = partial.stat().st_size
+    states = []
+    updater.state_changed.connect(lambda *state: states.append(state))
+
+    updater._finish_download(reply, update_dir / "program.zip")
+
+    assert reply.read_calls == 1
+    assert reply.deleted is True
+    assert not partial.exists()
+    assert states[-1][0].startswith("下载失败：HTTP 500")
+    assert states[-1][1:] == ("重试", True)
+
+
+def test_transport_failure_preserves_a_valid_download_partial(tmp_path):
+    class FakeReply:
+        def __init__(self):
+            self.deleted = False
+
+        def attribute(self, attribute):
+            assert attribute == QNetworkRequest.Attribute.HttpStatusCodeAttribute
+            return None
+
+        def error(self):
+            return QNetworkReply.NetworkError.TimeoutError
+
+        def errorString(self):
+            return "timed out"
+
+        def readAll(self):
+            raise AssertionError("an incomplete response has no readable body")
+
+        def deleteLater(self):
+            self.deleted = True
+
+    update_dir = tmp_path / "updates"
+    update_dir.mkdir()
+    partial = update_dir / "program.zip.part"
+    partial.write_bytes(b"valid-prefix")
+    release = ReleaseInfo(
+        "1.2.0",
+        "https://download.example/program.zip",
+        "a" * 64,
+        100,
+        "program.zip",
+    )
+    reply = FakeReply()
+    updater = ClientUpdater(update_dir=update_dir, background_download=False)
+    updater._release = release
+    updater._current_component = release
+    updater._download_path = partial
+    updater._download_file = partial.open("ab")
+    updater._download_reply = reply
+    updater._download_hash = hashlib.sha256(partial.read_bytes())
+    updater._resume_offset = partial.stat().st_size
+    states = []
+    updater.state_changed.connect(lambda *state: states.append(state))
+
+    updater._finish_download(reply, update_dir / "program.zip")
+
+    assert reply.deleted is True
+    assert partial.read_bytes() == b"valid-prefix"
+    assert states[-1] == ("下载失败：timed out", "继续下载", True)
 
 
 def test_client_updater_restores_large_local_state_off_qt_thread(

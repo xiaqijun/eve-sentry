@@ -86,13 +86,13 @@ try {
 
     $file = Get-Item -LiteralPath $programAssetPath
     $hash = (Get-FileHash -LiteralPath $programAssetPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $downloadUrl = "$($DownloadBaseUrl.TrimEnd('/'))/${programAssetName}?sha256=${hash}"
+    $downloadUrl = "$($DownloadBaseUrl.TrimEnd('/'))/${programAssetName}?sha256=${hash}&release=$([uri]::EscapeDataString($Version))"
     if (-not $modelAssetPath -or -not (Test-Path -LiteralPath $modelAssetPath)) {
         throw "Release model package is missing"
     }
     $modelFile = Get-Item -LiteralPath $modelAssetPath
     $modelHash = (Get-FileHash -LiteralPath $modelAssetPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $modelDownloadUrl = "$($DownloadBaseUrl.TrimEnd('/'))/${modelAssetName}?sha256=${modelHash}"
+    $modelDownloadUrl = "$($DownloadBaseUrl.TrimEnd('/'))/${modelAssetName}?sha256=${modelHash}&release=$([uri]::EscapeDataString($Version))"
     $manifest = [ordered]@{
         version = $Version
         url = $downloadUrl
