@@ -117,7 +117,7 @@ export function HostileReportPage() {
     queryKey: ["hostile-alert-history", range],
     queryFn: () => fetchHostileAlertHistory(range),
     refetchInterval: REPORT_REFRESH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
   });
   const report = useMemo(

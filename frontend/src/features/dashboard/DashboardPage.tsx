@@ -221,7 +221,7 @@ export function DashboardPage() {
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
     refetchInterval: REFRESH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
   });
   const graphData = useMemo(

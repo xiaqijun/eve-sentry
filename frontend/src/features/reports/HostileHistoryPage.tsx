@@ -139,7 +139,7 @@ export function HostileHistoryPage() {
     queryKey: ["hostile-alert-history", queryFilters.range],
     queryFn: () => fetchHostileAlertHistory(queryFilters.range),
     refetchInterval: REPORT_REFRESH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
   });
   const report = useMemo(

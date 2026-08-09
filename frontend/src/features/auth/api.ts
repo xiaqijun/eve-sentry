@@ -1,11 +1,14 @@
 import type {
   AdminUser,
+  AdminClientHeartbeatRecord,
+  AdminClientKeyUsage,
   AdminClientsSnapshot,
   AllowedCorporation,
   ApiKeyRecord,
   AuditRecord,
   AuthUser,
   ClientsSnapshot,
+  ClientHeartbeatRecord,
   SecuritySettings,
 } from "./types";
 
@@ -28,6 +31,19 @@ export function apiPath(path: string): string {
 
 export function setCsrfToken(value: string): void {
   csrfToken = value;
+}
+
+function arrayOrEmpty<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value as T[] : [];
+}
+
+function normalizeAdminUser(user: AdminUser): AdminUser {
+  return {
+    ...user,
+    keys: arrayOrEmpty<ApiKeyRecord>(user?.keys),
+    whitelist: arrayOrEmpty<AdminUser["whitelist"][number]>(user?.whitelist),
+    verified_characters: arrayOrEmpty<AdminUser["verified_characters"][number]>(user?.verified_characters),
+  };
 }
 
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -97,7 +113,8 @@ export async function changePassword(
 }
 
 export async function listMyKeys(): Promise<ApiKeyRecord[]> {
-  return (await apiRequest<{ keys: ApiKeyRecord[] }>("/api/v1/me/keys")).keys;
+  const payload = await apiRequest<{ keys?: unknown }>("/api/v1/me/keys");
+  return arrayOrEmpty<ApiKeyRecord>(payload.keys);
 }
 
 export async function createMyKey(name: string): Promise<ApiKeyRecord> {
@@ -124,7 +141,8 @@ export async function deleteKey(keyId: string): Promise<void> {
 }
 
 export async function listAdminUsers(): Promise<AdminUser[]> {
-  return (await apiRequest<{ users: AdminUser[] }>("/api/v1/admin/users")).users;
+  const payload = await apiRequest<{ users?: unknown }>("/api/v1/admin/users");
+  return arrayOrEmpty<AdminUser>(payload.users).map(normalizeAdminUser);
 }
 
 export async function fetchSecuritySettings(): Promise<SecuritySettings> {
@@ -190,9 +208,10 @@ export async function createAdminKey(
 }
 
 export async function listCorporations(): Promise<AllowedCorporation[]> {
-  return (await apiRequest<{ corporations: AllowedCorporation[] }>(
+  const payload = await apiRequest<{ corporations?: unknown }>(
     "/api/v1/admin/corporations",
-  )).corporations;
+  );
+  return arrayOrEmpty<AllowedCorporation>(payload.corporations);
 }
 
 export async function addCorporation(corporationId: number): Promise<void> {
@@ -228,13 +247,29 @@ export async function removeWhitelistCharacter(
 }
 
 export async function listAudit(): Promise<AuditRecord[]> {
-  return (await apiRequest<{ audit: AuditRecord[] }>("/api/v1/admin/audit")).audit;
+  const payload = await apiRequest<{ audit?: unknown }>("/api/v1/admin/audit");
+  return arrayOrEmpty<AuditRecord>(payload.audit);
 }
 
 export async function fetchClients(): Promise<ClientsSnapshot> {
-  return (await apiRequest<{ clients: ClientsSnapshot }>("/api/v1/clients")).clients;
+  const payload = await apiRequest<{ clients?: Partial<ClientsSnapshot> }>("/api/v1/clients");
+  return {
+    count: Number(payload.clients?.count ?? 0),
+    heartbeats: arrayOrEmpty<ClientHeartbeatRecord>(payload.clients?.heartbeats),
+    summary: payload.clients?.summary || {},
+  };
 }
 
 export async function listAdminClients(): Promise<AdminClientsSnapshot> {
-  return apiRequest<AdminClientsSnapshot>("/api/v1/admin/clients");
+  const payload = await apiRequest<Partial<AdminClientsSnapshot>>("/api/v1/admin/clients");
+  const clients: Partial<AdminClientsSnapshot["clients"]> = payload.clients || {};
+  const normalizedClients: AdminClientsSnapshot["clients"] = {
+    count: Number(clients.count ?? 0),
+    heartbeats: arrayOrEmpty<AdminClientHeartbeatRecord>(clients.heartbeats),
+    ...(clients.summary ? { summary: clients.summary } : {}),
+  };
+  return {
+    clients: normalizedClients,
+    keys: arrayOrEmpty<AdminClientKeyUsage>(payload.keys),
+  };
 }

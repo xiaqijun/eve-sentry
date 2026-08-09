@@ -92,13 +92,15 @@ export function AdminUsersPage() {
     });
   }, [search, statusFilter, users]);
 
-  const run = async (action: () => Promise<unknown>) => {
+  const run = async (action: () => Promise<unknown>): Promise<boolean> => {
     setError("");
     try {
       await action();
       await load();
+      return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "操作失败");
+      return false;
     }
   };
 
@@ -112,9 +114,11 @@ export function AdminUsersPage() {
       display_name: String(values.display_name || ""),
       password: String(values.password || ""),
       role: createRole,
-    })).then(() => {
-      setCreateRole("member");
-      setCreateOpen(false);
+    })).then((success) => {
+      if (success) {
+        setCreateRole("member");
+        setCreateOpen(false);
+      }
     });
   };
 

@@ -184,7 +184,7 @@ export function WorkbenchPage() {
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
     refetchInterval: BOOTSTRAP_REFRESH_INTERVAL_MS,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
   });
 

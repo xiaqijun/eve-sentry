@@ -112,6 +112,14 @@ npm run preview
 预览地址为 `http://127.0.0.1:4173`。生产代理必须让未知页面路径回退到
 `index.html`，否则直接访问 `/reports` 或 `/admin/users` 会返回 404。
 
+## 稳定性与错误恢复
+
+- 前端 API wrapper 会在返回边界规范化集合字段。服务端省略 `keys`、`whitelist`、`verified_characters`、`heartbeats`、`alerts` 等字段时，页面显示为空状态而不会抛出 `undefined.map`。
+- 路由提供统一可恢复错误页。页面渲染异常时可以重新加载当前路由或返回工作台，错误编号可用于日志关联。
+- SSE 的 `alert` 和 `bootstrap` 事件解析失败会进入连接错误处理，不会让事件监听器抛出未捕获异常。
+- Dashboard、Workbench、来袭分析和来袭历史的后台刷新已暂停；回到页面后由 React Query 按需恢复请求。
+- 管理台用户创建失败时保留弹窗和输入内容，避免用户重复填写。
+
 ## 实时更新
 
 星图态势读取 `/api/v1/bootstrap` 获取初始状态，通过 `/api/v1/events` SSE 接收后续

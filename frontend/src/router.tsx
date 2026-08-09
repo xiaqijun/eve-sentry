@@ -1,4 +1,5 @@
-import { createBrowserRouter, Navigate } from "react-router-dom";
+import { Button, Card, Space, Typography } from "@arco-design/web-react";
+import { createBrowserRouter, isRouteErrorResponse, Navigate, useRouteError } from "react-router-dom";
 
 import { HostileReportPage } from "./features/reports/HostileReportPage";
 import { HostileHistoryPage } from "./features/reports/HostileHistoryPage";
@@ -15,10 +16,32 @@ import { LoginPage } from "./features/auth/LoginPage";
 import { ProtectedRoute } from "./features/auth/RouteGuards";
 import { ManagementShell } from "./features/shell/ManagementShell";
 
+function RouteErrorPage() {
+  const error = useRouteError();
+  const message = isRouteErrorResponse(error)
+    ? `${error.status} ${error.statusText}`
+    : error instanceof Error ? error.message : "页面加载失败";
+  return (
+    <main className="route-error-page">
+      <Card title="页面暂时无法显示">
+        <Space direction="vertical" size="medium">
+          <Typography.Text type="secondary">{message}</Typography.Text>
+          <Typography.Text type="secondary">错误编号：{String(Date.now()).slice(-6)}</Typography.Text>
+          <Space>
+            <Button type="primary" onClick={() => window.location.reload()}>重新加载</Button>
+            <Button onClick={() => { window.location.assign("/"); }}>返回工作台</Button>
+          </Space>
+        </Space>
+      </Card>
+    </main>
+  );
+}
+
 export const router = createBrowserRouter([
   {
     path: "/",
     element: <ProtectedRoute allowWhenAuthDisabled><ManagementShell /></ProtectedRoute>,
+    errorElement: <RouteErrorPage />,
     children: [
       { index: true, element: <WorkbenchPage /> },
       { path: "dashboard", element: <DashboardPage /> },
@@ -39,5 +62,6 @@ export const router = createBrowserRouter([
   {
     path: "/login",
     element: <LoginPage />,
+    errorElement: <RouteErrorPage />,
   },
 ]);

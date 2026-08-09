@@ -8280,3 +8280,19 @@ body[data-theme="dark"] .admin-client-stacked-cell.has-error strong {
     padding: 10px 8px;
   }
 }
+/* Recoverable route errors keep the management shell usable after a render failure. */
+.route-error-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--color-bg-1, #f5f6f7);
+}
+
+.route-error-page .arco-card {
+  width: min(100%, 520px);
+}
+
+[data-theme="dark"] .route-error-page {
+  background: var(--color-bg-1, #17171a);
+}

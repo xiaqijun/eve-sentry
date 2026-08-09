@@ -17,8 +17,30 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function fetchBootstrap(): Promise<BootstrapPayload> {
-  const payload = await request<{ bootstrap: BootstrapPayload }>("/api/v1/bootstrap");
-  return payload.bootstrap;
+  const payload = await request<{ bootstrap?: Partial<BootstrapPayload> }>("/api/v1/bootstrap");
+  const bootstrap = payload.bootstrap || {};
+  return {
+    schema_version: String(bootstrap.schema_version || "intel_bootstrap.v1"),
+    generated_at: String(bootstrap.generated_at || new Date().toISOString()),
+    map: {
+      schema_version: String(bootstrap.map?.schema_version || "map.v1"),
+      generated_at: String(bootstrap.map?.generated_at || new Date().toISOString()),
+      systems: Array.isArray(bootstrap.map?.systems) ? bootstrap.map.systems : [],
+      links: Array.isArray(bootstrap.map?.links) ? bootstrap.map.links : [],
+      summary: bootstrap.map?.summary || {},
+    },
+    reports: Array.isArray(bootstrap.reports) ? bootstrap.reports : [],
+    observations: Array.isArray(bootstrap.observations) ? bootstrap.observations : [],
+    active_intel: Array.isArray(bootstrap.active_intel) ? bootstrap.active_intel : [],
+    alerts: Array.isArray(bootstrap.alerts) ? bootstrap.alerts : [],
+    clients: {
+      count: Number(bootstrap.clients?.count ?? 0),
+      heartbeats: Array.isArray(bootstrap.clients?.heartbeats) ? bootstrap.clients.heartbeats : [],
+      summary: bootstrap.clients?.summary || { count: 0, online_count: 0, stale_count: 0 },
+    },
+    config: bootstrap.config || null,
+    esi: bootstrap.esi || { enabled: false, authenticated: false },
+  };
 }
 
 export async function fetchMap(): Promise<MapSnapshotPayload> {
@@ -88,10 +110,18 @@ export function connectAlerts(
     { withCredentials: true },
   );
   stream.addEventListener("alert", (event) => {
-    onAlert(JSON.parse(event.data) as AlertItem);
+    try {
+      onAlert(JSON.parse(event.data) as AlertItem);
+    } catch {
+      onError?.();
+    }
   });
   stream.addEventListener("bootstrap", (event) => {
-    onBootstrap?.(JSON.parse(event.data) as BootstrapStreamPayload);
+    try {
+      onBootstrap?.(JSON.parse(event.data) as BootstrapStreamPayload);
+    } catch {
+      onError?.();
+    }
   });
   stream.addEventListener("error", () => {
     onError?.();

@@ -7,6 +7,10 @@ import {
   enableKey,
   fetchSecuritySettings,
   listAdminClients,
+  listAdminUsers,
+  listAudit,
+  listCorporations,
+  listMyKeys,
   login,
   setCsrfToken,
   updateSecuritySettings,
@@ -136,5 +140,34 @@ describe("authenticated API client", () => {
       .resolves.toEqual({ key_risk_control: false });
     expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/admin/security-settings");
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
+  });
+
+  it("normalizes partial collection responses at the API boundary", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ users: [{ user_id: "u1", username: "pilot" }] }), { status: 200 }),
+    );
+    await expect(listAdminUsers()).resolves.toEqual([expect.objectContaining({
+      user_id: "u1",
+      keys: [],
+      whitelist: [],
+      verified_characters: [],
+    })]);
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({}), { status: 200 }),
+    );
+    await expect(listMyKeys()).resolves.toEqual([]);
+    await expect(listCorporations()).resolves.toEqual([]);
+    await expect(listAudit()).resolves.toEqual([]);
+  });
+
+  it("normalizes a partial client inventory", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ clients: {}, keys: null }), { status: 200 }),
+    );
+    await expect(listAdminClients()).resolves.toEqual({
+      clients: { count: 0, heartbeats: [] },
+      keys: [],
+    });
   });
 });
