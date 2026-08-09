@@ -38,6 +38,7 @@ test("retries an invalid cached response with the exact release URL", async () =
 
     assert.equal(response.status, 206);
     assert.equal(calls.length, 2);
+    assert.match(calls[0].target, /releases\/download\/v1\.0\.31\//);
     assert.match(calls[1].target, /releases\/download\/v1\.0\.31\//);
     assert.equal(calls[1].options.headers.get("Cache-Control"), "no-cache");
   } finally {

@@ -33,10 +33,9 @@ npx wrangler deploy
 The custom domain root serves the landing page. `/health`, `/latest.json`, and
 `/download/*` continue to run through the Worker before static asset routing.
 Release downloads validate the upstream HTTP status before constructing the
-response. Invalid edge responses and upstream 5xx errors are retried once
-without cache, using an exact versioned GitHub release URL when the filename
-contains a semantic version or the signed manifest supplies its release query;
-persistent failures return a non-cacheable 502.
+response. Versioned assets use an exact GitHub release tag from the first
+request. Invalid edge responses and upstream 5xx errors are retried once
+without cache; persistent failures return a non-cacheable 502.
 
 ## Release Data
 

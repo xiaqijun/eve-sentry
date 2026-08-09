@@ -80,10 +80,11 @@ async function proxyRelease(request, env, target, cacheSeconds) {
   const range = request.headers.get("Range");
   if (range) originHeaders.set("Range", range);
   originHeaders.set("User-Agent", "EVE-Sentry-Download-Worker/1.0");
+  const releaseTarget = taggedReleaseUrl(env, request, target);
 
   let upstream;
   try {
-    upstream = await fetch(target, {
+    upstream = await fetch(releaseTarget, {
       headers: originHeaders,
       redirect: "follow",
       cf: {
@@ -106,7 +107,7 @@ async function proxyRelease(request, env, target, cacheSeconds) {
     const retryHeaders = new Headers(originHeaders);
     retryHeaders.set("Cache-Control", "no-cache");
     try {
-      upstream = await fetch(taggedReleaseUrl(env, request, target), {
+      upstream = await fetch(releaseTarget, {
         headers: retryHeaders,
         redirect: "follow",
         cf: {
