@@ -2561,7 +2561,10 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
     ) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "no-store, no-transform")
+        # Disable reverse-proxy buffering even when a deployment uses the
+        # generic /api/ location instead of the dedicated SSE location.
+        self.send_header("X-Accel-Buffering", "no")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 

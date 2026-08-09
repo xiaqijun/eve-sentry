@@ -76,7 +76,9 @@ export function connectAlerts(
     // the server can push live star-map changes when a hostile appears.
     bootstrap: "1",
     limit: "50",
-    timeout: "30",
+    // Keep the stream open for the server-side maximum. Short-lived streams
+    // create reconnect gaps in which the map can only fall back to polling.
+    timeout: "300",
   });
   if (since) {
     query.set("since", since);

@@ -30,7 +30,7 @@ describe("workbench event stream", () => {
 
     expect(url.searchParams.get("bootstrap")).toBe("1");
     expect(url.searchParams.get("since")).toBe("2026-08-05T09:00:00Z");
-    expect(url.searchParams.get("timeout")).toBe("30");
+    expect(url.searchParams.get("timeout")).toBe("300");
     stream.close();
   });
 });

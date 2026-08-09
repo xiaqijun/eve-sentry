@@ -2616,6 +2616,8 @@ def test_v1_events_stream_returns_alert_sse(tmp_path):
 
         assert status == 200
         assert headers["Content-Type"].startswith("text/event-stream")
+        assert headers["Cache-Control"] == "no-store, no-transform"
+        assert headers["X-Accel-Buffering"] == "no"
         assert "event: bootstrap" not in body
         assert "event: alert" in body
 
