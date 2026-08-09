@@ -5,6 +5,7 @@ import {
   Card,
   Empty,
   Grid,
+  Input,
   Radio,
   Statistic,
   Table,
@@ -131,6 +132,7 @@ function trendOption(labels: string[], values: number[], theme: ThemeMode): ECha
 export function HostileReportPage() {
   const { theme } = useTheme();
   const [range, setRange] = useState<ReportRange>("24h");
+  const [historySearch, setHistorySearch] = useState("");
   const historyQuery = useQuery({
     queryKey: ["hostile-alert-history", range],
     queryFn: () => fetchHostileAlertHistory(range),
@@ -148,6 +150,25 @@ export function HostileReportPage() {
     [historyQuery.data?.alerts, historyQuery.data?.waves, range],
   );
   const activeRange = RANGE_OPTIONS.find((item) => item.value === range)?.label || "24 小时";
+  const historyNeedle = historySearch.trim().toLocaleLowerCase();
+  const filteredWaves = useMemo(() => {
+    if (!historyNeedle) return report.waves;
+    return report.waves.filter((wave) => (
+      `${wave.systemName} ${wave.id}`.toLocaleLowerCase().includes(historyNeedle)
+    ));
+  }, [historyNeedle, report.waves]);
+  const filteredRecent = useMemo(() => {
+    if (!historyNeedle) return report.recent;
+    return report.recent.filter((alert) => {
+      const characters = (alert.verified_characters || []).map((item) => item.name);
+      return [
+        alert.system_name,
+        alert.system,
+        ...(alert.names || []),
+        ...characters,
+      ].some((value) => String(value || "").toLocaleLowerCase().includes(historyNeedle));
+    });
+  }, [historyNeedle, report.recent]);
 
   const waveColumns: TableColumnProps<WaveReportRow>[] = [
     { title: "星系", dataIndex: "systemName", render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
@@ -234,8 +255,35 @@ export function HostileReportPage() {
         </Grid.Col>
       </Grid.Row>
 
-      <Card className="hostile-report-card hostile-report-recent" title={<span><ShieldAlert size={16} />最近告警记录</span>} extra={<Typography.Text type="secondary">更新于 {formatTime(historyQuery.data?.generatedAt)}</Typography.Text>}>
-        <Table<AlertItem> border={false} columns={recentColumns} data={report.recent} pagination={false} rowKey="id" />
+      <Card
+        className="hostile-report-card hostile-report-recent"
+        title={<span><ShieldAlert size={16} />历史来敌查询</span>}
+        extra={<Input.Search
+          allowClear
+          placeholder="搜索星系或人员"
+          value={historySearch}
+          onChange={setHistorySearch}
+        />}
+      >
+        <Typography.Text type="secondary">
+          红色图标记录在来袭波次；人员告警来自 OCR 增效和身份核验。当前范围：{activeRange}，更新于 {formatTime(historyQuery.data?.generatedAt)}
+        </Typography.Text>
+        <Typography.Title heading={6}>来袭波次（{filteredWaves.length}）</Typography.Title>
+        <Table<WaveReportRow>
+          border={false}
+          columns={waveColumns}
+          data={filteredWaves}
+          pagination={{ pageSize: 8, hideOnSinglePage: true }}
+          rowKey="id"
+        />
+        <Typography.Title heading={6}>人员告警（{filteredRecent.length}）</Typography.Title>
+        <Table<AlertItem>
+          border={false}
+          columns={recentColumns}
+          data={filteredRecent}
+          pagination={{ pageSize: 8, hideOnSinglePage: true }}
+          rowKey="id"
+        />
       </Card>
     </div>
   );

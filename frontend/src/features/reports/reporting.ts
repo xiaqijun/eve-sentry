@@ -564,7 +564,9 @@ export function buildHostileReport(
     targets,
     severity: (["critical", "high", "medium", "low", "unknown"] as const)
       .map((level) => ({ level, count: severityCounts[level] })),
-    recent: alerts.slice(0, 12),
-    waves: waves.slice(0, 12),
+    // Keep the bounded server response intact here.  The page uses Arco's
+    // table pagination and keyword filtering for historical queries.
+    recent: alerts,
+    waves,
   };
 }

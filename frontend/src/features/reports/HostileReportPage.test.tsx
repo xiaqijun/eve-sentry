@@ -114,7 +114,11 @@ describe("HostileReportPage", () => {
     ).toBe(true);
     expect(container).not.toHaveTextContent("威胁度 82");
     expect(container.querySelector(".combat-summary")).toHaveTextContent("320 / 18");
-    expect(container).toHaveTextContent("最近告警记录");
+    expect(container).toHaveTextContent("历史来敌查询");
+    const historySearch = container.querySelector<HTMLInputElement>(
+      'input[placeholder="搜索星系或人员"]',
+    );
+    expect(historySearch).toBeInTheDocument();
     expect(container).toHaveTextContent("高");
     expect(container).toHaveTextContent("低");
     expect(container).toHaveTextContent("S-KSWL");
@@ -122,6 +126,19 @@ describe("HostileReportPage", () => {
     expect(container).toHaveTextContent("Bob");
     expect(container.querySelectorAll('[data-testid="eve-chart"]')).toHaveLength(1);
     expect(apiMocks.fetchHostileAlertHistory).toHaveBeenCalledWith("24h");
+
+    await act(async () => {
+      if (historySearch) {
+        const valueSetter = Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value",
+        )?.set;
+        valueSetter?.call(historySearch, "Bob");
+        historySearch.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      await Promise.resolve();
+    });
+    expect(container).toHaveTextContent("人员告警（1）");
 
     await act(async () => root.unmount());
   });

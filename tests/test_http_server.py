@@ -20,6 +20,7 @@ from app.intel.classification import CLASSIFICATION_VERSION
 from app.intel.enrichment import ThreatEnricher
 from app.intel.config import IntelConfigStore
 from app.intel.scoring import ScoringEngine, Watchlist
+from app.server.auth_http import build_admin_clients_payload
 from app.server.http_server import (
     IntelHTTPServer,
     IntelRequestHandler,
@@ -69,6 +70,45 @@ def test_active_hostile_counts_merge_case_variant_system_names():
     )
 
     assert counts == {"S-KSWL": 3}
+
+
+def test_admin_clients_hides_legacy_duplicate_identity_on_same_host():
+    payload = build_admin_clients_payload(
+        {
+            "heartbeats": [
+                {
+                    "client_id": "eve_legacy",
+                    "client_type": "detector_client",
+                    "user_id": "user-1",
+                    "seen_at": "2026-08-09T10:00:00+00:00",
+                    "details": {"host": "SCOUT-PC"},
+                },
+                {
+                    "client_id": "detector-client:stable",
+                    "client_type": "detector_client",
+                    "user_id": "user-1",
+                    "seen_at": "2026-08-09T10:01:00+00:00",
+                    "details": {"host": "scout-pc"},
+                },
+                {
+                    "client_id": "alert-client:stable",
+                    "client_type": "alert_client",
+                    "user_id": "user-1",
+                    "seen_at": "2026-08-09T10:02:00+00:00",
+                    "details": {"host": "scout-pc"},
+                },
+            ],
+            "summary": {},
+        },
+        [{"user_id": "user-1", "username": "pilot", "keys": []}],
+    )
+
+    assert payload["clients"]["count"] == 2
+    assert [item["client_id"] for item in payload["clients"]["heartbeats"]] == [
+        "alert-client:stable",
+        "detector-client:stable",
+    ]
+    assert payload["clients"]["summary"]["hidden_duplicate_count"] == 1
 
 
 def test_active_hostile_counts_include_latest_presence_without_double_counting():
@@ -3751,6 +3791,17 @@ def test_service_key_can_read_integration_hostile_systems(tmp_path):
         assert status == 200
         assert payload["systems"] == []
         assert payload["count"] == 0
+
+        for path, field in (
+            ("/api/v1/alert-history", "alerts"),
+            ("/api/v1/hostile-waves", "waves"),
+        ):
+            status, _, history_payload = authenticated_request(
+                f"{server.url}{path}",
+                headers=headers,
+            )
+            assert status == 200
+            assert history_payload[field] == []
     finally:
         server.stop()
 

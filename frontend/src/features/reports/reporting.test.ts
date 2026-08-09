@@ -232,4 +232,26 @@ describe("hostile reporting", () => {
       "first-wave",
     ]);
   });
+
+  it("keeps the bounded history available for page filtering and pagination", () => {
+    const historyAlerts: AlertItem[] = Array.from({ length: 20 }, (_, index) => ({
+      id: `history-alert-${index}`,
+      system_name: `System-${index}`,
+      classification: "red",
+      verified_characters: [{ character_id: 10_000 + index, name: `Pilot ${index}` }],
+      created_at: new Date(NOW - index * 60_000).toISOString(),
+    }));
+    const historyWaves: HostileWaveLifecycle[] = historyAlerts.map((alert, index) => ({
+      id: `history-wave-${index}`,
+      system_name: alert.system_name,
+      started_at: alert.created_at,
+      last_seen_at: alert.created_at,
+      active: true,
+    }));
+
+    const report = buildHostileReport(historyAlerts, "7d", NOW, historyWaves);
+
+    expect(report.recent).toHaveLength(20);
+    expect(report.waves).toHaveLength(20);
+  });
 });

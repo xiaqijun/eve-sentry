@@ -48,7 +48,13 @@ def build_admin_clients_payload(
     client_snapshot: dict[str, Any],
     users: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Enrich private heartbeat attribution and aggregate API-key usage."""
+    """Enrich private heartbeat attribution and aggregate API-key usage.
+
+    Older desktop builds generated legacy client ids after reinstalling or
+    losing their local identity file. Keep the newest legacy heartbeat for the
+    same user/type/host tuple while preserving the UUID-based ids used by the
+    current multi-client protocol.
+    """
     owners: dict[str, dict[str, Any]] = {}
     keys: dict[str, dict[str, Any]] = {}
     ordered_keys: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -83,10 +89,61 @@ def build_admin_clients_payload(
         heartbeat["owner"] = owners.get(user_id)
         heartbeat["key"] = keys.get(key_id)
         heartbeats.append(heartbeat)
-    heartbeats.sort(
-        key=lambda item: str(item.get("seen_at") or ""),
-        reverse=True,
-    )
+    heartbeats.sort(key=lambda item: str(item.get("seen_at") or ""), reverse=True)
+
+    deduplicated: list[dict[str, Any]] = []
+    seen_logical_clients: set[tuple[str, str, str]] = set()
+    stable_logical_clients: set[tuple[str, str, str]] = set()
+    hidden_duplicate_count = 0
+    for heartbeat in heartbeats:
+        details = heartbeat.get("details")
+        details = details if isinstance(details, dict) else {}
+        owner_id = str(heartbeat.get("user_id") or "").strip()
+        client_type = str(heartbeat.get("client_type") or "client").strip()
+        host = str(details.get("host") or "").strip().casefold()
+        client_id = str(heartbeat.get("client_id") or "").strip().casefold()
+        stable_prefix = {
+            "detector_client": "detector-client:",
+            "alert_client": "alert-client:",
+            "channel_client": "channel-client:",
+            "integration_client": "integration-client:",
+        }.get(client_type)
+        if owner_id and host and stable_prefix and client_id.startswith(stable_prefix):
+            stable_logical_clients.add((owner_id, client_type, host))
+
+    for heartbeat in heartbeats:
+        details = heartbeat.get("details")
+        details = details if isinstance(details, dict) else {}
+        client_id = str(heartbeat.get("client_id") or "").strip().casefold()
+        owner_id = str(heartbeat.get("user_id") or "").strip()
+        client_type = str(heartbeat.get("client_type") or "client").strip()
+        host = str(details.get("host") or "").strip().casefold()
+        stable_prefix = {
+            "detector_client": "detector-client:",
+            "alert_client": "alert-client:",
+            "channel_client": "channel-client:",
+            "integration_client": "integration-client:",
+        }.get(client_type)
+        if stable_prefix and client_id.startswith(stable_prefix):
+            deduplicated.append(heartbeat)
+            continue
+        # Without an owner and host there is no safe way to infer that two
+        # legacy ids belong to one installation; retain both records.
+        if not owner_id or not host:
+            deduplicated.append(heartbeat)
+            continue
+        logical_key = (owner_id, client_type, host)
+        if logical_key in stable_logical_clients and not (
+            stable_prefix and client_id.startswith(stable_prefix)
+        ):
+            hidden_duplicate_count += 1
+            continue
+        if logical_key in seen_logical_clients:
+            hidden_duplicate_count += 1
+            continue
+        seen_logical_clients.add(logical_key)
+        deduplicated.append(heartbeat)
+    heartbeats = deduplicated
 
     heartbeats_by_key: dict[str, list[dict[str, Any]]] = {}
     for heartbeat in heartbeats:
@@ -100,7 +157,7 @@ def build_admin_clients_payload(
         **client_snapshot,
         "heartbeats": heartbeats,
         "count": len(heartbeats),
-        "summary": summary,
+        "summary": {**summary, "hidden_duplicate_count": hidden_duplicate_count},
     }
 
     usage_records: list[dict[str, Any]] = []
@@ -177,6 +234,8 @@ class AuthHttpMixin:
             if principal.is_read_only and path not in {
                 "/api/v1/bootstrap",
                 "/api/v1/events",
+                "/api/v1/alert-history",
+                "/api/v1/hostile-waves",
                 "/api/v1/integrations/hostile-systems",
             }:
                 raise AuthError(
