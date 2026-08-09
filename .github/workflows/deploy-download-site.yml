@@ -52,6 +52,8 @@ jobs:
           test -s download-site/out/index.html
           test -s download-site/out/docs/client.html
           test -s download-site/out/docs/server.html
+      - name: Test download Worker
+        run: node --test deploy/cloudflare-download/src/index.test.js
       - name: Validate Worker bundle
         run: >-
           npx --yes wrangler@${WRANGLER_VERSION} deploy

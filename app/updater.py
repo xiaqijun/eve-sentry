@@ -1376,13 +1376,16 @@ class ClientUpdater(QObject):
     def _read_download_data(self) -> None:
         if self._download_reply is None or self._download_file is None:
             return
+        status = self._download_reply.attribute(
+            QNetworkRequest.Attribute.HttpStatusCodeAttribute
+        )
+        if status is not None and not 200 <= int(status) < 300:
+            self._download_reply.readAll()
+            return
         if self._resume_offset:
-            status = self._download_reply.attribute(
-                QNetworkRequest.Attribute.HttpStatusCodeAttribute
-            )
             if status is None:
                 return
-            if status is not None and int(status) != 206:
+            if int(status) != 206:
                 self._download_file.seek(0)
                 self._download_file.truncate()
                 self._download_hash = hashlib.sha256()
@@ -1416,7 +1419,18 @@ class ClientUpdater(QObject):
         self._download_path = None
         release = self._release
         component = self._current_component
+        http_status = reply.attribute(
+            QNetworkRequest.Attribute.HttpStatusCodeAttribute
+        )
+        http_failed = (
+            http_status is not None
+            and not 200 <= int(http_status) < 300
+        )
         try:
+            if http_failed:
+                raise UpdateError(
+                    f"HTTP {int(http_status)}：{reply.errorString()}"
+                )
             if reply.error() != QNetworkReply.NetworkError.NoError:
                 raise UpdateError(reply.errorString())
             if partial is None or release is None or component is None:
@@ -1461,7 +1475,8 @@ class ClientUpdater(QObject):
                 )
         except (OSError, UpdateError) as exc:
             transport_failed = (
-                reply.error() != QNetworkReply.NetworkError.NoError
+                not http_failed
+                and reply.error() != QNetworkReply.NetworkError.NoError
             )
             if partial is not None and not transport_failed:
                 partial.unlink(missing_ok=True)

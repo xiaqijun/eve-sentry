@@ -7,6 +7,22 @@ function githubReleaseUrl(env, assetName) {
   return `https://github.com/${owner}/${repo}/releases/latest/download/${encodeURIComponent(assetName)}`;
 }
 
+function taggedReleaseUrl(env, request, fallbackUrl) {
+  const requestUrl = new URL(request.url);
+  const pathname = requestUrl.pathname;
+  if (!pathname.startsWith("/download/")) return fallbackUrl;
+  const assetName = decodeURIComponent(pathname.slice("/download/".length));
+  const match = assetName.match(/-(\d+\.\d+\.\d+(?:[+-][0-9A-Za-z.-]+)?)\.zip$/);
+  const releaseVersion = String(requestUrl.searchParams.get("release") || "").trim();
+  const version = RELEASE_VERSION.test(releaseVersion)
+    ? releaseVersion
+    : match?.[1];
+  if (!version) return fallbackUrl;
+  const owner = encodeURIComponent(env.GITHUB_OWNER || "xiaqijun");
+  const repo = encodeURIComponent(env.GITHUB_REPO || "eve-sentry");
+  return `https://github.com/${owner}/${repo}/releases/download/v${encodeURIComponent(version)}/${encodeURIComponent(assetName)}`;
+}
+
 function latestManifestUrl(env) {
   const owner = encodeURIComponent(env.GITHUB_OWNER || "xiaqijun");
   const repo = encodeURIComponent(env.GITHUB_REPO || "eve-sentry");
@@ -65,15 +81,56 @@ async function proxyRelease(request, env, target, cacheSeconds) {
   if (range) originHeaders.set("Range", range);
   originHeaders.set("User-Agent", "EVE-Sentry-Download-Worker/1.0");
 
-  const upstream = await fetch(target, {
-    headers: originHeaders,
-    redirect: "follow",
-    cf: {
-      cacheEverything: !range,
-      cacheKey: request.url,
-      cacheTtl: cacheSeconds,
-    },
-  });
+  let upstream;
+  try {
+    upstream = await fetch(target, {
+      headers: originHeaders,
+      redirect: "follow",
+      cf: {
+        cacheEverything: !range,
+        cacheKey: request.url,
+        cacheTtl: cacheSeconds,
+      },
+    });
+  } catch (error) {
+    console.error("Release upstream fetch failed", String(error));
+  }
+
+  const validStatus = (response) => (
+    response
+    && Number.isInteger(response.status)
+    && response.status >= 200
+    && response.status <= 599
+  );
+  if (!validStatus(upstream) || upstream.status >= 500) {
+    const retryHeaders = new Headers(originHeaders);
+    retryHeaders.set("Cache-Control", "no-cache");
+    try {
+      upstream = await fetch(taggedReleaseUrl(env, request, target), {
+        headers: retryHeaders,
+        redirect: "follow",
+        cf: {
+          cacheEverything: false,
+          cacheTtl: 0,
+        },
+      });
+    } catch (error) {
+      console.error("Release upstream retry failed", String(error));
+    }
+  }
+
+  if (!validStatus(upstream) || upstream.status >= 500) {
+    return new Response("Release upstream unavailable", {
+      status: 502,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-store",
+        "Content-Type": "text/plain; charset=utf-8",
+        "Retry-After": "5",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
   return new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,
