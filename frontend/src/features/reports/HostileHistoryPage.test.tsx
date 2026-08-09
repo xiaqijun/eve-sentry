@@ -71,14 +71,20 @@ describe("HostileHistoryPage", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
 
-    expect(container).toHaveTextContent("来袭历史");
+    expect(container).toHaveTextContent("来袭历史查询");
+    expect(container).toHaveTextContent("查询条件");
+    expect(container).toHaveTextContent("查询结果");
     expect(container).toHaveTextContent("来袭波次（1）");
     expect(container).toHaveTextContent("人员告警（2）");
     expect(container).toHaveTextContent("Jita");
-    expect(container).toHaveTextContent("Amarr");
     expect(fetchHostileAlertHistory).toHaveBeenCalledWith("24h");
 
-    const search = container.querySelector<HTMLInputElement>('input[placeholder="搜索星系或人员"]');
+    const alertsTab = [...container.querySelectorAll<HTMLElement>('[role="tab"]')]
+      .find((item) => item.textContent?.includes("人员告警"));
+    expect(alertsTab).toBeInTheDocument();
+    await act(async () => alertsTab?.click());
+
+    const search = container.querySelector<HTMLInputElement>('input[placeholder="输入星系、人员或告警 ID"]');
     expect(search).toBeInTheDocument();
     await act(async () => {
       const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
@@ -86,7 +92,17 @@ describe("HostileHistoryPage", () => {
       search?.dispatchEvent(new Event("input", { bubbles: true }));
       await Promise.resolve();
     });
+    const queryButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((item) => item.textContent?.trim() === "查询");
+    await act(async () => queryButton?.click());
     expect(container).toHaveTextContent("人员告警（1）");
+    expect(container).toHaveTextContent("Bob");
+
+    const detailButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((item) => item.textContent?.trim() === "查看");
+    await act(async () => detailButton?.click());
+    expect(document.body).toHaveTextContent("人员告警详情");
+    expect(document.body).toHaveTextContent("alert-2");
 
     await act(async () => root.unmount());
   });

@@ -6681,6 +6681,108 @@ body[data-theme="dark"] .report-quality-stats > div {
   margin-bottom: 16px;
 }
 
+.hostile-history-page {
+  min-height: auto;
+}
+
+.hostile-history-filter-card > .arco-card-body {
+  padding: 18px;
+}
+
+.hostile-history-filter-form .arco-form-item {
+  margin-bottom: 0;
+}
+
+.hostile-history-filter-form .arco-input-wrapper,
+.hostile-history-filter-form .arco-select {
+  width: 100%;
+}
+
+.hostile-history-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 16px;
+  margin-top: 16px;
+  border-top: 1px solid #edf0ef;
+}
+
+.hostile-history-result-card > .arco-card-body {
+  padding: 0;
+}
+
+.hostile-history-result-card .arco-tabs-header {
+  padding: 0 18px;
+  margin-bottom: 0;
+}
+
+.hostile-history-result-card .arco-tabs-content {
+  padding-top: 0;
+}
+
+.hostile-history-result-meta {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  padding: 0 18px;
+  border-bottom: 1px solid #edf0ef;
+  background: #fbfcfb;
+}
+
+.hostile-history-result-card .arco-table table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.hostile-history-result-card .arco-table-cell {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.hostile-history-pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding: 16px 18px;
+  border-top: 1px solid #edf0ef;
+}
+
+.hostile-history-page .arco-descriptions-value {
+  overflow-wrap: anywhere;
+}
+
+body[data-theme="dark"] .hostile-history-filter-actions,
+body[data-theme="dark"] .hostile-history-result-meta,
+body[data-theme="dark"] .hostile-history-pagination {
+  border-color: var(--theme-border);
+}
+
+body[data-theme="dark"] .hostile-history-result-meta {
+  background: #101c21;
+}
+
+@media (max-width: 900px) {
+  .hostile-history-filter-form .arco-form-item {
+    margin-bottom: 12px;
+  }
+
+  .hostile-history-filter-actions {
+    padding-top: 4px;
+    margin-top: 0;
+  }
+}
+
+@media (max-width: 720px) {
+  .hostile-history-filter-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hostile-history-pagination {
+    justify-content: center;
+    overflow-x: auto;
+  }
+}
+
 .star-map-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
