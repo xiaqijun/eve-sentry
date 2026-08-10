@@ -98,7 +98,7 @@ async def test_sentry_status_query_replies_without_analysis_queue() -> None:
     client.queue.enqueue = AsyncMock()
     client.qq.send_text = AsyncMock(return_value={"id": "reply"})
     client.sentry_status.query = AsyncMock(
-        return_value="预警节点｜在线 1｜敌对 0 人\n🟢 S-KSWL｜敌 0｜Hajimi6"
+        return_value="预警节点｜在线 1｜敌对 0 人\n🟢 S-KSWL｜敌 0｜监控节点 1"
     )
 
     class Author:
@@ -117,7 +117,7 @@ async def test_sentry_status_query_replies_without_analysis_queue() -> None:
         client.qq.send_text.assert_awaited_once_with(
             "group-1",
             "status-message-1",
-            "预警节点｜在线 1｜敌对 0 人\n🟢 S-KSWL｜敌 0｜Hajimi6",
+            "预警节点｜在线 1｜敌对 0 人\n🟢 S-KSWL｜敌 0｜监控节点 1",
             msg_seq=1,
         )
     finally:

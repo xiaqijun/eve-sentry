@@ -22,7 +22,9 @@ ALERT_DELIVERED_PREFIX = "qq:eve-sentry:alert-delivered"
 ACTIVE_INTEL_STATE_KEY = "qq:eve-sentry:active-intel-state"
 SYSTEM_ALERT_STATE_KEY = "qq:eve-sentry:system-alert-state"
 SYSTEM_ALERT_STATE_READY_KEY = "qq:eve-sentry:system-alert-state-ready"
+MONITORING_NODE_SNAPSHOT_STATE_KEY = "qq:eve-sentry:monitoring-node-snapshot-state"
 ALERT_DEDUPE_SECONDS = 7 * 24 * 60 * 60
+RECONNECT_BACKOFF_SECONDS = (0.2, 1.0, 3.0, 5.0)
 
 _ENABLE_COMMANDS = {"开启预警", "订阅预警", "打开预警"}
 _DISABLE_COMMANDS = {"关闭预警", "取消预警", "停止预警"}
@@ -108,20 +110,78 @@ def format_system_alert_message(system_name: str, transition: str) -> str:
 
 def format_monitoring_node_message(change: dict[str, Any]) -> str:
     change_type = str(change.get("change") or "").strip().casefold()
-    account = str(
-        change.get("character_name")
-        or change.get("source_instance")
-        or change.get("client_id")
-        or "未知账号"
-    ).strip()
     system_name = str(change.get("system_name") or "Unknown").strip() or "Unknown"
     if change_type == "online":
-        return f"🟢 监控节点上线\n账号｜{account}\n位置｜{system_name}"
+        return f"🟢 监控节点上线\n位置｜{system_name}"
     if change_type == "offline":
-        return f"⚪ 监控节点下线\n账号｜{account}\n最后位置｜{system_name}"
+        return f"⚪ 监控节点下线\n最后位置｜{system_name}"
     from_system = str(change.get("from_system") or "Unknown").strip() or "Unknown"
     to_system = str(change.get("to_system") or system_name).strip() or "Unknown"
-    return f"🔵 监控节点移动\n账号｜{account}\n位置｜{from_system} → {to_system}"
+    return f"🔵 监控节点移动\n位置｜{from_system} → {to_system}"
+
+
+def format_monitoring_nodes_message(
+    nodes: list[dict[str, Any]],
+    changes: list[dict[str, Any]] | None = None,
+) -> str:
+    """Format an anonymous full online-node snapshot for group delivery."""
+    unique: dict[str, dict[str, Any]] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        client_id = str(node.get("client_id") or "").strip()
+        heartbeat_id = str(node.get("heartbeat_client_id") or "").strip()
+        source_instance = str(node.get("source_instance") or "").strip()
+        identity = client_id or "|".join(
+            value for value in (heartbeat_id, source_instance) if value
+        )
+        if not identity:
+            identity = str(node.get("character_name") or "").strip()
+        if not identity:
+            identity = json.dumps(node, ensure_ascii=False, sort_keys=True)
+        if identity:
+            unique.setdefault(identity.casefold(), node)
+
+    ordered = sorted(
+        unique.values(),
+        key=lambda node: (
+            str(node.get("system_name") or node.get("system") or "Unknown")
+            .strip()
+            .casefold(),
+            str(node.get("client_id") or node.get("source_instance") or "")
+            .strip()
+            .casefold(),
+        ),
+    )
+    lines = ["监控节点状态更新"]
+    if changes:
+        summaries: list[str] = []
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            change_type = str(change.get("change") or "").strip().casefold()
+            if change_type == "moved":
+                before = str(change.get("from_system") or "Unknown").strip() or "Unknown"
+                after = str(
+                    change.get("to_system") or change.get("system_name") or "Unknown"
+                ).strip() or "Unknown"
+                summaries.append(f"移动 {before} → {after}")
+            elif change_type == "online":
+                summaries.append("上线")
+            elif change_type == "offline":
+                summaries.append("下线")
+        if summaries:
+            lines.append(f"变化｜{'、'.join(summaries)}")
+    lines.append(f"在线节点｜{len(ordered)}")
+    if not ordered:
+        lines.append("暂无在线监控节点")
+        return "\n".join(lines)
+    for index, node in enumerate(ordered, start=1):
+        system_name = str(
+            node.get("system_name") or node.get("system") or "Unknown"
+        ).strip() or "Unknown"
+        lines.append(f"🟢 监控节点 {index}｜{system_name}")
+    return "\n".join(lines)
 
 
 async def iter_sse_events(
@@ -165,7 +225,7 @@ class EveSentryAlertRelay:
         api_key: str = "",
         min_level: str = "",
         public_url: str = "",
-        reconnect_delay_seconds: float = 3.0,
+        reconnect_delay_seconds: float = 5.0,
     ) -> None:
         self.http = http
         self.redis = redis
@@ -174,7 +234,7 @@ class EveSentryAlertRelay:
         self.api_key = api_key.strip()
         self.min_level = min_level.strip().casefold()
         self.public_url = public_url.strip()
-        self.reconnect_delay_seconds = max(0.1, float(reconnect_delay_seconds))
+        self.reconnect_delay_seconds = max(0.2, float(reconnect_delay_seconds))
 
     @property
     def enabled(self) -> bool:
@@ -192,14 +252,28 @@ class EveSentryAlertRelay:
     async def run_forever(self) -> None:
         if not self.enabled:
             return
+        failure_count = 0
         while True:
             try:
                 await self._stream_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("EVE Sentry alert stream disconnected")
-            await asyncio.sleep(self.reconnect_delay_seconds)
+                delay = min(
+                    RECONNECT_BACKOFF_SECONDS[
+                        min(failure_count, len(RECONNECT_BACKOFF_SECONDS) - 1)
+                    ],
+                    self.reconnect_delay_seconds,
+                )
+                failure_count += 1
+                logger.exception(
+                    "EVE Sentry alert stream disconnected; retrying in %.1fs",
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            failure_count = 0
+            await asyncio.sleep(0)
 
     async def deliver(
         self,
@@ -349,27 +423,119 @@ class EveSentryAlertRelay:
             delivered,
         )
 
+    async def deliver_monitoring_node_snapshot(
+        self,
+        nodes: list[dict[str, Any]],
+        occurred_at: str,
+        *,
+        nodes_version: str = "",
+        changes: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """Deliver the complete anonymous online-node list once per event."""
+        normalized_nodes = [node for node in nodes if isinstance(node, dict)]
+        version = str(nodes_version or "").strip()
+        if not version:
+            version_payload = json.dumps(
+                normalized_nodes,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            version = hashlib.sha256(version_payload).hexdigest()[:16]
+        change_payload = json.dumps(
+            changes or [],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        change_version = hashlib.sha256(change_payload).hexdigest()[:12]
+        event_id = f"node-snapshot:{version}:{change_version}:{occurred_at}"
+
+        raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
+        groups = sorted(_decode(value) for value in raw_groups if _decode(value))
+        if not groups:
+            return False
+        message = format_monitoring_nodes_message(normalized_nodes, changes)
+        delivered = 0
+        failed = False
+        for group_openid in groups:
+            delivered_key = _delivered_key(event_id, group_openid)
+            if await self.redis.exists(delivered_key):
+                continue
+            try:
+                await self.qq.send_proactive_text(group_openid, message)
+            except Exception:
+                failed = True
+                logger.exception("EVE Sentry monitoring node snapshot delivery failed")
+                continue
+            await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
+            delivered += 1
+        if not failed:
+            await self.redis.set(
+                MONITORING_NODE_SNAPSHOT_STATE_KEY,
+                version,
+                ex=ALERT_DEDUPE_SECONDS,
+            )
+        logger.info(
+            "EVE Sentry monitoring node snapshot processed nodes=%d deliveries=%d",
+            len(normalized_nodes),
+            delivered,
+        )
+        return delivered > 0
+
     async def process_monitoring_node(self, payload: dict[str, Any]) -> None:
         changes = payload.get("changes")
-        if not isinstance(changes, list):
-            logger.warning("Ignored EVE Sentry monitoring node event without changes")
-            return
         occurred_at = str(
             payload.get("generated_at") or datetime.now(UTC).isoformat()
         ).strip()
+        nodes = payload.get("nodes")
+        if isinstance(nodes, list):
+            await self.deliver_monitoring_node_snapshot(
+                nodes,
+                occurred_at,
+                nodes_version=str(payload.get("nodes_version") or ""),
+                changes=changes if isinstance(changes, list) else None,
+            )
+            return
+        if not isinstance(changes, list):
+            logger.warning("Ignored EVE Sentry monitoring node event without changes")
+            return
         for change in changes:
             if isinstance(change, dict):
                 await self.deliver_monitoring_node_change(change, occurred_at)
 
     async def process_bootstrap(self, payload: dict[str, Any]) -> None:
         node_changes = payload.get("monitoring_node_changes")
-        if isinstance(node_changes, list) and node_changes:
+        monitoring_nodes = payload.get("monitoring_nodes")
+        nodes_version = str(payload.get("monitoring_nodes_version") or "").strip()
+        if isinstance(node_changes, list) and node_changes and isinstance(
+            monitoring_nodes, list
+        ):
+            await self.process_monitoring_node(
+                {
+                    "generated_at": payload.get("generated_at"),
+                    "changes": node_changes,
+                    "nodes": monitoring_nodes,
+                    "nodes_version": nodes_version,
+                }
+            )
+        elif isinstance(node_changes, list) and node_changes:
             await self.process_monitoring_node(
                 {
                     "generated_at": payload.get("generated_at"),
                     "changes": node_changes,
                 }
             )
+        elif isinstance(monitoring_nodes, list) and nodes_version:
+            last_version = _decode(
+                await self.redis.get(MONITORING_NODE_SNAPSHOT_STATE_KEY)
+            )
+            if last_version != nodes_version:
+                await self.deliver_monitoring_node_snapshot(
+                    monitoring_nodes,
+                    str(payload.get("generated_at") or datetime.now(UTC).isoformat()),
+                    nodes_version=nodes_version,
+                )
         active_intel = payload.get("active_intel")
         if not isinstance(active_intel, list):
             logger.warning("Ignored EVE Sentry bootstrap without active_intel list")
@@ -491,14 +657,13 @@ class EveSentryAlertRelay:
         cursor = _decode(await self.redis.get(ALERT_CURSOR_KEY))
         params = {
             "limit": "50",
-            "timeout": "30",
             "heartbeat": "15",
             "bootstrap": "1",
             "since": cursor or datetime.now(UTC).isoformat(),
         }
         if self.min_level:
             params["min_level"] = self.min_level
-        timeout = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0)
+        timeout = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
         async with self.http.stream(
             "GET",
             self.events_url,

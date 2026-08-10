@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -30,6 +31,54 @@ async def _sse_lines():
         "",
     ):
         yield line
+
+
+@pytest.mark.asyncio
+async def test_relay_stream_uses_long_lived_sse_request() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            content=b": keepalive\n\n",
+        )
+
+    redis = fakeredis.aioredis.FakeRedis()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        relay = EveSentryAlertRelay(
+            http,
+            redis,
+            SimpleNamespace(),
+            "http://sentry.test/api/v1/events",
+        )
+        await relay._stream_once()
+
+    assert len(requests) == 1
+    assert "timeout" not in requests[0].url.params
+    assert requests[0].url.params["heartbeat"] == "15"
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_relay_reconnects_immediately_after_clean_eof() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(
+            http,
+            redis,
+            SimpleNamespace(),
+            "http://sentry.test/api/v1/events",
+        )
+        relay._stream_once = AsyncMock(
+            side_effect=[None, asyncio.CancelledError()]
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await relay.run_forever()
+
+    assert relay._stream_once.await_count == 2
+    await redis.aclose()
 
 
 @pytest.mark.asyncio
@@ -105,14 +154,14 @@ def test_monitoring_node_message_formats_online_offline_and_move() -> None:
             "character_name": "Pilot Alpha",
             "system_name": "Jita",
         }
-    ) == "🟢 监控节点上线\n账号｜Pilot Alpha\n位置｜Jita"
+    ) == "🟢 监控节点上线\n位置｜Jita"
     assert format_monitoring_node_message(
         {
             "change": "offline",
             "character_name": "Pilot Alpha",
             "system_name": "Jita",
         }
-    ) == "⚪ 监控节点下线\n账号｜Pilot Alpha\n最后位置｜Jita"
+    ) == "⚪ 监控节点下线\n最后位置｜Jita"
     assert format_monitoring_node_message(
         {
             "change": "moved",
@@ -120,7 +169,7 @@ def test_monitoring_node_message_formats_online_offline_and_move() -> None:
             "from_system": "Jita",
             "to_system": "Tama",
         }
-    ) == "🔵 监控节点移动\n账号｜Pilot Alpha\n位置｜Jita → Tama"
+    ) == "🔵 监控节点移动\n位置｜Jita → Tama"
 
 
 @pytest.mark.asyncio
@@ -170,10 +219,80 @@ async def test_relay_delivers_monitoring_node_changes_once_per_group() -> None:
         )
 
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
-            "🟢 监控节点上线\n账号｜Pilot Alpha\n位置｜Jita",
-            "🔵 监控节点移动\n账号｜Pilot Beta\n位置｜Amarr → Tama",
-            "⚪ 监控节点下线\n账号｜Pilot Gamma\n最后位置｜Dodixie",
+            "🟢 监控节点上线\n位置｜Jita",
+            "🔵 监控节点移动\n位置｜Amarr → Tama",
+            "⚪ 监控节点下线\n最后位置｜Dodixie",
         ]
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_text=AsyncMock(return_value={"id": "snapshot"}),
+    )
+    payload = {
+        "generated_at": "2026-08-10T01:00:00+00:00",
+        "nodes_version": "v1",
+        "nodes": [
+            {
+                "client_id": "client:alpha",
+                "character_name": "Pilot Alpha",
+                "system_name": "Jita",
+            },
+            {
+                "client_id": "client:beta",
+                "character_name": "Pilot Beta",
+                "system_name": "Tama",
+            },
+        ],
+        "changes": [
+            {
+                "change": "moved",
+                "node_id": "client:alpha",
+                "from_system": "Amarr",
+                "to_system": "Jita",
+                "system_name": "Jita",
+            }
+        ],
+    }
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+
+        await relay.process_monitoring_node(payload)
+        await relay.process_bootstrap(
+            {
+                "generated_at": payload["generated_at"],
+                "monitoring_nodes": payload["nodes"],
+                "monitoring_nodes_version": "v1",
+                "monitoring_node_changes": payload["changes"],
+                "active_intel": [],
+                "alerts": [],
+            }
+        )
+        assert qq.send_proactive_text.await_count == 1
+        message = qq.send_proactive_text.await_args.args[1]
+        assert "在线节点｜2" in message
+        assert "监控节点 1｜Jita" in message
+        assert "监控节点 2｜Tama" in message
+        assert "Pilot Alpha" not in message
+        assert "Pilot Beta" not in message
+
+        await relay.process_bootstrap(
+            {
+                "generated_at": "2026-08-10T01:00:05+00:00",
+                "monitoring_nodes": [payload["nodes"][1]],
+                "monitoring_nodes_version": "v2",
+                "monitoring_node_changes": [],
+                "active_intel": [],
+                "alerts": [],
+            }
+        )
+        assert qq.send_proactive_text.await_count == 2
+        assert "在线节点｜1" in qq.send_proactive_text.await_args.args[1]
 
     await redis.aclose()
 

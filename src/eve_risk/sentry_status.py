@@ -98,12 +98,14 @@ def format_sentry_status(bootstrap: dict[str, Any]) -> str:
             node.label.casefold(),
         ),
     )
-    for node in ordered_nodes:
+    for node_index, node in enumerate(ordered_nodes, start=1):
         if displayed_nodes >= MAX_NODES:
             break
         items = assignments[node]
         icon = "🔴" if items else "🟢"
-        lines.append(f"{icon} {node.system_name}｜敌 {len(items)}｜{node.label}")
+        lines.append(
+            f"{icon} {node.system_name}｜敌 {len(items)}｜监控节点 {node_index}"
+        )
         displayed_nodes += 1
         for item in items:
             if displayed_hostiles >= MAX_HOSTILES:

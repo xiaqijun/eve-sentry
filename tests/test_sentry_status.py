@@ -76,11 +76,13 @@ def test_formats_online_nodes_and_only_alerted_hostiles() -> None:
     message = format_sentry_status(_bootstrap())
 
     assert message.startswith("预警节点｜在线 2｜敌对 1 人")
-    assert "🔴 S-KSWL｜敌 1｜Hajimi6" in message
+    assert "🔴 S-KSWL｜敌 1｜监控节点 1" in message
     assert "Alice｜严重 100｜发现 07-23 11:40:52" in message
     assert "军团｜[G.N.V] Glory Navy" in message
     assert "联盟｜[FRT] Fraternity." in message
-    assert "🟢 H-ADOC｜敌 0｜Scout" in message
+    assert "🟢 H-ADOC｜敌 0｜监控节点 2" in message
+    assert "Hajimi6" not in message
+    assert "Scout" not in message
     assert "Friendly Pilot" not in message
 
 
