@@ -251,11 +251,19 @@ def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
         targets = details.get("targets")
         if not isinstance(targets, list) or not targets:
             targets = [details]
+        details_system_name = str(
+            details.get("system_name") or details.get("system") or ""
+        ).strip()
         for target in targets:
             if not isinstance(target, dict) or not bool(
                 target.get("monitoring", True)
             ):
                 continue
+            target_system_name = str(
+                target.get("system_name") or target.get("system") or ""
+            ).strip()
+            if target_system_name.casefold() in {"", "unknown", "未知星系"}:
+                target_system_name = details_system_name
             state.append(
                 {
                     "heartbeat_client_id": str(
@@ -270,9 +278,7 @@ def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
                         or target.get("window_title")
                         or ""
                     ).strip(),
-                    "system_name": str(
-                        target.get("system_name") or target.get("system") or ""
-                    ).strip(),
+                    "system_name": target_system_name,
                     "system_id": target.get("system_id"),
                 }
             )

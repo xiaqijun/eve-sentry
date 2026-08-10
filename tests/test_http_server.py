@@ -26,6 +26,7 @@ from app.server.http_server import (
     IntelRequestHandler,
     _active_hostile_counts,
     _monitoring_node_changes,
+    _monitoring_target_state,
 )
 from app.server.auth import AuthService
 from app.server.auth_store import AuthRepository
@@ -111,6 +112,34 @@ def test_monitoring_node_changes_describe_online_offline_and_move():
     assert by_change["moved"]["from_system"] == "Jita"
     assert by_change["moved"]["to_system"] == "Tama"
     assert _monitoring_node_changes(current, current) == []
+
+
+def test_monitoring_target_state_falls_back_to_heartbeat_system():
+    state = _monitoring_target_state(
+        {
+            "heartbeats": [
+                {
+                    "client_id": "detector-client:test",
+                    "client_type": "detector_client",
+                    "online": True,
+                    "details": {
+                        "monitoring": True,
+                        "system": "S-KSWL",
+                        "targets": [
+                            {
+                                "client_id": "window:test",
+                                "monitoring": True,
+                                "system_name": "Unknown",
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+
+    assert len(state) == 1
+    assert state[0]["system_name"] == "S-KSWL"
 
 
 def test_admin_clients_hides_legacy_duplicate_identity_on_same_host():
