@@ -72,6 +72,9 @@ from app.version import current_version
 
 logger = logging.getLogger(__name__)
 
+LISTENER_RETRY_INITIAL_SECONDS = 30.0
+LISTENER_RETRY_MAX_SECONDS = 600.0
+
 
 def _force_exit_if_shutdown_stalls(
     completed: threading.Event,
@@ -255,6 +258,10 @@ class MainWindow(QMainWindow):
         self._identity_timer = QTimer(self)
         self._identity_timer.setInterval(10000)
         self._identity_timer.timeout.connect(self._poll_identity_logs)
+        self._listener_scan_running = False
+        self._listener_next_poll_at = 0.0
+        self._listener_retry_delay = 0.0
+        self._listener_last_api_key = ""
         self._identity_timer.start()
         self._alert_controller: AlertTrayController | None = None
         self._stopping_monitor_workers: set[MonitorWorker] = set()
@@ -2110,6 +2117,9 @@ class MainWindow(QMainWindow):
     ) -> dict:
         scan = self._identity_scanner.scan(api_key)
         pending_names = list(scan.pending_characters)
+        pending_character_ids = list(
+            getattr(scan, "pending_character_ids", []) or []
+        )
         state_store = self._settings.auth_state_store()
         state = state_store.load()
         resolved_names = {
@@ -2126,16 +2136,43 @@ class MainWindow(QMainWindow):
             and str(name).strip().casefold()
             not in names_to_resolve_keys
         )
-        if names_to_resolve:
+        if pending_character_ids:
             ensure = getattr(client, "ensure_eve_character_check", None)
             identity = (
                 ensure(
-                    names_to_resolve,
+                    pending_character_ids,
                     client_id=str(_instance_attr(self, "_heartbeat_client_id", "")),
                 )
                 if callable(ensure)
-                else client.verify_eve_characters(names_to_resolve)
+                else client.verify_eve_character_ids(pending_character_ids)
             )
+            if bool(identity.get("verified")):
+                resolved_characters = identity.get("characters", [])
+                resolved_ids = [
+                    item.get("character_id")
+                    for item in resolved_characters
+                    if isinstance(item, dict)
+                ] or pending_character_ids
+                self._identity_scanner.mark_character_ids_verified(resolved_ids)
+                resolved_names_from_ids = [
+                    str(item.get("character_name") or "").strip()
+                    for item in resolved_characters
+                    if isinstance(item, dict)
+                    and str(item.get("character_name") or "").strip()
+                ]
+                if pending_names:
+                    self._identity_scanner.mark_verified(
+                        resolved_names_from_ids or pending_names
+                    )
+                remember = getattr(state_store, "remember_character_identities", None)
+                if callable(remember):
+                    remember(resolved_characters)
+            elif not bool(identity.get("pending")):
+                raise IntelApiError(
+                    str(identity.get("reason") or "EVE identity verification failed")
+                )
+        elif names_to_resolve:
+            identity = client.verify_eve_characters(names_to_resolve)
             if bool(identity.get("verified")):
                 self._identity_scanner.mark_verified(names_to_resolve)
                 remember = getattr(state_store, "remember_character_identities", None)
@@ -2159,16 +2196,28 @@ class MainWindow(QMainWindow):
         """Silently discover and upload Listener identities in the background."""
         scanner = _instance_attr(self, "_identity_scanner")
         client = _instance_attr(self, "_intel_client")
+        enabled_getter = getattr(
+            self._settings,
+            "get_listener_identity_scan_enabled",
+            None,
+        )
+        if not callable(enabled_getter) or not enabled_getter():
+            return
+        api_key = self._settings.get_api_key()
+        if api_key != _instance_attr(self, "_listener_last_api_key", ""):
+            self._listener_last_api_key = api_key
+            self._listener_next_poll_at = 0.0
+            self._listener_retry_delay = 0.0
         if (
             scanner is None
             or client is None
-            or not self._settings.get_api_key()
+            or not api_key
             or _instance_attr(self, "_listener_scan_running", False)
+            or time.monotonic()
+            < float(_instance_attr(self, "_listener_next_poll_at", 0.0))
         ):
             return
-        scanner.log_dir = Path(self._settings.get_channel_log_dir())
         self._listener_scan_running = True
-        api_key = self._settings.get_api_key()
         self._network_tasks.submit_latest(
             "listener",
             lambda: self._scan_and_validate_identities(client, api_key),
@@ -2215,10 +2264,22 @@ class MainWindow(QMainWindow):
 
     def _handle_listener_scan_success(self) -> None:
         self._listener_scan_running = False
+        self._listener_next_poll_at = 0.0
+        self._listener_retry_delay = 0.0
 
     def _handle_listener_scan_error(self, exc: Exception) -> None:
         self._listener_scan_running = False
         message = str(exc)
+        previous_delay = float(
+            _instance_attr(self, "_listener_retry_delay", 0.0)
+        )
+        delay = (
+            LISTENER_RETRY_INITIAL_SECONDS
+            if previous_delay <= 0
+            else min(LISTENER_RETRY_MAX_SECONDS, previous_delay * 2)
+        )
+        self._listener_retry_delay = delay
+        self._listener_next_poll_at = time.monotonic() + delay
         if _is_auth_rejection(message):
             self._disable_authenticated_features(message)
             return

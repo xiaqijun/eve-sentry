@@ -2164,7 +2164,7 @@ def test_intel_api_client_sends_api_key_for_json_and_identity_requests(monkeypat
     assert client.validate_api_key()["user_id"] == "user-1"
     assert client.verify_eve_characters(["Alice"])["permanent"] is True
     assert client.ensure_eve_character_check(
-        ["Alice"], client_id="detector:test"
+        [101], client_id="detector:test"
     )["pending"] is True
     assert client.client_status()["heartbeats"] == []
     assert [request.get_header("Authorization") for request in requests] == [
@@ -2175,7 +2175,9 @@ def test_intel_api_client_sends_api_key_for_json_and_identity_requests(monkeypat
     ]
     assert requests[0].full_url.endswith("/api/v1/auth/me")
     assert requests[2].full_url.endswith("/api/v1/client/identity-checks")
-    assert json.loads(requests[2].data.decode("utf-8"))["client_id"] == "detector:test"
+    identity_payload = json.loads(requests[2].data.decode("utf-8"))
+    assert identity_payload["client_id"] == "detector:test"
+    assert identity_payload["character_ids"] == [101]
 
 
 def test_intel_api_client_allows_api_key_over_configured_http_server():

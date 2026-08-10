@@ -251,25 +251,40 @@ class IntelApiClient:
             raise IntelApiError("server returned an invalid identity payload")
         return identity
 
+    def verify_eve_character_ids(
+        self,
+        character_ids: list[int],
+    ) -> dict[str, Any]:
+        """Authorize the API key using Local-log character IDs."""
+        payload = self._request(
+            "POST",
+            self._v1_path("/client/identity-check"),
+            payload={"character_ids": [int(item) for item in character_ids]},
+        )
+        identity = payload.get("identity")
+        if not isinstance(identity, dict):
+            raise IntelApiError("server returned an invalid identity payload")
+        return identity
+
     def ensure_eve_character_check(
         self,
-        names: list[str],
+        character_ids: list[int],
         client_id: str = "",
     ) -> dict[str, Any]:
-        """Report Listener names and return the durable server-side job state."""
+        """Report Local-log character IDs and return the durable job state."""
         try:
             payload = self._request(
                 "POST",
                 self._v1_path("/client/identity-checks"),
                 payload={
-                    "characters": list(names),
+                    "character_ids": [int(item) for item in character_ids],
                     "client_id": str(client_id or "").strip(),
                 },
             )
         except IntelApiError as exc:
             if getattr(exc, "status_code", None) != 404 and "404" not in str(exc):
                 raise
-            return self.verify_eve_characters(names)
+            return self.verify_eve_character_ids(character_ids)
         identity = payload.get("identity")
         if not isinstance(identity, dict):
             raise IntelApiError("server returned an invalid identity payload")
