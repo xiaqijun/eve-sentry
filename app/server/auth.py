@@ -615,8 +615,9 @@ class AuthService:
     def verify_characters(
         self,
         principal: AuthPrincipal,
-        names: list[str],
+        names: list[str] | None = None,
         *,
+        character_ids: list[int] | None = None,
         audit_failure: bool = True,
         audit_success: bool = True,
         audit_context: dict[str, Any] | None = None,
@@ -630,8 +631,9 @@ class AuthService:
                 "skipped": True,
                 "characters": [],
             }
-        clean_names = _clean_names(names)
-        if not clean_names:
+        clean_names = _clean_names(names or [])
+        clean_character_ids = _clean_character_ids(character_ids or [])
+        if not clean_names and not clean_character_ids:
             raise AuthError("at least one EVE Listener is required", 428, "eve_listener_required")
         key = self.repository.api_key_by_id(principal.api_key_id) or {}
         key_details = {
@@ -639,8 +641,20 @@ class AuthService:
             "api_key_name": str(key.get("name") or ""),
             "api_key_prefix": str(key.get("key_prefix") or ""),
         }
+        audit_inputs = (
+            {"character_ids": clean_character_ids}
+            if clean_character_ids
+            else {"characters": clean_names}
+        )
         try:
-            resolved = [self._resolve_character(name) for name in clean_names]
+            resolved = (
+                [
+                    self._resolve_character_id(character_id)
+                    for character_id in clean_character_ids
+                ]
+                if clean_character_ids
+                else [self._resolve_character(name) for name in clean_names]
+            )
         except AuthError as exc:
             if audit_failure:
                 self._audit(
@@ -650,7 +664,7 @@ class AuthService:
                     {
                         **key_details,
                         **dict(audit_context or {}),
-                        "characters": clean_names,
+                        **audit_inputs,
                         "error_code": exc.code,
                         "reason": str(exc),
                     },
@@ -721,8 +735,10 @@ class AuthService:
     def submit_character_report(
         self,
         principal: AuthPrincipal,
-        names: list[str],
+        names: list[str] | None = None,
         client_id: str = "",
+        *,
+        character_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         """Persist an idempotent report and return its current state immediately."""
         if principal.auth_type != "api_key" or principal.api_key_type != "desktop":
@@ -741,10 +757,15 @@ class AuthService:
             if client_id:
                 response["client_id"] = str(client_id).strip()[:160]
             return response
-        clean_names = sorted(_clean_names(names), key=str.casefold)
-        if not clean_names:
+        clean_names = sorted(_clean_names(names or []), key=str.casefold)
+        clean_character_ids = sorted(_clean_character_ids(character_ids or []))
+        if not clean_names and not clean_character_ids:
             raise AuthError("at least one EVE Listener is required", 428, "eve_listener_required")
-        names_hash = _identity_names_hash(clean_names)
+        names_hash = (
+            _identity_character_ids_hash(clean_character_ids)
+            if clean_character_ids
+            else _identity_names_hash(clean_names)
+        )
         job_id = hashlib.sha256(
             f"{principal.api_key_id}\0{names_hash}".encode("utf-8")
         ).hexdigest()
@@ -756,6 +777,7 @@ class AuthService:
             "client_id": str(client_id or "").strip()[:160],
             "names_hash": names_hash,
             "names": clean_names,
+            "character_ids": clean_character_ids,
             "status": "queued",
             "next_attempt_at": now,
             "created_at": now,
@@ -822,6 +844,7 @@ class AuthService:
             identity_verified=bool(key.get("identity_verified")),
         )
         names = [str(item) for item in job.get("names") or []]
+        character_ids = _clean_character_ids(job.get("character_ids") or [])
         audit_context = {
             "identity_job_id": job_id,
             "identity_attempt": int(job.get("attempt_count") or 1),
@@ -832,6 +855,7 @@ class AuthService:
             result = self.verify_characters(
                 principal,
                 names,
+                character_ids=character_ids,
                 audit_failure=int(job.get("attempt_count") or 1) <= 1,
                 audit_success=False,
                 audit_context=audit_context,
@@ -1146,6 +1170,32 @@ class AuthService:
             "corporation_name": str(profile.get("corporation_name") or ""),
         }
 
+    def _resolve_character_id(self, character_id: int) -> dict[str, Any]:
+        character_id = _positive_int(character_id, "character_id")
+        try:
+            profile = self.resolver.character_profile(character_id)
+            if not isinstance(profile, dict) or not str(profile.get("name") or "").strip():
+                raise IdentityUnavailableError(
+                    f"EVE character could not be resolved: {character_id}"
+                )
+        except IdentityUnavailableError:
+            raise
+        except Exception as exc:
+            raise IdentityUnavailableError(
+                f"EVE identity lookup failed for {character_id}: {exc}"
+            ) from exc
+        corporation_id = profile.get("corporation_id")
+        return {
+            "character_id": character_id,
+            "character_name": str(profile.get("name") or "").strip(),
+            "corporation_id": (
+                int(corporation_id)
+                if corporation_id not in {None, ""}
+                else None
+            ),
+            "corporation_name": str(profile.get("corporation_name") or ""),
+        }
+
     def _audit(
         self,
         actor_user_id: str,
@@ -1250,6 +1300,17 @@ def _clean_names(values: list[str]) -> list[str]:
     return result
 
 
+def _clean_character_ids(values: list[Any]) -> list[int]:
+    result: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        character_id = _positive_int(value, "character_id")
+        if character_id not in seen:
+            seen.add(character_id)
+            result.append(character_id)
+    return result
+
+
 def _positive_int(value: Any, label: str) -> int:
     try:
         number = int(value)
@@ -1282,4 +1343,11 @@ def _now_iso() -> str:
 
 def _identity_names_hash(names: list[str]) -> str:
     normalized = "\n".join(sorted({name.strip().casefold() for name in names if name.strip()}))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _identity_character_ids_hash(character_ids: list[int]) -> str:
+    normalized = "\n".join(
+        f"id:{item}" for item in sorted(set(character_ids))
+    )
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()

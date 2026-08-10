@@ -559,18 +559,22 @@ def test_async_identity_report_keeps_pending_names_until_server_verifies():
                 characters=["Alice"], pending_characters=["Alice"],
                 pending_files=[], processed_count=0, initial_scan=False,
                 key_validated=True, identity_verified=False,
+                character_ids=[101], pending_character_ids=[101],
             )
 
         def mark_verified(self, names):
             verified.append(list(names))
 
+        def mark_character_ids_verified(self, character_ids):
+            assert character_ids == [101]
+
     class FakeClient:
         def __init__(self):
             self.calls = 0
 
-        def ensure_eve_character_check(self, names, client_id=""):
+        def ensure_eve_character_check(self, character_ids, client_id=""):
             self.calls += 1
-            assert names == ["Alice"]
+            assert character_ids == [101]
             assert client_id == "detector:test"
             if self.calls == 1:
                 return {"accepted": True, "status": "processing", "pending": True}
@@ -605,15 +609,15 @@ def test_async_identity_report_keeps_pending_names_until_server_verifies():
     assert remembered == [{"character_id": 101, "character_name": "Alice"}]
 
 
-def test_listener_poll_rediscovers_log_path_and_runs_as_silent_task():
+def test_listener_poll_uses_cached_log_path_and_runs_as_silent_task():
     submissions = []
 
     class FakeSettings:
+        def get_listener_identity_scan_enabled(self):
+            return True
+
         def get_api_key(self):
             return "eve_valid"
-
-        def get_channel_log_dir(self):
-            return "D:/New/EVE/logs/Chatlogs"
 
     class FakeScanner:
         log_dir = Path("C:/Old/Chatlogs")
@@ -631,14 +635,38 @@ def test_listener_poll_rediscovers_log_path_and_runs_as_silent_task():
 
     MainWindow._poll_identity_logs(window)
 
-    assert window._identity_scanner.log_dir == Path("D:/New/EVE/logs/Chatlogs")
+    assert window._identity_scanner.log_dir == Path("C:/Old/Chatlogs")
     assert window._listener_scan_running is True
     assert submissions[0][0] == "listener"
     assert submissions[0][2] == {"kind": "listener"}
 
 
-def test_listener_background_errors_only_disable_features_for_auth_rejection():
+def test_listener_poll_is_disabled_by_default():
+    submissions = []
+    window = MainWindow.__new__(MainWindow)
+    window._settings = SimpleNamespace(
+        get_listener_identity_scan_enabled=lambda: False,
+        get_api_key=lambda: "eve_valid",
+    )
+    window._identity_scanner = object()
+    window._intel_client = object()
+    window._network_tasks = SimpleNamespace(
+        submit_latest=lambda *args: submissions.append(args)
+    )
+
+    MainWindow._poll_identity_logs(window)
+
+    assert submissions == []
+
+
+def test_listener_background_errors_back_off_and_only_disable_for_auth(
+    monkeypatch,
+):
     disabled = []
+    monkeypatch.setattr(
+        "app.ui.main_window.time.monotonic",
+        lambda: 100.0,
+    )
     window = MainWindow.__new__(MainWindow)
     window._listener_scan_running = True
     window._disable_authenticated_features = disabled.append
@@ -647,14 +675,22 @@ def test_listener_background_errors_only_disable_features_for_auth_rejection():
 
     assert window._listener_scan_running is False
     assert disabled == []
+    assert window._listener_retry_delay == 30.0
+    assert window._listener_next_poll_at == 130.0
 
     window._listener_scan_running = True
+    monkeypatch.setattr(
+        "app.ui.main_window.time.monotonic",
+        lambda: 200.0,
+    )
     MainWindow._handle_listener_scan_error(
         window,
         RuntimeError("API key is invalid or revoked"),
     )
 
     assert window._listener_scan_running is False
+    assert window._listener_retry_delay == 60.0
+    assert window._listener_next_poll_at == 260.0
     assert disabled == ["API key is invalid or revoked"]
 
 
@@ -1275,10 +1311,6 @@ def test_initial_local_system_promotes_first_detected_window(monkeypatch):
 def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
     monkeypatch.delenv("EVE_SENTRY_CHATLOG_DIR", raising=False)
     monkeypatch.delenv("EVE_SENTRY_INTEL_URL", raising=False)
-    monkeypatch.setattr(
-        "app.ui.settings.resolve_chatlog_dir",
-        lambda preferred=None: preferred or DEFAULT_CHATLOG_DIR,
-    )
     config_path = tmp_path / "channel_settings.json"
     config_path.write_text(
         json.dumps(
@@ -1311,6 +1343,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
         "chatlog_dir": "C:/EVE/Chatlogs",
         "scan_interval": 5,
         "ocr_enabled": True,
+        "listener_identity_scan_enabled": False,
         "window_keyword": "EVE - Pilot",
         "server_url": "",
         "start_with_windows": False,
@@ -1434,20 +1467,21 @@ def test_settings_panel_migrates_legacy_muted_alert_setting(tmp_path):
     assert "alert_min_severity" not in saved
 
 
-def test_settings_panel_rediscovers_active_chatlog_dir(tmp_path, monkeypatch):
+def test_settings_panel_reuses_saved_chatlog_dir_without_rescanning(
+    tmp_path,
+    monkeypatch,
+):
     monkeypatch.delenv("EVE_SENTRY_CHATLOG_DIR", raising=False)
-    calls = []
-
-    def resolve(preferred=None):
-        calls.append(str(preferred))
-        return Path("C:/Old/Chatlogs" if len(calls) == 1 else "D:/New/Chatlogs")
-
-    monkeypatch.setattr("app.ui.settings.resolve_chatlog_dir", resolve)
+    config_path = tmp_path / "channel_settings.json"
+    config_path.write_text(
+        json.dumps({"chatlog_dir": "C:/Saved/Chatlogs"}),
+        encoding="utf-8",
+    )
     qt_app()
-    panel = SettingsPanel(config_path=tmp_path / "channel_settings.json")
+    panel = SettingsPanel(config_path=config_path)
 
-    assert panel.get_channel_log_dir() == str(Path("D:/New/Chatlogs"))
-    assert calls == [str(DEFAULT_CHATLOG_DIR), str(Path("C:/Old/Chatlogs"))]
+    assert panel.get_channel_log_dir() == "C:/Saved/Chatlogs"
+    assert panel.get_channel_log_dir() == "C:/Saved/Chatlogs"
 
 
 def test_settings_panel_persists_normalized_server_url(tmp_path, monkeypatch):

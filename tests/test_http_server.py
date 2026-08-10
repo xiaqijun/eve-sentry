@@ -3286,7 +3286,7 @@ def test_async_identity_report_acknowledges_before_esi_finishes(tmp_path):
         status, _, payload = authenticated_request(
             f"{server.url}/api/v1/client/identity-checks",
             method="POST",
-            payload={"characters": ["Alice"], "client_id": "detector:test"},
+            payload={"character_ids": [101], "client_id": "detector:test"},
             headers=headers,
         )
 
@@ -3301,7 +3301,7 @@ def test_async_identity_report_acknowledges_before_esi_finishes(tmp_path):
             status, _, payload = authenticated_request(
                 f"{server.url}/api/v1/client/identity-checks",
                 method="POST",
-                payload={"characters": ["Alice"], "client_id": "detector:test"},
+                payload={"character_ids": [101], "client_id": "detector:test"},
                 headers=headers,
             )
             if status == 200:

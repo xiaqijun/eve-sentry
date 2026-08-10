@@ -413,21 +413,55 @@ def test_allowed_corporation_permanently_verifies_desktop_key(auth):
     assert auth.authenticate_api_key(created["secret"]).identity_verified is True
 
 
+def test_character_id_verification_skips_name_resolution(auth):
+    user = _member(auth)
+    auth.add_allowed_corporation(9001, user["user_id"])
+    created = auth.create_api_key(user["user_id"], "Desktop", user["user_id"])
+    principal = auth.authenticate_api_key(created["secret"], allow_unverified=True)
+    auth.resolver.resolve_names = lambda _names: (_ for _ in ()).throw(
+        AssertionError("character ID verification must not search by name")
+    )
+
+    result = auth.verify_characters(principal, character_ids=[101])
+
+    assert result["verified"] is True
+    assert result["characters"] == [
+        {
+            "character_id": 101,
+            "character_name": "Alice",
+            "corporation_id": 9001,
+            "corporation_name": "Blue Corp",
+        }
+    ]
+
+
 def test_character_report_is_idempotent_and_returns_completed_result(auth):
     user = _member(auth)
     auth.add_allowed_corporation(9001, user["user_id"])
     created = auth.create_api_key(user["user_id"], "Desktop", user["user_id"])
     principal = auth.authenticate_api_key(created["secret"], allow_unverified=True)
 
-    first = auth.submit_character_report(principal, ["Alice"], "detector:test")
-    duplicate = auth.submit_character_report(principal, [" alice ", "Alice"], "detector:test")
+    first = auth.submit_character_report(
+        principal,
+        client_id="detector:test",
+        character_ids=[101],
+    )
+    duplicate = auth.submit_character_report(
+        principal,
+        client_id="detector:test",
+        character_ids=[101, 101],
+    )
 
     assert first["status"] == "queued"
     assert duplicate["job_id"] == first["job_id"]
     deadline = time.monotonic() + 3
     completed = duplicate
     while time.monotonic() < deadline:
-        completed = auth.submit_character_report(principal, ["Alice"], "detector:test")
+        completed = auth.submit_character_report(
+            principal,
+            client_id="detector:test",
+            character_ids=[101],
+        )
         if completed["status"] == "verified":
             break
         time.sleep(0.02)

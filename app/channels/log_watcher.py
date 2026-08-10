@@ -93,7 +93,17 @@ def resolve_chatlog_dir(preferred: str | Path | None = None) -> Path:
     return Path.home() / "Documents" / "EVE" / "logs" / "Chatlogs"
 
 
-DEFAULT_CHATLOG_DIR = resolve_chatlog_dir()
+_DEFAULT_CHATLOG_CANDIDATES = _default_chatlog_candidates()
+DEFAULT_CHATLOG_DIR = next(
+    (
+        candidate
+        for candidate in _DEFAULT_CHATLOG_CANDIDATES
+        if candidate.is_dir()
+    ),
+    _DEFAULT_CHATLOG_CANDIDATES[0]
+    if _DEFAULT_CHATLOG_CANDIDATES
+    else Path.home() / "Documents" / "EVE" / "logs" / "Chatlogs",
+)
 CHANNEL_SUFFIX_RE = re.compile(r"(?:[_-]\d{8})?(?:[_-]\d{6})(?:[_-]\d+)?$")
 WILDCARD_CHARS = frozenset("*?")
 

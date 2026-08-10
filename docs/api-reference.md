@@ -41,7 +41,7 @@ Authorization: Bearer eve_xxx
 | `DELETE` | `/api/v1/me/keys/{id}` | 吊销密钥 |
 | `POST` | `/api/v1/me/keys/{id}/enable` | 重新启用可恢复密钥 |
 | `DELETE` | `/api/v1/me/keys/{id}/record` | 删除密钥记录 |
-| `POST` | `/api/v1/client/identity-checks` | 幂等提交 Listener 角色并立即返回任务状态；身份校验在服务端异步执行 |
+| `POST` | `/api/v1/client/identity-checks` | 幂等提交本地日志文件名中的角色 ID 并立即返回任务状态；身份校验在服务端异步执行 |
 | `POST` | `/api/v1/client/identity-check` | 旧版同步身份校验，仅用于滚动升级兼容 |
 | `GET/POST` | `/api/v1/admin/users` | 用户列表和创建用户 |
 | `GET/POST` | `/api/v1/admin/security-settings` | 查看或切换服务端密钥风控 |
@@ -56,9 +56,20 @@ Authorization: Bearer eve_xxx
 | `DELETE` | `/api/v1/admin/corporations/{corporation_id}` | 删除允许军团 |
 | `GET` | `/api/v1/admin/audit` | 审计日志 |
 
-异步身份接口在任务排队、处理中或等待重试时返回 `202`，已验证时返回 `200` 并携带解析
-后的角色 ID。客户端可用相同角色集合重复提交来读取状态，不需要保存任务 ID；服务端按
-设备密钥和规范化角色集合保证幂等。
+新客户端提交：
+
+```json
+{
+  "character_ids": [2112345678, 2112345679],
+  "client_id": "detector-client:example"
+}
+```
+
+角色 ID 来自 `Local_..._<character_id>.txt` 或 `本地_..._<character_id>.txt` 文件名末尾。
+异步身份接口在任务排队、处理中或等待重试时返回 `202`，已验证时返回 `200`，并在
+`characters` 中携带服务端通过 ESI 按 ID 取得的角色名和军团资料。客户端可用相同 ID 集合
+重复提交来读取状态，不需要保存任务 ID；服务端按设备密钥和规范化 ID 集合保证幂等。
+旧客户端提交的 `characters` 角色名数组仍受支持，但新客户端不再依赖名称搜索。
 关闭服务端密钥风控时，这两个身份接口直接返回已确认状态和 `skipped=true`，不会访问 ESI
 或创建后台任务。
 

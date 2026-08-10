@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app.channels.log_watcher import DEFAULT_CHATLOG_DIR, resolve_chatlog_dir
+from app.channels.log_watcher import DEFAULT_CHATLOG_DIR
 from app.channels.identity_logs import ClientAuthStateStore
 from app.intel_client import INVALID_API_KEY_MESSAGE
 from app.version import current_version
@@ -179,6 +179,18 @@ class SettingsPanel(QWidget):
         self._ocr_enabled_check.setChecked(bool(config["ocr_enabled"]))
         scan_layout.addWidget(self._ocr_enabled_check)
 
+        self._listener_identity_scan_check = QCheckBox("Listener 身份扫描")
+        self._listener_identity_scan_check.setChecked(
+            bool(config["listener_identity_scan_enabled"])
+        )
+        self._listener_identity_scan_check.setToolTip(
+            "仅在需要从 EVE 日志发现角色身份时开启"
+        )
+        self._listener_identity_scan_check.toggled.connect(
+            self._on_behavior_settings_changed
+        )
+        scan_layout.addWidget(self._listener_identity_scan_check)
+
         keyword_row = QHBoxLayout()
         keyword_label = QLabel("窗口关键字")
         keyword_label.setObjectName("fieldLabel")
@@ -301,12 +313,12 @@ class SettingsPanel(QWidget):
         return normalize_server_url(self._server_url_edit.text())
 
     def get_channel_log_dir(self) -> str:
-        """Return the currently active EVE Chatlogs directory."""
+        """Return the cached EVE Chatlogs directory without rescanning it."""
         configured = os.environ.get("EVE_SENTRY_CHATLOG_DIR", "").strip()
         if configured:
             resolved = os.path.expandvars(configured)
         else:
-            resolved = str(resolve_chatlog_dir(self._chatlog_dir or DEFAULT_CHATLOG_DIR))
+            resolved = self._chatlog_dir or str(DEFAULT_CHATLOG_DIR)
         self._chatlog_dir = str(resolved)
         return self._chatlog_dir
 
@@ -324,6 +336,9 @@ class SettingsPanel(QWidget):
 
     def get_restore_monitor_state(self) -> bool:
         return self._restore_monitor_check.isChecked()
+
+    def get_listener_identity_scan_enabled(self) -> bool:
+        return self._listener_identity_scan_check.isChecked()
 
     def set_behavior_preference(self, name: str, enabled: bool) -> None:
         """Update a startup preference selected from the tray menu."""
@@ -434,12 +449,10 @@ class SettingsPanel(QWidget):
 
         env_chatlog_dir = os.environ.get("EVE_SENTRY_CHATLOG_DIR", "").strip()
         if env_chatlog_dir:
-            chatlog_dir = env_chatlog_dir
+            chatlog_dir = os.path.expandvars(env_chatlog_dir)
         else:
             chatlog_dir = str(
-                resolve_chatlog_dir(
-                    payload.get("chatlog_dir", DEFAULT_CHATLOG_DIR)
-                )
+                payload.get("chatlog_dir") or DEFAULT_CHATLOG_DIR
             )
         scan_interval = self._clean_scan_interval(
             os.environ.get(
@@ -463,6 +476,9 @@ class SettingsPanel(QWidget):
             "chatlog_dir": chatlog_dir or str(DEFAULT_CHATLOG_DIR),
             "scan_interval": scan_interval,
             "ocr_enabled": bool(payload.get("ocr_enabled", True)),
+            "listener_identity_scan_enabled": bool(
+                payload.get("listener_identity_scan_enabled", False)
+            ),
             "window_keyword": window_keyword,
             "server_url": server_url,
             "start_with_windows": bool(payload.get("start_with_windows", False)),
@@ -490,6 +506,9 @@ class SettingsPanel(QWidget):
             "chatlog_dir": self.get_channel_log_dir(),
             "scan_interval": int(self._interval_spin.value()),
             "ocr_enabled": self.get_ocr_enabled(),
+            "listener_identity_scan_enabled": (
+                self.get_listener_identity_scan_enabled()
+            ),
             "window_keyword": self.get_keyword(),
             "server_url": self.get_server_url(),
             "start_with_windows": self.get_start_with_windows(),

@@ -585,7 +585,10 @@ class AuthRepository:
         return rows
 
     def ensure_identity_job(self, record: dict[str, Any]) -> dict[str, Any]:
-        """Create or return one persistent identity job for a key/name set."""
+        """Create or return one persistent identity job for a key/input set."""
+        identity_inputs = (
+            record.get("character_ids") or record.get("names") or []
+        )
         with self._connect() as connection:
             connection.execute(
                 """
@@ -600,7 +603,7 @@ class AuthRepository:
                 (
                     record["job_id"], record["api_key_id"], record["user_id"],
                     record.get("client_id", ""), record["names_hash"],
-                    json.dumps(record.get("names") or [], ensure_ascii=False),
+                    json.dumps(identity_inputs, ensure_ascii=False),
                     record.get("status", "queued"),
                     json.dumps(record.get("result") or {}, ensure_ascii=False),
                     record.get("error_code", ""), record.get("error_message", ""),
@@ -742,9 +745,20 @@ class AuthRepository:
             return None
         item = dict(row)
         try:
-            item["names"] = json.loads(str(item.pop("names_json", "[]")))
+            identity_inputs = json.loads(
+                str(item.pop("names_json", "[]"))
+            )
         except json.JSONDecodeError:
+            identity_inputs = []
+        if isinstance(identity_inputs, list) and all(
+            isinstance(value, int) and not isinstance(value, bool)
+            for value in identity_inputs
+        ):
+            item["character_ids"] = identity_inputs
             item["names"] = []
+        else:
+            item["character_ids"] = []
+            item["names"] = identity_inputs if isinstance(identity_inputs, list) else []
         try:
             item["result"] = json.loads(str(item.pop("result_json", "{}")))
         except json.JSONDecodeError:

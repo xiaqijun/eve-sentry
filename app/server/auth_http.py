@@ -415,15 +415,29 @@ class AuthHttpMixin:
                 names = payload.get("characters", payload.get("names", []))
                 if not isinstance(names, list):
                     raise AuthError("characters must be a list", 400, "invalid_characters")
+                character_ids = payload.get("character_ids", [])
+                if not isinstance(character_ids, list):
+                    raise AuthError(
+                        "character_ids must be a list",
+                        400,
+                        "invalid_character_ids",
+                    )
                 clean_names = [
                     str(item.get("name") if isinstance(item, dict) else item)
                     for item in names
+                ]
+                character_ids = list(character_ids) + [
+                    item.get("character_id")
+                    for item in names
+                    if isinstance(item, dict)
+                    and item.get("character_id") not in {None, ""}
                 ]
                 if path == "/api/v1/client/identity-checks":
                     result = service.submit_character_report(
                         principal,
                         clean_names,
                         client_id=str(payload.get("client_id") or ""),
+                        character_ids=character_ids,
                     )
                     status = (
                         HTTPStatus.ACCEPTED
@@ -432,7 +446,11 @@ class AuthHttpMixin:
                     )
                     self._send_json({"identity": result}, status)
                     return True
-                result = service.verify_characters(principal, clean_names)
+                result = service.verify_characters(
+                    principal,
+                    clean_names,
+                    character_ids=character_ids,
+                )
                 self._send_json({"identity": result})
                 return True
             if path == "/api/v1/admin/users":
