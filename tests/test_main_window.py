@@ -613,9 +613,6 @@ def test_listener_poll_uses_cached_log_path_and_runs_as_silent_task():
     submissions = []
 
     class FakeSettings:
-        def get_listener_identity_scan_enabled(self):
-            return True
-
         def get_api_key(self):
             return "eve_valid"
 
@@ -641,12 +638,11 @@ def test_listener_poll_uses_cached_log_path_and_runs_as_silent_task():
     assert submissions[0][2] == {"kind": "listener"}
 
 
-def test_listener_poll_is_disabled_by_default():
+def test_listener_poll_skips_without_api_key():
     submissions = []
     window = MainWindow.__new__(MainWindow)
     window._settings = SimpleNamespace(
-        get_listener_identity_scan_enabled=lambda: False,
-        get_api_key=lambda: "eve_valid",
+        get_api_key=lambda: "",
     )
     window._identity_scanner = object()
     window._intel_client = object()
@@ -1320,6 +1316,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
                 "chatlog_dir": "C:/EVE/Chatlogs",
                 "recent_days": 30,
                 "scan_interval": 2,
+                "listener_identity_scan_enabled": False,
                 "window_keyword": "EVE -",
             }
         ),
@@ -1334,6 +1331,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
     assert not hasattr(panel, "channel_settings_changed")
     assert not hasattr(panel, "_channel_enabled")
     assert not hasattr(panel, "_channel_list")
+    assert not hasattr(panel, "_listener_identity_scan_check")
 
     panel._interval_spin.setValue(5)
     panel._keyword_edit.setText("EVE - Pilot")
@@ -1343,7 +1341,6 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
         "chatlog_dir": "C:/EVE/Chatlogs",
         "scan_interval": 5,
         "ocr_enabled": True,
-        "listener_identity_scan_enabled": False,
         "window_keyword": "EVE - Pilot",
         "server_url": "",
         "start_with_windows": False,

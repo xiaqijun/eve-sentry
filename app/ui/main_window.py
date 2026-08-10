@@ -2196,13 +2196,6 @@ class MainWindow(QMainWindow):
         """Silently discover and upload Listener identities in the background."""
         scanner = _instance_attr(self, "_identity_scanner")
         client = _instance_attr(self, "_intel_client")
-        enabled_getter = getattr(
-            self._settings,
-            "get_listener_identity_scan_enabled",
-            None,
-        )
-        if not callable(enabled_getter) or not enabled_getter():
-            return
         api_key = self._settings.get_api_key()
         if api_key != _instance_attr(self, "_listener_last_api_key", ""):
             self._listener_last_api_key = api_key
