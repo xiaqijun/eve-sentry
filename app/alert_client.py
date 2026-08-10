@@ -730,20 +730,14 @@ class LocalStarMapWidget(QWidget):
             details.append(f"{account_kind}：{label}")
             details.append("监控：在线")
         remote_accounts = [item for item in accounts if not bool(item.get("local"))]
-        remote_labels = list(
-            dict.fromkeys(
-                str(item.get("label") or item.get("character_name") or "").strip()
-                for item in remote_accounts
-            )
-        )
-        remote_labels = [item for item in remote_labels if item]
-        if remote_labels:
-            details.append(f"监控节点：{'、'.join(remote_labels)}")
+        if remote_accounts:
+            details.append("监控节点：在线")
+            details.append(f"节点数量：{len(remote_accounts)}")
         remaining = [
             str(item.get("label") or item.get("character_name") or "").strip()
             for item in accounts
             if str(item.get("key") or "") != primary_key
-            and bool(item.get("local", True))
+            and bool(item.get("local"))
         ]
         remaining = list(dict.fromkeys(item for item in remaining if item))
         if remaining:
@@ -1181,10 +1175,10 @@ class AlertOverlay(QWidget):
         options.addWidget(account_button)
         online_legend = QLabel("● 监控")
         online_legend.setObjectName("mapOnlineLegend")
-        online_legend.setToolTip("青色节点：监控账号在线")
-        warning_legend = QLabel("★ 账号位置")
+        online_legend.setToolTip("青色节点：监控节点在线")
+        warning_legend = QLabel("★ 本地账号位置")
         warning_legend.setObjectName("mapWarningLegend")
-        warning_legend.setToolTip("金色星形：所选账号所在星系")
+        warning_legend.setToolTip("金色星形：所选本地账号所在星系")
         hostile_legend = QLabel("◆ 来敌")
         hostile_legend.setObjectName("mapHostileLegend")
         hostile_legend.setToolTip("红色节点：当前存在敌对预警")

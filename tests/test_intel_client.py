@@ -1421,7 +1421,7 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
             if label.objectName().startswith("map")
         }
         assert legends["mapOnlineLegend"].text() == "● 监控"
-        assert legends["mapWarningLegend"].text() == "★ 账号位置"
+        assert legends["mapWarningLegend"].text() == "★ 本地账号位置"
         assert legends["mapHostileLegend"].text() == "◆ 来敌"
         assert "青色节点" in legends["mapOnlineLegend"].toolTip()
         assert "金色星形" in legends["mapWarningLegend"].toolTip()
@@ -1540,7 +1540,10 @@ def test_local_star_map_only_labels_key_nodes_and_prefers_local_account():
     assert label == "Alice"
     assert "星系：Tama" in tooltip
     assert "本地账号：Alice" in tooltip
-    assert "监控节点：Remote Scout、Other Pilot" in tooltip
+    assert "监控节点：在线" in tooltip
+    assert "节点数量：2" in tooltip
+    assert "Remote Scout" not in tooltip
+    assert "Other Pilot" not in tooltip
     assert "来敌：3 人" in tooltip
     assert LocalStarMapWidget._node_annotation("Kedama", [], 0) == ("", "")
     assert LocalStarMapWidget._node_annotation("Kedama", [], 2)[0] == "Kedama"
@@ -1551,7 +1554,9 @@ def test_local_star_map_only_labels_key_nodes_and_prefers_local_account():
         0,
     )
     assert monitor_label == "Kedama"
-    assert "监控节点：Remote Scout" in monitor_tooltip
+    assert "监控节点：在线" in monitor_tooltip
+    assert "节点数量：1" in monitor_tooltip
+    assert "Remote Scout" not in monitor_tooltip
 
 
 def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypatch):
@@ -1633,7 +1638,9 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
         assert both_body.red() > both_body.green()
         assert any(
             "本地账号：Bob" in tooltip
-            and "监控节点：Remote Scout" in tooltip
+            and "监控节点：在线" in tooltip
+            and "节点数量：1" in tooltip
+            and "Remote Scout" not in tooltip
             and "来敌：1 人" in tooltip
             for _rect, tooltip in widget._node_tooltips
         )
