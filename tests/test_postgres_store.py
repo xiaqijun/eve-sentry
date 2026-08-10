@@ -186,6 +186,78 @@ def test_postgres_heartbeat_row_accepts_legacy_empty_attribution():
     assert store._heartbeat_row(heartbeat)[-3:] == ("", "", "")
 
 
+def test_postgres_heartbeat_load_prunes_only_attributed_logical_duplicates():
+    rows = [
+        {
+            "client_id": "detector-client:new",
+            "client_type": "detector_client",
+            "label": "Detector",
+            "status": "running",
+            "seen_at": "2026-08-10T10:00:00+00:00",
+            "heartbeat_interval_seconds": 15,
+            "details_json": '{"host":"Scout-PC"}',
+            "user_id": "user-1",
+            "api_key_id": "key-1",
+            "remote_ip": "127.0.0.1",
+        },
+        {
+            "client_id": "detector-client:old",
+            "client_type": "detector_client",
+            "label": "Detector",
+            "status": "running",
+            "seen_at": "2026-08-09T10:00:00+00:00",
+            "heartbeat_interval_seconds": 15,
+            "details_json": '{"host":"scout-pc"}',
+            "user_id": "user-1",
+            "api_key_id": "key-1",
+            "remote_ip": "127.0.0.1",
+        },
+        {
+            "client_id": "legacy-without-host",
+            "client_type": "detector_client",
+            "label": "Legacy",
+            "status": "idle",
+            "seen_at": "2026-08-08T10:00:00+00:00",
+            "heartbeat_interval_seconds": 15,
+            "details_json": "{}",
+            "user_id": "user-1",
+            "api_key_id": "key-1",
+            "remote_ip": "127.0.0.1",
+        },
+    ]
+    deleted = []
+
+    class Result:
+        def fetchall(self):
+            return rows
+
+    class FakeContext:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def execute(self, query, params=None):
+            assert "FROM client_heartbeats" in query
+            return Result()
+
+        def executemany(self, query, params_seq):
+            assert "DELETE FROM client_heartbeats" in query
+            deleted.extend(params_seq)
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._connect = FakeContext
+
+    heartbeats = store._read_heartbeats()
+
+    assert set(heartbeats) == {
+        "detector-client:new",
+        "legacy-without-host",
+    }
+    assert deleted == [("detector-client:old",)]
+
+
 @pytest.mark.parametrize("method_name", ["list_reports", "list_observations"])
 def test_postgres_limited_history_uses_keyset_query(method_name):
     report = IntelReport(

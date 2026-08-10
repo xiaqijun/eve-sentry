@@ -113,6 +113,25 @@ describe("ManagementShell", () => {
     expect(container.querySelector('[aria-label="账号设置"]')).not.toBeInTheDocument();
   });
 
+  it("selects only hostile history for the nested history route", async () => {
+    useAuthMock.mockReturnValue({ authEnabled: false, logout: vi.fn(), refresh: vi.fn(), user: null });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/reports/history"]}>
+          <Routes>
+            <Route element={<ManagementShell />} path="/">
+              <Route element={<div>历史内容</div>} path="reports/history" />
+            </Route>
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.querySelector('a[href="/reports/history"]')).toHaveClass("active");
+    expect(container.querySelector('a[href="/reports"]')).not.toHaveClass("active");
+  });
+
   it("keeps password settings hidden for EVE member accounts", async () => {
     useAuthMock.mockReturnValue({
       authEnabled: true,

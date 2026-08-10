@@ -28,7 +28,11 @@ describe("HostileHistoryPage", () => {
           id: "alert-1",
           system_name: "Jita",
           names: ["Alice"],
-          verified_characters: [{ character_id: 1, name: "Alice" }],
+          verified_characters: [{
+            character_id: 1,
+            name: "Alice",
+            zkill: { danger_ratio: 88, ships_destroyed: 120, ships_lost: 5 },
+          }],
           level: "high",
           classification: "red",
           created_at: new Date(now - 4 * 60 * 1000).toISOString(),
@@ -79,6 +83,14 @@ describe("HostileHistoryPage", () => {
     expect(container).toHaveTextContent("Jita");
     expect(fetchHostileAlertHistory).toHaveBeenCalledWith("24h");
 
+    const waveDetailButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((item) => item.textContent?.trim() === "查看");
+    await act(async () => waveDetailButton?.click());
+    expect(document.body).toHaveTextContent("来袭波次详情");
+    expect(document.body).toHaveTextContent("来袭人员明细");
+    expect(document.body).toHaveTextContent("Alice");
+    expect(document.body).toHaveTextContent("88");
+
     const alertsTab = [...container.querySelectorAll<HTMLElement>('[role="tab"]')]
       .find((item) => item.textContent?.includes("人员告警"));
     expect(alertsTab).toBeInTheDocument();
@@ -103,6 +115,8 @@ describe("HostileHistoryPage", () => {
     await act(async () => detailButton?.click());
     expect(document.body).toHaveTextContent("人员告警详情");
     expect(document.body).toHaveTextContent("alert-2");
+    expect(document.body).toHaveTextContent("告警人员明细");
+    expect(document.body).toHaveTextContent("Bob");
 
     await act(async () => root.unmount());
   });

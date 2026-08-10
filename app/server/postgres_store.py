@@ -2269,10 +2269,36 @@ class PostgreSQLIntelStore(IntelStore):
             ).fetchall()
 
         heartbeats: dict[str, dict[str, Any]] = {}
+        seen_logical_clients: set[tuple[str, str, str]] = set()
+        duplicate_client_ids: list[str] = []
         for row in rows:
             heartbeat = self._heartbeat_from_row(row)
             if heartbeat is not None:
+                details = heartbeat.get("details")
+                details = details if isinstance(details, dict) else {}
+                owner_id = str(heartbeat.get("user_id") or "").strip()
+                client_type = str(
+                    heartbeat.get("client_type") or "client"
+                ).strip()
+                host = str(details.get("host") or "").strip().casefold()
+                if owner_id and host:
+                    logical_key = (owner_id, client_type, host)
+                    if logical_key in seen_logical_clients:
+                        duplicate_client_ids.append(heartbeat["client_id"])
+                        continue
+                    seen_logical_clients.add(logical_key)
                 heartbeats[heartbeat["client_id"]] = heartbeat
+
+        if duplicate_client_ids:
+            with self._connect() as connection:
+                connection.executemany(
+                    "DELETE FROM client_heartbeats WHERE client_id = ?",
+                    [(client_id,) for client_id in duplicate_client_ids],
+                )
+            logger.info(
+                "pruned %s duplicate client heartbeat records",
+                len(duplicate_client_ids),
+            )
         return heartbeats
 
     def _write_heartbeat(self, heartbeat: dict[str, Any]) -> None:

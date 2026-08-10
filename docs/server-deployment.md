@@ -58,6 +58,8 @@ sudo -u postgres pg_dump -Fc eve_sentry > /var/lib/eve-sentry/eve_sentry.dump
 ```
 
 连接池默认最小 2、最大 8 个连接。不要为每个 SSE 心跳重新创建 PostgreSQL 连接。
+服务启动读取客户端心跳时，会按“用户 + 客户端类型 + 主机”保留最新实例并删除更旧的
+重复实例；缺少用户或主机归属的记录不会自动删除，避免误清理不同设备。
 迁移会为 `system_id` 和角色 ID JSON 建立查询索引。历史列表默认最多返回 100 条，最大
 1000 条；批量导出或后台巡检应使用 `/api/v1/reports`、`/api/v1/observations` 的游标分页，
 不要通过省略 `limit` 请求完整历史。

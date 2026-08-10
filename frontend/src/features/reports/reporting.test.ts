@@ -115,6 +115,20 @@ describe("hostile reporting", () => {
     expect(report.averageTargetsPerIncident).toBe(1.5);
     expect(report.waveCount).toBe(2);
     expect(report.peakWaveTargets).toBe(2);
+    expect(report.waves[0].targets).toEqual([
+      expect.objectContaining({
+        characterId: 101,
+        name: "Alice",
+        dangerRatio: 82,
+        incidentCount: 1,
+      }),
+      expect.objectContaining({
+        characterId: 102,
+        name: "Bob",
+        dangerRatio: null,
+        incidentCount: 1,
+      }),
+    ]);
     expect(report.zkillCoverage).toBe(50);
     expect(report.systems.map((item) => item.name)).toEqual(["S-KSWL", "1DQ1-A"]);
     expect(report.targets[0]).toMatchObject({

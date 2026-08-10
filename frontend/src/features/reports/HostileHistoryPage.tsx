@@ -36,6 +36,7 @@ import { fetchHostileAlertHistory } from "./api";
 import {
   buildHostileReport,
   type ReportRange,
+  type TargetReportRow,
   type WaveReportRow,
 } from "./reporting";
 
@@ -77,6 +78,22 @@ function formatTime(value?: string): string {
   return parsed.toLocaleString("zh-CN", { hour12: false });
 }
 
+function formatCompactNumber(value?: number): string {
+  if (value === undefined || !Number.isFinite(value)) return "-";
+  return new Intl.NumberFormat("zh-CN", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function dangerTag(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return <Typography.Text type="secondary">暂无数据</Typography.Text>;
+  }
+  const color = value >= 80 ? "red" : value >= 60 ? "orangered" : value >= 40 ? "orange" : "green";
+  return <Tag color={color}>{Math.round(value)}</Tag>;
+}
+
 function formatDuration(start?: string, end?: string): string {
   const startMs = start ? new Date(start).getTime() : Number.NaN;
   const endMs = end ? new Date(end).getTime() : Date.now();
@@ -98,6 +115,18 @@ function verifiedNames(alert: AlertItem): string[] {
     .filter(Boolean);
   if (verified.length > 0) return verified;
   return (alert.names || []).map((name) => String(name).trim()).filter(Boolean);
+}
+
+function alertTargetRows(alert: AlertItem): TargetReportRow[] {
+  return (alert.verified_characters || []).map((character) => ({
+    characterId: character.character_id,
+    name: character.name,
+    incidentCount: 1,
+    systems: [cleanSystem(alert)],
+    lastSeen: alert.created_at,
+    zkill: character.zkill,
+    dangerRatio: character.zkill?.danger_ratio ?? null,
+  }));
 }
 
 function textTokens(values: string[], fallback = "-") {
@@ -226,6 +255,15 @@ export function HostileHistoryPage() {
     { title: "来源", width: 120, render: () => <Tag color="arcoblue">OCR / 身份核验</Tag> },
     { title: "操作", width: 84, align: "center", render: (_value, row) => <Button icon={<IconEye />} size="mini" type="text" onClick={() => setSelectedRecord({ kind: "alert", value: row })}>查看</Button> },
   ];
+  const personnelColumns: TableColumnProps<TargetReportRow>[] = [
+    { title: "人员", dataIndex: "name", width: 150, render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
+    { title: "角色 ID", dataIndex: "characterId", width: 110, render: (value: number) => <Typography.Text copyable>{value}</Typography.Text> },
+    { title: "威胁度", dataIndex: "dangerRatio", width: 82, align: "center", render: (value: number | null) => dangerTag(value) },
+    { title: "出现次数", dataIndex: "incidentCount", width: 88, align: "right" },
+    { title: "击毁 / 损失", width: 112, render: (_value, row) => `${formatCompactNumber(row.zkill?.ships_destroyed)} / ${formatCompactNumber(row.zkill?.ships_lost)}` },
+    { title: "ISK 击毁 / 损失", width: 140, render: (_value, row) => `${formatCompactNumber(row.zkill?.isk_destroyed)} / ${formatCompactNumber(row.zkill?.isk_lost)}` },
+    { title: "最后出现", dataIndex: "lastSeen", width: 160, render: (value?: string) => formatTime(value) },
+  ];
 
   const waveDetails = selectedRecord?.kind === "wave" ? [
     { label: "记录 ID", value: <Typography.Text copyable>{selectedRecord.value.id}</Typography.Text> },
@@ -247,6 +285,11 @@ export function HostileHistoryPage() {
     { label: "角色 ID", value: (selectedRecord.value.character_ids || []).join("、") || "-" },
     { label: "分类", value: selectedRecord.value.classification === "red" ? "红色图标敌对" : String(selectedRecord.value.classification || "-") },
   ] : [];
+  const selectedTargets = selectedRecord?.kind === "wave"
+    ? selectedRecord.value.targets
+    : selectedRecord?.kind === "alert"
+      ? alertTargetRows(selectedRecord.value)
+      : [];
 
   return (
     <div className="admin-shell hostile-history-page">
@@ -373,16 +416,31 @@ export function HostileHistoryPage() {
         footer={null}
         title={selectedRecord?.kind === "wave" ? "来袭波次详情" : "人员告警详情"}
         visible={Boolean(selectedRecord)}
-        width={520}
+        width="min(920px, calc(100vw - 24px))"
         onCancel={() => setSelectedRecord(null)}
       >
         {selectedRecord ? (
-          <Descriptions
-            border
-            column={1}
-            data={selectedRecord.kind === "wave" ? waveDetails : alertDetails}
-            size="small"
-          />
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <Descriptions
+              border
+              column={1}
+              data={selectedRecord.kind === "wave" ? waveDetails : alertDetails}
+              size="small"
+            />
+            <Typography.Title heading={6} style={{ margin: 0 }}>
+              {selectedRecord.kind === "wave" ? "来袭人员明细" : "告警人员明细"}
+            </Typography.Title>
+            {selectedTargets.length > 0 ? (
+              <Table<TargetReportRow>
+                border={false}
+                columns={personnelColumns}
+                data={selectedTargets}
+                pagination={false}
+                rowKey="characterId"
+                size="small"
+              />
+            ) : <Empty description="没有可展示的人员详细数据" />}
+          </Space>
         ) : null}
       </Drawer>
     </div>

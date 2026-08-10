@@ -40,6 +40,7 @@ export interface WaveReportRow {
   lastSeen?: string;
   endedAt?: string;
   active: boolean;
+  targets: TargetReportRow[];
 }
 
 export interface HostileWaveLifecycle {
@@ -209,6 +210,7 @@ function buildWaves(
         endedAt: endedAt || undefined,
         active: Boolean(item.active) && !endedAt,
         targetIds: new Set<number>(),
+        targetMap: new Map<number, TargetReportRow>(),
         startedMs,
         endedMs,
       };
@@ -229,16 +231,52 @@ function buildWaves(
     wave.incidentCount += 1;
     cleanVerifiedCharacters(alert).forEach((character) => {
       wave.targetIds.add(character.character_id);
+      const current = wave.targetMap.get(character.character_id);
+      if (current) {
+        current.incidentCount += 1;
+        current.lastSeen = current.lastSeen || alert.created_at;
+        if (!current.systems.includes(wave.systemName)) {
+          current.systems.push(wave.systemName);
+        }
+        const candidateDanger = character.zkill?.danger_ratio;
+        const currentDanger = current.zkill?.danger_ratio;
+        if (
+          character.zkill &&
+          (!current.zkill
+            || (candidateDanger !== undefined
+              && (currentDanger === undefined || candidateDanger > currentDanger)))
+        ) {
+          current.zkill = character.zkill;
+          current.dangerRatio = candidateDanger ?? null;
+        }
+      } else {
+        wave.targetMap.set(character.character_id, {
+          characterId: character.character_id,
+          name: character.name,
+          incidentCount: 1,
+          systems: [wave.systemName],
+          lastSeen: alert.created_at,
+          zkill: character.zkill,
+          dangerRatio: character.zkill?.danger_ratio ?? null,
+        });
+      }
     });
     wave.uniqueTargets = wave.targetIds.size;
   });
 
   return waves.map(({
     targetIds: _targetIds,
+    targetMap,
     startedMs: _startedMs,
     endedMs: _endedMs,
     ...wave
-  }) => wave);
+  }) => ({
+    ...wave,
+    targets: [...targetMap.values()].sort((left, right) => (
+      (right.dangerRatio ?? -1) - (left.dangerRatio ?? -1)
+      || left.name.localeCompare(right.name)
+    )),
+  }));
 }
 
 function verifiedAlert(alert: AlertItem): AlertItem | null {

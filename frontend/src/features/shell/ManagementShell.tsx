@@ -71,7 +71,7 @@ export function ManagementShell() {
               <NavLink className={navigationClass} end to="/"><IconApps /><span>星图态势</span></NavLink>
             </MenuItem>
             <MenuItem key="/reports">
-              <NavLink className={navigationClass} to="/reports"><IconBook /><span>来袭分析</span></NavLink>
+              <NavLink className={navigationClass} end to="/reports"><IconBook /><span>来袭分析</span></NavLink>
             </MenuItem>
             <MenuItem key="/reports/history">
               <NavLink className={navigationClass} to="/reports/history"><IconHistory /><span>来袭历史</span></NavLink>
