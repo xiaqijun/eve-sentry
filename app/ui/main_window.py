@@ -308,6 +308,7 @@ class MainWindow(QMainWindow):
             self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
         )
         self._monitor_btn.setMinimumSize(132, 38)
+        self._monitor_btn.setToolTip("开始前请先选择在线 EVE 窗口并配置监控区域")
         self._monitor_btn.setStyleSheet(monitor_button_style(active=False))
         self._monitor_btn.setCheckable(True)
         self._monitor_btn.clicked.connect(self._toggle_monitor)
@@ -319,6 +320,7 @@ class MainWindow(QMainWindow):
             self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
         )
         self._alert_btn.setMinimumSize(120, 38)
+        self._alert_btn.setToolTip("使用服务端预警；需要先配置服务端地址")
         self._alert_btn.setStyleSheet(monitor_button_style(active=False))
         self._alert_btn.setCheckable(True)
         self._alert_btn.clicked.connect(self._toggle_alert)
@@ -870,9 +872,11 @@ class MainWindow(QMainWindow):
 
         self._syncing_monitor_menu = True
         menu.clear()
-        select_all_action = menu.addAction("全选")
+        select_all_action = menu.addAction("全选当前在线窗口")
+        select_all_action.setToolTip("仅选择当前已检测到的窗口，新上线窗口不会自动加入")
         select_all_action.triggered.connect(self._select_all_monitor_windows)
-        current_only_action = menu.addAction("仅选当前窗口")
+        current_only_action = menu.addAction("仅选择当前窗口")
+        current_only_action.setToolTip("取消其他窗口，仅保留当前用于预览/校准的窗口")
         current_only_action.triggered.connect(self._select_current_monitor_window)
         menu.addSeparator()
 
@@ -1700,18 +1704,62 @@ class MainWindow(QMainWindow):
 
     def _toggle_monitor(self, checked: bool) -> None:
         if checked:
+            if not self._monitor_prerequisites_ready(show_message=True):
+                self._monitor_btn.setChecked(False)
+                self._monitor_start_state = "idle"
+                return
             if _instance_attr(self, "_monitor_start_state", "idle") == "failed":
                 self._monitor_start_state = "idle"
             self._start_monitor()
         else:
+            # Cancelling while identity validation is still in flight must not
+            # allow its completion callback to start monitoring again.
+            self._identity_wants_monitor = False
             self._monitor_start_state = "idle"
             self._stop_monitor()
 
     def _toggle_alert(self, checked: bool) -> None:
         if checked:
+            if _instance_attr(self, "_intel_url", None) == "":
+                self._settings.set_auth_status("请先填写服务端地址", error=True)
+                QMessageBox.warning(
+                    self,
+                    "无法开启预警",
+                    "请先在设置中填写服务端地址，再开启预警。",
+                )
+                self._alert_btn.setChecked(False)
+                self._identity_wants_alert = False
+                return
             self._start_alert()
         else:
+            # Keep a cancelled async identity check from resurrecting the
+            # embedded alert controller when it finishes.
+            self._identity_wants_alert = False
             self._stop_alert()
+
+    def _monitor_prerequisites_ready(self, *, show_message: bool = False) -> bool:
+        """Validate manual monitor prerequisites before identity/network work."""
+        targets = self._build_monitor_targets()
+        if not targets:
+            if show_message:
+                QMessageBox.warning(
+                    self,
+                    "无法开始监控",
+                    "请先刷新并选择至少一个在线 EVE 窗口。\n\n“全选”只作用于当前在线窗口。",
+                )
+            return False
+        missing_regions = [
+            target for target in targets if not isinstance(target.get("region"), dict)
+        ]
+        if missing_regions:
+            if show_message:
+                QMessageBox.warning(
+                    self,
+                    "无法开始监控",
+                    "已选择窗口，但尚未配置监控区域。\n\n请先选择一个窗口并点击“选择区域”，保存成员列表区域后再开始。",
+                )
+            return False
+        return True
 
     def _monitoring_system_names(self) -> list[str]:
         """Return unique systems belonging to currently running monitor workers."""
