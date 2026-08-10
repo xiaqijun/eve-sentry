@@ -124,7 +124,7 @@ class TestFindEveWindow:
         assert [item["hwnd"] for item in result] == [2, 1]
         assert result[0]["w"] == 1280
         assert result[0]["h"] == 720
-        assert mock_win32process.GetWindowThreadProcessId.call_count == 7
+        assert mock_win32process.GetWindowThreadProcessId.call_count == 3
 
     @patch("app.engine.capturer.win32gui")
     @patch("app.engine.capturer.win32process")
@@ -330,11 +330,12 @@ class TestFindEveWindowByProcess:
     def test_process_name_supplements_title_matches(
         self, mock_psutil, mock_win32process, mock_win32gui
     ):
-        """Process-name matches are included even when a title matched first."""
+        """A process match without the configured game title is excluded."""
         windows = [
             (1, "EVE - Pilot A", (0, 0, 800, 600), 100, "exefile.exe"),
             (2, "EVE Launcher", (50, 50, 1050, 850), 200, "exefile.exe"),
             (3, "Chrome", (0, 0, 500, 400), 300, "chrome.exe"),
+            (4, "Temp Window", (0, 0, 800, 600), 100, "exefile.exe"),
         ]
         (
             em, gwt, gcr, cts, gwtpid, mkproc
@@ -350,8 +351,8 @@ class TestFindEveWindowByProcess:
         c = Capturer()
         result = c.list_eve_windows(keyword="EVE -")
 
-        assert [item["hwnd"] for item in result] == [2, 1]
-        assert [item["title"] for item in result] == ["EVE Launcher", "EVE - Pilot A"]
+        assert [item["hwnd"] for item in result] == [1]
+        assert [item["title"] for item in result] == ["EVE - Pilot A"]
 
     @patch("app.engine.capturer.win32gui")
     @patch("app.engine.capturer.win32process")
@@ -359,7 +360,7 @@ class TestFindEveWindowByProcess:
     def test_find_by_process_name_fallback(
         self, mock_psutil, mock_win32process, mock_win32gui
     ):
-        """No title matches, but process name matches exefile.exe."""
+        """A process-owned launcher is not a playable EVE client window."""
         windows = [
             (1, "Chrome", (0, 0, 500, 400), 100, "chrome.exe"),
             (2, "EVE Launcher", (50, 50, 850, 750), 200, "exefile.exe"),
@@ -379,8 +380,7 @@ class TestFindEveWindowByProcess:
         c = Capturer()
         result = c.find_eve_window(keyword="EVE -")
 
-        assert result is not None
-        assert result["title"] == "EVE Launcher"
+        assert result is None
 
     @patch("app.engine.capturer.win32gui")
     @patch("app.engine.capturer.win32process")

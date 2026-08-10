@@ -67,16 +67,10 @@ class Capturer:
                     results.append(info)
             return True
 
+        # EVE creates helper windows (IME, render and temporary surfaces) in
+        # the same process.  They are not playable clients and must not be
+        # added through a process-only fallback.
         win32gui.EnumWindows(title_callback, None)
-
-        def process_callback(hwnd, _):
-            if self._is_eve_client_window(hwnd):
-                info = self._build_window_info(hwnd)
-                if info is not None and not any(item["hwnd"] == hwnd for item in results):
-                    results.append(info)
-            return True
-
-        win32gui.EnumWindows(process_callback, None)
 
         # Sort: prefer larger windows (real client > thumbnail), then by name
         results.sort(key=lambda i: (-i["w"] * i["h"], i["title"]))
