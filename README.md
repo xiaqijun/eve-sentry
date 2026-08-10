@@ -102,6 +102,8 @@ SSE 默认保持长期连接；正常 EOF 立即重连，只有网络或协议�
 
 镜像构建严格使用仓库中的 `uv.lock`。`migrate` 服务会在 bot 与 worker 启动前自动执行 Alembic 迁移。`sde-sync` 服务会从 CCP 官方 JSONL SDE 生成持久化的精简中文索引，构建号未变化时不会重复下载。QQ 群被动回复有效期为 5 分钟，因此不要将抓取截止时间配置到 240 秒以上。
 
+向默认分支 `codex/main` 推送后，GitHub Actions 会自动执行测试、镜像构建、SSH 部署和生产健康检查。生产 `.env` 不进入部署包，Compose 项目名保持固定以复用现有数据卷。所需 Secrets、Variables、失败回滚和手动触发方式见 [机器人 CI/CD](docs/ci-cd.md)。
+
 ## 本地开发
 
 需要 Python 3.12 和 [uv](https://docs.astral.sh/uv/)：
