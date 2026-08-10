@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountKeysPage } from "./AccountKeysPage";
@@ -209,8 +210,12 @@ describe("split management pages", () => {
 
   it("allows administrators to switch key risk control", async () => {
     apiMocks.updateSecuritySettings.mockResolvedValue({ key_risk_control: false });
-    await render(<AdminSecurityPage />);
+    await render(<MemoryRouter><AdminSecurityPage /></MemoryRouter>);
     expect(container).toHaveTextContent("设备密钥风控");
+    expect(container).toHaveTextContent("识别角色");
+    expect(container).toHaveTextContent("解析身份");
+    expect(container.querySelector('a[href="/admin/whitelist"]')).toHaveTextContent("白名单管理");
+    expect(container.querySelector('a[href="/admin/audit"]')).toHaveTextContent("审计日志");
     const toggle = container.querySelector('[aria-label="设备密钥风控"]') as HTMLButtonElement | null;
     expect(toggle).toBeInTheDocument();
     await act(async () => toggle?.click());
