@@ -37,7 +37,7 @@ Authorization: Bearer eve_xxx
 ### 建立连接
 
 ```http
-GET /api/v1/events?bootstrap=1&timeout=300&heartbeat=15 HTTP/1.1
+GET /api/v1/events?bootstrap=1&heartbeat=15 HTTP/1.1
 Host: YOUR_SERVER
 Accept: text/event-stream
 Authorization: Bearer eve_xxx
@@ -49,18 +49,18 @@ Authorization: Bearer eve_xxx
 curl -N --fail-with-body \
   -H "Accept: text/event-stream" \
   -H "Authorization: Bearer eve_xxx" \
-  "https://YOUR_SERVER/api/v1/events?bootstrap=1&timeout=300&heartbeat=15"
+  "https://YOUR_SERVER/api/v1/events?bootstrap=1&heartbeat=15"
 ```
 
-响应类型为 `text/event-stream; charset=utf-8`。服务端会在 `timeout` 到期后正常关闭连接，
-调用方应立即重连，这不代表服务异常。
+响应类型为 `text/event-stream; charset=utf-8`。默认保持长期连接；只有显式设置非零
+`timeout` 时，服务端才会在到期后正常关闭。正常 EOF 应立即重连，连接异常才使用退避。
 
 ### 查询参数
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `bootstrap` | `false` | 为 `true` 时发送当前活动状态快照，推荐始终启用 |
-| `timeout` | `30` | 本次连接最长保持秒数，范围 `0` 至 `300` |
+| `timeout` | 空 | 本次连接最长保持秒数，范围 `0` 至 `300`；省略表示长期连接，`0` 表示读取当前一轮后结束 |
 | `heartbeat` | `15` | 空闲时发送 SSE 注释心跳的间隔秒数，范围 `0` 至 `60`；`0` 表示关闭 |
 | `limit` | `50` | 每轮最多读取的活动告警数，最大 `1000` |
 | `since` | 空 | ISO 8601 时间或上次事件游标 |
@@ -99,6 +99,8 @@ OCR 人员名单只是额外信息；因此即使尚未生成 OCR 告警记录�
 | `active_intel` | array | 当前活动情报 |
 | `clients` | object | 在线客户端和监控位置快照 |
 | `monitoring_node_changes` | array | 本次快照相对上次快照的上线、下线或换星系变化 |
+| `monitoring_nodes` | array | 当前全部在线监控节点快照；节点变化时用于校正漏报 |
+| `monitoring_nodes_version` | string | 当前在线节点快照版本；节点列表未变化时保持不变 |
 
 `hostile_count` 已由服务端按监控客户端去重和聚合。调用方不应自行累加 `alerts` 或
 `active_intel` 来替代该值；`alerts` 可能要等 OCR 增效信息到达后才出现。
@@ -106,8 +108,9 @@ OCR 人员名单只是额外信息；因此即使尚未生成 OCR 告警记录�
 ### 监控节点变化
 
 当连接使用 `bootstrap=1` 时，服务端会在监控节点状态发生变化后更新快照中的
-`monitoring_node_changes`。首次连接返回空数组；后续只包含本次变化，适合机器人直接转换成消息，
-无需轮询客户端列表或自行比较完整快照。
+`monitoring_node_changes`。首次连接返回空数组；后续只包含本次变化。与此同时，
+`monitoring_nodes` 始终提供完整在线节点列表，机器人应在节点变化时优先推送该列表，
+并可使用 `monitoring_nodes_version` 去重和在断线重连后校正漏报。
 
 ```json
 {
@@ -135,13 +138,25 @@ OCR 人员名单只是额外信息；因此即使尚未生成 OCR 告警记录�
       "character_name": "Pilot Gamma",
       "system_name": "Amarr"
     }
+  ],
+  "monitoring_nodes_version": "8d6a0d2a6c6bb1a0",
+  "monitoring_nodes": [
+    {
+      "client_id": "detector-client:test:pilot-alpha",
+      "system_name": "Jita"
+    },
+    {
+      "client_id": "detector-client:test:pilot-beta",
+      "system_name": "Tama"
+    }
   ]
 }
 ```
 
-`change` 取值为 `online`、`offline` 或 `moved`。机器人建议分别发送“上线”“下线”和
-“从 A 移动到 B”消息，并使用 `node_id` 去重。下线既包括客户端主动停止监控，也包括心跳超时；
-星系变化只在同一节点的 `system_name` 实际改变时产生。
+`change` 取值为 `online`、`offline` 或 `moved`。机器人应把变化信息作为提示，并以
+`monitoring_nodes` 的完整列表作为最终状态，使用 `monitoring_nodes_version` 去重。
+下线既包括客户端主动停止监控，也包括心跳超时；星系变化只在同一节点的
+`system_name` 实际改变时产生。
 
 ### `monitoring_node` 事件
 
@@ -151,10 +166,10 @@ OCR 人员名单只是额外信息；因此即使尚未生成 OCR 告警记录�
 ```text
 id: 2026-08-10T01:00:00+00:00
 event: monitoring_node
-data: {"schema_version":"monitoring_node_event.v1","generated_at":"2026-08-10T01:00:00+00:00","changes":[{"change":"moved","node_id":"client:detector-client:test:pilot-alpha","character_name":"Pilot Alpha","from_system":"Jita","to_system":"Tama","system_name":"Tama"}]}
+data: {"schema_version":"monitoring_node_event.v1","generated_at":"2026-08-10T01:00:00+00:00","changes":[{"change":"moved","node_id":"client:detector-client:test:pilot-alpha","character_name":"Pilot Alpha","from_system":"Jita","to_system":"Tama","system_name":"Tama"}],"nodes_version":"8d6a0d2a6c6bb1a0","nodes":[{"client_id":"detector-client:test:pilot-alpha","system_name":"Tama"}]}
 ```
 
-机器人可以直接监听 `monitoring_node`，按 `change` 分别发送上线、下线和换星系消息；
+机器人可以直接监听 `monitoring_node`，在收到事件时推送 `nodes` 中的完整在线节点列表；
 `bootstrap.monitoring_node_changes` 仍会保留，用于不支持新事件名的兼容消费者。
 
 ### `alert` 事件
@@ -237,11 +252,11 @@ while True:
         headers["Last-Event-ID"] = last_event_id
 
     request = Request(
-        f"{SERVER}/api/v1/events?bootstrap=1&timeout=300&heartbeat=15",
+        f"{SERVER}/api/v1/events?bootstrap=1&heartbeat=15",
         headers=headers,
     )
     try:
-        with urlopen(request, timeout=330) as response:
+        with urlopen(request, timeout=45) as response:
             event_name = "message"
             event_id = ""
             data_lines = []

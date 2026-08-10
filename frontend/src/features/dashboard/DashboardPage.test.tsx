@@ -131,11 +131,13 @@ describe("DashboardPage", () => {
     expect(container).toHaveTextContent("最新告警事件");
     expect(container).toHaveTextContent("高");
     expect(container).toHaveTextContent("监控覆盖");
-    expect(container).toHaveTextContent("2 个账号 · 2 个星系");
-    expect(container).toHaveTextContent("监控账号");
+    expect(container).toHaveTextContent("2 个节点 · 2 个星系");
+    expect(container).toHaveTextContent("监控节点");
     expect(container).toHaveTextContent("所在星系");
-    expect(container).toHaveTextContent("Scout One");
-    expect(container).toHaveTextContent("Scout Two");
+    expect(container).toHaveTextContent("监控节点 1");
+    expect(container).toHaveTextContent("监控节点 2");
+    expect(container).not.toHaveTextContent("Scout One");
+    expect(container).not.toHaveTextContent("Scout Two");
     expect(container).toHaveTextContent("Kedama");
     expect(container).toHaveTextContent("监控中");
     expect(container).toHaveTextContent("Alice");

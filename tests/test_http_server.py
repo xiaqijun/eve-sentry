@@ -2892,6 +2892,9 @@ def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
         assert node_changes[0]["system_name"] == "S-KSWL"
         assert node_events[0]["schema_version"] == "monitoring_node_event.v1"
         assert node_events[0]["changes"][0]["change"] == "online"
+        assert len(node_events[0]["nodes"]) == 1
+        assert node_events[0]["nodes"][0]["system_name"] == "S-KSWL"
+        assert node_events[0]["nodes_version"]
 
         started_at = time.monotonic()
         status, _ = request_json(
@@ -2915,6 +2918,7 @@ def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
             "online",
             "offline",
         ]
+        assert node_events[-1]["nodes"] == []
         stream_thread.join(timeout=1)
     finally:
         server.stop()

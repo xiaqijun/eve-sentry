@@ -49,6 +49,7 @@ interface LiveSystemRow {
 
 interface ClientStatusRow {
   id: string;
+  nodeLabel: string;
   accountName: string;
   clientLabel: string;
   systemName: string;
@@ -166,6 +167,7 @@ function clientStatusRows(bootstrap: BootstrapPayload): ClientStatusRow[] {
           || ["error", "failed", "failure", "exception"].includes(runtimeStatus);
         return [{
           id: `${id}:${String(value.client_id || targetIndex)}`,
+          nodeLabel: "",
           accountName: accountName || "未上报账号",
           clientLabel: `${clientLabel || id}${clientVersion ? ` · ${clientVersion}` : ""}`,
           systemName: systemName || "未知星系",
@@ -181,7 +183,8 @@ function clientStatusRows(bootstrap: BootstrapPayload): ClientStatusRow[] {
     .sort((left, right) => (
       Number(left.status === "monitoring") - Number(right.status === "monitoring")
       || left.accountName.localeCompare(right.accountName)
-    ));
+    ))
+    .map((row, index) => ({ ...row, nodeLabel: `监控节点 ${index + 1}` }));
 }
 
 function coverageStatusTag(status: ClientStatusRow["status"]) {
@@ -268,7 +271,7 @@ export function DashboardPage() {
     { title: "级别", dataIndex: "level", width: 76, render: (value?: string) => levelTag(value) },
   ];
   const clientColumns: TableColumnProps<ClientStatusRow>[] = [
-    { title: "监控账号", dataIndex: "accountName", width: 112, render: (value: string) => <Typography.Text bold ellipsis={{ showTooltip: true }}>{value}</Typography.Text> },
+    { title: "监控节点", dataIndex: "nodeLabel", width: 112, render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
     { title: "所在星系", dataIndex: "systemName", width: 96 },
     { title: "监控客户端", dataIndex: "clientLabel", render: (value: string) => <Typography.Text ellipsis={{ showTooltip: true }}>{value}</Typography.Text> },
     { title: "状态", dataIndex: "status", width: 92, render: (value: ClientStatusRow["status"]) => coverageStatusTag(value) },
@@ -311,10 +314,10 @@ export function DashboardPage() {
           </Card>
         </Grid.Col>
         <Grid.Col xl={12} lg={24} xs={24}>
-          <Card className="dashboard-card" title={<span><MonitorCheck size={16} />监控覆盖</span>} extra={<Typography.Text type="secondary">{clients.length} 个账号 · {coveredSystems} 个星系</Typography.Text>}>
+          <Card className="dashboard-card" title={<span><MonitorCheck size={16} />监控覆盖</span>} extra={<Typography.Text type="secondary">{clients.length} 个节点 · {coveredSystems} 个星系</Typography.Text>}>
             {clients.length > 0 ? (
               <Table<ClientStatusRow> border={false} columns={clientColumns} data={clients} pagination={clients.length > 8 ? { pageSize: 8, size: "mini" } : false} rowKey="id" />
-            ) : <Empty description="尚未收到监控账号覆盖信息" />}
+            ) : <Empty description="尚未收到监控节点覆盖信息" />}
           </Card>
         </Grid.Col>
       </Grid.Row>

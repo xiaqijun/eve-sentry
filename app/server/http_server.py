@@ -282,6 +282,17 @@ def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
     )
 
 
+def _monitoring_nodes_version(nodes: list[dict[str, Any]]) -> str:
+    """Return a stable version for an online monitoring-node snapshot."""
+    encoded = json.dumps(
+        nodes,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
 def _monitoring_node_key(node: dict[str, Any]) -> str:
     """Return a stable identity for one monitored account/window target."""
     client_id = str(node.get("client_id") or "").strip()
@@ -794,7 +805,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 resume_after_id=resume_after_id,
                 include_since=include_since,
                 limit=50 if parsed_limit is None else parsed_limit,
-                timeout_seconds=30.0 if parsed_timeout is None else parsed_timeout,
+                timeout_seconds=parsed_timeout,
                 heartbeat_seconds=15.0 if parsed_heartbeat is None else parsed_heartbeat,
                 **filters,
             )
@@ -1491,6 +1502,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             }
             for system_name, hostile_count in sorted(hostile_counts.items())
         ]
+        clients = self._store().heartbeat_snapshot()
+        monitoring_nodes = _monitoring_target_state(clients)
         return {
             "schema_version": "intel_bootstrap.v1",
             "generated_at": utc_now_iso(),
@@ -1503,7 +1516,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             },
             "alerts": alerts,
             "active_intel": active_items,
-            "clients": self._store().heartbeat_snapshot(),
+            "clients": clients,
+            "monitoring_nodes": monitoring_nodes,
+            "monitoring_nodes_version": _monitoring_nodes_version(monitoring_nodes),
         }
 
     def _map_snapshot_payload(self) -> dict[str, Any]:
@@ -2617,7 +2632,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         resume_after_id: str = "",
         include_since: bool = False,
         limit: int = 50,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float | None = None,
         heartbeat_seconds: float = 15.0,
         min_score: int | None = None,
         min_level: str | None = None,
@@ -2639,7 +2654,11 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         last_bootstrap_fingerprint = ""
         last_monitoring_target_state: list[dict[str, Any]] | None = None
         active_hostile_counts: dict[str, int] | None = None
-        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        deadline = (
+            time.monotonic() + max(0.0, timeout_seconds)
+            if timeout_seconds is not None
+            else None
+        )
         heartbeat_interval = max(0.0, heartbeat_seconds)
         next_heartbeat_at = (
             time.monotonic() + heartbeat_interval if heartbeat_interval else 0.0
@@ -2772,6 +2791,10 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                                         bootstrap.get("generated_at") or utc_now_iso()
                                     ),
                                     "changes": monitoring_node_changes,
+                                    "nodes": current_monitoring_target_state,
+                                    "nodes_version": _monitoring_nodes_version(
+                                        current_monitoring_target_state
+                                    ),
                                 },
                             )
                         self._write_sse("bootstrap", bootstrap_event_id, bootstrap)
@@ -2811,10 +2834,10 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 return
 
             now = time.monotonic()
-            remaining = deadline - now
-            if remaining <= 0:
+            remaining = deadline - now if deadline is not None else None
+            if remaining is not None and remaining <= 0:
                 break
-            sleep_for = min(1.0, remaining)
+            sleep_for = min(1.0, remaining) if remaining is not None else 1.0
             if heartbeat_interval:
                 sleep_for = min(sleep_for, max(0.0, next_heartbeat_at - now))
             if next_client_stale_in is not None:
