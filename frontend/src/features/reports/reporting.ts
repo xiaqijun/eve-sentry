@@ -264,7 +264,9 @@ function buildWaves(
     wave.uniqueTargets = wave.targetIds.size;
   });
 
-  return waves.map(({
+  return waves
+    .filter((wave) => wave.incidentCount > 0 && wave.targetMap.size > 0)
+    .map(({
     targetIds: _targetIds,
     targetMap,
     startedMs: _startedMs,

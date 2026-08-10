@@ -177,6 +177,26 @@ describe("hostile reporting", () => {
     expect(report.verificationRate).toBe(0);
   });
 
+  it("omits lifecycle waves that have no verified hostile personnel", () => {
+    const report = buildHostileReport(
+      [],
+      "24h",
+      NOW,
+      [{
+        id: "empty-wave",
+        system_name: "S-KSWL",
+        started_at: "2026-07-22T11:00:00Z",
+        last_seen_at: "2026-07-22T11:05:00Z",
+        cleared_at: "2026-07-22T11:10:00Z",
+        active: false,
+      }],
+    );
+
+    expect(report.waves).toEqual([]);
+    expect(report.waveCount).toBe(0);
+    expect(report.peakWaveTargets).toBe(0);
+  });
+
   it("keeps alerts more than fifteen minutes apart in one uncleared wave", () => {
     const lifecycle: HostileWaveLifecycle[] = [{
       id: "long-wave",
