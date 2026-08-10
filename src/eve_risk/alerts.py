@@ -124,7 +124,11 @@ def format_monitoring_nodes_message(
     nodes: list[dict[str, Any]],
     changes: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Format an anonymous full online-node snapshot for group delivery."""
+    """Format the current anonymous online-node list for group delivery.
+
+    ``changes`` remains accepted for event compatibility, but the message is
+    intentionally a snapshot only so a group always sees the current list.
+    """
     unique: dict[str, dict[str, Any]] = {}
     for node in nodes:
         if not isinstance(node, dict):
@@ -153,26 +157,7 @@ def format_monitoring_nodes_message(
             .casefold(),
         ),
     )
-    lines = ["监控节点状态更新"]
-    if changes:
-        summaries: list[str] = []
-        for change in changes:
-            if not isinstance(change, dict):
-                continue
-            change_type = str(change.get("change") or "").strip().casefold()
-            if change_type == "moved":
-                before = str(change.get("from_system") or "Unknown").strip() or "Unknown"
-                after = str(
-                    change.get("to_system") or change.get("system_name") or "Unknown"
-                ).strip() or "Unknown"
-                summaries.append(f"移动 {before} → {after}")
-            elif change_type == "online":
-                summaries.append("上线")
-            elif change_type == "offline":
-                summaries.append("下线")
-        if summaries:
-            lines.append(f"变化｜{'、'.join(summaries)}")
-    lines.append(f"在线节点｜{len(ordered)}")
+    lines = [f"在线节点｜{len(ordered)}"]
     if not ordered:
         lines.append("暂无在线监控节点")
         return "\n".join(lines)

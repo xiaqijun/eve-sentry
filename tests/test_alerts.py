@@ -278,6 +278,8 @@ async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event()
         assert "在线节点｜2" in message
         assert "监控节点 1｜Jita" in message
         assert "监控节点 2｜Tama" in message
+        assert "监控节点状态更新" not in message
+        assert "变化｜" not in message
         assert "Pilot Alpha" not in message
         assert "Pilot Beta" not in message
 
