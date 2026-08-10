@@ -64,6 +64,10 @@ Character Three
 星系状态和告警去重游标保存在 Redis 中，不写入 PostgreSQL 或应用日志；QQ 发送
 临时失败时不会提前推进星系状态，后续状态同步会继续重试。
 
+监控账号上线、下线或移动到新星系时，同一批订阅群还会收到对应节点消息。机器人同时
+兼容独立的 `monitoring_node` SSE 事件和 `bootstrap.monitoring_node_changes` 字段，
+并通过 Redis 去重，服务端同时发送两种格式时不会重复通知。
+
 ## 部署
 
 1. 在 QQ 开放平台创建机器人，启用群聊消息能力，取得 `AppID` 与 `AppSecret`。

@@ -106,6 +106,24 @@ def format_system_alert_message(system_name: str, transition: str) -> str:
     return f"❗ {system_name} 来敌"
 
 
+def format_monitoring_node_message(change: dict[str, Any]) -> str:
+    change_type = str(change.get("change") or "").strip().casefold()
+    account = str(
+        change.get("character_name")
+        or change.get("source_instance")
+        or change.get("client_id")
+        or "未知账号"
+    ).strip()
+    system_name = str(change.get("system_name") or "Unknown").strip() or "Unknown"
+    if change_type == "online":
+        return f"🟢 监控节点上线\n账号｜{account}\n位置｜{system_name}"
+    if change_type == "offline":
+        return f"⚪ 监控节点下线\n账号｜{account}\n最后位置｜{system_name}"
+    from_system = str(change.get("from_system") or "Unknown").strip() or "Unknown"
+    to_system = str(change.get("to_system") or system_name).strip() or "Unknown"
+    return f"🔵 监控节点移动\n账号｜{account}\n位置｜{from_system} → {to_system}"
+
+
 async def iter_sse_events(
     lines: AsyncIterable[str],
 ) -> AsyncIterator[tuple[str, str, str]]:
@@ -279,7 +297,79 @@ class EveSentryAlertRelay:
         )
         return failed == 0
 
+    async def deliver_monitoring_node_change(
+        self,
+        change: dict[str, Any],
+        occurred_at: str,
+    ) -> None:
+        change_type = str(change.get("change") or "").strip().casefold()
+        if change_type not in {"online", "offline", "moved"}:
+            logger.warning("Ignored unknown EVE Sentry monitoring node change")
+            return
+        node_id = str(
+            change.get("node_id")
+            or change.get("client_id")
+            or change.get("source_instance")
+            or change.get("character_name")
+            or ""
+        ).strip()
+        if not node_id:
+            logger.warning("Ignored monitoring node change without identity")
+            return
+
+        raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
+        groups = sorted(_decode(value) for value in raw_groups if _decode(value))
+        message = format_monitoring_node_message(change)
+        event_id = ":".join(
+            (
+                "node",
+                change_type,
+                node_id,
+                str(change.get("from_system") or ""),
+                str(change.get("to_system") or change.get("system_name") or ""),
+                occurred_at,
+            )
+        )
+        delivered = 0
+        for group_openid in groups:
+            delivered_key = _delivered_key(event_id, group_openid)
+            if await self.redis.exists(delivered_key):
+                continue
+            try:
+                await self.qq.send_proactive_text(group_openid, message)
+            except Exception:
+                logger.exception("QQ monitoring node delivery failed")
+                continue
+            await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
+            delivered += 1
+
+        logger.info(
+            "EVE Sentry monitoring node change processed change=%s deliveries=%d",
+            change_type,
+            delivered,
+        )
+
+    async def process_monitoring_node(self, payload: dict[str, Any]) -> None:
+        changes = payload.get("changes")
+        if not isinstance(changes, list):
+            logger.warning("Ignored EVE Sentry monitoring node event without changes")
+            return
+        occurred_at = str(
+            payload.get("generated_at") or datetime.now(UTC).isoformat()
+        ).strip()
+        for change in changes:
+            if isinstance(change, dict):
+                await self.deliver_monitoring_node_change(change, occurred_at)
+
     async def process_bootstrap(self, payload: dict[str, Any]) -> None:
+        node_changes = payload.get("monitoring_node_changes")
+        if isinstance(node_changes, list) and node_changes:
+            await self.process_monitoring_node(
+                {
+                    "generated_at": payload.get("generated_at"),
+                    "changes": node_changes,
+                }
+            )
         active_intel = payload.get("active_intel")
         if not isinstance(active_intel, list):
             logger.warning("Ignored EVE Sentry bootstrap without active_intel list")
@@ -427,11 +517,11 @@ class EveSentryAlertRelay:
             async for event_name, _event_id, data in iter_sse_events(
                 response.aiter_lines()
             ):
-                if event_name != "bootstrap":
-                    continue
                 payload = json.loads(data)
-                if isinstance(payload, dict):
+                if event_name == "bootstrap" and isinstance(payload, dict):
                     await self.process_bootstrap(payload)
+                elif event_name == "monitoring_node" and isinstance(payload, dict):
+                    await self.process_monitoring_node(payload)
 
 
 def _active_intel_map(
