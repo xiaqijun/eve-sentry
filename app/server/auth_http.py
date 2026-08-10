@@ -50,10 +50,9 @@ def build_admin_clients_payload(
 ) -> dict[str, Any]:
     """Enrich private heartbeat attribution and aggregate API-key usage.
 
-    Older desktop builds generated legacy client ids after reinstalling or
-    losing their local identity file. Keep the newest legacy heartbeat for the
-    same user/type/host tuple while preserving the UUID-based ids used by the
-    current multi-client protocol.
+    Keep every currently online instance, but collapse offline history for the
+    same user/type/host tuple to its newest record. This removes reinstall and
+    upgrade residue without hiding genuinely concurrent clients.
     """
     owners: dict[str, dict[str, Any]] = {}
     keys: dict[str, dict[str, Any]] = {}
@@ -93,7 +92,7 @@ def build_admin_clients_payload(
 
     deduplicated: list[dict[str, Any]] = []
     seen_logical_clients: set[tuple[str, str, str]] = set()
-    stable_logical_clients: set[tuple[str, str, str]] = set()
+    online_logical_clients: set[tuple[str, str, str]] = set()
     hidden_duplicate_count = 0
     for heartbeat in heartbeats:
         details = heartbeat.get("details")
@@ -101,41 +100,26 @@ def build_admin_clients_payload(
         owner_id = str(heartbeat.get("user_id") or "").strip()
         client_type = str(heartbeat.get("client_type") or "client").strip()
         host = str(details.get("host") or "").strip().casefold()
-        client_id = str(heartbeat.get("client_id") or "").strip().casefold()
-        stable_prefix = {
-            "detector_client": "detector-client:",
-            "alert_client": "alert-client:",
-            "channel_client": "channel-client:",
-            "integration_client": "integration-client:",
-        }.get(client_type)
-        if owner_id and host and stable_prefix and client_id.startswith(stable_prefix):
-            stable_logical_clients.add((owner_id, client_type, host))
+        if owner_id and host and bool(heartbeat.get("online")):
+            online_logical_clients.add((owner_id, client_type, host))
 
     for heartbeat in heartbeats:
         details = heartbeat.get("details")
         details = details if isinstance(details, dict) else {}
-        client_id = str(heartbeat.get("client_id") or "").strip().casefold()
         owner_id = str(heartbeat.get("user_id") or "").strip()
         client_type = str(heartbeat.get("client_type") or "client").strip()
         host = str(details.get("host") or "").strip().casefold()
-        stable_prefix = {
-            "detector_client": "detector-client:",
-            "alert_client": "alert-client:",
-            "channel_client": "channel-client:",
-            "integration_client": "integration-client:",
-        }.get(client_type)
-        if stable_prefix and client_id.startswith(stable_prefix):
-            deduplicated.append(heartbeat)
-            continue
         # Without an owner and host there is no safe way to infer that two
-        # legacy ids belong to one installation; retain both records.
+        # records belong to one installation; retain both records.
         if not owner_id or not host:
             deduplicated.append(heartbeat)
             continue
         logical_key = (owner_id, client_type, host)
-        if logical_key in stable_logical_clients and not (
-            stable_prefix and client_id.startswith(stable_prefix)
-        ):
+        if bool(heartbeat.get("online")):
+            deduplicated.append(heartbeat)
+            seen_logical_clients.add(logical_key)
+            continue
+        if logical_key in online_logical_clients:
             hidden_duplicate_count += 1
             continue
         if logical_key in seen_logical_clients:

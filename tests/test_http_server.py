@@ -181,6 +181,45 @@ def test_admin_clients_hides_legacy_duplicate_identity_on_same_host():
     assert payload["clients"]["summary"]["hidden_duplicate_count"] == 1
 
 
+def test_admin_clients_collapses_offline_stable_history_but_keeps_online_instances():
+    payload = build_admin_clients_payload(
+        {
+            "heartbeats": [
+                {
+                    "client_id": "detector-client:online",
+                    "client_type": "detector_client",
+                    "user_id": "user-1",
+                    "seen_at": "2026-08-09T10:03:00+00:00",
+                    "online": True,
+                    "details": {"host": "scout-pc"},
+                },
+                {
+                    "client_id": "detector-client:old-1",
+                    "client_type": "detector_client",
+                    "user_id": "user-1",
+                    "seen_at": "2026-08-09T10:02:00+00:00",
+                    "online": False,
+                    "details": {"host": "scout-pc"},
+                },
+                {
+                    "client_id": "detector-client:old-2",
+                    "client_type": "detector_client",
+                    "user_id": "user-1",
+                    "seen_at": "2026-08-09T10:01:00+00:00",
+                    "online": False,
+                    "details": {"host": "scout-pc"},
+                },
+            ],
+            "summary": {},
+        },
+        [{"user_id": "user-1", "username": "pilot", "keys": []}],
+    )
+
+    assert payload["clients"]["count"] == 1
+    assert payload["clients"]["heartbeats"][0]["client_id"] == "detector-client:online"
+    assert payload["clients"]["summary"]["hidden_duplicate_count"] == 2
+
+
 def test_active_hostile_counts_include_latest_presence_without_double_counting():
     counts = _active_hostile_counts(
         [
