@@ -120,6 +120,8 @@ class SettingsPanel(QWidget):
             SETTINGS_INPUT_HEIGHT,
         )
         self._server_url_edit.setPlaceholderText("请输入服务端地址")
+        self._server_url_edit.setClearButtonEnabled(True)
+        self._server_url_edit.setToolTip("支持 http:// 或 https://；留空可关闭服务端通信")
         server_layout.addWidget(self._server_url_edit)
         key_label = QLabel("设备密钥")
         key_label.setObjectName("fieldLabel")
@@ -131,6 +133,8 @@ class SettingsPanel(QWidget):
         )
         self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_key_edit.setPlaceholderText("eve_...")
+        self._api_key_edit.setClearButtonEnabled(True)
+        self._api_key_edit.setToolTip("留空表示不启用认证；清空后会停止使用旧密钥")
         self._api_key_edit.setMaxLength(128)
         self._api_key_edit.setValidator(
             QRegularExpressionValidator(
@@ -383,8 +387,20 @@ class SettingsPanel(QWidget):
         server_url = self.get_server_url()
         validation_error = server_url_validation_error(server_url)
         if validation_error:
+            self._server_url_edit.setProperty("validationState", "error")
+            self._server_url_edit.setToolTip(validation_error)
+            self._server_url_edit.style().unpolish(self._server_url_edit)
+            self._server_url_edit.style().polish(self._server_url_edit)
+            self._server_url_edit.update()
             self.set_auth_status(validation_error, error=True)
             return
+        self._server_url_edit.setProperty("validationState", "ok")
+        self._server_url_edit.setToolTip(
+            "支持 http:// 或 https://；留空可关闭服务端通信"
+        )
+        self._server_url_edit.style().unpolish(self._server_url_edit)
+        self._server_url_edit.style().polish(self._server_url_edit)
+        self._server_url_edit.update()
         self._server_url_edit.setText(server_url)
         self.save_channel_config()
         self.server_url_changed.emit(server_url)

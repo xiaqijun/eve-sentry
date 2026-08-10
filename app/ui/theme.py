@@ -145,6 +145,10 @@ QLineEdit, QComboBox, QSpinBox {
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
     border-color: #23b7d8;
 }
+QLineEdit[validationState="error"] {
+    border-color: #d95c66;
+    background: #21161a;
+}
 QSpinBox {
     min-height: 32px;
     padding: 3px 30px 3px 8px;

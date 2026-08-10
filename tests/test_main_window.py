@@ -1487,6 +1487,12 @@ def test_settings_panel_rejects_invalid_server_port(tmp_path, monkeypatch):
     assert panel._auth_status_label.text() == (
         "服务端地址端口无效，请填写 1-65535 的数字端口"
     )
+    assert panel._server_url_edit.property("validationState") == "error"
+    assert "端口无效" in panel._server_url_edit.toolTip()
+
+    panel._server_url_edit.setText("127.0.0.1:8765")
+    panel._server_url_edit.editingFinished.emit()
+    assert panel._server_url_edit.property("validationState") == "ok"
 
 
 def test_settings_panel_does_not_supply_a_default_server_url(tmp_path, monkeypatch):
@@ -3115,6 +3121,84 @@ def test_start_monitor_rejects_missing_eve_windows(monkeypatch):
 
     assert window._monitor_btn.checked is False
     assert messages == ["当前没有可用的 EVE 窗口。"]
+
+
+def test_monitor_prerequisites_fail_before_identity_when_window_or_region_missing(monkeypatch):
+    messages = []
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.warning",
+        lambda _parent, _title, message: messages.append(message),
+    )
+    window = MainWindow.__new__(MainWindow)
+    window._build_monitor_targets = lambda: []
+
+    assert MainWindow._monitor_prerequisites_ready(window, show_message=True) is False
+    assert "在线 EVE 窗口" in messages[-1]
+
+    window._build_monitor_targets = lambda: [{"region": None}]
+    assert MainWindow._monitor_prerequisites_ready(window, show_message=True) is False
+    assert "监控区域" in messages[-1]
+
+
+def test_toggle_monitor_off_cancels_pending_identity_resume():
+    window = MainWindow.__new__(MainWindow)
+    window._identity_wants_monitor = True
+    window._monitor_start_state = "awaiting_identity"
+    stopped = []
+    window._stop_monitor = lambda: stopped.append(True)
+
+    MainWindow._toggle_monitor(window, False)
+
+    assert window._identity_wants_monitor is False
+    assert window._monitor_start_state == "idle"
+    assert stopped == [True]
+
+
+def test_toggle_alert_requires_server_and_cancels_pending_resume(monkeypatch):
+    class FakeButton:
+        def __init__(self):
+            self.checked = True
+
+        def setChecked(self, value):
+            self.checked = value
+
+    class FakeSettings:
+        def __init__(self):
+            self.status = None
+
+        def set_auth_status(self, message, error=False):
+            self.status = (message, error)
+
+    messages = []
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.warning",
+        lambda _parent, _title, message: messages.append(message),
+    )
+    window = MainWindow.__new__(MainWindow)
+    window._intel_url = ""
+    window._settings = FakeSettings()
+    window._alert_btn = FakeButton()
+    window._identity_wants_alert = True
+    started = []
+    window._start_alert = lambda: started.append(True)
+
+    MainWindow._toggle_alert(window, True)
+
+    assert window._alert_btn.checked is False
+    assert window._identity_wants_alert is False
+    assert window._settings.status == ("请先填写服务端地址", True)
+    assert messages == ["请先在设置中填写服务端地址，再开启预警。"]
+    assert started == []
+
+    window._intel_url = "https://example.test"
+    window._identity_wants_alert = True
+    stopped = []
+    window._stop_alert = lambda: stopped.append(True)
+
+    MainWindow._toggle_alert(window, False)
+
+    assert window._identity_wants_alert is False
+    assert stopped == [True]
 
 
 def test_start_monitor_deduplicates_repeated_start_request(monkeypatch):
