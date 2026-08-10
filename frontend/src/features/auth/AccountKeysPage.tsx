@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Button, Card, Input, Message, Space, Table, Tag, Typography } from "@arco-design/web-react";
+import { Button, Card, Input, Message, Pagination, Space, Table, Tag, Typography } from "@arco-design/web-react";
 import { IconCopy, IconPlus } from "@arco-design/web-react/icon";
 import { Ban, KeyRound, RotateCcw, Trash2 } from "lucide-react";
 
@@ -43,8 +43,12 @@ async function copyText(value: string): Promise<boolean> {
   }
 }
 
+const ACCOUNT_KEY_PAGE_SIZE = 20;
+
 export function AccountKeysPage() {
   const [keys, setKeys] = useState<ApiKeyRecord[]>([]);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
   const [newKeyName, setNewKeyName] = useState("");
   const [createdSecret, setCreatedSecret] = useState("");
   const [error, setError] = useState("");
@@ -55,8 +59,19 @@ export function AccountKeysPage() {
     "revoked by administrator",
   ].includes(key.revoked_reason || "");
 
-  const loadKeys = async () => setKeys(await listMyKeys());
+  const loadKeys = async () => {
+    setLoading(true);
+    try {
+      setKeys(await listMyKeys());
+    } finally {
+      setLoading(false);
+    }
+  };
   useEffect(() => { void loadKeys().catch((reason) => setError(String(reason))); }, []);
+  const pagedKeys = keys.slice((page - 1) * ACCOUNT_KEY_PAGE_SIZE, page * ACCOUNT_KEY_PAGE_SIZE);
+  useEffect(() => {
+    setPage((current) => Math.min(current, Math.max(1, Math.ceil(keys.length / ACCOUNT_KEY_PAGE_SIZE))));
+  }, [keys.length]);
 
   const createKey = async (event: FormEvent) => {
     event.preventDefault();
@@ -145,7 +160,8 @@ export function AccountKeysPage() {
               </div>
             ) : null}
           </div>
-          <Table<ApiKeyRecord> border={false} columns={columns} data={keys} noDataElement="尚未创建设备密钥" pagination={false} rowKey="key_id" />
+          <Table<ApiKeyRecord> border={false} columns={columns} data={pagedKeys} loading={loading} noDataElement="尚未创建设备密钥" pagination={false} rowKey="key_id" />
+          {keys.length > ACCOUNT_KEY_PAGE_SIZE ? <Pagination current={page} pageSize={ACCOUNT_KEY_PAGE_SIZE} showTotal total={keys.length} onChange={setPage} /> : null}
         </Card>
       </section>
     </div>

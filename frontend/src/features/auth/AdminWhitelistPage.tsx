@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Button, Card, Drawer, Empty, Input, List, Select, Space, Table, Tooltip, Typography } from "@arco-design/web-react";
+import { Button, Card, Drawer, Empty, Input, List, Pagination, Select, Space, Table, Tooltip, Typography } from "@arco-design/web-react";
 import { IconDelete, IconPlus, IconSafe, IconSettings, IconUserGroup } from "@arco-design/web-react/icon";
 
 import {
@@ -17,11 +17,15 @@ import {
 } from "./api";
 import type { AdminUser, AllowedCorporation } from "./types";
 
+const WHITELIST_PAGE_SIZE = 20;
+
 export function AdminWhitelistPage() {
   const [corporations, setCorporations] = useState<AllowedCorporation[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [selectedUserId, setSelectedUserId] = useState("");
   const [search, setSearch] = useState("");
+  const [userPage, setUserPage] = useState(1);
+  const [corporationPage, setCorporationPage] = useState(1);
   const [corporationId, setCorporationId] = useState("");
   const [characterId, setCharacterId] = useState("");
   const [characterNote, setCharacterNote] = useState("");
@@ -59,6 +63,18 @@ export function AdminWhitelistPage() {
     return users.filter((user) => [user.username, user.display_name]
       .some((value) => String(value || "").toLocaleLowerCase().includes(query)));
   }, [search, users]);
+  const pagedUsers = filteredUsers.slice((userPage - 1) * WHITELIST_PAGE_SIZE, userPage * WHITELIST_PAGE_SIZE);
+  const pagedCorporations = corporations.slice(
+    (corporationPage - 1) * WHITELIST_PAGE_SIZE,
+    corporationPage * WHITELIST_PAGE_SIZE,
+  );
+  useEffect(() => { setUserPage(1); }, [search]);
+  useEffect(() => {
+    setUserPage((current) => Math.min(current, Math.max(1, Math.ceil(filteredUsers.length / WHITELIST_PAGE_SIZE))));
+  }, [filteredUsers.length]);
+  useEffect(() => {
+    setCorporationPage((current) => Math.min(current, Math.max(1, Math.ceil(corporations.length / WHITELIST_PAGE_SIZE))));
+  }, [corporations.length]);
 
   const run = async (action: () => Promise<unknown>) => {
     setError("");
@@ -129,7 +145,8 @@ export function AdminWhitelistPage() {
         )}
         title={<Space><IconSafe /><span>军团白名单</span></Space>}
       >
-        <Table<AllowedCorporation> border={false} columns={corporationColumns} data={corporations} loading={loading} noDataElement="暂无军团" pagination={false} rowKey="corporation_id" />
+        <Table<AllowedCorporation> border={false} columns={corporationColumns} data={pagedCorporations} loading={loading} noDataElement="暂无军团" pagination={false} rowKey="corporation_id" />
+        {corporations.length > WHITELIST_PAGE_SIZE ? <Pagination current={corporationPage} pageSize={WHITELIST_PAGE_SIZE} showTotal total={corporations.length} onChange={setCorporationPage} /> : null}
       </Card>
 
       <Card
@@ -137,7 +154,8 @@ export function AdminWhitelistPage() {
         extra={<Input.Search aria-label="搜索用户" placeholder="搜索用户" value={search} onChange={setSearch} />}
         title={<Space><IconUserGroup /><span>角色白名单</span><Typography.Text type="secondary">共 {filteredUsers.length} 个用户</Typography.Text></Space>}
       >
-        <Table<AdminUser> border={false} columns={userColumns} data={filteredUsers} loading={loading} noDataElement="暂无用户" pagination={false} rowKey="user_id" />
+        <Table<AdminUser> border={false} columns={userColumns} data={pagedUsers} loading={loading} noDataElement="暂无用户" pagination={false} rowKey="user_id" />
+        {filteredUsers.length > WHITELIST_PAGE_SIZE ? <Pagination current={userPage} pageSize={WHITELIST_PAGE_SIZE} showTotal total={filteredUsers.length} onChange={setUserPage} /> : null}
       </Card>
 
       <Drawer footer={null} title={selectedUser ? <UserIdentity displayName={selectedUser.display_name} username={selectedUser.username} /> : "白名单详情"} visible={Boolean(selectedUser)} width={460} onCancel={() => setSelectedUserId("")}>

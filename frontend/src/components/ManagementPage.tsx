@@ -3,12 +3,16 @@ import { IconRefresh } from "@arco-design/web-react/icon";
 
 export function ManagementPageHeader({
   title,
+  subtitle,
+  kicker,
   loading = false,
   onRefresh,
   refreshLabel = "刷新",
   extra,
 }: {
   title: string;
+  subtitle?: string;
+  kicker?: string;
   loading?: boolean;
   onRefresh?: () => void;
   refreshLabel?: string;
@@ -16,8 +20,12 @@ export function ManagementPageHeader({
 }) {
   return (
     <header className="content-page-header account-header arco-page-header">
-      <Typography.Title heading={4}>{title}</Typography.Title>
-      <div className="arco-page-header-actions">
+      <div className="management-page-heading">
+        {kicker ? <Typography.Text className="content-page-kicker">{kicker}</Typography.Text> : null}
+        <Typography.Title heading={4}>{title}</Typography.Title>
+        {subtitle ? <Typography.Text className="management-page-subtitle" type="secondary">{subtitle}</Typography.Text> : null}
+      </div>
+      <div aria-label="页面操作" className="arco-page-header-actions" role="toolbar">
         {extra}
         {onRefresh ? (
           <Button icon={<IconRefresh />} loading={loading} type="outline" onClick={onRefresh}>
@@ -31,7 +39,7 @@ export function ManagementPageHeader({
 
 export function ManagementError({ error }: { error: string }) {
   return error ? (
-    <div className="arco-page-alert" role="alert">
+    <div aria-live="assertive" className="arco-page-alert" role="alert">
       <Alert closable={false} content={error} type="error" />
     </div>
   ) : null;
@@ -50,7 +58,7 @@ export function ManagementSummary({
       <Grid.Row gutter={16}>
         {items.map((item) => (
           <Grid.Col key={item.label} md={span} sm={12} xs={24}>
-            <Card>
+            <Card className="arco-summary-card">
               <Statistic title={item.label} value={item.value} />
             </Card>
           </Grid.Col>

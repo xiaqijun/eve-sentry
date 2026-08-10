@@ -8296,3 +8296,232 @@ body[data-theme="dark"] .admin-client-stacked-cell.has-error strong {
 [data-theme="dark"] .route-error-page {
   background: var(--color-bg-1, #17171a);
 }
+
+/* Management-system layout contract: shared spacing, hierarchy and responsive behavior. */
+.management-content:not(.management-content-workbench) {
+  min-width: 0;
+  padding: 28px clamp(18px, 3vw, 40px) 40px;
+  background: var(--color-bg-1, #f5f6f7);
+}
+
+.management-content:not(.management-content-workbench) > .admin-shell,
+.management-content:not(.management-content-workbench) > .account-shell {
+  width: min(100%, 1440px);
+  min-width: 0;
+  margin: 0 auto;
+}
+
+.arco-page-header {
+  align-items: flex-end;
+  min-height: 58px;
+  margin-bottom: 22px;
+  padding: 0 2px;
+}
+
+.management-page-heading {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.management-page-heading .arco-typography-title {
+  margin: 0;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+.management-page-subtitle {
+  max-width: 760px;
+  overflow: hidden;
+  color: var(--color-text-3, #86909c);
+  font-size: 13px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arco-page-header-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.arco-page-alert {
+  margin: -4px 0 18px;
+}
+
+.arco-summary-grid {
+  margin-bottom: 22px;
+}
+
+.arco-summary-grid .arco-row {
+  row-gap: 14px;
+}
+
+.arco-summary-grid .arco-summary-card {
+  height: 100%;
+  border: 1px solid var(--color-border-2, #e5e6eb);
+  border-radius: 10px;
+  background: var(--color-bg-2, #fff);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 3%);
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.arco-summary-grid .arco-summary-card:hover {
+  border-color: var(--color-primary-light-3, #c9e0ff);
+  box-shadow: 0 8px 22px rgb(0 0 0 / 7%);
+  transform: translateY(-1px);
+}
+
+.arco-summary-grid .arco-summary-card .arco-card-body {
+  min-height: 92px;
+  padding: 17px 18px;
+}
+
+.arco-summary-grid .arco-statistic-title {
+  margin-bottom: 8px;
+  color: var(--color-text-3, #86909c);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.arco-summary-grid .arco-statistic-value {
+  color: var(--color-text-1, #1d2129);
+  font-size: clamp(22px, 2vw, 28px);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.arco-management-card,
+.management-table-panel,
+.account-panel {
+  border: 1px solid var(--color-border-2, #e5e6eb);
+  border-radius: 10px;
+  background: var(--color-bg-2, #fff);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 3%);
+}
+
+.arco-management-card + .arco-management-card,
+.management-table-panel + .management-table-panel {
+  margin-top: 20px;
+}
+
+.arco-management-card > .arco-card-header,
+.management-table-panel > .arco-card-header,
+.account-panel > .arco-card-header {
+  min-height: 56px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--color-border-2, #e5e6eb);
+}
+
+.arco-management-card > .arco-card-body,
+.management-table-panel > .arco-card-body,
+.account-panel > .arco-card-body {
+  min-width: 0;
+}
+
+.arco-management-card .arco-card-header-title,
+.management-table-panel .arco-card-header-title,
+.account-panel .arco-card-header-title {
+  color: var(--color-text-1, #1d2129);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.arco-table-container {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.arco-table-th {
+  white-space: nowrap;
+}
+
+.arco-table-td {
+  max-width: 360px;
+  overflow-wrap: anywhere;
+}
+
+.arco-table .arco-table-tr:hover .arco-table-td {
+  background: var(--color-fill-2, #f7f8fa);
+}
+
+.management-table-panel .arco-pagination,
+.account-panel .arco-pagination,
+.arco-management-card .arco-pagination,
+.audit-pagination,
+.hostile-history-pagination {
+  justify-content: flex-end;
+  margin: 18px 20px 4px;
+}
+
+body[data-theme="dark"] .arco-summary-grid .arco-summary-card,
+body[data-theme="dark"] .arco-management-card,
+body[data-theme="dark"] .management-table-panel,
+body[data-theme="dark"] .account-panel {
+  border-color: var(--theme-border, #30343b);
+  background: var(--theme-surface, #20242a);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 18%);
+}
+
+body[data-theme="dark"] .arco-summary-grid .arco-summary-card:hover {
+  border-color: var(--color-primary-light-3, #35618f);
+}
+
+@media (max-width: 768px) {
+  .management-content:not(.management-content-workbench) {
+    padding: 18px 12px 28px;
+  }
+
+  .arco-page-header {
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 18px;
+    padding: 0;
+  }
+
+  .arco-page-header-actions {
+    flex-shrink: 0;
+  }
+
+  .management-page-subtitle {
+    white-space: normal;
+  }
+
+  .arco-summary-grid .arco-summary-card .arco-card-body {
+    min-height: 78px;
+    padding: 13px 14px;
+  }
+
+  .arco-management-card > .arco-card-header,
+  .management-table-panel > .arco-card-header,
+  .account-panel > .arco-card-header {
+    min-height: 52px;
+    padding: 0 14px;
+  }
+
+  .management-table-panel .arco-pagination,
+  .account-panel .arco-pagination,
+  .arco-management-card .arco-pagination,
+  .audit-pagination,
+  .hostile-history-pagination {
+    justify-content: center;
+    margin: 14px 8px 2px;
+  }
+}
+
+@media (max-width: 480px) {
+  .arco-page-header {
+    flex-direction: column;
+  }
+
+  .arco-page-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .arco-page-header-actions .arco-btn {
+    flex: 1 1 auto;
+  }
+}

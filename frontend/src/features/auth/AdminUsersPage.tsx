@@ -8,6 +8,7 @@ import {
   Input,
   Menu,
   Modal,
+  Pagination,
   Select,
   Space,
   Table,
@@ -46,6 +47,7 @@ import { useAuth } from "./AuthContext";
 import type { AdminUser, ApiKeyRecord } from "./types";
 
 type UserStatusFilter = "all" | "active" | "disabled";
+const USER_PAGE_SIZE = 20;
 
 export function AdminUsersPage() {
   const { user: currentUser } = useAuth();
@@ -53,6 +55,7 @@ export function AdminUsersPage() {
   const [selectedUserId, setSelectedUserId] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<UserStatusFilter>("all");
+  const [page, setPage] = useState(1);
   const [createRole, setCreateRole] = useState<"admin" | "member">("member");
   const [createOpen, setCreateOpen] = useState(false);
   const [createdSecret, setCreatedSecret] = useState("");
@@ -91,6 +94,14 @@ export function AdminUsersPage() {
         .some((value) => String(value || "").toLocaleLowerCase().includes(query));
     });
   }, [search, statusFilter, users]);
+  const pagedUsers = filteredUsers.slice((page - 1) * USER_PAGE_SIZE, page * USER_PAGE_SIZE);
+  useEffect(() => {
+    setPage(1);
+  }, [search, statusFilter]);
+  useEffect(() => {
+    const lastPage = Math.max(1, Math.ceil(filteredUsers.length / USER_PAGE_SIZE));
+    setPage((current) => Math.min(current, lastPage));
+  }, [filteredUsers.length]);
 
   const run = async (action: () => Promise<unknown>): Promise<boolean> => {
     setError("");
@@ -245,7 +256,8 @@ export function AdminUsersPage() {
         )}
         title={<Space><IconUserGroup /><span>用户列表</span><Typography.Text type="secondary">共 {filteredUsers.length} 个结果</Typography.Text></Space>}
       >
-        <Table<AdminUser> border={false} columns={columns} data={filteredUsers} loading={loading} noDataElement="没有符合条件的用户" pagination={false} rowKey="user_id" />
+        <Table<AdminUser> border={false} columns={columns} data={pagedUsers} loading={loading} noDataElement="没有符合条件的用户" pagination={false} rowKey="user_id" />
+        {filteredUsers.length > USER_PAGE_SIZE ? <Pagination current={page} pageSize={USER_PAGE_SIZE} showTotal total={filteredUsers.length} onChange={setPage} /> : null}
       </Card>
 
       <Modal

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Button, Card, Descriptions, Drawer, Empty, Input, List, Space, Table, Tooltip, Typography } from "@arco-design/web-react";
+import { Button, Card, Descriptions, Drawer, Empty, Input, List, Pagination, Space, Table, Tooltip, Typography } from "@arco-design/web-react";
 import { IconEye, IconIdcard } from "@arco-design/web-react/icon";
 
 import {
@@ -11,10 +11,13 @@ import {
 import { listAdminUsers } from "./api";
 import type { AdminUser } from "./types";
 
+const IDENTITY_PAGE_SIZE = 20;
+
 export function AdminIdentityPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [selectedUserId, setSelectedUserId] = useState("");
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -41,6 +44,12 @@ export function AdminIdentityPage() {
       .some((value) => String(value || "").toLocaleLowerCase().includes(query)));
   }, [search, users]);
 
+  const pagedUsers = filteredUsers.slice((page - 1) * IDENTITY_PAGE_SIZE, page * IDENTITY_PAGE_SIZE);
+  useEffect(() => { setPage(1); }, [search]);
+  useEffect(() => {
+    setPage((current) => Math.min(current, Math.max(1, Math.ceil(filteredUsers.length / IDENTITY_PAGE_SIZE))));
+  }, [filteredUsers.length]);
+
   const columns = [
     { title: "用户", render: (_: unknown, user: AdminUser) => <UserIdentity displayName={user.display_name} username={user.username} /> },
     { title: "已验证角色", dataIndex: "verified_characters", render: (items: AdminUser["verified_characters"]) => items.length },
@@ -66,7 +75,8 @@ export function AdminIdentityPage() {
         extra={<Input.Search aria-label="搜索用户身份" placeholder="搜索用户名或显示名称" value={search} onChange={setSearch} />}
         title={<Space><IconIdcard /><span>已验证身份</span><Typography.Text type="secondary">共 {filteredUsers.length} 个结果</Typography.Text></Space>}
       >
-        <Table<AdminUser> border={false} columns={columns} data={filteredUsers} loading={loading} noDataElement="没有符合条件的用户" pagination={false} rowKey="user_id" />
+        <Table<AdminUser> border={false} columns={columns} data={pagedUsers} loading={loading} noDataElement="没有符合条件的用户" pagination={false} rowKey="user_id" />
+        {filteredUsers.length > IDENTITY_PAGE_SIZE ? <Pagination current={page} pageSize={IDENTITY_PAGE_SIZE} showTotal total={filteredUsers.length} onChange={setPage} /> : null}
       </Card>
 
       <Drawer
