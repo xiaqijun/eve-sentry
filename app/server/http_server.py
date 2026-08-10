@@ -2762,6 +2762,18 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                                 bootstrap.get("generated_at") or last_seen or ""
                             ).strip()
                         bootstrap["monitoring_node_changes"] = monitoring_node_changes
+                        if monitoring_node_changes:
+                            self._write_sse(
+                                "monitoring_node",
+                                bootstrap_event_id,
+                                {
+                                    "schema_version": "monitoring_node_event.v1",
+                                    "generated_at": str(
+                                        bootstrap.get("generated_at") or utc_now_iso()
+                                    ),
+                                    "changes": monitoring_node_changes,
+                                },
+                            )
                         self._write_sse("bootstrap", bootstrap_event_id, bootstrap)
                         last_bootstrap_fingerprint = fingerprint
                         wrote_event = True

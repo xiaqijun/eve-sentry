@@ -143,6 +143,20 @@ OCR 人员名单只是额外信息；因此即使尚未生成 OCR 告警记录�
 “从 A 移动到 B”消息，并使用 `node_id` 去重。下线既包括客户端主动停止监控，也包括心跳超时；
 星系变化只在同一节点的 `system_name` 实际改变时产生。
 
+### `monitoring_node` 事件
+
+为方便机器人直接推送消息，节点状态变化还会作为独立 SSE 事件发送。该事件与同一轮
+`bootstrap` 使用相同的 SSE `id`，不会影响告警断线续传。
+
+```text
+id: 2026-08-10T01:00:00+00:00
+event: monitoring_node
+data: {"schema_version":"monitoring_node_event.v1","generated_at":"2026-08-10T01:00:00+00:00","changes":[{"change":"moved","node_id":"client:detector-client:test:pilot-alpha","character_name":"Pilot Alpha","from_system":"Jita","to_system":"Tama","system_name":"Tama"}]}
+```
+
+机器人可以直接监听 `monitoring_node`，按 `change` 分别发送上线、下线和换星系消息；
+`bootstrap.monitoring_node_changes` 仍会保留，用于不支持新事件名的兼容消费者。
+
 ### `alert` 事件
 
 发现新的活动敌对证据时发送：
@@ -236,7 +250,7 @@ while True:
                 if not line:
                     if data_lines:
                         payload = json.loads("\n".join(data_lines))
-                        if event_name in {"bootstrap", "alert", "safe"}:
+                        if event_name in {"bootstrap", "monitoring_node", "alert", "safe"}:
                             print(event_name, payload)
                         if event_id:
                             last_event_id = event_id

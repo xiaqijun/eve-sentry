@@ -2831,6 +2831,7 @@ def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
     node_removed = threading.Event()
     snapshots = []
     node_changes = []
+    node_events = []
 
     def read_bootstraps():
         query = urlencode(
@@ -2851,6 +2852,8 @@ def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
                 line = raw_line.decode("utf-8").strip()
                 if line.startswith("event:"):
                     event_name = line[len("event:"):].strip()
+                elif line.startswith("data:") and event_name == "monitoring_node":
+                    node_events.append(json.loads(line[len("data:"):].strip()))
                 elif line.startswith("data:") and event_name == "bootstrap":
                     payload = json.loads(line[len("data:"):].strip())
                     systems = monitored_system_names(payload.get("clients"))
@@ -2887,6 +2890,8 @@ def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
         assert time.monotonic() - started_at < 0.75
         assert [item["change"] for item in node_changes] == ["online"]
         assert node_changes[0]["system_name"] == "S-KSWL"
+        assert node_events[0]["schema_version"] == "monitoring_node_event.v1"
+        assert node_events[0]["changes"][0]["change"] == "online"
 
         started_at = time.monotonic()
         status, _ = request_json(
@@ -2906,6 +2911,10 @@ def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
         assert time.monotonic() - started_at < 0.75
         assert snapshots == [[], ["S-KSWL"], []]
         assert [item["change"] for item in node_changes] == ["online", "offline"]
+        assert [item["change"] for event in node_events for item in event["changes"]] == [
+            "online",
+            "offline",
+        ]
         stream_thread.join(timeout=1)
     finally:
         server.stop()
