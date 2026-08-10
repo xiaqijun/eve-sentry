@@ -25,6 +25,7 @@ from app.server.http_server import (
     IntelHTTPServer,
     IntelRequestHandler,
     _active_hostile_counts,
+    _monitoring_node_changes,
 )
 from app.server.auth import AuthService
 from app.server.auth_store import AuthRepository
@@ -70,6 +71,46 @@ def test_active_hostile_counts_merge_case_variant_system_names():
     )
 
     assert counts == {"S-KSWL": 3}
+
+
+def test_monitoring_node_changes_describe_online_offline_and_move():
+    previous = [
+        {
+            "client_id": "window:alpha",
+            "character_name": "Pilot Alpha",
+            "source_instance": "EVE - Pilot Alpha",
+            "system_name": "Jita",
+        },
+        {
+            "client_id": "window:gone",
+            "character_name": "Pilot Gone",
+            "source_instance": "EVE - Pilot Gone",
+            "system_name": "Amarr",
+        },
+    ]
+    current = [
+        {
+            "client_id": "window:alpha",
+            "character_name": "Pilot Alpha",
+            "source_instance": "EVE - Pilot Alpha",
+            "system_name": "Tama",
+        },
+        {
+            "client_id": "window:new",
+            "character_name": "Pilot New",
+            "source_instance": "EVE - Pilot New",
+            "system_name": "Dodixie",
+        },
+    ]
+
+    changes = _monitoring_node_changes(previous, current)
+    by_change = {item["change"]: item for item in changes}
+
+    assert by_change["online"]["character_name"] == "Pilot New"
+    assert by_change["offline"]["character_name"] == "Pilot Gone"
+    assert by_change["moved"]["from_system"] == "Jita"
+    assert by_change["moved"]["to_system"] == "Tama"
+    assert _monitoring_node_changes(current, current) == []
 
 
 def test_admin_clients_hides_legacy_duplicate_identity_on_same_host():
@@ -2789,6 +2830,7 @@ def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
     node_received = threading.Event()
     node_removed = threading.Event()
     snapshots = []
+    node_changes = []
 
     def read_bootstraps():
         query = urlencode(
@@ -2813,6 +2855,7 @@ def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
                     payload = json.loads(line[len("data:"):].strip())
                     systems = monitored_system_names(payload.get("clients"))
                     snapshots.append(systems)
+                    node_changes.extend(payload.get("monitoring_node_changes") or [])
                     if len(snapshots) == 1:
                         stream_ready.set()
                     if systems == ["S-KSWL"]:
@@ -2842,6 +2885,8 @@ def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
         assert status == 201
         assert node_received.wait(timeout=0.75)
         assert time.monotonic() - started_at < 0.75
+        assert [item["change"] for item in node_changes] == ["online"]
+        assert node_changes[0]["system_name"] == "S-KSWL"
 
         started_at = time.monotonic()
         status, _ = request_json(
@@ -2860,6 +2905,7 @@ def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
         assert node_removed.wait(timeout=0.75)
         assert time.monotonic() - started_at < 0.75
         assert snapshots == [[], ["S-KSWL"], []]
+        assert [item["change"] for item in node_changes] == ["online", "offline"]
         stream_thread.join(timeout=1)
     finally:
         server.stop()

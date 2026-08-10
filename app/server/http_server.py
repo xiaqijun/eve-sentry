@@ -282,6 +282,71 @@ def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
     )
 
 
+def _monitoring_node_key(node: dict[str, Any]) -> str:
+    """Return a stable identity for one monitored account/window target."""
+    client_id = str(node.get("client_id") or "").strip()
+    if client_id:
+        return f"client:{client_id}"
+    heartbeat_id = str(node.get("heartbeat_client_id") or "").strip()
+    source_instance = str(node.get("source_instance") or "").strip()
+    if heartbeat_id or source_instance:
+        return f"window:{heartbeat_id}:{source_instance}"
+    character_name = str(node.get("character_name") or "").strip()
+    return f"character:{character_name.casefold()}"
+
+
+def _monitoring_node_changes(
+    previous: list[dict[str, Any]],
+    current: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Describe online, offline, and system-move changes between snapshots."""
+    previous_by_key = {
+        _monitoring_node_key(node): node
+        for node in previous
+        if isinstance(node, dict)
+    }
+    current_by_key = {
+        _monitoring_node_key(node): node
+        for node in current
+        if isinstance(node, dict)
+    }
+    changes: list[dict[str, Any]] = []
+
+    for key in sorted(current_by_key.keys() - previous_by_key.keys()):
+        change = dict(current_by_key[key])
+        change.update({"node_id": key, "change": "online"})
+        changes.append(change)
+
+    for key in sorted(previous_by_key.keys() - current_by_key.keys()):
+        change = dict(previous_by_key[key])
+        change.update({"node_id": key, "change": "offline"})
+        changes.append(change)
+
+    for key in sorted(current_by_key.keys() & previous_by_key.keys()):
+        before = previous_by_key[key]
+        after = current_by_key[key]
+        before_system = str(
+            before.get("system_name") or before.get("system") or ""
+        ).strip()
+        after_system = str(
+            after.get("system_name") or after.get("system") or ""
+        ).strip()
+        if before_system.casefold() == after_system.casefold():
+            continue
+        change = dict(after)
+        change.update(
+            {
+                "node_id": key,
+                "change": "moved",
+                "from_system": before_system or "Unknown",
+                "to_system": after_system or "Unknown",
+            }
+        )
+        changes.append(change)
+
+    return changes
+
+
 class IntelHTTPServer:
     """Small background HTTP server for local intel sharing."""
 
@@ -2572,6 +2637,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         resume_after_id = resume_after_id.strip()
         sent_ids: set[str] = set()
         last_bootstrap_fingerprint = ""
+        last_monitoring_target_state: list[dict[str, Any]] | None = None
         active_hostile_counts: dict[str, int] | None = None
         deadline = time.monotonic() + max(0.0, timeout_seconds)
         heartbeat_interval = max(0.0, heartbeat_seconds)
@@ -2667,6 +2733,18 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         active_items or [],
                         active_snapshot_alerts,
                     )
+                    current_monitoring_target_state = _monitoring_target_state(
+                        bootstrap.get("clients")
+                    )
+                    monitoring_node_changes = (
+                        _monitoring_node_changes(
+                            last_monitoring_target_state,
+                            current_monitoring_target_state,
+                        )
+                        if last_monitoring_target_state is not None
+                        else []
+                    )
+                    last_monitoring_target_state = current_monitoring_target_state
                     next_client_stale_in = _next_monitoring_heartbeat_stale_in(
                         bootstrap.get("clients")
                     )
@@ -2683,6 +2761,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                             bootstrap_event_id = str(
                                 bootstrap.get("generated_at") or last_seen or ""
                             ).strip()
+                        bootstrap["monitoring_node_changes"] = monitoring_node_changes
                         self._write_sse("bootstrap", bootstrap_event_id, bootstrap)
                         last_bootstrap_fingerprint = fingerprint
                         wrote_event = True

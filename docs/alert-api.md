@@ -98,9 +98,50 @@ OCR 人员名单只是额外信息；因此即使尚未生成 OCR 告警记录�
 | `alerts` | array | 当前活动告警详情 |
 | `active_intel` | array | 当前活动情报 |
 | `clients` | object | 在线客户端和监控位置快照 |
+| `monitoring_node_changes` | array | 本次快照相对上次快照的上线、下线或换星系变化 |
 
 `hostile_count` 已由服务端按监控客户端去重和聚合。调用方不应自行累加 `alerts` 或
 `active_intel` 来替代该值；`alerts` 可能要等 OCR 增效信息到达后才出现。
+
+### 监控节点变化
+
+当连接使用 `bootstrap=1` 时，服务端会在监控节点状态发生变化后更新快照中的
+`monitoring_node_changes`。首次连接返回空数组；后续只包含本次变化，适合机器人直接转换成消息，
+无需轮询客户端列表或自行比较完整快照。
+
+```json
+{
+  "monitoring_node_changes": [
+    {
+      "change": "online",
+      "node_id": "client:detector-client:test:pilot-alpha",
+      "character_name": "Pilot Alpha",
+      "source_instance": "EVE - Pilot Alpha",
+      "system_name": "Jita",
+      "system_id": 30000142
+    },
+    {
+      "change": "moved",
+      "node_id": "client:detector-client:test:pilot-beta",
+      "character_name": "Pilot Beta",
+      "from_system": "Jita",
+      "to_system": "Tama",
+      "system_name": "Tama",
+      "system_id": 30002813
+    },
+    {
+      "change": "offline",
+      "node_id": "client:detector-client:test:pilot-gamma",
+      "character_name": "Pilot Gamma",
+      "system_name": "Amarr"
+    }
+  ]
+}
+```
+
+`change` 取值为 `online`、`offline` 或 `moved`。机器人建议分别发送“上线”“下线”和
+“从 A 移动到 B”消息，并使用 `node_id` 去重。下线既包括客户端主动停止监控，也包括心跳超时；
+星系变化只在同一节点的 `system_name` 实际改变时产生。
 
 ### `alert` 事件
 
