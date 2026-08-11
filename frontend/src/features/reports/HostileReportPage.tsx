@@ -135,8 +135,8 @@ export function HostileReportPage() {
     { title: "星系", dataIndex: "systemName", render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
     { title: "开始", dataIndex: "startedAt", width: 154, render: (value?: string) => formatTime(value) },
     { title: "结束", dataIndex: "endedAt", width: 154, render: (value: string | undefined, row) => row.active ? <Tag color="red">进行中</Tag> : formatTime(value) },
-    { title: "事件", dataIndex: "incidentCount", width: 70 },
-    { title: "独立人员", dataIndex: "uniqueTargets", width: 84 },
+    { title: "峰值敌对", dataIndex: "peakHostileCount", width: 92 },
+    { title: "已识别人员", dataIndex: "uniqueTargets", width: 100 },
   ];
   const systemColumns: TableColumnProps<SystemReportRow>[] = [
     { title: "星系", dataIndex: "name", width: 110, render: (value: string) => <Typography.Text bold>{value}</Typography.Text> },
@@ -188,7 +188,7 @@ export function HostileReportPage() {
           </Card>
         </Grid.Col>
         <Grid.Col xl={10} lg={24} xs={24}>
-          <Card className="hostile-report-card" title={<span><RadioTower size={16} />最近来袭波次</span>} extra={<Typography.Text type="secondary">峰值 {report.peakWaveTargets} 人</Typography.Text>}>
+          <Card className="hostile-report-card" title={<span><RadioTower size={16} />最近来袭波次</span>} extra={<Typography.Text type="secondary">视觉峰值 {report.peakWaveHostiles}</Typography.Text>}>
             {report.waves.length > 0 ? (
               <Table<WaveReportRow> border={false} columns={waveColumns} data={report.waves.slice(0, 6)} pagination={false} rowKey="id" />
             ) : <Empty description="暂无可聚合波次" />}

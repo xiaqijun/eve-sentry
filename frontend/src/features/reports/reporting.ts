@@ -34,6 +34,7 @@ export interface TargetReportRow {
 export interface WaveReportRow {
   id: string;
   systemName: string;
+  peakHostileCount: number;
   incidentCount: number;
   uniqueTargets: number;
   startedAt?: string;
@@ -51,6 +52,7 @@ export interface HostileWaveLifecycle {
   last_seen_at?: string;
   cleared_at?: string;
   active?: boolean;
+  peak_hostile_count?: number;
 }
 
 export interface SeverityReportRow {
@@ -74,6 +76,7 @@ export interface HostileReport {
   highRiskRate: number;
   averageTargetsPerIncident: number;
   waveCount: number;
+  peakWaveHostiles: number;
   peakWaveTargets: number;
   zkillCoverage: number;
   trend: TrendPoint[];
@@ -190,6 +193,10 @@ function buildWaves(
       const startedMs = parsedTime(startedAt);
       const endedAt = String(item.cleared_at || "").trim();
       const endedMs = parsedTime(endedAt);
+      const rawPeakHostileCount = Number(item.peak_hostile_count ?? 0);
+      const peakHostileCount = Number.isFinite(rawPeakHostileCount)
+        ? Math.max(0, Math.floor(rawPeakHostileCount))
+        : 0;
       if (
         !id
         || seenIds.has(id)
@@ -203,6 +210,7 @@ function buildWaves(
       return {
         id,
         systemName,
+        peakHostileCount,
         incidentCount: 0,
         uniqueTargets: 0,
         startedAt,
@@ -265,7 +273,10 @@ function buildWaves(
   });
 
   return waves
-    .filter((wave) => wave.incidentCount > 0 && wave.targetMap.size > 0)
+    .filter((wave) => (
+      wave.peakHostileCount > 0
+      || (wave.incidentCount > 0 && wave.targetMap.size > 0)
+    ))
     .map(({
     targetIds: _targetIds,
     targetMap,
@@ -594,6 +605,10 @@ export function buildHostileReport(
     highRiskRate: alerts.length > 0 ? (highRiskCount / alerts.length) * 100 : 0,
     averageTargetsPerIncident: alerts.length > 0 ? targetSightings / alerts.length : 0,
     waveCount: waves.length,
+    peakWaveHostiles: waves.reduce(
+      (maximum, wave) => Math.max(maximum, wave.peakHostileCount),
+      0,
+    ),
     peakWaveTargets: waves.reduce(
       (maximum, wave) => Math.max(maximum, wave.uniqueTargets),
       0,

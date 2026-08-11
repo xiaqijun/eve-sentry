@@ -126,7 +126,9 @@ GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
 `/api/v1/hostile-waves` 支持 `since` 和 `limit`。`since` 会返回结束时间晚于该时刻或仍在
 进行中的波次；每个星系从敌对总数由 0 变为大于 0 时创建波次，回到 0 时写入
 `cleared_at`，之后再次出现会创建新的 `id`。该接口使用独立 PostgreSQL 生命周期表，
-不会恢复启动时的全量 active-intel 历史加载。
+不会恢复启动时的全量 active-intel 历史加载。每条波次的 `peak_hostile_count` 是该波次
+期间客户端上报的红色图标数量峰值；同一客户端的视觉状态与 OCR 人员行会去重，同星系
+多客户端取当前最大值。人员识别失败不会移除已有视觉证据波次。
 
 敌对告警的 `verified_characters` 始终保留 `character_id` 和 `name`。取得外部统计时会额外
 包含可选的 `zkill` 对象：

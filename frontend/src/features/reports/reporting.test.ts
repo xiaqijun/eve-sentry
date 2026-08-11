@@ -197,6 +197,33 @@ describe("hostile reporting", () => {
     expect(report.peakWaveTargets).toBe(0);
   });
 
+  it("counts visual-only waves while keeping personnel enrichment optional", () => {
+    const report = buildHostileReport(
+      [],
+      "24h",
+      NOW,
+      [{
+        id: "visual-wave",
+        system_name: "S-KSWL",
+        started_at: "2026-07-22T11:00:00Z",
+        last_seen_at: "2026-07-22T11:05:00Z",
+        cleared_at: "2026-07-22T11:10:00Z",
+        active: false,
+        peak_hostile_count: 3,
+      }],
+    );
+
+    expect(report.waveCount).toBe(1);
+    expect(report.peakWaveHostiles).toBe(3);
+    expect(report.peakWaveTargets).toBe(0);
+    expect(report.waves[0]).toMatchObject({
+      peakHostileCount: 3,
+      incidentCount: 0,
+      uniqueTargets: 0,
+      targets: [],
+    });
+  });
+
   it("keeps alerts more than fifteen minutes apart in one uncleared wave", () => {
     const lifecycle: HostileWaveLifecycle[] = [{
       id: "long-wave",

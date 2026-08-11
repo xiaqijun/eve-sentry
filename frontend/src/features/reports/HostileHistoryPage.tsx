@@ -241,8 +241,8 @@ export function HostileHistoryPage() {
     { title: "开始时间", dataIndex: "startedAt", width: 170, render: (value?: string) => formatTime(value) },
     { title: "结束时间", dataIndex: "endedAt", width: 170, render: (value: string | undefined, row) => row.active ? "-" : formatTime(value) },
     { title: "持续时间", width: 130, render: (_value, row) => formatDuration(row.startedAt, row.active ? undefined : row.endedAt) },
-    { title: "事件数", dataIndex: "incidentCount", width: 90, align: "right" },
-    { title: "独立人员", dataIndex: "uniqueTargets", width: 100, align: "right" },
+    { title: "峰值敌对", dataIndex: "peakHostileCount", width: 100, align: "right" },
+    { title: "已识别人员", dataIndex: "uniqueTargets", width: 110, align: "right" },
     { title: "状态", width: 90, align: "center", render: (_value, row) => <Tag color={row.active ? "red" : "green"}>{row.active ? "进行中" : "已清空"}</Tag> },
     { title: "操作", width: 84, align: "center", render: (_value, row) => <Button icon={<IconEye />} size="mini" type="text" onClick={() => setSelectedRecord({ kind: "wave", value: row })}>查看</Button> },
   ];
@@ -273,8 +273,9 @@ export function HostileHistoryPage() {
     { label: "最后发现", value: formatTime(selectedRecord.value.lastSeen) },
     { label: "结束时间", value: selectedRecord.value.active ? "-" : formatTime(selectedRecord.value.endedAt) },
     { label: "持续时间", value: formatDuration(selectedRecord.value.startedAt, selectedRecord.value.active ? undefined : selectedRecord.value.endedAt) },
-    { label: "告警事件", value: selectedRecord.value.incidentCount },
-    { label: "独立人员", value: selectedRecord.value.uniqueTargets },
+    { label: "峰值敌对", value: selectedRecord.value.peakHostileCount },
+    { label: "已验证告警", value: selectedRecord.value.incidentCount },
+    { label: "已识别人员", value: selectedRecord.value.uniqueTargets },
   ] : [];
   const alertDetails = selectedRecord?.kind === "alert" ? [
     { label: "记录 ID", value: <Typography.Text copyable>{selectedRecord.value.id}</Typography.Text> },
@@ -439,7 +440,9 @@ export function HostileHistoryPage() {
                 rowKey="characterId"
                 size="small"
               />
-            ) : <Empty description="没有可展示的人员详细数据" />}
+            ) : <Empty description={selectedRecord.kind === "wave" && selectedRecord.value.peakHostileCount > 0
+              ? "本波次由红色图标确认，未识别到人员信息"
+              : "没有可展示的人员详细数据"} />}
           </Space>
         ) : null}
       </Drawer>

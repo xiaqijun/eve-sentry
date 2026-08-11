@@ -933,6 +933,105 @@ def test_postgres_hostile_wave_state_uses_appearance_to_clear_lifecycle():
     assert reopened[0]["started_at"] == "2026-08-03T10:03:30+00:00"
 
 
+def test_postgres_hostile_wave_state_deduplicates_detector_visual_counts():
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._active_intel = {}
+
+    def item(active_id, client_id, count, seen_at):
+        return ActiveIntelItem(
+            active_id=active_id,
+            source="eve-sentry-detector",
+            source_instance=client_id,
+            system_name="S-KSWL",
+            target_type="system",
+            metadata={
+                "client_id": client_id,
+                "hostile_icon_count": count,
+                "hostile_icon_seen_at": seen_at,
+            },
+            first_seen_at="2026-08-03T10:00:00+00:00",
+            last_seen_at=seen_at,
+        )
+
+    state = store._hostile_system_state(
+        [
+            item("client-a:old", "client-a", 2, "2026-08-03T10:00:00+00:00"),
+            item("client-a:new", "client-a", 3, "2026-08-03T10:00:03+00:00"),
+            item("client-a:ocr", "client-a", 3, "2026-08-03T10:00:03+00:00"),
+            item("client-b", "client-b", 2, "2026-08-03T10:00:02+00:00"),
+        ]
+    )
+
+    assert state["s-kswl"]["hostile_count"] == 3
+    assert store._hostile_system_state(
+        [
+            item("client-a:old", "client-a", 2, "2026-08-03T10:00:00+00:00"),
+            item("client-a:clear", "client-a", 0, "2026-08-03T10:00:04+00:00"),
+        ]
+    ) == {}
+
+
+def test_postgres_hostile_wave_persistence_tracks_visual_peak():
+    calls = []
+
+    class Result:
+        rowcount = 1
+
+    class FakeConnection:
+        def execute(self, query, params):
+            calls.append((" ".join(query.split()), params))
+            return Result()
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    base = {
+        "system_key": "s-kswl",
+        "system_name": "S-KSWL",
+        "system_id": 30004759,
+        "started_at": "2026-08-03T10:00:00+00:00",
+        "last_seen_at": "2026-08-03T10:00:03+00:00",
+    }
+
+    store._persist_hostile_wave_changes(
+        FakeConnection(),
+        [
+            {"action": "touch", **base, "hostile_count": 2},
+            {"action": "touch", **base, "hostile_count": 3},
+            {
+                "action": "clear",
+                **base,
+                "hostile_count": 3,
+                "cleared_at": "2026-08-03T10:00:06+00:00",
+            },
+        ],
+    )
+
+    assert "peak_hostile_count" in calls[0][0]
+    assert "GREATEST" in calls[0][0]
+    assert calls[0][1][-1] == 2
+    assert calls[1][1][-1] == 3
+    assert "peak_hostile_count = GREATEST" in calls[2][0]
+    assert calls[2][1][2] == 3
+
+
+def test_postgres_hostile_wave_row_exposes_visual_peak():
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+
+    wave = store._hostile_wave_from_row(
+        {
+            "wave_id": "wave-1",
+            "system_name": "S-KSWL",
+            "system_id": 30004759,
+            "started_at": "2026-08-03T10:00:00+00:00",
+            "last_seen_at": "2026-08-03T10:00:03+00:00",
+            "cleared_at": "2026-08-03T10:00:06+00:00",
+            "active": 0,
+            "peak_hostile_count": 3,
+        }
+    )
+
+    assert wave["peak_hostile_count"] == 3
+
+
 def test_postgres_hostile_wave_query_filters_overlapping_lifecycles():
     calls = []
 

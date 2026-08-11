@@ -631,7 +631,7 @@ class PostgreSQLIntelStore(IntelStore):
             rows = connection.execute(
                 f"""
                 SELECT wave_id, system_name, system_id, started_at,
-                       last_seen_at, cleared_at, active
+                       last_seen_at, cleared_at, active, peak_hostile_count
                 FROM hostile_waves
                 {where_clause}
                 ORDER BY started_at DESC, wave_id DESC
@@ -657,12 +657,24 @@ class PostgreSQLIntelStore(IntelStore):
     ) -> dict[str, dict[str, Any]]:
         source_items = self._active_intel.values() if items is None else items
         systems: dict[str, dict[str, Any]] = {}
+        detector_counts: dict[str, dict[str, tuple[str, int]]] = {}
         for item in source_items:
             if not item.active:
                 continue
             system_name = str(item.system_name or "").strip()
             if not system_name:
                 continue
+            metadata = item.metadata if isinstance(item.metadata, dict) else {}
+            source = str(item.source or "").strip().casefold()
+            detector_count: int | None = None
+            if source == "eve-sentry-detector" and "hostile_icon_count" in metadata:
+                try:
+                    detector_count = max(
+                        0,
+                        int(metadata.get("hostile_icon_count") or 0),
+                    )
+                except (TypeError, ValueError):
+                    detector_count = 0
             system_key = system_name.casefold()
             state = systems.get(system_key)
             first_seen_at = str(item.first_seen_at or item.last_seen_at or "").strip()
@@ -674,19 +686,50 @@ class PostgreSQLIntelStore(IntelStore):
                     "system_id": item.system_id,
                     "first_seen_at": first_seen_at,
                     "last_seen_at": last_seen_at,
+                    "hostile_count": 0,
                 }
+                state = systems[system_key]
+            else:
+                state["first_seen_at"] = self._earlier_iso(
+                    str(state.get("first_seen_at") or ""),
+                    first_seen_at,
+                )
+                state["last_seen_at"] = self._later_iso(
+                    str(state.get("last_seen_at") or ""),
+                    last_seen_at,
+                )
+                if state.get("system_id") is None and item.system_id is not None:
+                    state["system_id"] = item.system_id
+
+            if detector_count is not None:
+                client_id = str(
+                    metadata.get("client_id") or item.source_instance or "unknown"
+                ).strip() or "unknown"
+                snapshot_seen_at = str(
+                    metadata.get("hostile_icon_seen_at") or last_seen_at
+                ).strip()
+                client_counts = detector_counts.setdefault(system_key, {})
+                previous = client_counts.get(client_id)
+                if previous is None or snapshot_seen_at >= previous[0]:
+                    client_counts[client_id] = (snapshot_seen_at, detector_count)
                 continue
-            state["first_seen_at"] = self._earlier_iso(
-                str(state.get("first_seen_at") or ""),
-                first_seen_at,
-            )
-            state["last_seen_at"] = self._later_iso(
-                str(state.get("last_seen_at") or ""),
-                last_seen_at,
-            )
-            if state.get("system_id") is None and item.system_id is not None:
-                state["system_id"] = item.system_id
-        return systems
+
+            fallback_count = metadata.get("hostile_count")
+            if isinstance(fallback_count, int) and fallback_count > 0:
+                state["hostile_count"] += fallback_count
+            else:
+                state["hostile_count"] += 1
+
+        for system_key, client_counts in detector_counts.items():
+            if client_counts:
+                systems[system_key]["hostile_count"] += max(
+                    count for _, count in client_counts.values()
+                )
+        return {
+            system_key: state
+            for system_key, state in systems.items()
+            if int(state.get("hostile_count") or 0) > 0
+        }
 
     def _database_hostile_system_state(
         self,
@@ -770,12 +813,17 @@ class PostgreSQLIntelStore(IntelStore):
                     """
                     INSERT INTO hostile_waves (
                         wave_id, system_key, system_name, system_id,
-                        started_at, last_seen_at, cleared_at, active
+                        started_at, last_seen_at, cleared_at, active,
+                        peak_hostile_count
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, '', 1)
+                    VALUES (?, ?, ?, ?, ?, ?, '', 1, ?)
                     ON CONFLICT (system_key) WHERE active = 1 DO UPDATE SET
                         system_name = excluded.system_name,
                         system_id = COALESCE(excluded.system_id, hostile_waves.system_id),
+                        peak_hostile_count = GREATEST(
+                            hostile_waves.peak_hostile_count,
+                            excluded.peak_hostile_count
+                        ),
                         last_seen_at = CASE
                             WHEN hostile_waves.last_seen_at::timestamptz
                                >= excluded.last_seen_at::timestamptz
@@ -790,6 +838,7 @@ class PostgreSQLIntelStore(IntelStore):
                         change.get("system_id"),
                         change["started_at"],
                         change["last_seen_at"],
+                        max(0, int(change.get("hostile_count") or 0)),
                     ),
                 )
                 continue
@@ -802,6 +851,7 @@ class PostgreSQLIntelStore(IntelStore):
                         THEN last_seen_at
                         ELSE ?
                     END,
+                    peak_hostile_count = GREATEST(peak_hostile_count, ?),
                     cleared_at = ?,
                     active = 0
                 WHERE system_key = ? AND active = 1
@@ -809,6 +859,7 @@ class PostgreSQLIntelStore(IntelStore):
                 (
                     change["last_seen_at"],
                     change["last_seen_at"],
+                    max(0, int(change.get("hostile_count") or 0)),
                     change["cleared_at"],
                     change["system_key"],
                 ),
@@ -819,9 +870,10 @@ class PostgreSQLIntelStore(IntelStore):
                 """
                 INSERT INTO hostile_waves (
                     wave_id, system_key, system_name, system_id,
-                    started_at, last_seen_at, cleared_at, active
+                    started_at, last_seen_at, cleared_at, active,
+                    peak_hostile_count
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
                 """,
                 (
                     uuid4().hex,
@@ -831,6 +883,7 @@ class PostgreSQLIntelStore(IntelStore):
                     change["started_at"],
                     change["last_seen_at"],
                     change["cleared_at"],
+                    max(0, int(change.get("hostile_count") or 0)),
                 ),
             )
 
@@ -840,7 +893,7 @@ class PostgreSQLIntelStore(IntelStore):
             rows = connection.execute(
                 """
                 SELECT system_key, system_name, system_id, started_at,
-                       last_seen_at
+                       last_seen_at, peak_hostile_count
                 FROM hostile_waves
                 WHERE active = 1
                 """
@@ -852,6 +905,10 @@ class PostgreSQLIntelStore(IntelStore):
                     "system_id": self._optional_int(row["system_id"]),
                     "first_seen_at": str(row["started_at"]),
                     "last_seen_at": str(row["last_seen_at"]),
+                    "hostile_count": max(
+                        0,
+                        self._strict_int(row["peak_hostile_count"]),
+                    ),
                 }
                 for row in rows
             }
@@ -867,6 +924,10 @@ class PostgreSQLIntelStore(IntelStore):
             )
 
     def _hostile_wave_from_row(self, row: Any) -> dict[str, Any]:
+        try:
+            peak_hostile_count = self._strict_int(row["peak_hostile_count"])
+        except (KeyError, IndexError):
+            peak_hostile_count = 0
         return {
             "id": str(row["wave_id"]),
             "system_name": str(row["system_name"]),
@@ -875,6 +936,7 @@ class PostgreSQLIntelStore(IntelStore):
             "last_seen_at": str(row["last_seen_at"]),
             "cleared_at": str(row["cleared_at"] or ""),
             "active": bool(self._strict_int(row["active"])),
+            "peak_hostile_count": max(0, peak_hostile_count),
         }
 
     def _earlier_iso(self, left: str, right: str) -> str:
@@ -1395,9 +1457,16 @@ class PostgreSQLIntelStore(IntelStore):
                     started_at TEXT NOT NULL,
                     last_seen_at TEXT NOT NULL,
                     cleared_at TEXT NOT NULL DEFAULT '',
-                    active INTEGER NOT NULL DEFAULT 1
+                    active INTEGER NOT NULL DEFAULT 1,
+                    peak_hostile_count INTEGER NOT NULL DEFAULT 0
                 )
                 """
+            )
+            self._ensure_column(
+                connection,
+                "hostile_waves",
+                "peak_hostile_count",
+                "INTEGER NOT NULL DEFAULT 0",
             )
             connection.execute(
                 """
