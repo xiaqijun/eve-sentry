@@ -2393,18 +2393,29 @@ class MainWindow(QMainWindow):
         self._local_system_cache = cache
         if detection is None:
             return
-        context = metadata.get("context")
-        if isinstance(context, dict):
-            self._apply_local_system_detection(context, detection)
         character_key = str(metadata.get("character_name") or "").strip().casefold()
-        for collection_name in ("_detected_window_contexts", "_worker_contexts"):
+        applied = False
+        for collection_name in ("_worker_contexts", "_detected_window_contexts"):
             collection = _instance_attr(self, collection_name, {})
             for candidate in collection.values():
                 if not isinstance(candidate, dict):
                     continue
                 if str(candidate.get("character_name") or "").strip().casefold() == character_key:
-                    self._apply_local_system_detection(candidate, detection)
-        if context is None:
+                    if not applied:
+                        self._apply_local_system_detection(candidate, detection)
+                        applied = True
+                    else:
+                        # Keep the idle/detected copy in sync without replaying
+                        # the transition log or presence reset for this result.
+                        system_name = str(
+                            getattr(detection, "system_name", "") or ""
+                        ).strip()
+                        if system_name:
+                            candidate["system_name"] = system_name
+                            candidate["system_id"] = None
+                            candidate["system_source"] = "chatlog"
+                            candidate["_hostile_icon_count"] = 0
+        if not applied and metadata.get("context") is None:
             self._apply_local_system_detection(self, detection)
         self._last_local_system_error = ""
         controller = _instance_attr(self, "_alert_controller")
