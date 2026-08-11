@@ -142,6 +142,60 @@ def test_monitoring_target_state_falls_back_to_heartbeat_system():
     assert state[0]["system_name"] == "S-KSWL"
 
 
+def test_monitoring_target_state_omits_unknown_location():
+    state = _monitoring_target_state(
+        {
+            "heartbeats": [
+                {
+                    "client_id": "detector-client:test",
+                    "client_type": "detector_client",
+                    "online": True,
+                    "details": {
+                        "monitoring": True,
+                        "system_name": "Unknown",
+                        "targets": [
+                            {
+                                "client_id": "window:test",
+                                "monitoring": True,
+                                "system_name": "Unknown",
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+
+    assert state == []
+
+
+def test_monitoring_target_state_omits_localized_unknown_location():
+    state = _monitoring_target_state(
+        {
+            "heartbeats": [
+                {
+                    "client_id": "detector-client:test",
+                    "client_type": "detector_client",
+                    "online": True,
+                    "details": {
+                        "monitoring": True,
+                        "system_name": "\u672a\u77e5\u661f\u7cfb",
+                        "targets": [
+                            {
+                                "client_id": "window:test",
+                                "monitoring": True,
+                                "system_name": "\u672a\u77e5\u661f\u7cfb",
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+
+    assert state == []
+
+
 def test_admin_clients_hides_legacy_duplicate_identity_on_same_host():
     payload = build_admin_clients_payload(
         {

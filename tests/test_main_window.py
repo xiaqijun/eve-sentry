@@ -1255,6 +1255,48 @@ def test_window_system_change_refreshes_local_alert_systems(monkeypatch):
     assert window._alert_controller.systems == [["HB-FSO"]]
 
 
+def test_async_local_system_result_logs_once_for_duplicate_contexts():
+    worker_context = {
+        "key": "pilot-a",
+        "character_name": "Hajimi6",
+        "window_title": "EVE - Hajimi6",
+        "system_name": "Unknown",
+    }
+    detected_context = dict(worker_context)
+    window = MainWindow.__new__(MainWindow)
+    window._local_system_pending = {"hajimi6"}
+    window._local_system_cache = {}
+    window._location_refresh_ttl = 5.0
+    window._worker_contexts = {"pilot-a": worker_context}
+    window._detected_window_contexts = {"pilot-a": detected_context}
+    window._workers = {}
+    window._intel_system = "Unknown"
+    window._intel_system_source = "default"
+    window._log_messages = []
+    window._log_message = window._log_messages.append
+    window._refresh_monitor_window_action_labels = lambda: None
+    window._refresh_window_status_table = lambda: None
+    window._refresh_status_cards = lambda: None
+    window._alert_controller = None
+
+    MainWindow._handle_local_system_result(
+        window,
+        SimpleNamespace(system_name="S-KSWL"),
+        {
+            "cache_key": "hajimi6",
+            "character_name": "Hajimi6",
+            # This is the stale snapshot captured when the task was queued.
+            "context": dict(worker_context),
+        },
+    )
+
+    assert worker_context["system_name"] == "S-KSWL"
+    assert detected_context["system_name"] == "S-KSWL"
+    assert window._log_messages == [
+        "EVE - Hajimi6: Current system from local chatlog: S-KSWL"
+    ]
+
+
 def test_initial_local_system_promotes_first_detected_window(monkeypatch):
     class Detection:
         system_name = "Jita"

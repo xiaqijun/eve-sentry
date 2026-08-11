@@ -264,6 +264,15 @@ def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
             ).strip()
             if target_system_name.casefold() in {"", "unknown", "未知星系"}:
                 target_system_name = details_system_name
+            if target_system_name.casefold() in {
+                "",
+                "unknown",
+                "\u672a\u77e5\u661f\u7cfb",
+            }:
+                # Heartbeats may arrive before local chatlog detection. Keep
+                # those clients online, but do not expose an unusable node in
+                # the map or robot snapshot until its location is known.
+                continue
             state.append(
                 {
                     "heartbeat_client_id": str(
