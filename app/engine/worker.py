@@ -2,6 +2,7 @@
 
 import logging
 import threading
+import time
 from typing import Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -22,12 +23,7 @@ logger = logging.getLogger(__name__)
 def build_scan_status(ocr_results: list[tuple[str, float]]) -> str:
     """Build the monitor status text using cleaned member names, not OCR noise."""
     member_names = ocr_candidate_names(ocr_results)
-    return (
-        "名单识别: "
-        f"{len(member_names)} 个成员 / "
-        f"{len(member_names)} 个唯一 / "
-        "已上报服务器"
-    )
+    return f"OCR 识别完成: {len(member_names)} 个敌对姓名，已进入上报队列"
 
 
 def build_ocr_snapshot_names(ocr_results: list[tuple[str, float]]) -> list[str]:
@@ -130,6 +126,7 @@ class MonitorWorker(QThread):
         scan_count = 0
         ocr_ready = False  # track whether OCR has been lazy-initialised
         previous_hostile_count: int | None = None
+        last_health_status_at = time.monotonic()
         capturer = self._capturer
         owns_capturer = False
 
@@ -195,6 +192,18 @@ class MonitorWorker(QThread):
                                 )
                             elif hostile_count == 0:
                                 self.status_update.emit("未检测到敌对图标")
+                        elif time.monotonic() - last_health_status_at >= 15.0:
+                            if hostile_count > 0:
+                                self.status_update.emit(
+                                    "持续监测中: "
+                                    f"{hostile_count} 个敌对图标，数量未变化，"
+                                    "OCR 未重复执行"
+                                )
+                            else:
+                                self.status_update.emit(
+                                    "持续监测中: 未检测到敌对图标"
+                                )
+                            last_health_status_at = time.monotonic()
                         self._active_interval = (
                             max(1.0, self._interval * 0.5)
                             if self._burst_scans_remaining > 0

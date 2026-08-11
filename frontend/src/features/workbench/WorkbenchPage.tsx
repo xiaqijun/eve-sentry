@@ -41,44 +41,6 @@ function selectedSystem(
   return systems.find((item) => item.system_id === selectedSystemId) || null;
 }
 
-interface VerifiedHostileSummary {
-  hostileCount: number;
-  systemCount: number;
-}
-
-function summarizeVerifiedHostiles(alerts: AlertItem[]): VerifiedHostileSummary {
-  const characterIds = new Set<number>();
-  const systems = new Set<string>();
-
-  alerts.forEach((alert) => {
-    if (alert.classification !== "red") {
-      return;
-    }
-    const verifiedCharacterIds = (alert.verified_characters || [])
-      .map((character) => Number(character?.character_id))
-      .filter((characterId) => Number.isInteger(characterId) && characterId > 0);
-    if (verifiedCharacterIds.length === 0) {
-      return;
-    }
-    verifiedCharacterIds.forEach((characterId) => characterIds.add(characterId));
-
-    const systemId = Number(alert.system_id);
-    if (Number.isInteger(systemId) && systemId > 0) {
-      systems.add(`id:${systemId}`);
-      return;
-    }
-    const systemName = String(alert.system_name || "").trim().toLocaleLowerCase();
-    if (systemName) {
-      systems.add(`name:${systemName}`);
-    }
-  });
-
-  return {
-    hostileCount: characterIds.size,
-    systemCount: systems.size,
-  };
-}
-
 type BootstrapStreamUpdate = Partial<Omit<BootstrapPayload, "map">> & {
   map?: Partial<Omit<MapSnapshotPayload, "systems">> & {
     systems?: Array<Partial<MapSystem>>;
@@ -227,9 +189,15 @@ export function WorkbenchPage() {
     };
   }, [bootstrapQuery.isSuccess, queryClient]);
 
-  const verifiedHostiles = summarizeVerifiedHostiles(bootstrap?.alerts || []);
+  const hostileSystemNodes = graphData.nodes.filter(
+    (item) => item.kind === "system" && item.hostileCount > 0,
+  );
+  const currentHostileCount = hostileSystemNodes.reduce(
+    (sum, item) => sum + item.hostileCount,
+    0,
+  );
   const onlineMonitorNodeCount = graphData.nodes.filter((item) =>
-    item.monitorOnlineCount > 0,
+    item.kind === "system" && item.monitorOnlineCount > 0,
   ).length;
   return (
     <div className="star-map-workspace">
@@ -242,8 +210,8 @@ export function WorkbenchPage() {
 
         <section className="star-map-status" aria-label="态势统计">
           <div><span>在线预警节点</span><strong>{onlineMonitorNodeCount}</strong></div>
-          <div><span>当前有敌星系</span><strong className={verifiedHostiles.systemCount > 0 ? "danger-text" : ""}>{verifiedHostiles.systemCount}</strong></div>
-          <div><span>当前敌对人数</span><strong className={verifiedHostiles.hostileCount > 0 ? "danger-text" : ""}>{verifiedHostiles.hostileCount}</strong></div>
+          <div><span>当前有敌星系</span><strong className={hostileSystemNodes.length > 0 ? "danger-text" : ""}>{hostileSystemNodes.length}</strong></div>
+          <div><span>当前敌对人数</span><strong className={currentHostileCount > 0 ? "danger-text" : ""}>{currentHostileCount}</strong></div>
           <div><span>更新时间</span><strong>{formatClock(bootstrap?.generated_at)}</strong></div>
         </section>
 

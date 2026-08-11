@@ -357,6 +357,29 @@ describe("WorkbenchPage", () => {
     expect(container).not.toHaveTextContent("滚轮缩放");
     expect(container).not.toHaveTextContent("拖拽平移");
 
+    await act(async () => {
+      apiMocks.onBootstrap?.({
+        ...bootstrap,
+        map: {
+          ...bootstrap.map,
+          systems: bootstrap.map.systems.map((system) => ({
+            ...system,
+            hostile_count: 4,
+          })),
+          summary: {
+            ...bootstrap.map.summary,
+            hostile_count: 4,
+          },
+        },
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    // Red-icon counts remain authoritative even when only one hostile identity
+    // has been resolved in the alert payload.
+    expect(situationStats).toHaveTextContent("当前有敌星系1");
+    expect(situationStats).toHaveTextContent("当前敌对人数4");
+
     expect(apiMocks.connectAlerts).toHaveBeenCalledTimes(1);
     expect(apiMocks.connectAlerts).toHaveBeenCalledWith(
       expect.any(Function),
