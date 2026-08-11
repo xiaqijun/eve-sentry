@@ -130,6 +130,31 @@ GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
 期间客户端上报的红色图标数量峰值；同一客户端的视觉状态与 OCR 人员行会去重，同星系
 多客户端取当前最大值。人员识别失败不会移除已有视觉证据波次。
 
+示例响应：
+
+```json
+{
+  "schema_version": "hostile_waves.v1",
+  "waves": [
+    {
+      "id": "f27d15bd84d44cd5a7a73435f7de5706",
+      "system_name": "S-KSWL",
+      "system_id": 30004759,
+      "started_at": "2026-08-11T09:30:00+00:00",
+      "last_seen_at": "2026-08-11T09:34:12+00:00",
+      "cleared_at": "2026-08-11T09:35:03+00:00",
+      "active": false,
+      "peak_hostile_count": 3
+    }
+  ],
+  "count": 1,
+  "generated_at": "2026-08-11T09:36:00+00:00"
+}
+```
+
+`peak_hostile_count` 是视觉峰值，不等于 OCR 已识别人员数；人员明细需要按波次时间范围与
+`/api/v1/alert-history` 中的 `verified_characters` 关联。
+
 敌对告警的 `verified_characters` 始终保留 `character_id` 和 `name`。取得外部统计时会额外
 包含可选的 `zkill` 对象：
 
