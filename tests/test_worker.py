@@ -12,7 +12,7 @@ def test_scan_status_counts_cleaned_member_names_not_raw_ocr_blocks():
     ]
 
     assert build_scan_status(ocr_results) == (
-        "名单识别: 2 个成员 / 2 个唯一 / 已上报服务器"
+        "OCR 识别完成: 2 个敌对姓名，已进入上报队列"
     )
 
 
@@ -427,6 +427,38 @@ def test_monitor_worker_keeps_scan_interval_when_unchanged_frames_skip_ocr(
     assert ocr.calls == 0
     assert waits == [2, 2, 2]
     assert not any("OCR" in status for status in statuses)
+
+
+def test_monitor_worker_emits_periodic_health_status_for_unchanged_frames(
+    monkeypatch,
+):
+    frames = iter([0, 0])
+    clock = iter([0.0, 16.0, 16.0])
+
+    class FrameCapturer:
+        def screenshot(self, _x, _y, _w, _h):
+            try:
+                return next(frames)
+            except StopIteration:
+                raise TargetWindowClosed("done") from None
+
+    class ForbiddenOcr:
+        def recognize(self, _image, progress=None):
+            _ = progress
+            raise AssertionError("unchanged clear frames must not run OCR")
+
+    monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
+    monkeypatch.setattr("app.engine.worker.time.monotonic", lambda: next(clock))
+    monkeypatch.setattr("app.engine.worker.find_hostile_icons", lambda count: [])
+    worker = MonitorWorker(FrameCapturer(), ForbiddenOcr())
+    worker.set_region(0, 0, 180, 100)
+    statuses = []
+    worker.status_update.connect(statuses.append)
+
+    worker.run()
+
+    assert "未检测到敌对图标" in statuses
+    assert "持续监测中: 未检测到敌对图标" in statuses
 
 
 def test_monitor_worker_keeps_configured_interval_for_benign_frame_changes(

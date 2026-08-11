@@ -915,16 +915,26 @@ def test_hostile_icon_detection_notifies_immediately():
 
     assert window._alert_controller.counts == [("S-KSWL", 2)]
     assert window._updates == [
-        (context, "敌对告警", "❗ S-KSWL 来敌")
+        (context, "敌对告警", "S-KSWL 检测到 2 个敌对图标")
+    ]
+    assert window._messages == [
+        "EVE - Hajimi6: S-KSWL 检测到 2 个敌对图标，仅更新本地状态"
     ]
 
     MainWindow._on_hostile_icon_detected(window, 0, context)
 
     assert window._alert_controller.counts[-1] == ("S-KSWL", 0)
-    assert window._updates[-1] == (context, "监控中", "✅ S-KSWL 清空")
+    assert window._updates[-1] == (
+        context,
+        "监控中",
+        "S-KSWL 敌对图标 2 → 0（已清空）",
+    )
+    assert window._messages[-1] == (
+        "EVE - Hajimi6: S-KSWL 敌对图标 2 → 0（已清空），仅更新本地状态"
+    )
 
 
-def test_hostile_icon_detection_is_silent_when_alerts_are_disabled():
+def test_hostile_icon_detection_logs_when_alerts_are_disabled():
     class FakeTray:
         def __init__(self):
             self.messages = []
@@ -946,8 +956,68 @@ def test_hostile_icon_detection_is_silent_when_alerts_are_disabled():
     )
 
     assert window._tray.messages == []
-    assert window._messages == []
-    assert window._updates == []
+    assert window._messages == [
+        "EVE - Hajimi6: S-KSWL 检测到 2 个敌对图标，仅更新本地状态"
+    ]
+    assert window._updates == [
+        (
+            {"window_title": "EVE - Hajimi6", "system_name": "S-KSWL", "_hostile_icon_count": 2},
+            "敌对告警",
+            "S-KSWL 检测到 2 个敌对图标",
+        )
+    ]
+
+
+def test_worker_status_logs_ocr_queue_without_claiming_server_confirmation():
+    window = MainWindow.__new__(MainWindow)
+    window._messages = []
+    window._log_message = window._messages.append
+    window._updates = []
+    window._update_window_status = lambda *args: window._updates.append(args)
+    context = {"window_title": "EVE - Hajimi6"}
+
+    MainWindow._on_worker_status_update(
+        window,
+        "OCR 识别完成: 2 个敌对姓名，已进入上报队列",
+        context,
+    )
+
+    assert window._messages == [
+        "EVE - Hajimi6: OCR 识别完成: 2 个敌对姓名，已进入上报队列"
+    ]
+    assert window._updates == [
+        (
+            context,
+            "扫描中",
+            "OCR 识别完成: 2 个敌对姓名，已进入上报队列",
+        )
+    ]
+
+
+def test_upload_confirmation_logs_visual_count_and_ocr_names():
+    window = MainWindow.__new__(MainWindow)
+    window._messages = []
+    window._log_message = window._messages.append
+    window._updates = []
+    window._update_window_status = lambda *args, **kwargs: window._updates.append(
+        (args, kwargs)
+    )
+    window._refresh_status_cards = lambda: None
+    context = {"window_title": "EVE - Hajimi6"}
+
+    MainWindow._handle_presence_publish_success(
+        window,
+        {"context": context, "hostile_icon_count": 2},
+    )
+    MainWindow._handle_ocr_publish_success(
+        window,
+        {"context": context, "names": ["Pilot A", "Pilot B"]},
+    )
+
+    assert window._messages == [
+        "EVE - Hajimi6: 服务器已确认实时敌对数量（2）",
+        "EVE - Hajimi6: 服务器已确认 OCR 敌对名单（2 人）",
+    ]
 
 
 def test_system_change_clears_old_presence_and_refreshes_current_frame():
@@ -3371,6 +3441,8 @@ def test_hostile_count_upload_does_not_depend_on_local_alert_controller():
     window._alert_controller = None
     window._heartbeat_client_id = "detector:device"
     window._refresh_intel_location = lambda context: True
+    window._log_message = lambda _message: None
+    window._update_window_status = lambda *_args: None
     context = {
         "client_id": "detector:device:pilot-a",
         "source_instance": "EVE - Pilot A",

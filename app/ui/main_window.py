@@ -2324,6 +2324,8 @@ class MainWindow(QMainWindow):
                 self._handle_listener_scan_error(exc)
             elif kind == "local_system":
                 self._handle_local_system_error(exc, metadata)
+            elif kind == "hostile_presence":
+                self._handle_presence_publish_error(exc, metadata)
         else:
             if kind == "ocr":
                 self._handle_ocr_publish_success(metadata)
@@ -2336,6 +2338,8 @@ class MainWindow(QMainWindow):
                 self._handle_listener_scan_success()
             elif kind == "local_system":
                 self._handle_local_system_result(result, metadata)
+            elif kind == "hostile_presence":
+                self._handle_presence_publish_success(metadata)
         finally:
             runner = _instance_attr(self, "_network_tasks")
             if runner is not None:
@@ -2353,11 +2357,55 @@ class MainWindow(QMainWindow):
     def _handle_ocr_publish_success(self, metadata: dict) -> None:
         names = list(metadata.get("names") or [])
         context = metadata.get("context")
+        window_title = "EVE"
+        if isinstance(context, dict):
+            window_title = str(
+                context.get("window_title")
+                or context.get("source_instance")
+                or window_title
+            ).strip()
         self._heartbeat_last_action = f"ocr_snapshot:{len(names)}"
         self._heartbeat_last_error = ""
         self._heartbeat_last_success_at = heartbeat_now_iso()
+        self._log_message(
+            f"{window_title}: 服务器已确认 OCR 敌对名单（{len(names)} 人）"
+        )
         self._update_window_status(context, "运行中", f"OCR 名单 {len(names)}")
         self._refresh_status_cards()
+
+    def _handle_presence_publish_error(self, exc: Exception, metadata: dict) -> None:
+        context = metadata.get("context")
+        window_title = "EVE"
+        if isinstance(context, dict):
+            window_title = str(
+                context.get("window_title")
+                or context.get("source_instance")
+                or window_title
+            ).strip()
+        message = str(exc)
+        self._log_message(f"{window_title}: 实时敌对数量上报失败：{message}")
+        self._update_window_status(context, "上报异常", message, error=message)
+
+    def _handle_presence_publish_success(self, metadata: object) -> None:
+        details = metadata if isinstance(metadata, dict) else {}
+        context = details.get("context")
+        hostile_count = max(0, int(details.get("hostile_icon_count") or 0))
+        window_title = "EVE"
+        if isinstance(context, dict):
+            window_title = str(
+                context.get("window_title")
+                or context.get("source_instance")
+                or window_title
+            ).strip()
+        self._log_message(
+            f"{window_title}: 服务器已确认实时敌对数量（{hostile_count}）"
+        )
+        status = "敌对告警" if hostile_count > 0 else "监控中"
+        self._update_window_status(
+            context,
+            status,
+            f"服务器已确认敌对图标 {hostile_count} 个",
+        )
 
     def _handle_heartbeat_publish_error(self, exc: Exception) -> None:
         message = str(exc)
@@ -2651,9 +2699,9 @@ class MainWindow(QMainWindow):
     def _on_worker_status_update(self, message: str, context: dict) -> None:
         """Record one worker status update in log and the per-window table."""
         text = str(message or "").strip()
-        if text.startswith("名单识别:"):
+        if not text:
             return
-        routine_update = text.startswith("名单已上报:") or text == "未识别到名单"
+        routine_update = text.startswith("持续监测中:")
         now = time.monotonic()
         last_routine_log_at = float(context.get("_last_routine_log_at") or 0.0)
         if not routine_update or now - last_routine_log_at >= 15.0:
@@ -2671,23 +2719,42 @@ class MainWindow(QMainWindow):
     def _on_hostile_icon_detected(self, count: int, context: dict) -> None:
         """Update the local system alert as soon as its red-icon count changes."""
         hostile_count = max(0, int(count))
+        previous_count = context.get("_hostile_icon_count")
         context["_hostile_icon_count"] = hostile_count
         self._publish_hostile_presence(hostile_count, context)
-        controller = _instance_attr(self, "_alert_controller")
-        if controller is None:
-            return
         window_title = str(context.get("window_title") or "EVE").strip() or "EVE"
         system_name = str(context.get("system_name") or "Unknown").strip()
+        can_upload = bool(
+            _instance_attr(self, "_intel_client") is not None
+            and _instance_attr(self, "_uploads_enabled", True)
+            and (
+                _instance_attr(self, "_upload_manager") is not None
+                or _instance_attr(self, "_network_tasks") is not None
+            )
+        )
+        upload_note = (
+            "，实时数量已进入上报队列"
+            if can_upload
+            else "，仅更新本地状态"
+        )
         if hostile_count == 0:
-            message = f"✅ {system_name} 清空"
-            self._log_message(f"{window_title}: {message}")
+            message = f"{system_name} 未检测到敌对图标"
+            if previous_count not in {None, 0}:
+                message = f"{system_name} 敌对图标 {previous_count} → 0（已清空）"
+            self._log_message(f"{window_title}: {message}{upload_note}")
             self._update_window_status(context, "监控中", message)
-            controller.update_local_hostile_count(system_name, 0)
+            controller = _instance_attr(self, "_alert_controller")
+            if controller is not None:
+                controller.update_local_hostile_count(system_name, 0)
             return
-        message = f"❗ {system_name} 来敌"
-        self._log_message(f"{window_title}: {message}")
+        message = f"{system_name} 检测到 {hostile_count} 个敌对图标"
+        if previous_count is not None and previous_count != hostile_count:
+            message = f"{system_name} 敌对图标 {previous_count} → {hostile_count}"
+        self._log_message(f"{window_title}: {message}{upload_note}")
         self._update_window_status(context, "敌对告警", message)
-        controller.update_local_hostile_count(system_name, hostile_count)
+        controller = _instance_attr(self, "_alert_controller")
+        if controller is not None:
+            controller.update_local_hostile_count(system_name, hostile_count)
 
     def _publish_hostile_presence(
         self,
@@ -3108,6 +3175,18 @@ class MainWindow(QMainWindow):
             connection_label.setStyleSheet(
                 f"color: {colors.get(state, '#a8b1c7')}; font-weight: 600;"
             )
+        previous_state = str(_instance_attr(self, "_last_upload_state", ""))
+        self._last_upload_state = state
+        if state != previous_state:
+            state_messages = {
+                "online": "服务器连接正常，待上传状态已同步",
+                "reconnecting": "服务器连接中断，正在自动重连",
+                "offline_cached": "服务器暂不可用，最新状态已缓存并等待重试",
+                "authentication_failed": "服务器认证失败，已停止认证相关功能",
+            }
+            message = state_messages.get(state)
+            if message:
+                self._log_message(message)
         if state == "authentication_failed":
             self._disable_authenticated_features(label)
         elif state in {"reconnecting", "offline_cached"}:
@@ -3132,6 +3211,9 @@ class MainWindow(QMainWindow):
         self._upload_manager.state_changed.connect(self._on_upload_state_changed)
         self._upload_manager.snapshot_uploaded.connect(
             self._handle_ocr_publish_success
+        )
+        self._upload_manager.presence_uploaded.connect(
+            self._handle_presence_publish_success
         )
         self._upload_manager.heartbeat_uploaded.connect(
             self._on_reliable_heartbeat_uploaded
