@@ -101,11 +101,45 @@ def format_alert_message(alert: dict[str, Any], public_url: str = "") -> str:
     return format_active_intel_message(alert, "entered", occurred_at, public_url)
 
 
-def format_system_alert_message(system_name: str, transition: str) -> str:
+def format_system_alert_message(
+    system_name: str,
+    transition: str,
+    hostile_count: int | None = None,
+) -> str:
     system_name = str(system_name or "").strip() or "未知星系"
     if transition == "safe":
         return f"✅ {system_name} 清空"
-    return f"❗ {system_name} 来敌"
+    count_label = (
+        f"｜当前敌对 {hostile_count} 人"
+        if isinstance(hostile_count, int) and hostile_count >= 0
+        else ""
+    )
+    return f"❗ {system_name} 来敌{count_label}"
+
+
+def format_personnel_alert_message(
+    state: dict[str, Any],
+    occurred_at: str,
+) -> str:
+    """Format the current personnel snapshot for one hostile episode."""
+    system_name = _system_label(state)
+    hostile_count = state.get("hostile_count")
+    count = hostile_count if isinstance(hostile_count, int) else 0
+    lines = [
+        "### ⚠️ 敌对事件",
+        f"**位置**｜{system_name}",
+        f"**当前敌对**｜{count} 人",
+        "**人员**｜",
+    ]
+    personnel = state.get("personnel")
+    if not isinstance(personnel, list) or not personnel:
+        lines.append("暂无已识别人员")
+    else:
+        for index, item in enumerate(personnel, start=1):
+            if isinstance(item, dict):
+                lines.append(f"{index}. {_personnel_label(item)}")
+    lines.append(f"**时间**｜{_format_alert_time(occurred_at)}")
+    return "\n".join(lines)
 
 
 def format_monitoring_node_message(change: dict[str, Any]) -> str:
@@ -117,7 +151,7 @@ def format_monitoring_node_message(change: dict[str, Any]) -> str:
         return f"⚪ 监控节点下线\n最后位置｜{system_name}"
     from_system = str(change.get("from_system") or "Unknown").strip() or "Unknown"
     to_system = str(change.get("to_system") or system_name).strip() or "Unknown"
-    return f"🔵 监控节点移动\n位置｜{from_system} → {to_system}"
+    return f"🔵 监控节点移动\n去向｜{from_system} → {to_system}"
 
 
 def format_monitoring_nodes_message(
@@ -331,7 +365,11 @@ class EveSentryAlertRelay:
 
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
         groups = sorted(_decode(value) for value in raw_groups if _decode(value))
-        message = format_system_alert_message(system_name, transition)
+        message = format_system_alert_message(
+            system_name,
+            transition,
+            state.get("hostile_count") if transition == "alert" else None,
+        )
         event_id = f"system:{transition}:{system_name.casefold()}:{episode_id}"
         delivered = 0
         failed = 0
@@ -351,6 +389,60 @@ class EveSentryAlertRelay:
         logger.info(
             "EVE Sentry system transition processed transition=%s deliveries=%d failures=%d",
             transition,
+            delivered,
+            failed,
+        )
+        return failed == 0
+
+    async def deliver_system_personnel_update(
+        self,
+        state: dict[str, Any],
+        occurred_at: str,
+    ) -> bool:
+        """Deliver personnel changes once per system episode and fingerprint."""
+        system_name = _system_label(state)
+        episode_id = str(state.get("episode_id") or "").strip()
+        fingerprint = str(state.get("personnel_fingerprint") or "").strip()
+        if not episode_id or not fingerprint:
+            logger.warning("Ignored malformed EVE Sentry personnel update")
+            return True
+
+        raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
+        groups = sorted(_decode(value) for value in raw_groups if _decode(value))
+        message = format_personnel_alert_message(state, occurred_at)
+        event_id = f"personnel:{system_name.casefold()}:{episode_id}:{fingerprint}"
+        failed = 0
+        delivered = 0
+        for group_openid in groups:
+            delivered_key = _delivered_key(event_id, group_openid)
+            if await self.redis.exists(delivered_key):
+                continue
+            try:
+                send_markdown = getattr(self.qq, "send_proactive_markdown", None)
+                if send_markdown is None:
+                    await self.qq.send_proactive_text(
+                        group_openid, _markdown_to_plain_text(message)
+                    )
+                else:
+                    try:
+                        await send_markdown(group_openid, message)
+                    except Exception:
+                        logger.warning(
+                            "QQ proactive personnel markdown delivery failed; falling back to text"
+                        )
+                        await self.qq.send_proactive_text(
+                            group_openid, _markdown_to_plain_text(message)
+                        )
+            except Exception:
+                failed += 1
+                logger.exception("QQ proactive personnel delivery failed")
+                continue
+            await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
+            delivered += 1
+
+        logger.info(
+            "EVE Sentry personnel update processed system=%s deliveries=%d failures=%d",
+            system_name,
             delivered,
             failed,
         )
@@ -557,6 +649,29 @@ class EveSentryAlertRelay:
             logger.warning("EVE Sentry system state update deferred after delivery failure")
             return
 
+        personnel_updates_succeeded = True
+        if initialized:
+            for system_key in sorted(current.keys()):
+                current_state = current[system_key]
+                previous_state = previous.get(system_key)
+                if previous_state is not None and (
+                    current_state.get("personnel_fingerprint")
+                    == previous_state.get("personnel_fingerprint")
+                ):
+                    continue
+                personnel_updates_succeeded = (
+                    await self.deliver_system_personnel_update(
+                        current_state, generated_at
+                    )
+                    and personnel_updates_succeeded
+                )
+
+        if not personnel_updates_succeeded:
+            logger.warning(
+                "EVE Sentry personnel state update deferred after delivery failure"
+            )
+            return
+
         await self._save_system_alert_state(current)
         await self.redis.set(ALERT_CURSOR_KEY, generated_at)
         logger.info(
@@ -719,10 +834,64 @@ def _active_system_state(
                 "system_name": system_name,
                 "hostile_count": 0,
                 "episode_id": fallback_episode_id,
+                "personnel": [],
             },
         )
         state["hostile_count"] += 1
+        state["personnel"].append(_personnel_snapshot(item))
+    for state in systems.values():
+        personnel = sorted(
+            state["personnel"],
+            key=lambda item: (
+                str(item.get("id") or "").casefold(),
+                str(item.get("name") or "").casefold(),
+            ),
+        )
+        state["personnel"] = personnel
+        state["personnel_fingerprint"] = hashlib.sha256(
+            json.dumps(
+                personnel,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:20]
     return systems
+
+
+def _personnel_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+    metadata = _metadata(item)
+    return {
+        "id": str(item.get("id") or "").strip(),
+        "name": str(item.get("name") or "").strip(),
+        "metadata": {
+            key: str(metadata.get(key) or "").strip()
+            for key in (
+                "alliance_ticker",
+                "alliance_name",
+                "corporation_ticker",
+                "corporation_name",
+            )
+            if str(metadata.get(key) or "").strip()
+        },
+        "level": str(item.get("level") or "").strip().casefold(),
+        "score": item.get("score") if isinstance(item.get("score"), int | float) else None,
+    }
+
+
+def _personnel_label(item: dict[str, Any]) -> str:
+    name = str(item.get("name") or "未知人员").strip() or "未知人员"
+    parts = [name]
+    corporation = _affiliation_label(item, "corporation")
+    alliance = _affiliation_label(item, "alliance")
+    if corporation:
+        parts.append(corporation)
+    if alliance:
+        parts.append(alliance)
+    threat = _threat_label(item)
+    if threat:
+        parts.append(f"威胁 {threat}")
+    return "｜".join(parts)
 
 
 def _transition_groups(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

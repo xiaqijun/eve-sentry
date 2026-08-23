@@ -16,6 +16,7 @@ from eve_risk.alerts import (
     format_active_intel_message,
     format_alert_message,
     format_monitoring_node_message,
+    format_personnel_alert_message,
     format_system_alert_message,
     iter_sse_events,
 )
@@ -144,7 +145,20 @@ def test_alert_subscription_commands_and_message_format() -> None:
     assert "态势图" not in left
     assert "敌对进入" in format_alert_message(item)
     assert format_system_alert_message("S-KSWL", "alert") == "❗ S-KSWL 来敌"
+    assert format_system_alert_message("S-KSWL", "alert", 3) == "❗ S-KSWL 来敌｜当前敌对 3 人"
     assert format_system_alert_message("S-KSWL", "safe") == "✅ S-KSWL 清空"
+
+    personnel = format_personnel_alert_message(
+        {
+            "system_name": "S-KSWL",
+            "hostile_count": 1,
+            "personnel": [item],
+        },
+        "2026-07-20T16:22:29+00:00",
+    )
+    assert "### ⚠️ 敌对事件" in personnel
+    assert "**当前敌对**｜1 人" in personnel
+    assert "Alice｜[G.N.V] Glory Navy｜[FRT] Fraternity.｜威胁 高（评分 80）" in personnel
 
 
 def test_monitoring_node_message_formats_online_offline_and_move() -> None:
@@ -169,7 +183,7 @@ def test_monitoring_node_message_formats_online_offline_and_move() -> None:
             "from_system": "Jita",
             "to_system": "Tama",
         }
-    ) == "🔵 监控节点移动\n位置｜Jita → Tama"
+    ) == "🔵 监控节点移动\n去向｜Jita → Tama"
 
 
 @pytest.mark.asyncio
@@ -220,7 +234,7 @@ async def test_relay_delivers_monitoring_node_changes_once_per_group() -> None:
 
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
             "🟢 监控节点上线\n位置｜Jita",
-            "🔵 监控节点移动\n位置｜Amarr → Tama",
+                "🔵 监控节点移动\n去向｜Amarr → Tama",
             "⚪ 监控节点下线\n最后位置｜Dodixie",
         ]
 
@@ -420,10 +434,14 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
 
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
             "✅ S-KSWL 清空",
-            "❗ S-KSWL 来敌",
+                "❗ S-KSWL 来敌｜当前敌对 1 人",
             "✅ S-KSWL 清空",
         ]
-        qq.send_proactive_markdown.assert_not_awaited()
+        assert qq.send_proactive_markdown.await_count == 3
+        assert all(
+            "### ⚠️ 敌对事件" in call.args[1]
+            for call in qq.send_proactive_markdown.await_args_list
+        )
         assert await redis.hlen(ACTIVE_INTEL_STATE_KEY) == 0
         assert await redis.hlen(SYSTEM_ALERT_STATE_KEY) == 0
         assert await redis.get(SYSTEM_ALERT_STATE_READY_KEY) == b"1"
@@ -442,6 +460,7 @@ async def test_system_transition_retries_before_advancing_state() -> None:
         send_proactive_text=AsyncMock(
             side_effect=[RuntimeError("temporary failure"), {"id": "m1"}]
         ),
+        send_proactive_markdown=AsyncMock(return_value={"id": "personnel"}),
     )
     async with httpx.AsyncClient() as http:
         relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
@@ -475,6 +494,73 @@ async def test_system_transition_retries_before_advancing_state() -> None:
         assert qq.send_proactive_text.await_count == 2
         assert await redis.hlen(SYSTEM_ALERT_STATE_KEY) == 1
         assert await redis.get(ALERT_CURSOR_KEY) == b"2026-07-20T16:21:00+00:00"
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_personnel_updates_are_once_per_episode_and_fingerprint() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+
+        alice = {
+            "id": "ocr:alice",
+            "active": True,
+            "system_name": "S-KSWL",
+            "name": "Alice",
+        }
+        bob = {**alice, "id": "ocr:bob", "name": "Bob"}
+        empty = {"active_intel": [], "alerts": [], "generated_at": "t0"}
+
+        await relay.process_bootstrap(empty)
+        await relay.process_bootstrap(
+            {
+                "active_intel": [alice],
+                "alerts": [{"active_intel_id": "ocr:alice", "level": "high"}],
+                "generated_at": "t1",
+            }
+        )
+        await relay.process_bootstrap(
+            {
+                "active_intel": [alice],
+                "alerts": [{"active_intel_id": "ocr:alice", "level": "high"}],
+                "generated_at": "t2",
+            }
+        )
+        assert qq.send_proactive_markdown.await_count == 1
+
+        await relay.process_bootstrap(
+            {
+                "active_intel": [alice, bob],
+                "alerts": [
+                    {"active_intel_id": "ocr:alice", "level": "high"},
+                    {"active_intel_id": "ocr:bob", "level": "medium"},
+                ],
+                "generated_at": "t3",
+            }
+        )
+        assert qq.send_proactive_markdown.await_count == 2
+        assert "Alice" in qq.send_proactive_markdown.await_args_list[-1].args[1]
+        assert "Bob" in qq.send_proactive_markdown.await_args_list[-1].args[1]
+
+        await relay.process_bootstrap({**empty, "generated_at": "t4"})
+        await relay.process_bootstrap(
+            {
+                "active_intel": [alice],
+                "alerts": [{"active_intel_id": "ocr:alice", "level": "high"}],
+                "generated_at": "t5",
+            }
+        )
+        assert qq.send_proactive_markdown.await_count == 3
+        assert qq.send_proactive_text.await_count == 3
+        assert qq.send_proactive_text.await_args_list[-2].args[1].startswith("✅ S-KSWL 清空")
+        assert qq.send_proactive_text.await_args_list[-1].args[1].startswith("❗ S-KSWL 来敌")
 
     await redis.aclose()
 
