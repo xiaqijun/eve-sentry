@@ -819,29 +819,17 @@ class EveSentryAlertRelay:
                     await self.process_monitoring_node(payload)
 
     async def process_alert_event(self, payload: dict[str, Any]) -> None:
-        """Deliver an alert that disappeared before the next active snapshot.
+        """Ignore legacy single-alert events; bootstrap is authoritative.
 
-        Normal active alerts are represented by the following bootstrap and are
-        handled as a system/personnel update. A short-lived alert can be absent
-        from that snapshot, so retain the SSE event as a fallback path.
+        The alert SSE event predates system/personnel aggregation and its old
+        formatter can race the bootstrap event after reconnects. Delivering it
+        here produces a duplicate message with the legacy template, so all
+        current notifications are intentionally derived from bootstrap state.
         """
-        if payload.get("active") is False:
-            return
-        active_id = str(payload.get("id") or "").strip()
-        if not active_id or active_id in self._active_alert_ids:
-            return
-        if not self._allows_transition(payload):
-            return
-        occurred_at = str(
-            payload.get("created_at")
-            or payload.get("first_seen_at")
-            or datetime.now(UTC).isoformat()
-        ).strip()
-        delivered = await self.deliver(payload, "entered", occurred_at)
-        if delivered:
-            cursor = _decode(await self.redis.get(ALERT_CURSOR_KEY))
-            if occurred_at > cursor:
-                await self.redis.set(ALERT_CURSOR_KEY, occurred_at)
+        if payload.get("active") is not False:
+            logger.debug(
+                "Ignored legacy EVE Sentry alert event; waiting for bootstrap state"
+            )
 
 
 def _active_intel_map(
@@ -862,18 +850,35 @@ def _active_intel_map(
             continue
         active_id = str(raw_item.get("id") or "").strip()
         alert = alerts_by_active_id.get(active_id)
-        if not active_id or alert is None:
+        metadata = raw_item.get("metadata")
+        try:
+            presence_count = (
+                int(metadata.get("hostile_icon_count") or 0)
+                if isinstance(metadata, dict)
+                else 0
+            )
+        except (TypeError, ValueError):
+            presence_count = 0
+        presence_only = (
+            isinstance(metadata, dict)
+            and str(raw_item.get("source") or "").strip().casefold()
+            == "eve-sentry-detector"
+            and bool(metadata.get("presence_only"))
+            and presence_count > 0
+        )
+        if not active_id or (alert is None and not presence_only):
             continue
         item = dict(raw_item)
-        for key in ("level", "score", "classification", "names"):
-            if item.get(key) in (None, "", []) and alert.get(key) not in (
-                None,
-                "",
-                [],
-            ):
-                item[key] = alert[key]
+        if alert is not None:
+            for key in ("level", "score", "classification", "names"):
+                if item.get(key) in (None, "", []) and alert.get(key) not in (
+                    None,
+                    "",
+                    [],
+                ):
+                    item[key] = alert[key]
         item_metadata = item.get("metadata")
-        alert_metadata = alert.get("metadata")
+        alert_metadata = alert.get("metadata") if alert is not None else None
         if isinstance(alert_metadata, dict) or isinstance(item_metadata, dict):
             merged_metadata = dict(alert_metadata) if isinstance(alert_metadata, dict) else {}
             if isinstance(item_metadata, dict):
@@ -892,6 +897,15 @@ def _active_system_state(
     for item in items:
         system_name = _system_label(item)
         system_key = system_name.casefold()
+        metadata = _metadata(item)
+        is_presence = bool(metadata.get("presence_only"))
+        if is_presence:
+            try:
+                item_count = max(1, int(metadata.get("hostile_icon_count") or 0))
+            except (TypeError, ValueError):
+                item_count = 1
+        else:
+            item_count = 1
         state = systems.setdefault(
             system_key,
             {
@@ -899,11 +913,31 @@ def _active_system_state(
                 "hostile_count": 0,
                 "episode_id": fallback_episode_id,
                 "personnel": [],
+                "_detector_counts": {},
             },
         )
-        state["hostile_count"] += 1
-        state["personnel"].append(_personnel_snapshot(item))
+        source = str(item.get("source") or "").strip().casefold()
+        client_id = str(metadata.get("client_id") or "").strip()
+        if source == "eve-sentry-detector" and client_id:
+            detector_counts = state["_detector_counts"].setdefault(
+                client_id.casefold(), {"presence": 0, "ocr": 0}
+            )
+            if is_presence:
+                detector_counts["presence"] = max(
+                    detector_counts["presence"], item_count
+                )
+            else:
+                detector_counts["ocr"] += 1
+        else:
+            state["hostile_count"] += item_count
+        # Red-icon presence has no character identity until optional OCR runs.
+        if not is_presence or str(item.get("name") or "").strip():
+            state["personnel"].append(_personnel_snapshot(item))
     for state in systems.values():
+        state["hostile_count"] += sum(
+            max(counts["presence"], counts["ocr"])
+            for counts in state.pop("_detector_counts", {}).values()
+        )
         personnel = sorted(
             state["personnel"],
             key=lambda item: (
@@ -912,14 +946,18 @@ def _active_system_state(
             ),
         )
         state["personnel"] = personnel
-        state["personnel_fingerprint"] = hashlib.sha256(
-            json.dumps(
-                personnel,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()[:20]
+        state["personnel_fingerprint"] = (
+            hashlib.sha256(
+                json.dumps(
+                    personnel,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()[:20]
+            if personnel
+            else ""
+        )
     return systems
 
 

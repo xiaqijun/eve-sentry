@@ -217,6 +217,95 @@ def test_personnel_affiliations_fall_back_to_alert_metadata_and_profiles() -> No
     assert "| Alice | S-KSWL | Glory Navy | Fraternity. |" in message
 
 
+def test_presence_only_intel_creates_system_alert_without_personnel_row() -> None:
+    item = {
+        "id": "presence:client-1:S-KSWL",
+        "active": True,
+        "source": "eve-sentry-detector",
+        "system_name": "S-KSWL",
+        "metadata": {
+            "presence_only": True,
+            "hostile_icon_count": 2,
+            "client_id": "client-1",
+        },
+    }
+
+    merged = _active_intel_map([item], [])
+
+    assert list(merged) == ["presence:client-1:S-KSWL"]
+    state = _active_system_state(merged.values(), "episode-1")["s-kswl"]
+    assert state["hostile_count"] == 2
+    assert state["personnel"] == []
+    assert state["personnel_fingerprint"] == ""
+
+
+def test_presence_and_ocr_for_one_detector_are_not_double_counted() -> None:
+    presence = {
+        "id": "presence:client-1:S-KSWL",
+        "active": True,
+        "source": "eve-sentry-detector",
+        "system_name": "S-KSWL",
+        "metadata": {
+            "presence_only": True,
+            "hostile_icon_count": 2,
+            "client_id": "client-1",
+        },
+    }
+    ocr = {
+        "id": "ocr:alice",
+        "active": True,
+        "source": "eve-sentry-detector",
+        "system_name": "S-KSWL",
+        "name": "Alice",
+        "metadata": {"client_id": "client-1"},
+    }
+
+    state = _active_system_state([presence, ocr], "episode-1")["s-kswl"]
+
+    assert state["hostile_count"] == 2
+    assert [item["name"] for item in state["personnel"]] == ["Alice"]
+
+
+@pytest.mark.asyncio
+async def test_relay_delivers_presence_only_system_alert_without_empty_personnel_table() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {"generated_at": "t0", "active_intel": [], "alerts": []}
+        )
+        await relay.process_bootstrap(
+            {
+                "generated_at": "t1",
+                "active_intel": [
+                    {
+                        "id": "presence:client-1:S-KSWL",
+                        "active": True,
+                        "source": "eve-sentry-detector",
+                        "system_name": "S-KSWL",
+                        "metadata": {
+                            "presence_only": True,
+                            "hostile_icon_count": 2,
+                        },
+                    }
+                ],
+                "alerts": [],
+            }
+        )
+
+        assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
+            "❗ S-KSWL 来敌｜当前敌对 2 人"
+        ]
+        qq.send_proactive_markdown.assert_not_awaited()
+
+    await redis.aclose()
+
+
 def test_monitoring_node_message_formats_online_offline_and_move() -> None:
     assert format_monitoring_node_message(
         {
@@ -622,7 +711,7 @@ async def test_personnel_updates_are_once_per_episode_and_fingerprint() -> None:
 
 
 @pytest.mark.asyncio
-async def test_transient_alert_event_is_delivered_when_absent_from_bootstrap() -> None:
+async def test_legacy_alert_event_does_not_send_old_template() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     qq = SimpleNamespace(
         send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
@@ -649,9 +738,9 @@ async def test_transient_alert_event_is_delivered_when_absent_from_bootstrap() -
             }
         )
 
-        assert qq.send_proactive_markdown.await_count == 1
-        assert "Alice" in qq.send_proactive_markdown.await_args.args[1]
-        assert await redis.get(ALERT_CURSOR_KEY) == b"2026-08-10T01:00:03+00:00"
+        qq.send_proactive_markdown.assert_not_awaited()
+        qq.send_proactive_text.assert_not_awaited()
+        assert await redis.get(ALERT_CURSOR_KEY) == b"2026-08-10T01:00:00+00:00"
 
         await relay.process_alert_event(
             {
@@ -662,7 +751,7 @@ async def test_transient_alert_event_is_delivered_when_absent_from_bootstrap() -
                 "created_at": "2026-08-10T01:00:03+00:00",
             }
         )
-        assert qq.send_proactive_markdown.await_count == 1
+        qq.send_proactive_markdown.assert_not_awaited()
 
     await redis.aclose()
 
