@@ -121,23 +121,23 @@ def format_personnel_alert_message(
     state: dict[str, Any],
     occurred_at: str,
 ) -> str:
-    """Format the current personnel snapshot for one hostile episode."""
+    """Format the current personnel snapshot as a compact Markdown table."""
     system_name = _system_label(state)
     hostile_count = state.get("hostile_count")
     count = hostile_count if isinstance(hostile_count, int) else 0
     lines = [
         "### ⚠️ 敌对事件",
-        f"**位置**｜{system_name}",
         f"**当前敌对**｜{count} 人",
-        "**人员**｜",
+        "| 人员 | 星系 | 军团 | 联盟 | zKill |",
+        "| --- | --- | --- | --- | --- |",
     ]
     personnel = state.get("personnel")
     if not isinstance(personnel, list) or not personnel:
-        lines.append("暂无已识别人员")
+        lines.append("| 暂无已识别人员 | — | — | — | — |")
     else:
-        for index, item in enumerate(personnel, start=1):
+        for item in personnel:
             if isinstance(item, dict):
-                lines.append(f"{index}. {_personnel_label(item)}")
+                lines.append(_personnel_table_row(item, system_name))
     lines.append(f"**时间**｜{_format_alert_time(occurred_at)}")
     return "\n".join(lines)
 
@@ -655,6 +655,14 @@ class EveSentryAlertRelay:
 
         personnel_updates_succeeded = True
         if initialized:
+            previous_personnel = {
+                "personnel": [
+                    item
+                    for previous_state in previous.values()
+                    for item in previous_state.get("personnel", [])
+                    if isinstance(item, dict)
+                ]
+            }
             for system_key in sorted(current.keys()):
                 current_state = current[system_key]
                 previous_state = previous.get(system_key)
@@ -663,9 +671,13 @@ class EveSentryAlertRelay:
                     == previous_state.get("personnel_fingerprint")
                 ):
                     continue
+                update_state = _personnel_display_state(
+                    current_state,
+                    previous_personnel,
+                )
                 personnel_updates_succeeded = (
                     await self.deliver_system_personnel_update(
-                        current_state, generated_at
+                        update_state, generated_at
                     )
                     and personnel_updates_succeeded
                 )
@@ -907,6 +919,10 @@ def _personnel_snapshot(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(item.get("id") or "").strip(),
         "name": str(item.get("name") or "").strip(),
+        "character_id": item.get("character_id")
+        if isinstance(item.get("character_id"), int | str)
+        else metadata.get("character_id"),
+        "system_name": _system_label(item),
         "metadata": {
             key: str(metadata.get(key) or "").strip()
             for key in (
@@ -922,19 +938,73 @@ def _personnel_snapshot(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _personnel_label(item: dict[str, Any]) -> str:
-    name = str(item.get("name") or "未知人员").strip() or "未知人员"
-    parts = [name]
-    corporation = _affiliation_label(item, "corporation")
-    alliance = _affiliation_label(item, "alliance")
-    if corporation:
-        parts.append(corporation)
-    if alliance:
-        parts.append(alliance)
-    threat = _threat_label(item)
-    if threat:
-        parts.append(f"威胁 {threat}")
-    return "｜".join(parts)
+def _personnel_display_state(
+    current: dict[str, Any],
+    previous: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Add a one-message movement label without persisting it in the state."""
+    if not previous:
+        return current
+    previous_by_identity = {
+        _personnel_identity(item): item
+        for item in previous.get("personnel", [])
+        if isinstance(item, dict)
+    }
+    displayed = dict(current)
+    rows: list[dict[str, Any]] = []
+    for item in current.get("personnel", []):
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        old = previous_by_identity.get(_personnel_identity(item))
+        old_system = str(old.get("system_name") or "").strip() if old else ""
+        new_system = str(item.get("system_name") or "").strip()
+        if old_system and new_system and old_system.casefold() != new_system.casefold():
+            row["system_display"] = f"{old_system} → {new_system}"
+        rows.append(row)
+    displayed["personnel"] = rows
+    return displayed
+
+
+def _personnel_identity(item: dict[str, Any]) -> str:
+    character_id = str(item.get("character_id") or "").strip()
+    if character_id:
+        return f"character:{character_id}"
+    name = str(item.get("name") or "").strip().casefold()
+    if name:
+        return f"name:{name}"
+    return f"id:{str(item.get('id') or '').strip()}"
+
+
+def _personnel_table_row(item: dict[str, Any], fallback_system: str) -> str:
+    name = _escape_table_cell(str(item.get("name") or "未知人员").strip() or "未知人员")
+    system = str(item.get("system_display") or item.get("system_name") or fallback_system)
+    corporation = _ticker_label(item, "corporation")
+    alliance = _ticker_label(item, "alliance")
+    character_id = str(item.get("character_id") or "").strip()
+    zkill = (
+        f"[🔗](https://zkillboard.com/character/{character_id}/)"
+        if character_id.isdigit()
+        else "—"
+    )
+    return "| " + " | ".join(
+        (
+            name,
+            _escape_table_cell(system),
+            _escape_table_cell(corporation),
+            _escape_table_cell(alliance),
+            zkill,
+        )
+    ) + " |"
+
+
+def _ticker_label(item: dict[str, Any], kind: str) -> str:
+    metadata = _metadata(item)
+    return str(metadata.get(f"{kind}_ticker") or "").strip() or "—"
+
+
+def _escape_table_cell(value: str) -> str:
+    return str(value or "—").replace("|", "\\|").replace("\n", " ").strip() or "—"
 
 
 def _transition_groups(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

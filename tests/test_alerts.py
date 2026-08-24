@@ -100,6 +100,7 @@ def test_alert_subscription_commands_and_message_format() -> None:
         "_remaining_count": 2,
         "system_name": "S-KSWL",
         "name": "Alice",
+        "character_id": 12345,
         "source": "eve-sentry-detector",
         "source_instance": "EVE - Hajimi6",
         "level": "high",
@@ -158,7 +159,27 @@ def test_alert_subscription_commands_and_message_format() -> None:
     )
     assert "### ⚠️ 敌对事件" in personnel
     assert "**当前敌对**｜1 人" in personnel
-    assert "Alice｜[G.N.V] Glory Navy｜[FRT] Fraternity.｜威胁 高（评分 80）" in personnel
+    assert "| 人员 | 星系 | 军团 | 联盟 | zKill |" in personnel
+    assert "| Alice | S-KSWL | G.N.V | FRT | [🔗](https://zkillboard.com/character/12345/) |" in personnel
+    moved_personnel = format_personnel_alert_message(
+        {
+            "system_name": "Tama",
+            "hostile_count": 1,
+            "personnel": [
+                {
+                    "name": "Alice",
+                    "character_id": 12345,
+                    "system_display": "S-KSWL → Tama",
+                    "metadata": {
+                        "corporation_ticker": "G.N.V",
+                        "alliance_ticker": "FRT",
+                    },
+                }
+            ],
+        },
+        "2026-07-20T16:22:29+00:00",
+    )
+    assert "| Alice | S-KSWL → Tama | G.N.V | FRT | [🔗](https://zkillboard.com/character/12345/) |" in moved_personnel
 
 
 def test_monitoring_node_message_formats_online_offline_and_move() -> None:
