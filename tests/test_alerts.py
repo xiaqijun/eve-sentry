@@ -566,6 +566,104 @@ async def test_personnel_updates_are_once_per_episode_and_fingerprint() -> None:
 
 
 @pytest.mark.asyncio
+async def test_transient_alert_event_is_delivered_when_absent_from_bootstrap() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {
+                "generated_at": "2026-08-10T01:00:00+00:00",
+                "active_intel": [],
+                "alerts": [],
+            }
+        )
+
+        await relay.process_alert_event(
+            {
+                "id": "evt:transient",
+                "active": True,
+                "system_name": "S-KSWL",
+                "name": "Alice",
+                "created_at": "2026-08-10T01:00:03+00:00",
+            }
+        )
+
+        assert qq.send_proactive_markdown.await_count == 1
+        assert "Alice" in qq.send_proactive_markdown.await_args.args[1]
+        assert await redis.get(ALERT_CURSOR_KEY) == b"2026-08-10T01:00:03+00:00"
+
+        await relay.process_alert_event(
+            {
+                "id": "evt:transient",
+                "active": True,
+                "system_name": "S-KSWL",
+                "name": "Alice",
+                "created_at": "2026-08-10T01:00:03+00:00",
+            }
+        )
+        assert qq.send_proactive_markdown.await_count == 1
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_alert_event_in_active_bootstrap_is_not_delivered_twice() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {
+                "generated_at": "2026-08-10T01:00:00+00:00",
+                "active_intel": [],
+                "alerts": [],
+            }
+        )
+        await relay.process_bootstrap(
+            {
+                "generated_at": "2026-08-10T01:00:01+00:00",
+                "active_intel": [
+                    {
+                        "id": "ocr:alice",
+                        "active": True,
+                        "system_name": "S-KSWL",
+                        "name": "Alice",
+                    }
+                ],
+                "alerts": [
+                    {
+                        "id": "evt:alice",
+                        "active_intel_id": "ocr:alice",
+                        "level": "high",
+                    }
+                ],
+            }
+        )
+        await relay.process_alert_event(
+            {
+                "id": "evt:alice",
+                "active_intel_id": "ocr:alice",
+                "active": True,
+                "system_name": "S-KSWL",
+                "name": "Alice",
+                "created_at": "2026-08-10T01:00:01+00:00",
+            }
+        )
+        assert qq.send_proactive_markdown.await_count == 1
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
 async def test_relay_falls_back_to_plain_text_when_markdown_is_unavailable() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     qq = SimpleNamespace(

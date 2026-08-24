@@ -254,6 +254,7 @@ class EveSentryAlertRelay:
         self.min_level = min_level.strip().casefold()
         self.public_url = public_url.strip()
         self.reconnect_delay_seconds = max(0.2, float(reconnect_delay_seconds))
+        self._active_alert_ids: set[str] = set()
 
     @property
     def enabled(self) -> bool:
@@ -299,7 +300,7 @@ class EveSentryAlertRelay:
         item: dict[str, Any],
         transition: str = "entered",
         occurred_at: str = "",
-    ) -> None:
+    ) -> bool:
         active_id = str(item.get("id") or "").strip()
         occurred_at = str(
             occurred_at
@@ -308,7 +309,7 @@ class EveSentryAlertRelay:
         ).strip()
         if not active_id or not occurred_at:
             logger.warning("Ignored malformed EVE Sentry active intel transition")
-            return
+            return False
 
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
         groups = sorted(_decode(value) for value in raw_groups if _decode(value))
@@ -320,6 +321,7 @@ class EveSentryAlertRelay:
         )
         event_id = f"{transition}:{active_id}:{occurred_at}"
         delivered = 0
+        failed = 0
         for group_openid in groups:
             delivered_key = _delivered_key(event_id, group_openid)
             if await self.redis.exists(delivered_key):
@@ -341,6 +343,7 @@ class EveSentryAlertRelay:
                             group_openid, _markdown_to_plain_text(message)
                         )
             except Exception:
+                failed += 1
                 logger.exception("QQ proactive alert delivery failed")
                 continue
             await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
@@ -351,6 +354,7 @@ class EveSentryAlertRelay:
             transition,
             delivered,
         )
+        return failed == 0
 
     async def deliver_system_transition(
         self,
@@ -673,6 +677,18 @@ class EveSentryAlertRelay:
             return
 
         await self._save_system_alert_state(current)
+        active_ids = set(active_items)
+        raw_alerts = payload.get("alerts")
+        if isinstance(raw_alerts, list):
+            for alert in raw_alerts:
+                if not isinstance(alert, dict):
+                    continue
+                active_intel_id = str(alert.get("active_intel_id") or "").strip()
+                if active_intel_id in active_ids:
+                    alert_id = str(alert.get("id") or "").strip()
+                    if alert_id:
+                        active_ids.add(alert_id)
+        self._active_alert_ids = active_ids
         await self.redis.set(ALERT_CURSOR_KEY, generated_at)
         logger.info(
             "EVE Sentry system alerts synchronized systems=%d hostiles=%d initialized=%s",
@@ -785,8 +801,35 @@ class EveSentryAlertRelay:
                 payload = json.loads(data)
                 if event_name == "bootstrap" and isinstance(payload, dict):
                     await self.process_bootstrap(payload)
+                elif event_name == "alert" and isinstance(payload, dict):
+                    await self.process_alert_event(payload)
                 elif event_name == "monitoring_node" and isinstance(payload, dict):
                     await self.process_monitoring_node(payload)
+
+    async def process_alert_event(self, payload: dict[str, Any]) -> None:
+        """Deliver an alert that disappeared before the next active snapshot.
+
+        Normal active alerts are represented by the following bootstrap and are
+        handled as a system/personnel update. A short-lived alert can be absent
+        from that snapshot, so retain the SSE event as a fallback path.
+        """
+        if payload.get("active") is False:
+            return
+        active_id = str(payload.get("id") or "").strip()
+        if not active_id or active_id in self._active_alert_ids:
+            return
+        if not self._allows_transition(payload):
+            return
+        occurred_at = str(
+            payload.get("created_at")
+            or payload.get("first_seen_at")
+            or datetime.now(UTC).isoformat()
+        ).strip()
+        delivered = await self.deliver(payload, "entered", occurred_at)
+        if delivered:
+            cursor = _decode(await self.redis.get(ALERT_CURSOR_KEY))
+            if occurred_at > cursor:
+                await self.redis.set(ALERT_CURSOR_KEY, occurred_at)
 
 
 def _active_intel_map(
