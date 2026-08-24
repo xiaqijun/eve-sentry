@@ -128,16 +128,16 @@ def format_personnel_alert_message(
     lines = [
         "### ⚠️ 敌对事件",
         f"**当前敌对**｜{count} 人",
-        "| 人员 | 星系 | 军团 | 联盟 | zKill |",
-        "| --- | --- | --- | --- | --- |",
+        "| 人员 | 星系 | 军团 | 联盟 | 时间 | zKill |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     personnel = state.get("personnel")
     if not isinstance(personnel, list) or not personnel:
-        lines.append("| 暂无已识别人员 | — | — | — | — |")
+        lines.append("| 暂无已识别人员 | — | — | — | — | — |")
     else:
         for item in personnel:
             if isinstance(item, dict):
-                lines.append(_personnel_table_row(item, system_name))
+                lines.append(_personnel_table_row(item, system_name, occurred_at))
     lines.append(f"**时间**｜{_format_alert_time(occurred_at)}")
     return "\n".join(lines)
 
@@ -923,6 +923,7 @@ def _personnel_snapshot(item: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item.get("character_id"), int | str)
         else metadata.get("character_id"),
         "system_name": _system_label(item),
+        "first_seen_at": str(item.get("first_seen_at") or "").strip(),
         "metadata": {
             key: str(metadata.get(key) or "").strip()
             for key in (
@@ -976,11 +977,15 @@ def _personnel_identity(item: dict[str, Any]) -> str:
     return f"id:{str(item.get('id') or '').strip()}"
 
 
-def _personnel_table_row(item: dict[str, Any], fallback_system: str) -> str:
+def _personnel_table_row(
+    item: dict[str, Any], fallback_system: str, fallback_time: str
+) -> str:
     name = _escape_table_cell(str(item.get("name") or "未知人员").strip() or "未知人员")
     system = str(item.get("system_display") or item.get("system_name") or fallback_system)
     corporation = _ticker_label(item, "corporation")
     alliance = _ticker_label(item, "alliance")
+    first_seen_at = str(item.get("first_seen_at") or fallback_time).strip()
+    occurred_label = _format_alert_time(first_seen_at)
     character_id = str(item.get("character_id") or "").strip()
     zkill = (
         f"[🔗](https://zkillboard.com/character/{character_id}/)"
@@ -993,6 +998,7 @@ def _personnel_table_row(item: dict[str, Any], fallback_system: str) -> str:
             _escape_table_cell(system),
             _escape_table_cell(corporation),
             _escape_table_cell(alliance),
+            _escape_table_cell(occurred_label),
             zkill,
         )
     ) + " |"

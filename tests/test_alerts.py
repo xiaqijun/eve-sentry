@@ -159,8 +159,8 @@ def test_alert_subscription_commands_and_message_format() -> None:
     )
     assert "### ⚠️ 敌对事件" in personnel
     assert "**当前敌对**｜1 人" in personnel
-    assert "| 人员 | 星系 | 军团 | 联盟 | zKill |" in personnel
-    assert "| Alice | S-KSWL | G.N.V | FRT | [🔗](https://zkillboard.com/character/12345/) |" in personnel
+    assert "| 人员 | 星系 | 军团 | 联盟 | 时间 | zKill |" in personnel
+    assert "| Alice | S-KSWL | G.N.V | FRT | 2026-07-21 00:20:24 | [🔗](https://zkillboard.com/character/12345/) |" in personnel
     moved_personnel = format_personnel_alert_message(
         {
             "system_name": "Tama",
@@ -179,7 +179,7 @@ def test_alert_subscription_commands_and_message_format() -> None:
         },
         "2026-07-20T16:22:29+00:00",
     )
-    assert "| Alice | S-KSWL → Tama | G.N.V | FRT | [🔗](https://zkillboard.com/character/12345/) |" in moved_personnel
+    assert "| Alice | S-KSWL → Tama | G.N.V | FRT | 2026-07-21 00:22:29 | [🔗](https://zkillboard.com/character/12345/) |" in moved_personnel
 
 
 def test_monitoring_node_message_formats_online_offline_and_move() -> None:
