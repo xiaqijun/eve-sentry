@@ -872,6 +872,15 @@ def _active_intel_map(
                 [],
             ):
                 item[key] = alert[key]
+        item_metadata = item.get("metadata")
+        alert_metadata = alert.get("metadata")
+        if isinstance(alert_metadata, dict) or isinstance(item_metadata, dict):
+            merged_metadata = dict(alert_metadata) if isinstance(alert_metadata, dict) else {}
+            if isinstance(item_metadata, dict):
+                for key, value in item_metadata.items():
+                    if value not in (None, "", [], {}):
+                        merged_metadata[key] = value
+            item["metadata"] = merged_metadata
         result[active_id] = item
     return result
 
@@ -916,24 +925,29 @@ def _active_system_state(
 
 def _personnel_snapshot(item: dict[str, Any]) -> dict[str, Any]:
     metadata = _metadata(item)
+    character_id = (
+        item.get("character_id")
+        if isinstance(item.get("character_id"), int | str)
+        else metadata.get("character_id")
+    )
+    profile = _character_profile(metadata, character_id)
+    personnel_metadata: dict[str, str] = {}
+    for key in (
+        "alliance_ticker",
+        "alliance_name",
+        "corporation_ticker",
+        "corporation_name",
+    ):
+        value = metadata.get(key) or profile.get(key)
+        if str(value or "").strip():
+            personnel_metadata[key] = str(value).strip()
     return {
         "id": str(item.get("id") or "").strip(),
         "name": str(item.get("name") or "").strip(),
-        "character_id": item.get("character_id")
-        if isinstance(item.get("character_id"), int | str)
-        else metadata.get("character_id"),
+        "character_id": character_id,
         "system_name": _system_label(item),
         "first_seen_at": str(item.get("first_seen_at") or "").strip(),
-        "metadata": {
-            key: str(metadata.get(key) or "").strip()
-            for key in (
-                "alliance_ticker",
-                "alliance_name",
-                "corporation_ticker",
-                "corporation_name",
-            )
-            if str(metadata.get(key) or "").strip()
-        },
+        "metadata": personnel_metadata,
         "level": str(item.get("level") or "").strip().casefold(),
         "score": item.get("score") if isinstance(item.get("score"), int | float) else None,
     }
@@ -1006,7 +1020,23 @@ def _personnel_table_row(
 
 def _ticker_label(item: dict[str, Any], kind: str) -> str:
     metadata = _metadata(item)
-    return str(metadata.get(f"{kind}_ticker") or "").strip() or "—"
+    return (
+        str(metadata.get(f"{kind}_ticker") or metadata.get(f"{kind}_name") or "")
+        .strip()
+        or "—"
+    )
+
+
+def _character_profile(metadata: dict[str, Any], character_id: object) -> dict[str, Any]:
+    profiles = metadata.get("character_profiles")
+    if not isinstance(profiles, list):
+        return {}
+    wanted = str(character_id or "").strip()
+    candidates = [profile for profile in profiles if isinstance(profile, dict)]
+    for profile in candidates:
+        if wanted and str(profile.get("character_id") or "").strip() == wanted:
+            return profile
+    return candidates[0] if len(candidates) == 1 else {}
 
 
 def _escape_table_cell(value: str) -> str:

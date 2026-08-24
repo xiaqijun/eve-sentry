@@ -12,6 +12,8 @@ from eve_risk.alerts import (
     SYSTEM_ALERT_STATE_KEY,
     SYSTEM_ALERT_STATE_READY_KEY,
     EveSentryAlertRelay,
+    _active_intel_map,
+    _active_system_state,
     alert_subscription_action,
     format_active_intel_message,
     format_alert_message,
@@ -180,6 +182,39 @@ def test_alert_subscription_commands_and_message_format() -> None:
         "2026-07-20T16:22:29+00:00",
     )
     assert "| Alice | S-KSWL → Tama | G.N.V | FRT | 2026-07-21 00:22:29 | [🔗](https://zkillboard.com/character/12345/) |" in moved_personnel
+
+
+def test_personnel_affiliations_fall_back_to_alert_metadata_and_profiles() -> None:
+    item = {
+        "id": "ocr:alice",
+        "active": True,
+        "system_name": "S-KSWL",
+        "name": "Alice",
+        "character_id": 12345,
+    }
+    merged = _active_intel_map(
+        [item],
+        [
+            {
+                "active_intel_id": "ocr:alice",
+                "metadata": {
+                    "character_profiles": [
+                        {
+                            "character_id": 12345,
+                            "corporation_name": "Glory Navy",
+                            "alliance_name": "Fraternity.",
+                        }
+                    ]
+                },
+            }
+        ],
+    )
+    state = _active_system_state(merged.values(), "episode-1")["s-kswl"]
+    message = format_personnel_alert_message(
+        state,
+        "2026-07-20T16:22:29+00:00",
+    )
+    assert "| Alice | S-KSWL | Glory Navy | Fraternity. |" in message
 
 
 def test_monitoring_node_message_formats_online_offline_and_move() -> None:
