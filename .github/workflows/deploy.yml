@@ -46,7 +46,11 @@ jobs:
           cp .env.example .env
           docker compose config --quiet
       - name: Validate production image build
-        run: docker build --tag "eve-risk-analysis:${GITHUB_SHA}" .
+        run: >-
+          docker build
+          --build-arg APT_MIRROR=deb.debian.org
+          --tag "eve-risk-analysis:${GITHUB_SHA}"
+          .
 
   deploy:
     if: github.event_name != 'pull_request'

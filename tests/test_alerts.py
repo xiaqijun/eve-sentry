@@ -15,6 +15,7 @@ from eve_risk.alerts import (
     EveSentryAlertRelay,
     _active_intel_map,
     _active_system_state,
+    _personnel_movement_pairs,
     alert_subscription_action,
     format_active_intel_message,
     format_alert_message,
@@ -22,7 +23,6 @@ from eve_risk.alerts import (
     format_personnel_alert_message,
     format_system_alert_message,
     format_system_movement_message,
-    _personnel_movement_pairs,
     iter_sse_events,
 )
 
