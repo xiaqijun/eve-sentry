@@ -364,6 +364,47 @@ async def test_relay_delivers_presence_only_system_alert_without_empty_personnel
     await redis.aclose()
 
 
+@pytest.mark.asyncio
+async def test_relay_enqueues_analysis_for_new_hostile_system() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(send_proactive_text=AsyncMock(return_value={"id": "text"}))
+    enqueue = AsyncMock(return_value=True)
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(
+            http,
+            redis,
+            qq,
+            "http://sentry.test/events",
+            analysis_enqueue=enqueue,
+        )
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {"generated_at": "t0", "active_intel": [], "alerts": []}
+        )
+        await relay.process_bootstrap(
+            {
+                "generated_at": "t1",
+                "active_intel": [
+                    {
+                        "id": "ocr:alice",
+                        "active": True,
+                        "source": "eve-sentry-detector",
+                        "system_name": "S-KSWL",
+                        "name": "Alice",
+                        "character_id": 12345,
+                        "metadata": {"client_id": "client-1"},
+                    }
+                ],
+                "alerts": [{"active_intel_id": "ocr:alice"}],
+            }
+        )
+
+    enqueue.assert_awaited_once()
+    assert enqueue.await_args.args[0] == "group-1"
+    assert enqueue.await_args.args[1]["personnel"][0]["name"] == "Alice"
+    await redis.aclose()
+
+
 def test_monitoring_node_message_formats_online_offline_and_move() -> None:
     assert format_monitoring_node_message(
         {

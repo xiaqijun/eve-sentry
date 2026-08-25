@@ -94,6 +94,18 @@ class CompositionMetric(BaseModel):
     sample_count: int
 
 
+class FleetSizeBucket(BaseModel):
+    label: str
+    count: int = 0
+    share: float = 0
+
+
+class FleetSizeWindow(BaseModel):
+    label: str
+    sample_count: int = 0
+    buckets: list[FleetSizeBucket] = Field(default_factory=list)
+
+
 class FleetCompositionItem(BaseModel):
     id: int | None = None
     name: str
@@ -244,6 +256,7 @@ class AnalysisReport(BaseModel):
     affiliations: list[NamedMetric] = Field(default_factory=list)
     role_distribution: list[CompositionMetric] = Field(default_factory=list)
     top_ships: list[CompositionMetric] = Field(default_factory=list)
+    fleet_size_windows: list[FleetSizeWindow] = Field(default_factory=list)
     activity_hours: list[float] = Field(default_factory=lambda: [0.0] * 24)
     activity_week_hours: list[list[float]] = Field(
         default_factory=lambda: [[0.0] * 24 for _ in range(7)]
@@ -288,3 +301,4 @@ class AnalysisRequest(BaseModel):
     received_at: datetime
     fetch_deadline_at: datetime
     reply_deadline_at: datetime
+    proactive: bool = False

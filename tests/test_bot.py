@@ -90,6 +90,31 @@ async def test_analysis_query_is_enqueued_without_intermediate_text_reply() -> N
 
 
 @pytest.mark.asyncio
+async def test_hostile_transition_enqueues_proactive_analysis() -> None:
+    client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
+    original_redis = client.redis
+    client.admission.admit = AsyncMock(return_value=AdmissionResult.OK)
+    client.queue.enqueue = AsyncMock()
+    try:
+        accepted = await client._enqueue_sentry_analysis(
+            "group-1",
+            {"personnel": [{"name": "Alice"}, {"name": "Alice"}]},
+            "2026-08-25T00:00:00+00:00",
+            "system:alert:s-kswl:episode-1",
+        )
+
+        assert accepted is True
+        client.queue.enqueue.assert_awaited_once()
+        request = client.queue.enqueue.await_args.args[0]
+        assert request.character_names == ["Alice"]
+        assert request.proactive is True
+        assert request.msg_id == ""
+    finally:
+        await client.http_client.aclose()
+        await original_redis.aclose()
+
+
+@pytest.mark.asyncio
 async def test_sentry_status_query_replies_without_analysis_queue() -> None:
     client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
     original_redis = client.redis

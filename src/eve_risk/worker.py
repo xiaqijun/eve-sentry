@@ -139,7 +139,7 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
         cached_report = await _get_cached_report(redis, request.character_names)
         if cached_report is not None:
             image, resolved_count, data_events = cached_report
-            await qq.send_image(request.group_openid, request.msg_id, image, msg_seq=1)
+            await _send_report_image(qq, request, image)
             await job_start_task
             await _record_job_finish(
                 repository,
@@ -158,11 +158,8 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
         identities, invalid_names = await esi.resolve_characters(request.character_names)
         resolved_count = len(identities)
         if not identities:
-            await qq.send_text(
-                request.group_openid,
-                request.msg_id,
-                "没有找到任何 Tranquility 角色，请检查名字拼写。",
-                1,
+            await _send_report_text(
+                qq, request, "没有找到任何 Tranquility 角色，请检查名字拼写。"
             )
             await job_start_task
             await _record_job_finish(
@@ -319,7 +316,7 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
         remaining = max(1.0, (request.reply_deadline_at - datetime.now(UTC)).total_seconds())
         async with asyncio.timeout(remaining):
             try:
-                await qq.send_image(request.group_openid, request.msg_id, image, msg_seq=1)
+                await _send_report_image(qq, request, image)
                 await _set_cached_report(
                     redis,
                     request.character_names,
@@ -457,9 +454,27 @@ async def _safe_error_reply(qq: QQOpenAPIClient, request: AnalysisRequest, conte
     if datetime.now(UTC) >= request.reply_deadline_at:
         return
     try:
-        await qq.send_text(request.group_openid, request.msg_id, content, msg_seq=1)
+        await _send_report_text(qq, request, content)
     except Exception:
         logger.exception("request_id=%s error_reply_failed", request.request_id)
+
+
+async def _send_report_image(
+    qq: QQOpenAPIClient, request: AnalysisRequest, image: bytes
+) -> None:
+    if request.proactive:
+        await qq.send_proactive_image(request.group_openid, image)
+    else:
+        await qq.send_image(request.group_openid, request.msg_id, image, msg_seq=1)
+
+
+async def _send_report_text(
+    qq: QQOpenAPIClient, request: AnalysisRequest, content: str
+) -> None:
+    if request.proactive:
+        await qq.send_proactive_text(request.group_openid, content)
+    else:
+        await qq.send_text(request.group_openid, request.msg_id, content, msg_seq=1)
 
 
 def _report_cache_key(character_names: list[str]) -> str:

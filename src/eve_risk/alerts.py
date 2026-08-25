@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import AsyncIterable, AsyncIterator, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
@@ -259,6 +259,8 @@ class EveSentryAlertRelay:
         min_level: str = "",
         public_url: str = "",
         reconnect_delay_seconds: float = 5.0,
+        analysis_enqueue: Callable[[str, dict[str, Any], str, str], Awaitable[bool]]
+        | None = None,
     ) -> None:
         self.http = http
         self.redis = redis
@@ -268,6 +270,7 @@ class EveSentryAlertRelay:
         self.min_level = min_level.strip().casefold()
         self.public_url = public_url.strip()
         self.reconnect_delay_seconds = max(0.2, float(reconnect_delay_seconds))
+        self.analysis_enqueue = analysis_enqueue
         self._active_alert_ids: set[str] = set()
 
     @property
@@ -403,6 +406,13 @@ class EveSentryAlertRelay:
                 continue
             await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
             delivered += 1
+            if transition == "alert" and self.analysis_enqueue is not None:
+                try:
+                    await self.analysis_enqueue(
+                        group_openid, state, datetime.now(UTC).isoformat(), event_id
+                    )
+                except Exception:
+                    logger.exception("EVE Sentry hostile analysis enqueue failed")
 
         logger.info(
             "EVE Sentry system transition processed transition=%s deliveries=%d failures=%d",
@@ -443,6 +453,11 @@ class EveSentryAlertRelay:
                 logger.exception("QQ proactive movement delivery failed")
                 continue
             await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
+            if self.analysis_enqueue is not None:
+                try:
+                    await self.analysis_enqueue(group_openid, state, occurred_at, event_id)
+                except Exception:
+                    logger.exception("EVE Sentry movement analysis enqueue failed")
         logger.info(
             "EVE Sentry movement processed from=%s to=%s failures=%d",
             from_system,

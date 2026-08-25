@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import threading
 import uuid
@@ -78,8 +79,81 @@ class RiskBotClient(botpy.Client):
             api_key=settings.eve_sentry_api_key,
             min_level=settings.eve_sentry_alert_min_level,
             public_url=settings.eve_sentry_public_url,
+            analysis_enqueue=self._enqueue_sentry_analysis,
         )
         self.alert_task: asyncio.Task[None] | None = None
+
+    async def _enqueue_sentry_analysis(
+        self,
+        group_openid: str,
+        state: dict[str, object],
+        occurred_at: str,
+        event_id: str,
+    ) -> bool:
+        names: list[str] = []
+        seen: set[str] = set()
+        personnel = state.get("personnel")
+        if isinstance(personnel, list):
+            for item in personnel:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                key = name.casefold()
+                if not name or key in seen or key in {"未知人员", "unknown"}:
+                    continue
+                seen.add(key)
+                names.append(name)
+                if len(names) >= self.settings.max_characters:
+                    break
+        if not names:
+            logger.info("Skipping hostile analysis without identified personnel")
+            return False
+
+        now = datetime.now(UTC)
+        request_id = "sentry-" + hashlib.sha256(
+            f"{event_id}:{group_openid}".encode()
+        ).hexdigest()[:32]
+        request = AnalysisRequest(
+            request_id=request_id,
+            msg_id="",
+            group_openid=group_openid,
+            member_openid=f"eve-sentry:{group_openid}",
+            character_names=names,
+            received_at=now,
+            fetch_deadline_at=now
+            + timedelta(seconds=self.settings.analysis_fetch_deadline_seconds),
+            reply_deadline_at=now
+            + timedelta(seconds=self.settings.analysis_reply_deadline_seconds),
+            proactive=True,
+        )
+        admission = await self.admission.admit(
+            job_id=request.request_id,
+            msg_id="",
+            member_openid=request.member_openid,
+            group_openid=group_openid,
+            now_epoch=int(now.timestamp()),
+            deadline_epoch=int(request.reply_deadline_at.timestamp()),
+        )
+        if admission != AdmissionResult.OK:
+            logger.info(
+                "Skipping hostile analysis admission result=%s group=%s",
+                admission.value,
+                group_openid,
+            )
+            return False
+        try:
+            await self.queue.enqueue(request)
+        except Exception:
+            await self.admission.release(request.request_id, group_openid)
+            logger.exception("Hostile analysis enqueue failed")
+            return False
+        logger.info(
+            "Hostile analysis enqueued group=%s characters=%d occurred_at=%s",
+            group_openid,
+            len(names),
+            occurred_at,
+        )
+        return True
 
     async def on_ready(self) -> None:
         if not self.alert_relay.enabled:

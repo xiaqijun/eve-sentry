@@ -69,6 +69,32 @@ class QQOpenAPIClient:
     async def send_image(
         self, group_openid: str, msg_id: str, image_bytes: bytes, msg_seq: int
     ) -> dict[str, object]:
+        file_info = await self._upload_image(group_openid, image_bytes)
+        return await self._post_message(
+            group_openid,
+            {
+                "content": "",
+                "msg_type": 7,
+                "media": {"file_info": file_info},
+                "msg_id": msg_id,
+                "msg_seq": msg_seq,
+            },
+        )
+
+    async def send_proactive_image(
+        self, group_openid: str, image_bytes: bytes
+    ) -> dict[str, object]:
+        file_info = await self._upload_image(group_openid, image_bytes)
+        return await self._post_message(
+            group_openid,
+            {
+                "content": "",
+                "msg_type": 7,
+                "media": {"file_info": file_info},
+            },
+        )
+
+    async def _upload_image(self, group_openid: str, image_bytes: bytes) -> object:
         token = await self._access_token()
         try:
             upload = await request_with_retries(
@@ -84,17 +110,7 @@ class QQOpenAPIClient:
             )
         except Exception:
             raise QQAPIError("QQ media upload failed") from None
-        file_info = upload.json()["file_info"]
-        return await self._post_message(
-            group_openid,
-            {
-                "content": "",
-                "msg_type": 7,
-                "media": {"file_info": file_info},
-                "msg_id": msg_id,
-                "msg_seq": msg_seq,
-            },
-        )
+        return upload.json()["file_info"]
 
     async def _post_message(
         self, group_openid: str, payload: dict[str, object]

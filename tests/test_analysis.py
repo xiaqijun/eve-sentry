@@ -79,6 +79,42 @@ def test_analysis_deduplicates_weights_and_builds_patterns(now, identities, ship
     assert report.latest_engagement is not None
     assert report.latest_engagement.last_seen == recent_group.killmail_time
     assert report.latest_engagement.fleet_size == 3
+    fleet_windows = {item.label: item for item in report.fleet_size_windows}
+    assert [item.label for item in report.fleet_size_windows] == [
+        "最近 30 个 KM",
+        "近 30 天",
+        "近 90 天",
+    ]
+    assert fleet_windows["最近 30 个 KM"].sample_count == 2
+    assert [bucket.count for bucket in fleet_windows["最近 30 个 KM"].buckets] == [2, 0, 0, 0]
+
+
+def test_fleet_size_windows_use_km_and_time_boundaries(now, identities, ship_types) -> None:
+    sizes = [1, 4, 5, 8, 9, 12, 13]
+    mails = [
+        _mail(
+            index,
+            now - timedelta(days=45 if index == 7 else index),
+            [Participant(character_id=1)]
+            + [Participant(character_id=1000 + index * 20 + offset) for offset in range(size - 1)],
+        )
+        for index, size in enumerate(sizes, start=1)
+    ]
+    report = FleetAnalyzer().analyze(
+        request_id="fleet-size-windows",
+        requested_count=1,
+        identities=identities[:1],
+        invalid_names=[],
+        killmails=mails,
+        ship_types=ship_types,
+        covered_character_ids={1},
+        now=now,
+    )
+
+    windows = {item.label: item for item in report.fleet_size_windows}
+    assert [bucket.count for bucket in windows["最近 30 个 KM"].buckets] == [2, 2, 2, 1]
+    assert windows["近 30 天"].sample_count == 6
+    assert windows["近 90 天"].sample_count == 7
 
 
 def test_same_engagement_does_not_multiply_fleet_composition(now, identities, ship_types) -> None:

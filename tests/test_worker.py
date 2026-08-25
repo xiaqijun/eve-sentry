@@ -75,6 +75,53 @@ async def test_cached_query_replies_with_one_image_only() -> None:
         await redis.aclose()
 
 
+@pytest.mark.asyncio
+async def test_proactive_cached_query_uses_proactive_image_delivery() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(send_proactive_image=AsyncMock(), send_proactive_text=AsyncMock())
+    admission = SimpleNamespace(release=AsyncMock())
+    repository = SimpleNamespace(
+        record_job_started=AsyncMock(),
+        record_job_finished=AsyncMock(),
+    )
+    now = datetime.now(UTC)
+    request = AnalysisRequest(
+        request_id="cached-proactive-request",
+        msg_id="",
+        group_openid="group-1",
+        member_openid="eve-sentry:group-1",
+        character_names=["MP5K"],
+        received_at=now,
+        fetch_deadline_at=now + timedelta(minutes=4),
+        reply_deadline_at=now + timedelta(minutes=4, seconds=30),
+        proactive=True,
+    )
+    await _set_cached_report(redis, request.character_names, b"png-data", 1, 241)
+    ctx = {
+        "settings": SimpleNamespace(),
+        "redis": redis,
+        "esi": SimpleNamespace(),
+        "images": SimpleNamespace(),
+        "zkill": SimpleNamespace(),
+        "qq": qq,
+        "analyzer": SimpleNamespace(),
+        "renderer": SimpleNamespace(),
+        "admission": admission,
+        "repository": repository,
+    }
+
+    try:
+        await run_analysis_job(ctx, request.model_dump())
+
+        qq.send_proactive_image.assert_awaited_once_with("group-1", b"png-data")
+        qq.send_proactive_text.assert_not_awaited()
+        admission.release.assert_awaited_once_with(
+            "cached-proactive-request", "group-1"
+        )
+    finally:
+        await redis.aclose()
+
+
 def test_analysis_window_falls_back_to_historical_killmails() -> None:
     now = datetime(2026, 7, 21, tzinfo=UTC)
     historical = Killmail(

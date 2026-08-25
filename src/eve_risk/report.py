@@ -12,6 +12,7 @@ from eve_risk.domain import (
     AnalysisReport,
     AssociateCandidate,
     CompositionMetric,
+    FleetSizeWindow,
     LatestEngagement,
     NamedMetric,
     PilotShipMetric,
@@ -367,17 +368,9 @@ class ReportRenderer:
         left, top, right, _ = bounds
         center = (left + right) // 2
         draw.line((center, top + 24, center, bounds[3] - 24), fill=BORDER, width=2)
-        self._section_header(draw, left + 28, top + 20, center - 24, "最佳队友")
+        self._section_header(draw, left + 28, top + 20, center - 24, "小队规模")
         self._section_header(draw, center + 24, top + 20, right - 28, "常用舰船")
-        self._associate_rows(
-            image,
-            draw,
-            left + 28,
-            top + 72,
-            center - 24,
-            report.common_associates[:5],
-            assets,
-        )
+        self._fleet_size_rows(draw, left + 28, top + 72, center - 24, report.fleet_size_windows)
         if report.pilot_ships:
             self._pilot_ship_rows(
                 image,
@@ -398,6 +391,60 @@ class ReportRenderer:
                 report.top_ships[:5],
                 assets,
             )
+
+    def _fleet_size_rows(
+        self,
+        draw: ImageDraw.ImageDraw,
+        left: int,
+        top: int,
+        right: int,
+        windows: list[FleetSizeWindow],
+    ) -> None:
+        if not windows:
+            draw.text((left, top + 20), "暂无小队规模样本", fill=MUTED, font=self.fonts["body"])
+            return
+        column_width = max(1, (right - left - 112) // 4)
+        for index, bucket_label in enumerate(("0–4人", "4–8人", "8–12人", "12+人")):
+            draw.text(
+                (left + 112 + index * column_width, top - 27),
+                bucket_label,
+                fill=MUTED,
+                font=self.fonts["tiny"],
+                anchor="ma",
+            )
+        for row, window in enumerate(windows[:3]):
+            y = top + row * 82
+            draw.text(
+                (left, y),
+                _fit_text(draw, window.label, self.fonts["small"], 104),
+                fill=TEXT,
+                font=self.fonts["small"],
+            )
+            draw.text(
+                (left, y + 25),
+                f"{window.sample_count} KM",
+                fill=DIM,
+                font=self.fonts["tiny"],
+            )
+            maximum = max((bucket.count for bucket in window.buckets), default=1) or 1
+            for index, bucket in enumerate(window.buckets[:4]):
+                x = left + 112 + index * column_width
+                draw.text(
+                    (x + column_width // 2, y + 3),
+                    str(bucket.count),
+                    fill=TEXT,
+                    font=self.fonts["body"],
+                    anchor="ma",
+                )
+                self._progress(
+                    draw,
+                    x + 8,
+                    y + 40,
+                    column_width - 16,
+                    bucket.count / maximum,
+                    CYAN,
+                    height=8,
+                )
 
     def _associate_rows(
         self,

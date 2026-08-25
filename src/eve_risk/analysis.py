@@ -17,6 +17,8 @@ from eve_risk.domain import (
     DoctrineMatch,
     EngagementPattern,
     FleetCompositionItem,
+    FleetSizeBucket,
+    FleetSizeWindow,
     Killmail,
     LatestEngagement,
     NamedMetric,
@@ -306,6 +308,14 @@ class FleetAnalyzer:
         total_engagement_weight = sum(engagement_weights)
         peak_activity = _peak_activity(activity_hours)
         fleet_size_label = _fleet_size_label(median_gang, p75_gang)
+        fleet_size_windows = _fleet_size_windows(
+            mails,
+            input_ids,
+            self.friendly_character_ids,
+            self.friendly_corporation_ids,
+            self.friendly_alliance_ids,
+            now,
+        )
         threat_score, threat_level, threat_components, threat_reasons = _threat_rating(
             event_count=len(mails),
             recent_kills=recent_7d_kills,
@@ -352,6 +362,7 @@ class FleetAnalyzer:
             affiliations=affiliations,
             role_distribution=role_distribution,
             top_ships=top_ships,
+            fleet_size_windows=fleet_size_windows,
             activity_hours=activity_hours,
             activity_week_hours=activity_week_hours,
             median_gang_size=median_gang,
@@ -1427,6 +1438,98 @@ def _fleet_size_label(median_size: float | None, p75_size: float | None) -> str:
     if p75_size <= 50:
         return "舰队 / 10–50人"
     return "大型舰队 / 50+人"
+
+
+_FLEET_SIZE_BUCKETS = ("0–4人", "4–8人", "8–12人", "12人以上")
+
+
+def _fleet_size_windows(
+    mails: list[Killmail],
+    input_ids: set[int],
+    friendly_character_ids: frozenset[int] | set[int],
+    friendly_corporation_ids: frozenset[int] | set[int],
+    friendly_alliance_ids: frozenset[int] | set[int],
+    now: datetime,
+) -> list[FleetSizeWindow]:
+    """Summarize attacker group sizes for stable KM and time windows."""
+    ordered = sorted(mails, key=lambda item: _aware(item.killmail_time), reverse=True)
+    windows = (
+        ("最近 30 个 KM", ordered[:30]),
+        ("近 30 天", [mail for mail in ordered if _aware(mail.killmail_time) >= now - timedelta(days=30)]),
+        ("近 90 天", [mail for mail in ordered if _aware(mail.killmail_time) >= now - timedelta(days=90)]),
+    )
+    result: list[FleetSizeWindow] = []
+    for label, window_mails in windows:
+        sizes: list[int] = []
+        for mail in window_mails:
+            size = _fleet_size_for_killmail(
+                mail,
+                input_ids,
+                friendly_character_ids,
+                friendly_corporation_ids,
+                friendly_alliance_ids,
+            )
+            if size is not None:
+                sizes.append(size)
+        sample_count = len(sizes)
+        bucket_counts = [
+            sum(1 for size in sizes if _fleet_size_bucket_index(size) == index)
+            for index in range(len(_FLEET_SIZE_BUCKETS))
+        ]
+        result.append(
+            FleetSizeWindow(
+                label=label,
+                sample_count=sample_count,
+                buckets=[
+                    FleetSizeBucket(
+                        label=bucket_label,
+                        count=count,
+                        share=count / sample_count if sample_count else 0,
+                    )
+                    for bucket_label, count in zip(
+                        _FLEET_SIZE_BUCKETS, bucket_counts, strict=True
+                    )
+                ],
+            )
+        )
+    return result
+
+
+def _fleet_size_for_killmail(
+    mail: Killmail,
+    input_ids: set[int],
+    friendly_character_ids: frozenset[int] | set[int],
+    friendly_corporation_ids: frozenset[int] | set[int],
+    friendly_alliance_ids: frozenset[int] | set[int],
+) -> int | None:
+    attackers = {
+        participant.character_id
+        for participant in mail.participants
+        if participant.character_id is not None
+        and not participant.is_victim
+        and (
+            participant.character_id in input_ids
+            or not _is_friendly_participant(
+                participant,
+                friendly_character_ids,
+                friendly_corporation_ids,
+                friendly_alliance_ids,
+            )
+        )
+    }
+    if not attackers.intersection(input_ids):
+        return None
+    return len(attackers)
+
+
+def _fleet_size_bucket_index(size: int) -> int:
+    if size <= 4:
+        return 0
+    if size <= 8:
+        return 1
+    if size <= 12:
+        return 2
+    return 3
 
 
 def _counter_metrics(counter: Counter[str], limit: int | None = None) -> list[NamedMetric]:
