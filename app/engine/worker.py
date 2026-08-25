@@ -1,5 +1,6 @@
 """Background worker thread for the monitor loop."""
 
+import hashlib
 import logging
 import threading
 import time
@@ -127,6 +128,8 @@ class MonitorWorker(QThread):
         ocr_ready = False  # track whether OCR has been lazy-initialised
         previous_hostile_count: int | None = None
         last_health_status_at = time.monotonic()
+        previous_hostile_rows_fingerprint: bytes | None = None
+        ocr_retry_remaining = 0
         capturer = self._capturer
         owns_capturer = False
 
@@ -179,8 +182,29 @@ class MonitorWorker(QThread):
                         self._burst_scans_remaining = 2 if hostile_count > 0 else 0
                     previous_hostile_count = hostile_count
 
+                    hostile_rows = (
+                        extract_hostile_name_rows(img, hostile_icons)
+                        if hostile_icons
+                        else None
+                    )
+                    rows_fingerprint = (
+                        _image_fingerprint(hostile_rows)
+                        if hostile_rows is not None
+                        else None
+                    )
+                    rows_changed = rows_fingerprint != previous_hostile_rows_fingerprint
+                    previous_hostile_rows_fingerprint = rows_fingerprint
+                    if hostile_count == 0:
+                        ocr_retry_remaining = 0
+                    elif count_changed or rows_changed:
+                        # Allow the list to finish repainting before giving up on
+                        # a transiently incomplete OCR frame.
+                        ocr_retry_remaining = 3
+
                     should_run_ocr = (
-                        self._ocr_enabled and count_changed and hostile_count > 0
+                        self._ocr_enabled
+                        and hostile_count > 0
+                        and (count_changed or rows_changed or ocr_retry_remaining > 0)
                     )
                     if not should_run_ocr:
                         scan_count += 1
@@ -216,16 +240,20 @@ class MonitorWorker(QThread):
                         self._wait_for_next_scan()
                         continue
 
-                    hostile_rows = (
-                        extract_hostile_name_rows(img) if hostile_icons else None
-                    )
                     if hostile_rows is None:
                         ocr_results = []
-                        self.status_update.emit(
-                            "敌对图标已上报，姓名区域定位失败"
+                        logger.warning(
+                            "Hostile OCR row extraction failed (icons=%d, retries=%d)",
+                            hostile_count,
+                            ocr_retry_remaining,
                         )
+                        self.status_update.emit(
+                            "敌对图标已上报，姓名区域定位失败，等待下一帧重试"
+                        )
+                        ocr_retry_remaining = max(0, ocr_retry_remaining - 1)
                     else:
                         progress = None if ocr_ready else self.status_update.emit
+                        ocr_retry_remaining = max(0, ocr_retry_remaining - 1)
                         hostile_ocr_results = self._recognize(
                             hostile_rows,
                             progress=progress,
@@ -235,10 +263,23 @@ class MonitorWorker(QThread):
                         if len(hostile_names) == hostile_count:
                             ocr_results = hostile_ocr_results
                             self.ocr_snapshot.emit(hostile_names, hostile_count)
+                            ocr_retry_remaining = 0
+                            logger.info(
+                                "Hostile OCR snapshot accepted (icons=%d, names=%d)",
+                                hostile_count,
+                                len(hostile_names),
+                            )
                         else:
                             ocr_results = []
+                            logger.warning(
+                                "Hostile OCR name count mismatch "
+                                "(icons=%d, names=%d, retries=%d)",
+                                hostile_count,
+                                len(hostile_names),
+                                ocr_retry_remaining,
+                            )
                             self.status_update.emit(
-                                "敌对图标已上报，姓名数量不匹配，本轮不发布姓名"
+                                "敌对图标已上报，姓名数量不匹配，等待下一帧重试"
                             )
                     ocr_ready = True
                     if self._stop_requested():
@@ -261,6 +302,7 @@ class MonitorWorker(QThread):
 
                 except OCRRequestSuperseded:
                     logger.debug("Discarded superseded OCR frame")
+                    ocr_retry_remaining = max(1, ocr_retry_remaining)
                     self.status_update.emit("OCR 已跳过过期帧")
                 except TargetWindowClosed:
                     logger.info("Target EVE window closed; waiting for monitor reconnect")
@@ -278,3 +320,30 @@ class MonitorWorker(QThread):
         finally:
             if owns_capturer:
                 capturer.close()
+
+
+def _image_fingerprint(image) -> bytes:
+    """Return a cheap fingerprint for an OCR input image.
+
+    The compact hostile-row image is small, so hashing it is inexpensive and
+    detects same-count roster changes without hashing the complete game frame.
+    The fallback keeps worker tests and alternate image providers compatible.
+    """
+    if image is None:
+        return b""
+    try:
+        grayscale = image.convert("L")
+        width, height = grayscale.size
+        # Focus on the name column. Overview distance and type/size columns can
+        # update while the hostile roster itself remains unchanged.
+        name_left = min(width - 1, max(0, int(round(width * 0.12))))
+        name_right = max(name_left + 1, int(round(width * 0.62)))
+        grayscale = grayscale.crop((name_left, 0, min(width, name_right), height))
+        target_width = min(96, max(1, int(grayscale.width)))
+        target_height = min(192, max(1, int(height)))
+        reduced = grayscale.resize((target_width, target_height)).point(
+            lambda value: 255 if value >= 96 else 0
+        )
+        return hashlib.blake2b(reduced.tobytes(), digest_size=12).digest()
+    except (AttributeError, TypeError, ValueError):
+        return hashlib.blake2b(repr(image).encode("utf-8"), digest_size=12).digest()
