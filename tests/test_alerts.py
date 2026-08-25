@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -822,6 +823,15 @@ async def test_personnel_updates_are_once_per_episode_and_fingerprint() -> None:
                 "generated_at": "t1",
             }
         )
+        stored = await redis.hget(SYSTEM_ALERT_STATE_KEY, "s-kswl")
+        assert stored is not None
+        stored_state = json.loads(stored)
+        stored_state["personnel_fingerprint"] = "legacy-hidden-field-fingerprint"
+        await redis.hset(
+            SYSTEM_ALERT_STATE_KEY,
+            "s-kswl",
+            json.dumps(stored_state),
+        )
         await relay.process_bootstrap(
             {
                 "active_intel": [alice],
@@ -857,6 +867,64 @@ async def test_personnel_updates_are_once_per_episode_and_fingerprint() -> None:
         assert qq.send_proactive_text.await_count == 3
         assert qq.send_proactive_text.await_args_list[-2].args[1].startswith("✅ S-KSWL 清空")
         assert qq.send_proactive_text.await_args_list[-1].args[1].startswith("❗ S-KSWL 来敌")
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_hidden_threat_enrichment_does_not_repeat_personnel_alert() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {"active_intel": [], "alerts": [], "generated_at": "t0"}
+        )
+        alice = {
+            "id": "ocr:alice",
+            "active": True,
+            "source": "eve-sentry-detector",
+            "system_name": "S-KSWL",
+            "name": "Alice",
+            "metadata": {"client_id": "client-1"},
+        }
+        await relay.process_bootstrap(
+            {
+                "active_intel": [{**alice, "character_id": 12345}],
+                "alerts": [
+                    {
+                        "active_intel_id": "ocr:alice",
+                        "level": "medium",
+                        "score": 55,
+                    }
+                ],
+                "generated_at": "t1",
+            }
+        )
+        await relay.process_bootstrap(
+            {
+                "active_intel": [alice],
+                "alerts": [
+                    {
+                        "active_intel_id": "ocr:alice",
+                        "level": "high",
+                        "score": 80,
+                        "metadata": {
+                            "corporation_name": "Enriched Corporation",
+                            "alliance_name": "Enriched Alliance",
+                        },
+                    }
+                ],
+                "generated_at": "t2",
+            }
+        )
+
+        assert qq.send_proactive_markdown.await_count == 1
+        assert qq.send_proactive_text.await_count == 1
 
     await redis.aclose()
 

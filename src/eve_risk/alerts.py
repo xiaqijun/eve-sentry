@@ -754,7 +754,7 @@ class EveSentryAlertRelay:
                 previous_state = previous.get(system_key)
                 if previous_state is not None and (
                     current_state.get("personnel_fingerprint")
-                    == previous_state.get("personnel_fingerprint")
+                    == _personnel_fingerprint(previous_state.get("personnel"))
                 ):
                     continue
                 update_state = _personnel_display_state(
@@ -1031,19 +1031,37 @@ def _active_system_state(
             ),
         )
         state["personnel"] = personnel
-        state["personnel_fingerprint"] = (
-            hashlib.sha256(
-                json.dumps(
-                    personnel,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()[:20]
-            if personnel
-            else ""
-        )
+        state["personnel_fingerprint"] = _personnel_fingerprint(personnel)
     return systems
+
+
+def _personnel_fingerprint(value: object) -> str:
+    """Fingerprint only personnel fields that should trigger another alert."""
+    if not isinstance(value, list):
+        return ""
+    personnel = [item for item in value if isinstance(item, dict)]
+    if not personnel:
+        return ""
+    visible_identity = sorted(
+        [
+            {
+                "name": str(item.get("name") or "").strip().casefold(),
+                "system_name": str(item.get("system_name") or "")
+                .strip()
+                .casefold(),
+            }
+            for item in personnel
+        ],
+        key=lambda item: (item["system_name"], item["name"]),
+    )
+    return hashlib.sha256(
+        json.dumps(
+            visible_identity,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:20]
 
 
 def _personnel_snapshot(item: dict[str, Any]) -> dict[str, Any]:
