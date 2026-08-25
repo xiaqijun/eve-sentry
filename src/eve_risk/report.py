@@ -403,10 +403,15 @@ class ReportRenderer:
         if not windows:
             draw.text((left, top + 20), "暂无小队规模样本", fill=MUTED, font=self.fonts["body"])
             return
-        column_width = max(1, (right - left - 112) // 4)
-        for index, bucket_label in enumerate(("0–4人", "4–8人", "8–12人", "12+人")):
+        label_width = 132
+        data_left = left + label_width
+        column_width = (right - data_left) / 4
+        bucket_labels = ("0–4人", "4–8人", "8–12人", "12人以上")
+        for index, bucket_label in enumerate(bucket_labels):
+            column_left = round(data_left + index * column_width)
+            column_right = round(data_left + (index + 1) * column_width)
             draw.text(
-                (left + 112 + index * column_width, top - 27),
+                ((column_left + column_right) / 2, top - 27),
                 bucket_label,
                 fill=MUTED,
                 font=self.fonts["tiny"],
@@ -416,7 +421,7 @@ class ReportRenderer:
             y = top + row * 82
             draw.text(
                 (left, y),
-                _fit_text(draw, window.label, self.fonts["small"], 104),
+                _fit_text(draw, window.label, self.fonts["small"], label_width - 10),
                 fill=TEXT,
                 font=self.fonts["small"],
             )
@@ -428,9 +433,10 @@ class ReportRenderer:
             )
             maximum = max((bucket.count for bucket in window.buckets), default=1) or 1
             for index, bucket in enumerate(window.buckets[:4]):
-                x = left + 112 + index * column_width
+                column_left = round(data_left + index * column_width)
+                column_right = round(data_left + (index + 1) * column_width)
                 draw.text(
-                    (x + column_width // 2, y + 3),
+                    ((column_left + column_right) / 2, y + 3),
                     str(bucket.count),
                     fill=TEXT,
                     font=self.fonts["body"],
@@ -438,9 +444,9 @@ class ReportRenderer:
                 )
                 self._progress(
                     draw,
-                    x + 8,
+                    column_left + 8,
                     y + 40,
-                    column_width - 16,
+                    max(1, column_right - column_left - 16),
                     bucket.count / maximum,
                     CYAN,
                     height=8,
