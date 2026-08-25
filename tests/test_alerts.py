@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import fakeredis.aioredis
@@ -20,6 +21,7 @@ from eve_risk.alerts import (
     format_monitoring_node_message,
     format_personnel_alert_message,
     format_system_alert_message,
+    format_system_movement_message,
     iter_sse_events,
 )
 
@@ -150,6 +152,9 @@ def test_alert_subscription_commands_and_message_format() -> None:
     assert format_system_alert_message("S-KSWL", "alert") == "❗ S-KSWL 来敌"
     assert format_system_alert_message("S-KSWL", "alert", 3) == "❗ S-KSWL 来敌｜当前敌对 3 人"
     assert format_system_alert_message("S-KSWL", "safe") == "✅ S-KSWL 清空"
+    assert format_system_movement_message("Jita", "Tama", 2) == (
+        "🔵 敌对移动｜Jita → Tama｜当前敌对 2 人"
+    )
 
     personnel = format_personnel_alert_message(
         {
@@ -594,6 +599,58 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
 
         await relay.unsubscribe("group-1")
         assert await relay.is_subscribed("group-1") is False
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_relay_compacts_complete_personnel_move_into_one_movement_message() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+
+        def item(active_id: str, system_name: str) -> dict[str, Any]:
+            return {
+                "id": active_id,
+                "active": True,
+                "source": "eve-sentry-detector",
+                "system_name": system_name,
+                "name": "Alice",
+                "first_seen_at": "2026-08-24T10:00:00+00:00",
+                "metadata": {"client_id": "client-1"},
+            }
+
+        await relay.process_bootstrap(
+            {"generated_at": "t0", "active_intel": [], "alerts": []}
+        )
+        await relay.process_bootstrap(
+            {
+                "generated_at": "t1",
+                "active_intel": [item("ocr:jita", "Jita")],
+                "alerts": [{"active_intel_id": "ocr:jita"}],
+            }
+        )
+        qq.send_proactive_text.reset_mock()
+        qq.send_proactive_markdown.reset_mock()
+
+        await relay.process_bootstrap(
+            {
+                "generated_at": "t2",
+                "active_intel": [item("ocr:tama", "Tama")],
+                "alerts": [{"active_intel_id": "ocr:tama"}],
+            }
+        )
+
+        assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
+            "🔵 敌对移动｜Jita → Tama｜当前敌对 1 人"
+        ]
+        assert qq.send_proactive_markdown.await_count == 1
+        assert "Jita → Tama" in qq.send_proactive_markdown.await_args.args[1]
 
     await redis.aclose()
 

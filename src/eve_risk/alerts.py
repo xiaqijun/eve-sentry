@@ -117,6 +117,21 @@ def format_system_alert_message(
     return f"❗ {system_name} 来敌{count_label}"
 
 
+def format_system_movement_message(
+    from_system: str,
+    to_system: str,
+    hostile_count: int | None = None,
+) -> str:
+    from_label = str(from_system or "未知星系").strip() or "未知星系"
+    to_label = str(to_system or "未知星系").strip() or "未知星系"
+    count_label = (
+        f"｜当前敌对 {hostile_count} 人"
+        if isinstance(hostile_count, int) and hostile_count >= 0
+        else ""
+    )
+    return f"🔵 敌对移动｜{from_label} → {to_label}{count_label}"
+
+
 def format_personnel_alert_message(
     state: dict[str, Any],
     occurred_at: str,
@@ -398,6 +413,45 @@ class EveSentryAlertRelay:
         )
         return failed == 0
 
+    async def deliver_system_movement(
+        self,
+        from_system: str,
+        to_system: str,
+        state: dict[str, Any],
+        occurred_at: str,
+    ) -> bool:
+        """Deliver one compact movement event instead of clear plus re-entry."""
+        raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
+        groups = sorted(_decode(value) for value in raw_groups if _decode(value))
+        message = format_system_movement_message(
+            from_system,
+            to_system,
+            state.get("hostile_count"),
+        )
+        event_id = (
+            f"movement:{str(from_system).casefold()}:{str(to_system).casefold()}"
+            f":{str(state.get('episode_id') or occurred_at)}"
+        )
+        failed = 0
+        for group_openid in groups:
+            delivered_key = _delivered_key(event_id, group_openid)
+            if await self.redis.exists(delivered_key):
+                continue
+            try:
+                await self.qq.send_proactive_text(group_openid, message)
+            except Exception:
+                failed += 1
+                logger.exception("QQ proactive movement delivery failed")
+                continue
+            await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
+        logger.info(
+            "EVE Sentry movement processed from=%s to=%s failures=%d",
+            from_system,
+            to_system,
+            failed,
+        )
+        return failed == 0
+
     async def deliver_system_personnel_update(
         self,
         state: dict[str, Any],
@@ -636,16 +690,34 @@ class EveSentryAlertRelay:
         for system_key in current.keys() & previous.keys():
             current[system_key]["episode_id"] = previous[system_key]["episode_id"]
 
+        movement_pairs = _personnel_movement_pairs(previous, current)
+        moved_from = {pair["from_system"].casefold() for pair in movement_pairs}
+        moved_to = {pair["to_system"].casefold() for pair in movement_pairs}
+
         transitions_succeeded = True
         if initialized:
             for system_key in sorted(previous.keys() - current.keys()):
+                if system_key in moved_from:
+                    continue
                 transitions_succeeded = (
                     await self.deliver_system_transition(previous[system_key], "safe")
                     and transitions_succeeded
                 )
             for system_key in sorted(current.keys() - previous.keys()):
+                if system_key in moved_to:
+                    continue
                 transitions_succeeded = (
                     await self.deliver_system_transition(current[system_key], "alert")
+                    and transitions_succeeded
+                )
+            for pair in movement_pairs:
+                transitions_succeeded = (
+                    await self.deliver_system_movement(
+                        pair["from_system"],
+                        pair["to_system"],
+                        current[pair["to_key"]],
+                        generated_at,
+                    )
                     and transitions_succeeded
                 )
 
@@ -1017,6 +1089,42 @@ def _personnel_display_state(
         rows.append(row)
     displayed["personnel"] = rows
     return displayed
+
+
+def _personnel_movement_pairs(
+    previous: dict[str, dict[str, Any]],
+    current: dict[str, dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Find complete system-to-system personnel moves in one snapshot."""
+    previous_by_identity: dict[str, str] = {}
+    for system_key, state in previous.items():
+        system_name = str(state.get("system_name") or system_key).strip()
+        for item in state.get("personnel", []):
+            if isinstance(item, dict):
+                previous_by_identity[_personnel_identity(item)] = system_name
+
+    pairs: dict[tuple[str, str], dict[str, str]] = {}
+    for state in current.values():
+        to_system = str(state.get("system_name") or "").strip()
+        to_key = to_system.casefold()
+        for item in state.get("personnel", []):
+            if not isinstance(item, dict):
+                continue
+            from_system = previous_by_identity.get(_personnel_identity(item), "")
+            if not from_system or from_system.casefold() == to_key:
+                continue
+            from_key = from_system.casefold()
+            if from_key not in previous or to_key in previous:
+                continue
+            pairs.setdefault(
+                (from_key, to_key),
+                {
+                    "from_system": from_system,
+                    "to_system": to_system,
+                    "to_key": to_key,
+                },
+            )
+    return list(pairs.values())
 
 
 def _personnel_identity(item: dict[str, Any]) -> str:
