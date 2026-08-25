@@ -1455,6 +1455,7 @@ def _fleet_size_windows(
     ordered = sorted(mails, key=lambda item: _aware(item.killmail_time), reverse=True)
     windows = (
         ("最近 30 个 KM", ordered[:30]),
+        ("近 7 天", [mail for mail in ordered if _aware(mail.killmail_time) >= now - timedelta(days=7)]),
         ("近 30 天", [mail for mail in ordered if _aware(mail.killmail_time) >= now - timedelta(days=30)]),
         ("近 90 天", [mail for mail in ordered if _aware(mail.killmail_time) >= now - timedelta(days=90)]),
     )

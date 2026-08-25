@@ -11,6 +11,7 @@ from eve_risk.analysis import SHANGHAI
 from eve_risk.domain import (
     AnalysisReport,
     AssociateCandidate,
+    CharacterProfile,
     CompositionMetric,
     FleetSizeWindow,
     LatestEngagement,
@@ -157,23 +158,55 @@ class ReportRenderer:
             font=self.fonts["hero"],
         )
 
-        badge_text = (
-            f"{primary.character_id} [{primary.candidate_label}]"
-            if single and primary
-            else f"已解析 {report.resolved_count}/{report.requested_count}"
-        )
-        badge_width = max(
-            150,
-            draw.textbbox((0, 0), badge_text, font=self.fonts["tiny"])[2] + 28,
-        )
-        draw.rounded_rectangle((tx, top + 75, tx + badge_width, top + 107), 14, fill="#102a3c")
-        draw.text(
-            (tx + badge_width / 2, top + 91),
-            badge_text,
-            fill=CYAN,
-            font=self.fonts["tiny"],
-            anchor="mm",
-        )
+        if single and primary:
+            tag_styles = (
+                ("#321722", _threat_color(report.threat_score)),
+                ("#102a3c", CYAN),
+                ("#2d2717", YELLOW),
+            )
+            tag_x = tx
+            for label, (tag_fill, tag_color) in zip(
+                _profile_tags(report, primary), tag_styles, strict=False
+            ):
+                tag_width = draw.textbbox(
+                    (0, 0), label, font=self.fonts["tiny"]
+                )[2] + 26
+                if tag_x + tag_width > right - 28:
+                    break
+                draw.rounded_rectangle(
+                    (tag_x, top + 75, tag_x + tag_width, top + 107),
+                    7,
+                    fill=tag_fill,
+                    outline=tag_color,
+                    width=1,
+                )
+                draw.text(
+                    (tag_x + tag_width / 2, top + 91),
+                    label,
+                    fill=tag_color,
+                    font=self.fonts["tiny"],
+                    anchor="mm",
+                )
+                tag_x += tag_width + 10
+        else:
+            badge_text = f"已解析 {report.resolved_count}/{report.requested_count}"
+            badge_width = max(
+                150,
+                draw.textbbox((0, 0), badge_text, font=self.fonts["tiny"])[2]
+                + 28,
+            )
+            draw.rounded_rectangle(
+                (tx, top + 75, tx + badge_width, top + 107),
+                14,
+                fill="#102a3c",
+            )
+            draw.text(
+                (tx + badge_width / 2, top + 91),
+                badge_text,
+                fill=CYAN,
+                font=self.fonts["tiny"],
+                anchor="mm",
+            )
 
         if single and primary:
             affiliation_x = tx + 47
@@ -403,7 +436,7 @@ class ReportRenderer:
         if not windows:
             draw.text((left, top + 20), "暂无小队规模样本", fill=MUTED, font=self.fonts["body"])
             return
-        label_width = 132
+        label_width = 140
         data_left = left + label_width
         column_width = (right - data_left) / 4
         bucket_labels = ("0–4人", "4–8人", "8–12人", "12人以上")
@@ -417,7 +450,7 @@ class ReportRenderer:
                 font=self.fonts["tiny"],
                 anchor="ma",
             )
-        for row, window in enumerate(windows[:3]):
+        for row, window in enumerate(windows[:4]):
             y = top + row * 82
             draw.text(
                 (left, y),
@@ -680,6 +713,14 @@ class ReportRenderer:
         draw.text((left + 28, table_y), "最近战报", fill=TEXT, font=self.fonts["body"])
         draw.text((left + 28, table_y + 34), "时间", fill=MUTED, font=self.fonts["tiny"])
         draw.text((left + 160, table_y + 34), "星系", fill=MUTED, font=self.fonts["tiny"])
+        scale_x = right - 386
+        draw.text(
+            (scale_x, table_y + 34),
+            "规模",
+            fill=MUTED,
+            font=self.fonts["tiny"],
+            anchor="ma",
+        )
         draw.text((right - 28, table_y + 34), "战损", fill=MUTED, font=self.fonts["tiny"], anchor="ra")
         rows = report.recent_engagements[:5]
         if not rows and report.latest_engagement:
@@ -695,9 +736,16 @@ class ReportRenderer:
             location = engagement.system_name
             draw.text(
                 (left + 168, row_y + 13),
-                _fit_text(draw, location, self.fonts["small"], 300),
+                _fit_text(draw, location, self.fonts["small"], 280),
                 fill=TEXT,
                 font=self.fonts["small"],
+            )
+            draw.text(
+                (scale_x, row_y + 15),
+                _battle_scale_text(engagement),
+                fill=CYAN,
+                font=self.fonts["tiny"],
+                anchor="ma",
             )
             self._battle_ship_icons(
                 image,
@@ -997,6 +1045,18 @@ class ReportRenderer:
             draw.rounded_rectangle((left, top, left + filled, top + height), height // 2, fill=color)
 
 
+def _profile_tags(
+    report: AnalysisReport, profile: CharacterProfile
+) -> list[str]:
+    tags = [f"{report.threat_level}威胁"]
+    if profile.primary_roles:
+        tags.append(profile.primary_roles[0].name)
+    fleet_style = report.fleet_size_label.partition("/")[0].strip()
+    if fleet_style and fleet_style != "样本不足":
+        tags.append(fleet_style if fleet_style == "单收" else f"{fleet_style}作战")
+    return list(dict.fromkeys(tags))[:3]
+
+
 def build_summary(report: AnalysisReport) -> str:
     location = (
         report.top_regions[0].name
@@ -1137,6 +1197,11 @@ def _battle_value_text(engagement: LatestEngagement) -> str:
         f"{_format_battle_isk(engagement.lost_value)} / "
         f"{_format_battle_isk(engagement.destroyed_value)}"
     )
+
+
+def _battle_scale_text(engagement: LatestEngagement) -> str:
+    observed = max(engagement.fleet_size, engagement.observed_attacker_count)
+    return f"约{observed}人" if observed > 0 else "--"
 
 
 def _format_battle_isk(value: float) -> str:

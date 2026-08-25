@@ -82,10 +82,12 @@ def test_analysis_deduplicates_weights_and_builds_patterns(now, identities, ship
     fleet_windows = {item.label: item for item in report.fleet_size_windows}
     assert [item.label for item in report.fleet_size_windows] == [
         "最近 30 个 KM",
+        "近 7 天",
         "近 30 天",
         "近 90 天",
     ]
     assert fleet_windows["最近 30 个 KM"].sample_count == 2
+    assert fleet_windows["近 7 天"].sample_count == 2
     assert [bucket.count for bucket in fleet_windows["最近 30 个 KM"].buckets] == [2, 0, 0, 0]
 
 
@@ -113,6 +115,7 @@ def test_fleet_size_windows_use_km_and_time_boundaries(now, identities, ship_typ
 
     windows = {item.label: item for item in report.fleet_size_windows}
     assert [bucket.count for bucket in windows["最近 30 个 KM"].buckets] == [2, 2, 2, 1]
+    assert windows["近 7 天"].sample_count == 6
     assert windows["近 30 天"].sample_count == 6
     assert windows["近 90 天"].sample_count == 7
 

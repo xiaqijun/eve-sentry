@@ -3,8 +3,29 @@ import io
 from PIL import Image
 
 from eve_risk.analysis import FleetAnalyzer
-from eve_risk.domain import ZKillStats
-from eve_risk.report import ReportAssets, ReportRenderer, _footer_text, build_summary
+from eve_risk.domain import LatestEngagement, NamedMetric, ZKillStats
+from eve_risk.report import (
+    ReportAssets,
+    ReportRenderer,
+    _battle_scale_text,
+    _footer_text,
+    _profile_tags,
+    build_summary,
+)
+
+
+def test_battle_scale_prefers_observed_attackers(now) -> None:
+    engagement = LatestEngagement(
+        started_at=now,
+        last_seen=now,
+        solar_system_id=30000142,
+        system_name="Jita",
+        fleet_size=4,
+        observed_attacker_count=11,
+        event_count=1,
+    )
+
+    assert _battle_scale_text(engagement) == "约11人"
 
 
 def test_renderer_produces_png(now, identities, ship_types) -> None:
@@ -59,6 +80,12 @@ def test_renderer_accepts_portrait_and_ship_assets(now, identities, ship_types) 
         covered_character_ids={1},
         now=now,
     )
+    report.threat_level = "高"
+    report.fleet_size_label = "小队 / 5–10人"
+    report.profiles[0].primary_roles = [NamedMetric(name="输出舰", value=1)]
+    tags = _profile_tags(report, report.profiles[0])
+    assert tags == ["高威胁", "输出舰", "小队作战"]
+    assert "核心成员候选" not in tags
     asset = io.BytesIO()
     Image.new("RGB", (64, 64), "#49b6ff").save(asset, format="PNG")
 
