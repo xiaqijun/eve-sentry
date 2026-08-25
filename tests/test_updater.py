@@ -17,6 +17,7 @@ from PyQt6.QtNetwork import QNetworkReply, QNetworkRequest
 from app.updater import (
     ClientUpdater,
     ReleaseInfo,
+    UpdateComponent,
     UpdateError,
     build_update_script,
     cleanup_update_artifacts,
@@ -182,6 +183,19 @@ def test_build_update_script_waits_replaces_and_restarts(tmp_path):
     assert "a" * 64 in script
 
 
+def test_build_update_script_tolerates_process_exit_race(tmp_path):
+    script = build_update_script(
+        tmp_path / "client.zip",
+        Path("C:/Apps/EVE Sentry"),
+        "EVE-Sentry-Monitor.exe",
+        4242,
+    )
+
+    assert "Wait-Process -Id 4242 -ErrorAction Stop" in script
+    assert "Get-Process -Id 4242 -ErrorAction SilentlyContinue" in script
+    assert "if ($null -ne" in script
+
+
 def test_build_update_script_preserves_legacy_region_preferences(tmp_path):
     script = build_update_script(
         tmp_path / "client.zip",
@@ -206,6 +220,55 @@ def test_client_updater_reports_verified_package_ready_to_install(tmp_path):
 
     updater._installer_launched = True
     assert updater.ready_to_install is False
+
+
+def test_download_skips_already_installed_model_after_program_restore(
+    tmp_path,
+    monkeypatch,
+):
+    program = tmp_path / "program.zip"
+    program.write_bytes(b"program")
+    model = UpdateComponent(
+        "model-current",
+        "https://download.example/models.zip",
+        hashlib.sha256(b"models").hexdigest(),
+        len(b"models"),
+        "models.zip",
+    )
+    release = ReleaseInfo(
+        "1.2.0",
+        "https://download.example/program.zip",
+        hashlib.sha256(program.read_bytes()).hexdigest(),
+        program.stat().st_size,
+        program.name,
+        model,
+    )
+    updater = ClientUpdater(update_dir=tmp_path, background_download=False)
+    updater._release = release
+    updater._program_ready_path = program
+    downloads = []
+    states = []
+    monkeypatch.setattr(
+        "app.updater.installed_model_version",
+        lambda: "model-current",
+    )
+    monkeypatch.setattr(
+        updater,
+        "_begin_component_download",
+        lambda component, kind: downloads.append((component, kind)),
+    )
+    updater.state_changed.connect(lambda *state: states.append(state))
+
+    updater.download()
+
+    assert downloads == []
+    assert updater._ready_path == program
+    assert updater._model_ready_path is None
+    pending = json.loads(
+        (tmp_path / "pending-update.json").read_text(encoding="utf-8")
+    )
+    assert pending["models"] is None
+    assert states[-1] == ("更新包已就绪，退出时自动安装", "立即安装", True)
 
 
 def test_http_error_body_is_not_saved_as_a_resumable_update(tmp_path):

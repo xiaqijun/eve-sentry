@@ -702,7 +702,11 @@ try {{
     }} finally {{
         $archive.Dispose()
     }}
-    Wait-Process -Id {int(process_id)} -ErrorAction SilentlyContinue
+    try {{
+        Wait-Process -Id {int(process_id)} -ErrorAction Stop
+    }} catch {{
+        if ($null -ne (Get-Process -Id {int(process_id)} -ErrorAction SilentlyContinue)) {{ throw }}
+    }}
     Write-UpdateLog 'previous client exited'
     if ($expectedPackageSize -gt 0 -and (Get-Item -LiteralPath $package).Length -ne $expectedPackageSize) {{
         throw 'program package size changed before installation'
@@ -1033,8 +1037,30 @@ class ClientUpdater(QObject):
         release = self._release
         if self._busy or release is None:
             return
-        if self._program_ready_path is not None and release.models is not None:
-            self._begin_component_download(release.models, "models")
+        if self._program_ready_path is not None:
+            models = release.models
+            if models is not None and models.version != installed_model_version():
+                self._begin_component_download(models, "models")
+                return
+            self._model_ready_path = None
+            self._ready_path = self._program_ready_path
+            try:
+                save_pending_update(
+                    self.update_dir,
+                    release,
+                    self._ready_path,
+                    self._model_ready_path,
+                )
+            except OSError:
+                logger.exception("Could not persist verified pending update")
+            if self._asynchronous_file_tasks:
+                QTimer.singleShot(0, self._prepare_ready_update)
+            else:
+                self.state_changed.emit(
+                    "更新包已就绪，退出时自动安装",
+                    "立即安装",
+                    True,
+                )
             return
         component = UpdateComponent(
             release.version,
