@@ -143,17 +143,16 @@ def format_personnel_alert_message(
     lines = [
         "### ⚠️ 敌对事件",
         f"**当前敌对**｜{count} 人",
-        "| 人员 | 星系 | 军团 | 联盟 | 时间 | zKill |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| 人员 | 星系 | zKill |",
+        "| --- | --- | --- |",
     ]
     personnel = state.get("personnel")
     if not isinstance(personnel, list) or not personnel:
-        lines.append("| 暂无已识别人员 | — | — | — | — | — |")
+        lines.append("| 暂无已识别人员 | — | — |")
     else:
         for item in personnel:
             if isinstance(item, dict):
                 lines.append(_personnel_table_row(item, system_name, occurred_at))
-    lines.append(f"**时间**｜{_format_alert_time(occurred_at)}")
     return "\n".join(lines)
 
 
@@ -931,14 +930,13 @@ def _active_intel_map(
             )
         except (TypeError, ValueError):
             presence_count = 0
-        presence_only = (
+        detector_icon_evidence = (
             isinstance(metadata, dict)
             and str(raw_item.get("source") or "").strip().casefold()
             == "eve-sentry-detector"
-            and bool(metadata.get("presence_only"))
             and presence_count > 0
         )
-        if not active_id or (alert is None and not presence_only):
+        if not active_id or (alert is None and not detector_icon_evidence):
             continue
         item = dict(raw_item)
         if alert is not None:
@@ -1071,9 +1069,10 @@ def _personnel_display_state(
     if not previous:
         return current
     previous_by_identity = {
-        _personnel_identity(item): item
+        alias: item
         for item in previous.get("personnel", [])
         if isinstance(item, dict)
+        for alias in _personnel_aliases(item)
     }
     displayed = dict(current)
     rows: list[dict[str, Any]] = []
@@ -1081,7 +1080,14 @@ def _personnel_display_state(
         if not isinstance(item, dict):
             continue
         row = dict(item)
-        old = previous_by_identity.get(_personnel_identity(item))
+        old = next(
+            (
+                previous_by_identity[alias]
+                for alias in _personnel_aliases(item)
+                if alias in previous_by_identity
+            ),
+            None,
+        )
         old_system = str(old.get("system_name") or "").strip() if old else ""
         new_system = str(item.get("system_name") or "").strip()
         if old_system and new_system and old_system.casefold() != new_system.casefold():
@@ -1101,7 +1107,8 @@ def _personnel_movement_pairs(
         system_name = str(state.get("system_name") or system_key).strip()
         for item in state.get("personnel", []):
             if isinstance(item, dict):
-                previous_by_identity[_personnel_identity(item)] = system_name
+                for alias in _personnel_aliases(item):
+                    previous_by_identity.setdefault(alias, system_name)
 
     pairs: dict[tuple[str, str], dict[str, str]] = {}
     for state in current.values():
@@ -1110,11 +1117,18 @@ def _personnel_movement_pairs(
         for item in state.get("personnel", []):
             if not isinstance(item, dict):
                 continue
-            from_system = previous_by_identity.get(_personnel_identity(item), "")
+            from_system = next(
+                (
+                    previous_by_identity[alias]
+                    for alias in _personnel_aliases(item)
+                    if alias in previous_by_identity
+                ),
+                "",
+            )
             if not from_system or from_system.casefold() == to_key:
                 continue
             from_key = from_system.casefold()
-            if from_key not in previous or to_key in previous:
+            if from_key not in previous:
                 continue
             pairs.setdefault(
                 (from_key, to_key),
@@ -1137,15 +1151,26 @@ def _personnel_identity(item: dict[str, Any]) -> str:
     return f"id:{str(item.get('id') or '').strip()}"
 
 
+def _personnel_aliases(item: dict[str, Any]) -> list[str]:
+    """Return stable and OCR-friendly keys for matching a moving person."""
+    aliases: list[str] = []
+    character_id = str(item.get("character_id") or "").strip()
+    if character_id:
+        aliases.append(f"character:{character_id}")
+    name = str(item.get("name") or "").strip().casefold()
+    if name:
+        aliases.append(f"name:{name}")
+    item_id = str(item.get("id") or "").strip()
+    if item_id:
+        aliases.append(f"id:{item_id}")
+    return aliases or [_personnel_identity(item)]
+
+
 def _personnel_table_row(
     item: dict[str, Any], fallback_system: str, fallback_time: str
 ) -> str:
     name = _escape_table_cell(str(item.get("name") or "未知人员").strip() or "未知人员")
     system = str(item.get("system_display") or item.get("system_name") or fallback_system)
-    corporation = _ticker_label(item, "corporation")
-    alliance = _ticker_label(item, "alliance")
-    first_seen_at = str(item.get("first_seen_at") or fallback_time).strip()
-    occurred_label = _format_alert_time(first_seen_at)
     character_id = str(item.get("character_id") or "").strip()
     zkill = (
         f"[🔗](https://zkillboard.com/character/{character_id}/)"
@@ -1156,9 +1181,6 @@ def _personnel_table_row(
         (
             name,
             _escape_table_cell(system),
-            _escape_table_cell(corporation),
-            _escape_table_cell(alliance),
-            _escape_table_cell(occurred_label),
             zkill,
         )
     ) + " |"

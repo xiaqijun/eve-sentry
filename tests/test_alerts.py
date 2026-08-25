@@ -22,6 +22,7 @@ from eve_risk.alerts import (
     format_personnel_alert_message,
     format_system_alert_message,
     format_system_movement_message,
+    _personnel_movement_pairs,
     iter_sse_events,
 )
 
@@ -166,8 +167,9 @@ def test_alert_subscription_commands_and_message_format() -> None:
     )
     assert "### ⚠️ 敌对事件" in personnel
     assert "**当前敌对**｜1 人" in personnel
-    assert "| 人员 | 星系 | 军团 | 联盟 | 时间 | zKill |" in personnel
-    assert "| Alice | S-KSWL | G.N.V | FRT | 2026-07-21 00:20:24 | [🔗](https://zkillboard.com/character/12345/) |" in personnel
+    assert "| 人员 | 星系 | zKill |" in personnel
+    assert "| Alice | S-KSWL | [🔗](https://zkillboard.com/character/12345/) |" in personnel
+    assert "**时间**" not in personnel
     moved_personnel = format_personnel_alert_message(
         {
             "system_name": "Tama",
@@ -186,7 +188,8 @@ def test_alert_subscription_commands_and_message_format() -> None:
         },
         "2026-07-20T16:22:29+00:00",
     )
-    assert "| Alice | S-KSWL → Tama | G.N.V | FRT | 2026-07-21 00:22:29 | [🔗](https://zkillboard.com/character/12345/) |" in moved_personnel
+    assert "| Alice | S-KSWL → Tama | [🔗](https://zkillboard.com/character/12345/) |" in moved_personnel
+    assert "**时间**" not in moved_personnel
 
 
 def test_personnel_affiliations_fall_back_to_alert_metadata_and_profiles() -> None:
@@ -219,7 +222,38 @@ def test_personnel_affiliations_fall_back_to_alert_metadata_and_profiles() -> No
         state,
         "2026-07-20T16:22:29+00:00",
     )
-    assert "| Alice | S-KSWL | Glory Navy | Fraternity. |" in message
+    assert "| Alice | S-KSWL | [🔗](https://zkillboard.com/character/12345/) |" in message
+    assert "Glory Navy" not in message
+    assert "Fraternity." not in message
+    assert "**时间**" not in message
+
+
+def test_personnel_movement_matches_existing_destination_and_partial_identity() -> None:
+    previous = {
+        "jita": {
+            "system_name": "Jita",
+            "personnel": [{"name": "Tom Sisko", "character_id": 9001}],
+        },
+        "r-y": {
+            "system_name": "R-Y",
+            "personnel": [{"name": "Other Pilot", "character_id": 9002}],
+        },
+    }
+    current = {
+        "r-y": {
+            "system_name": "R-Y",
+            "personnel": [
+                {"name": "Tom Sisko"},
+                {"name": "Other Pilot", "character_id": 9002},
+            ],
+        }
+    }
+
+    pairs = _personnel_movement_pairs(previous, current)
+
+    assert pairs == [
+        {"from_system": "Jita", "to_system": "R-Y", "to_key": "r-y"}
+    ]
 
 
 def test_presence_only_intel_creates_system_alert_without_personnel_row() -> None:
@@ -269,6 +303,25 @@ def test_presence_and_ocr_for_one_detector_are_not_double_counted() -> None:
 
     assert state["hostile_count"] == 2
     assert [item["name"] for item in state["personnel"]] == ["Alice"]
+
+
+def test_detector_ocr_with_red_icon_evidence_is_kept_before_alert_exists() -> None:
+    item = {
+        "id": "ocr:shazzza",
+        "active": True,
+        "source": "eve-sentry-detector",
+        "system_name": "S-K",
+        "name": "Shazzza",
+        "metadata": {
+            "client_id": "client-1",
+            "hostile_icon_count": 1,
+        },
+    }
+
+    merged = _active_intel_map([item], [])
+
+    assert list(merged) == ["ocr:shazzza"]
+    assert merged["ocr:shazzza"]["name"] == "Shazzza"
 
 
 @pytest.mark.asyncio
