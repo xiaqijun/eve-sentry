@@ -58,3 +58,14 @@ def test_hostile_icons_and_rows_scale_with_a_4k_style_member_list():
     assert [(icon.width, icon.height) for icon in icons] == [(22, 22), (22, 22)]
     assert rows is not None
     assert rows.size == (322, 96)
+
+
+def test_row_height_does_not_scale_with_a_wide_capture_region():
+    source = member_list_fixture()
+    image = Image.new("RGB", (480, source.height), color=(12, 13, 13))
+    image.paste(source, (0, 0))
+
+    rows = extract_hostile_name_rows(image)
+
+    assert rows is not None
+    assert rows.size == (461, 48)

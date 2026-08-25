@@ -1,7 +1,12 @@
 from PIL import Image, ImageDraw
 
 from app.engine.capturer import BackgroundCaptureUnavailable, TargetWindowClosed
-from app.engine.worker import MonitorWorker, build_ocr_snapshot_names, build_scan_status
+from app.engine.worker import (
+    MonitorWorker,
+    _image_fingerprint,
+    build_ocr_snapshot_names,
+    build_scan_status,
+)
 
 
 def test_scan_status_counts_cleaned_member_names_not_raw_ocr_blocks():
@@ -25,6 +30,15 @@ def test_ocr_snapshot_names_are_cleaned_member_names():
     ]
 
     assert build_ocr_snapshot_names(ocr_results) == ["Alice", "Bob", "Carol"]
+
+
+def test_hostile_row_fingerprint_ignores_non_name_columns():
+    first = Image.new("RGB", (200, 40), color=(12, 13, 13))
+    second = first.copy()
+    ImageDraw.Draw(first).rectangle((4, 10, 16, 20), fill=(220, 220, 220))
+    ImageDraw.Draw(second).rectangle((180, 10, 196, 20), fill=(220, 220, 220))
+
+    assert _image_fingerprint(first) == _image_fingerprint(second)
 
 
 def test_monitor_worker_uses_bound_window_capture_session(monkeypatch):
@@ -209,8 +223,92 @@ def test_monitor_worker_does_not_publish_full_list_after_red_row_mismatches():
     worker.run()
 
     assert snapshots == []
-    assert len(ocr.images) == 1
+    assert len(ocr.images) == 2
     assert ocr.images[0].height < frame.height
+
+
+def test_monitor_worker_retries_same_count_when_hostile_rows_change(monkeypatch):
+    first = Image.new("RGB", (180, 100), color=(12, 13, 13))
+    second = first.copy()
+    first_draw = ImageDraw.Draw(first)
+    first_draw.rectangle((6, 20, 16, 30), fill=(146, 3, 3))
+    first_draw.rectangle((20, 22, 90, 28), fill=(220, 220, 220))
+    second_draw = ImageDraw.Draw(second)
+    second_draw.rectangle((6, 20, 16, 30), fill=(146, 3, 3))
+    second_draw.rectangle((20, 22, 65, 28), fill=(220, 220, 220))
+    frames = iter([first, second])
+
+    class FrameCapturer:
+        def screenshot(self, _x, _y, _w, _h):
+            try:
+                return next(frames)
+            except StopIteration:
+                raise TargetWindowClosed("done") from None
+
+    class StableOcr:
+        def __init__(self):
+            self.calls = 0
+
+        def recognize(self, _image, progress=None):
+            _ = progress
+            self.calls += 1
+            return [("Enemy Pilot", 0.99)]
+
+    monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
+    ocr = StableOcr()
+    worker = MonitorWorker(FrameCapturer(), ocr)
+    worker.set_region(0, 0, first.width, first.height)
+    snapshots = []
+    worker.ocr_snapshot.connect(
+        lambda names, hostile_count: snapshots.append((names, hostile_count))
+    )
+
+    worker.run()
+
+    assert ocr.calls == 2
+    assert snapshots == [(["Enemy Pilot"], 1), (["Enemy Pilot"], 1)]
+
+
+def test_monitor_worker_retries_transient_name_count_mismatch(monkeypatch):
+    frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
+    draw = ImageDraw.Draw(frame)
+    draw.rectangle((6, 20, 16, 30), fill=(146, 3, 3))
+    draw.rectangle((6, 50, 16, 60), fill=(149, 8, 9))
+
+    class FrameCapturer:
+        def __init__(self):
+            self.calls = 0
+
+        def screenshot(self, _x, _y, _w, _h):
+            self.calls += 1
+            if self.calls <= 2:
+                return frame
+            raise TargetWindowClosed("done")
+
+    class RecoveringOcr:
+        def __init__(self):
+            self.calls = 0
+
+        def recognize(self, _image, progress=None):
+            _ = progress
+            self.calls += 1
+            if self.calls == 1:
+                return [("Only One Red Name", 0.99)]
+            return [("First Red", 0.99), ("Second Red", 0.99)]
+
+    monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
+    ocr = RecoveringOcr()
+    worker = MonitorWorker(FrameCapturer(), ocr)
+    worker.set_region(0, 0, frame.width, frame.height)
+    snapshots = []
+    worker.ocr_snapshot.connect(
+        lambda names, hostile_count: snapshots.append((names, hostile_count))
+    )
+
+    worker.run()
+
+    assert ocr.calls == 2
+    assert snapshots == [(["First Red", "Second Red"], 2)]
 
 
 def test_monitor_worker_resets_fallback_after_a_matching_red_row_frame():
@@ -258,7 +356,7 @@ def test_monitor_worker_resets_fallback_after_a_matching_red_row_frame():
     worker.run()
 
     assert snapshots == [(["First Red", "Second Red", "Third Red"], 3)]
-    assert ocr.calls == 2
+    assert ocr.calls == 3
 
 
 def test_monitor_worker_publishes_each_hostile_count_change_including_clear(
@@ -292,7 +390,7 @@ def test_monitor_worker_publishes_each_hostile_count_change_including_clear(
     )
     monkeypatch.setattr(
         "app.engine.worker.extract_hostile_name_rows",
-        lambda image: image,
+        lambda image, _icons=None: image,
     )
     ocr = StableOcr()
     worker = MonitorWorker(FrameCapturer(), ocr)
@@ -340,7 +438,7 @@ def test_monitor_worker_republishes_unchanged_count_after_presence_refresh(
     )
     monkeypatch.setattr(
         "app.engine.worker.extract_hostile_name_rows",
-        lambda image: image,
+        lambda image, _icons=None: image,
     )
     worker = MonitorWorker(FrameCapturer(), StableOcr())
     worker.set_region(0, 0, 180, 100)

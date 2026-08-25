@@ -72,14 +72,18 @@ def find_hostile_icons(image: Image.Image) -> list[HostileIcon]:
     return icons
 
 
-def extract_hostile_name_rows(image: Image.Image) -> Image.Image | None:
+def extract_hostile_name_rows(
+    image: Image.Image,
+    icons: list[HostileIcon] | None = None,
+) -> Image.Image | None:
     """Stack only red-icon rows into a compact image suitable for OCR."""
-    icons = find_hostile_icons(image)
+    if icons is None:
+        icons = find_hostile_icons(image)
     if not icons:
         return None
 
     source = image.convert("RGB")
-    scale = _member_list_scale(source.width)
+    scale = _hostile_icon_scale(icons)
     name_left = min(
         source.width,
         max(icon.right for icon in icons) + max(2, int(round(2 * scale))),
@@ -110,6 +114,13 @@ def extract_hostile_name_rows(image: Image.Image) -> Image.Image | None:
         output_y += source_top - requested_top
         output.paste(row, (0, output_y))
     return output
+
+
+def _hostile_icon_scale(icons: list[HostileIcon]) -> float:
+    """Estimate UI scaling from the standing icon, not user-selected width."""
+    heights = sorted(icon.height for icon in icons)
+    median_height = heights[len(heights) // 2]
+    return max(1.0, min(2.5, float(median_height) / 11.0))
 
 
 def _member_list_scale(width: int) -> float:
