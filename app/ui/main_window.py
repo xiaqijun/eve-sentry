@@ -2732,6 +2732,16 @@ class MainWindow(QMainWindow):
                     hostile_icon_count=hostile_icon_count,
                 )
             )
+            evidence_snapshot = getattr(worker, "ocr_evidence_snapshot", None)
+            if evidence_snapshot is not None:
+                evidence_snapshot.connect(
+                    lambda names, hostile_icon_count, evidence, context=target: self._publish_ocr_snapshot(
+                        names,
+                        context=context,
+                        hostile_icon_count=hostile_icon_count,
+                        ocr_evidence=evidence,
+                    )
+                )
             worker.hostile_detected.connect(
                 lambda count, context=target: self._on_hostile_icon_detected(
                     count,
@@ -2946,6 +2956,12 @@ class MainWindow(QMainWindow):
             worker.ocr_snapshot.disconnect()
         except TypeError:
             pass
+        evidence_snapshot = getattr(worker, "ocr_evidence_snapshot", None)
+        if evidence_snapshot is not None:
+            try:
+                evidence_snapshot.disconnect()
+            except TypeError:
+                pass
         try:
             worker.hostile_detected.disconnect()
         except TypeError:
@@ -3123,6 +3139,7 @@ class MainWindow(QMainWindow):
         names: list[str],
         context: dict | None = None,
         hostile_icon_count: int = 0,
+        ocr_evidence: dict | None = None,
     ) -> None:
         if (
             self._intel_client is None
@@ -3154,10 +3171,15 @@ class MainWindow(QMainWindow):
             "source_instance": source_instance,
             "system_name": system_name or "Unknown",
             "system_id": system_id,
-            "names": list(names),
+            # Old servers do not understand geometric OCR evidence. Keep their
+            # fallback safe by never presenting full-frame candidates as a
+            # verified hostile list.
+            "names": [] if ocr_evidence else list(names),
         }
         if hostile_icon_count > 0:
             payload["hostile_icon_count"] = int(hostile_icon_count)
+        if ocr_evidence:
+            payload.update(ocr_evidence)
         upload_manager = _instance_attr(self, "_upload_manager")
         if upload_manager is not None:
             upload_manager.submit_snapshot(

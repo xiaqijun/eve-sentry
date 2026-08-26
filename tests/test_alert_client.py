@@ -170,6 +170,29 @@ def test_local_monitored_account_matches_shared_installation_identity():
     assert not is_local_monitored_account("", alert_client_id)
 
 
+def test_controller_persists_explicit_map_account_selection(tmp_path):
+    class Overlay:
+        @staticmethod
+        def map_selection_memory():
+            return ["local-account:alice"]
+
+    state_path = tmp_path / "alert_state.json"
+    state = AlertClientState(state_path)
+    state.load_seen_ids()
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller.state = state
+    controller.overlay = Overlay()
+    refreshes = []
+    controller._refresh_local_map = lambda **kwargs: refreshes.append(kwargs)
+
+    controller._on_map_options_changed(["local-account:alice"], 3)
+
+    reloaded = AlertClientState(state_path)
+    reloaded.load_seen_ids()
+    assert reloaded.map_selected_account_keys() == ["local-account:alice"]
+    assert refreshes == [{"selected_keys": ["local-account:alice"], "hops": 3}]
+
+
 def test_alert_worker_connects_sse_before_posting_heartbeat(tmp_path):
     calls = []
     worker = None

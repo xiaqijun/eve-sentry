@@ -32,6 +32,16 @@ def test_ocr_candidate_names_ignore_member_count_numbers():
     assert ocr_candidate_names(results) == ["Hajimi6"]
 
 
+def test_ocr_candidate_names_merges_zero_padded_numeric_suffix():
+    results = [
+        ("STARKEY", 0.95),
+        ("07", 0.95),
+        ("3", 1.0),
+    ]
+
+    assert ocr_candidate_names(results) == ["STARKEY 07"]
+
+
 def test_ocr_candidate_names_ignore_distance_and_location_marker_noise():
     results = [
         ("527 m", 0.99),

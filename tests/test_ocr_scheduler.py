@@ -28,6 +28,27 @@ def test_shared_ocr_scheduler_reuses_one_lazy_model():
         scheduler.close(wait=True)
 
 
+def test_shared_ocr_scheduler_preserves_ocr_text_boxes():
+    class FakeEngine:
+        def initialize(self):
+            pass
+
+        def recognize_with_boxes(self, _image, progress=None):
+            _ = progress
+            return [("Enemy Pilot", 0.99, (3, 4, 50, 15))]
+
+    scheduler = SharedOCRScheduler(max_instances=1, engine_factory=FakeEngine)
+    try:
+        result = scheduler.recognize_with_boxes_latest(
+            Image.new("RGB", (60, 20)),
+            request_key="window:1",
+        )
+        assert result == [("Enemy Pilot", 0.99, (3, 4, 50, 15))]
+        assert scheduler.health()["completed"] == 1
+    finally:
+        scheduler.close(wait=True)
+
+
 def test_shared_ocr_scheduler_bounds_parallel_model_instances():
     initialized = []
     release = threading.Event()

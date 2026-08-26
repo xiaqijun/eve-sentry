@@ -894,6 +894,22 @@ def test_publish_ocr_snapshot_posts_only_detected_names():
 
     assert window._intel_client.payload["hostile_icon_count"] == 1
 
+    evidence = {
+        "ocr_candidates": [
+            {"text": "Alice", "left": 20, "top": 20, "right": 80, "bottom": 30}
+        ],
+        "hostile_icons": [{"left": 6, "top": 20, "right": 16, "bottom": 30}],
+    }
+    MainWindow._publish_ocr_snapshot(
+        window,
+        ["Alice"],
+        hostile_icon_count=1,
+        ocr_evidence=evidence,
+    )
+
+    assert window._intel_client.payload["names"] == []
+    assert window._intel_client.payload["ocr_candidates"] == evidence["ocr_candidates"]
+
 
 def test_hostile_icon_detection_notifies_immediately():
     class FakeAlertController:

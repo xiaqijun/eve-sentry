@@ -5,12 +5,14 @@ import os
 import sys
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, TypeAlias
 
 import numpy as np
 from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)
+
+OCRTextBox: TypeAlias = tuple[str, float, tuple[int, int, int, int]]
 
 
 class OCREngine:
@@ -203,6 +205,23 @@ class OCREngine:
 
         return self._parse_results(raw)
 
+    def recognize_with_boxes(
+        self,
+        image: Image.Image,
+        progress: Callable[[str], None] | None = None,
+    ) -> list[OCRTextBox]:
+        """Run OCR and retain text bounding boxes in image coordinates."""
+        if not self.initialize(progress=progress):
+            return []
+
+        prepared = self._prepare_image(image)
+        try:
+            raw = self._run_ocr(np.array(prepared))
+        except Exception:
+            logger.exception("OCR recognition with boxes failed")
+            return []
+        return self._parse_results_with_boxes(raw)
+
     def _prepare_image(self, image: Image.Image) -> Image.Image:
         """Apply lightweight enhancement before OCR."""
         grayscale = image.convert("L")
@@ -236,6 +255,37 @@ class OCREngine:
                 for block in page:
                     self._append_legacy_block(block, results)
 
+        return results
+
+    def _parse_results_with_boxes(self, raw) -> list[OCRTextBox]:
+        """Parse recognized text with geometry from PaddleOCR 2.x/3.x output."""
+        if raw is None:
+            return []
+        if isinstance(raw, dict):
+            raw = [raw]
+
+        results: list[OCRTextBox] = []
+        for page in raw:
+            if page is None:
+                continue
+            if isinstance(page, dict):
+                texts = page.get("rec_texts") or []
+                scores = page.get("rec_scores") or []
+                boxes = page.get("rec_boxes")
+                if boxes is None or len(boxes) == 0:
+                    boxes = page.get("rec_polys")
+                if boxes is None:
+                    boxes = []
+                for text, score, box in zip(texts, scores, boxes):
+                    self._append_text_box(text, score, box, results)
+            elif isinstance(page, (list, tuple)):
+                for block in page:
+                    if not isinstance(block, (list, tuple)) or len(block) < 2:
+                        continue
+                    info = block[1]
+                    if not isinstance(info, (list, tuple)) or len(info) < 2:
+                        continue
+                    self._append_text_box(info[0], info[1], block[0], results)
         return results
 
     def _extend_from_dict_page(
@@ -276,3 +326,40 @@ class OCREngine:
         text = str(text).strip()
         if text and conf >= self._confidence_threshold:
             results.append((text, conf))
+
+    def _append_text_box(
+        self,
+        text,
+        confidence,
+        box,
+        results: list[OCRTextBox],
+    ) -> None:
+        """Append one high-confidence OCR result with a valid bounding box."""
+        try:
+            conf = float(confidence)
+        except (TypeError, ValueError):
+            return
+        bounds = _normalize_box(box)
+        text = str(text).strip()
+        if text and bounds is not None and conf >= self._confidence_threshold:
+            results.append((text, conf, bounds))
+
+
+def _normalize_box(box) -> tuple[int, int, int, int] | None:
+    """Return ``(left, top, right, bottom)`` from common PaddleOCR boxes."""
+    try:
+        values = np.asarray(box, dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if values.ndim == 1 and values.size == 4:
+        left, top, right, bottom = values.tolist()
+    elif values.ndim == 2 and values.shape[1] >= 2:
+        left = float(values[:, 0].min())
+        top = float(values[:, 1].min())
+        right = float(values[:, 0].max())
+        bottom = float(values[:, 1].max())
+    else:
+        return None
+    if right <= left or bottom <= top:
+        return None
+    return (int(left), int(top), int(right), int(bottom))

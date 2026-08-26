@@ -1,7 +1,11 @@
 import numpy as np
 from PIL import Image, ImageDraw
 
-from app.engine.hostile_icons import extract_hostile_name_rows, find_hostile_icons
+from app.engine.hostile_icons import (
+    extract_hostile_name_row_images,
+    extract_hostile_name_rows,
+    find_hostile_icons,
+)
 
 
 def member_list_fixture() -> Image.Image:
@@ -40,6 +44,30 @@ def test_extract_hostile_name_rows_excludes_green_rows_and_icons():
     assert np.any(np.all(pixels == (220, 220, 220), axis=1))
     assert not np.any(pixels[:, 1] > pixels[:, 0] * 2)
     assert not np.any((pixels[:, 0] >= 100) & ((pixels[:, 0] - pixels[:, 1]) >= 60))
+
+
+def test_extract_hostile_name_row_images_keeps_each_hostile_on_its_own_row():
+    rows = extract_hostile_name_row_images(member_list_fixture())
+
+    assert len(rows) == 2
+    assert [row.size for row in rows] == [(161, 16), (161, 16)]
+
+
+def test_hostile_name_rows_do_not_overlap_adjacent_icon_lines():
+    image = Image.new("RGB", (180, 80), color=(12, 13, 13))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((6, 20, 16, 30), fill=(146, 3, 3))
+    draw.rectangle((6, 32, 16, 42), fill=(149, 8, 9))
+    draw.rectangle((20, 20, 90, 25), fill=(220, 220, 220))
+    draw.rectangle((20, 37, 90, 42), fill=(90, 90, 90))
+
+    rows = extract_hostile_name_row_images(image)
+
+    assert len(rows) == 2
+    first_pixels = np.asarray(rows[0])
+    second_pixels = np.asarray(rows[1])
+    assert not np.any(np.all(first_pixels == (90, 90, 90), axis=2))
+    assert not np.any(np.all(second_pixels == (220, 220, 220), axis=2))
 
 
 def test_extract_hostile_name_rows_returns_none_without_red_icons():

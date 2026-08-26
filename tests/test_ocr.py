@@ -49,6 +49,19 @@ def test_parse_paddleocr_3_predict_dict_results():
     assert fake.last_shape == (6, 8, 3)
 
 
+def test_parse_paddleocr_3_results_with_text_boxes():
+    fake = PredictOCR([{
+        "rec_texts": [" Alice ", "LowConfidence"],
+        "rec_scores": [0.91, 0.2],
+        "rec_boxes": [[2, 3, 14, 11], [0, 0, 1, 1]],
+    }])
+    engine = make_engine(fake)
+
+    results = engine.recognize_with_boxes(Image.new("L", (20, 20), color=255))
+
+    assert results == [("Alice", 0.91, (2, 3, 14, 11))]
+
+
 def test_parse_paddleocr_2_legacy_ocr_results():
     fake = LegacyOCR([
         [

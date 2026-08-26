@@ -16,9 +16,7 @@ def test_scan_status_counts_cleaned_member_names_not_raw_ocr_blocks():
         ("Bob", 0.95),
     ]
 
-    assert build_scan_status(ocr_results) == (
-        "OCR 识别完成: 2 个敌对姓名，已进入上报队列"
-    )
+    assert build_scan_status(ocr_results) == "OCR 识别完成: 2 个文本候选，已进入上报队列"
 
 
 def test_ocr_snapshot_names_are_cleaned_member_names():
@@ -30,6 +28,86 @@ def test_ocr_snapshot_names_are_cleaned_member_names():
     ]
 
     assert build_ocr_snapshot_names(ocr_results) == ["Alice", "Bob", "Carol"]
+
+
+def test_monitor_worker_matches_full_frame_ocr_by_hostile_icon_row(monkeypatch):
+    frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
+    draw = ImageDraw.Draw(frame)
+    draw.rectangle((6, 20, 16, 30), fill=(146, 3, 3))
+    draw.rectangle((6, 50, 16, 60), fill=(149, 8, 9))
+
+    class FrameCapturer:
+        def __init__(self):
+            self.calls = 0
+
+        def screenshot(self, _x, _y, _w, _h):
+            self.calls += 1
+            if self.calls == 1:
+                return frame
+            raise TargetWindowClosed("done")
+
+    class PositionedOcr:
+        def recognize_with_boxes(self, _image, progress=None):
+            _ = progress
+            return [
+                ("Friendly Pilot", 0.99, (20, 4, 100, 14)),
+                ("STARKEY 07", 0.99, (20, 20, 100, 30)),
+                ("Second Pilot", 0.99, (20, 50, 100, 60)),
+            ]
+
+        def recognize(self, _image, progress=None):
+            raise AssertionError("full-frame OCR should not fall back to row crops")
+
+    monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
+    worker = MonitorWorker(FrameCapturer(), PositionedOcr())
+    worker.set_region(0, 0, frame.width, frame.height)
+    snapshots = []
+    worker.ocr_evidence_snapshot.connect(
+        lambda names, hostile_count, evidence: snapshots.append(
+            (names, hostile_count, evidence)
+        )
+    )
+
+    worker.run()
+
+    assert snapshots == [
+        (
+            ["Friendly Pilot", "STARKEY 07", "Second Pilot"],
+            2,
+            {
+                "ocr_candidates": [
+                    {
+                        "text": "Friendly Pilot",
+                        "confidence": 0.99,
+                        "left": 20,
+                        "top": 4,
+                        "right": 100,
+                        "bottom": 14,
+                    },
+                    {
+                        "text": "STARKEY 07",
+                        "confidence": 0.99,
+                        "left": 20,
+                        "top": 20,
+                        "right": 100,
+                        "bottom": 30,
+                    },
+                    {
+                        "text": "Second Pilot",
+                        "confidence": 0.99,
+                        "left": 20,
+                        "top": 50,
+                        "right": 100,
+                        "bottom": 60,
+                    },
+                ],
+                "hostile_icons": [
+                    {"left": 6, "top": 20, "right": 17, "bottom": 31},
+                    {"left": 6, "top": 50, "right": 17, "bottom": 61},
+                ],
+            },
+        )
+    ]
 
 
 def test_hostile_row_fingerprint_ignores_non_name_columns():
@@ -81,8 +159,8 @@ def test_monitor_worker_does_not_repeat_ocr_for_border_jitter(monkeypatch):
     monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
     monkeypatch.setattr("app.engine.worker.find_hostile_icons", lambda _frame: [object()])
     monkeypatch.setattr(
-        "app.engine.worker.extract_hostile_name_rows",
-        lambda _frame, _icons=None: row_images.pop(0),
+        "app.engine.worker.extract_hostile_name_row_images",
+        lambda _frame, _icons=None: [row_images.pop(0)],
     )
     ocr = RecordingOcr()
     worker = MonitorWorker(FrameCapturer(), ocr)
@@ -90,7 +168,7 @@ def test_monitor_worker_does_not_repeat_ocr_for_border_jitter(monkeypatch):
 
     worker.run()
 
-    assert ocr.calls == 1
+    assert ocr.calls == 2
 
 
 def test_monitor_worker_uses_bound_window_capture_session(monkeypatch):
@@ -262,7 +340,7 @@ def test_monitor_worker_does_not_publish_full_list_after_red_row_mismatches():
         def recognize(self, image, progress=None):
             _ = progress
             self.images.append(image)
-            return [("Only One Red Name", 0.99)]
+            return [("Only One Red Name", 0.99)] if len(self.images) % 2 else []
 
     ocr = MismatchedOcr()
     worker = MonitorWorker(FrameCapturer(), ocr)
@@ -275,7 +353,7 @@ def test_monitor_worker_does_not_publish_full_list_after_red_row_mismatches():
     worker.run()
 
     assert snapshots == []
-    assert len(ocr.images) == 2
+    assert len(ocr.images) == 4
     assert ocr.images[0].height < frame.height
 
 
@@ -345,8 +423,12 @@ def test_monitor_worker_retries_transient_name_count_mismatch(monkeypatch):
             _ = progress
             self.calls += 1
             if self.calls == 1:
-                return [("Only One Red Name", 0.99)]
-            return [("First Red", 0.99), ("Second Red", 0.99)]
+                return []
+            return [
+                ("First Red", 0.99)
+                if self.calls == 3
+                else ("Second Red", 0.99)
+            ]
 
     monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
     ocr = RecoveringOcr()
@@ -359,7 +441,7 @@ def test_monitor_worker_retries_transient_name_count_mismatch(monkeypatch):
 
     worker.run()
 
-    assert ocr.calls == 2
+    assert ocr.calls == 4
     assert snapshots == [(["First Red", "Second Red"], 2)]
 
 
@@ -389,13 +471,15 @@ def test_monitor_worker_resets_fallback_after_a_matching_red_row_frame():
         def recognize(self, _image, progress=None):
             _ = progress
             self.calls += 1
-            if self.calls == 1:
-                return [("Only One Red Name", 0.99)]
-            return [
-                ("First Red", 0.99),
-                ("Second Red", 0.99),
-                ("Third Red", 0.99),
-            ]
+            names = {
+                1: "Only One Red Name",
+                3: "First Red",
+                4: "Second Red",
+                5: "First Red",
+                6: "Second Red",
+                7: "Third Red",
+            }
+            return [(names[self.calls], 0.99)] if self.calls in names else []
 
     ocr = RecoveringOcr()
     worker = MonitorWorker(FrameCapturer(), ocr)
@@ -407,8 +491,11 @@ def test_monitor_worker_resets_fallback_after_a_matching_red_row_frame():
 
     worker.run()
 
-    assert snapshots == [(["First Red", "Second Red", "Third Red"], 3)]
-    assert ocr.calls == 3
+    assert snapshots == [
+        (["First Red", "Second Red"], 2),
+        (["First Red", "Second Red", "Third Red"], 3),
+    ]
+    assert ocr.calls == 7
 
 
 def test_monitor_worker_publishes_each_hostile_count_change_including_clear(
@@ -430,10 +517,7 @@ def test_monitor_worker_publishes_each_hostile_count_change_including_clear(
         def recognize(self, image, progress=None):
             _ = progress
             self.calls += 1
-            return [
-                (f"Enemy Pilot {index}", 0.99)
-                for index in range(1, image + 1)
-            ]
+            return [(f"Enemy Pilot {image}", 0.99)]
 
     monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
     monkeypatch.setattr(
@@ -441,8 +525,8 @@ def test_monitor_worker_publishes_each_hostile_count_change_including_clear(
         lambda count: [object()] * count,
     )
     monkeypatch.setattr(
-        "app.engine.worker.extract_hostile_name_rows",
-        lambda image, _icons=None: image,
+        "app.engine.worker.extract_hostile_name_row_images",
+        lambda count, _icons=None: list(range(1, count + 1)),
     )
     ocr = StableOcr()
     worker = MonitorWorker(FrameCapturer(), ocr)
@@ -457,7 +541,7 @@ def test_monitor_worker_publishes_each_hostile_count_change_including_clear(
     worker.run()
 
     assert alerts == [0, 2, 1, 3, 0]
-    assert ocr.calls == 3
+    assert ocr.calls == 6
     assert [hostile_count for _names, hostile_count in snapshots] == [2, 1, 3]
 
 
@@ -489,8 +573,8 @@ def test_monitor_worker_republishes_unchanged_count_after_presence_refresh(
         lambda count: [object()] * count,
     )
     monkeypatch.setattr(
-        "app.engine.worker.extract_hostile_name_rows",
-        lambda image, _icons=None: image,
+        "app.engine.worker.extract_hostile_name_row_images",
+        lambda count, _icons=None: list(range(1, count + 1)),
     )
     worker = MonitorWorker(FrameCapturer(), StableOcr())
     worker.set_region(0, 0, 180, 100)
