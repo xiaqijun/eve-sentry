@@ -135,6 +135,8 @@ class IntelApiClient:
         system_id: int | None = None,
         confidence: float | None = None,
         hostile_icon_count: int = 0,
+        ocr_candidates: list[dict[str, Any]] | None = None,
+        hostile_icons: list[dict[str, int]] | None = None,
         snapshot_id: str = "",
         sequence: int | None = None,
         captured_at: str = "",
@@ -154,6 +156,10 @@ class IntelApiClient:
             payload["confidence"] = confidence
         if hostile_icon_count > 0:
             payload["hostile_icon_count"] = int(hostile_icon_count)
+        if ocr_candidates is not None:
+            payload["ocr_candidates"] = list(ocr_candidates)
+        if hostile_icons is not None:
+            payload["hostile_icons"] = list(hostile_icons)
         if snapshot_id:
             payload["snapshot_id"] = str(snapshot_id)
         if sequence is not None:

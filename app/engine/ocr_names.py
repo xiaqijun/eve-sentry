@@ -7,6 +7,7 @@ _DISTANCE_RE = re.compile(
     r"^\s*\d+(?:[.,]\d+)?\s*(?:m|km|au)\s*$",
     re.IGNORECASE,
 )
+_NUMERIC_NAME_SUFFIX_RE = re.compile(r"^0\d{1,2}$")
 
 
 def is_plausible_ocr_name(text: str) -> bool:
@@ -44,7 +45,21 @@ def ocr_candidate_names(ocr_results: list[tuple[str, float]]) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
     for text, _confidence in ocr_results:
-        for name in _iter_ocr_names(text):
+        for part in str(text).split(","):
+            raw_part = part.strip()
+            # PaddleOCR can return a valid name's zero-padded numeric suffix
+            # as a separate box (for example ``STARKEY`` + ``07``). A
+            # leading zero distinguishes this from member-count noise.
+            if names and _NUMERIC_NAME_SUFFIX_RE.fullmatch(raw_part):
+                previous = names[-1]
+                seen.discard(previous.casefold())
+                merged = f"{previous} {raw_part}"
+                names[-1] = merged
+                seen.add(merged.casefold())
+                continue
+            name = _clean_ocr_name(raw_part)
+            if not name:
+                continue
             key = name.casefold()
             if key in seen:
                 continue

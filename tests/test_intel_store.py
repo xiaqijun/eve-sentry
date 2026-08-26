@@ -422,6 +422,31 @@ def test_record_ocr_snapshot_creates_and_refreshes_active_intel(tmp_path):
     assert len(store.list_observations()) == 2
 
 
+def test_record_ocr_snapshot_selects_hostile_names_from_full_frame_evidence(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "hostile_icon_count": 1,
+            "names": ["Friendly Pilot", "Enemy Pilot"],
+            "ocr_candidates": [
+                {"text": "Friendly Pilot", "left": 20, "top": 4, "right": 100, "bottom": 14},
+                {"text": "STARKEY", "left": 20, "top": 20, "right": 80, "bottom": 30},
+                {"text": "07", "left": 84, "top": 20, "right": 100, "bottom": 30},
+            ],
+            "hostile_icons": [
+                {"left": 6, "top": 20, "right": 16, "bottom": 30},
+            ],
+        }
+    )
+
+    active = store.list_active_intel(source="eve-sentry-detector")
+    assert [item["name"] for item in active] == ["STARKEY 07"]
+
+
 def test_record_ocr_snapshot_red_icon_is_persisted_as_direct_alert_evidence(tmp_path):
     store = IntelStore(
         tmp_path / "intel.json",

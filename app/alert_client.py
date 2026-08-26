@@ -95,7 +95,7 @@ def default_state_path() -> str:
 
 
 class AlertClientState:
-    """Persist recently received alert ids so restarts do not repeat alerts."""
+    """Persist alert de-duplication and local-map selection preferences."""
 
     def __init__(
         self,
@@ -107,23 +107,28 @@ class AlertClientState:
         self.loaded = False
         self._seen_ids: list[str] = []
         self._seen_set: set[str] = set()
+        self._map_selected_account_keys: list[str] | None = None
 
     def load_seen_ids(self) -> list[str]:
         """Load remembered alert ids from disk."""
         self.loaded = self.path.exists()
         if not self.loaded:
             self._set_ids([])
+            self._set_map_selected_account_keys(None)
             return []
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             logger.warning("Failed to read alert client state from %s", self.path)
             self._set_ids([])
+            self._set_map_selected_account_keys(None)
             return []
         if not isinstance(payload, dict):
             self._set_ids([])
+            self._set_map_selected_account_keys(None)
             return []
         self._set_ids(self._clean_ids(payload.get("seen_alert_ids")))
+        self._set_map_selected_account_keys(payload.get("map_selected_account_keys"))
         return list(self._seen_ids)
 
     def has_seen(self, alert_id: str) -> bool:
@@ -143,7 +148,23 @@ class AlertClientState:
     def save_seen_ids(self, seen_ids: list[str]) -> None:
         """Persist normalized alert ids."""
         self._set_ids(self._clean_ids(seen_ids))
-        payload = {"version": 1, "seen_alert_ids": self._seen_ids}
+        self._write_state()
+
+    def map_selected_account_keys(self) -> list[str] | None:
+        """Return the saved local-map selection, or None before first selection."""
+        if self._map_selected_account_keys is None:
+            return None
+        return list(self._map_selected_account_keys)
+
+    def save_map_selected_account_keys(self, account_keys: list[str]) -> None:
+        """Persist an explicit local-map account selection."""
+        self._set_map_selected_account_keys(account_keys)
+        self._write_state()
+
+    def _write_state(self) -> None:
+        payload: dict[str, Any] = {"version": 2, "seen_alert_ids": self._seen_ids}
+        if self._map_selected_account_keys is not None:
+            payload["map_selected_account_keys"] = self._map_selected_account_keys
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(
@@ -158,6 +179,12 @@ class AlertClientState:
         self._seen_ids = list(seen_ids)
         self._seen_set = set(seen_ids)
 
+    def _set_map_selected_account_keys(self, account_keys: Any) -> None:
+        if not isinstance(account_keys, list):
+            self._map_selected_account_keys = None
+            return
+        self._map_selected_account_keys = self._clean_map_account_keys(account_keys)
+
     def _clean_ids(self, value: Any) -> list[str]:
         if not isinstance(value, list):
             return []
@@ -169,6 +196,18 @@ class AlertClientState:
                 continue
             seen.add(alert_id)
             cleaned.append(alert_id)
+        return cleaned
+
+    @staticmethod
+    def _clean_map_account_keys(value: list[Any]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            account_key = str(item or "").strip()
+            if not account_key or account_key in seen:
+                continue
+            seen.add(account_key)
+            cleaned.append(account_key)
         return cleaned
 
 
@@ -1054,7 +1093,7 @@ class AlertOverlay(QWidget):
         self._hops_spinbox: QSpinBox | None = None
         self._map_accounts: list[dict[str, Any]] = []
         self._map_alerts: list[dict[str, Any]] = []
-        self._map_selection_initialized = False
+        self._map_selected_account_keys: set[str] | None = None
         self._anchor_rect: dict[str, Any] | None = None
         self._tile_width = OVERLAY_TILE_WIDTH
         self._tile_height = OVERLAY_TILE_HEIGHT
@@ -1165,8 +1204,11 @@ class AlertOverlay(QWidget):
         map_layout.setSpacing(6)
         map_toolbar = QFrame()
         map_toolbar.setObjectName("mapToolbar")
-        options = QHBoxLayout(map_toolbar)
-        options.setContentsMargins(6, 4, 6, 4)
+        toolbar_layout = QVBoxLayout(map_toolbar)
+        toolbar_layout.setContentsMargins(6, 4, 6, 4)
+        toolbar_layout.setSpacing(2)
+        options = QHBoxLayout()
+        options.setContentsMargins(0, 0, 0, 0)
         options.setSpacing(4)
         account_button = QPushButton("账号 0/0")
         account_button.setObjectName("mapAccountButton")
@@ -1177,22 +1219,7 @@ class AlertOverlay(QWidget):
         account_menu.setObjectName("mapAccountMenu")
         account_button.setMenu(account_menu)
         options.addWidget(account_button)
-        online_legend = QLabel("● 监控")
-        online_legend.setObjectName("mapOnlineLegend")
-        online_legend.setToolTip("青色节点：监控节点在线")
-        warning_legend = QLabel("★ 本地账号位置")
-        warning_legend.setObjectName("mapWarningLegend")
-        warning_legend.setToolTip("金色星形：所选本地账号所在星系")
-        hostile_legend = QLabel("◆ 来敌")
-        hostile_legend.setObjectName("mapHostileLegend")
-        hostile_legend.setToolTip("红色节点：当前存在敌对预警")
-        options.addWidget(online_legend)
-        options.addWidget(warning_legend)
-        options.addWidget(hostile_legend)
         options.addStretch(1)
-        hops_label = QLabel("跳数")
-        hops_label.setObjectName("mapToolbarLabel")
-        options.addWidget(hops_label)
         hops_spinbox = QSpinBox()
         hops_spinbox.setObjectName("mapHopsSpinBox")
         hops_spinbox.setRange(1, 5)
@@ -1239,6 +1266,25 @@ class AlertOverlay(QWidget):
             step_layout.addWidget(step_button)
         hops_layout.addLayout(step_layout)
         options.addWidget(hops_control)
+        toolbar_layout.addLayout(options)
+
+        legend_layout = QHBoxLayout()
+        legend_layout.setContentsMargins(0, 0, 0, 0)
+        legend_layout.setSpacing(8)
+        online_legend = QLabel("● 监控")
+        online_legend.setObjectName("mapOnlineLegend")
+        online_legend.setToolTip("青色节点：监控节点在线")
+        warning_legend = QLabel("★ 本地")
+        warning_legend.setObjectName("mapWarningLegend")
+        warning_legend.setToolTip("金色星形：所选本地账号所在星系")
+        hostile_legend = QLabel("◆ 来敌")
+        hostile_legend.setObjectName("mapHostileLegend")
+        hostile_legend.setToolTip("红色节点：当前存在敌对预警")
+        legend_layout.addWidget(online_legend)
+        legend_layout.addWidget(warning_legend)
+        legend_layout.addWidget(hostile_legend)
+        legend_layout.addStretch(1)
+        toolbar_layout.addLayout(legend_layout)
         map_layout.addWidget(map_toolbar)
         map_widget = LocalStarMapWidget()
         map_layout.addWidget(map_widget, 1)
@@ -1448,6 +1494,23 @@ class AlertOverlay(QWidget):
             )
         self.map_options_changed.emit(selected, hops)
 
+    def _on_map_account_toggled(self, _checked: bool) -> None:
+        current_keys = {
+            str(action.data() or "").strip()
+            for action in self._account_actions
+            if str(action.data() or "").strip()
+        }
+        selected_keys = set(self._selected_map_account_keys())
+        remembered_keys = (
+            set(self._map_selected_account_keys)
+            if self._map_selected_account_keys is not None
+            else set(current_keys)
+        )
+        self._map_selected_account_keys = (
+            remembered_keys - current_keys
+        ) | selected_keys
+        self._emit_map_options()
+
     def _selected_map_account_keys(self) -> list[str]:
         return [
             str(action.data() or "")
@@ -1468,6 +1531,23 @@ class AlertOverlay(QWidget):
         hops = self._hops_spinbox.value() if self._hops_spinbox is not None else 3
         return selected, hops
 
+    def map_selection_memory(self) -> list[str] | None:
+        """Return explicit selection memory, retaining currently offline accounts."""
+        if self._map_selected_account_keys is None:
+            return None
+        return sorted(self._map_selected_account_keys)
+
+    def set_map_selection_memory(self, account_keys: list[str] | None) -> None:
+        """Restore explicit selection memory before the account menu is populated."""
+        if account_keys is None:
+            self._map_selected_account_keys = None
+            return
+        self._map_selected_account_keys = {
+            str(item or "").strip()
+            for item in account_keys
+            if str(item or "").strip()
+        }
+
     def set_map_accounts(self, accounts: list[dict[str, Any]]) -> None:
         self._map_accounts = [
             dict(item)
@@ -1482,10 +1562,8 @@ class AlertOverlay(QWidget):
             for item in self._map_accounts
             if bool(item.get("local", True))
         ]
-        previous, _ = self.map_selection()
         self._account_menu.clear()
         self._account_actions.clear()
-        default_all = not self._map_selection_initialized
         for account in selectable_accounts:
             key = str(account.get("key") or "")
             label = str(account.get("label") or account.get("system_name") or key)
@@ -1494,11 +1572,12 @@ class AlertOverlay(QWidget):
             action = self._account_menu.addAction(text)
             action.setData(key)
             action.setCheckable(True)
-            action.setChecked(default_all or key in previous)
-            action.toggled.connect(lambda _checked: self._emit_map_options())
+            action.setChecked(
+                self._map_selected_account_keys is None
+                or key in self._map_selected_account_keys
+            )
+            action.toggled.connect(self._on_map_account_toggled)
             self._account_actions.append(action)
-        if selectable_accounts:
-            self._map_selection_initialized = True
         self._update_map_account_button()
         if self._map_widget is not None:
             selected, _ = self.map_selection()
@@ -2133,6 +2212,7 @@ class AlertTrayController:
         self._tray_enabled = bool(tray_enabled)
         self._notification_callback = notification_callback
         self.overlay = AlertOverlay()
+        self.overlay.set_map_selection_memory(self.state.map_selected_account_keys())
         self.overlay.map_options_changed.connect(self._on_map_options_changed)
         self.overlay.set_status("连接中", "warn")
         self.overlay.show()
@@ -2415,6 +2495,9 @@ class AlertTrayController:
             )
 
     def _on_map_options_changed(self, selected_keys: list[str], hops: int) -> None:
+        memory = self.overlay.map_selection_memory()
+        if memory is not None:
+            self.state.save_map_selected_account_keys(memory)
         self._refresh_local_map(selected_keys=selected_keys, hops=hops)
 
     def _refresh_local_map(

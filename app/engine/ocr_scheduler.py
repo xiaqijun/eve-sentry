@@ -98,6 +98,45 @@ class SharedOCRScheduler:
         except CancelledError as exc:
             raise OCRRequestSuperseded from exc
 
+    def recognize_with_boxes_latest(
+        self,
+        image: Image.Image,
+        progress=None,
+        *,
+        request_key: str,
+        priority: int = 0,
+    ):
+        """Run only the newest queued OCR request and retain text geometry."""
+        key = str(request_key or "window")
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("OCR scheduler is closed")
+        with self._job_lock:
+            generation = self._latest_generation.get(key, 0) + 1
+            self._latest_generation[key] = generation
+            for future, (job_key, _job_generation, job_priority) in list(
+                self._jobs.items()
+            ):
+                if future.done():
+                    self._jobs.pop(future, None)
+                    continue
+                if job_key == key or priority > job_priority:
+                    future.cancel()
+            future = self._executor.submit(
+                self._recognize_with_boxes_latest,
+                key,
+                generation,
+                int(priority),
+                image,
+                progress,
+            )
+            self._jobs[future] = (key, generation, int(priority))
+            future.add_done_callback(self._forget_job)
+        try:
+            return future.result()
+        except CancelledError as exc:
+            raise OCRRequestSuperseded from exc
+
     def _recognize_latest(
         self,
         key: str,
@@ -110,6 +149,23 @@ class SharedOCRScheduler:
             if generation != self._latest_generation.get(key):
                 raise OCRRequestSuperseded
         result = self._recognize(image, progress)
+        with self._job_lock:
+            if generation != self._latest_generation.get(key):
+                raise OCRRequestSuperseded
+        return result
+
+    def _recognize_with_boxes_latest(
+        self,
+        key: str,
+        generation: int,
+        _priority: int,
+        image: Image.Image,
+        progress,
+    ):
+        with self._job_lock:
+            if generation != self._latest_generation.get(key):
+                raise OCRRequestSuperseded
+        result = self._recognize_with_boxes(image, progress)
         with self._job_lock:
             if generation != self._latest_generation.get(key):
                 raise OCRRequestSuperseded
@@ -169,6 +225,20 @@ class SharedOCRScheduler:
         started = time.monotonic()
         try:
             result = self._engine().recognize(image, progress=progress)
+        except Exception:
+            with self._lock:
+                self._failed += 1
+            raise
+        with self._lock:
+            self._completed += 1
+            self._last_latency_ms = (time.monotonic() - started) * 1000
+            self._last_success_at = time.time()
+        return result
+
+    def _recognize_with_boxes(self, image: Image.Image, progress):
+        started = time.monotonic()
+        try:
+            result = self._engine().recognize_with_boxes(image, progress=progress)
         except Exception:
             with self._lock:
                 self._failed += 1

@@ -502,6 +502,37 @@ def test_intel_api_client_posts_hostile_icon_count():
     assert api.payload["hostile_icon_count"] == 1
 
 
+def test_intel_api_client_posts_full_frame_ocr_evidence():
+    class RecordingClient(IntelApiClient):
+        def __init__(self):
+            super().__init__("http://example.invalid")
+            self.payload = None
+
+        def _request(self, method, path, payload=None, params=None):
+            _ = method, path, params
+            self.payload = payload
+            return {"created": 1}
+
+    api = RecordingClient()
+    api.post_ocr_snapshot(
+        client_id="detector-client:test",
+        source_instance="EVE - Hajimi6",
+        system_name="S-KSWL",
+        names=["Friendly Pilot", "Enemy Pilot"],
+        hostile_icon_count=1,
+        ocr_candidates=[
+            {"text": "Friendly Pilot", "left": 20, "top": 4, "right": 100, "bottom": 14},
+            {"text": "Enemy Pilot", "left": 20, "top": 20, "right": 100, "bottom": 30},
+        ],
+        hostile_icons=[{"left": 6, "top": 20, "right": 16, "bottom": 30}],
+    )
+
+    assert api.payload["ocr_candidates"][1]["text"] == "Enemy Pilot"
+    assert api.payload["hostile_icons"] == [
+        {"left": 6, "top": 20, "right": 16, "bottom": 30}
+    ]
+
+
 def test_intel_api_client_posts_zero_hostile_presence_to_clear_state():
     class RecordingPresenceClient(IntelApiClient):
         def __init__(self):
@@ -952,6 +983,21 @@ def test_alert_client_state_corruption_falls_back_to_empty(tmp_path):
     assert state.loaded is True
 
 
+def test_alert_client_state_persists_explicit_map_account_selection(tmp_path):
+    state_path = tmp_path / "alert_state.json"
+    state = AlertClientState(state_path)
+
+    assert state.load_seen_ids() == []
+    assert state.map_selected_account_keys() is None
+
+    state.save_map_selected_account_keys(["alice", "bob", "alice", " "])
+    assert state.record_alert({"id": "evt-1"}) is True
+
+    reloaded = AlertClientState(state_path)
+    assert reloaded.load_seen_ids() == ["evt-1"]
+    assert reloaded.map_selected_account_keys() == ["alice", "bob"]
+
+
 def test_alert_event_consumer_deduplicates_before_ui(tmp_path):
     state = AlertClientState(tmp_path / "alert_state.json")
     state.load_seen_ids()
@@ -1375,6 +1421,7 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
     from PyQt6.QtWidgets import (
         QApplication,
         QComboBox,
+        QFrame,
         QLabel,
         QListWidget,
         QPushButton,
@@ -1452,11 +1499,18 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
             if label.objectName().startswith("map")
         }
         assert legends["mapOnlineLegend"].text() == "● 监控"
-        assert legends["mapWarningLegend"].text() == "★ 本地账号位置"
+        assert legends["mapWarningLegend"].text() == "★ 本地"
         assert legends["mapHostileLegend"].text() == "◆ 来敌"
         assert "青色节点" in legends["mapOnlineLegend"].toolTip()
         assert "金色星形" in legends["mapWarningLegend"].toolTip()
         assert "红色节点" in legends["mapHostileLegend"].toolTip()
+        hops_control = overlay.findChild(QFrame, "mapHopsControl")
+        assert hops_control is not None
+        assert account_button.geometry().right() < hops_control.geometry().left()
+        assert all(
+            legend.geometry().top() > account_button.geometry().bottom()
+            for legend in legends.values()
+        )
         view_buttons = {
             button.text(): button
             for button in overlay.findChildren(QPushButton, "overlayViewButton")
@@ -1501,6 +1555,43 @@ def test_alert_overlay_uses_compact_map_account_menu(monkeypatch):
 
         assert overlay.map_selection() == (["alice"], 3)
         assert changes[-1] == (["alice"], 3)
+    finally:
+        overlay.close()
+
+
+def test_alert_overlay_defaults_all_and_remembers_map_account_selection(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    accounts = [
+        {
+            "key": "alice",
+            "label": "Alice",
+            "system_name": "Tama",
+            "local": True,
+        },
+        {
+            "key": "bob",
+            "label": "Bob",
+            "system_name": "Kedama",
+            "local": True,
+        },
+    ]
+    try:
+        overlay.set_map_accounts(accounts)
+        assert overlay.map_selection() == (["alice", "bob"], 3)
+        overlay._account_actions[0].setChecked(False)
+        app.processEvents()
+
+        assert overlay.map_selection() == (["bob"], 3)
+        assert overlay.map_selection_memory() == ["bob"]
+
+        overlay.set_map_accounts([accounts[1]])
+        assert overlay.map_selection() == (["bob"], 3)
+        overlay.set_map_accounts(accounts)
+        assert overlay.map_selection() == (["bob"], 3)
     finally:
         overlay.close()
 
