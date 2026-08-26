@@ -193,6 +193,8 @@ data: {"id":"evt_0123456789abcdef","level":"critical","score":100,"system_name":
 | `names` | string[] | 是 | 本次识别或上报的角色名称 |
 | `character_ids` | integer[] | 是 | 已解析的角色 ID，可能为空 |
 | `hostile_count` | integer | 否 | 监控客户端确认的当前敌对人数 |
+| `active_names` | string[] | 否 | detector 客户端在该星系当前活动快照中的完整角色名单；不要用单条 `names` 的长度计算人数 |
+| `active_character_ids` | integer[] | 否 | 当前活动快照中已解析的完整角色 ID 列表 |
 | `classification` | string | 否 | 当前敌我分类，敌对通常为 `red` |
 | `level` | string | 是 | 兼容告警等级 |
 | `score` | integer | 是 | 兼容告警分数，不等同于 zKill 威胁度 |
@@ -202,7 +204,9 @@ data: {"id":"evt_0123456789abcdef","level":"critical","score":100,"system_name":
 | `evidence` | object[] | 是 | 告警判定依据 |
 
 `verified_characters[].zkill` 是可选的外部统计。消费者必须允许它缺失，并忽略未来新增的
-未知字段。
+未知字段。机器人或其他集成应使用 `hostile_count` 作为人数，使用 `active_names` 作为
+detector 当前名单；`names` 只表示这一条告警记录，不能作为完整名单。presence-only
+告警没有角色名单时，`active_names` 可能为空，但 `hostile_count` 仍然有效。
 
 ### `safe` 事件
 

@@ -142,6 +142,33 @@ def test_monitoring_target_state_falls_back_to_heartbeat_system():
     assert state[0]["system_name"] == "S-KSWL"
 
 
+def test_monitoring_target_state_omits_capture_offline_window():
+    state = _monitoring_target_state(
+        {
+            "heartbeats": [
+                {
+                    "client_id": "detector-client:test",
+                    "client_type": "detector_client",
+                    "online": True,
+                    "details": {
+                        "monitoring": True,
+                        "targets": [
+                            {
+                                "client_id": "window:test",
+                                "monitoring": True,
+                                "capture_online": False,
+                                "system_name": "S-KSWL",
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+
+    assert state == []
+
+
 def test_monitoring_target_state_omits_unknown_location():
     state = _monitoring_target_state(
         {
@@ -1077,6 +1104,10 @@ def test_remote_alert_count_uses_latest_detector_snapshot_total(tmp_path):
         }
         assert len(bootstrap["alerts"]) == 2
         assert {item["hostile_count"] for item in bootstrap["alerts"]} == {2}
+        assert {
+            tuple(item["active_names"])
+            for item in bootstrap["alerts"]
+        } == {("AddisonW", "Shisen Hanomaa")}
 
         status, _, body = request_text(
             f"{server.url}/api/v1/events?"
@@ -1097,6 +1128,42 @@ def test_remote_alert_count_uses_latest_detector_snapshot_total(tmp_path):
             for item in events
             if item.get("event") == "alert"
         } == {2}
+    finally:
+        server.stop()
+
+
+def test_detector_alert_exposes_complete_active_roster_without_three_name_cap(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+
+    try:
+        status, _ = request_json(
+            f"{server.url}/api/v1/ocr/snapshot",
+            method="POST",
+            payload={
+                "client_id": "detector-client:four",
+                "source_instance": "EVE - Four",
+                "system_name": "S-KSWL",
+                "seen_at": "2026-07-24T09:09:16+00:00",
+                "names": ["Alpha", "Bravo", "Charlie", "Delta"],
+                "hostile_icon_count": 4,
+            },
+        )
+        assert status == 201
+
+        status, payload = request_json(f"{server.url}/api/v1/alerts")
+        assert status == 200
+        assert payload["count"] == 4
+        assert {tuple(item["active_names"]) for item in payload["alerts"]} == {
+            ("Alpha", "Bravo", "Charlie", "Delta")
+        }
+        assert {item["hostile_count"] for item in payload["alerts"]} == {4}
     finally:
         server.stop()
 

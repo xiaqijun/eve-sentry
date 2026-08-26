@@ -259,6 +259,15 @@ def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
                 target.get("monitoring", True)
             ):
                 continue
+            if target.get("capture_online") is False:
+                # Keep the target in heartbeat management details, but do not
+                # expose a window whose local capture connection is offline.
+                continue
+            if target.get("game_connection_online") is False:
+                # The EVE process can still exist while its game-server
+                # connection is down; do not publish that window as a live
+                # monitoring node until the Gamelog reports recovery.
+                continue
             target_system_name = str(
                 target.get("system_name") or target.get("system") or ""
             ).strip()
@@ -1760,6 +1769,49 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             for source_id in self._active_item_source_ids(item):
                 active_by_source_id[source_id] = item
 
+        # A detector can publish one OCR report per character.  Keep the
+        # report-level ``names`` field unchanged, but also expose the complete
+        # current detector snapshot so integrations do not mistake one report
+        # (or a locally truncated message) for the full hostile roster.
+        detector_rosters: dict[tuple[str, str], dict[str, Any]] = {}
+        for item in active_items:
+            if not bool(item.get("active", True)):
+                continue
+            if str(item.get("source") or "").strip().casefold() != (
+                "eve-sentry-detector"
+            ):
+                continue
+            metadata = item.get("metadata")
+            if not isinstance(metadata, dict) or "hostile_icon_count" not in metadata:
+                continue
+            client_id = str(
+                metadata.get("client_id")
+                or item.get("source_instance")
+                or "unknown"
+            ).strip() or "unknown"
+            system_name = str(
+                item.get("system_name") or item.get("system") or "Unknown"
+            ).strip() or "Unknown"
+            roster = detector_rosters.setdefault(
+                (client_id, system_name.casefold()),
+                {"system_name": system_name, "names": {}, "character_ids": set()},
+            )
+            name = str(item.get("name") or "").strip()
+            if name:
+                roster["names"].setdefault(name.casefold(), name)
+            character_id = item.get("character_id")
+            try:
+                if character_id is not None:
+                    roster["character_ids"].add(int(character_id))
+            except (TypeError, ValueError):
+                pass
+
+        for roster in detector_rosters.values():
+            roster["active_names"] = [
+                roster["names"][key] for key in sorted(roster["names"])
+            ]
+            roster["active_character_ids"] = sorted(roster["character_ids"])
+
         alerts = []
         report_items = reports if reports else store._reports_snapshot()
         for report in report_items:
@@ -1783,11 +1835,27 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             if str(active_item.get("source") or "").strip().casefold() == (
                 "eve-sentry-detector"
             ) and "hostile_icon_count" in metadata:
-                data["detector_client_id"] = str(
+                detector_client_id = str(
                     metadata.get("client_id")
                     or active_item.get("source_instance")
                     or "unknown"
                 )
+                data["detector_client_id"] = detector_client_id
+                roster = detector_rosters.get(
+                    (
+                        detector_client_id,
+                        str(
+                            active_item.get("system_name")
+                            or active_item.get("system")
+                            or "Unknown"
+                        ).strip().casefold(),
+                    )
+                )
+                if roster is not None:
+                    data["active_names"] = list(roster["active_names"])
+                    data["active_character_ids"] = list(
+                        roster["active_character_ids"]
+                    )
                 try:
                     data["hostile_count"] = max(
                         0,

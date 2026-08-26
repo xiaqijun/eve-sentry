@@ -41,6 +41,58 @@ def test_hostile_row_fingerprint_ignores_non_name_columns():
     assert _image_fingerprint(first) == _image_fingerprint(second)
 
 
+def test_hostile_row_fingerprint_ignores_extraction_border_jitter():
+    first = Image.new("RGB", (200, 40), color=(12, 13, 13))
+    second = Image.new("RGB", (201, 40), color=(12, 13, 13))
+    ImageDraw.Draw(first).rectangle((30, 10, 95, 20), fill=(220, 220, 220))
+    ImageDraw.Draw(second).rectangle((31, 10, 96, 20), fill=(220, 220, 220))
+
+    assert _image_fingerprint(first) == _image_fingerprint(second)
+
+
+def test_monitor_worker_does_not_repeat_ocr_for_border_jitter(monkeypatch):
+    frames = [0, 1]
+
+    class FrameCapturer:
+        def screenshot(self, _x, _y, _w, _h):
+            if frames:
+                return frames.pop(0)
+            raise TargetWindowClosed("done")
+
+    class RecordingOcr:
+        def __init__(self):
+            self.calls = 0
+
+        def recognize(self, _image, progress=None):
+            _ = progress
+            self.calls += 1
+            return [("Enemy Pilot", 0.99)]
+
+    row_images = [
+        Image.new("RGB", (200, 40), color=(12, 13, 13)),
+        Image.new("RGB", (201, 40), color=(12, 13, 13)),
+    ]
+    ImageDraw.Draw(row_images[0]).rectangle(
+        (30, 10, 95, 20), fill=(220, 220, 220)
+    )
+    ImageDraw.Draw(row_images[1]).rectangle(
+        (31, 10, 96, 20), fill=(220, 220, 220)
+    )
+    monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
+    monkeypatch.setattr("app.engine.worker.find_hostile_icons", lambda _frame: [object()])
+    monkeypatch.setattr(
+        "app.engine.worker.extract_hostile_name_rows",
+        lambda _frame, _icons=None: row_images.pop(0),
+    )
+    ocr = RecordingOcr()
+    worker = MonitorWorker(FrameCapturer(), ocr)
+    worker.set_region(0, 0, 200, 40)
+
+    worker.run()
+
+    assert ocr.calls == 1
+
+
 def test_monitor_worker_uses_bound_window_capture_session(monkeypatch):
     created_capturers = []
 
@@ -645,11 +697,14 @@ def test_monitor_worker_stops_when_the_game_window_closes():
     worker = MonitorWorker(ClosedCapturer(), ForbiddenOcr())
     worker.set_region(1000, 80, 260, 620)
     statuses = []
+    lost = []
     worker.status_update.connect(statuses.append)
+    worker.connection_lost.connect(lost.append)
 
     worker.run()
 
     assert statuses[-1] == "EVE 窗口已关闭，等待自动重连"
+    assert lost == ["EVE 窗口已关闭，等待自动重连"]
 
 
 def test_monitor_worker_skips_ocr_when_background_frame_is_unavailable():
@@ -671,3 +726,38 @@ def test_monitor_worker_skips_ocr_when_background_frame_is_unavailable():
     worker.run()
 
     assert statuses[-1] == "后台画面暂不可用，已跳过当前帧"
+
+
+def test_monitor_worker_requires_repeated_capture_failures_and_reports_recovery(
+    monkeypatch,
+):
+    frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
+
+    class FlakyCapturer:
+        def __init__(self):
+            self.calls = 0
+
+        def screenshot(self, _x, _y, _w, _h):
+            self.calls += 1
+            if self.calls <= 3:
+                raise BackgroundCaptureUnavailable("no frame")
+            worker.stop()
+            return frame
+
+    class ForbiddenOcr:
+        def recognize(self, image, progress=None):
+            _ = image, progress
+            raise AssertionError("a clear recovery frame must not reach OCR")
+
+    monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
+    worker = MonitorWorker(FlakyCapturer(), ForbiddenOcr())
+    worker.set_region(1000, 80, 260, 620)
+    lost = []
+    restored = []
+    worker.connection_lost.connect(lost.append)
+    worker.connection_restored.connect(lambda: restored.append(True))
+
+    worker.run()
+
+    assert lost == ["后台画面连续不可用"]
+    assert restored == [True]

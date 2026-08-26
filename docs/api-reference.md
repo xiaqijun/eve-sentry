@@ -96,6 +96,17 @@ Authorization: Bearer eve_xxx
 | `GET/POST` | `/api/v1/observations` | 规范化观察记录读取和写入 |
 | `POST` | `/api/v1/channel-lines` | 独立频道客户端上传日志行 |
 
+检测客户端心跳的 `details.targets` 会在窗口采集状态已确定时包含
+`capture_online` 和 `capture_failure_count`；`capture_online=false` 表示该 EVE 窗口已
+关闭或后台画面连续不可用。此类目标仍保留在客户端管理心跳中，但不会被在线监控节点和
+预警账号列表选中；采集恢复后客户端会立即发送新的心跳。
+
+客户端同时从 EVE `Gamelogs` 的最新日志实例尾部增量读取网络连接状态。目标字段
+`game_connection_online=false` 表示游戏进程仍在运行但日志报告已与服务器断开；
+`game_connection_log_id` 是用于多开隔离的日志实例 ID，`game_connection_last_event_at` 为
+最近一次连接转换时间。服务端和预警端同样不会把该目标作为在线监控节点，连接恢复后由
+客户端立即发送新的心跳。首次发现日志只读取最新文件的有限尾部，不扫描或回放整个历史目录。
+
 `POST /api/v1/hostile-presence` 的请求体包含 `client_id`、`source_instance`、
 `system_name`、`hostile_icon_count`，并可带 `system_id`、`seen_at`、`snapshot_id`、
 `sequence` 和 `captured_at`。该接口只维护当前星系数量状态，不创建虚假人员报告；同一

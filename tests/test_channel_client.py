@@ -174,9 +174,10 @@ def test_run_channel_client_once_posts_raw_line_and_heartbeat(monkeypatch, tmp_p
     class HeartbeatApi:
         instances = []
 
-        def __init__(self, base_url, timeout=3.0):
+        def __init__(self, base_url, timeout=3.0, api_key=""):
             self.base_url = base_url
             self.timeout = timeout
+            self.api_key = api_key
             self.heartbeats = []
             self.channel_lines = []
             self.instances.append(self)
@@ -208,6 +209,8 @@ def test_run_channel_client_once_posts_raw_line_and_heartbeat(monkeypatch, tmp_p
         [
             "--server",
             "http://example.invalid",
+            "--api-key",
+            "eve_test-key",
             "--log-dir",
             str(log_dir),
             "--state",
@@ -222,6 +225,7 @@ def test_run_channel_client_once_posts_raw_line_and_heartbeat(monkeypatch, tmp_p
     assert run_channel_client(args) == 0
     api = HeartbeatApi.instances[0]
     assert len(api.heartbeats) == 1
+    assert api.api_key == "eve_test-key"
     assert api.heartbeats[0]["client_type"] == "channel_client"
     assert api.heartbeats[0]["details"]["mode"] == "server_parse"
     assert api.heartbeats[0]["details"]["last_action"] == "server_parse:1"
@@ -242,9 +246,10 @@ def test_run_channel_client_without_channel_does_not_scan_or_post(monkeypatch, t
     class HeartbeatApi:
         instances = []
 
-        def __init__(self, base_url, timeout=3.0):
+        def __init__(self, base_url, timeout=3.0, api_key=""):
             self.base_url = base_url
             self.timeout = timeout
+            self.api_key = api_key
             self.heartbeats = []
             self.instances.append(self)
 

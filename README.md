@@ -79,7 +79,8 @@ flowchart LR
     configured -->|"是"| keycheck["验证设备密钥"]
     key --> configured
     keycheck --> access["开启经过认证的客户端访问"]
-    keycheck --> listener["客户端扫描 Chatlogs Listener"]
+    keycheck -.-> listenerEnabled{"已开启 Listener 身份扫描？"}
+    listenerEnabled -->|"是"| listener["客户端读取最近修改的 Chatlogs Listener"]
     listener -->|"发现角色"| check["服务端身份风控"]
     check --> rule{"允许军团或角色白名单？"}
     rule -->|"是"| access
@@ -101,7 +102,7 @@ flowchart LR
   在浏览器中。项目未使用 Arco Design Pro 脚手架，星图和图表保留专用实现。
 - 管理员使用密码登录，普通用户使用 EVE SSO；桌面客户端可选使用设备密钥。密钥留空时
   不进行认证预检、Listener 身份扫描，也不发送 `Authorization`；服务端 `enforce` 模式
-  仍会拒绝未认证的受保护请求。
+  仍会拒绝未认证的受保护请求。Listener 身份扫描由客户端独立开关控制，默认关闭。
 
 ## 本地启动
 

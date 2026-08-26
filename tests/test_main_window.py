@@ -3634,8 +3634,9 @@ def test_heartbeat_reports_multi_window_and_recovered_transport_errors():
         "a": {
             "key": "a", "client_id": "detector:a", "window_title": "EVE - Pilot A",
             "source_instance": "EVE - Pilot A", "character_name": "Pilot A",
-            "system_name": "S-KSWL", "system_id": None, "system_source": "chatlog",
+        "system_name": "S-KSWL", "system_id": None, "system_source": "chatlog",
             "region": {}, "runtime_status": "上报异常", "last_error": "OCR timeout",
+            "capture_online": False, "capture_failure_count": 3,
         },
         "b": {
             "key": "b", "client_id": "detector:b", "window_title": "EVE - Pilot B",
@@ -3663,6 +3664,9 @@ def test_heartbeat_reports_multi_window_and_recovered_transport_errors():
     details = window._intel_client.payload["details"]
     assert "Pilot A: OCR timeout" in details["last_error"]
     assert "心跳连接: connection reset" in details["last_error"]
+    assert details["capture_offline_count"] == 1
+    assert details["targets"][0]["capture_online"] is False
+    assert details["targets"][0]["capture_failure_count"] == 3
     assert details["targets"][0]["last_error"] == "OCR timeout"
     assert details["targets"][1]["runtime_status"] == "运行中"
 

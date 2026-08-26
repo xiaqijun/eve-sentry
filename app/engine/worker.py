@@ -6,6 +6,7 @@ import threading
 import time
 from typing import Optional
 
+from PIL import Image
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from app.engine.capturer import (
@@ -35,10 +36,14 @@ def build_ocr_snapshot_names(ocr_results: list[tuple[str, float]]) -> list[str]:
 class MonitorWorker(QThread):
     """Runs capture -> OCR -> report-only snapshot publishing on a timer."""
 
+    CAPTURE_FAILURE_THRESHOLD = 3
+
     status_update = pyqtSignal(str)       # human-readable status message
     scan_complete = pyqtSignal(int)       # total scan count
     ocr_snapshot = pyqtSignal(list, int)  # names, verified hostile-icon count
     hostile_detected = pyqtSignal(int)    # emitted when the visible count changes
+    connection_lost = pyqtSignal(str)     # capture/window connection is offline
+    connection_restored = pyqtSignal()    # capture resumed after an offline state
 
     def __init__(
         self,
@@ -60,6 +65,8 @@ class MonitorWorker(QThread):
         self._ocr_request_key: str | None = None
         self._ocr_enabled = True
         self._presence_refresh_requested = threading.Event()
+        self._capture_failure_count = 0
+        self._capture_lost = False
 
     def set_region(self, x: int, y: int, w: int, h: int) -> None:
         """Set the screen region to capture."""
@@ -121,6 +128,23 @@ class MonitorWorker(QThread):
             self.msleep(sleep_ms)
             remaining_ms -= sleep_ms
 
+    def _mark_capture_success(self) -> None:
+        """Reset capture failures and announce recovery after a real outage."""
+        self._capture_failure_count = 0
+        if self._capture_lost:
+            self._capture_lost = False
+            self.connection_restored.emit()
+
+    def _mark_capture_failure(self, message: str, *, definitive: bool = False) -> None:
+        """Emit one loss transition after a closed window or repeated failures."""
+        self._capture_failure_count += 1
+        if not definitive and self._capture_failure_count < self.CAPTURE_FAILURE_THRESHOLD:
+            return
+        if self._capture_lost:
+            return
+        self._capture_lost = True
+        self.connection_lost.emit(str(message or "后台画面不可用"))
+
     def run(self) -> None:
         """Main loop.  Runs until :meth:`stop` is called."""
         self._running = True
@@ -164,6 +188,7 @@ class MonitorWorker(QThread):
                             f"截图区域: ({r['x']},{r['y']}) {r['w']}×{r['h']}"
                         )
                     img = capturer.screenshot(r["x"], r["y"], r["w"], r["h"])
+                    self._mark_capture_success()
                     if self._stop_requested():
                         break
 
@@ -305,10 +330,15 @@ class MonitorWorker(QThread):
                     ocr_retry_remaining = max(1, ocr_retry_remaining)
                     self.status_update.emit("OCR 已跳过过期帧")
                 except TargetWindowClosed:
+                    self._mark_capture_failure(
+                        "EVE 窗口已关闭，等待自动重连",
+                        definitive=True,
+                    )
                     logger.info("Target EVE window closed; waiting for monitor reconnect")
                     self.status_update.emit("EVE 窗口已关闭，等待自动重连")
                     break
                 except BackgroundCaptureUnavailable:
+                    self._mark_capture_failure("后台画面连续不可用")
                     logger.debug("Background capture unavailable; skipping OCR frame")
                     self.status_update.emit("后台画面暂不可用，已跳过当前帧")
                 except Exception:
@@ -339,11 +369,20 @@ def _image_fingerprint(image) -> bytes:
         name_left = min(width - 1, max(0, int(round(width * 0.12))))
         name_right = max(name_left + 1, int(round(width * 0.62)))
         grayscale = grayscale.crop((name_left, 0, min(width, name_right), height))
-        target_width = min(96, max(1, int(grayscale.width)))
-        target_height = min(192, max(1, int(height)))
-        reduced = grayscale.resize((target_width, target_height)).point(
-            lambda value: 255 if value >= 96 else 0
-        )
+        # Icon detection can move the extracted crop by a pixel or two between
+        # frames. Remove the blank border before resizing so that this geometry
+        # jitter does not look like a roster change. The name-column crop keeps
+        # changing distance/type columns out of the fingerprint.
+        binary = grayscale.point(lambda value: 255 if value >= 96 else 0)
+        content_box = binary.getbbox()
+        if content_box is not None:
+            normalized = binary.crop(content_box)
+        else:
+            normalized = binary
+        if normalized.width > 96 or normalized.height > 192:
+            normalized.thumbnail((96, 192))
+        reduced = Image.new("1", (96, 192))
+        reduced.paste(normalized, (0, 0))
         return hashlib.blake2b(reduced.tobytes(), digest_size=12).digest()
     except (AttributeError, TypeError, ValueError):
         return hashlib.blake2b(repr(image).encode("utf-8"), digest_size=12).digest()

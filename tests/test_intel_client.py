@@ -1056,6 +1056,37 @@ def test_alert_client_syncs_counts_and_drops_unmonitored_safe_systems():
     rows = prune_inactive_alert_summaries(rows, now=170.0)
     assert [item["system_name"] for item in rows] == ["S-KSWL"]
 
+
+def test_alert_client_syncs_presence_only_hostile_system_from_map():
+    rows = sync_alert_summaries_from_bootstrap(
+        [],
+        {
+            "map": {"systems": [{"name": "S-KSWL", "hostile_count": 2}]},
+            "active_intel": [
+                {
+                    "id": "presence:client-1:S-KSWL",
+                    "system_name": "S-KSWL",
+                    "active": True,
+                    "metadata": {
+                        "presence_only": True,
+                        "hostile_icon_count": 2,
+                    },
+                }
+            ],
+            "alerts": [],
+        },
+    )
+
+    assert rows == [
+        {
+            "system_name": "S-KSWL",
+            "hostile_count": 2,
+            "active_hostile_count": 2,
+            "created_at": "",
+            "active": True,
+        }
+    ]
+
     rows = sync_alert_summaries_from_bootstrap(
         [],
         {
