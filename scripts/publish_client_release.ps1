@@ -20,6 +20,9 @@ try {
     $buildName = "EVE-Sentry-Monitor-ONNX"
     $assetName = "$buildName-$Version.zip"
     $assetPath = Join-Path $repoRoot "dist\$assetName"
+    $channelBuildName = "EVE-Sentry-Channel"
+    $channelAssetName = "$channelBuildName-$Version.zip"
+    $channelAssetPath = Join-Path $repoRoot "dist\$channelAssetName"
     $programAssetName = "$buildName-program-$Version.zip"
     $programAssetPath = Join-Path $repoRoot "dist\$programAssetName"
     $manifestPath = Join-Path $repoRoot "dist\latest.json"
@@ -53,6 +56,14 @@ try {
         )
         Compress-Archive -Path ".\dist\$buildName" -DestinationPath $assetPath -Force
 
+        & $Python -m PyInstaller --clean --noconfirm packaging\eve-sentry-channel.spec
+        if ($LASTEXITCODE -ne 0) { throw "Channel client PyInstaller failed with exit code $LASTEXITCODE" }
+        $channelBuiltRoot = Join-Path $repoRoot "dist\$channelBuildName"
+        if (-not (Test-Path -LiteralPath (Join-Path $channelBuiltRoot "$channelBuildName.exe"))) {
+            throw "Built channel client executable is missing"
+        }
+        Compress-Archive -Path ".\dist\$channelBuildName" -DestinationPath $channelAssetPath -Force
+
         $programStage = Join-Path $repoRoot "dist\.program-stage-$Version"
         $modelStage = Join-Path $repoRoot "dist\.model-stage-$Version"
         Remove-Item -LiteralPath $programStage,$modelStage -Recurse -Force -ErrorAction SilentlyContinue
@@ -80,8 +91,8 @@ try {
             $modelVersion = $modelCandidate.BaseName.Substring("$buildName-models-".Length)
         }
     }
-    if (-not (Test-Path -LiteralPath $assetPath) -or -not (Test-Path -LiteralPath $programAssetPath)) {
-        throw "Release program package is missing"
+    if (-not (Test-Path -LiteralPath $assetPath) -or -not (Test-Path -LiteralPath $programAssetPath) -or -not (Test-Path -LiteralPath $channelAssetPath)) {
+        throw "Release client package is missing"
     }
 
     $file = Get-Item -LiteralPath $programAssetPath
@@ -127,10 +138,10 @@ try {
         $releaseExists = $LASTEXITCODE -eq 0
         $ErrorActionPreference = $previousErrorAction
         if ($releaseExists) {
-            gh release upload $tag $assetPath $programAssetPath $modelAssetPath $manifestPath --clobber
+            gh release upload $tag $assetPath $programAssetPath $channelAssetPath $modelAssetPath $manifestPath --clobber
         } else {
             $targetCommit = (git rev-parse HEAD).Trim()
-            gh release create $tag $assetPath $programAssetPath $modelAssetPath $manifestPath --target $targetCommit --title "EVE Sentry v$Version" --generate-notes
+            gh release create $tag $assetPath $programAssetPath $channelAssetPath $modelAssetPath $manifestPath --target $targetCommit --title "EVE Sentry v$Version" --generate-notes
         }
         if ($LASTEXITCODE -ne 0) { throw "GitHub release failed with exit code $LASTEXITCODE" }
     }
@@ -142,6 +153,7 @@ try {
         size = $file.Length
         manifest = $manifestPath
         download_url = $downloadUrl
+        channel_package = $channelAssetPath
     } | ConvertTo-Json
 } finally {
     Pop-Location

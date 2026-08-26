@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from typing import Any
@@ -59,7 +60,15 @@ def run_channel_client(args: argparse.Namespace) -> int:
         state_path=args.state,
         start_at_end_for_new_files=args.ignore_existing,
     )
-    api = None if args.dry_run else IntelApiClient(args.server, timeout=args.timeout)
+    api = (
+        None
+        if args.dry_run
+        else IntelApiClient(
+            args.server,
+            timeout=args.timeout,
+            api_key=args.api_key,
+        )
+    )
     status_stream = sys.stderr if args.json else sys.stdout
 
     if channels_selected and args.ignore_existing:
@@ -235,6 +244,11 @@ def emit_channel_line(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", default="")
+    parser.add_argument(
+        "--api-key",
+        default=os.environ.get("EVE_SENTRY_API_KEY", ""),
+        help="optional device key; prefer EVE_SENTRY_API_KEY to avoid command-line exposure",
+    )
     parser.add_argument("--log-dir", default=str(DEFAULT_CHATLOG_DIR))
     parser.add_argument(
         "--channel",

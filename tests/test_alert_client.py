@@ -63,6 +63,35 @@ def test_monitored_accounts_from_bootstrap_keeps_online_monitoring_targets():
     ]
 
 
+def test_monitored_accounts_from_bootstrap_omits_capture_offline_targets():
+    accounts = monitored_accounts_from_bootstrap(
+        {
+            "clients": {
+                "heartbeats": [
+                    {
+                        "client_type": "detector_client",
+                        "online": True,
+                        "details": {
+                            "monitoring": True,
+                            "targets": [
+                                {
+                                    "client_id": "window:offline",
+                                    "character_name": "Alice",
+                                    "system_name": "Tama",
+                                    "monitoring": True,
+                                    "capture_online": False,
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        }
+    )
+
+    assert accounts == []
+
+
 def test_local_accounts_from_windows_uses_stable_character_identity():
     accounts = local_accounts_from_windows(
         [

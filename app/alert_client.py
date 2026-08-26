@@ -516,6 +516,10 @@ def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[st
         for target in targets:
             if not isinstance(target, dict) or not bool(target.get("monitoring", True)):
                 continue
+            if target.get("capture_online") is False:
+                continue
+            if target.get("game_connection_online") is False:
+                continue
             client_id = str(target.get("client_id") or heartbeat.get("client_id") or "").strip()
             character_name = str(target.get("character_name") or "").strip()
             source_instance = str(
