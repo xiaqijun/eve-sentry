@@ -46,17 +46,9 @@ jobs:
           .\scripts\publish_client_release.ps1
           -Python "python"
           -DownloadBaseUrl "https://evesentrydownload.kisectool.com/download"
-          -GitCodeRepository "xiaqiqi/eve-sentry-releases"
         env:
           GH_TOKEN: ${{ github.token }}
           EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 }}
-      - name: Publish GitCode release mirror
-        shell: pwsh
-        run: |
-          $version = (python -c "from app.version import APP_VERSION; print(APP_VERSION)").Trim()
-          .\scripts\publish_gitcode_release.ps1 -Version $version
-        env:
-          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
       - name: Verify release manifest and download range
         shell: pwsh
         run: |
@@ -69,26 +61,12 @@ jobs:
                   Start-Sleep -Seconds 5
                   continue
               }
-              if (
-                  $manifest.mirrors -isnot [System.Array] -or
-                  $manifest.components.models.mirrors -isnot [System.Array]
-              ) {
-                  throw "Release manifest mirrors must be JSON arrays."
-              }
               $headers = curl.exe -fsS -D - -o NUL -H "Range: bytes=0-1023" $manifest.url
               $expectedRange = "Content-Range:\s*bytes 0-1023/$([regex]::Escape([string]$manifest.size))"
-              $programMirrorHeaders = curl.exe -fsS -L -D - -o NUL -H "Range: bytes=0-1023" $manifest.mirrors[0]
-              $expectedProgramMirrorRange = "Content-Range:\s*bytes 0-1023/$([regex]::Escape([string]$manifest.size))"
-              $modelMirrorHeaders = curl.exe -fsS -L -D - -o NUL -H "Range: bytes=0-1023" $manifest.components.models.mirrors[0]
-              $expectedModelMirrorRange = "Content-Range:\s*bytes 0-1023/$([regex]::Escape([string]$manifest.components.models.size))"
               if (
                   $LASTEXITCODE -eq 0 -and
                   $headers -match "206 Partial Content" -and
-                  $headers -match $expectedRange -and
-                  $programMirrorHeaders -match "206 Partial Content" -and
-                  $programMirrorHeaders -match $expectedProgramMirrorRange -and
-                  $modelMirrorHeaders -match "206 Partial Content" -and
-                  $modelMirrorHeaders -match $expectedModelMirrorRange
+                  $headers -match $expectedRange
               ) {
                   $verified = $true
                   break
