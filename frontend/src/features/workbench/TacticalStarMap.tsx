@@ -877,11 +877,11 @@ export function TacticalStarMap({
             }}
           />
         ) : (
-          <Empty description="已发现敌对信号，身份资料仍在解析" />
+          <Empty description="已发现敌对信号，尚未收到可用人员名单" />
         )}
         {unresolvedHostileCount > 0 ? (
           <div className="hostile-detail-unresolved">
-            另有 {unresolvedHostileCount} 名敌对身份待解析
+            另有 {unresolvedHostileCount} 名敌对信号未匹配到人员名单
           </div>
         ) : null}
       </Drawer>
