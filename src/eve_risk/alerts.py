@@ -785,6 +785,11 @@ class EveSentryAlertRelay:
             for system_key in sorted(current.keys()):
                 current_state = current[system_key]
                 previous_state = previous.get(system_key)
+                if not current_state.get("personnel"):
+                    # Presence-only and pending-ESI states have no safe names
+                    # to publish. Persist the empty baseline so a later
+                    # resolved roster produces one personnel update.
+                    continue
                 if previous_state is not None and (
                     current_state.get("personnel_fingerprint")
                     == _personnel_fingerprint(previous_state.get("personnel"))
@@ -1124,7 +1129,9 @@ def _active_system_state(
         else:
             state["hostile_count"] += item_count
         # Red-icon presence has no character identity until optional OCR runs.
-        if not is_presence or str(item.get("name") or "").strip():
+        if (
+            not is_presence or str(item.get("name") or "").strip()
+        ) and _include_personnel_identity(item, metadata):
             state["personnel"].append(_personnel_snapshot(item))
     for state in systems.values():
         state["hostile_count"] += sum(
@@ -1141,6 +1148,27 @@ def _active_system_state(
         state["personnel"] = personnel
         state["personnel_fingerprint"] = _personnel_fingerprint(personnel)
     return systems
+
+
+def _include_personnel_identity(
+    item: dict[str, Any],
+    metadata: dict[str, Any],
+) -> bool:
+    """Exclude detector OCR names until ESI confirms their identity."""
+    source = str(item.get("source") or "").strip().casefold()
+    if source != "eve-sentry-detector":
+        return True
+
+    identity_status = str(metadata.get("identity_status") or "").strip().casefold()
+    if identity_status in {"pending", "unresolved"}:
+        return False
+    if identity_status == "resolved":
+        character_id = item.get("character_id") or metadata.get("character_id")
+        return _positive_int(character_id) is not None
+
+    # Older server snapshots predate identity_status. Keep them compatible;
+    # current servers always mark asynchronous OCR identities explicitly.
+    return bool(str(item.get("name") or "").strip())
 
 
 def _personnel_fingerprint(value: object) -> str:

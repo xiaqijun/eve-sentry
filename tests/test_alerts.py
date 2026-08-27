@@ -334,6 +334,45 @@ def test_presence_and_ocr_for_one_detector_are_not_double_counted() -> None:
     assert [item["name"] for item in state["personnel"]] == ["Alice"]
 
 
+def test_detector_personnel_waits_for_esi_identity_resolution() -> None:
+    base = {
+        "id": "ocr:alice",
+        "active": True,
+        "source": "eve-sentry-detector",
+        "system_name": "S-KSWL",
+        "name": "Alice",
+    }
+    pending = {
+        **base,
+        "metadata": {
+            "client_id": "client-1",
+            "identity_status": "pending",
+        },
+    }
+    unresolved = {
+        **base,
+        "metadata": {
+            "client_id": "client-1",
+            "identity_status": "unresolved",
+        },
+    }
+    resolved = {
+        **base,
+        "character_id": 12345,
+        "metadata": {
+            "client_id": "client-1",
+            "identity_status": "resolved",
+        },
+    }
+
+    assert _active_system_state([pending], "episode-1")["s-kswl"]["personnel"] == []
+    assert _active_system_state([unresolved], "episode-1")["s-kswl"]["personnel"] == []
+    personnel = _active_system_state([resolved], "episode-1")["s-kswl"]["personnel"]
+    assert [(item["name"], item["character_id"]) for item in personnel] == [
+        ("Alice", 12345)
+    ]
+
+
 def test_detector_ocr_with_red_icon_evidence_is_kept_before_alert_exists() -> None:
     item = {
         "id": "ocr:shazzza",
@@ -389,6 +428,84 @@ async def test_relay_delivers_presence_only_system_alert_without_empty_personnel
             "❗ S-KSWL 来敌｜当前敌对 2 人"
         ]
         qq.send_proactive_markdown.assert_not_awaited()
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_relay_publishes_personnel_once_after_esi_resolution() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+    )
+    presence = {
+        "id": "presence:client-1:S-KSWL",
+        "active": True,
+        "source": "eve-sentry-detector",
+        "system_name": "S-KSWL",
+        "metadata": {
+            "client_id": "client-1",
+            "presence_only": True,
+            "hostile_icon_count": 1,
+        },
+    }
+    pending = {
+        "id": "ocr:alice",
+        "active": True,
+        "source": "eve-sentry-detector",
+        "system_name": "S-KSWL",
+        "name": "Al1ce",
+        "metadata": {
+            "client_id": "client-1",
+            "hostile_icon_count": 1,
+            "identity_status": "pending",
+        },
+    }
+    resolved = {
+        **pending,
+        "name": "Alice",
+        "character_id": 12345,
+        "metadata": {
+            **pending["metadata"],
+            "identity_status": "resolved",
+        },
+    }
+
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {"generated_at": "t0", "active_intel": [], "alerts": []}
+        )
+        await relay.process_bootstrap(
+            {
+                "generated_at": "t1",
+                "active_intel": [presence, pending],
+                "alerts": [],
+            }
+        )
+        qq.send_proactive_markdown.assert_not_awaited()
+
+        resolved_snapshot = {
+            "generated_at": "t2",
+            "active_intel": [presence, resolved],
+            "alerts": [
+                {
+                    "id": "evt:alice",
+                    "active_intel_id": "ocr:alice",
+                    "level": "high",
+                }
+            ],
+        }
+        await relay.process_bootstrap(resolved_snapshot)
+        await relay.process_bootstrap({**resolved_snapshot, "generated_at": "t3"})
+
+        assert qq.send_proactive_text.await_count == 1
+        assert qq.send_proactive_markdown.await_count == 1
+        message = qq.send_proactive_markdown.await_args.args[1]
+        assert "Alice" in message
+        assert "Al1ce" not in message
 
     await redis.aclose()
 
