@@ -16,6 +16,7 @@ from app.engine.capturer import (
 )
 from app.engine.hostile_icons import (
     extract_hostile_name_row_images,
+    extract_hostile_name_rows,
     find_hostile_icons,
 )
 from app.engine.ocr import OCREngine
@@ -226,10 +227,16 @@ class MonitorWorker(QThread):
                         self._burst_scans_remaining = 2 if hostile_count > 0 else 0
                     previous_hostile_count = hostile_count
 
-                    # Full-frame OCR keeps glyphs that visually extend past a
-                    # member row.  The fingerprint only decides whether a
-                    # refreshed OCR evidence upload is useful.
-                    hostile_rows = img if hostile_icons else None
+                    # OCR still receives the full member list.  Only the
+                    # lightweight change fingerprint is restricted to hostile
+                    # rows so background animation cannot restart OCR forever.
+                    try:
+                        hostile_rows = extract_hostile_name_rows(
+                            img,
+                            hostile_icons,
+                        )
+                    except (AttributeError, TypeError, ValueError):
+                        hostile_rows = img if hostile_icons else None
                     rows_fingerprint = (
                         _image_fingerprint(hostile_rows)
                         if hostile_rows is not None
@@ -342,6 +349,8 @@ class MonitorWorker(QThread):
                                 hostile_count,
                                 evidence,
                             )
+                            if full_ocr_results:
+                                ocr_retry_remaining = 0
                             logger.info(
                                 "Full-frame OCR evidence published "
                                 "(icons=%d, candidates=%d)",

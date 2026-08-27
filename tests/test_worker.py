@@ -768,6 +768,40 @@ def test_monitor_worker_runs_ocr_once_while_hostile_count_remains_stable(monkeyp
     assert "画面无变化，已跳过 OCR" not in statuses
 
 
+def test_full_frame_ocr_does_not_repeat_for_changes_outside_hostile_rows(monkeypatch):
+    frames = []
+    for background in ((12, 13, 13), (20, 21, 22), (30, 31, 32)):
+        frame = Image.new("RGB", (180, 100), color=background)
+        draw = ImageDraw.Draw(frame)
+        draw.rectangle((6, 20, 16, 30), fill=(146, 3, 3))
+        draw.rectangle((20, 22, 90, 28), fill=(220, 220, 220))
+        frames.append(frame)
+
+    class FrameCapturer:
+        def screenshot(self, _x, _y, _w, _h):
+            if frames:
+                return frames.pop(0)
+            raise TargetWindowClosed("done")
+
+    class PositionedOcr:
+        def __init__(self):
+            self.calls = 0
+
+        def recognize_with_boxes(self, _image, progress=None):
+            _ = progress
+            self.calls += 1
+            return [("Enemy Pilot", 0.99, (17, 20, 100, 30))]
+
+    monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
+    ocr = PositionedOcr()
+    worker = MonitorWorker(FrameCapturer(), ocr)
+    worker.set_region(0, 0, 180, 100)
+
+    worker.run()
+
+    assert ocr.calls == 1
+
+
 def test_monitor_worker_stops_when_the_game_window_closes():
     class ClosedCapturer:
         def screenshot(self, _x, _y, _w, _h):
