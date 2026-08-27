@@ -2,13 +2,14 @@
 
 Windows 客户端版本由 `.github/workflows/release-client.yml` 构建。每个新版本先创建或更新
 GitHub Release，再由 `scripts/publish_gitcode_release.ps1` 将完整包、程序包、频道客户端、
-OCR 模型包和签名清单上传到 GitCode Release。
+OCR 模型包和签名清单上传到 `xiaqiqi/eve-sentry-releases` 的 GitCode Release。源码镜像
+`xiaqiqi/eve-sentry` 不支持创建 Release，因此不用于托管客户端附件。
 
 ## 配置
 
 GitHub 仓库 Actions Secret 必须包含：
 
-- `GITCODE_TOKEN`：可管理 `xiaqiqi/eve-sentry` Release 的 GitCode PAT。
+- `GITCODE_TOKEN`：可管理 `xiaqiqi/eve-sentry-releases` Release 的 GitCode PAT。
 - `EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64`：现有 Ed25519 更新签名私钥。
 
 令牌只通过环境变量传给发布脚本。不得写入仓库、Release 附件、下载 URL或命令行参数。

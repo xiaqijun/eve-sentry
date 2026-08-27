@@ -46,7 +46,7 @@ jobs:
           .\scripts\publish_client_release.ps1
           -Python "python"
           -DownloadBaseUrl "https://evesentrydownload.kisectool.com/download"
-          -GitCodeRepository "xiaqiqi/eve-sentry"
+          -GitCodeRepository "xiaqiqi/eve-sentry-releases"
         env:
           GH_TOKEN: ${{ github.token }}
           EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 }}

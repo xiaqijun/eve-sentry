@@ -26,6 +26,6 @@ def test_release_workflow_publishes_and_verifies_gitcode_mirror():
         encoding="utf-8"
     )
 
-    assert '-GitCodeRepository "xiaqiqi/eve-sentry"' in workflow
+    assert '-GitCodeRepository "xiaqiqi/eve-sentry-releases"' in workflow
     assert ".\\scripts\\publish_gitcode_release.ps1 -Version $version" in workflow
     assert "GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}" in workflow

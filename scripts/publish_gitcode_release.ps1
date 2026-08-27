@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
     [string]$Owner = "xiaqiqi",
-    [string]$Repository = "eve-sentry",
+    [string]$Repository = "eve-sentry-releases",
     [string]$Token = $env:GITCODE_TOKEN,
     [string[]]$Assets = @(),
     [string]$TargetCommit = ""
