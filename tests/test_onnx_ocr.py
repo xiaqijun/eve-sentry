@@ -46,6 +46,13 @@ def test_adapter_predict_returns_paddle_compatible_page():
     adapter._ocr = lambda _image, use_cls: SimpleNamespace(
         txts=("Alice", "Bob"),
         scores=(0.98, np.float32(0.87)),
+        boxes=np.asarray(
+            [
+                [[1, 2], [10, 2], [10, 12], [1, 12]],
+                [[2, 20], [12, 20], [12, 30], [2, 30]],
+            ],
+            dtype=np.float32,
+        ),
     )
 
     result = adapter.predict(np.zeros((4, 4, 3), dtype=np.uint8))
@@ -54,5 +61,9 @@ def test_adapter_predict_returns_paddle_compatible_page():
         {
             "rec_texts": ["Alice", "Bob"],
             "rec_scores": [0.98, pytest.approx(0.87)],
+            "rec_boxes": [
+                [[1.0, 2.0], [10.0, 2.0], [10.0, 12.0], [1.0, 12.0]],
+                [[2.0, 20.0], [12.0, 20.0], [12.0, 30.0], [2.0, 30.0]],
+            ],
         }
     ]

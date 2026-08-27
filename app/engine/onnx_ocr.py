@@ -168,4 +168,18 @@ class RapidOCROnnxAdapter:
         output = self._ocr(img_array, use_cls=False)
         texts = list(getattr(output, "txts", None) or [])
         scores = [float(score) for score in (getattr(output, "scores", None) or [])]
-        return [{"rec_texts": texts, "rec_scores": scores}]
+        # RapidOCR exposes geometry as ``boxes`` (older releases use ``polys``).
+        # Preserve it because the server uses text/icon row alignment to select
+        # hostile names from the full-frame OCR result.
+        boxes = getattr(output, "boxes", None)
+        if boxes is None:
+            boxes = getattr(output, "polys", None)
+        if boxes is None:
+            boxes = getattr(output, "rec_boxes", None)
+        if hasattr(boxes, "tolist"):
+            boxes = boxes.tolist()
+        return [{
+            "rec_texts": texts,
+            "rec_scores": scores,
+            "rec_boxes": list(boxes or []),
+        }]
