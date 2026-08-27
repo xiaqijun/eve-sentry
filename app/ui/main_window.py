@@ -1174,8 +1174,26 @@ class MainWindow(QMainWindow):
             self._log_message("未选择监控窗口，已停止监控")
             self._stop_monitor()
             return
-        self._log_message("监控窗口选择已更新，正在重新连接")
-        QTimer.singleShot(0, lambda: self._start_monitor(identity_checked=True))
+        self._log_message("监控窗口选择已更新，正在增量调整监控")
+        QTimer.singleShot(0, self._reconcile_selected_monitor_workers)
+
+    def _reconcile_selected_monitor_workers(self) -> None:
+        """Reconcile the currently selected online windows after a menu change."""
+        monitor_btn = _instance_attr(self, "_monitor_btn")
+        if monitor_btn is None or not monitor_btn.isChecked():
+            return
+        targets = self._build_monitor_targets()
+        missing_regions = [
+            target for target in targets if not isinstance(target.get("region"), dict)
+        ]
+        if missing_regions:
+            QMessageBox.warning(
+                self,
+                "无法更新监控",
+                "已选择窗口，但尚未配置监控区域，请先点击“选择区域”。",
+            )
+            return
+        self._reconcile_monitor_workers(targets)
 
     def _select_all_monitor_windows(self) -> None:
         """Select every currently detected EVE window."""
@@ -1407,14 +1425,8 @@ class MainWindow(QMainWindow):
         }
         if running_keys == expected_keys:
             return
-        self._log_message("EVE 窗口状态已恢复，正在重建监控节点")
-        if self._running_workers():
-            self._monitor_restart_pending = True
-            self._stop_monitor_workers(timeout_ms=0)
-            if not _instance_attr(self, "_stopping_monitor_workers", set()):
-                self._reap_stopping_monitor_workers()
-            return
-        self._start_monitor(identity_checked=True)
+        self._log_message("EVE 窗口状态已恢复，正在增量调整监控节点")
+        self._reconcile_monitor_workers(targets)
 
     def _sync_monitor_target_geometry(self, windows: list[dict]) -> None:
         """Remap active capture regions when an EVE window moves or resizes."""
@@ -1714,6 +1726,16 @@ class MainWindow(QMainWindow):
                 self._heartbeat_last_action = "region_updated"
                 self._heartbeat_last_success_at = heartbeat_now_iso()
                 self._publish_heartbeat()
+            else:
+                monitor_btn = _instance_attr(self, "_monitor_btn")
+                action = _instance_attr(self, "_monitor_window_actions", {}).get(key)
+                if (
+                    monitor_btn is not None
+                    and monitor_btn.isChecked()
+                    and action is not None
+                    and action.isChecked()
+                ):
+                    QTimer.singleShot(0, self._reconcile_selected_monitor_workers)
         self._window_label.setText(f"手动区域：({x},{y}) {w}x{h}")
         self._log_message(f"已保存成员列表区域 {w}x{h} @ ({x},{y})")
         self._refresh_status_cards()
@@ -2675,19 +2697,9 @@ class MainWindow(QMainWindow):
             self._monitor_start_state = "failed"
             return
 
-        existing_workers = list(_instance_attr(self, "_workers", {}).values())
-        existing_workers.extend(
-            worker
-            for worker in _instance_attr(self, "_stopping_monitor_workers", set())
-            if worker not in existing_workers
-        )
+        existing_workers = _instance_attr(self, "_workers", {})
         if existing_workers:
-            self._monitor_restart_pending = True
-            self._status_label.setText("正在重建监控")
-            self._status_label.setStyleSheet(
-                "color: #f0b35a; font-weight: bold;"
-            )
-            self._stop_monitor_workers(timeout_ms=0)
+            self._reconcile_monitor_workers(targets)
             self._monitor_start_state = "idle"
             return
 
@@ -2712,68 +2724,12 @@ class MainWindow(QMainWindow):
                 self._ocr_scheduler.warm_up()
             ocr_engine = self._ocr_scheduler
         for index, target in enumerate(targets):
-            worker = MonitorWorker(
-                Capturer(),
+            worker = self._create_monitor_worker(
+                target,
                 ocr_engine,
-            )
-            window = target["window"]
-            region = target["region"]
-            worker.set_window(window)
-            worker.set_region(region["x"], region["y"], region["w"], region["h"])
-            worker.set_interval(interval)
-            worker.set_ocr_enabled(ocr_enabled)
-            set_scan_offset = getattr(worker, "set_scan_offset", None)
-            if callable(set_scan_offset):
-                set_scan_offset(index * interval / max(1, len(targets)))
-            worker.ocr_snapshot.connect(
-                lambda names, hostile_icon_count, context=target: self._publish_ocr_snapshot(
-                    names,
-                    context=context,
-                    hostile_icon_count=hostile_icon_count,
-                )
-            )
-            evidence_snapshot = getattr(worker, "ocr_evidence_snapshot", None)
-            if evidence_snapshot is not None:
-                evidence_snapshot.connect(
-                    lambda names, hostile_icon_count, evidence, context=target: self._publish_ocr_snapshot(
-                        names,
-                        context=context,
-                        hostile_icon_count=hostile_icon_count,
-                        ocr_evidence=evidence,
-                    )
-                )
-            worker.hostile_detected.connect(
-                lambda count, context=target: self._on_hostile_icon_detected(
-                    count,
-                    context,
-                )
-            )
-            worker.status_update.connect(
-                lambda message, context=target: self._on_worker_status_update(
-                    message,
-                    context,
-                )
-            )
-            connection_lost = getattr(worker, "connection_lost", None)
-            if connection_lost is not None:
-                connection_lost.connect(
-                    lambda message, context=target, worker=worker: self._on_worker_connection_lost(
-                        message,
-                        context,
-                        worker,
-                    )
-                )
-            connection_restored = getattr(worker, "connection_restored", None)
-            if connection_restored is not None:
-                connection_restored.connect(
-                    lambda context=target: self._on_worker_connection_restored(context)
-                )
-            worker.scan_complete.connect(self._update_scan_count)
-            target["runtime_status"] = "准备中"
-            target["capture_online"] = True
-            target["capture_failure_count"] = 0
-            target["last_action"] = (
-                "等待 OCR 初始化" if ocr_enabled else "仅检测敌对图标"
+                interval,
+                ocr_enabled,
+                index * interval / max(1, len(targets)),
             )
             self._workers[target["key"]] = worker
             self._worker_contexts[target["key"]] = target
@@ -2801,6 +2757,192 @@ class MainWindow(QMainWindow):
         self._refresh_status_cards()
         self._refresh_window_status_table()
         self._monitor_start_state = "idle"
+
+    def _create_monitor_worker(
+        self,
+        target: dict,
+        ocr_engine,
+        interval: float,
+        ocr_enabled: bool,
+        scan_offset: float = 0.0,
+    ) -> MonitorWorker:
+        """Create and wire one detector worker without touching other windows."""
+        worker = MonitorWorker(Capturer(), ocr_engine)
+        window = target["window"]
+        region = target["region"]
+        worker.set_window(window)
+        worker.set_region(region["x"], region["y"], region["w"], region["h"])
+        worker.set_interval(interval)
+        worker.set_ocr_enabled(ocr_enabled)
+        set_scan_offset = getattr(worker, "set_scan_offset", None)
+        if callable(set_scan_offset):
+            set_scan_offset(scan_offset)
+        worker.ocr_snapshot.connect(
+            lambda names, hostile_icon_count, context=target: self._publish_ocr_snapshot(
+                names,
+                context=context,
+                hostile_icon_count=hostile_icon_count,
+            )
+        )
+        evidence_snapshot = getattr(worker, "ocr_evidence_snapshot", None)
+        if evidence_snapshot is not None:
+            evidence_snapshot.connect(
+                lambda names, hostile_icon_count, evidence, context=target: self._publish_ocr_snapshot(
+                    names,
+                    context=context,
+                    hostile_icon_count=hostile_icon_count,
+                    ocr_evidence=evidence,
+                )
+            )
+        worker.hostile_detected.connect(
+            lambda count, context=target: self._on_hostile_icon_detected(count, context)
+        )
+        worker.status_update.connect(
+            lambda message, context=target: self._on_worker_status_update(message, context)
+        )
+        connection_lost = getattr(worker, "connection_lost", None)
+        if connection_lost is not None:
+            connection_lost.connect(
+                lambda message, context=target, worker=worker: self._on_worker_connection_lost(
+                    message,
+                    context,
+                    worker,
+                )
+            )
+        connection_restored = getattr(worker, "connection_restored", None)
+        if connection_restored is not None:
+            connection_restored.connect(
+                lambda context=target: self._on_worker_connection_restored(context)
+            )
+        worker.scan_complete.connect(self._update_scan_count)
+        target["runtime_status"] = "准备中"
+        target["capture_online"] = True
+        target["capture_failure_count"] = 0
+        target["last_action"] = "等待 OCR 初始化" if ocr_enabled else "仅检测敌对图标"
+        return worker
+
+    def _reconcile_monitor_workers(self, targets: list[dict]) -> None:
+        """Add/remove only changed monitor windows while preserving active workers."""
+        if not targets:
+            self._stop_monitor()
+            return
+        workers = _instance_attr(self, "_workers", {})
+        contexts = _instance_attr(self, "_worker_contexts", {})
+        target_by_key = {target["key"]: target for target in targets}
+        removed_keys = set(workers) - set(target_by_key)
+
+        for key in removed_keys:
+            worker = workers.pop(key, None)
+            context = contexts.pop(key, None)
+            if worker is None:
+                continue
+            if context:
+                previous_system = str(context.get("system_name") or "").strip()
+                if previous_system and previous_system.casefold() != "unknown":
+                    controller = _instance_attr(self, "_alert_controller")
+                    forget = getattr(controller, "forget_local_monitoring_systems", None)
+                    if callable(forget):
+                        forget([previous_system])
+            self._disconnect_worker_signals(worker)
+            worker.stop()
+            if worker.isRunning():
+                self._stopping_monitor_workers.add(worker)
+
+        get_ocr_enabled = getattr(self._settings, "get_ocr_enabled", None)
+        ocr_enabled = get_ocr_enabled() if callable(get_ocr_enabled) else True
+        interval = self._settings.get_interval()
+        ocr_engine = _instance_attr(self, "_ocr_scheduler") or _instance_attr(self, "_ocr")
+        if ocr_engine is None:
+            self._ocr_scheduler = SharedOCRScheduler()
+            if ocr_enabled:
+                self._ocr_scheduler.warm_up()
+            ocr_engine = self._ocr_scheduler
+
+        added = 0
+        restarted = 0
+        for index, target in enumerate(targets):
+            key = target["key"]
+            worker = workers.get(key)
+            context = contexts.get(key)
+            if worker is not None and worker.isRunning():
+                if context is None:
+                    context = target
+                    contexts[key] = context
+                old_region = context.get("region")
+                for field in (
+                    "client_id",
+                    "window",
+                    "window_title",
+                    "character_id",
+                    "character_name",
+                    "source_instance",
+                    "region",
+                ):
+                    if field in target:
+                        context[field] = target[field]
+                if old_region != target.get("region"):
+                    region = target["region"]
+                    worker.set_region(region["x"], region["y"], region["w"], region["h"])
+                continue
+            if worker is not None:
+                self._disconnect_worker_signals(worker)
+                worker.stop()
+                if worker.isRunning():
+                    self._stopping_monitor_workers.add(worker)
+                workers.pop(key, None)
+                contexts.pop(key, None)
+                restarted += 1
+            if context is not None:
+                current_target = target
+                target = dict(context)
+                for field in (
+                    "key",
+                    "client_id",
+                    "window",
+                    "window_title",
+                    "character_id",
+                    "character_name",
+                    "source_instance",
+                    "region",
+                ):
+                    if field in current_target:
+                        target[field] = current_target[field]
+            self._refresh_intel_location(force=True, context=target)
+            workers[key] = self._create_monitor_worker(
+                target,
+                ocr_engine,
+                interval,
+                ocr_enabled,
+                index * interval / max(1, len(targets)),
+            )
+            contexts[key] = target
+            workers[key].start()
+            added += 1
+
+        self._workers = workers
+        self._worker_contexts = contexts
+        self._worker = next(iter(workers.values()), None)
+        for context in contexts.values():
+            if context.get("runtime_status") == "准备中":
+                self._update_window_status(context, "运行中", "监控线程已启动")
+        self._uploads_enabled = bool(workers)
+        self._set_heartbeat_enabled(bool(workers))
+        controller = _instance_attr(self, "_alert_controller")
+        if controller is not None:
+            controller.show_monitoring_systems(self._monitoring_system_names())
+        self._monitor_btn.setText("停止监控")
+        self._monitor_btn.setStyleSheet(monitor_button_style(active=True))
+        self._status_label.setText("监控中")
+        self._status_label.setStyleSheet("color: #37d6b0; font-weight: bold;")
+        if added or restarted or removed_keys:
+            self._log_message(
+                f"监控窗口已增量更新：新增 {added}，停止 {len(removed_keys)}，恢复 {restarted}"
+            )
+        self._publish_heartbeat()
+        self._refresh_status_cards()
+        self._refresh_window_status_table()
+        if self._stopping_monitor_workers:
+            QTimer.singleShot(50, self._reap_stopping_monitor_workers)
 
     def _on_worker_status_update(self, message: str, context: dict) -> None:
         """Record one worker status update in log and the per-window table."""
@@ -3086,6 +3228,15 @@ class MainWindow(QMainWindow):
         }
         if self._stopping_monitor_workers:
             QTimer.singleShot(50, self._reap_stopping_monitor_workers)
+            return
+        if self._running_workers():
+            self._monitor_btn.setEnabled(True)
+            self._monitor_btn.setText("停止监控")
+            self._monitor_btn.setStyleSheet(monitor_button_style(active=True))
+            self._status_label.setText("监控中")
+            self._status_label.setStyleSheet("color: #37d6b0; font-weight: bold;")
+            self._refresh_status_cards()
+            self._refresh_window_status_table()
             return
         self._monitor_btn.setEnabled(True)
         restart_pending = bool(
