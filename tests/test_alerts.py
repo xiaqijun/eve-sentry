@@ -95,6 +95,34 @@ async def test_iter_sse_events_ignores_comments_and_parses_alerts() -> None:
     assert events == [("alert", "evt-1", '{"id":"evt-1"}')]
 
 
+def test_detector_count_uses_server_snapshot_when_active_roster_is_partial() -> None:
+    raw_items = [
+        {
+            "id": f"ocr:{name.casefold()}",
+            "active": True,
+            "system_name": "S-KSWL",
+            "name": name,
+            "source": "eve-sentry-detector",
+            "metadata": {"client_id": "detector-1", "hostile_icon_count": 4},
+        }
+        for name in ("Alpha", "Bravo", "Charlie")
+    ]
+    raw_alerts = [
+        {
+            "active_intel_id": item["id"],
+            "hostile_count": 4,
+            "active_names": ["Alpha", "Bravo", "Charlie", "Delta"],
+        }
+        for item in raw_items
+    ]
+
+    mapped = _active_intel_map(raw_items, raw_alerts)
+    assert {item["hostile_count"] for item in mapped.values()} == {4}
+    state = _active_system_state(mapped.values(), "snapshot-1")
+
+    assert state["s-kswl"]["hostile_count"] == 4
+
+
 def test_alert_subscription_commands_and_message_format() -> None:
     assert alert_subscription_action("开启预警") == "enable"
     assert alert_subscription_action("<@!bot> 关闭预警") == "disable"
@@ -751,6 +779,62 @@ async def test_relay_compacts_complete_personnel_move_into_one_movement_message(
 
 
 @pytest.mark.asyncio
+async def test_relay_enqueues_analysis_after_system_message_without_skipping_personnel(
+) -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    delivery_order: list[str] = []
+
+    async def send_text(_group: str, _message: str) -> dict[str, str]:
+        delivery_order.append("event")
+        return {"id": "event"}
+
+    async def enqueue_analysis(*_args: object) -> bool:
+        delivery_order.append("analysis")
+        return True
+
+    async def send_markdown(_group: str, _message: str) -> dict[str, str]:
+        delivery_order.append("personnel")
+        return {"id": "personnel"}
+
+    qq = SimpleNamespace(
+        send_proactive_text=send_text,
+        send_proactive_markdown=send_markdown,
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(
+            http,
+            redis,
+            qq,
+            "http://sentry.test/events",
+            analysis_enqueue=enqueue_analysis,
+        )
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {"generated_at": "t0", "active_intel": [], "alerts": []}
+        )
+        await relay.process_bootstrap(
+            {
+                "generated_at": "t1",
+                "active_intel": [
+                    {
+                        "id": "ocr:alice",
+                        "active": True,
+                        "source": "eve-sentry-detector",
+                        "system_name": "S-KSWL",
+                        "name": "Alice",
+                        "metadata": {"client_id": "client-1"},
+                    }
+                ],
+                "alerts": [{"active_intel_id": "ocr:alice"}],
+            }
+        )
+
+    assert delivery_order[0:2] == ["event", "analysis"]
+    assert delivery_order.count("personnel") == 1
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
 async def test_system_transition_retries_before_advancing_state() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     qq = SimpleNamespace(
@@ -930,7 +1014,7 @@ async def test_hidden_threat_enrichment_does_not_repeat_personnel_alert() -> Non
 
 
 @pytest.mark.asyncio
-async def test_legacy_alert_event_does_not_send_old_template() -> None:
+async def test_alert_event_delivers_system_alert_without_legacy_template() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     qq = SimpleNamespace(
         send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
@@ -953,13 +1037,16 @@ async def test_legacy_alert_event_does_not_send_old_template() -> None:
                 "active": True,
                 "system_name": "S-KSWL",
                 "name": "Alice",
+                "hostile_count": 2,
                 "created_at": "2026-08-10T01:00:03+00:00",
             }
         )
 
         qq.send_proactive_markdown.assert_not_awaited()
-        qq.send_proactive_text.assert_not_awaited()
-        assert await redis.get(ALERT_CURSOR_KEY) == b"2026-08-10T01:00:00+00:00"
+        assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
+            "❗ S-KSWL 来敌｜当前敌对 2 人"
+        ]
+        assert await redis.get(ALERT_CURSOR_KEY) == b"2026-08-10T01:00:03+00:00"
 
         await relay.process_alert_event(
             {
@@ -967,11 +1054,68 @@ async def test_legacy_alert_event_does_not_send_old_template() -> None:
                 "active": True,
                 "system_name": "S-KSWL",
                 "name": "Alice",
+                "hostile_count": 2,
                 "created_at": "2026-08-10T01:00:03+00:00",
             }
         )
-        qq.send_proactive_markdown.assert_not_awaited()
+        assert qq.send_proactive_text.await_count == 1
 
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_presence_alert_event_is_not_repeated_by_later_bootstrap() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {
+                "generated_at": "2026-08-10T01:00:00+00:00",
+                "active_intel": [],
+                "alerts": [],
+            }
+        )
+
+        await relay.process_alert_event(
+            {
+                "id": "presence:event-1",
+                "active": True,
+                "system_name": "S-KSWL",
+                "hostile_count": 1,
+                "presence_only": True,
+                "source_observation_id": "presence:client-1:S-KSWL",
+                "created_at": "2026-08-10T01:00:02+00:00",
+            }
+        )
+        await relay.process_bootstrap(
+            {
+                "generated_at": "2026-08-10T01:00:03+00:00",
+                "active_intel": [
+                    {
+                        "id": "presence:client-1:S-KSWL",
+                        "active": True,
+                        "source": "eve-sentry-detector",
+                        "system_name": "S-KSWL",
+                        "metadata": {
+                            "presence_only": True,
+                            "hostile_icon_count": 1,
+                            "client_id": "client-1",
+                        },
+                    }
+                ],
+                "alerts": [],
+            }
+        )
+
+    assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
+        "❗ S-KSWL 来敌｜当前敌对 1 人"
+    ]
+    qq.send_proactive_markdown.assert_not_awaited()
     await redis.aclose()
 
 

@@ -377,6 +377,7 @@ class EveSentryAlertRelay:
         self,
         state: dict[str, Any],
         transition: str,
+        deferred_analysis: list[tuple[str, dict[str, Any], str, str]] | None = None,
     ) -> bool:
         system_name = _system_label(state)
         episode_id = str(state.get("episode_id") or "").strip()
@@ -397,6 +398,8 @@ class EveSentryAlertRelay:
         for group_openid in groups:
             delivered_key = _delivered_key(event_id, group_openid)
             if await self.redis.exists(delivered_key):
+                if transition == "alert" and deferred_analysis is not None:
+                    deferred_analysis.append((group_openid, state, "", event_id))
                 continue
             try:
                 await self.qq.send_proactive_text(group_openid, message)
@@ -407,12 +410,16 @@ class EveSentryAlertRelay:
             await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
             delivered += 1
             if transition == "alert" and self.analysis_enqueue is not None:
-                try:
-                    await self.analysis_enqueue(
-                        group_openid, state, datetime.now(UTC).isoformat(), event_id
-                    )
-                except Exception:
-                    logger.exception("EVE Sentry hostile analysis enqueue failed")
+                occurred_at = datetime.now(UTC).isoformat()
+                if deferred_analysis is None:
+                    try:
+                        await self.analysis_enqueue(
+                            group_openid, state, occurred_at, event_id
+                        )
+                    except Exception:
+                        logger.exception("EVE Sentry hostile analysis enqueue failed")
+                else:
+                    deferred_analysis.append((group_openid, state, occurred_at, event_id))
 
         logger.info(
             "EVE Sentry system transition processed transition=%s deliveries=%d failures=%d",
@@ -428,6 +435,7 @@ class EveSentryAlertRelay:
         to_system: str,
         state: dict[str, Any],
         occurred_at: str,
+        deferred_analysis: list[tuple[str, dict[str, Any], str, str]] | None = None,
     ) -> bool:
         """Deliver one compact movement event instead of clear plus re-entry."""
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
@@ -445,6 +453,8 @@ class EveSentryAlertRelay:
         for group_openid in groups:
             delivered_key = _delivered_key(event_id, group_openid)
             if await self.redis.exists(delivered_key):
+                if deferred_analysis is not None:
+                    deferred_analysis.append((group_openid, state, occurred_at, event_id))
                 continue
             try:
                 await self.qq.send_proactive_text(group_openid, message)
@@ -454,10 +464,15 @@ class EveSentryAlertRelay:
                 continue
             await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
             if self.analysis_enqueue is not None:
-                try:
-                    await self.analysis_enqueue(group_openid, state, occurred_at, event_id)
-                except Exception:
-                    logger.exception("EVE Sentry movement analysis enqueue failed")
+                if deferred_analysis is None:
+                    try:
+                        await self.analysis_enqueue(
+                            group_openid, state, occurred_at, event_id
+                        )
+                    except Exception:
+                        logger.exception("EVE Sentry movement analysis enqueue failed")
+                else:
+                    deferred_analysis.append((group_openid, state, occurred_at, event_id))
         logger.info(
             "EVE Sentry movement processed from=%s to=%s failures=%d",
             from_system,
@@ -707,6 +722,7 @@ class EveSentryAlertRelay:
         movement_pairs = _personnel_movement_pairs(previous, current)
         moved_from = {pair["from_system"].casefold() for pair in movement_pairs}
         moved_to = {pair["to_system"].casefold() for pair in movement_pairs}
+        deferred_analysis: list[tuple[str, dict[str, Any], str, str]] = []
 
         transitions_succeeded = True
         if initialized:
@@ -721,7 +737,11 @@ class EveSentryAlertRelay:
                 if system_key in moved_to:
                     continue
                 transitions_succeeded = (
-                    await self.deliver_system_transition(current[system_key], "alert")
+                    await self.deliver_system_transition(
+                        current[system_key],
+                        "alert",
+                        deferred_analysis,
+                    )
                     and transitions_succeeded
                 )
             for pair in movement_pairs:
@@ -731,6 +751,7 @@ class EveSentryAlertRelay:
                         pair["to_system"],
                         current[pair["to_key"]],
                         generated_at,
+                        deferred_analysis,
                     )
                     and transitions_succeeded
                 )
@@ -738,6 +759,18 @@ class EveSentryAlertRelay:
         if not transitions_succeeded:
             logger.warning("EVE Sentry system state update deferred after delivery failure")
             return
+
+        if self.analysis_enqueue is not None:
+            for group_openid, state, occurred_at, event_id in deferred_analysis:
+                try:
+                    await self.analysis_enqueue(
+                        group_openid,
+                        state,
+                        occurred_at or generated_at,
+                        event_id,
+                    )
+                except Exception:
+                    logger.exception("EVE Sentry hostile analysis enqueue failed")
 
         personnel_updates_succeeded = True
         if initialized:
@@ -905,17 +938,77 @@ class EveSentryAlertRelay:
                     await self.process_monitoring_node(payload)
 
     async def process_alert_event(self, payload: dict[str, Any]) -> None:
-        """Ignore legacy single-alert events; bootstrap is authoritative.
+        """Deliver a first-seen system alert before asynchronous enrichment.
 
-        The alert SSE event predates system/personnel aggregation and its old
-        formatter can race the bootstrap event after reconnects. Delivering it
-        here produces a duplicate message with the legacy template, so all
-        current notifications are intentionally derived from bootstrap state.
+        Bootstrap remains authoritative for personnel and later state changes,
+        but an alert event can arrive while OCR/ESI enrichment is still pending
+        or disappear before the next bootstrap refresh. Persisting the system
+        state here lets the later bootstrap enrich the same episode without
+        sending a duplicate entry notification.
         """
-        if payload.get("active") is not False:
-            logger.debug(
-                "Ignored legacy EVE Sentry alert event; waiting for bootstrap state"
+        if payload.get("active") is False or not self._allows_transition(payload):
+            return
+
+        alert_id = str(payload.get("id") or "").strip()
+        occurred_at = str(
+            payload.get("created_at")
+            or payload.get("first_seen_at")
+            or datetime.now(UTC).isoformat()
+        ).strip()
+        system_name = _system_label(payload)
+        if not alert_id or not occurred_at or not system_name:
+            logger.warning("Ignored malformed EVE Sentry alert event")
+            return
+
+        event_ids = {
+            value
+            for value in (
+                alert_id,
+                str(payload.get("active_intel_id") or "").strip(),
+                str(payload.get("source_observation_id") or "").strip(),
             )
+            if value
+        }
+        if event_ids.intersection(self._active_alert_ids):
+            logger.debug("Ignored EVE Sentry alert already delivered by bootstrap")
+            return
+
+        current, initialized = await self._load_system_alert_state()
+        if not initialized:
+            # The first bootstrap establishes the current state without
+            # backfilling history. Wait for it before accepting live events.
+            logger.debug("Ignored alert event before initial bootstrap state")
+            return
+
+        system_key = system_name.casefold()
+        if system_key in current:
+            self._active_alert_ids.update(event_ids)
+            return
+
+        try:
+            hostile_count = max(1, int(payload.get("hostile_count") or 1))
+        except (TypeError, ValueError):
+            hostile_count = 1
+        state = {
+            "system_name": system_name,
+            "hostile_count": hostile_count,
+            "episode_id": f"event:{alert_id}",
+            "personnel": [],
+            "personnel_fingerprint": "",
+        }
+        if not await self.deliver_system_transition(state, "alert"):
+            logger.warning("EVE Sentry alert event delivery deferred")
+            return
+
+        current[system_key] = state
+        await self._save_system_alert_state(current)
+        self._active_alert_ids.update(event_ids)
+        await self.redis.set(ALERT_CURSOR_KEY, occurred_at)
+        logger.info(
+            "EVE Sentry alert event delivered system=%s hostiles=%d",
+            system_name,
+            hostile_count,
+        )
 
 
 def _active_intel_map(
@@ -955,7 +1048,15 @@ def _active_intel_map(
             continue
         item = dict(raw_item)
         if alert is not None:
-            for key in ("level", "score", "classification", "names"):
+            for key in (
+                "level",
+                "score",
+                "classification",
+                "names",
+                "hostile_count",
+                "active_names",
+                "active_character_ids",
+            ):
                 if item.get(key) in (None, "", []) and alert.get(key) not in (
                     None,
                     "",
@@ -1005,7 +1106,7 @@ def _active_system_state(
         client_id = str(metadata.get("client_id") or "").strip()
         if source == "eve-sentry-detector" and client_id:
             detector_counts = state["_detector_counts"].setdefault(
-                client_id.casefold(), {"presence": 0, "ocr": 0}
+                client_id.casefold(), {"presence": 0, "ocr": 0, "reported": 0}
             )
             if is_presence:
                 detector_counts["presence"] = max(
@@ -1013,6 +1114,13 @@ def _active_system_state(
                 )
             else:
                 detector_counts["ocr"] += 1
+            try:
+                reported_count = max(0, int(item.get("hostile_count") or 0))
+            except (TypeError, ValueError):
+                reported_count = 0
+            detector_counts["reported"] = max(
+                detector_counts["reported"], reported_count
+            )
         else:
             state["hostile_count"] += item_count
         # Red-icon presence has no character identity until optional OCR runs.
@@ -1020,7 +1128,7 @@ def _active_system_state(
             state["personnel"].append(_personnel_snapshot(item))
     for state in systems.values():
         state["hostile_count"] += sum(
-            max(counts["presence"], counts["ocr"])
+            max(counts["presence"], counts["ocr"], counts["reported"])
             for counts in state.pop("_detector_counts", {}).values()
         )
         personnel = sorted(
