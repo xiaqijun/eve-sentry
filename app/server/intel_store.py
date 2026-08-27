@@ -195,6 +195,11 @@ class _OcrEsiTask:
     original_name: str
 
 
+@dataclass(frozen=True)
+class _OcrCandidateEsiTask:
+    names: tuple[str, ...]
+
+
 @dataclass
 class IntelReport:
     """One hostile sighting report.
@@ -613,7 +618,13 @@ class IntelStore:
         report = self._report_from_observation(observation)
         return report, observation
 
-    def _process_ocr_esi_task(self, task: _OcrEsiTask) -> None:
+    def _process_ocr_esi_task(
+        self,
+        task: _OcrEsiTask | _OcrCandidateEsiTask,
+    ) -> None:
+        if isinstance(task, _OcrCandidateEsiTask):
+            self._resolve_ocr_candidate_identities(task.names)
+            return
         with self._lock:
             current_report = next(
                 (
@@ -765,6 +776,35 @@ class IntelStore:
                 item,
                 previous_active_id=previous_active_id,
             )
+
+    def _resolve_ocr_candidate_identities(self, names: tuple[str, ...]) -> None:
+        """Warm ESI identity and affiliation caches for a full OCR candidate list."""
+        if self._resolver is None or not hasattr(self._resolver, "resolve_names"):
+            return
+        try:
+            resolved = self._resolver.resolve_names(list(names))
+        except Exception:
+            logger.exception("Could not resolve full OCR candidate list through ESI")
+            return
+        for item in resolved:
+            if str(getattr(item, "category", "")).casefold() != "character":
+                continue
+            character_id = self._optional_int(getattr(item, "entity_id", None))
+            if character_id is not None:
+                self.character_profile(character_id)
+
+    def _queue_ocr_candidate_esi_lookup(self, names: list[str]) -> bool:
+        """Queue one cached batch lookup for all client-recognized names."""
+        if self._resolver is None or not names:
+            return False
+        normalized = tuple(dict.fromkeys(name.strip() for name in names if name.strip()))
+        if not normalized:
+            return False
+        digest = hashlib.sha256("\0".join(normalized).encode("utf-8")).hexdigest()
+        return self._esi_worker.submit(
+            f"ocr-candidates:{digest}",
+            _OcrCandidateEsiTask(normalized),
+        )
 
     def _apply_hostile_icon_metadata(
         self,
@@ -1303,6 +1343,10 @@ class IntelStore:
             self._optional_int(payload.get("hostile_icon_count")) or 0,
         )
         defer_esi = self._resolver is not None or self._enricher is not None
+        candidate_names = self._normalize_ocr_names(
+            payload.get("names"),
+            resolve=False,
+        )
         evidence_names = _hostile_names_from_ocr_evidence(payload)
         names = self._normalize_ocr_names(
             evidence_names if evidence_names is not None else payload.get("names"),
@@ -1471,6 +1515,8 @@ class IntelStore:
 
         for task in esi_tasks:
             self._esi_worker.submit(task.active_id, task)
+        if evidence_names is not None:
+            self._queue_ocr_candidate_esi_lookup(candidate_names)
         return result.to_dict(include_active=False)
 
     def record_hostile_presence(self, payload: dict[str, Any]) -> dict[str, Any]:

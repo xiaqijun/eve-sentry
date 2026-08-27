@@ -18,6 +18,35 @@ from app.server.intel_store import (
 )
 
 
+def test_full_ocr_candidate_list_is_resolved_and_profiled_through_esi(tmp_path):
+    resolved_names = []
+    profiled_ids = []
+
+    class Resolver:
+        def resolve_names(self, names):
+            resolved_names.append(list(names))
+            return [
+                SimpleNamespace(name="Alice", category="character", entity_id=101),
+                SimpleNamespace(name="Tama", category="solar_system", entity_id=3001),
+            ]
+
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        resolver=Resolver(),
+    )
+    store.character_profile = lambda character_id: profiled_ids.append(character_id) or {}
+    try:
+        assert store._queue_ocr_candidate_esi_lookup(["Alice", "Tama"])
+        assert store.wait_for_esi_idle(timeout=1.0)
+    finally:
+        store.close()
+
+    assert resolved_names == [["Alice", "Tama"]]
+    assert profiled_ids == [101]
+
+
 def test_resume_pending_ocr_identity_tasks_after_restart(tmp_path):
     store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
     observation = store.add_observation(

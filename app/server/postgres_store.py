@@ -295,6 +295,10 @@ class PostgreSQLIntelStore(IntelStore):
             self._optional_int(payload.get("hostile_icon_count")) or 0,
         )
         defer_esi = self._resolver is not None or self._enricher is not None
+        candidate_names = self._normalize_ocr_names(
+            payload.get("names"),
+            resolve=False,
+        )
         evidence_names = _hostile_names_from_ocr_evidence(payload)
         names = self._normalize_ocr_names(
             evidence_names if evidence_names is not None else payload.get("names"),
@@ -516,6 +520,8 @@ class PostgreSQLIntelStore(IntelStore):
                 self._persist_hostile_wave_changes(connection, hostile_waves)
         for task in esi_tasks:
             self._esi_worker.submit(task.active_id, task)
+        if evidence_names is not None:
+            self._queue_ocr_candidate_esi_lookup(candidate_names)
         return result.to_dict(include_active=False)
 
     def record_hostile_presence(self, payload: dict[str, Any]) -> dict[str, Any]:
