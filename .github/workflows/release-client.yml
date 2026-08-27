@@ -17,7 +17,7 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       PYTHONUTF8: "1"
     steps:
@@ -46,9 +46,17 @@ jobs:
           .\scripts\publish_client_release.ps1
           -Python "python"
           -DownloadBaseUrl "https://evesentrydownload.kisectool.com/download"
+          -GitCodeRepository "xiaqiqi/eve-sentry"
         env:
           GH_TOKEN: ${{ github.token }}
           EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 }}
+      - name: Publish GitCode release mirror
+        shell: pwsh
+        run: |
+          $version = (python -c "from app.version import APP_VERSION; print(APP_VERSION)").Trim()
+          .\scripts\publish_gitcode_release.ps1 -Version $version
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
       - name: Verify release manifest and download range
         shell: pwsh
         run: |

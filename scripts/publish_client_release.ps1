@@ -2,6 +2,7 @@ param(
     [string]$Version = "",
     [string]$Python = ".\.venv\Scripts\python.exe",
     [string]$DownloadBaseUrl = "https://github.com/xiaqijun/eve-sentry/releases/latest/download",
+    [string]$GitCodeRepository = "",
     [switch]$SkipBuild,
     [switch]$SkipGithub
 )
@@ -98,15 +99,25 @@ try {
     $file = Get-Item -LiteralPath $programAssetPath
     $hash = (Get-FileHash -LiteralPath $programAssetPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $downloadUrl = "$($DownloadBaseUrl.TrimEnd('/'))/${programAssetName}?sha256=${hash}&release=$([uri]::EscapeDataString($Version))"
+    $programMirrors = @()
+    if ($GitCodeRepository) {
+        $gitCodeBaseUrl = "https://gitcode.com/$($GitCodeRepository.Trim('/'))/releases/download/v$Version"
+        $programMirrors += "$gitCodeBaseUrl/$programAssetName"
+    }
     if (-not $modelAssetPath -or -not (Test-Path -LiteralPath $modelAssetPath)) {
         throw "Release model package is missing"
     }
     $modelFile = Get-Item -LiteralPath $modelAssetPath
     $modelHash = (Get-FileHash -LiteralPath $modelAssetPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $modelDownloadUrl = "$($DownloadBaseUrl.TrimEnd('/'))/${modelAssetName}?sha256=${modelHash}&release=$([uri]::EscapeDataString($Version))"
+    $modelMirrors = @()
+    if ($GitCodeRepository) {
+        $modelMirrors += "$gitCodeBaseUrl/$modelAssetName"
+    }
     $manifest = [ordered]@{
         version = $Version
         url = $downloadUrl
+        mirrors = $programMirrors
         sha256 = $hash
         size = $file.Length
         filename = $programAssetName
@@ -115,6 +126,7 @@ try {
             models = [ordered]@{
                 version = $modelVersion
                 url = $modelDownloadUrl
+                mirrors = $modelMirrors
                 sha256 = $modelHash
                 size = $modelFile.Length
                 filename = $modelAssetName
