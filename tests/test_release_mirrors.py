@@ -1,4 +1,9 @@
+import json
 from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
 
 
 def test_client_release_manifest_contains_gitcode_mirrors():
@@ -8,6 +13,42 @@ def test_client_release_manifest_contains_gitcode_mirrors():
     assert "https://gitcode.com/$($GitCodeRepository.Trim('/'))" in script
     assert "mirrors = $programMirrors" in script
     assert "mirrors = $modelMirrors" in script
+    assert 'release_manifest.ps1' in script
+    assert "ConvertTo-ReleaseManifestJson -Manifest $manifest" in script
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
+def test_release_manifest_serializer_preserves_nested_mirror_arrays():
+    helper = Path("scripts/release_manifest.ps1").resolve()
+    escaped_helper = str(helper).replace("'", "''")
+    command = f"""
+. '{escaped_helper}'
+$manifest = [ordered]@{{
+    version = '1.2.3'
+    url = 'https://download.example/program.zip'
+    mirrors = @('https://mirror.example/program.zip')
+    components = [ordered]@{{
+        models = [ordered]@{{
+            url = 'https://download.example/models.zip'
+            mirrors = @('https://mirror.example/models.zip')
+        }}
+    }}
+}}
+ConvertTo-ReleaseManifestJson -Manifest $manifest
+"""
+    completed = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload["mirrors"] == ["https://mirror.example/program.zip"]
+    assert payload["components"]["models"]["mirrors"] == [
+        "https://mirror.example/models.zip"
+    ]
 
 
 def test_gitcode_release_script_keeps_token_out_of_public_urls():

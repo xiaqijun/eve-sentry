@@ -69,9 +69,27 @@ jobs:
                   Start-Sleep -Seconds 5
                   continue
               }
+              if (
+                  $manifest.mirrors -isnot [System.Array] -or
+                  $manifest.components.models.mirrors -isnot [System.Array]
+              ) {
+                  throw "Release manifest mirrors must be JSON arrays."
+              }
               $headers = curl.exe -fsS -D - -o NUL -H "Range: bytes=0-1023" $manifest.url
               $expectedRange = "Content-Range:\s*bytes 0-1023/$([regex]::Escape([string]$manifest.size))"
-              if ($LASTEXITCODE -eq 0 -and $headers -match "206 Partial Content" -and $headers -match $expectedRange) {
+              $programMirrorHeaders = curl.exe -fsS -L -D - -o NUL -H "Range: bytes=0-1023" $manifest.mirrors[0]
+              $expectedProgramMirrorRange = "Content-Range:\s*bytes 0-1023/$([regex]::Escape([string]$manifest.size))"
+              $modelMirrorHeaders = curl.exe -fsS -L -D - -o NUL -H "Range: bytes=0-1023" $manifest.components.models.mirrors[0]
+              $expectedModelMirrorRange = "Content-Range:\s*bytes 0-1023/$([regex]::Escape([string]$manifest.components.models.size))"
+              if (
+                  $LASTEXITCODE -eq 0 -and
+                  $headers -match "206 Partial Content" -and
+                  $headers -match $expectedRange -and
+                  $programMirrorHeaders -match "206 Partial Content" -and
+                  $programMirrorHeaders -match $expectedProgramMirrorRange -and
+                  $modelMirrorHeaders -match "206 Partial Content" -and
+                  $modelMirrorHeaders -match $expectedModelMirrorRange
+              ) {
                   $verified = $true
                   break
               }

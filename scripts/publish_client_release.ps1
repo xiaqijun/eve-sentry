@@ -9,6 +9,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "release_manifest.ps1")
 Push-Location $repoRoot
 try {
     if (-not $Version) {
@@ -133,7 +134,7 @@ try {
             }
         }
     }
-    $manifestJson = $manifest | ConvertTo-Json
+    $manifestJson = ConvertTo-ReleaseManifestJson -Manifest $manifest
     [IO.File]::WriteAllText(
         $manifestPath,
         $manifestJson,
