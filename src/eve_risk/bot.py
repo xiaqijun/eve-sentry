@@ -25,6 +25,7 @@ from eve_risk.sentry_status import (
     SentryStatusError,
     is_sentry_status_command,
 )
+from eve_risk.server_status import EveServerStartupMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,16 @@ class RiskBotClient(botpy.Client):
             analysis_enqueue=self._enqueue_sentry_analysis,
         )
         self.alert_task: asyncio.Task[None] | None = None
+        status_url = settings.eve_server_status_url if settings.eve_server_status_enabled else ""
+        self.server_status_monitor = EveServerStartupMonitor(
+            self.http_client,
+            self.redis,
+            self.qq,
+            status_url,
+            poll_interval_seconds=settings.eve_server_status_poll_seconds,
+            offline_threshold=settings.eve_server_offline_threshold,
+        )
+        self.server_status_task: asyncio.Task[None] | None = None
 
     async def _enqueue_sentry_analysis(
         self,
@@ -158,13 +169,20 @@ class RiskBotClient(botpy.Client):
     async def on_ready(self) -> None:
         if not self.alert_relay.enabled:
             logger.info("EVE Sentry proactive alerts are disabled")
-            return
-        if self.alert_task is None or self.alert_task.done():
+        elif self.alert_task is None or self.alert_task.done():
             self.alert_task = asyncio.create_task(
                 self.alert_relay.run_forever(),
                 name="eve-sentry-alert-relay",
             )
             logger.info("EVE Sentry proactive alert relay started")
+        if self.server_status_monitor.enabled and (
+            self.server_status_task is None or self.server_status_task.done()
+        ):
+            self.server_status_task = asyncio.create_task(
+                self.server_status_monitor.run_forever(),
+                name="eve-server-startup-monitor",
+            )
+            logger.info("EVE server startup monitor started")
 
     async def on_group_at_message_create(self, message: object) -> None:
         msg_id = str(getattr(message, "id", ""))

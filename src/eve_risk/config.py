@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     friendly_alliance_ids: str = ""
 
     esi_base_url: str = "https://esi.evetech.net/latest"
+    eve_server_status_url: str = "https://esi.evetech.net/status"
+    eve_server_status_enabled: bool = True
+    eve_server_status_poll_seconds: float = 5.0
+    eve_server_offline_threshold: int = 6
     eve_image_base_url: str = "https://images.evetech.net"
     sde_url: str = (
         "https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip"
