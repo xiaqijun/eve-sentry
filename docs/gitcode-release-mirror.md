@@ -34,3 +34,7 @@ GitCode CDN 会缓存 Release 附件路径。正式附件使用版本化文件�
 发布脚本会在上传后匿名请求每个附件的前 1 KiB，要求服务端返回 `206 Partial Content` 和
 正确的 `Content-Range`。GitCode 上传或范围下载校验失败会阻断客户端发布，避免签名清单
 指向未就绪的镜像。
+
+GitCode 的源码同步可能晚于 GitHub push。Release 会绑定 GitCode 当前可用的 `main` 分支，
+不会因源码镜像延迟阻塞客户端附件发布；客户端实际使用的二进制版本仍由签名清单、文件大小和
+SHA-256 唯一约束。

@@ -18,6 +18,7 @@ def test_gitcode_release_script_keeps_token_out_of_public_urls():
     assert "access_token=" not in script
     assert "releases/download/$tag" not in script
     assert "browser_download_url" in script
+    assert '$TargetCommit = "main"' in script
 
 
 def test_release_workflow_publishes_and_verifies_gitcode_mirror():

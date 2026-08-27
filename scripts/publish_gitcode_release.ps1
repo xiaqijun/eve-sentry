@@ -50,10 +50,9 @@ function Invoke-GitCodeGet([string]$Path, [switch]$AllowMissing) {
 }
 
 if (-not $TargetCommit) {
-    $TargetCommit = (git -C $repoRoot rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not resolve release target commit"
-    }
+    # GitCode source mirrors can lag behind GitHub pushes. Release binaries are
+    # verified independently, so use the branch GitCode already has.
+    $TargetCommit = "main"
 }
 
 if ($Assets.Count -eq 0) {
