@@ -34,6 +34,46 @@ def test_monitored_system_names_reads_online_detector_targets():
     ) == ["S-KSWL", "8-4GQM"]
 
 
+def test_monitored_system_names_ignores_stopped_targets_and_stale_parent_system():
+    assert monitored_system_names(
+        {
+            "heartbeats": [
+                {
+                    "client_type": "detector_client",
+                    "online": True,
+                    "details": {
+                        "monitoring": True,
+                        "system": "S-KSWL",
+                        "targets": [
+                            {"system_name": "S-KSWL", "monitoring": False}
+                        ],
+                    },
+                }
+            ]
+        }
+    ) == []
+
+
+def test_monitored_system_names_falls_back_for_active_target_without_location():
+    assert monitored_system_names(
+        {
+            "heartbeats": [
+                {
+                    "client_type": "detector_client",
+                    "online": True,
+                    "details": {
+                        "monitoring": True,
+                        "system": "S-KSWL",
+                        "targets": [
+                            {"system_name": "Unknown", "monitoring": True}
+                        ],
+                    },
+                }
+            ]
+        }
+    ) == ["S-KSWL"]
+
+
 def test_build_detector_heartbeat_details_includes_runtime_fields():
     details = build_detector_heartbeat_details(
         monitoring=True,

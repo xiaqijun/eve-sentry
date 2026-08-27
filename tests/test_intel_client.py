@@ -1681,6 +1681,27 @@ def test_local_star_map_only_labels_key_nodes_and_prefers_local_account():
     assert "Remote Scout" not in monitor_tooltip
 
 
+def test_local_star_map_does_not_claim_stopped_local_monitor_is_online():
+    label, tooltip = LocalStarMapWidget._node_annotation(
+        "Tama",
+        [
+            {
+                "key": "local",
+                "label": "Alice",
+                "selected": True,
+                "local": True,
+                "monitoring": False,
+            }
+        ],
+        0,
+    )
+
+    assert label == "Alice"
+    assert "本地账号：Alice" in tooltip
+    assert "监控：在线" not in tooltip
+    assert "监控节点：在线" not in tooltip
+
+
 def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtWidgets import QApplication
