@@ -2255,10 +2255,10 @@ def test_monitor_window_menu_can_select_only_current_calibration_window():
     assert window._monitor_selected_titles == {"EVE - Pilot B"}
 
 
-def test_monitor_window_change_rebuilds_running_workers(monkeypatch):
+def test_monitor_window_change_reconciles_running_workers(monkeypatch):
     qt_app()
     callbacks = []
-    starts = []
+    reconciles = []
     monkeypatch.setattr(
         "app.ui.main_window.QTimer.singleShot",
         lambda _delay, callback: callbacks.append(callback),
@@ -2284,13 +2284,13 @@ def test_monitor_window_change_rebuilds_running_workers(monkeypatch):
         {"isChecked": lambda self: True},
     )()
     window._log_message = lambda message: None
-    window._start_monitor = lambda **kwargs: starts.append(kwargs)
+    window._reconcile_selected_monitor_workers = lambda: reconciles.append(True)
 
     MainWindow._on_monitor_window_toggled(window)
     assert len(callbacks) == 1
 
     callbacks[0]()
-    assert starts == [{"identity_checked": True}]
+    assert reconciles == [True]
 
 
 def test_monitor_window_menu_retains_offline_window_selection_memory():
@@ -2737,13 +2737,13 @@ def test_refresh_restarts_monitor_when_window_reappears():
     window._detect_window = lambda windows=None: None
     window._build_monitor_targets = lambda: [{"key": "window"}]
     window._log_message = lambda _message: None
-    starts = []
-    window._start_monitor = lambda **kwargs: starts.append(kwargs)
+    reconciled = []
+    window._reconcile_monitor_workers = lambda targets: reconciled.append(targets)
 
     MainWindow._refresh_detected_windows(window)
     MainWindow._reconnect_monitor(window)
 
-    assert starts == [{"identity_checked": True}]
+    assert reconciled == [[{"key": "window"}]]
 
 
 def test_refresh_restarts_monitor_after_worker_exits_with_unchanged_window_signature(
@@ -2752,7 +2752,7 @@ def test_refresh_restarts_monitor_after_worker_exits_with_unchanged_window_signa
     """Recover when the window returns before a missing-window refresh observes it."""
     qt_app()
     callbacks = []
-    starts = []
+    reconciled = []
     monitor_window = {
         "hwnd": 42,
         "title": "EVE - Pilot",
@@ -2811,7 +2811,7 @@ def test_refresh_restarts_monitor_after_worker_exits_with_unchanged_window_signa
     )
     window._build_monitor_targets = lambda: [{"key": monitor_key}]
     window._log_message = lambda _message: None
-    window._start_monitor = lambda **kwargs: starts.append(kwargs)
+    window._reconcile_monitor_workers = lambda targets: reconciled.append(targets)
     monkeypatch.setattr(
         "app.ui.main_window.QTimer.singleShot",
         lambda _delay, callback: callbacks.append(callback),
@@ -2824,16 +2824,16 @@ def test_refresh_restarts_monitor_after_worker_exits_with_unchanged_window_signa
     MainWindow._refresh_detected_windows(window)
     assert len(callbacks) == 1
     callbacks[0]()
-    assert starts == [{"identity_checked": True}]
+    assert reconciled == [[{"key": monitor_key}]]
 
 
-def test_refresh_rebuilds_all_targets_when_one_of_multiple_workers_exits(
+def test_refresh_recovers_only_worker_that_exits(
     monkeypatch,
 ):
     """A surviving client must not prevent another selected client recovering."""
     qt_app()
     callbacks = []
-    starts = []
+    created_workers = []
     windows = [
         {
             "hwnd": 1,
@@ -2868,12 +2868,32 @@ def test_refresh_rebuilds_all_targets_when_one_of_multiple_workers_exits(
             self.hostile_detected = FakeSignal()
             self.status_update = FakeSignal()
             self.scan_complete = FakeSignal()
+            self.window_updates = []
+            self.region_updates = []
+            self.interval_updates = []
+            self.ocr_updates = []
 
         def isRunning(self):
             return self.running
 
         def stop(self):
             self.stop_calls += 1
+            self.running = False
+
+        def start(self):
+            self.running = True
+
+        def set_window(self, window):
+            self.window_updates.append(window)
+
+        def set_region(self, x, y, w, h):
+            self.region_updates.append((x, y, w, h))
+
+        def set_interval(self, interval):
+            self.interval_updates.append(interval)
+
+        def set_ocr_enabled(self, enabled):
+            self.ocr_updates.append(enabled)
 
         def wait(self, *_args):
             self.wait_calls += 1
@@ -2886,7 +2906,11 @@ def test_refresh_rebuilds_all_targets_when_one_of_multiple_workers_exits(
     window._settings = type(
         "Settings",
         (),
-        {"get_keyword": lambda self: "EVE -"},
+        {
+            "get_keyword": lambda self: "EVE -",
+            "get_interval": lambda self: 3.0,
+            "get_ocr_enabled": lambda self: True,
+        },
     )()
     window._capturer = type(
         "Capturer",
@@ -2911,7 +2935,24 @@ def test_refresh_rebuilds_all_targets_when_one_of_multiple_workers_exits(
         second_key: second_worker,
     }
     window._worker = window._workers[first_key]
-    window._worker_contexts = {}
+    first_context = {
+        "key": first_key,
+        "window": windows[0],
+        "region": {"x": 900, "y": 0, "w": 300, "h": 900},
+        "system_name": "S-KSWL",
+        "runtime_status": "运行中",
+    }
+    second_context = {
+        "key": second_key,
+        "window": windows[1],
+        "region": {"x": 2100, "y": 0, "w": 300, "h": 900},
+        "system_name": "R-YWID",
+        "runtime_status": "运行中",
+    }
+    window._worker_contexts = {
+        first_key: first_context,
+        second_key: second_context,
+    }
     window._stopping_monitor_workers = set()
     window._monitor_btn = type(
         "Button",
@@ -2928,14 +2969,32 @@ def test_refresh_rebuilds_all_targets_when_one_of_multiple_workers_exits(
     window._detect_window = lambda **_kwargs: (_ for _ in ()).throw(
         AssertionError("unchanged window signature unexpectedly rebuilt the selector")
     )
-    window._build_monitor_targets = lambda: [
-        {"key": first_key},
-        {"key": second_key},
+    targets = [
+        {**first_context, "system_name": "Unknown"},
+        {**second_context, "system_name": "Unknown"},
     ]
+    window._build_monitor_targets = lambda: [dict(item) for item in targets]
     window._log_message = lambda _message: None
     window._refresh_window_status_table = lambda: None
     window._refresh_monitor_window_action_labels = lambda: None
-    window._start_monitor = lambda **kwargs: starts.append(kwargs)
+    window._refresh_status_cards = lambda: None
+    window._refresh_intel_location = lambda **_kwargs: None
+    window._publish_heartbeat = lambda: None
+    window._set_heartbeat_enabled = lambda _enabled: None
+    window._alert_controller = None
+    window._ocr = object()
+    window._ocr_scheduler = None
+    window._monitor_btn.setText = lambda _text: None
+    window._monitor_btn.setStyleSheet = lambda _style: None
+    window._status_label = type(
+        "Label",
+        (),
+        {"setText": lambda self, _text: None, "setStyleSheet": lambda self, _style: None},
+    )()
+    window._uploads_enabled = True
+    window._create_monitor_worker = lambda *_args: (
+        created_workers.append(FakeWorker(False)) or created_workers[-1]
+    )
     monkeypatch.setattr(
         "app.ui.main_window.QTimer.singleShot",
         lambda _delay, callback: callbacks.append(callback),
@@ -2948,15 +3007,133 @@ def test_refresh_rebuilds_all_targets_when_one_of_multiple_workers_exits(
     MainWindow._refresh_detected_windows(window)
     assert len(callbacks) == 1
     callbacks.pop(0)()
-    assert starts == []
-    assert first_worker.stop_calls == 1
+    assert window._workers[first_key] is first_worker
+    assert first_worker.stop_calls == 0
+    assert first_worker.window_updates == []
+    assert first_worker.interval_updates == []
+    assert first_worker.ocr_updates == []
     assert second_worker.stop_calls == 1
+    assert len(created_workers) == 1
+    assert window._workers[second_key] is created_workers[0]
+    assert window._worker_contexts[second_key]["system_name"] == "R-YWID"
     assert first_worker.wait_calls == 0
     assert second_worker.wait_calls == 0
 
-    first_worker.running = False
-    callbacks.pop(0)()
-    assert starts == [{"identity_checked": True}]
+
+def test_reconcile_adds_and_removes_windows_without_restarting_survivor(monkeypatch):
+    class FakeSignal:
+        def disconnect(self):
+            pass
+
+    class FakeWorker:
+        def __init__(self, running=True):
+            self.running = running
+            self.stop_calls = 0
+            self.start_calls = 0
+            self.ocr_snapshot = FakeSignal()
+            self.hostile_detected = FakeSignal()
+            self.status_update = FakeSignal()
+            self.scan_complete = FakeSignal()
+
+        def isRunning(self):
+            return self.running
+
+        def start(self):
+            self.running = True
+            self.start_calls += 1
+
+        def stop(self):
+            self.running = False
+            self.stop_calls += 1
+
+        def set_window(self, _window):
+            pass
+
+        def set_region(self, *_region):
+            pass
+
+        def set_interval(self, _interval):
+            pass
+
+        def set_ocr_enabled(self, _enabled):
+            pass
+
+    first_key = "hwnd:1:eve - pilot a"
+    second_key = "hwnd:2:eve - pilot b"
+    region = {"x": 0, "y": 0, "w": 200, "h": 800}
+    first_target = {
+        "key": first_key,
+        "window": {"hwnd": 1, "title": "EVE - Pilot A"},
+        "window_title": "EVE - Pilot A",
+        "region": region,
+        "system_name": "S-KSWL",
+        "runtime_status": "运行中",
+    }
+    second_target = {
+        "key": second_key,
+        "window": {"hwnd": 2, "title": "EVE - Pilot B"},
+        "window_title": "EVE - Pilot B",
+        "region": region,
+        "system_name": "R-YWID",
+    }
+    first_worker = FakeWorker()
+    created_workers = []
+    scheduler = object()
+    window = MainWindow.__new__(MainWindow)
+    window._workers = {first_key: first_worker}
+    window._worker_contexts = {first_key: dict(first_target)}
+    window._worker = first_worker
+    window._stopping_monitor_workers = set()
+    window._settings = SimpleNamespace(
+        get_interval=lambda: 3.0,
+        get_ocr_enabled=lambda: True,
+    )
+    window._ocr = None
+    window._ocr_scheduler = scheduler
+    window._alert_controller = None
+    window._monitor_btn = SimpleNamespace(
+        setText=lambda _text: None,
+        setStyleSheet=lambda _style: None,
+    )
+    window._status_label = SimpleNamespace(
+        setText=lambda _text: None,
+        setStyleSheet=lambda _style: None,
+    )
+    window._create_monitor_worker = lambda *_args: (
+        created_workers.append(FakeWorker(False)) or created_workers[-1]
+    )
+    window._refresh_intel_location = lambda **_kwargs: None
+    window._update_window_status = (
+        lambda context, status, action="": context.update(runtime_status=status)
+    )
+    window._set_heartbeat_enabled = lambda _enabled: None
+    window._publish_heartbeat = lambda: None
+    window._refresh_status_cards = lambda: None
+    window._refresh_window_status_table = lambda: None
+    window._log_message = lambda _message: None
+    window._uploads_enabled = True
+    monkeypatch.setattr(
+        "app.ui.main_window.QTimer.singleShot",
+        lambda _delay, _callback: None,
+    )
+
+    MainWindow._reconcile_monitor_workers(
+        window,
+        [dict(first_target), dict(second_target)],
+    )
+
+    assert window._workers[first_key] is first_worker
+    assert first_worker.stop_calls == 0
+    assert window._ocr_scheduler is scheduler
+    assert len(created_workers) == 1
+    assert created_workers[0].start_calls == 1
+
+    MainWindow._reconcile_monitor_workers(window, [dict(first_target)])
+
+    assert window._workers == {first_key: first_worker}
+    assert first_worker.stop_calls == 0
+    assert created_workers[0].stop_calls == 1
+    assert window._ocr_scheduler is scheduler
 
 
 def test_transient_missing_window_does_not_override_running_monitor_status():
