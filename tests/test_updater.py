@@ -135,10 +135,39 @@ def test_parse_release_manifest_accepts_separate_model_component():
     assert release.models.filename.endswith(".zip")
 
 
+def test_parse_release_manifest_accepts_signed_download_mirrors():
+    program_mirror = (
+        "https://gitcode.com/xiaqiqi/eve-sentry/releases/download/"
+        "v1.2.0/EVE-Sentry-Monitor-ONNX-1.2.0.zip"
+    )
+    model_mirror = (
+        "https://gitcode.com/xiaqiqi/eve-sentry/releases/download/"
+        "v1.2.0/EVE-Sentry-Monitor-ONNX-models-model-2026-07.zip"
+    )
+    model_payload = release_payload(
+        version="model-2026-07",
+        filename="EVE-Sentry-Monitor-ONNX-models-model-2026-07.zip",
+        url="https://download.example/models.zip",
+        mirrors=[model_mirror],
+    )
+    payload = release_payload(
+        mirrors=[program_mirror, program_mirror, release_payload()["url"]],
+        components={"models": model_payload},
+    )
+
+    release = parse_release_manifest(payload)
+
+    assert release.mirrors == (program_mirror,)
+    assert release.models is not None
+    assert release.models.mirrors == (model_mirror,)
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
         {"url": "http://download.example/client.zip"},
+        {"mirrors": ["http://download.example/client.zip"]},
+        {"mirrors": "https://download.example/client.zip"},
         {"sha256": "bad"},
         {"size": 0},
         {"filename": "../client.zip"},
@@ -375,6 +404,79 @@ def test_transport_failure_preserves_a_valid_download_partial(tmp_path):
     assert reply.deleted is True
     assert partial.read_bytes() == b"valid-prefix"
     assert states[-1] == ("下载失败：timed out", "继续下载", True)
+
+
+def test_http_failure_switches_from_gitcode_mirror_to_primary_url(
+    tmp_path,
+    monkeypatch,
+):
+    class FakeReply:
+        def __init__(self):
+            self.deleted = False
+
+        def attribute(self, attribute):
+            assert attribute == QNetworkRequest.Attribute.HttpStatusCodeAttribute
+            return 503
+
+        def error(self):
+            return QNetworkReply.NetworkError.ServiceUnavailableError
+
+        def errorString(self):
+            return "mirror unavailable"
+
+        def readAll(self):
+            return b"upstream unavailable"
+
+        def deleteLater(self):
+            self.deleted = True
+
+    update_dir = tmp_path / "updates"
+    update_dir.mkdir()
+    partial = update_dir / "program.zip.part"
+    partial.write_bytes(b"valid-prefix")
+    component = UpdateComponent(
+        "1.2.0",
+        "https://download.example/program.zip",
+        "a" * 64,
+        100,
+        "program.zip",
+        ("https://gitcode.example/program.zip",),
+    )
+    release = ReleaseInfo(
+        component.version,
+        component.url,
+        component.sha256,
+        component.size,
+        component.filename,
+        mirrors=component.mirrors,
+    )
+    reply = FakeReply()
+    updater = ClientUpdater(update_dir=update_dir, background_download=False)
+    updater._release = release
+    updater._current_component = component
+    updater._download_urls = (*component.mirrors, component.url)
+    updater._download_url_index = 0
+    updater._download_path = partial
+    updater._download_file = partial.open("ab")
+    updater._download_reply = reply
+    updater._download_hash = hashlib.sha256(partial.read_bytes())
+    updater._resume_offset = partial.stat().st_size
+    retries = []
+    states = []
+    monkeypatch.setattr(
+        updater,
+        "_retry_component_download",
+        lambda retried, kind, target: retries.append((retried, kind, target)),
+    )
+    updater.state_changed.connect(lambda *state: states.append(state))
+
+    updater._finish_download(reply, update_dir / "program.zip")
+
+    assert reply.deleted is True
+    assert partial.read_bytes() == b"valid-prefix"
+    assert updater._download_url_index == 1
+    assert retries == [(component, "program", update_dir / "program.zip")]
+    assert states == []
 
 
 def test_client_updater_restores_large_local_state_off_qt_thread(

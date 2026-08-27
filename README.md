@@ -125,7 +125,9 @@ Windows 用户直接下载并解压完整便携包即可使用。连接服务端
 该地址不包含版本号，会自动跳转到最新完整客户端包，并支持 HTTP Range 断点续传。
 
 `main` 分支由 GitHub Actions 自动测试并部署服务端；修改 `app/version.py` 的版本号会
-额外触发 Windows 客户端构建和 Release 发布。日常部署及客户端推送无需人工执行命令。
+额外触发 Windows 客户端构建，并同步发布到 GitHub Release 与 GitCode 国内镜像。
+客户端优先从 GitCode 下载程序和模型，失败时自动续传并回退到原 Cloudflare 下载源。
+发布配置与故障处理见 [GitCode 发布镜像](docs/gitcode-release-mirror.md)。
 
 ONNX 模型应位于：
 
@@ -162,5 +164,6 @@ npm run build
 
 - [客户端操作指南](docs/client.md)
 - [服务端部署](docs/server-deployment.md)
+- [GitCode 发布镜像](docs/gitcode-release-mirror.md)
 
 运行时数据库、配置、EVE SSO token、本地密钥状态和模型缓存均不应提交到仓库。

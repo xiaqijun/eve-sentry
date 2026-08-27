@@ -54,6 +54,7 @@ class UpdateComponent:
     sha256: str
     size: int
     filename: str
+    mirrors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,7 @@ class ReleaseInfo:
     size: int
     filename: str
     models: UpdateComponent | None = None
+    mirrors: tuple[str, ...] = ()
 
 
 class _UpdaterFileTask(QThread):
@@ -191,11 +193,12 @@ def parse_release_manifest(payload: Any) -> ReleaseInfo:
         raise UpdateError("更新包大小无效")
     if not filename or Path(filename).name != filename or not filename.lower().endswith(".zip"):
         raise UpdateError("更新包文件名无效")
+    mirrors = _parse_mirror_urls(payload, url, "更新包")
     models = None
     components = payload.get("components")
     if isinstance(components, dict) and isinstance(components.get("models"), dict):
         models = _parse_update_component(components["models"], "OCR 模型")
-    return ReleaseInfo(version, url, sha256, size, filename, models)
+    return ReleaseInfo(version, url, sha256, size, filename, models, mirrors)
 
 
 def _parse_update_component(payload: dict[str, Any], label: str) -> UpdateComponent:
@@ -215,7 +218,28 @@ def _parse_update_component(payload: dict[str, Any], label: str) -> UpdateCompon
         raise UpdateError(f"{label}包校验信息无效")
     if not filename or Path(filename).name != filename or not filename.endswith(".zip"):
         raise UpdateError(f"{label}包文件名无效")
-    return UpdateComponent(version, url, sha256, size, filename)
+    mirrors = _parse_mirror_urls(payload, url, f"{label}包")
+    return UpdateComponent(version, url, sha256, size, filename, mirrors)
+
+
+def _parse_mirror_urls(
+    payload: dict[str, Any],
+    primary_url: str,
+    label: str,
+) -> tuple[str, ...]:
+    raw_mirrors = payload.get("mirrors", [])
+    if raw_mirrors is None:
+        return ()
+    if not isinstance(raw_mirrors, list):
+        raise UpdateError(f"{label}镜像地址格式错误")
+    mirrors: list[str] = []
+    for item in raw_mirrors:
+        url = str(item or "").strip()
+        if not QUrl(url).isValid() or not url.lower().startswith("https://"):
+            raise UpdateError(f"{label}镜像必须使用 HTTPS 地址")
+        if url != primary_url and url not in mirrors:
+            mirrors.append(url)
+    return tuple(mirrors)
 
 
 def installed_model_version() -> str:
@@ -856,6 +880,8 @@ class ClientUpdater(QObject):
         self._model_ready_path: Path | None = None
         self._current_component: UpdateComponent | None = None
         self._download_kind = "program"
+        self._download_urls: tuple[str, ...] = ()
+        self._download_url_index = 0
         self._resume_offset = 0
         self._installer_launched = False
         self._busy = False
@@ -1068,6 +1094,7 @@ class ClientUpdater(QObject):
             release.sha256,
             release.size,
             release.filename,
+            release.mirrors,
         )
         self._begin_component_download(component, "program")
 
@@ -1082,6 +1109,8 @@ class ClientUpdater(QObject):
         self._busy = True
         self._current_component = component
         self._download_kind = str(kind)
+        self._download_urls = tuple(dict.fromkeys((*component.mirrors, component.url)))
+        self._download_url_index = 0
         self.state_changed.emit("正在校验下载断点", "准备下载", False)
         self._run_file_task(
             lambda: self._load_partial_download_state(partial, component.size),
@@ -1137,7 +1166,12 @@ class ClientUpdater(QObject):
             "下载中",
             False,
         )
-        request = self._request(QUrl(component.url), timeout_ms=60000)
+        download_url = (
+            self._download_urls[self._download_url_index]
+            if self._download_urls
+            else component.url
+        )
+        request = self._request(QUrl(download_url), timeout_ms=60000)
         if self._resume_offset:
             request.setRawHeader(
                 b"Range",
@@ -1148,6 +1182,27 @@ class ClientUpdater(QObject):
         reply.readyRead.connect(self._read_download_data)
         reply.downloadProgress.connect(self._on_download_progress)
         reply.finished.connect(lambda: self._finish_download(reply, target))
+
+    def _retry_component_download(
+        self,
+        component: UpdateComponent,
+        kind: str,
+        target: Path,
+    ) -> None:
+        partial = target.with_suffix(target.suffix + ".part")
+        self._busy = True
+        self.state_changed.emit("下载源不可用，正在切换", "切换线路", False)
+        self._run_file_task(
+            lambda: self._load_partial_download_state(partial, component.size),
+            lambda result: self._start_component_download(
+                component,
+                kind,
+                target,
+                partial,
+                result,
+            ),
+            self._fail_component_download_prepare,
+        )
 
     def _fail_component_download_prepare(self, exc: Exception) -> None:
         self._busy = False
@@ -1452,6 +1507,7 @@ class ClientUpdater(QObject):
             http_status is not None
             and not 200 <= int(http_status) < 300
         )
+        integrity_failed = False
         try:
             if http_failed:
                 raise UpdateError(
@@ -1463,11 +1519,13 @@ class ClientUpdater(QObject):
                 raise UpdateError("更新下载状态丢失")
             actual_size = partial.stat().st_size
             if actual_size != component.size:
+                integrity_failed = True
                 raise UpdateError(
                     f"文件大小不匹配（{actual_size}/{component.size}）"
                 )
             digest = self._download_hash.hexdigest()
             if digest != component.sha256:
+                integrity_failed = True
                 raise UpdateError("SHA256 校验失败")
             partial.replace(target)
             if self._download_kind == "program":
@@ -1504,6 +1562,22 @@ class ClientUpdater(QObject):
                 not http_failed
                 and reply.error() != QNetworkReply.NetworkError.NoError
             )
+            source_failed = http_failed or transport_failed or integrity_failed
+            has_fallback = (
+                source_failed
+                and component is not None
+                and self._download_url_index + 1 < len(self._download_urls)
+            )
+            if has_fallback:
+                if integrity_failed and partial is not None:
+                    partial.unlink(missing_ok=True)
+                self._download_url_index += 1
+                self._retry_component_download(
+                    component,
+                    self._download_kind,
+                    target,
+                )
+                return
             if partial is not None and not transport_failed:
                 partial.unlink(missing_ok=True)
             action = "继续下载" if transport_failed else "重试"
