@@ -127,28 +127,39 @@ if ($duplicateNames.Count -gt 0) {
 
 foreach ($asset in $assetFiles) {
     $encodedName = [uri]::EscapeDataString($asset.Name)
-    $upload = Invoke-GitCodeGet "/releases/$tag/upload_url?file_name=$encodedName"
-    if (-not $upload.url -or -not $upload.headers) {
-        throw "GitCode did not return an upload target for $($asset.Name)"
-    }
-    $uploadHeaders = @{}
-    foreach ($property in $upload.headers.psobject.Properties) {
-        $uploadHeaders[$property.Name] = [string]$property.Value
-    }
-    try {
-        $response = Invoke-WebRequest `
-            -Uri $upload.url `
-            -Method Put `
-            -Headers $uploadHeaders `
-            -InFile $asset.FullName `
-            -TimeoutSec 1800
-        if ([int]$response.StatusCode -lt 200 -or [int]$response.StatusCode -ge 300) {
-            throw "unexpected upload response"
+    $uploaded = $false
+    $lastUploadError = ""
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $upload = Invoke-GitCodeGet "/releases/$tag/upload_url?file_name=$encodedName"
+        if (-not $upload.url -or -not $upload.headers) {
+            throw "GitCode did not return an upload target for $($asset.Name)"
         }
-    } catch {
-        $status = Get-HttpStatusCode $_
-        $detail = $_.Exception.Message
-        throw "GitCode upload failed for $($asset.Name) (HTTP $status): $detail"
+        $uploadHeaders = @{}
+        foreach ($property in $upload.headers.psobject.Properties) {
+            $uploadHeaders[$property.Name] = [string]$property.Value
+        }
+        try {
+            $response = Invoke-WebRequest `
+                -Uri $upload.url `
+                -Method Put `
+                -Headers $uploadHeaders `
+                -InFile $asset.FullName `
+                -TimeoutSec 600
+            if ([int]$response.StatusCode -lt 200 -or [int]$response.StatusCode -ge 300) {
+                throw "unexpected upload response"
+            }
+            $uploaded = $true
+            break
+        } catch {
+            $status = Get-HttpStatusCode $_
+            $lastUploadError = "HTTP ${status}: $($_.Exception.Message)"
+            if ($attempt -lt 3) {
+                Start-Sleep -Seconds (10 * $attempt)
+            }
+        }
+    }
+    if (-not $uploaded) {
+        throw "GitCode upload failed for $($asset.Name) after 3 attempts: $lastUploadError"
     }
 }
 
