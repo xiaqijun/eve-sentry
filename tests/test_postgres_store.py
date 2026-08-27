@@ -1131,6 +1131,68 @@ def test_postgres_ocr_snapshot_persists_old_system_as_inactive():
     assert persisted_rows == [old_item.to_dict()]
 
 
+def test_postgres_ocr_snapshot_selects_names_from_full_frame_evidence(tmp_path):
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def executemany(self, _query, _rows):
+            return None
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._load_reports = lambda: []
+    IntelStore.__init__(store, tmp_path / "intel.json", systems={}, links=[])
+    store._connect = FakeConnection
+    store._upsert_active_intel_rows = lambda _connection, _rows: None
+    store._persist_hostile_wave_changes = lambda _connection, _changes: None
+
+    try:
+        result = store.record_ocr_snapshot(
+            {
+                "client_id": "detector-client:test",
+                "source_instance": "EVE - Pilot",
+                "system_name": "S-KSWL",
+                "hostile_icon_count": 1,
+                "names": [],
+                "ocr_candidates": [
+                    {
+                        "text": "Friendly Pilot",
+                        "left": 20,
+                        "top": 4,
+                        "right": 100,
+                        "bottom": 14,
+                    },
+                    {
+                        "text": "STARKEY",
+                        "left": 20,
+                        "top": 20,
+                        "right": 80,
+                        "bottom": 30,
+                    },
+                    {
+                        "text": "07",
+                        "left": 84,
+                        "top": 20,
+                        "right": 100,
+                        "bottom": 30,
+                    },
+                ],
+                "hostile_icons": [
+                    {"left": 6, "top": 20, "right": 16, "bottom": 30},
+                ],
+            }
+        )
+    finally:
+        IntelStore.close(store)
+
+    assert result["created"] == 1
+    active = store.list_active_intel(source="eve-sentry-detector")
+    assert [item["name"] for item in active] == ["STARKEY 07"]
+
+
 def test_postgres_hostile_presence_persists_active_rows_and_wave_changes(tmp_path):
     persisted_rows = []
     persisted_waves = []

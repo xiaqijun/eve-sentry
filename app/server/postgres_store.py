@@ -24,6 +24,7 @@ from app.server.intel_store import (
     STALE_HEARTBEAT_STARTUP_GRACE_SECONDS,
     StarSystem,
     _OcrEsiTask,
+    _hostile_names_from_ocr_evidence,
     utc_now_iso,
 )
 
@@ -83,6 +84,7 @@ class PostgreSQLIntelStore(IntelStore):
             self._stale_heartbeat_cleanup_after = (
                 time.monotonic() + STALE_HEARTBEAT_STARTUP_GRACE_SECONDS
             )
+        self._resume_pending_ocr_esi_tasks()
 
     def close(self, *, wait: bool = True) -> None:
         """Stop background work and close reusable PostgreSQL connections."""
@@ -293,8 +295,9 @@ class PostgreSQLIntelStore(IntelStore):
             self._optional_int(payload.get("hostile_icon_count")) or 0,
         )
         defer_esi = self._resolver is not None or self._enricher is not None
+        evidence_names = _hostile_names_from_ocr_evidence(payload)
         names = self._normalize_ocr_names(
-            payload.get("names"),
+            evidence_names if evidence_names is not None else payload.get("names"),
             resolve=not defer_esi,
         )
         snapshot_metadata = (

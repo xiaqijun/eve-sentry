@@ -6,6 +6,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -37,6 +38,9 @@ from app.core.models import Observation, ThreatEvent
 from app.engine.ocr_names import is_plausible_ocr_name, ocr_candidate_names
 from app.intel.scoring import ChannelMention
 from app.server.esi_worker import EsiWorker
+
+
+logger = logging.getLogger(__name__)
 
 
 CHANNEL_SAME_SYSTEM_WINDOW_SECONDS = 10 * 60
@@ -322,6 +326,42 @@ class IntelStore:
     def wait_for_esi_idle(self, timeout: float | None = None) -> bool:
         """Wait until queued OCR ESI enrichment has finished."""
         return self._esi_worker.wait_idle(timeout=timeout)
+
+    def _resume_pending_ocr_esi_tasks(self) -> int:
+        """Requeue persisted OCR identities left pending by a server restart."""
+        if self._resolver is None and self._enricher is None:
+            return 0
+        with self._lock:
+            report_ids = {report.report_id for report in self._reports}
+            tasks = [
+                _OcrEsiTask(
+                    active_id=item.active_id,
+                    report_id=next(
+                        report_id
+                        for report_id in item.source_observation_ids
+                        if report_id in report_ids
+                    ),
+                    client_id=str(item.metadata.get("client_id") or ""),
+                    original_name=item.name,
+                )
+                for item in self._active_intel.values()
+                if item.active
+                and item.target_type == "character"
+                and item.name.strip()
+                and item.metadata.get("identity_status") == "pending"
+                and any(
+                    report_id in report_ids
+                    for report_id in item.source_observation_ids
+                )
+            ]
+        resumed = sum(
+            1
+            for task in tasks
+            if self._esi_worker.submit(task.active_id, task)
+        )
+        if resumed:
+            logger.info("Resumed %s pending OCR identity tasks", resumed)
+        return resumed
 
     def close(self, *, wait: bool = True) -> None:
         """Stop the dedicated ESI worker."""

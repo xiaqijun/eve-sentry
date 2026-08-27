@@ -18,6 +18,47 @@ from app.server.intel_store import (
 )
 
 
+def test_resume_pending_ocr_identity_tasks_after_restart(tmp_path):
+    store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
+    observation = store.add_observation(
+        {
+            "source": "eve-sentry-detector",
+            "source_instance": "EVE - Pilot",
+            "system_name": "S-KSWL",
+            "names": ["Pending Pilot"],
+        }
+    )
+    active_id = "ocr:pending"
+    store._active_intel[active_id] = ActiveIntelItem(
+        active_id=active_id,
+        source="eve-sentry-detector",
+        source_instance="EVE - Pilot",
+        system_name="S-KSWL",
+        target_type="character",
+        name="Pending Pilot",
+        metadata={
+            "client_id": "detector-client:test",
+            "identity_status": "pending",
+        },
+        active=True,
+        source_observation_ids=[observation.observation_id],
+    )
+    submitted = []
+    store._resolver = object()
+    store._esi_worker = SimpleNamespace(
+        submit=lambda key, task: submitted.append((key, task)) or True,
+    )
+
+    assert store._resume_pending_ocr_esi_tasks() == 1
+    assert len(submitted) == 1
+    key, task = submitted[0]
+    assert key == active_id
+    assert task.active_id == active_id
+    assert task.report_id == observation.observation_id
+    assert task.client_id == "detector-client:test"
+    assert task.original_name == "Pending Pilot"
+
+
 def test_list_alerts_stops_scoring_after_reaching_limit(tmp_path, monkeypatch):
     store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
     observations = [
