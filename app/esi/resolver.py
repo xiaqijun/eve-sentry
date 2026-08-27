@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,13 +28,23 @@ class EsiResolver:
         client: EsiClient | Any | None = None,
         cache: EsiCache | None = None,
         ttl_seconds: int = 86400,
+        negative_ttl_seconds: int = 600,
     ) -> None:
         self.client = client or EsiClient()
         self.cache = cache or EsiCache()
         self.ttl_seconds = ttl_seconds
+        self.negative_ttl_seconds = max(1, int(negative_ttl_seconds))
+        self._resolve_lock = threading.Lock()
 
     def resolve_names(self, names: list[str]) -> list[ResolvedName]:
         """Resolve names to ids, preserving the input order where possible."""
+        # OCR snapshots from several clients commonly contain the same pilots.
+        # Serialize cache misses so only one batch reaches ESI.
+        with self._resolve_lock:
+            return self._resolve_names_locked(names)
+
+    def _resolve_names_locked(self, names: list[str]) -> list[ResolvedName]:
+        """Resolve one batch while holding the cache-miss coalescing lock."""
         clean_names = [name.strip() for name in names if name and name.strip()]
         cached: dict[str, ResolvedName] = {}
         missing: list[str] = []
@@ -74,7 +85,7 @@ class EsiResolver:
                         "name": name,
                         "status": "not_found",
                     },
-                    ttl_seconds=self.ttl_seconds,
+                    ttl_seconds=self.negative_ttl_seconds,
                 )
             self.cache.save()
 
@@ -91,6 +102,10 @@ class EsiResolver:
         cached = self.cache.get(key)
         if isinstance(cached, dict):
             profile = dict(cached)
+            profile.setdefault(
+                "zkill_url",
+                f"https://zkillboard.com/character/{int(character_id)}/",
+            )
             if self._complete_character_affiliations(profile):
                 self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
                 self.cache.save()
@@ -104,6 +119,7 @@ class EsiResolver:
         profile = {
             "character_id": int(character_id),
             "name": str(character.get("name", "")),
+            "zkill_url": f"https://zkillboard.com/character/{int(character_id)}/",
             "corporation_id": _optional_int(character.get("corporation_id")),
             "alliance_id": _optional_int(character.get("alliance_id")),
             "security_status": character.get("security_status"),

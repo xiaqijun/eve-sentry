@@ -517,6 +517,46 @@ def test_record_ocr_snapshot_selects_hostile_names_from_full_frame_evidence(tmp_
     assert [item["name"] for item in active] == ["STARKEY 07"]
 
 
+def test_full_frame_evidence_accepts_text_box_merged_with_hostile_icon(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Hajimi6",
+            "system_name": "S-KSWL",
+            "hostile_icon_count": 1,
+            "names": ["784 fvtr", "Hajimi6", "Jone Rayl", "Misriah 2442"],
+            "ocr_candidates": [
+                {"text": "784 fvtr", "left": 20, "top": 31, "right": 74, "bottom": 46},
+                {"text": "Hajimi6", "left": 19, "top": 61, "right": 72, "bottom": 79},
+                {"text": "= Jone Rayl", "left": 8, "top": 90, "right": 85, "bottom": 105},
+                {"text": "Misriah 2442", "left": 9, "top": 105, "right": 107, "bottom": 119},
+            ],
+            "hostile_icons": [
+                {"left": 8, "top": 92, "right": 19, "bottom": 103},
+            ],
+        }
+    )
+
+    active = store.list_active_intel(source="eve-sentry-detector")
+    assert [item["name"] for item in active] == ["Jone Rayl"]
+
+
+def test_active_character_summary_keeps_generated_zkill_link(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+
+    summary = store._active_character_profile_summary(
+        {
+            "character_id": 123,
+            "name": "Jone Rayl",
+            "zkill_url": "https://zkillboard.com/character/123/",
+        }
+    )
+
+    assert summary["zkill_url"] == "https://zkillboard.com/character/123/"
+
+
 def test_record_ocr_snapshot_red_icon_is_persisted_as_direct_alert_evidence(tmp_path):
     store = IntelStore(
         tmp_path / "intel.json",

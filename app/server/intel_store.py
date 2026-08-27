@@ -93,7 +93,7 @@ def _hostile_names_from_ocr_evidence(payload: dict[str, Any]) -> list[str] | Non
         return []
     icons.sort(key=lambda icon: (icon[1], icon[0]))
 
-    candidates: list[tuple[str, float, float]] = []
+    candidates: list[tuple[str, float]] = []
     for item in raw_candidates:
         if not isinstance(item, dict):
             continue
@@ -108,9 +108,8 @@ def _hostile_names_from_ocr_evidence(payload: dict[str, Any]) -> list[str] | Non
         except (KeyError, TypeError, ValueError):
             continue
         if right > left and bottom > top:
-            candidates.append((text, left, (top + bottom) / 2))
+            candidates.append((text, (top + bottom) / 2))
 
-    name_left = max(icon[2] for icon in icons) + 2
     row_half_height = max(16.0, max(icon[3] - icon[1] for icon in icons) + 5) / 2
     names: list[str] = []
     seen: set[str] = set()
@@ -126,8 +125,11 @@ def _hostile_names_from_ocr_evidence(payload: dict[str, Any]) -> list[str] | Non
             if index + 1 < len(icons)
             else center_y + row_half_height
         )
-        for text, left, candidate_center_y in candidates:
-            if left + 2 < name_left or not (row_top <= candidate_center_y < row_bottom):
+        for text, candidate_center_y in candidates:
+            # OCR may either exclude the standing icon or merge it into the
+            # same text box.  Horizontal filtering therefore drops valid
+            # names; vertical row membership is the stable evidence.
+            if not (row_top <= candidate_center_y < row_bottom):
                 continue
             key = text.casefold()
             if key not in seen:
@@ -3351,6 +3353,7 @@ class IntelStore:
             "cache_status",
             "cached_at",
             "expires_at",
+            "zkill_url",
             "zkill_danger_ratio",
         ):
             value = profile.get(key)

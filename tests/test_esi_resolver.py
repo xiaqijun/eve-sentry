@@ -1,3 +1,6 @@
+import threading
+import time
+
 from app.core.models import Observation
 from app.esi.cache import EsiCache
 from app.esi.client import EsiApiError
@@ -112,6 +115,68 @@ def test_resolve_names_negative_caches_unresolved_names(tmp_path):
     assert resolver.resolve_names(["Ghost Pilot"]) == []
 
     assert client.resolve_calls == 1
+
+
+def test_negative_name_cache_uses_short_ttl(tmp_path):
+    class MissingNameClient(FakeEsiClient):
+        def resolve_ids(self, names):
+            self.resolve_calls += 1
+            return {}
+
+    cache = EsiCache(tmp_path / "esi.json")
+    resolver = EsiResolver(
+        client=MissingNameClient(),
+        cache=cache,
+        negative_ttl_seconds=120,
+    )
+
+    assert resolver.resolve_names(["Ghost Pilot"]) == []
+    metadata = cache.metadata("name:ghost pilot")
+
+    assert 0 < metadata["expires_at"] - metadata["fetched_at"] <= 120
+
+
+def test_concurrent_name_batches_share_one_esi_request(tmp_path):
+    class BlockingClient(FakeEsiClient):
+        def __init__(self):
+            super().__init__()
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def resolve_ids(self, names):
+            self.resolve_calls += 1
+            self.started.set()
+            assert self.release.wait(timeout=1)
+            return {"characters": [{"id": 123, "name": "Alice"}]}
+
+    client = BlockingClient()
+    resolver = EsiResolver(client=client, cache=EsiCache(tmp_path / "esi.json"))
+    results = []
+
+    first = threading.Thread(target=lambda: results.append(resolver.resolve_names(["Alice"])))
+    second = threading.Thread(target=lambda: results.append(resolver.resolve_names(["Alice"])))
+    first.start()
+    assert client.started.wait(timeout=1)
+    second.start()
+    time.sleep(0.02)
+    client.release.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert client.resolve_calls == 1
+    assert len(results) == 2
+
+
+def test_character_profile_includes_stable_zkill_link(tmp_path):
+    resolver = EsiResolver(
+        client=FakeEsiClient(),
+        cache=EsiCache(tmp_path / "esi.json"),
+    )
+
+    profile = resolver.character_profile(123)
+
+    assert profile["zkill_url"] == "https://zkillboard.com/character/123/"
 
 
 def test_profiles_are_cached(tmp_path):
