@@ -77,12 +77,24 @@ def monitored_system_names(client_snapshot: Any) -> list[str]:
             continue
         targets = details.get("targets")
         if isinstance(targets, list):
+            active_target_seen = False
+            target_system_seen = False
             for target in targets:
                 if not isinstance(target, dict):
                     continue
                 if not bool(target.get("monitoring", True)):
                     continue
+                active_target_seen = True
+                before = len(systems)
                 add_system(target.get("system_name") or target.get("system"))
+                target_system_seen = target_system_seen or len(systems) > before
+            # A target can be active before its local system is resolved. In
+            # that case the heartbeat-level system is still a useful fallback.
+            # When every target is explicitly stopped, however, the old
+            # heartbeat-level location must not keep a node online.
+            if active_target_seen and not target_system_seen:
+                add_system(details.get("system_name") or details.get("system"))
+            continue
         add_system(details.get("system_name") or details.get("system"))
     return systems
 

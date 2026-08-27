@@ -59,6 +59,7 @@ def test_monitored_accounts_from_bootstrap_keeps_online_monitoring_targets():
             "client_id": "detector-client:one:alice",
             "system_name": "Tama",
             "system_id": 30002813,
+            "monitoring": True,
         }
     ]
 
@@ -153,6 +154,48 @@ def test_merge_map_accounts_enriches_local_window_without_duplicate():
     assert merged[0]["system_name"] == "Tama"
     assert merged[0]["system_id"] == 30002813
     assert merged[1]["character_name"] == "Bob"
+
+
+def test_merge_map_accounts_does_not_mark_unmonitored_local_window_online():
+    local = local_accounts_from_windows(
+        [{"hwnd": 11, "title": "EVE - Alice"}],
+        {"alice": "Tama"},
+    )
+
+    merged = merge_map_accounts(local, [])
+
+    assert merged[0]["system_name"] == "Tama"
+    assert merged[0]["monitoring"] is False
+
+
+def test_sync_map_accounts_refreshes_when_monitoring_stops():
+    class FakeOverlay:
+        def __init__(self):
+            self.calls = []
+
+        def set_map_accounts(self, accounts):
+            self.calls.append(accounts)
+
+    account = {
+        "key": "local-account:alice",
+        "character_name": "Alice",
+        "system_name": "Tama",
+        "system_id": None,
+        "local": True,
+        "monitoring": True,
+    }
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller.overlay = FakeOverlay()
+    controller._map_accounts = [dict(account)]
+    controller._local_map_accounts = [{**account, "monitoring": False}]
+    controller._remote_map_accounts = []
+    controller._map_request_signature = (("Tama",), (), 3)
+    controller._refresh_local_map = lambda: None
+
+    controller._sync_map_accounts()
+
+    assert controller._map_accounts[0]["monitoring"] is False
+    assert controller.overlay.calls == [controller._map_accounts]
 
 
 def test_local_monitored_account_matches_shared_installation_identity():

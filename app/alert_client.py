@@ -586,6 +586,7 @@ def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[st
                     "client_id": client_id,
                     "system_name": system_name,
                     "system_id": target.get("system_id"),
+                    "monitoring": True,
                 }
             )
     return accounts
@@ -625,9 +626,21 @@ def local_accounts_from_windows(
                 "system_name": system_name or "Unknown",
                 "system_id": None,
                 "local": True,
+                # Local windows are account locations even when monitoring is
+                # stopped. The server heartbeat is the source of truth for
+                # whether this account currently has an active monitor.
+                "monitoring": False,
             }
         )
     return accounts
+
+
+def _account_is_monitoring(account: dict[str, Any]) -> bool:
+    """Return whether a map account represents an active monitoring target."""
+    # Older payloads did not carry this field. They only exposed remote
+    # accounts while monitored, and local fixtures represented monitored
+    # accounts, so treat a missing value as active for compatibility.
+    return bool(account.get("monitoring", True))
 
 
 def merge_map_accounts(
@@ -660,6 +673,7 @@ def merge_map_accounts(
                 item["system_name"] = remote_system or "Unknown"
                 item["system_id"] = remote.get("system_id")
             item["client_id"] = remote.get("client_id")
+            item["monitoring"] = _account_is_monitoring(remote)
         merged.append(item)
 
     merged.extend(
@@ -771,8 +785,13 @@ class LocalStarMapWidget(QWidget):
         if primary is not None:
             account_kind = "本地账号" if bool(primary.get("local")) else "监控账号"
             details.append(f"{account_kind}：{label}")
-            details.append("监控：在线")
-        remote_accounts = [item for item in accounts if not bool(item.get("local"))]
+            if _account_is_monitoring(primary):
+                details.append("监控：在线")
+        remote_accounts = [
+            item
+            for item in accounts
+            if not bool(item.get("local")) and _account_is_monitoring(item)
+        ]
         if remote_accounts:
             details.append("监控节点：在线")
             details.append(f"节点数量：{len(remote_accounts)}")
@@ -887,7 +906,10 @@ class LocalStarMapWidget(QWidget):
             x, y = point(name)
             key = name.casefold()
             hostile = hostile_counts.get(key, 0) > 0
-            monitoring = key in accounts_by_system
+            monitoring = any(
+                _account_is_monitoring(item)
+                for item in accounts_by_system.get(key, [])
+            )
             focused = key in centers
             radius = 12 if hostile else 10 if focused else 9 if monitoring else 4
             if hostile:
@@ -2366,6 +2388,7 @@ class AlertTrayController:
                 str(item.get("key") or ""),
                 str(item.get("system_name") or ""),
                 item.get("system_id"),
+                _account_is_monitoring(item),
             )
             for item in getattr(self, "_map_accounts", [])
         )
@@ -2374,6 +2397,7 @@ class AlertTrayController:
                 str(item.get("key") or ""),
                 str(item.get("system_name") or ""),
                 item.get("system_id"),
+                _account_is_monitoring(item),
             )
             for item in accounts
         )
