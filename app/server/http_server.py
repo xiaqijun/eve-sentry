@@ -2228,6 +2228,82 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             alerts = alerts[:max(0, limit)]
         return alerts
 
+    def _active_presence_alerts(
+        self,
+        active_items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Expose detector-only hostile presence as one resumable alert event."""
+        alerts: list[dict[str, Any]] = []
+        for item in active_items:
+            if not isinstance(item, dict) or not bool(item.get("active", True)):
+                continue
+            if str(item.get("source") or "").strip().casefold() != (
+                "eve-sentry-detector"
+            ):
+                continue
+            metadata = item.get("metadata")
+            if not isinstance(metadata, dict) or not metadata.get("presence_only"):
+                continue
+            try:
+                hostile_count = max(0, int(metadata.get("hostile_icon_count") or 0))
+            except (TypeError, ValueError):
+                hostile_count = 0
+            if hostile_count <= 0:
+                continue
+            active_id = str(item.get("id") or "").strip()
+            if not active_id:
+                continue
+            system_name = str(
+                item.get("system_name") or item.get("system") or "Unknown"
+            ).strip() or "Unknown"
+            first_seen_at = str(
+                item.get("first_seen_at")
+                or metadata.get("hostile_icon_seen_at")
+                or item.get("last_seen_at")
+                or utc_now_iso()
+            ).strip()
+            detector_client_id = str(
+                metadata.get("client_id") or item.get("source_instance") or "unknown"
+            ).strip() or "unknown"
+            event_id = "presence_" + hashlib.sha256(
+                active_id.encode("utf-8")
+            ).hexdigest()[:24]
+            alerts.append(
+                {
+                    "id": event_id,
+                    "level": "critical",
+                    "score": 100,
+                    "system_name": system_name,
+                    "system": system_name,
+                    "system_id": item.get("system_id"),
+                    "names": [],
+                    "character_ids": [],
+                    "classification": "red",
+                    "hostile_count": hostile_count,
+                    "active_names": [],
+                    "active_character_ids": [],
+                    "created_at": first_seen_at,
+                    "seen_at": str(
+                        metadata.get("hostile_icon_seen_at")
+                        or item.get("last_seen_at")
+                        or first_seen_at
+                    ),
+                    "source_observation_id": active_id,
+                    "verified_characters": [],
+                    "evidence": [
+                        {
+                            "type": "hostile_icon",
+                            "count": hostile_count,
+                            "source": "detector",
+                        }
+                    ],
+                    "presence_only": True,
+                    "detector_client_id": detector_client_id,
+                }
+            )
+        alerts.sort(key=lambda alert: str(alert.get("created_at") or ""))
+        return alerts
+
     def _store(self) -> IntelStore:
         return self.server.store  # type: ignore[attr-defined,no-any-return]
 
@@ -2802,10 +2878,18 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 )
                 active_snapshot_alerts: list[dict[str, Any]] = []
                 if active_only:
+                    active_presence_alerts = self._active_presence_alerts(
+                        active_items or []
+                    )
                     active_snapshot_alerts = self._active_alert_list(
                         since="",
                         limit=None,
                         active_items=active_items,
+                    )
+                    active_snapshot_alerts.extend(active_presence_alerts)
+                    active_snapshot_alerts.sort(
+                        key=lambda item: str(item.get("created_at") or ""),
+                        reverse=True,
                     )
                     current_hostile_counts = _active_hostile_counts(
                         active_snapshot_alerts,
@@ -2883,6 +2967,26 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         self._write_sse("bootstrap", bootstrap_event_id, bootstrap)
                         last_bootstrap_fingerprint = fingerprint
                         wrote_event = True
+                if active_only:
+                    presence_alerts = self._active_presence_alerts(active_items or [])
+                    if last_seen:
+                        if current_include_since:
+                            presence_alerts = [
+                                alert
+                                for alert in presence_alerts
+                                if str(alert.get("created_at") or "") >= last_seen
+                            ]
+                        else:
+                            presence_alerts = [
+                                alert
+                                for alert in presence_alerts
+                                if str(alert.get("created_at") or "") > last_seen
+                            ]
+                    alerts.extend(presence_alerts)
+                ordered_alerts = sorted(
+                    alerts,
+                    key=lambda item: str(item.get("created_at") or ""),
+                )
                 if resume_after_id and not any(
                     str(alert.get("id") or "") == resume_after_id
                     for alert in ordered_alerts

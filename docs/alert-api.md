@@ -183,6 +183,11 @@ data: {"id":"evt_0123456789abcdef","level":"critical","score":100,"system_name":
 
 ```
 
+红色图标的 detector presence-only 证据也会作为一次 `alert` 事件发送。该事件不写入
+历史人员报告，`presence_only` 为 `true`，`names`、`character_ids` 和
+`verified_characters` 为空，但 `hostile_count` 表示客户端确认的敌对数量。事件 ID 对同一
+客户端和星系的本次进入保持稳定；数量刷新不会重复触发，清空后再次进入会生成新的事件。
+
 调用方通常只需要以下字段：
 
 | 字段 | 类型 | 必需 | 说明 |

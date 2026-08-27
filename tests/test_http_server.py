@@ -3180,6 +3180,48 @@ def test_v1_events_push_hostile_presence_immediately(tmp_path):
         server.stop()
 
 
+def test_v1_events_push_presence_only_alert_for_robot_consumers(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        query = urlencode(
+            {
+                "timeout": "0",
+                "heartbeat": "0",
+                "bootstrap": "1",
+            }
+        )
+        status, _, initial = request_text(f"{server.url}/api/v1/events?{query}")
+        assert status == 200
+        assert "event: alert" not in initial
+
+        status, _ = request_json(
+            f"{server.url}/api/v1/hostile-presence",
+            method="POST",
+            payload={
+                "client_id": "detector-client:robot-test",
+                "source_instance": "EVE - Pilot",
+                "system_name": "S-KSWL",
+                "hostile_icon_count": 2,
+            },
+        )
+        assert status == 201
+
+        status, _, body = request_text(f"{server.url}/api/v1/events?{query}")
+        assert status == 200
+        event_blocks = [block for block in body.split("\n\n") if block.strip()]
+        alert_block = next(block for block in event_blocks if "event: alert" in block)
+        payload = json.loads(
+            next(line[5:].strip() for line in alert_block.splitlines() if line.startswith("data:"))
+        )
+        assert payload["presence_only"] is True
+        assert payload["hostile_count"] == 2
+        assert payload["system_name"] == "S-KSWL"
+        assert payload["names"] == []
+    finally:
+        server.stop()
+
+
 def test_v1_events_push_monitoring_node_offline_at_stale_deadline(tmp_path):
     class ExpiringHeartbeatStore(IntelStore):
         def __init__(self, filepath):
