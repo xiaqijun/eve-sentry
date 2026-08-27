@@ -1,8 +1,9 @@
 # GitCode 发布镜像
 
 Windows 客户端版本由 `.github/workflows/release-client.yml` 构建。每个新版本先创建或更新
-GitHub Release，再由 `scripts/publish_gitcode_release.ps1` 将完整包、程序包、频道客户端、
-OCR 模型包和签名清单上传到 `xiaqiqi/eve-sentry-releases` 的 GitCode Release。源码镜像
+GitHub Release，再由 `scripts/publish_gitcode_release.ps1` 将程序包、频道客户端、OCR 模型包和
+签名清单上传到 `xiaqiqi/eve-sentry-releases` 的 GitCode Release。完整包默认只保留在 GitHub
+Release，可通过 `-IncludeFullPackage` 显式上传。源码镜像
 `xiaqiqi/eve-sentry` 不支持创建 Release，因此不用于托管客户端附件。
 
 ## 配置

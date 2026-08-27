@@ -5,7 +5,8 @@ param(
     [string]$Repository = "eve-sentry-releases",
     [string]$Token = $env:GITCODE_TOKEN,
     [string[]]$Assets = @(),
-    [string]$TargetCommit = ""
+    [string]$TargetCommit = "",
+    [switch]$IncludeFullPackage
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,12 +68,17 @@ if ($Assets.Count -eq 0) {
         throw "Release manifest model filename is invalid"
     }
     $Assets = @(
-        Join-Path $dist "EVE-Sentry-Monitor-ONNX-$Version.zip"
         Join-Path $dist "EVE-Sentry-Monitor-ONNX-program-$Version.zip"
         Join-Path $dist "EVE-Sentry-Channel-$Version.zip"
         Join-Path $dist $modelAssetName
         $manifestPath
     )
+    if ($IncludeFullPackage) {
+        $Assets = @(
+            Join-Path $dist "EVE-Sentry-Monitor-ONNX-$Version.zip"
+            $Assets
+        )
+    }
 }
 
 $assetFiles = @(
@@ -140,7 +146,9 @@ foreach ($asset in $assetFiles) {
             throw "unexpected upload response"
         }
     } catch {
-        throw "GitCode upload failed for $($asset.Name)"
+        $status = Get-HttpStatusCode $_
+        $detail = $_.Exception.Message
+        throw "GitCode upload failed for $($asset.Name) (HTTP $status): $detail"
     }
 }
 

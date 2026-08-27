@@ -60,6 +60,9 @@ def test_gitcode_release_script_keeps_token_out_of_public_urls():
     assert "releases/download/$tag" not in script
     assert "browser_download_url" in script
     assert '$TargetCommit = "main"' in script
+    assert '[switch]$IncludeFullPackage' in script
+    assert 'if ($IncludeFullPackage)' in script
+    assert 'GitCode upload failed for $($asset.Name) (HTTP $status)' in script
 
 
 def test_release_workflow_publishes_and_verifies_gitcode_mirror():
