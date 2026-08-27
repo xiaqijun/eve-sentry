@@ -159,7 +159,7 @@ foreach ($asset in $assetFiles) {
         }
     }
     if (-not $uploaded) {
-        throw "GitCode upload failed for $($asset.Name) after 3 attempts: $lastUploadError"
+        throw "GitCode upload failed for $($asset.Name) (HTTP $status): after 3 attempts; $lastUploadError"
     }
 }
 
