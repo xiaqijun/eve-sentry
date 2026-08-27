@@ -907,7 +907,7 @@ def test_publish_ocr_snapshot_posts_only_detected_names():
         ocr_evidence=evidence,
     )
 
-    assert window._intel_client.payload["names"] == []
+    assert window._intel_client.payload["names"] == ["Alice"]
     assert window._intel_client.payload["ocr_candidates"] == evidence["ocr_candidates"]
 
 

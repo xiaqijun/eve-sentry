@@ -3322,10 +3322,9 @@ class MainWindow(QMainWindow):
             "source_instance": source_instance,
             "system_name": system_name or "Unknown",
             "system_id": system_id,
-            # Old servers do not understand geometric OCR evidence. Keep their
-            # fallback safe by never presenting full-frame candidates as a
-            # verified hostile list.
-            "names": [] if ocr_evidence else list(names),
+            # Upload every cleaned OCR candidate for server-side ESI lookup.
+            # Geometric evidence still decides which candidates are hostile.
+            "names": list(names),
         }
         if hostile_icon_count > 0:
             payload["hostile_icon_count"] = int(hostile_icon_count)
