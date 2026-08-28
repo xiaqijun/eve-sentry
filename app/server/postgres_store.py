@@ -342,6 +342,17 @@ class PostgreSQLIntelStore(IntelStore):
                         metadata=snapshot_metadata,
                         enrich=not defer_esi,
                     )
+                    identity_cached = not defer_esi
+                    needs_esi_refresh = defer_esi
+                    character_profiles: list[dict[str, Any]] = []
+                    if defer_esi:
+                        (
+                            observation,
+                            character_profiles,
+                            identity_cached,
+                            needs_esi_refresh,
+                        ) = self._apply_cached_ocr_identity(observation)
+                        report = self._report_from_observation(observation)
                     duplicate = self._find_duplicate_observation(report)
                     if duplicate is not None:
                         observation = duplicate.to_observation()
@@ -349,11 +360,10 @@ class PostgreSQLIntelStore(IntelStore):
                         self._ensure_system(report.system)
                         self._reports.append(report)
                         new_reports.append(report)
-                    character_profiles = (
-                        []
-                        if defer_esi
-                        else self._character_profiles_for_observation(observation)
-                    )
+                    if not defer_esi:
+                        character_profiles = self._character_profiles_for_observation(
+                            observation
+                        )
                     if self._observation_is_suppressed(
                         observation,
                         character_profiles=character_profiles,
@@ -365,6 +375,28 @@ class PostgreSQLIntelStore(IntelStore):
                             changed_active_ids.add(active_id)
                         result.filtered += 1
                         continue
+                    item_metadata = (
+                        {
+                            "client_id": client_id,
+                            "identity_status": "pending",
+                            **snapshot_metadata,
+                        }
+                        if defer_esi and not identity_cached
+                        else self._active_ocr_metadata(
+                            client_id,
+                            observation,
+                            checked_at=str(
+                                observation.metadata.get("identity_checked_at") or ""
+                            )
+                            or None,
+                            character_profiles=character_profiles,
+                            cached_only=defer_esi and identity_cached,
+                        )
+                    )
+                    if defer_esi and identity_cached:
+                        item_metadata["identity_status"] = str(
+                            observation.metadata.get("identity_status") or "unresolved"
+                        )
                     self._active_intel[active_id] = ActiveIntelItem(
                         active_id=active_id,
                         source=source,
@@ -377,28 +409,16 @@ class PostgreSQLIntelStore(IntelStore):
                             else None
                         ),
                         target_type="character",
-                        name=name,
+                        name=(observation.names[0] if observation.names else name),
                         raw_text=raw_text,
-                        metadata=(
-                            {
-                                "client_id": client_id,
-                                "identity_status": "pending",
-                                **snapshot_metadata,
-                            }
-                            if defer_esi
-                            else self._active_ocr_metadata(
-                                client_id,
-                                observation,
-                                character_profiles=character_profiles,
-                            )
-                        ),
+                        metadata=item_metadata,
                         first_seen_at=seen_at,
                         last_seen_at=seen_at,
                         active=True,
                         seen_count=1,
                         source_observation_ids=[observation.observation_id],
                     )
-                    if defer_esi:
+                    if defer_esi and needs_esi_refresh:
                         esi_tasks.append(
                             _OcrEsiTask(
                                 active_id=active_id,

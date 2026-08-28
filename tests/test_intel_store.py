@@ -1154,6 +1154,130 @@ def test_record_ocr_snapshot_does_not_wait_for_esi_resolution(tmp_path):
     assert active["metadata"]["identity_status"] == "unresolved"
 
 
+def test_record_ocr_snapshot_uses_fresh_cached_identity_without_queueing(tmp_path):
+    class NetworkMustNotRun:
+        def resolve_ids(self, names):
+            raise AssertionError(names)
+
+        def get_character(self, character_id):
+            raise AssertionError(character_id)
+
+    class EnricherMustNotRun:
+        esi_session = None
+
+        def enrich(self, observation):
+            raise AssertionError(observation)
+
+    cache = EsiCache(tmp_path / "esi.json")
+    cache.set(
+        "name:alice",
+        {"name": "Alice", "category": "character", "id": 123},
+    )
+    cache.set(
+        "character:123",
+        {
+            "character_id": 123,
+            "name": "Alice",
+            "corporation_id": 456,
+            "corporation_name": "Some Corp",
+            "contact_standing": -10.0,
+        },
+    )
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=EsiResolver(client=NetworkMustNotRun(), cache=cache),
+        enricher=EnricherMustNotRun(),
+    )
+    submitted = []
+    store._esi_worker.submit = (
+        lambda key, task: submitted.append((key, task)) or True
+    )
+
+    result = store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+        }
+    )
+    active = store.list_active_intel(source="eve-sentry-detector")[0]
+
+    assert result["created"] == 1
+    assert submitted == []
+    assert active["character_id"] == 123
+    assert active["metadata"]["identity_status"] == "resolved"
+    assert active["metadata"]["corporation_name"] == "Some Corp"
+    assert active["metadata"]["contact_standing"] == -10.0
+
+
+def test_record_ocr_snapshot_uses_stale_identity_then_queues_refresh(tmp_path):
+    cache = EsiCache(tmp_path / "esi.json")
+    cache._items = {
+        "name:alice": {
+            "value": {"name": "Alice", "category": "character", "id": 123},
+            "expires_at": 0,
+        },
+        "character:123": {
+            "value": {"character_id": 123, "name": "Alice"},
+            "expires_at": 0,
+        },
+    }
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=EsiResolver(client=object(), cache=cache),
+    )
+    submitted = []
+    store._esi_worker.submit = (
+        lambda key, task: submitted.append((key, task)) or True
+    )
+
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+        }
+    )
+    active = store.list_active_intel(source="eve-sentry-detector")[0]
+
+    assert active["character_id"] == 123
+    assert active["metadata"]["identity_status"] == "resolved"
+    assert active["metadata"]["esi_resolution"]["cache_status"] == "stale"
+    assert len(submitted) == 1
+
+
+def test_record_ocr_snapshot_uses_fresh_negative_cache_without_queueing(tmp_path):
+    cache = EsiCache(tmp_path / "esi.json")
+    cache.set("name:ocr noise", {"name": "OCR Noise", "status": "not_found"})
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=EsiResolver(client=object(), cache=cache),
+    )
+    submitted = []
+    store._esi_worker.submit = (
+        lambda key, task: submitted.append((key, task)) or True
+    )
+
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "system_name": "S-KSWL",
+            "names": ["OCR Noise"],
+        }
+    )
+    active = store.list_active_intel(source="eve-sentry-detector")[0]
+
+    assert submitted == []
+    assert active["character_id"] is None
+    assert active["metadata"]["identity_status"] == "unresolved"
+
+
 def test_delayed_esi_result_does_not_restore_stale_hostile_count(tmp_path):
     class BlockingResolver:
         def __init__(self):

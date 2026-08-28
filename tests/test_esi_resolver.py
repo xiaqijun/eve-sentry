@@ -101,6 +101,68 @@ def test_resolve_names_uses_client_then_cache(tmp_path):
     assert client.resolve_calls == 1
 
 
+def test_cached_identity_access_never_calls_esi(tmp_path):
+    class NetworkMustNotRun:
+        def resolve_ids(self, names):
+            raise AssertionError(names)
+
+        def get_character(self, character_id):
+            raise AssertionError(character_id)
+
+    cache = EsiCache(tmp_path / "esi.json")
+    cache.set(
+        "name:alice",
+        {"name": "Alice", "category": "character", "id": 123},
+    )
+    cache.set(
+        "character:123",
+        {
+            "character_id": 123,
+            "name": "Alice",
+            "corporation_id": 456,
+            "corporation_name": "Some Corp",
+        },
+    )
+    resolver = EsiResolver(client=NetworkMustNotRun(), cache=cache)
+
+    resolved, name_status = resolver.cached_name("Alice")
+    profile = resolver.cached_character_profile(123)
+
+    assert resolved is not None
+    assert (resolved.name, resolved.category, resolved.entity_id) == (
+        "Alice",
+        "character",
+        123,
+    )
+    assert name_status == "cached"
+    assert profile is not None
+    assert profile["corporation_name"] == "Some Corp"
+    assert profile["cache_status"] == "cached"
+
+
+def test_cached_identity_can_return_stale_data_for_background_refresh(tmp_path):
+    cache = EsiCache(tmp_path / "esi.json")
+    cache._items = {
+        "name:alice": {
+            "value": {"name": "Alice", "category": "character", "id": 123},
+            "expires_at": 0,
+        },
+        "character:123": {
+            "value": {"character_id": 123, "name": "Alice"},
+            "expires_at": 0,
+        },
+    }
+    resolver = EsiResolver(client=FailingEsiClient(), cache=cache)
+
+    resolved, name_status = resolver.cached_name("Alice", allow_stale=True)
+    profile = resolver.cached_character_profile(123, allow_stale=True)
+
+    assert resolved is not None
+    assert name_status == "stale"
+    assert profile is not None
+    assert profile["cache_status"] == "stale"
+
+
 def test_resolve_names_negative_caches_unresolved_names(tmp_path):
     class MissingNameClient(FakeEsiClient):
         def resolve_ids(self, names):

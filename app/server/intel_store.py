@@ -542,6 +542,107 @@ class IntelStore:
         report = self._report_from_observation(observation)
         return report, observation
 
+    def _apply_cached_ocr_identity(
+        self,
+        observation: Observation,
+    ) -> tuple[Observation, list[dict[str, Any]], bool, bool]:
+        """Use cached ESI identity data without blocking snapshot ingestion."""
+        resolver = self._resolver
+        cached_name = getattr(resolver, "cached_name", None)
+        if not callable(cached_name) or not observation.names:
+            return observation, [], False, True
+
+        original_name = observation.names[0]
+        try:
+            resolved, cache_status = cached_name(original_name, allow_stale=True)
+        except Exception:
+            return observation, [], False, True
+        cache_status = str(cache_status or "miss")
+        if cache_status == "miss":
+            return observation, [], False, True
+
+        checked_at = utc_now_iso()
+        resolution = {
+            "attempted": True,
+            "cache_status": cache_status,
+            "character_name_count": 1,
+            "resolved_character_count": 0,
+            "system_name_matched": observation.system_id is not None,
+        }
+        needs_refresh = cache_status.startswith("stale")
+        if resolved is None or str(resolved.category).casefold() != "character":
+            resolution["unresolved_character_names"] = [original_name]
+            observation.metadata["esi_resolution"] = resolution
+            observation.metadata["identity_status"] = "unresolved"
+            observation.metadata["identity_checked_at"] = checked_at
+            return observation, [], True, needs_refresh
+
+        canonical_name = str(resolved.name or original_name).strip() or original_name
+        character_id = int(resolved.entity_id)
+        observation.names = [canonical_name]
+        observation.raw_text = canonical_name
+        observation.character_ids = [character_id]
+        resolution["resolved_character_count"] = 1
+        resolution["resolved_character_names"] = [canonical_name]
+        observation.metadata["esi_resolution"] = resolution
+        observation.metadata["identity_status"] = "resolved"
+        observation.metadata["identity_checked_at"] = checked_at
+
+        profile = self._cached_ocr_character_profile(character_id)
+        profiles = [profile] if profile is not None else []
+        if profile is None:
+            needs_refresh = True
+        else:
+            if str(profile.get("cache_status") or "").casefold() == "stale":
+                needs_refresh = True
+            esi_session = getattr(self._enricher, "esi_session", None)
+            if (
+                esi_session is not None
+                and "contact_standing" not in profile
+                and "standing" not in profile
+            ):
+                needs_refresh = True
+            summary = self._active_character_profile_summary(profile)
+            if summary:
+                observation.metadata["character_profiles"] = [summary]
+        return observation, profiles, True, needs_refresh
+
+    def _cached_ocr_character_profile(
+        self,
+        character_id: int,
+    ) -> dict[str, Any] | None:
+        """Merge cached public and previously enriched profile data."""
+        character_id = int(character_id)
+        profile: dict[str, Any] = {}
+        cached_profile = getattr(self._resolver, "cached_character_profile", None)
+        if callable(cached_profile):
+            try:
+                value = cached_profile(character_id, allow_stale=True)
+            except Exception:
+                value = None
+            if isinstance(value, dict):
+                profile.update(value)
+
+        for item in self._active_intel.values():
+            metadata = item.metadata if isinstance(item.metadata, dict) else {}
+            rows = metadata.get("character_profiles")
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if self._optional_int(row.get("character_id")) == character_id:
+                    profile.update(row)
+
+        memory_profile = self._character_profile_cache.get(character_id)
+        if isinstance(memory_profile, dict):
+            profile.update(memory_profile)
+        if not profile:
+            return None
+        profile["character_id"] = character_id
+        self._character_profile_cache[character_id] = dict(profile)
+        return profile
+
     def _process_ocr_esi_task(
         self,
         task: _OcrEsiTask,
@@ -1283,6 +1384,17 @@ class IntelStore:
                         metadata=snapshot_metadata,
                         enrich=not defer_esi,
                     )
+                    identity_cached = not defer_esi
+                    needs_esi_refresh = defer_esi
+                    character_profiles: list[dict[str, Any]] = []
+                    if defer_esi:
+                        (
+                            observation,
+                            character_profiles,
+                            identity_cached,
+                            needs_esi_refresh,
+                        ) = self._apply_cached_ocr_identity(observation)
+                        report = self._report_from_observation(observation)
                     duplicate = self._find_duplicate_observation(report)
                     if duplicate is not None:
                         observation = duplicate.to_observation()
@@ -1290,11 +1402,10 @@ class IntelStore:
                         self._ensure_system(report.system)
                         self._reports.append(report)
                         changed_reports = True
-                    character_profiles = (
-                        []
-                        if defer_esi
-                        else self._character_profiles_for_observation(observation)
-                    )
+                    if not defer_esi:
+                        character_profiles = self._character_profiles_for_observation(
+                            observation
+                        )
                     if self._observation_is_suppressed(
                         observation,
                         character_profiles=character_profiles,
@@ -1305,6 +1416,28 @@ class IntelStore:
                             item.left_at = seen_at
                         result.filtered += 1
                         continue
+                    item_metadata = (
+                        {
+                            "client_id": client_id,
+                            "identity_status": "pending",
+                            **snapshot_metadata,
+                        }
+                        if defer_esi and not identity_cached
+                        else self._active_ocr_metadata(
+                            client_id,
+                            observation,
+                            checked_at=str(
+                                observation.metadata.get("identity_checked_at") or ""
+                            )
+                            or None,
+                            character_profiles=character_profiles,
+                            cached_only=defer_esi and identity_cached,
+                        )
+                    )
+                    if defer_esi and identity_cached:
+                        item_metadata["identity_status"] = str(
+                            observation.metadata.get("identity_status") or "unresolved"
+                        )
                     self._active_intel[active_id] = ActiveIntelItem(
                         active_id=active_id,
                         source=source,
@@ -1317,28 +1450,16 @@ class IntelStore:
                             else None
                         ),
                         target_type="character",
-                        name=name,
+                        name=(observation.names[0] if observation.names else name),
                         raw_text=raw_text,
-                        metadata=(
-                            {
-                                "client_id": client_id,
-                                "identity_status": "pending",
-                                **snapshot_metadata,
-                            }
-                            if defer_esi
-                            else self._active_ocr_metadata(
-                                client_id,
-                                observation,
-                                character_profiles=character_profiles,
-                            )
-                        ),
+                        metadata=item_metadata,
                         first_seen_at=seen_at,
                         last_seen_at=seen_at,
                         active=True,
                         seen_count=1,
                         source_observation_ids=[observation.observation_id],
                     )
-                    if defer_esi:
+                    if defer_esi and needs_esi_refresh:
                         esi_tasks.append(
                             _OcrEsiTask(
                                 active_id=active_id,
@@ -3191,6 +3312,7 @@ class IntelStore:
         observation: Observation,
         checked_at: str | None = None,
         character_profiles: list[dict[str, Any]] | None = None,
+        cached_only: bool = False,
     ) -> dict[str, Any]:
         metadata: dict[str, Any] = {"client_id": client_id}
         for key in (
@@ -3210,6 +3332,7 @@ class IntelStore:
         profiles = self._active_character_profile_summaries(
             observation,
             character_profiles=character_profiles,
+            cached_only=cached_only,
         )
         if not profiles:
             return metadata
@@ -3238,14 +3361,15 @@ class IntelStore:
         self,
         observation: Observation,
         character_profiles: list[dict[str, Any]] | None = None,
+        cached_only: bool = False,
     ) -> list[dict[str, Any]]:
         profiles = []
-        if self._enricher is not None:
+        if not cached_only and self._enricher is not None:
             enrichment = self._best_effort_enrichment(observation)
             profiles = list(getattr(enrichment, "character_profiles", None) or [])
         if not profiles:
             profiles = list(character_profiles or [])
-        if not profiles:
+        if not profiles and not cached_only:
             profiles = self._character_profiles_for_observation(observation)
 
         summaries: list[dict[str, Any]] = []

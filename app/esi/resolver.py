@@ -43,6 +43,58 @@ class EsiResolver:
         with self._resolve_lock:
             return self._resolve_names_locked(names)
 
+    def cached_name(
+        self,
+        name: str,
+        *,
+        allow_stale: bool = False,
+    ) -> tuple[ResolvedName | None, str]:
+        """Return one cached name resolution without performing network I/O."""
+        text = str(name or "").strip()
+        if not text:
+            return None, "miss"
+        key = self._name_key(text)
+        value = self.cache.get(key)
+        status = str(self.cache.metadata(key).get("cache_status") or "miss")
+        if value is None and allow_stale:
+            value = self.cache.get_stale(key)
+        if not isinstance(value, dict):
+            return None, "miss"
+        if value.get("status") == "not_found":
+            return None, f"{status}_not_found"
+        try:
+            resolved = ResolvedName(
+                name=str(value["name"]),
+                category=str(value["category"]),
+                entity_id=int(value["id"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None, "miss"
+        return resolved, status
+
+    def cached_character_profile(
+        self,
+        character_id: int,
+        *,
+        allow_stale: bool = False,
+    ) -> dict[str, Any] | None:
+        """Return a cached public character profile without network access."""
+        character_id = int(character_id)
+        key = f"character:{character_id}"
+        cached = self.cache.get(key)
+        if cached is None and allow_stale:
+            cached = self.cache.get_stale(key)
+        if not isinstance(cached, dict):
+            return None
+        profile = dict(cached)
+        profile.setdefault("character_id", character_id)
+        profile.setdefault(
+            "zkill_url",
+            f"https://zkillboard.com/character/{character_id}/",
+        )
+        profile.update(self.cache.metadata(key))
+        return profile
+
     def _resolve_names_locked(self, names: list[str]) -> list[ResolvedName]:
         """Resolve one batch while holding the cache-miss coalescing lock."""
         clean_names = [name.strip() for name in names if name and name.strip()]

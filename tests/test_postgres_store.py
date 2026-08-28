@@ -1230,6 +1230,79 @@ def test_postgres_ocr_snapshot_uses_complete_roster_not_coordinate_evidence(tmp_
     assert {item["name"] for item in active} == {"Friendly Pilot", "Enemy Pilot"}
 
 
+def test_postgres_ocr_snapshot_persists_fresh_cached_identity_without_queueing(
+    tmp_path,
+):
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def executemany(self, _query, _rows):
+            return None
+
+    class CachedResolver:
+        def cached_name(self, name, *, allow_stale=False):
+            assert name == "Alice"
+            assert allow_stale is True
+            return (
+                SimpleNamespace(
+                    name="Alice",
+                    category="character",
+                    entity_id=123,
+                ),
+                "cached",
+            )
+
+        def cached_character_profile(self, character_id, *, allow_stale=False):
+            assert character_id == 123
+            assert allow_stale is True
+            return {
+                "character_id": 123,
+                "name": "Alice",
+                "corporation_name": "Some Corp",
+                "cache_status": "cached",
+            }
+
+        def enrich_observation(self, observation):
+            raise AssertionError(observation)
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._load_reports = lambda: []
+    IntelStore.__init__(
+        store,
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=CachedResolver(),
+    )
+    store._connect = FakeConnection
+    store._upsert_active_intel_rows = lambda _connection, _rows: None
+    store._persist_hostile_wave_changes = lambda _connection, _changes: None
+    submitted = []
+    store._esi_worker.submit = (
+        lambda key, task: submitted.append((key, task)) or True
+    )
+
+    result = store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Pilot",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+        }
+    )
+
+    assert result["created"] == 1
+    assert submitted == []
+    active = store.list_active_intel(source="eve-sentry-detector")[0]
+    assert active["character_id"] == 123
+    assert active["metadata"]["identity_status"] == "resolved"
+    assert active["metadata"]["corporation_name"] == "Some Corp"
+
+
 def test_postgres_hostile_presence_persists_active_rows_and_wave_changes(tmp_path):
     persisted_rows = []
     persisted_waves = []
