@@ -38,7 +38,6 @@ class ThreatEnricher:
         self,
         resolver: Any | None = None,
         killboard: Any | None = None,
-        kill_window: str = "recent",
         esi_session: Any | None = None,
         standing_ttl_seconds: float = 300.0,
         now: Callable[[], float] | None = None,

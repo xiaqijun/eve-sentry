@@ -54,6 +54,8 @@ zkill_cache.json
 /_zbl_*
 /_test_*.png
 /_test_*.py
+runtime-*.html
+runtime-*.txt
 /.gitlog.txt
 
 # Superpowers session artifacts

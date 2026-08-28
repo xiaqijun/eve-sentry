@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import main as client_main
 
 

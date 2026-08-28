@@ -4249,7 +4249,7 @@ def test_v1_active_alerts_exclude_friendly_classifications(tmp_path):
 
 def test_v1_alerts_ignores_legacy_active_item_without_source_ids(tmp_path):
     store = IntelStore(tmp_path / "intel.json")
-    observation = store.add_observation(
+    store.add_observation(
         {
             "system_name": "Tama",
             "names": ["Alice"],

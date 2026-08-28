@@ -55,7 +55,6 @@ from app.core.heartbeat import (
     heartbeat_now_iso,
     resolve_runtime_identity,
 )
-from app.engine.ocr import OCREngine
 from app.engine.ocr_runtime import preload_ocr_runtime
 from app.engine.ocr_scheduler import SharedOCRScheduler
 from app.engine.worker import MonitorWorker
