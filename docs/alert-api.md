@@ -209,9 +209,15 @@ data: {"id":"evt_0123456789abcdef","level":"critical","score":100,"system_name":
 | `evidence` | object[] | 是 | 告警判定依据 |
 
 `verified_characters[].zkill` 是可选的外部统计。消费者必须允许它缺失，并忽略未来新增的
-未知字段。机器人或其他集成应使用 `hostile_count` 作为人数，使用 `active_names` 作为
-detector 当前名单；`names` 只表示这一条告警记录，不能作为完整名单。presence-only
-告警没有角色名单时，`active_names` 可能为空，但 `hostile_count` 仍然有效。
+未知字段。服务端在敌对历史和活动告警中排除 `classification=white` 以及带有
+`friendly_*` 证据的记录；detector 人员只有在 ESI 身份解析完成且当前分类为 `red` 时才会
+进入人员明细。机器人或其他集成应使用 `hostile_count` 作为人数，使用 `active_names` 作为
+detector 当前的已确认敌对名单；`names` 只表示这一条告警记录，不能作为完整名单。
+presence-only 告警没有角色名单时，`active_names` 可能为空，但 `hostile_count` 仍然有效。
+
+QQ 机器人在人员表的 zKill 列直接输出完整的 `https://zkillboard.com/character/{id}/`
+地址。不要依赖仅包含图标的 Markdown 链接：部分 QQ 群 Markdown 渲染器会隐藏其链接目标，
+导致消息中只剩 `🔗` 且无法点击。
 
 ### `safe` 事件
 

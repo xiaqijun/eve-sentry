@@ -133,8 +133,10 @@ GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
 查询重新评分全部热报告。
 `/api/v1/active-intel` 同样默认最多返回 100 条；需要更多活跃项时必须显式传递 `limit`。
 `/api/v1/alert-history` 支持 `since`、`limit`、`min_score` 和 `min_level`。PostgreSQL
-部署会直接按 `received_at` 索引分页，并仅使用报告快照和本地缓存重建分类，避免历史
-查询触发外部 ESI/zKill 请求或污染实时告警缓存。
+部署会直接按 `received_at` 索引分页，并使用报告快照和本地缓存重建分类，避免历史查询
+触发外部 ESI/zKill 请求或污染实时告警缓存。返回结果会排除 `classification=white` 以及
+带有 `friendly_*` 证据的记录；旧 detector `red` 快照会用持久化 ESI 身份资料重新核验，
+避免已确认友军出现在敌对历史中。
 `/api/v1/hostile-waves` 支持 `since` 和 `limit`。`since` 会返回结束时间晚于该时刻或仍在
 进行中的波次；每个星系从敌对总数由 0 变为大于 0 时创建波次，回到 0 时写入
 `cleared_at`，之后再次出现会创建新的 `id`。该接口使用独立 PostgreSQL 生命周期表，
@@ -165,7 +167,8 @@ GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
 ```
 
 `peak_hostile_count` 是视觉峰值，不等于 OCR 已识别人员数；人员明细需要按波次时间范围与
-`/api/v1/alert-history` 中的 `verified_characters` 关联。
+`/api/v1/alert-history` 中的 `verified_characters` 关联。只有 ESI 已确认且当前分类为
+`red` 的 detector 角色才属于敌对人员明细。
 
 敌对告警的 `verified_characters` 始终保留 `character_id` 和 `name`。取得外部统计时会额外
 包含可选的 `zkill` 对象：
