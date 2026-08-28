@@ -656,9 +656,9 @@ def test_alert_controller_uses_compact_hostile_and_safe_messages(monkeypatch):
     )
 
     assert notifications == [
-        ("敌对告警", "❗ S-KSWL 来敌 1 人\n人员：Alice、Bob、Carol"),
+        ("敌对告警", "❗ S-KSWL 敌对告警：Alice、Bob、Carol"),
         ("星系安全", "✅ S-KSWL 清空"),
-        ("敌对告警", "❗ S-KSWL 来敌 1 人"),
+        ("敌对告警", "❗ S-KSWL 敌对告警"),
     ]
     assert controller._recent_summaries == [
         {
