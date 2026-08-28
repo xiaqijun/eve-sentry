@@ -1083,6 +1083,44 @@ def test_v1_alert_history_isolated_from_realtime_alerts(tmp_path):
         server.stop()
 
 
+def test_v1_alert_history_excludes_friendly_classification_records(tmp_path):
+    class HistoryStore(IntelStore):
+        def list_alert_history(self, *args, **kwargs):
+            return [
+                {
+                    "id": "friendly",
+                    "classification": "white",
+                    "names": ["Friendly Pilot"],
+                },
+                {
+                    "id": "friendly-evidence",
+                    "evidence": [{"type": "friendly_standing"}],
+                    "names": ["Blue Pilot"],
+                },
+                {
+                    "id": "hostile",
+                    "classification": "red",
+                    "names": ["Hostile Pilot"],
+                },
+                {"id": "legacy"},
+            ]
+
+    store = HistoryStore(tmp_path / "intel.json")
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, payload = request_json(f"{server.url}/api/v1/alert-history")
+
+        assert status == 200
+        assert [item["id"] for item in payload["alerts"]] == [
+            "hostile",
+            "legacy",
+        ]
+        assert payload["count"] == 2
+    finally:
+        server.stop()
+
+
 def test_v1_alert_history_falls_back_with_bounded_limit(tmp_path):
     class FallbackStore(IntelStore):
         def __init__(self, filepath):

@@ -230,6 +230,29 @@ def _split_query_values(values: list[str]) -> list[str]:
     return result
 
 
+def _is_hostile_history_alert(alert: object) -> bool:
+    """Keep friendly classification records out of the hostile history feed."""
+    if not isinstance(alert, dict):
+        return False
+
+    classification = str(alert.get("classification") or "").strip().casefold()
+    if classification == "white":
+        return False
+    if classification == "red":
+        return True
+
+    evidence = alert.get("evidence")
+    if isinstance(evidence, list):
+        evidence_types = {
+            str(item.get("type") or "").strip().casefold()
+            for item in evidence
+            if isinstance(item, dict)
+        }
+        if any(item.startswith("friendly_") for item in evidence_types):
+            return False
+    return True
+
+
 def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
     """Return stable online account/location fields for SSE change detection."""
     if not isinstance(client_snapshot, dict):
@@ -2153,6 +2176,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 limit=DEFAULT_QUERY_LIMIT if limit is None else limit,
                 **filters,
             )
+            alerts = [alert for alert in alerts if _is_hostile_history_alert(alert)]
         except ValueError as exc:
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
