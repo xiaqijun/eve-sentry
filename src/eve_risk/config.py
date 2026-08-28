@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     eve_sentry_api_key: str = ""
     eve_sentry_public_url: str = ""
     eve_sentry_alert_min_level: str = ""
+    eve_sentry_personnel_push_interval_seconds: float = 10.0
     friendly_character_ids: str = ""
     friendly_corporation_ids: str = ""
     friendly_alliance_ids: str = ""

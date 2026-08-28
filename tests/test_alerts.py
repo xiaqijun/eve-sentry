@@ -196,7 +196,8 @@ def test_alert_subscription_commands_and_message_format() -> None:
         "2026-07-20T16:22:29+00:00",
     )
     assert "### ⚠️ 敌对事件" in personnel
-    assert "**当前敌对**｜1 人" in personnel
+    assert "**敌对**｜1 人" in personnel
+    assert "**识别**｜1 人" in personnel
     assert "| 人员 | 星系 | zKill |" in personnel
     assert "| Alice | S-KSWL | [🔗](https://zkillboard.com/character/12345/) |" in personnel
     assert "**时间**" not in personnel
@@ -220,6 +221,26 @@ def test_alert_subscription_commands_and_message_format() -> None:
     )
     assert "| Alice | S-KSWL → Tama | [🔗](https://zkillboard.com/character/12345/) |" in moved_personnel
     assert "**时间**" not in moved_personnel
+
+
+def test_personnel_message_separates_detected_and_confirmed_counts() -> None:
+    personnel = format_personnel_alert_message(
+        {
+            "system_name": "S-KSWL",
+            "hostile_count": 3,
+            "personnel": [
+                {"name": "Alice", "character_id": 1001},
+                {"name": "Bob", "character_id": 1002},
+            ],
+        },
+        "2026-08-28T04:00:00+00:00",
+    )
+
+    assert "**敌对**｜3 人" in personnel
+    assert "**识别**｜2 人" in personnel
+    assert "| Alice | S-KSWL |" in personnel
+    assert "| Bob | S-KSWL |" in personnel
+    assert "**当前敌对**｜3 人" not in personnel
 
 
 def test_personnel_affiliations_fall_back_to_alert_metadata_and_profiles() -> None:
@@ -753,7 +774,7 @@ async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event()
         )
         assert qq.send_proactive_text.await_count == 1
         message = qq.send_proactive_text.await_args.args[1]
-        assert "在线节点｜2" in message
+        assert "在线监控节点｜2" in message
         assert "监控节点 1｜Jita" in message
         assert "监控节点 2｜Tama" in message
         assert "监控节点状态更新" not in message
@@ -772,7 +793,7 @@ async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event()
             }
         )
         assert qq.send_proactive_text.await_count == 2
-        assert "在线节点｜1" in qq.send_proactive_text.await_args.args[1]
+        assert "在线监控节点｜1" in qq.send_proactive_text.await_args.args[1]
 
     await redis.aclose()
 
@@ -1172,6 +1193,116 @@ async def test_personnel_updates_are_once_per_episode_and_fingerprint() -> None:
         assert qq.send_proactive_text.await_count == 3
         assert qq.send_proactive_text.await_args_list[-2].args[1].startswith("✅ S-KSWL 清空")
         assert qq.send_proactive_text.await_args_list[-1].args[1].startswith("❗ S-KSWL 来敌")
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_personnel_push_interval_coalesces_to_latest_roster() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(
+            http,
+            redis,
+            qq,
+            "http://sentry.test/events",
+            personnel_push_interval_seconds=0.05,
+        )
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {"active_intel": [], "alerts": [], "generated_at": "t0"}
+        )
+
+        def bootstrap(*names: str, generated_at: str) -> dict[str, Any]:
+            active_intel = [
+                {
+                    "id": f"ocr:{name.casefold()}",
+                    "active": True,
+                    "system_name": "S-KSWL",
+                    "name": name,
+                }
+                for name in names
+            ]
+            return {
+                "active_intel": active_intel,
+                "alerts": [
+                    {"active_intel_id": item["id"], "level": "high"}
+                    for item in active_intel
+                ],
+                "generated_at": generated_at,
+            }
+
+        await relay.process_bootstrap(bootstrap("Alice", generated_at="t1"))
+        await relay.process_bootstrap(bootstrap("Alice", "Bob", generated_at="t2"))
+        await relay.process_bootstrap(
+            bootstrap("Alice", "Bob", "Charlie", generated_at="t3")
+        )
+
+        assert qq.send_proactive_markdown.await_count == 1
+        await asyncio.sleep(0.08)
+        assert qq.send_proactive_markdown.await_count == 2
+        latest_message = qq.send_proactive_markdown.await_args_list[-1].args[1]
+        assert "Alice" in latest_message
+        assert "Bob" in latest_message
+        assert "Charlie" in latest_message
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_personnel_push_interval_discards_stale_roster_after_clear() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(
+            http,
+            redis,
+            qq,
+            "http://sentry.test/events",
+            personnel_push_interval_seconds=0.05,
+        )
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {"active_intel": [], "alerts": [], "generated_at": "t0"}
+        )
+        alice = {
+            "id": "ocr:alice",
+            "active": True,
+            "system_name": "S-KSWL",
+            "name": "Alice",
+        }
+        bob = {**alice, "id": "ocr:bob", "name": "Bob"}
+        await relay.process_bootstrap(
+            {
+                "active_intel": [alice],
+                "alerts": [{"active_intel_id": "ocr:alice", "level": "high"}],
+                "generated_at": "t1",
+            }
+        )
+        await relay.process_bootstrap(
+            {
+                "active_intel": [alice, bob],
+                "alerts": [
+                    {"active_intel_id": "ocr:alice", "level": "high"},
+                    {"active_intel_id": "ocr:bob", "level": "high"},
+                ],
+                "generated_at": "t2",
+            }
+        )
+        await relay.process_bootstrap(
+            {"active_intel": [], "alerts": [], "generated_at": "t3"}
+        )
+
+        await asyncio.sleep(0.08)
+        assert qq.send_proactive_markdown.await_count == 1
+        assert not relay._personnel_pending
 
     await redis.aclose()
 

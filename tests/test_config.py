@@ -39,3 +39,8 @@ def test_eve_sentry_alert_level_is_validated() -> None:
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None, eve_sentry_alert_min_level="urgent")
+
+
+def test_personnel_push_interval_defaults_to_ten_seconds() -> None:
+    settings = Settings(_env_file=None)
+    assert settings.eve_sentry_personnel_push_interval_seconds == 10.0

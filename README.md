@@ -101,11 +101,14 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
    EVE_SENTRY_API_KEY=eve_请填写管理员签发的只读服务密钥
    EVE_SENTRY_PUBLIC_URL=http://YOUR_EVE_SENTRY_HOST
    EVE_SENTRY_ALERT_MIN_LEVEL=
+   EVE_SENTRY_PERSONNEL_PUSH_INTERVAL_SECONDS=10
    ```
 
    `EVE_SENTRY_API_KEY` 必须使用 EVE Sentry 管理员页面签发的只读服务密钥，
    仅用于 Bootstrap 和 SSE。`EVE_SENTRY_ALERT_MIN_LEVEL` 留空表示推送所有等级，
    也可设置为 `low`、`medium`、`high` 或 `critical`。
+   `EVE_SENTRY_PERSONNEL_PUSH_INTERVAL_SECONDS` 控制同一星系名单更新的最小推送间隔；
+   间隔内的变化会合并并在到期后推送最新完整名单，设为 `0` 可关闭合并。
 4. 启动服务：
 
    ```bash

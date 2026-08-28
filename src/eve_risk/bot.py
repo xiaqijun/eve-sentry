@@ -80,6 +80,9 @@ class RiskBotClient(botpy.Client):
             api_key=settings.eve_sentry_api_key,
             min_level=settings.eve_sentry_alert_min_level,
             public_url=settings.eve_sentry_public_url,
+            personnel_push_interval_seconds=(
+                settings.eve_sentry_personnel_push_interval_seconds
+            ),
             analysis_enqueue=self._enqueue_sentry_analysis,
         )
         self.alert_task: asyncio.Task[None] | None = None

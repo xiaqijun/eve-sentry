@@ -139,20 +139,24 @@ def format_personnel_alert_message(
     """Format the current personnel snapshot as a compact Markdown table."""
     system_name = _system_label(state)
     hostile_count = state.get("hostile_count")
-    count = hostile_count if isinstance(hostile_count, int) else 0
+    detected_count = hostile_count if isinstance(hostile_count, int) else 0
+    personnel = state.get("personnel")
+    confirmed_personnel = [
+        item
+        for item in personnel if isinstance(item, dict)
+    ] if isinstance(personnel, list) else []
     lines = [
         "### ⚠️ 敌对事件",
-        f"**当前敌对**｜{count} 人",
+        f"**敌对**｜{detected_count} 人",
+        f"**识别**｜{len(confirmed_personnel)} 人",
         "| 人员 | 星系 | zKill |",
         "| --- | --- | --- |",
     ]
-    personnel = state.get("personnel")
-    if not isinstance(personnel, list) or not personnel:
-        lines.append("| 暂无已识别人员 | — | — |")
+    if not confirmed_personnel:
+        lines.append("| 暂无已确认敌对 | — | — |")
     else:
-        for item in personnel:
-            if isinstance(item, dict):
-                lines.append(_personnel_table_row(item, system_name, occurred_at))
+        for item in confirmed_personnel:
+            lines.append(_personnel_table_row(item, system_name, occurred_at))
     return "\n".join(lines)
 
 
@@ -205,7 +209,7 @@ def format_monitoring_nodes_message(
             .casefold(),
         ),
     )
-    lines = [f"在线节点｜{len(ordered)}"]
+    lines = [f"在线监控节点｜{len(ordered)}"]
     if not ordered:
         lines.append("暂无在线监控节点")
         return "\n".join(lines)
@@ -259,6 +263,7 @@ class EveSentryAlertRelay:
         min_level: str = "",
         public_url: str = "",
         reconnect_delay_seconds: float = 5.0,
+        personnel_push_interval_seconds: float = 0.0,
         analysis_enqueue: Callable[[str, dict[str, Any], str, str], Awaitable[bool]]
         | None = None,
     ) -> None:
@@ -270,8 +275,14 @@ class EveSentryAlertRelay:
         self.min_level = min_level.strip().casefold()
         self.public_url = public_url.strip()
         self.reconnect_delay_seconds = max(0.2, float(reconnect_delay_seconds))
+        self.personnel_push_interval_seconds = max(
+            0.0, float(personnel_push_interval_seconds)
+        )
         self.analysis_enqueue = analysis_enqueue
         self._active_alert_ids: set[str] = set()
+        self._personnel_last_sent_at: dict[str, float] = {}
+        self._personnel_pending: dict[str, tuple[dict[str, Any], str]] = {}
+        self._personnel_flush_tasks: dict[str, asyncio.Task[None]] = {}
 
     @property
     def enabled(self) -> bool:
@@ -535,6 +546,72 @@ class EveSentryAlertRelay:
         )
         return failed == 0
 
+    async def queue_system_personnel_update(
+        self,
+        state: dict[str, Any],
+        occurred_at: str,
+    ) -> bool:
+        """Send immediately when allowed, otherwise coalesce into one trailing update."""
+        if self.personnel_push_interval_seconds <= 0:
+            return await self.deliver_system_personnel_update(state, occurred_at)
+
+        system_key = _system_label(state).casefold()
+        loop = asyncio.get_running_loop()
+        last_sent_at = self._personnel_last_sent_at.get(system_key)
+        if (
+            last_sent_at is None
+            or loop.time() - last_sent_at >= self.personnel_push_interval_seconds
+        ):
+            self._discard_pending_personnel_update(system_key)
+            delivered = await self.deliver_system_personnel_update(state, occurred_at)
+            if delivered:
+                self._personnel_last_sent_at[system_key] = loop.time()
+            return delivered
+
+        self._personnel_pending[system_key] = (dict(state), occurred_at)
+        task = self._personnel_flush_tasks.get(system_key)
+        if task is None or task.done():
+            delay = max(
+                0.0,
+                self.personnel_push_interval_seconds
+                - (loop.time() - last_sent_at),
+            )
+            self._personnel_flush_tasks[system_key] = asyncio.create_task(
+                self._flush_personnel_update(system_key, delay),
+                name=f"eve-sentry-personnel:{system_key}",
+            )
+        return True
+
+    def _discard_pending_personnel_update(self, system_key: str) -> None:
+        self._personnel_pending.pop(system_key, None)
+        task = self._personnel_flush_tasks.pop(system_key, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _flush_personnel_update(self, system_key: str, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            while system_key in self._personnel_pending:
+                state, occurred_at = self._personnel_pending[system_key]
+                delivered = await self.deliver_system_personnel_update(
+                    state, occurred_at
+                )
+                if not delivered:
+                    await asyncio.sleep(self.personnel_push_interval_seconds)
+                    continue
+                self._personnel_last_sent_at[system_key] = (
+                    asyncio.get_running_loop().time()
+                )
+                current = self._personnel_pending.get(system_key)
+                if current is not None and current[0] is state:
+                    self._personnel_pending.pop(system_key, None)
+                if system_key in self._personnel_pending:
+                    await asyncio.sleep(self.personnel_push_interval_seconds)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._personnel_flush_tasks.pop(system_key, None)
+
     async def deliver_monitoring_node_change(
         self,
         change: dict[str, Any],
@@ -716,6 +793,14 @@ class EveSentryAlertRelay:
         current = _active_system_state(active_items.values(), generated_at)
         previous, initialized = await self._load_system_alert_state()
 
+        active_personnel_systems = {
+            system_key
+            for system_key, state in current.items()
+            if state.get("personnel")
+        }
+        for system_key in set(self._personnel_pending) - active_personnel_systems:
+            self._discard_pending_personnel_update(system_key)
+
         for system_key in current.keys() & previous.keys():
             current[system_key]["episode_id"] = previous[system_key]["episode_id"]
 
@@ -800,7 +885,7 @@ class EveSentryAlertRelay:
                     previous_personnel,
                 )
                 personnel_updates_succeeded = (
-                    await self.deliver_system_personnel_update(
+                    await self.queue_system_personnel_update(
                         update_state, generated_at
                     )
                     and personnel_updates_succeeded
