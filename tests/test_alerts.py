@@ -199,7 +199,7 @@ def test_alert_subscription_commands_and_message_format() -> None:
     assert "**敌对**｜1 人" in personnel
     assert "**识别**｜1 人" in personnel
     assert "| 人员 | 星系 | zKill |" in personnel
-    assert "| Alice | S-KSWL | [🔗](https://zkillboard.com/character/12345/) |" in personnel
+    assert "| Alice | S-KSWL | https://zkillboard.com/character/12345/ |" in personnel
     assert "**时间**" not in personnel
     moved_personnel = format_personnel_alert_message(
         {
@@ -219,7 +219,7 @@ def test_alert_subscription_commands_and_message_format() -> None:
         },
         "2026-07-20T16:22:29+00:00",
     )
-    assert "| Alice | S-KSWL → Tama | [🔗](https://zkillboard.com/character/12345/) |" in moved_personnel
+    assert "| Alice | S-KSWL → Tama | https://zkillboard.com/character/12345/ |" in moved_personnel
     assert "**时间**" not in moved_personnel
 
 
@@ -273,7 +273,7 @@ def test_personnel_affiliations_fall_back_to_alert_metadata_and_profiles() -> No
         state,
         "2026-07-20T16:22:29+00:00",
     )
-    assert "| Alice | S-KSWL | [🔗](https://zkillboard.com/character/12345/) |" in message
+    assert "| Alice | S-KSWL | https://zkillboard.com/character/12345/ |" in message
     assert "Glory Navy" not in message
     assert "Fraternity." not in message
     assert "**时间**" not in message

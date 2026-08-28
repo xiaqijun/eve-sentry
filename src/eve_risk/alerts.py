@@ -1441,7 +1441,7 @@ def _personnel_table_row(
     system = str(item.get("system_display") or item.get("system_name") or fallback_system)
     character_id = str(item.get("character_id") or "").strip()
     zkill = (
-        f"[🔗](https://zkillboard.com/character/{character_id}/)"
+        f"https://zkillboard.com/character/{character_id}/"
         if character_id.isdigit()
         else "—"
     )
