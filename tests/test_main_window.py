@@ -19,7 +19,6 @@ from PyQt6.QtWidgets import (
 from app.channels.identity_logs import IdentityScanResult
 from app.ui.main_window import MainWindow, PreviewCaptureWorker
 from app.ui.settings import SettingsPanel
-from app.ui.settings import DEFAULT_CHATLOG_DIR
 from app.ui.settings import SETTINGS_INLINE_INPUT_WIDTH
 from app.ui.settings import SETTINGS_INPUT_HEIGHT
 from app.ui.settings import SETTINGS_LONG_INPUT_WIDTH
@@ -1916,7 +1915,6 @@ def test_start_monitor_creates_worker_for_each_eve_window(monkeypatch):
 
     monkeypatch.setattr("app.ui.main_window.MonitorWorker", FakeWorker)
     monkeypatch.setattr("app.ui.main_window.Capturer", lambda: object())
-    monkeypatch.setattr("app.ui.main_window.OCREngine", lambda **kwargs: object())
 
     window = MainWindow.__new__(MainWindow)
     window._capturer = FakeCapturer()
