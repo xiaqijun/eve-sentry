@@ -55,6 +55,33 @@ class AuthTestResolver:
         return {"corporation_id": int(corporation_id), "name": "Blue Corp"}
 
 
+class HostileTestResolver:
+    def __init__(self, names):
+        self._ids_by_name = {
+            str(name): 1000 + index for index, name in enumerate(names, start=1)
+        }
+        self._names_by_id = {
+            character_id: name for name, character_id in self._ids_by_name.items()
+        }
+
+    def enrich_observation(self, observation):
+        name = observation.names[0]
+        character_id = self._ids_by_name.get(name)
+        observation.character_ids = [character_id] if character_id else []
+        observation.metadata["esi_resolution"] = {
+            "attempted": True,
+            "resolved_character_names": [name] if character_id else [],
+        }
+        return observation
+
+    def character_profile(self, character_id):
+        return {
+            "character_id": int(character_id),
+            "name": self._names_by_id[int(character_id)],
+            "contact_standing": -5.0,
+        }
+
+
 def test_active_hostile_counts_merge_case_variant_system_names():
     counts = _active_hostile_counts(
         [
@@ -1049,10 +1076,12 @@ def test_legacy_event_stream_never_uses_alert_history(tmp_path):
 
 
 def test_remote_alert_count_uses_latest_detector_snapshot_total(tmp_path):
+    names = ["Shisen Hanomaa", "AddisonW"]
     store = IntelStore(
         tmp_path / "intel.json",
         systems={},
         links=[],
+        resolver=HostileTestResolver(names),
         scorer=ScoringEngine(cooldown_seconds=0),
     )
     server = IntelHTTPServer(store, port=0)
@@ -1089,6 +1118,7 @@ def test_remote_alert_count_uses_latest_detector_snapshot_total(tmp_path):
         assert second_status == 201
         assert second["created"] == 1
         assert second["refreshed"] == 1
+        assert store.wait_for_esi_idle(timeout=1)
 
         status, payload = request_json(f"{server.url}/api/v1/bootstrap")
         assert status == 200
@@ -1133,10 +1163,12 @@ def test_remote_alert_count_uses_latest_detector_snapshot_total(tmp_path):
 
 
 def test_detector_alert_exposes_complete_active_roster_without_three_name_cap(tmp_path):
+    names = ["Alpha", "Bravo", "Charlie", "Delta"]
     store = IntelStore(
         tmp_path / "intel.json",
         systems={},
         links=[],
+        resolver=HostileTestResolver(names),
         scorer=ScoringEngine(cooldown_seconds=0),
     )
     server = IntelHTTPServer(store, port=0)
@@ -1151,11 +1183,12 @@ def test_detector_alert_exposes_complete_active_roster_without_three_name_cap(tm
                 "source_instance": "EVE - Four",
                 "system_name": "S-KSWL",
                 "seen_at": "2026-07-24T09:09:16+00:00",
-                "names": ["Alpha", "Bravo", "Charlie", "Delta"],
+                "names": names,
                 "hostile_icon_count": 4,
             },
         )
         assert status == 201
+        assert store.wait_for_esi_idle(timeout=1)
 
         status, payload = request_json(f"{server.url}/api/v1/alerts")
         assert status == 200
@@ -4245,6 +4278,52 @@ def test_v1_active_alerts_exclude_friendly_classifications(tmp_path):
         assert "event: alert" not in body
     finally:
         server.stop()
+
+
+def test_detector_active_alert_classification_precedes_aggregate_icon_count():
+    handler = IntelRequestHandler.__new__(IntelRequestHandler)
+    base_item = {
+        "source": "eve-sentry-detector",
+        "target_type": "character",
+        "name": "Resolved Pilot",
+        "character_id": 101,
+        "metadata": {
+            "hostile_icon_count": 3,
+            "identity_status": "resolved",
+        },
+    }
+
+    assert not handler._active_alert_is_hostile(
+        {"classification": "white"},
+        base_item,
+    )
+    assert handler._active_alert_is_hostile(
+        {"classification": "red"},
+        base_item,
+    )
+    assert not handler._active_alert_is_hostile(
+        {"classification": ""},
+        {
+            **base_item,
+            "name": "Unresolved OCR Text",
+            "metadata": {
+                "hostile_icon_count": 3,
+                "identity_status": "unresolved",
+            },
+        },
+    )
+    assert handler._active_alert_is_hostile(
+        {"classification": ""},
+        {
+            **base_item,
+            "target_type": "system",
+            "name": "",
+            "metadata": {
+                "hostile_icon_count": 3,
+                "presence_only": True,
+            },
+        },
+    )
 
 
 def test_v1_alerts_ignores_legacy_active_item_without_source_ids(tmp_path):

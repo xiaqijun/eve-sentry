@@ -1131,7 +1131,7 @@ def test_postgres_ocr_snapshot_persists_old_system_as_inactive():
     assert persisted_rows == [old_item.to_dict()]
 
 
-def test_postgres_ocr_snapshot_selects_names_from_full_frame_evidence(tmp_path):
+def test_postgres_ocr_snapshot_uses_complete_roster_not_coordinate_evidence(tmp_path):
     class FakeConnection:
         def __enter__(self):
             return self
@@ -1156,7 +1156,7 @@ def test_postgres_ocr_snapshot_selects_names_from_full_frame_evidence(tmp_path):
                 "source_instance": "EVE - Pilot",
                 "system_name": "S-KSWL",
                 "hostile_icon_count": 1,
-                "names": [],
+                "names": ["Friendly Pilot", "Enemy Pilot"],
                 "ocr_candidates": [
                     {
                         "text": "Friendly Pilot",
@@ -1188,9 +1188,9 @@ def test_postgres_ocr_snapshot_selects_names_from_full_frame_evidence(tmp_path):
     finally:
         IntelStore.close(store)
 
-    assert result["created"] == 1
+    assert result["created"] == 2
     active = store.list_active_intel(source="eve-sentry-detector")
-    assert [item["name"] for item in active] == ["STARKEY 07"]
+    assert {item["name"] for item in active} == {"Friendly Pilot", "Enemy Pilot"}
 
 
 def test_postgres_hostile_presence_persists_active_rows_and_wave_changes(tmp_path):

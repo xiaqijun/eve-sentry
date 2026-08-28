@@ -18,17 +18,25 @@ from app.server.intel_store import (
 )
 
 
-def test_full_ocr_candidate_list_is_resolved_and_profiled_through_esi(tmp_path):
+def test_record_ocr_snapshot_resolves_every_full_roster_name_through_esi(tmp_path):
     resolved_names = []
-    profiled_ids = []
 
     class Resolver:
-        def resolve_names(self, names):
-            resolved_names.append(list(names))
-            return [
-                SimpleNamespace(name="Alice", category="character", entity_id=101),
-                SimpleNamespace(name="Tama", category="solar_system", entity_id=3001),
-            ]
+        def enrich_observation(self, observation):
+            name = observation.names[0]
+            resolved_names.append(name)
+            character_id = {
+                "Friendly Pilot": 101,
+                "Hostile Pilot": 102,
+            }.get(name)
+            observation.character_ids = [character_id] if character_id else []
+            return observation
+
+        def character_profile(self, character_id):
+            return {
+                "character_id": int(character_id),
+                "name": "Friendly Pilot" if character_id == 101 else "Hostile Pilot",
+            }
 
     store = IntelStore(
         tmp_path / "intel_reports.json",
@@ -36,15 +44,26 @@ def test_full_ocr_candidate_list_is_resolved_and_profiled_through_esi(tmp_path):
         links=[],
         resolver=Resolver(),
     )
-    store.character_profile = lambda character_id: profiled_ids.append(character_id) or {}
     try:
-        assert store._queue_ocr_candidate_esi_lookup(["Alice", "Tama"])
+        result = store.record_ocr_snapshot(
+            {
+                "client_id": "detector-client:test",
+                "source_instance": "EVE - Pilot",
+                "system_name": "S-KSWL",
+                "hostile_icon_count": 2,
+                "names": ["Friendly Pilot", "Hostile Pilot", "Unreadable Pilot"],
+            }
+        )
         assert store.wait_for_esi_idle(timeout=1.0)
     finally:
         store.close()
 
-    assert resolved_names == [["Alice", "Tama"]]
-    assert profiled_ids == [101]
+    assert result["created"] == 3
+    assert set(resolved_names) == {
+        "Friendly Pilot",
+        "Hostile Pilot",
+        "Unreadable Pilot",
+    }
 
 
 def test_resume_pending_ocr_identity_tasks_after_restart(tmp_path):
@@ -492,7 +511,7 @@ def test_record_ocr_snapshot_creates_and_refreshes_active_intel(tmp_path):
     assert len(store.list_observations()) == 2
 
 
-def test_record_ocr_snapshot_selects_hostile_names_from_full_frame_evidence(tmp_path):
+def test_record_ocr_snapshot_uses_complete_roster_not_coordinate_evidence(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
 
     store.record_ocr_snapshot(
@@ -514,10 +533,10 @@ def test_record_ocr_snapshot_selects_hostile_names_from_full_frame_evidence(tmp_
     )
 
     active = store.list_active_intel(source="eve-sentry-detector")
-    assert [item["name"] for item in active] == ["STARKEY 07"]
+    assert {item["name"] for item in active} == {"Friendly Pilot", "Enemy Pilot"}
 
 
-def test_full_frame_evidence_accepts_text_box_merged_with_hostile_icon(tmp_path):
+def test_record_ocr_snapshot_does_not_add_coordinate_only_names(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
 
     store.record_ocr_snapshot(
@@ -540,7 +559,82 @@ def test_full_frame_evidence_accepts_text_box_merged_with_hostile_icon(tmp_path)
     )
 
     active = store.list_active_intel(source="eve-sentry-detector")
-    assert [item["name"] for item in active] == ["Jone Rayl"]
+    assert {item["name"] for item in active} == {
+        "784 fvtr",
+        "Hajimi6",
+        "Jone Rayl",
+        "Misriah 2442",
+    }
+
+
+def test_detector_hostility_uses_resolved_identity_instead_of_aggregate_icon_count(
+    tmp_path,
+):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+
+    base = {
+        "active": True,
+        "source": "eve-sentry-detector",
+        "target_type": "character",
+        "system_name": "S-KSWL",
+        "metadata": {
+            "hostile_icon_count": 4,
+            "identity_status": "resolved",
+        },
+    }
+
+    assert not store._active_item_is_hostile(
+        {
+            **base,
+            "name": "Friendly Pilot",
+            "character_id": 101,
+            "metadata": {**base["metadata"], "contact_standing": 10.0},
+        }
+    )
+    assert store._active_item_is_hostile(
+        {
+            **base,
+            "name": "Hostile Pilot",
+            "character_id": 102,
+            "metadata": {**base["metadata"], "contact_standing": -5.0},
+        }
+    )
+    assert store._active_item_is_hostile(
+        {
+            **base,
+            "name": "Neutral Pilot",
+            "character_id": 103,
+            "metadata": {**base["metadata"], "contact_standing": 0.0},
+        }
+    )
+    assert not store._active_item_is_hostile(
+        {
+            **base,
+            "name": "Unresolved OCR Text",
+            "character_id": None,
+            "metadata": {
+                "hostile_icon_count": 4,
+                "identity_status": "unresolved",
+            },
+        }
+    )
+    assert store._active_item_is_hostile(
+        {
+            **base,
+            "target_type": "system",
+            "name": "",
+            "character_id": None,
+            "metadata": {
+                "hostile_icon_count": 4,
+                "presence_only": True,
+            },
+        }
+    )
 
 
 def test_active_character_summary_keeps_generated_zkill_link(tmp_path):
@@ -720,7 +814,28 @@ def test_ocr_missing_confirmations_do_not_clear_presence_state(tmp_path):
 
 
 def test_map_does_not_double_count_presence_and_ocr_for_same_client(tmp_path):
-    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    class HostileResolver:
+        def enrich_observation(self, observation):
+            observation.character_ids = [101]
+            observation.metadata["esi_resolution"] = {
+                "attempted": True,
+                "resolved_character_names": list(observation.names),
+            }
+            return observation
+
+        def character_profile(self, character_id):
+            return {
+                "character_id": int(character_id),
+                "name": "Alice",
+                "contact_standing": -5.0,
+            }
+
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=HostileResolver(),
+    )
     base = {
         "client_id": "detector-client:test",
         "source_instance": "EVE - Pilot",
@@ -741,6 +856,7 @@ def test_map_does_not_double_count_presence_and_ocr_for_same_client(tmp_path):
             "seen_at": "2026-08-07T10:00:01+00:00",
         }
     )
+    assert store.wait_for_esi_idle(timeout=1)
 
     system = next(
         item for item in store.snapshot()["systems"] if item["name"] == "S-KSWL"

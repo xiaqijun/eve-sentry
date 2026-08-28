@@ -1784,6 +1784,16 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             metadata = item.get("metadata")
             if not isinstance(metadata, dict) or "hostile_icon_count" not in metadata:
                 continue
+            if not store._active_item_is_hostile(item):
+                continue
+            if (
+                not metadata.get("presence_only")
+                and (
+                    metadata.get("identity_status") != "resolved"
+                    or not item.get("character_id")
+                )
+            ):
+                continue
             client_id = str(
                 metadata.get("client_id")
                 or item.get("source_instance")
@@ -1884,11 +1894,17 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             else {}
         )
         source = str(active_item.get("source") or "").strip().casefold()
-        if source == "eve-sentry-detector" and "hostile_icon_count" in metadata:
+        if source == "eve-sentry-detector" and metadata.get("presence_only"):
             try:
                 return int(metadata.get("hostile_icon_count") or 0) > 0
             except (TypeError, ValueError):
                 return False
+
+        if source == "eve-sentry-detector" and (
+            metadata.get("identity_status") != "resolved"
+            or not active_item.get("character_id")
+        ):
+            return False
 
         classification = str(alert.get("classification") or "").strip().casefold()
         if classification == "white":

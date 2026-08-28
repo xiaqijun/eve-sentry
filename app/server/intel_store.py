@@ -35,7 +35,7 @@ from app.core.active_intel import (
     contains_clear_signal,
 )
 from app.core.models import Observation, ThreatEvent
-from app.engine.ocr_names import is_plausible_ocr_name, ocr_candidate_names
+from app.engine.ocr_names import is_plausible_ocr_name
 from app.intel.scoring import ChannelMention
 from app.server.esi_worker import EsiWorker
 
@@ -63,79 +63,6 @@ class HeartbeatOwnershipConflict(ValueError):
 def utc_now_iso() -> str:
     """Return an ISO-8601 UTC timestamp with second precision."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def _hostile_names_from_ocr_evidence(payload: dict[str, Any]) -> list[str] | None:
-    """Select hostile-row OCR text from full-frame client evidence.
-
-    The monitor uploads every OCR text box and every red icon.  Matching is
-    deliberately server-side so the client only supplies visual evidence.
-    """
-    raw_candidates = payload.get("ocr_candidates")
-    raw_icons = payload.get("hostile_icons")
-    if not isinstance(raw_candidates, list) or not isinstance(raw_icons, list):
-        return None
-
-    icons: list[tuple[float, float, float, float]] = []
-    for item in raw_icons:
-        if not isinstance(item, dict):
-            continue
-        try:
-            left = float(item["left"])
-            top = float(item["top"])
-            right = float(item["right"])
-            bottom = float(item["bottom"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if right > left and bottom > top:
-            icons.append((left, top, right, bottom))
-    if not icons:
-        return []
-    icons.sort(key=lambda icon: (icon[1], icon[0]))
-
-    candidates: list[tuple[str, float]] = []
-    for item in raw_candidates:
-        if not isinstance(item, dict):
-            continue
-        text = str(item.get("text") or "").strip()
-        if not text:
-            continue
-        try:
-            left = float(item["left"])
-            top = float(item["top"])
-            right = float(item["right"])
-            bottom = float(item["bottom"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if right > left and bottom > top:
-            candidates.append((text, (top + bottom) / 2))
-
-    row_half_height = max(16.0, max(icon[3] - icon[1] for icon in icons) + 5) / 2
-    names: list[str] = []
-    seen: set[str] = set()
-    for index, icon in enumerate(icons):
-        center_y = (icon[1] + icon[3]) / 2
-        row_top = (
-            (icons[index - 1][1] + icons[index - 1][3] + icon[1] + icon[3]) / 4
-            if index > 0
-            else center_y - row_half_height
-        )
-        row_bottom = (
-            (icon[1] + icon[3] + icons[index + 1][1] + icons[index + 1][3]) / 4
-            if index + 1 < len(icons)
-            else center_y + row_half_height
-        )
-        for text, candidate_center_y in candidates:
-            # OCR may either exclude the standing icon or merge it into the
-            # same text box.  Horizontal filtering therefore drops valid
-            # names; vertical row membership is the stable evidence.
-            if not (row_top <= candidate_center_y < row_bottom):
-                continue
-            key = text.casefold()
-            if key not in seen:
-                seen.add(key)
-                names.append(text)
-    return ocr_candidate_names([(name, 1.0) for name in names])
 
 
 def _ocr_i_l_candidates(name: str) -> list[str]:
@@ -195,11 +122,6 @@ class _OcrEsiTask:
     report_id: str
     client_id: str
     original_name: str
-
-
-@dataclass(frozen=True)
-class _OcrCandidateEsiTask:
-    names: tuple[str, ...]
 
 
 @dataclass
@@ -622,11 +544,8 @@ class IntelStore:
 
     def _process_ocr_esi_task(
         self,
-        task: _OcrEsiTask | _OcrCandidateEsiTask,
+        task: _OcrEsiTask,
     ) -> None:
-        if isinstance(task, _OcrCandidateEsiTask):
-            self._resolve_ocr_candidate_identities(task.names)
-            return
         with self._lock:
             current_report = next(
                 (
@@ -778,35 +697,6 @@ class IntelStore:
                 item,
                 previous_active_id=previous_active_id,
             )
-
-    def _resolve_ocr_candidate_identities(self, names: tuple[str, ...]) -> None:
-        """Warm ESI identity and affiliation caches for a full OCR candidate list."""
-        if self._resolver is None or not hasattr(self._resolver, "resolve_names"):
-            return
-        try:
-            resolved = self._resolver.resolve_names(list(names))
-        except Exception:
-            logger.exception("Could not resolve full OCR candidate list through ESI")
-            return
-        for item in resolved:
-            if str(getattr(item, "category", "")).casefold() != "character":
-                continue
-            character_id = self._optional_int(getattr(item, "entity_id", None))
-            if character_id is not None:
-                self.character_profile(character_id)
-
-    def _queue_ocr_candidate_esi_lookup(self, names: list[str]) -> bool:
-        """Queue one cached batch lookup for all client-recognized names."""
-        if self._resolver is None or not names:
-            return False
-        normalized = tuple(dict.fromkeys(name.strip() for name in names if name.strip()))
-        if not normalized:
-            return False
-        digest = hashlib.sha256("\0".join(normalized).encode("utf-8")).hexdigest()
-        return self._esi_worker.submit(
-            f"ocr-candidates:{digest}",
-            _OcrCandidateEsiTask(normalized),
-        )
 
     def _apply_hostile_icon_metadata(
         self,
@@ -1345,13 +1235,8 @@ class IntelStore:
             self._optional_int(payload.get("hostile_icon_count")) or 0,
         )
         defer_esi = self._resolver is not None or self._enricher is not None
-        candidate_names = self._normalize_ocr_names(
-            payload.get("names"),
-            resolve=False,
-        )
-        evidence_names = _hostile_names_from_ocr_evidence(payload)
         names = self._normalize_ocr_names(
-            evidence_names if evidence_names is not None else payload.get("names"),
+            payload.get("names"),
             resolve=not defer_esi,
         )
         snapshot_metadata = (
@@ -1517,8 +1402,6 @@ class IntelStore:
 
         for task in esi_tasks:
             self._esi_worker.submit(task.active_id, task)
-        if evidence_names is not None:
-            self._queue_ocr_candidate_esi_lookup(candidate_names)
         return result.to_dict(include_active=False)
 
     def record_hostile_presence(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -4034,7 +3917,7 @@ class IntelStore:
     def _active_item_is_hostile(self, item: dict[str, Any]) -> bool:
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         source = str(item.get("source") or "").strip().casefold()
-        if source == "eve-sentry-detector" and "hostile_icon_count" in metadata:
+        if source == "eve-sentry-detector" and metadata.get("presence_only"):
             try:
                 return int(metadata.get("hostile_icon_count") or 0) > 0
             except (TypeError, ValueError):
