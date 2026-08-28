@@ -39,6 +39,17 @@ EVE SSO。EVE SSO 登录和态势页 ESI 授权共用一个应用和回调：
 Listener 身份，也不会发送 `Authorization` 请求头。这只是客户端行为，不会绕过服务端
 策略；`enforce` 模式仍会拒绝未认证的受保护请求。
 
+## 公共 ESI 代理边界
+
+生产环境可以把角色、军团、联盟和星系等无用户令牌的公共 ESI 请求交给独立 Gateway，
+以降低主服务端到 ESI 的网络抖动。Gateway 只接收白名单路径，并通过独立服务密钥和
+ZeroTier 来源限制保护；114 保留本地直连回退。
+
+Gateway 不接触 EVE SSO 的 OAuth token，也不处理登录回调、角色当前位置或联系人
+standings。认证 ESI 仍由 114 上的 `EsiAuthenticatedSession` 发起。除非完成 token
+加密存储、日志脱敏、密钥轮换、CSRF、备份和回滚评审，否则不要把 OAuth 流程迁移到
+Gateway。
+
 HTTP 可以启用认证，但密码、Cookie 和 API 密钥会明文经过网络。可信内网可按实际环境
 使用 HTTP，公网入口建议使用 HTTPS。
 

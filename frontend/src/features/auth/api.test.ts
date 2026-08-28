@@ -6,6 +6,7 @@ import {
   deleteKey,
   enableKey,
   fetchSecuritySettings,
+  fetchEsiGateway,
   listAdminClients,
   listAdminUsers,
   listAudit,
@@ -94,6 +95,22 @@ describe("authenticated API client", () => {
     await expect(listAdminClients()).resolves.toEqual(payload);
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/admin/clients",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
+  it("loads ESI gateway observability for administrators", async () => {
+    const payload = {
+      gateway: { configured: true, reachable: true },
+      client_metrics: { counts: { "get_system:miss:remote": 2 } },
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(payload), { status: 200 }),
+    );
+
+    await expect(fetchEsiGateway()).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/admin/esi-gateway",
       expect.objectContaining({ credentials: "include" }),
     );
   });

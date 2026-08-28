@@ -4,6 +4,7 @@ import {
   IconBook,
   IconDashboard,
   IconDesktop,
+  IconCloud,
   IconFile,
   IconHistory,
   IconIdcard,
@@ -32,6 +33,7 @@ const PAGE_META: Record<string, { title: string }> = {
   "/admin/security": { title: "安全设置" },
   "/admin/whitelist": { title: "白名单管理" },
   "/admin/audit": { title: "审计日志" },
+  "/admin/esi-gateway": { title: "ESI 网关观测" },
 };
 
 const { Header, Content, Sider } = Layout;
@@ -103,6 +105,9 @@ export function ManagementShell() {
               </MenuItem>
               <MenuItem key="/admin/audit">
                 <NavLink className={navigationClass} to="/admin/audit"><IconFile /><span>审计日志</span></NavLink>
+              </MenuItem>
+              <MenuItem key="/admin/esi-gateway">
+                <NavLink className={navigationClass} to="/admin/esi-gateway"><IconCloud /><span>ESI 网关观测</span></NavLink>
               </MenuItem>
             </MenuItemGroup>
           ) : null}

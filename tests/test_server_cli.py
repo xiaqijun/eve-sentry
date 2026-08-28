@@ -401,6 +401,9 @@ def test_server_cli_builds_esi_config_summary(tmp_path):
     summary = server_main._build_esi_config(args)
 
     assert summary == {
+        "backend": "local",
+        "gateway_url": "",
+        "local_fallback": True,
         "client_id_configured": True,
         "redirect_uri": "http://127.0.0.1:9000/callback",
         "token_file": str(token_file),
@@ -424,6 +427,29 @@ def test_server_cli_login_implies_esi_for_server_start():
     )
 
     assert server_main._should_enable_esi(args) is True
+
+
+def test_server_cli_remote_esi_requires_gateway_credentials():
+    parser = build_arg_parser()
+    missing_url = parser.parse_args(
+        ["--esi-backend", "remote", "--esi-gateway-token", "x" * 32]
+    )
+    with pytest.raises(SystemExit):
+        server_main._validate_args(parser, missing_url)
+
+    valid = parser.parse_args(
+        [
+            "--storage",
+            "json",
+            "--esi-backend",
+            "remote",
+            "--esi-gateway-url",
+            "http://10.233.53.17:8787",
+            "--esi-gateway-token",
+            "x" * 32,
+        ]
+    )
+    server_main._validate_args(parser, valid)
 
 
 def test_server_cli_can_disable_key_risk_control_while_auth_keeps_esi_available():

@@ -1517,6 +1517,31 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             public_status["degraded"] = True
         return public_status
 
+    def _esi_gateway_observability(self) -> dict[str, Any]:
+        """Return admin-only gateway and client metrics without credentials."""
+        config = self._esi_config()
+        resolver = self._esi_public_resolver()
+        client = getattr(resolver, "client", None) if resolver is not None else None
+        gateway = {
+            "configured": callable(getattr(client, "gateway_health", None)),
+            "reachable": False,
+            "url": str(config.get("gateway_url") or ""),
+            "checked_at": utc_now_iso(),
+        }
+        health = getattr(client, "gateway_health", None)
+        if callable(health):
+            try:
+                gateway["health"] = health()
+                gateway["reachable"] = True
+            except Exception as exc:
+                gateway["error"] = str(exc)
+        metrics = getattr(getattr(client, "metrics", None), "snapshot", None)
+        return {
+            "gateway": gateway,
+            "client_metrics": metrics() if callable(metrics) else {},
+            "esi": self._public_esi_health(),
+        }
+
     def _event_bootstrap_payload(
         self,
         active_items: list[dict[str, Any]],

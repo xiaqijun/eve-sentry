@@ -307,6 +307,7 @@ class AuthHttpMixin:
             "/api/v1/admin/corporations",
             "/api/v1/admin/audit",
             "/api/v1/admin/security-settings",
+            "/api/v1/admin/esi-gateway",
         }
         if path not in auth_paths:
             return False
@@ -341,6 +342,9 @@ class AuthHttpMixin:
             return True
         if path == "/api/v1/admin/audit":
             self._send_json({"audit": service.repository.list_audit()})
+            return True
+        if path == "/api/v1/admin/esi-gateway":
+            self._send_json(self._esi_gateway_observability())
             return True
         return False
 

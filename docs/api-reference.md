@@ -44,6 +44,7 @@ Authorization: Bearer eve_xxx
 | `POST` | `/api/v1/client/identity-checks` | 幂等提交本地日志文件名中的角色 ID 并立即返回任务状态；身份校验在服务端异步执行 |
 | `POST` | `/api/v1/client/identity-check` | 旧版同步身份校验，仅用于滚动升级兼容 |
 | `GET/POST` | `/api/v1/admin/users` | 用户列表和创建用户 |
+| `GET` | `/api/v1/admin/esi-gateway` | ESI Gateway 健康和客户端指标（管理员） |
 | `GET/POST` | `/api/v1/admin/security-settings` | 查看或切换服务端密钥风控 |
 | `POST` | `/api/v1/admin/users/{id}/status` | 启用或禁用用户 |
 | `POST` | `/api/v1/admin/users/{id}/reset-password` | 重置管理员密码 |

@@ -127,3 +127,42 @@ export interface AdminClientsSnapshot {
   };
   keys: AdminClientKeyUsage[];
 }
+
+export interface EsiGatewayHealth {
+  ok?: boolean;
+  service?: string;
+  version?: string;
+  uptime_seconds?: number;
+  requests?: number;
+  errors?: number;
+  cache_hits?: number;
+  cache_entries?: number;
+  cache_hit_rate?: number;
+  rate_limit_per_second?: number;
+  latency_ms?: {
+    last?: number;
+    average?: number;
+  };
+  last_error_at?: number | null;
+}
+
+export interface EsiGatewaySnapshot {
+  gateway: {
+    configured: boolean;
+    reachable: boolean;
+    url?: string;
+    checked_at?: string;
+    error?: string;
+    health?: EsiGatewayHealth;
+  };
+  client_metrics: {
+    counts?: Record<string, number>;
+    durations_ms?: Record<string, {
+      count?: number;
+      last?: number;
+      p50?: number;
+      p95?: number;
+    }>;
+  };
+  esi?: Record<string, unknown>;
+}

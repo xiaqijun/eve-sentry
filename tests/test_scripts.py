@@ -1984,6 +1984,32 @@ def test_run_server_maps_zkillboard_environment_options():
     assert disabled == ["--disable-killboard"]
 
 
+def test_run_server_maps_remote_esi_environment_options():
+    module = _load_script_module("run_server_remote_esi", "scripts/run_server.py")
+
+    argv = module.build_server_argv(
+        {
+            "EVE_SENTRY_SERVER_ESI_BACKEND": "remote",
+            "EVE_SENTRY_SERVER_ESI_GATEWAY_URL": "http://10.233.53.17:8787",
+            "EVE_SENTRY_SERVER_ESI_GATEWAY_TOKEN": "x" * 32,
+            "EVE_SENTRY_SERVER_ESI_REMOTE_TIMEOUT": "8",
+            "EVE_SENTRY_SERVER_ESI_NO_LOCAL_FALLBACK": "1",
+        }
+    )
+
+    assert argv == [
+        "--esi-backend",
+        "remote",
+        "--esi-gateway-url",
+        "http://10.233.53.17:8787",
+        "--esi-gateway-token",
+        "x" * 32,
+        "--esi-remote-timeout",
+        "8",
+        "--esi-no-local-fallback",
+    ]
+
+
 def test_run_server_main_appends_cli_args(monkeypatch):
     module = _load_script_module("run_server", "scripts/run_server.py")
     recorded = []

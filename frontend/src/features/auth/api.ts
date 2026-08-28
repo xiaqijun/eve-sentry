@@ -10,6 +10,7 @@ import type {
   ClientsSnapshot,
   ClientHeartbeatRecord,
   SecuritySettings,
+  EsiGatewaySnapshot,
 } from "./types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "";
@@ -272,4 +273,8 @@ export async function listAdminClients(): Promise<AdminClientsSnapshot> {
     clients: normalizedClients,
     keys: arrayOrEmpty<AdminClientKeyUsage>(payload.keys),
   };
+}
+
+export async function fetchEsiGateway(): Promise<EsiGatewaySnapshot> {
+  return apiRequest<EsiGatewaySnapshot>("/api/v1/admin/esi-gateway");
 }

@@ -6,9 +6,13 @@
 OpenResty/Nginx :80/:443
   -> frontend/dist
   -> /api/ -> Python 127.0.0.1:8765
-Python app.server
+Python app.server (114.132.167.239)
   -> PostgreSQL
-  -> ESI / SDE / zKillboard
+  -> public ESI (local or private Gateway)
+  -> SDE / zKillboard
+
+Optional public ESI Gateway (47.243.104.165)
+  -> ESI / cache / rate limit
 ```
 
 ## 目录
@@ -93,6 +97,12 @@ EVE_SENTRY_SERVER_KEY_RISK_CONTROL=on
 EVE_SENTRY_SERVER_MAP_SOURCE=sde
 EVE_SENTRY_SERVER_MAP_SDE_PATH=/var/lib/eve-sentry/sde/BUILD_NUMBER
 EVE_SENTRY_SERVER_MAP_REGION_IDS=10000045
+EVE_SENTRY_SERVER_ENABLE_ESI=1
+EVE_SENTRY_SERVER_ESI_BACKEND=local
+EVE_SENTRY_SERVER_ESI_GATEWAY_URL=http://10.233.53.17:8787
+EVE_SENTRY_SERVER_ESI_GATEWAY_TOKEN=
+EVE_SENTRY_SERVER_ESI_REMOTE_TIMEOUT=8
+EVE_SENTRY_SERVER_ESI_NO_LOCAL_FALLBACK=0
 EVE_SENTRY_SERVER_ESI_CLIENT_ID=YOUR_EVE_APP_CLIENT_ID
 EVE_SENTRY_SERVER_ESI_REDIRECT_URI=http://YOUR_SERVER/api/v1/auth/esi/callback
 EVE_SENTRY_SERVER_ESI_TOKEN_FILE=/var/lib/eve-sentry/esi_tokens.json
@@ -119,6 +129,36 @@ EVE_SENTRY_SERVER_DISABLE_ZKILL=0
 未登录 EVE SSO 的用户签发密钥；身份检查接口直接确认并跳过 ESI。管理员也可以在 Web 的
 “系统管理 → 安全设置”中切换，Web 保存的值会写入 PostgreSQL 并覆盖启动默认值。该开关不
 关闭密钥认证、账号禁用、吊销或只读密钥权限限制。
+
+### 公共 ESI Gateway
+
+公共角色、军团、联盟和星系解析可以通过独立 Gateway 访问 `47.243.104.165`。当前
+Gateway 使用 ZeroTier 地址 `10.233.53.17:8787`，只允许 114 的 `10.233.53.204`
+调用，并在自身缓存和限流；114 仍保留本地 ESI 回退。部署模板为：
+
+```text
+deploy/linux/eve-sentry-esi-gateway.service
+deploy/linux/eve-sentry-esi-gateway.env.example
+```
+
+Gateway 不处理 EVE SSO、OAuth token、角色当前位置或联系人 standings。启用前先从 114
+验证：
+
+```bash
+curl http://10.233.53.17:8787/health
+curl -H "Authorization: Bearer $EVE_SENTRY_SERVER_ESI_GATEWAY_TOKEN" \
+  http://10.233.53.17:8787/v1/systems/30000142
+```
+
+确认健康后，将 `EVE_SENTRY_SERVER_ESI_BACKEND` 改为 `remote` 并重启 114 服务。出现
+代理故障时改回 `local`；保留 `EVE_SENTRY_SERVER_ESI_NO_LOCAL_FALLBACK=0`，保证公共解析
+失败不会阻塞 OCR、心跳和告警。
+
+管理员可在 Web 的“系统管理 → ESI 网关观测”（`/admin/esi-gateway`）查看 Gateway
+健康摘要和 114 远端客户端延迟。页面调用 114 的
+`GET /api/v1/admin/esi-gateway`，不会把 Gateway Bearer token 暴露给浏览器。若页面显示
+“网关不可达”，先检查 114 到 `10.233.53.17:8787` 的 ZeroTier 路由和
+`eve-sentry-esi-gateway.service` 日志。
 
 启用公共 ESI 后，zKillboard 人员统计默认同时启用；`EVE_SENTRY_SERVER_ENABLE_ZKILL=1`
 可显式开启，`EVE_SENTRY_SERVER_DISABLE_ZKILL=1` 可用于紧急停用，后者优先。服务端对成功

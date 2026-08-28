@@ -89,6 +89,12 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
     if _env_flag(values.get("EVE_SENTRY_SERVER_DISABLE_ZKILL")):
         argv.append("--disable-killboard")
     _append_option(argv, "--esi-cache", values.get("EVE_SENTRY_SERVER_ESI_CACHE", ""))
+    _append_option(argv, "--esi-backend", values.get("EVE_SENTRY_SERVER_ESI_BACKEND", ""))
+    _append_option(argv, "--esi-gateway-url", values.get("EVE_SENTRY_SERVER_ESI_GATEWAY_URL", ""))
+    _append_option(argv, "--esi-gateway-token", values.get("EVE_SENTRY_SERVER_ESI_GATEWAY_TOKEN", ""))
+    _append_option(argv, "--esi-remote-timeout", values.get("EVE_SENTRY_SERVER_ESI_REMOTE_TIMEOUT", ""))
+    if _env_flag(values.get("EVE_SENTRY_SERVER_ESI_NO_LOCAL_FALLBACK")):
+        argv.append("--esi-no-local-fallback")
     _append_option(
         argv,
         "--esi-client-id",

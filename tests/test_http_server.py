@@ -3533,6 +3533,55 @@ def test_admin_can_toggle_key_risk_control_from_web(tmp_path):
         store.close()
 
 
+def test_admin_can_read_esi_gateway_observability(tmp_path):
+    class GatewayClient:
+        def gateway_health(self):
+            return {
+                "ok": True,
+                "service": "eve-sentry-esi-gateway",
+                "requests": 4,
+                "cache_hits": 3,
+                "cache_hit_rate": 0.75,
+            }
+
+        class Metrics:
+            @staticmethod
+            def snapshot():
+                return {"counts": {"get_system:miss:remote": 1}}
+
+        metrics = Metrics()
+
+    class GatewayResolver(AuthTestResolver):
+        client = GatewayClient()
+
+    resolver = GatewayResolver()
+    store = AuthTestStore(tmp_path / "intel.json")
+    store._resolver = resolver
+    auth = AuthService(AuthRepository(store._connect), resolver)
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    admin_key = auth.create_api_key(admin["user_id"], "Admin", admin["user_id"])
+    server = IntelHTTPServer(
+        store,
+        port=0,
+        esi_config={"backend": "remote", "gateway_url": "http://gateway.test"},
+        auth_service=auth,
+    )
+    server.start()
+    try:
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/esi-gateway",
+            headers={"Authorization": f"Bearer {admin_key['secret']}"},
+        )
+        assert status == 200
+        assert payload["gateway"]["reachable"] is True
+        assert payload["gateway"]["health"]["cache_hits"] == 3
+        assert payload["client_metrics"]["counts"]["get_system:miss:remote"] == 1
+    finally:
+        server.stop()
+        auth.close()
+        store.close()
+
+
 def test_async_identity_report_acknowledges_before_esi_finishes(tmp_path):
     started = threading.Event()
     release = threading.Event()

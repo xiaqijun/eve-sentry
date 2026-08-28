@@ -73,6 +73,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--map-refresh-on-start", action="store_true")
     parser.add_argument("--enable-esi", action="store_true")
     parser.add_argument("--esi-cache", default="esi_cache.json")
+    parser.add_argument(
+        "--esi-backend",
+        choices=["local", "remote"],
+        default="local",
+        help="public ESI backend; remote uses the private ESI Gateway",
+    )
+    parser.add_argument("--esi-gateway-url", default="")
+    parser.add_argument("--esi-gateway-token", default="")
+    parser.add_argument("--esi-remote-timeout", type=float, default=8.0)
+    parser.add_argument(
+        "--esi-no-local-fallback",
+        action="store_true",
+        help="do not fall back to direct public ESI when the Gateway fails",
+    )
     parser.add_argument("--esi-client-id", default="")
     parser.add_argument(
         "--esi-redirect-uri",
@@ -136,8 +150,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if enable_esi:
         from app.esi.resolver import EsiResolver
+        resolver_client = _build_public_esi_client(args)
 
-        resolver = EsiResolver(cache=EsiCache(args.esi_cache))
+        resolver = EsiResolver(client=resolver_client, cache=EsiCache(args.esi_cache))
         if args.esi_client_id:
             esi_session = _build_esi_session(args)
             esi_login = _build_esi_login(args)
@@ -331,6 +346,13 @@ def _validate_args(
         parser.error(
             "--auth-bootstrap-password-file is required with --auth-bootstrap-admin"
         )
+    if args.esi_backend == "remote":
+        if not str(args.esi_gateway_url or "").strip():
+            parser.error("--esi-gateway-url is required with --esi-backend remote")
+        if len(str(args.esi_gateway_token or "").strip()) < 32:
+            parser.error("--esi-gateway-token must be at least 32 characters")
+        if args.esi_remote_timeout <= 0:
+            parser.error("--esi-remote-timeout must be positive")
 
 
 def _should_enable_esi(args: argparse.Namespace) -> bool:
@@ -438,6 +460,9 @@ def _build_esi_config(args: argparse.Namespace) -> dict[str, Any]:
     token_file = str(args.esi_token_file or "").strip()
     token_path = Path(token_file) if token_file else None
     return {
+        "backend": str(getattr(args, "esi_backend", "local") or "local"),
+        "gateway_url": str(getattr(args, "esi_gateway_url", "") or "").strip(),
+        "local_fallback": not bool(getattr(args, "esi_no_local_fallback", False)),
         "client_id_configured": bool(str(args.esi_client_id or "").strip()),
         "redirect_uri": str(args.esi_redirect_uri or "").strip(),
         "token_file": token_file,
@@ -445,6 +470,24 @@ def _build_esi_config(args: argparse.Namespace) -> dict[str, Any]:
         "token_storage": str(args.esi_token_storage or "").strip(),
         "scopes": list(args.esi_scopes or []),
     }
+
+
+def _build_public_esi_client(args: argparse.Namespace) -> Any:
+    """Build the configured public ESI client without affecting authenticated ESI."""
+    if str(getattr(args, "esi_backend", "local") or "local") != "remote":
+        from app.esi.client import EsiClient
+
+        return EsiClient()
+    from app.esi.client import EsiClient
+    from app.esi.remote import RemoteEsiClient
+
+    fallback = None if getattr(args, "esi_no_local_fallback", False) else EsiClient()
+    return RemoteEsiClient(
+        args.esi_gateway_url,
+        args.esi_gateway_token,
+        timeout=args.esi_remote_timeout,
+        fallback=fallback,
+    )
 
 
 def _run_esi_login(args: argparse.Namespace) -> Any:

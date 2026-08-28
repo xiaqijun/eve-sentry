@@ -7,6 +7,7 @@ import { DashboardPage } from "./features/dashboard/DashboardPage";
 import { WorkbenchPage } from "./features/workbench/WorkbenchPage";
 import { AccountKeysPage } from "./features/auth/AccountKeysPage";
 import { AdminAuditPage } from "./features/auth/AdminAuditPage";
+import { AdminEsiGatewayPage } from "./features/auth/AdminEsiGatewayPage";
 import { AdminClientsPage } from "./features/auth/AdminClientsPage";
 import { AdminIdentityPage } from "./features/auth/AdminIdentityPage";
 import { AdminSecurityPage } from "./features/auth/AdminSecurityPage";
@@ -57,6 +58,7 @@ export const router = createBrowserRouter([
       { path: "admin/security", element: <ProtectedRoute admin><AdminSecurityPage /></ProtectedRoute> },
       { path: "admin/whitelist", element: <ProtectedRoute admin><AdminWhitelistPage /></ProtectedRoute> },
       { path: "admin/audit", element: <ProtectedRoute admin><AdminAuditPage /></ProtectedRoute> },
+      { path: "admin/esi-gateway", element: <ProtectedRoute admin><AdminEsiGatewayPage /></ProtectedRoute> },
     ],
   },
   {
