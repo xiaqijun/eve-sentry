@@ -2766,10 +2766,10 @@ class AlertTrayController:
                 if str(name or "").strip()
             )
         )
-        names_suffix = f"\n人员：{'、'.join(names)}" if names else ""
+        roster_suffix = f"：{'、'.join(names)}" if names else ""
         self._notify(
             "敌对告警",
-            f"❗ {summary['system_name']} 来敌 {hostile_count} 人{names_suffix}",
+            f"❗ {summary['system_name']} 敌对告警{roster_suffix}",
         )
 
     def _play_alert_sound_sequence(self) -> None:
