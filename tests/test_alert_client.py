@@ -630,8 +630,7 @@ def test_alert_controller_uses_compact_hostile_and_safe_messages(monkeypatch):
         {
             "id": "evt-1",
             "system_name": "S-KSWL",
-            "names": ["Alice"],
-            "active_names": ["Alice", "Bob", "Carol"],
+            "names": ["Alice", "Bob"],
             "created_at": "2026-07-23T14:00:00+00:00",
         }
     )
@@ -656,7 +655,7 @@ def test_alert_controller_uses_compact_hostile_and_safe_messages(monkeypatch):
     )
 
     assert notifications == [
-        ("敌对告警", "❗ S-KSWL 来敌 1 人\n人员：Alice、Bob、Carol"),
+        ("敌对告警", "❗ S-KSWL 来敌 2 人"),
         ("星系安全", "✅ S-KSWL 清空"),
         ("敌对告警", "❗ S-KSWL 来敌 1 人"),
     ]
