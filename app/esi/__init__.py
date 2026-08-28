@@ -5,6 +5,8 @@ _EXPORTS = {
     "DEFAULT_SCOPES": ("app.esi.sso", "DEFAULT_SCOPES"),
     "EsiAuthenticatedSession": ("app.esi.session", "EsiAuthenticatedSession"),
     "EsiSessionSnapshot": ("app.esi.session", "EsiSessionSnapshot"),
+    "EsiRequestMetrics": ("app.esi.remote", "EsiRequestMetrics"),
+    "RemoteEsiClient": ("app.esi.remote", "RemoteEsiClient"),
     "EsiSsoError": ("app.esi.sso", "EsiSsoError"),
     "EsiLoginManager": ("app.esi.sso", "EsiLoginManager"),
     "EsiTokenStore": ("app.esi.sso", "EsiTokenStore"),

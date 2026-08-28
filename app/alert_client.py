@@ -1064,32 +1064,6 @@ def _forget_sound(sound: QSoundEffect) -> None:
         pass
 
 
-def _severity_rank(value: str) -> int:
-    return {
-        "low": 0,
-        "medium": 1,
-        "high": 2,
-        "critical": 3,
-    }.get(str(value or "").casefold(), 2)
-
-
-def _in_quiet_hours(value: str, now: datetime | None = None) -> bool:
-    """Return whether local time falls inside a HH:MM-HH:MM window."""
-    text = str(value or "").strip()
-    if not text or "-" not in text:
-        return False
-    start_text, end_text = (part.strip() for part in text.split("-", 1))
-    try:
-        start = datetime.strptime(start_text, "%H:%M").time()
-        end = datetime.strptime(end_text, "%H:%M").time()
-    except ValueError:
-        return False
-    current = (now or datetime.now()).time()
-    if start <= end:
-        return start <= current < end
-    return current >= start or current < end
-
-
 class AlertOverlay(QWidget):
     """Always-on-top compact alert overlay."""
 

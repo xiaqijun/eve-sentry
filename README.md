@@ -163,7 +163,14 @@ npm run build
 ## 文档
 
 - [客户端操作指南](docs/client.md)
+- [系统架构](docs/architecture.md)
 - [服务端部署](docs/server-deployment.md)
+- [认证与 EVE 身份校验](docs/authentication.md)
+- [Web 管理系统](docs/web-console.md)
+- [完整 API 参考](docs/api-reference.md)
+- [预警消息 API 接入指南](docs/alert-api.md)
 - [GitCode 镜像状态](docs/gitcode-release-mirror.md)
+
+完整文档索引见 [docs/README.md](docs/README.md)。
 
 运行时数据库、配置、EVE SSO token、本地密钥状态和模型缓存均不应提交到仓库。
