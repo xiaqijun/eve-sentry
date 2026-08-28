@@ -2756,9 +2756,20 @@ class AlertTrayController:
         if in_cooldown:
             return
         last_notified[notification_key] = (now, hostile_count)
+        raw_names = alert.get("active_names")
+        if not isinstance(raw_names, list) or not raw_names:
+            raw_names = alert.get("names")
+        names = list(
+            dict.fromkeys(
+                str(name).strip()
+                for name in raw_names or []
+                if str(name or "").strip()
+            )
+        )
+        names_suffix = f"\n人员：{'、'.join(names)}" if names else ""
         self._notify(
             "敌对告警",
-            f"❗ {summary['system_name']} 来敌 {hostile_count} 人",
+            f"❗ {summary['system_name']} 来敌 {hostile_count} 人{names_suffix}",
         )
 
     def _play_alert_sound_sequence(self) -> None:
