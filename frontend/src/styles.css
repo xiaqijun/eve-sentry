@@ -7627,6 +7627,13 @@ body[data-theme="dark"] .hostile-history-result-meta {
   white-space: nowrap;
 }
 
+.hostile-detail-zkill.arco-btn {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
 .hostile-detail-unresolved {
   margin-top: 14px;
   padding: 10px 12px;

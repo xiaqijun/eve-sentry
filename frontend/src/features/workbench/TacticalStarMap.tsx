@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Avatar, Drawer, Empty, List, Tag } from "@arco-design/web-react";
+import { Avatar, Button, Drawer, Empty, List, Tag, Tooltip } from "@arco-design/web-react";
+import { ExternalLink } from "lucide-react";
 import ForceGraph2D, {
   type ForceGraphMethods,
   type NodeObject,
@@ -766,11 +767,12 @@ export function TacticalStarMap({
       setHostileDetailSystemId(systemId);
       return;
     }
-    setHostileDetailSystemId(null);
     if (node.hostileCount > 0) {
-      setExpandedHostileSystemId((current) => current === systemId ? null : systemId);
+      setExpandedHostileSystemId(systemId);
+      setHostileDetailSystemId(systemId);
     } else {
       setExpandedHostileSystemId(null);
+      setHostileDetailSystemId(null);
     }
   }, [onSelectSystem]);
 
@@ -871,6 +873,21 @@ export function TacticalStarMap({
                       <span title={intel.corporation}>军团 · {intel.corporation}</span>
                       <span title={intel.alliance}>联盟 · {intel.alliance}</span>
                     </div>
+                    {intel.characterId !== null ? (
+                      <Tooltip content="在 zKillboard 查看战报">
+                        <Button
+                          aria-label={`查看 ${intel.name} 的 zKillboard 战报`}
+                          className="hostile-detail-zkill"
+                          href={`https://zkillboard.com/character/${intel.characterId}/`}
+                          icon={<ExternalLink size={14} />}
+                          rel="noopener noreferrer"
+                          shape="square"
+                          size="small"
+                          target="_blank"
+                          type="outline"
+                        />
+                      </Tooltip>
+                    ) : null}
                   </div>
                 </List.Item>
               );

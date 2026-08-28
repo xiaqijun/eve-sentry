@@ -348,7 +348,7 @@ describe("TacticalStarMap", () => {
     container.remove();
   });
 
-  test("expands one compact summary on click and then opens the full hostile drawer", async () => {
+  test("opens current hostile details when a hostile system node is clicked", async () => {
     const hostileMembers = [
       {
         characterId: 90000001,
@@ -448,6 +448,19 @@ describe("TacticalStarMap", () => {
     onNodeClick = forceGraphMock.latestProps?.onNodeClick as Function;
     (layoutNodes as Function)(context, 1);
     expect(hostileCard.hostileCardHidden).toBe(false);
+    expect(document.body).toHaveTextContent("NCG-PW · 敌对详情");
+    expect(document.body).toHaveTextContent("Pilot One");
+    expect(document.body).toHaveTextContent("Pilot Two");
+    expect(document.body).toHaveTextContent("2 名敌对");
+    expect(document.body.querySelector(
+      'a[aria-label="查看 Pilot One 的 zKillboard 战报"]',
+    )).toHaveAttribute(
+      "href",
+      "https://zkillboard.com/character/90000001/",
+    );
+    expect(document.body.querySelector(
+      'a[aria-label="查看 Pilot One 的 zKillboard 战报"]',
+    )).toHaveAttribute("target", "_blank");
     (drawNode as Function)(hostileCard, context, 1);
     expect(fillText).toHaveBeenCalledWith("Pilot One", expect.any(Number), expect.any(Number));
     expect(fillText).toHaveBeenCalledWith("高危 88", expect.any(Number), expect.any(Number));
@@ -467,14 +480,6 @@ describe("TacticalStarMap", () => {
     );
     expect(lineTo).toHaveBeenCalledTimes(3);
 
-    await act(async () => {
-      onNodeClick(hostileCard);
-    });
-    expect(document.body).toHaveTextContent("NCG-PW · 敌对详情");
-    expect(document.body).toHaveTextContent("Pilot One");
-    expect(document.body).toHaveTextContent("Pilot Two");
-    expect(document.body).toHaveTextContent("2 名敌对");
-
     (layoutNodes as Function)(context, 0.2);
     expect(hostileCard.hostileCardHidden).toBe(true);
 
@@ -486,7 +491,7 @@ describe("TacticalStarMap", () => {
     });
     layoutNodes = forceGraphMock.latestProps?.onRenderFramePre;
     (layoutNodes as Function)(context, 1);
-    expect(hostileCard.hostileCardHidden).toBe(true);
+    expect(hostileCard.hostileCardHidden).toBe(false);
 
     await act(async () => {
       root.unmount();
