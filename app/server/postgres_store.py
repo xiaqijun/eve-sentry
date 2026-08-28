@@ -331,6 +331,26 @@ class PostgreSQLIntelStore(IntelStore):
                 active_id = self._active_ocr_id(client_id, system_name, name)
                 item = self._active_intel.get(active_id)
                 if item is None or not item.active:
+                    for candidate in self._active_intel.values():
+                        if (
+                            candidate.active
+                            and candidate.source == source
+                            and candidate.target_type == "character"
+                            and candidate.metadata.get("client_id") == client_id
+                            and candidate.system_name.casefold()
+                            == system_name.casefold()
+                            and candidate.name.casefold() == name.casefold()
+                        ):
+                            active_id = candidate.active_id
+                            item = candidate
+                            break
+                if item is None or not item.active:
+                    active_id = self._active_ocr_reentry_id(
+                        client_id,
+                        system_name,
+                        name,
+                        seen_at,
+                    )
                     report, observation = self._build_ocr_observation_report(
                         source=source,
                         source_instance=source_instance,
@@ -1685,7 +1705,7 @@ class PostgreSQLIntelStore(IntelStore):
                     UPDATE intel_reports
                     SET metadata_json = (
                         COALESCE(NULLIF(metadata_json, ''), '{}')::jsonb
-                        || jsonb_build_object(?, ?::jsonb)
+                        || jsonb_build_object(?::text, ?::jsonb)
                     )::text
                     WHERE report_id = ?
                     """,

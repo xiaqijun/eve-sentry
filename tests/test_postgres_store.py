@@ -636,7 +636,7 @@ def test_postgres_realtime_alert_snapshot_survives_standing_cache_loss():
     assert realtime is alert
     assert len(calls) == 1
     query, params = calls[0]
-    assert "jsonb_build_object(%s, %s::jsonb)" in query
+    assert "jsonb_build_object(%s::text, %s::jsonb)" in query
     assert params[0] == PERSISTED_ALERT_METADATA_KEY
     assert params[2] == report.report_id
     assert report.metadata[PERSISTED_ALERT_METADATA_KEY]["reason"] == (

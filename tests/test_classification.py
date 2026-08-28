@@ -103,3 +103,23 @@ def test_neutral_standing_alerts_as_hostile_by_default():
     assert event.classification == "red"
     assert event.reason == "Hostile standing 0"
     assert evidence_types(event)[:1] == ["hostile_standing"]
+
+
+def test_hostile_icon_alerts_when_standing_is_unavailable():
+    event = ClassificationEngine(cooldown_seconds=0).score(
+        Observation(
+            source="eve-sentry-detector",
+            system_name="S-KSWL",
+            names=["Sundeezl Hopkins"],
+            character_ids=[92358740],
+            raw_text="Sundeezl Hopkins",
+            metadata={"hostile_icon_count": 1},
+            seen_at="2026-07-09T10:00:00+00:00",
+            received_at="2026-07-09T10:00:01+00:00",
+            observation_id="obs-hostile-icon",
+        )
+    )
+
+    assert event is not None
+    assert event.classification == "red"
+    assert evidence_types(event)[0] == "hostile_icon"

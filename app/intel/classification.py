@@ -90,11 +90,28 @@ class ClassificationEngine:
         character_profiles: list[dict[str, Any]] | None = None,
     ) -> ClassificationResult | None:
         """Classify an observation as hostile, friendly, or unknown."""
-        del observation
         event_names = self._event_names_from_names(names or [])
         profiles = character_profiles or []
 
         hostile = self._hostile_evidence(event_names, profiles)
+        hostile_icon_count = _optional_int(
+            observation.metadata.get("hostile_icon_count")
+        )
+        if (
+            observation.source.strip().casefold()
+            in {"local_ocr", "ocr", "eve-sentry-detector"}
+            and hostile_icon_count is not None
+            and hostile_icon_count > 0
+        ):
+            hostile.insert(
+                0,
+                Evidence(
+                    "hostile_icon",
+                    100,
+                    f"Client detected {hostile_icon_count} red standing icon(s) in "
+                    f"{observation.system_name}",
+                ),
+            )
         if hostile:
             return ClassificationResult(
                 classification="red",

@@ -571,6 +571,34 @@ def test_record_ocr_snapshot_creates_and_refreshes_active_intel(tmp_path):
     assert len(store.list_observations()) == 2
 
 
+def test_record_ocr_snapshot_keeps_ended_wave_when_name_reenters(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    payload = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Hajimi6",
+        "system_name": "S-KSWL",
+        "names": ["Alice"],
+    }
+
+    store.record_ocr_snapshot({**payload, "seen_at": "2026-07-03T10:00:00+00:00"})
+    store.record_ocr_snapshot({**payload, "seen_at": "2026-07-03T10:00:01+00:00"})
+    store.record_ocr_snapshot(
+        {**payload, "names": [], "seen_at": "2026-07-03T10:00:20+00:00"}
+    )
+    store.record_ocr_snapshot(
+        {**payload, "names": [], "seen_at": "2026-07-03T10:00:40+00:00"}
+    )
+    store.record_ocr_snapshot(
+        {**payload, "names": [], "seen_at": "2026-07-03T10:01:00+00:00"}
+    )
+    store.record_ocr_snapshot({**payload, "seen_at": "2026-07-03T10:01:20+00:00"})
+
+    rows = store.list_active_intel(source="eve-sentry-detector", active=True)
+    assert len(rows) == 1
+    assert rows[0]["active"] is True
+    assert len(store.list_active_intel(source="eve-sentry-detector", active=False)) == 1
+
+
 def test_record_ocr_snapshot_uses_complete_roster_not_coordinate_evidence(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
 

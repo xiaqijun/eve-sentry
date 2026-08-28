@@ -729,7 +729,7 @@ class IntelStore:
                 )
                 if canonical_active_id != item.active_id:
                     existing = self._active_intel.get(canonical_active_id)
-                    if existing is not None and existing is not item:
+                    if existing is not None and existing is not item and existing.active:
                         existing.first_seen_at = min(
                             existing.first_seen_at,
                             item.first_seen_at,
@@ -744,7 +744,7 @@ class IntelStore:
                                 existing.source_observation_ids.append(report_id)
                         self._active_intel.pop(item.active_id, None)
                         item = existing
-                    else:
+                    elif existing is None:
                         self._active_intel.pop(item.active_id, None)
                         item.active_id = canonical_active_id
                         self._active_intel[canonical_active_id] = item
@@ -1373,6 +1373,26 @@ class IntelStore:
                 )
                 item = self._active_intel.get(active_id)
                 if item is None or not item.active:
+                    for candidate in self._active_intel.values():
+                        if (
+                            candidate.active
+                            and candidate.source == source
+                            and candidate.target_type == "character"
+                            and candidate.metadata.get("client_id") == client_id
+                            and candidate.system_name.casefold()
+                            == system_name.casefold()
+                            and candidate.name.casefold() == name.casefold()
+                        ):
+                            active_id = candidate.active_id
+                            item = candidate
+                            break
+                if item is None or not item.active:
+                    active_id = self._active_ocr_reentry_id(
+                        client_id,
+                        system_name,
+                        name,
+                        seen_at,
+                    )
                     report, observation = self._build_ocr_observation_report(
                         source=source,
                         source_instance=source_instance,
@@ -3531,6 +3551,25 @@ class IntelStore:
                 client_id.strip().casefold(),
                 system.strip().casefold(),
                 name.strip().casefold(),
+            ]
+        )
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return f"ocr:{digest}"
+
+    def _active_ocr_reentry_id(
+        self,
+        client_id: str,
+        system: str,
+        name: str,
+        seen_at: str,
+    ) -> str:
+        """Create a distinct active row id for a later OCR wave."""
+        key = "\x1f".join(
+            [
+                client_id.strip().casefold(),
+                system.strip().casefold(),
+                name.strip().casefold(),
+                seen_at.strip(),
             ]
         )
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
