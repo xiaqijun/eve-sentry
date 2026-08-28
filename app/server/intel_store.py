@@ -2064,6 +2064,49 @@ class IntelStore:
             self._heartbeats[client_id] = heartbeat
         return self._heartbeat_view(heartbeat)
 
+    def refresh_detector_heartbeat(
+        self,
+        upload_client_id: str,
+    ) -> dict[str, Any] | None:
+        """Refresh the parent detector heartbeat after a successful upload."""
+        target_client_id = str(upload_client_id or "").strip()
+        if not target_client_id:
+            return None
+
+        with self._lock:
+            heartbeat = self._heartbeats.get(target_client_id)
+            if (
+                heartbeat is None
+                or str(heartbeat.get("client_type") or "").strip()
+                != "detector_client"
+            ):
+                heartbeat = None
+                for candidate in self._heartbeats.values():
+                    if (
+                        str(candidate.get("client_type") or "").strip()
+                        != "detector_client"
+                    ):
+                        continue
+                    details = candidate.get("details")
+                    if not isinstance(details, dict):
+                        continue
+                    targets = details.get("targets")
+                    if not isinstance(targets, list):
+                        continue
+                    if any(
+                        isinstance(target, dict)
+                        and str(target.get("client_id") or "").strip()
+                        == target_client_id
+                        for target in targets
+                    ):
+                        heartbeat = candidate
+                        break
+            if heartbeat is None:
+                return None
+
+            heartbeat["seen_at"] = utc_now_iso()
+            return self._heartbeat_view(heartbeat)
+
     def list_heartbeats(self) -> list[dict[str, Any]]:
         """Return recent client heartbeat states ordered by newest first."""
         with self._lock:

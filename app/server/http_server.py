@@ -1352,7 +1352,10 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         if path == f"{API_V1_PREFIX}/ocr/snapshot":
             try:
-                result = self._store().record_ocr_snapshot(self._read_json())
+                store = self._store()
+                payload = self._read_json()
+                result = store.record_ocr_snapshot(payload)
+                store.refresh_detector_heartbeat(payload.get("client_id"))
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
@@ -1362,7 +1365,10 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         if path == f"{API_V1_PREFIX}/hostile-presence":
             try:
-                result = self._store().record_hostile_presence(self._read_json())
+                store = self._store()
+                payload = self._read_json()
+                result = store.record_hostile_presence(payload)
+                store.refresh_detector_heartbeat(payload.get("client_id"))
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return

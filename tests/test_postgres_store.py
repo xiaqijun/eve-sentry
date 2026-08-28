@@ -186,6 +186,43 @@ def test_postgres_heartbeat_row_accepts_legacy_empty_attribution():
     assert store._heartbeat_row(heartbeat)[-3:] == ("", "", "")
 
 
+def test_postgres_refresh_detector_heartbeat_persists_parent(monkeypatch):
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._lock = threading.RLock()
+    store._heartbeats = {
+        "detector:parent": {
+            "client_id": "detector:parent",
+            "client_type": "detector_client",
+            "label": "Detector",
+            "status": "running",
+            "seen_at": "2026-08-28T00:00:00+00:00",
+            "heartbeat_interval_seconds": 15,
+            "details": {
+                "targets": [{"client_id": "detector:window-a"}],
+            },
+            "user_id": "user-1",
+            "api_key_id": "key-1",
+            "remote_ip": "203.0.113.9",
+        }
+    }
+    persisted = []
+    store._write_heartbeat = lambda heartbeat: persisted.append(heartbeat)
+    monkeypatch.setattr(
+        "app.server.intel_store.utc_now_iso",
+        lambda: "2026-08-28T00:00:30+00:00",
+    )
+
+    refreshed = store.refresh_detector_heartbeat("detector:window-a")
+
+    assert refreshed is not None
+    assert refreshed["client_id"] == "detector:parent"
+    assert persisted == [store._heartbeats["detector:parent"]]
+    assert persisted[0]["seen_at"] == "2026-08-28T00:00:30+00:00"
+    assert persisted[0]["details"] == {
+        "targets": [{"client_id": "detector:window-a"}],
+    }
+
+
 def test_postgres_heartbeat_load_prunes_only_attributed_logical_duplicates():
     rows = [
         {

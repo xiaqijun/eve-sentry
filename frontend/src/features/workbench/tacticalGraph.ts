@@ -241,16 +241,17 @@ function activeIntelWeight(item: Record<string, unknown>): number {
 
 function activeIntelIsHostile(item: Record<string, unknown>): boolean {
   const metadata = asRecord(item.metadata);
+  const source = String(item.source || "").trim().toLowerCase();
+  const hostileIconCount = firstNumber(metadata.hostile_icon_count);
+  if (source === "eve-sentry-detector" && metadata.presence_only === true) {
+    return hostileIconCount !== null && hostileIconCount > 0;
+  }
+
   const hostileCount = firstNumber(metadata.hostile_count);
   if (hostileCount !== null && hostileCount > 0) {
     return true;
   }
-  const hostileIconCount = firstNumber(metadata.hostile_icon_count);
-  if (hostileIconCount !== null && hostileIconCount > 0) {
-    return true;
-  }
 
-  const source = String(item.source || "").trim().toLowerCase();
   if (CHANNEL_SOURCES.has(source)) {
     return true;
   }

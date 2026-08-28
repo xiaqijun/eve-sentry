@@ -256,7 +256,7 @@ describe("buildTacticalGraph", () => {
           character_id: 90000001,
           name: "Current Enemy",
           active: true,
-          metadata: { hostile_icon_count: 1 },
+          metadata: { hostile_icon_count: 1, contact_standing: 0 },
         },
         {
           id: "ocr-stale",
@@ -266,7 +266,7 @@ describe("buildTacticalGraph", () => {
           character_id: 90000002,
           name: "Stale Enemy",
           active: true,
-          metadata: { hostile_icon_count: 1 },
+          metadata: { hostile_icon_count: 1, contact_standing: 0 },
         },
       ],
     }, null, { includeHostileCards: true });
@@ -352,6 +352,94 @@ describe("buildTacticalGraph", () => {
       source: "0-UVHJ",
       target: hostileSummary.id,
       kind: "hostile-intel",
+    });
+  });
+
+  it("keeps aggregate detector counts without replacing a hostile with a friendly pilot", () => {
+    const graph = buildTacticalGraph({
+      ...bootstrap,
+      active_intel: [
+        {
+          id: "war-authority",
+          source: "eve-sentry-detector",
+          system_name: "0-UVHJ",
+          system_id: 30003615,
+          character_id: 770566340,
+          name: "WarAuthority",
+          active: true,
+          metadata: {
+            hostile_icon_count: 2,
+            identity_status: "resolved",
+            contact_standing: -5,
+            character_profiles: [
+              {
+                character_id: 770566340,
+                name: "WarAuthority",
+                contact_standing: -5,
+              },
+            ],
+          },
+        },
+        {
+          id: "albert-verstappen",
+          source: "eve-sentry-detector",
+          system_name: "0-UVHJ",
+          system_id: 30003615,
+          character_id: 2123542619,
+          name: "Albert Verstappen",
+          active: true,
+          metadata: {
+            hostile_icon_count: 2,
+            identity_status: "resolved",
+            contact_standing: 10,
+            character_profiles: [
+              {
+                character_id: 2123542619,
+                name: "Albert Verstappen",
+                contact_standing: 10,
+              },
+            ],
+          },
+        },
+        {
+          id: "second-hostile",
+          source: "eve-sentry-detector",
+          system_name: "0-UVHJ",
+          system_id: 30003615,
+          character_id: 2111111111,
+          name: "Second Hostile",
+          active: true,
+          metadata: {
+            hostile_icon_count: 2,
+            identity_status: "resolved",
+            contact_standing: -10,
+            character_profiles: [
+              {
+                character_id: 2111111111,
+                name: "Second Hostile",
+                contact_standing: -10,
+              },
+            ],
+          },
+        },
+      ],
+    }, null, { includeHostileCards: true });
+
+    expect(graph.nodes.find((node) => node.kind === "system")).toMatchObject({
+      hostileCount: 2,
+    });
+    expect(graph.nodes.find((node) => node.kind === "hostile-summary")).toMatchObject({
+      hostileCount: 2,
+      hostileMembers: [
+        expect.objectContaining({
+          characterId: 2111111111,
+          name: "Second Hostile",
+        }),
+        expect.objectContaining({
+          characterId: 770566340,
+          name: "WarAuthority",
+        }),
+      ],
     });
   });
 

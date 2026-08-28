@@ -284,6 +284,66 @@ def test_heartbeat_client_id_cannot_move_between_users(tmp_path):
     assert managed["api_key_id"] == "key-3"
 
 
+@pytest.mark.parametrize(
+    "upload_client_id",
+    ["detector:parent", "detector:window-a"],
+)
+def test_refresh_detector_heartbeat_matches_parent_without_changing_details(
+    tmp_path,
+    monkeypatch,
+    upload_client_id,
+):
+    store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
+    original_details = {
+        "monitoring": True,
+        "system_name": "S-KSWL",
+        "targets": [
+            {
+                "client_id": "detector:window-a",
+                "system_name": "S-KSWL",
+                "monitoring": True,
+            },
+            {
+                "client_id": "detector:window-b",
+                "system_name": "R-YWID",
+                "monitoring": False,
+            },
+        ],
+    }
+    store.record_heartbeat(
+        {
+            "client_id": "detector:parent",
+            "client_type": "detector_client",
+            "label": "Detector",
+            "status": "running",
+            "seen_at": "2026-08-28T00:00:00+00:00",
+            "heartbeat_interval_seconds": 15,
+            "details": original_details,
+            "user_id": "user-1",
+            "api_key_id": "key-1",
+            "remote_ip": "203.0.113.9",
+        }
+    )
+    monkeypatch.setattr(
+        "app.server.intel_store.utc_now_iso",
+        lambda: "2026-08-28T00:00:30+00:00",
+    )
+
+    refreshed = store.refresh_detector_heartbeat(upload_client_id)
+
+    assert refreshed is not None
+    assert refreshed["client_id"] == "detector:parent"
+    assert refreshed["seen_at"] == "2026-08-28T00:00:30+00:00"
+    managed = store.management_heartbeat_snapshot()["heartbeats"][0]
+    assert managed["status"] == "running"
+    assert managed["heartbeat_interval_seconds"] == 15
+    assert managed["details"] == original_details
+    assert managed["user_id"] == "user-1"
+    assert managed["api_key_id"] == "key-1"
+    assert managed["remote_ip"] == "203.0.113.9"
+    assert store.refresh_detector_heartbeat("detector:missing") is None
+
+
 def test_add_report_persists_and_snapshot_aggregates(tmp_path):
     path = tmp_path / "intel_reports.json"
     store = IntelStore(

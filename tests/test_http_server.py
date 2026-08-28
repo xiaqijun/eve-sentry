@@ -847,6 +847,80 @@ def test_v1_ocr_snapshot_endpoint_updates_active_intel(tmp_path):
         server.stop()
 
 
+@pytest.mark.parametrize(
+    ("path", "upload_payload"),
+    [
+        (
+            "/api/v1/ocr/snapshot",
+            {
+                "names": ["Alice"],
+                "hostile_icon_count": 1,
+            },
+        ),
+        (
+            "/api/v1/hostile-presence",
+            {"hostile_icon_count": 1},
+        ),
+    ],
+)
+def test_detector_upload_refreshes_parent_heartbeat(
+    tmp_path,
+    monkeypatch,
+    path,
+    upload_payload,
+):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    details = {
+        "monitoring": True,
+        "system_name": "J1-KJP",
+        "targets": [
+            {
+                "client_id": "detector:window-a",
+                "system_name": "S-KSWL",
+                "monitoring": True,
+            }
+        ],
+    }
+    store.record_heartbeat(
+        {
+            "client_id": "detector:parent",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": "2026-08-28T00:00:00+00:00",
+            "heartbeat_interval_seconds": 15,
+            "details": details,
+        }
+    )
+    monkeypatch.setattr(
+        "app.server.intel_store.utc_now_iso",
+        lambda: "2026-08-28T00:00:30+00:00",
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        payload = {
+            "client_id": "detector:window-a",
+            "source_instance": "EVE - Pilot A",
+            "system_name": "S-KSWL",
+            "seen_at": "2026-08-28T00:00:05+00:00",
+            **upload_payload,
+        }
+
+        status, _result = request_json(
+            f"{server.url}{path}",
+            method="POST",
+            payload=payload,
+        )
+
+        assert status in {200, 201}
+        heartbeat = store.management_heartbeat_snapshot()["heartbeats"][0]
+        assert heartbeat["seen_at"] == "2026-08-28T00:00:30+00:00"
+        assert heartbeat["status"] == "running"
+        assert heartbeat["details"] == details
+    finally:
+        server.stop()
+
+
 def test_v1_hostile_presence_updates_bootstrap_without_fabricating_alerts(tmp_path):
     server = IntelHTTPServer(
         IntelStore(tmp_path / "intel.json", systems={}, links=[]),

@@ -2326,6 +2326,20 @@ class PostgreSQLIntelStore(IntelStore):
         self._write_heartbeat(raw)
         return heartbeat
 
+    def refresh_detector_heartbeat(
+        self,
+        upload_client_id: str,
+    ) -> dict[str, Any] | None:
+        """Persist implicit detector activity from OCR or presence uploads."""
+        heartbeat = super().refresh_detector_heartbeat(upload_client_id)
+        if heartbeat is None:
+            return None
+        with self._lock:
+            raw = dict(self._heartbeats[heartbeat["client_id"]])
+            raw["details"] = dict(raw.get("details") or {})
+        self._write_heartbeat(raw)
+        return heartbeat
+
     def _read_heartbeats(self) -> dict[str, dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(

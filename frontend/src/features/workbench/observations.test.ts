@@ -282,7 +282,7 @@ describe("buildPilotObservations", () => {
     expect(items[0].repeatCount).toBe(3);
   });
 
-  it("keeps detector names visible when hostility is confirmed by a red icon", () => {
+  it("does not classify unresolved detector names from the aggregate red icon count", () => {
     const payload = {
       ...bootstrap,
       reports: [],
@@ -303,9 +303,7 @@ describe("buildPilotObservations", () => {
       ],
     } satisfies BootstrapPayload;
 
-    expect(buildPilotObservations(payload).map((item) => item.pilotName)).toEqual([
-      "Obi Augurey",
-    ]);
+    expect(buildPilotObservations(payload)).toEqual([]);
   });
 
   it("does not fall back to stale history when active intel is empty", () => {
@@ -336,6 +334,7 @@ describe("buildPilotObservations", () => {
           seen_count: 1,
           last_seen_at: "2026-07-03T10:00:04+00:00",
           metadata: {
+            hostile_icon_count: 2,
             contact_standing: 10,
             standing_source: "esi_self",
             standing_contact_type: "character",
@@ -352,7 +351,7 @@ describe("buildPilotObservations", () => {
           active: true,
           seen_count: 1,
           last_seen_at: "2026-07-03T10:00:05+00:00",
-          metadata: { contact_standing: 0 },
+          metadata: { hostile_icon_count: 2, contact_standing: 0 },
         },
       ],
     } satisfies BootstrapPayload;
