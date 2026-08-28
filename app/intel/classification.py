@@ -94,6 +94,16 @@ class ClassificationEngine:
         profiles = character_profiles or []
 
         hostile = self._hostile_evidence(event_names, profiles)
+        friendly = self._friendly_evidence(event_names, profiles)
+        # Detector icon counts describe the whole screenshot, not each OCR
+        # identity. Once ESI has confirmed a friendly identity, do not attach
+        # that shared visual evidence to the friendly pilot.
+        if friendly and not hostile:
+            return ClassificationResult(
+                classification="white",
+                reason=friendly[0].summary,
+                evidence=friendly,
+            )
         hostile_icon_count = _optional_int(
             observation.metadata.get("hostile_icon_count")
         )
@@ -119,7 +129,6 @@ class ClassificationEngine:
                 evidence=hostile,
             )
 
-        friendly = self._friendly_evidence(event_names, profiles)
         if friendly:
             return ClassificationResult(
                 classification="white",

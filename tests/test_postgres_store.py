@@ -585,6 +585,41 @@ def test_postgres_persisted_alert_scoring_does_not_use_live_enrichment():
     assert store._alert_cache == {}
 
 
+def test_postgres_history_drops_legacy_detector_snapshot_for_friendly_identity():
+    report = IntelReport(
+        report_id="report-friendly",
+        system="S-KSWL",
+        names=["chin harry"],
+        source="eve-sentry-detector",
+        character_ids=[92358740],
+        metadata={
+            "character_profiles": [
+                {"character_id": 92358740, "contact_standing": 10.0}
+            ],
+            PERSISTED_ALERT_METADATA_KEY: {
+                "id": "evt-report-friendly",
+                "system_name": "S-KSWL",
+                "names": ["chin harry"],
+                "character_ids": [92358740],
+                "score": 100,
+                "level": "critical",
+                "classification": "red",
+                "evidence": [{"type": "hostile_icon", "weight": 100}],
+            },
+        },
+    )
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._lock = threading.RLock()
+    store._resolver = None
+    store._character_profile_cache = {}
+    store._scorer = ClassificationEngine(cooldown_seconds=0)
+
+    alert = store._alert_from_persisted_report(report)
+
+    assert alert is not None
+    assert alert.classification == "white"
+
+
 def test_postgres_realtime_alerts_keep_shared_store_behavior():
     assert PostgreSQLIntelStore.list_alerts is IntelStore.list_alerts
 

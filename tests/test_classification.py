@@ -123,3 +123,29 @@ def test_hostile_icon_alerts_when_standing_is_unavailable():
     assert event is not None
     assert event.classification == "red"
     assert evidence_types(event)[0] == "hostile_icon"
+
+
+def test_friendly_identity_is_not_overridden_by_shared_detector_icon_count():
+    engine = ClassificationEngine(cooldown_seconds=0)
+
+    event = engine.score(
+        Observation(
+            source="eve-sentry-detector",
+            system_name="S-KSWL",
+            names=["chin harry"],
+            character_ids=[92358740],
+            raw_text="chin harry",
+            metadata={"hostile_icon_count": 16},
+            seen_at="2026-07-09T10:00:00+00:00",
+            received_at="2026-07-09T10:00:01+00:00",
+            observation_id="obs-friendly-icon",
+        ),
+        character_profile={
+            "character_id": 92358740,
+            "contact_standing": 10.0,
+        },
+    )
+
+    assert event is not None
+    assert event.classification == "white"
+    assert evidence_types(event)[:1] == ["friendly_standing"]

@@ -1950,6 +1950,21 @@ class PostgreSQLIntelStore(IntelStore):
         character_ids = self._normalize_ints(snapshot.get("character_ids"))
         if not character_ids:
             character_ids = list(observation.character_ids)
+
+        # Older detector snapshots could be marked red solely because the
+        # screenshot contained red icons. Re-check persisted ESI identity data
+        # so a friendly pilot is not resurrected in hostile history.
+        if (
+            report.source.strip().casefold() == "eve-sentry-detector"
+            and self._scorer is not None
+        ):
+            classify = getattr(self._scorer, "classify", None)
+            if callable(classify):
+                profiles = self._persisted_character_profiles(report)
+                current = classify(observation, names, profiles)
+                if current is not None and current.classification == "white":
+                    return None
+
         return ThreatEvent(
             event_id=str(snapshot.get("id") or f"evt_{report.report_id}"),
             system_name=str(
