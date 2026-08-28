@@ -1008,6 +1008,51 @@ def test_postgres_hostile_wave_state_deduplicates_detector_visual_counts():
     ) == {}
 
 
+def test_postgres_hostile_wave_state_excludes_friendly_ocr_from_visual_counts():
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._active_intel = {}
+    store._scorer = None
+
+    def item(active_id, target_type, metadata, name=""):
+        return ActiveIntelItem(
+            active_id=active_id,
+            source="eve-sentry-detector",
+            source_instance="client-a",
+            system_name="S-KSWL",
+            target_type=target_type,
+            name=name,
+            metadata=metadata,
+            first_seen_at="2026-08-03T10:00:00+00:00",
+            last_seen_at="2026-08-03T10:00:00+00:00",
+        )
+
+    state = store._hostile_system_state(
+        [
+            item(
+                "presence",
+                "system",
+                {
+                    "presence_only": True,
+                    "hostile_icon_count": 2,
+                    "hostile_icon_seen_at": "2026-08-03T10:00:00+00:00",
+                },
+            ),
+            item(
+                "friendly",
+                "character",
+                {
+                    "hostile_icon_count": 2,
+                    "identity_status": "resolved",
+                    "contact_standing": 10.0,
+                },
+                name="Friendly Pilot",
+            ),
+        ]
+    )
+
+    assert state["s-kswl"]["hostile_count"] == 2
+
+
 def test_postgres_hostile_wave_persistence_tracks_visual_peak():
     calls = []
 

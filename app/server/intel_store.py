@@ -4070,7 +4070,20 @@ class IntelStore:
                 item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
             )
             source = str(item.get("source") or "").strip().casefold()
-            if source == "eve-sentry-detector" and "hostile_icon_count" in metadata:
+            has_identity_metadata = any(
+                key in metadata
+                for key in ("identity_status", "contact_standing", "standing")
+            )
+            if (
+                source == "eve-sentry-detector"
+                and "hostile_icon_count" in metadata
+                and (
+                    str(item.get("target_type") or "").strip().casefold() == "system"
+                    or bool(metadata.get("presence_only"))
+                    or not has_identity_metadata
+                    or (has_identity_metadata and is_hostile)
+                )
+            ):
                 snapshot_seen_at = str(
                     metadata.get("hostile_icon_seen_at")
                     or item.get("last_seen_at")

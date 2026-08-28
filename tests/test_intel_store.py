@@ -447,6 +447,44 @@ def test_snapshot_map_excludes_friendly_ocr_active_intel_from_hostile_counts(tmp
     assert snapshot["systems"][0]["report_count"] == 0
 
 
+def test_active_aggregation_excludes_friendly_ocr_from_detector_visual_counts(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={"S-KSWL": StarSystem("S-KSWL", 10, 20, "Tenal", -0.3)},
+        links=[],
+    )
+
+    active_items = [
+        {
+            "source": "eve-sentry-detector",
+            "target_type": "system",
+            "system_name": "S-KSWL",
+            "metadata": {
+                "presence_only": True,
+                "hostile_icon_count": 2,
+                "hostile_icon_seen_at": "2026-07-10T01:00:00+00:00",
+            },
+            "last_seen_at": "2026-07-10T01:00:00+00:00",
+        },
+        {
+            "source": "eve-sentry-detector",
+            "target_type": "character",
+            "system_name": "S-KSWL",
+            "name": "Friendly Pilot",
+            "metadata": {
+                "hostile_icon_count": 2,
+                "identity_status": "resolved",
+                "contact_standing": 10.0,
+            },
+            "last_seen_at": "2026-07-10T01:00:00+00:00",
+        },
+    ]
+
+    snapshot = store._aggregate_active_by_system(active_items)
+
+    assert snapshot["S-KSWL"]["hostile_count"] == 2
+
+
 def test_configured_map_does_not_add_unmapped_report_system_to_snapshot(tmp_path):
     store = IntelStore(
         tmp_path / "intel_reports.json",

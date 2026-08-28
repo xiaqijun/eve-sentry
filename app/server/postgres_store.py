@@ -708,7 +708,25 @@ class PostgreSQLIntelStore(IntelStore):
             metadata = item.metadata if isinstance(item.metadata, dict) else {}
             source = str(item.source or "").strip().casefold()
             detector_count: int | None = None
-            if source == "eve-sentry-detector" and "hostile_icon_count" in metadata:
+            has_identity_metadata = any(
+                key in metadata
+                for key in ("identity_status", "contact_standing", "standing")
+            )
+            is_hostile = (
+                self._active_item_is_hostile(item.to_dict())
+                if has_identity_metadata
+                else False
+            )
+            if (
+                source == "eve-sentry-detector"
+                and "hostile_icon_count" in metadata
+                and (
+                    item.target_type.casefold() == "system"
+                    or bool(metadata.get("presence_only"))
+                    or not has_identity_metadata
+                    or is_hostile
+                )
+            ):
                 try:
                     detector_count = max(
                         0,
@@ -753,6 +771,9 @@ class PostgreSQLIntelStore(IntelStore):
                 previous = client_counts.get(client_id)
                 if previous is None or snapshot_seen_at >= previous[0]:
                     client_counts[client_id] = (snapshot_seen_at, detector_count)
+                continue
+
+            if has_identity_metadata and not is_hostile:
                 continue
 
             fallback_count = metadata.get("hostile_count")
