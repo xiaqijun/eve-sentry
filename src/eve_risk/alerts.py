@@ -1035,6 +1035,11 @@ def _active_intel_map(
         active_id = str(raw_item.get("id") or "").strip()
         alert = alerts_by_active_id.get(active_id)
         metadata = raw_item.get("metadata")
+        source = str(raw_item.get("source") or "").strip().casefold()
+        is_detector = source == "eve-sentry-detector"
+        is_presence_only = bool(
+            isinstance(metadata, dict) and metadata.get("presence_only")
+        )
         try:
             presence_count = (
                 int(metadata.get("hostile_icon_count") or 0)
@@ -1044,12 +1049,21 @@ def _active_intel_map(
         except (TypeError, ValueError):
             presence_count = 0
         detector_icon_evidence = (
-            isinstance(metadata, dict)
-            and str(raw_item.get("source") or "").strip().casefold()
-            == "eve-sentry-detector"
+            is_detector
+            and is_presence_only
             and presence_count > 0
         )
-        if not active_id or (alert is None and not detector_icon_evidence):
+        alert_classification = str(
+            (alert or {}).get("classification")
+            or raw_item.get("classification")
+            or ""
+        ).strip().casefold()
+        if not active_id:
+            continue
+        if is_detector and not is_presence_only:
+            if alert is None or alert_classification != "red":
+                continue
+        elif alert is None and not detector_icon_evidence:
             continue
         item = dict(raw_item)
         if alert is not None:
@@ -1159,16 +1173,16 @@ def _include_personnel_identity(
     if source != "eve-sentry-detector":
         return True
 
-    identity_status = str(metadata.get("identity_status") or "").strip().casefold()
-    if identity_status in {"pending", "unresolved"}:
+    classification = str(
+        item.get("classification") or metadata.get("classification") or ""
+    ).strip().casefold()
+    if classification != "red":
         return False
-    if identity_status == "resolved":
-        character_id = item.get("character_id") or metadata.get("character_id")
-        return _positive_int(character_id) is not None
-
-    # Older server snapshots predate identity_status. Keep them compatible;
-    # current servers always mark asynchronous OCR identities explicitly.
-    return bool(str(item.get("name") or "").strip())
+    identity_status = str(metadata.get("identity_status") or "").strip().casefold()
+    if identity_status != "resolved":
+        return False
+    character_id = item.get("character_id") or metadata.get("character_id")
+    return _positive_int(character_id) is not None
 
 
 def _personnel_fingerprint(value: object) -> str:

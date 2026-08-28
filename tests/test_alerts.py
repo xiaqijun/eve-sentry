@@ -110,6 +110,7 @@ def test_detector_count_uses_server_snapshot_when_active_roster_is_partial() -> 
     raw_alerts = [
         {
             "active_intel_id": item["id"],
+            "classification": "red",
             "hostile_count": 4,
             "active_names": ["Alpha", "Bravo", "Charlie", "Delta"],
         }
@@ -325,7 +326,12 @@ def test_presence_and_ocr_for_one_detector_are_not_double_counted() -> None:
         "source": "eve-sentry-detector",
         "system_name": "S-KSWL",
         "name": "Alice",
-        "metadata": {"client_id": "client-1"},
+        "character_id": 12345,
+        "classification": "red",
+        "metadata": {
+            "client_id": "client-1",
+            "identity_status": "resolved",
+        },
     }
 
     state = _active_system_state([presence, ocr], "episode-1")["s-kswl"]
@@ -344,6 +350,7 @@ def test_detector_personnel_waits_for_esi_identity_resolution() -> None:
     }
     pending = {
         **base,
+        "classification": "red",
         "metadata": {
             "client_id": "client-1",
             "identity_status": "pending",
@@ -351,6 +358,7 @@ def test_detector_personnel_waits_for_esi_identity_resolution() -> None:
     }
     unresolved = {
         **base,
+        "classification": "red",
         "metadata": {
             "client_id": "client-1",
             "identity_status": "unresolved",
@@ -359,6 +367,7 @@ def test_detector_personnel_waits_for_esi_identity_resolution() -> None:
     resolved = {
         **base,
         "character_id": 12345,
+        "classification": "red",
         "metadata": {
             "client_id": "client-1",
             "identity_status": "resolved",
@@ -372,8 +381,14 @@ def test_detector_personnel_waits_for_esi_identity_resolution() -> None:
         ("Alice", 12345)
     ]
 
+    friendly = {
+        **resolved,
+        "classification": "white",
+    }
+    assert _active_system_state([friendly], "episode-1")["s-kswl"]["personnel"] == []
 
-def test_detector_ocr_with_red_icon_evidence_is_kept_before_alert_exists() -> None:
+
+def test_named_detector_ocr_requires_corresponding_red_alert() -> None:
     item = {
         "id": "ocr:shazzza",
         "active": True,
@@ -388,8 +403,58 @@ def test_detector_ocr_with_red_icon_evidence_is_kept_before_alert_exists() -> No
 
     merged = _active_intel_map([item], [])
 
-    assert list(merged) == ["ocr:shazzza"]
-    assert merged["ocr:shazzza"]["name"] == "Shazzza"
+    assert merged == {}
+
+    white = _active_intel_map(
+        [item],
+        [{"active_intel_id": "ocr:shazzza", "classification": "white"}],
+    )
+    assert white == {}
+
+    red = _active_intel_map(
+        [item],
+        [{"active_intel_id": "ocr:shazzza", "classification": "red"}],
+    )
+    assert list(red) == ["ocr:shazzza"]
+    assert red["ocr:shazzza"]["classification"] == "red"
+
+
+def test_detector_aggregate_icon_count_does_not_include_friendly_roster() -> None:
+    def item(name: str, character_id: int) -> dict[str, Any]:
+        return {
+            "id": f"ocr:{name.casefold()}",
+            "active": True,
+            "source": "eve-sentry-detector",
+            "system_name": "S-KSWL",
+            "name": name,
+            "character_id": character_id,
+            "metadata": {
+                "client_id": "client-1",
+                "hostile_icon_count": 2,
+                "identity_status": "resolved",
+            },
+        }
+
+    hostile = item("Hostile Pilot", 1001)
+    friendly = item("Friendly Pilot", 1002)
+    merged = _active_intel_map(
+        [hostile, friendly],
+        [
+            {
+                "active_intel_id": hostile["id"],
+                "classification": "red",
+            },
+            {
+                "active_intel_id": friendly["id"],
+                "classification": "white",
+            },
+        ],
+    )
+
+    assert list(merged) == [hostile["id"]]
+    state = _active_system_state(merged.values(), "episode-1")["s-kswl"]
+    assert state["hostile_count"] == 1
+    assert [person["name"] for person in state["personnel"]] == ["Hostile Pilot"]
 
 
 @pytest.mark.asyncio
@@ -494,6 +559,7 @@ async def test_relay_publishes_personnel_once_after_esi_resolution() -> None:
                 {
                     "id": "evt:alice",
                     "active_intel_id": "ocr:alice",
+                    "classification": "red",
                     "level": "high",
                 }
             ],
@@ -538,10 +604,18 @@ async def test_relay_enqueues_analysis_for_new_hostile_system() -> None:
                         "system_name": "S-KSWL",
                         "name": "Alice",
                         "character_id": 12345,
-                        "metadata": {"client_id": "client-1"},
+                        "metadata": {
+                            "client_id": "client-1",
+                            "identity_status": "resolved",
+                        },
                     }
                 ],
-                "alerts": [{"active_intel_id": "ocr:alice"}],
+                "alerts": [
+                    {
+                        "active_intel_id": "ocr:alice",
+                        "classification": "red",
+                    }
+                ],
             }
         )
 
@@ -728,10 +802,12 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
             "active": True,
             "system_name": "S-KSWL",
             "name": "Alice",
+            "character_id": 12345,
             "source": "eve-sentry-detector",
             "source_instance": "EVE - Hajimi6",
             "first_seen_at": "2026-07-20T16:20:24+00:00",
             "last_seen_at": "2026-07-20T16:20:24+00:00",
+            "metadata": {"identity_status": "resolved"},
         }
         second_item = {
             **item,
@@ -751,6 +827,7 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
             "alerts": [
                 {
                     "active_intel_id": "ocr:alice",
+                    "classification": "red",
                     "level": "high",
                     "score": 80,
                 },
@@ -767,6 +844,7 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
             "alerts": [
                 {
                     "active_intel_id": "ocr:alice",
+                    "classification": "red",
                     "level": "high",
                     "score": 80,
                 },
@@ -782,11 +860,13 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
             "alerts": [
                 {
                     "active_intel_id": "ocr:alice",
+                    "classification": "red",
                     "level": "high",
                     "score": 80,
                 },
                 {
                     "active_intel_id": "ocr:bob",
+                    "classification": "red",
                     "level": "medium",
                     "score": 55,
                 },
@@ -800,6 +880,7 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
             "alerts": [
                 {
                     "active_intel_id": "ocr:bob",
+                    "classification": "red",
                     "level": "medium",
                     "score": 55,
                 },
@@ -861,8 +942,12 @@ async def test_relay_compacts_complete_personnel_move_into_one_movement_message(
                 "source": "eve-sentry-detector",
                 "system_name": system_name,
                 "name": "Alice",
+                "character_id": 12345,
                 "first_seen_at": "2026-08-24T10:00:00+00:00",
-                "metadata": {"client_id": "client-1"},
+                "metadata": {
+                    "client_id": "client-1",
+                    "identity_status": "resolved",
+                },
             }
 
         await relay.process_bootstrap(
@@ -872,7 +957,12 @@ async def test_relay_compacts_complete_personnel_move_into_one_movement_message(
             {
                 "generated_at": "t1",
                 "active_intel": [item("ocr:jita", "Jita")],
-                "alerts": [{"active_intel_id": "ocr:jita"}],
+                "alerts": [
+                    {
+                        "active_intel_id": "ocr:jita",
+                        "classification": "red",
+                    }
+                ],
             }
         )
         qq.send_proactive_text.reset_mock()
@@ -882,7 +972,12 @@ async def test_relay_compacts_complete_personnel_move_into_one_movement_message(
             {
                 "generated_at": "t2",
                 "active_intel": [item("ocr:tama", "Tama")],
-                "alerts": [{"active_intel_id": "ocr:tama"}],
+                "alerts": [
+                    {
+                        "active_intel_id": "ocr:tama",
+                        "classification": "red",
+                    }
+                ],
             }
         )
 
@@ -939,10 +1034,19 @@ async def test_relay_enqueues_analysis_after_system_message_without_skipping_per
                         "source": "eve-sentry-detector",
                         "system_name": "S-KSWL",
                         "name": "Alice",
-                        "metadata": {"client_id": "client-1"},
+                        "character_id": 12345,
+                        "metadata": {
+                            "client_id": "client-1",
+                            "identity_status": "resolved",
+                        },
                     }
                 ],
-                "alerts": [{"active_intel_id": "ocr:alice"}],
+                "alerts": [
+                    {
+                        "active_intel_id": "ocr:alice",
+                        "classification": "red",
+                    }
+                ],
             }
         )
 
@@ -1091,7 +1195,11 @@ async def test_hidden_threat_enrichment_does_not_repeat_personnel_alert() -> Non
             "source": "eve-sentry-detector",
             "system_name": "S-KSWL",
             "name": "Alice",
-            "metadata": {"client_id": "client-1"},
+            "character_id": 12345,
+            "metadata": {
+                "client_id": "client-1",
+                "identity_status": "resolved",
+            },
         }
         await relay.process_bootstrap(
             {
@@ -1099,6 +1207,7 @@ async def test_hidden_threat_enrichment_does_not_repeat_personnel_alert() -> Non
                 "alerts": [
                     {
                         "active_intel_id": "ocr:alice",
+                        "classification": "red",
                         "level": "medium",
                         "score": 55,
                     }
@@ -1112,6 +1221,7 @@ async def test_hidden_threat_enrichment_does_not_repeat_personnel_alert() -> Non
                 "alerts": [
                     {
                         "active_intel_id": "ocr:alice",
+                        "classification": "red",
                         "level": "high",
                         "score": 80,
                         "metadata": {
