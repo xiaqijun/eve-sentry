@@ -281,9 +281,11 @@ class ReliableUploadManager(QObject):
     def _next_upload(self) -> _PendingUpload | None:
         if self._presence:
             return min(self._presence.values(), key=lambda item: item.expires_at)
+        if self._heartbeat is not None:
+            return self._heartbeat
         if self._snapshots:
             return min(self._snapshots.values(), key=lambda item: item.expires_at)
-        return self._heartbeat
+        return None
 
     def _drop_expired(self, now: float) -> None:
         previous_presence_count = len(self._presence)
