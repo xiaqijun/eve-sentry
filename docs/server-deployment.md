@@ -264,6 +264,13 @@ npm run build
 目录和 systemd 单元，安装服务端依赖并重启；就绪检查失败时自动恢复备份。默认保留
 最近 5 次部署备份。
 
+ESI Gateway 使用独立工作流 `.github/workflows/deploy-esi-gateway.yml`。它只在公共 ESI
+客户端、Gateway 脚本或 Gateway systemd 单元变化时触发，上传归档到 `47.243.104.165`
+并执行健康检查；健康响应必须包含 `cache_entries`，否则部署失败并自动恢复备份。该
+工作流使用独立的 `EVE_SENTRY_ESI_GATEWAY_SSH_KEY`、
+`EVE_SENTRY_ESI_GATEWAY_KNOWN_HOSTS` Secret，以及
+`EVE_SENTRY_ESI_GATEWAY_DEPLOY_HOST/USER/PORT` Variables。
+
 GitHub Actions 配置：
 
 | 类型 | 名称 | 用途 |
