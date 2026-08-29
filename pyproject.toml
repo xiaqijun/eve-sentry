@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eve-sentry-esi-gateway"
+version = "1.0.0"
+description = "Private allow-listed public EVE ESI gateway"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools]
+packages = ["esi_gateway"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

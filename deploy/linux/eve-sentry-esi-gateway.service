@@ -1,0 +1,21 @@
+[Unit]
+Description=EVE Sentry Public ESI Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=eve-sentry-esi
+Group=eve-sentry-esi
+WorkingDirectory=/opt/eve-sentry-esi-gateway
+EnvironmentFile=/etc/eve-sentry-esi/gateway.env
+ExecStart=/opt/eve-sentry-esi-gateway/.venv/bin/python /opt/eve-sentry-esi-gateway/scripts/esi_gateway.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
