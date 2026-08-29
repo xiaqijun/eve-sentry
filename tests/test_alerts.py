@@ -11,9 +11,11 @@ import pytest
 from eve_risk.alerts import (
     ACTIVE_INTEL_STATE_KEY,
     ALERT_CURSOR_KEY,
+    ALERT_EVENT_ID_KEY,
     SYSTEM_ALERT_STATE_KEY,
     SYSTEM_ALERT_STATE_READY_KEY,
     EveSentryAlertRelay,
+    SentryAuthenticationError,
     _active_intel_map,
     _active_system_state,
     _personnel_movement_pairs,
@@ -65,6 +67,68 @@ async def test_relay_stream_uses_long_lived_sse_request() -> None:
     assert len(requests) == 1
     assert "timeout" not in requests[0].url.params
     assert requests[0].url.params["heartbeat"] == "15"
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_relay_persists_event_id_and_reuses_it_on_reconnect() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        body = (
+            b"id: evt-1\n"
+            b"event: bootstrap\n"
+            b'data: {"generated_at":"2026-08-30T08:00:00+00:00","active_intel":[],"alerts":[]}\n\n'
+        )
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=body)
+
+    redis = fakeredis.aioredis.FakeRedis()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        relay = EveSentryAlertRelay(http, redis, SimpleNamespace(), "http://sentry.test/api/v1/events")
+        await relay._stream_once()
+        assert await redis.get(ALERT_EVENT_ID_KEY) == b"evt-1"
+        await relay._stream_once()
+
+    assert requests[0].headers.get("Last-Event-ID") is None
+    assert requests[1].headers["Last-Event-ID"] == "evt-1"
+    assert "since" not in requests[1].url.params
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_relay_surfaces_authentication_failures_separately() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401)
+
+    redis = fakeredis.aioredis.FakeRedis()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        relay = EveSentryAlertRelay(http, redis, SimpleNamespace(), "http://sentry.test/events")
+        with pytest.raises(SentryAuthenticationError):
+            await relay._stream_once()
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_explicit_hostile_movement_event_is_deduplicated() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(send_proactive_text=AsyncMock())
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+        payload = {
+            "schema_version": "hostile_movement_event.v1",
+            "movement_id": "move-1",
+            "occurred_at": "2026-08-30T08:01:00+00:00",
+            "from_system": {"name": "Jita"},
+            "to_system": {"name": "Tama"},
+            "hostile_count": 2,
+            "personnel": [{"character_id": 1, "name": "Pilot"}],
+            "source": "detector",
+        }
+        assert await relay.process_hostile_movement(payload) is True
+        assert await relay.process_hostile_movement(payload) is True
+    assert qq.send_proactive_text.await_count == 1
     await redis.aclose()
 
 
