@@ -134,16 +134,31 @@ export interface EsiGatewayHealth {
   version?: string;
   uptime_seconds?: number;
   requests?: number;
+  total_requests?: number;
+  upstream_requests?: number;
+  cache_misses?: number;
   errors?: number;
   cache_hits?: number;
   cache_entries?: number;
   cache_hit_rate?: number;
+  request_rate_per_second?: number;
+  upstream_rate_per_second?: number;
   rate_limit_per_second?: number;
   latency_ms?: {
     last?: number;
     average?: number;
   };
   last_error_at?: number | null;
+  endpoints?: Record<string, {
+    requests?: number;
+    cache_hits?: number;
+    cache_misses?: number;
+    upstream_requests?: number;
+    errors?: number;
+    cache_hit_rate?: number;
+    last_latency_ms?: number;
+    average_latency_ms?: number;
+  }>;
 }
 
 export interface EsiGatewaySnapshot {
@@ -157,6 +172,27 @@ export interface EsiGatewaySnapshot {
   };
   client_metrics: {
     counts?: Record<string, number>;
+    totals?: {
+      requests?: number;
+      remote_requests?: number;
+      cache_hits?: number;
+      cache_misses?: number;
+      fallback_requests?: number;
+      request_rate_per_second?: number;
+    };
+    endpoints?: Record<string, {
+      requests?: number;
+      remote_requests?: number;
+      cache_hits?: number;
+      cache_misses?: number;
+      fallback_requests?: number;
+      errors?: number;
+      cache_hit_rate?: number;
+      last_ms?: number;
+      average_ms?: number;
+      p50_ms?: number;
+      p95_ms?: number;
+    }>;
     durations_ms?: Record<string, {
       count?: number;
       last?: number;

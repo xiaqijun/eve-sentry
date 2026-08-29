@@ -120,6 +120,12 @@ Authorization: Bearer eve_xxx
 敌对、友军或未解析状态。`hostile_icon_count` 只表示截图中的视觉红色图标总数，不给单个角色
 直接定性。
 
+`GET /api/v1/admin/esi-gateway` 返回 47 Gateway 的运行摘要和 114 进程内远端调用指标。
+Gateway 的 `requests` 是总请求数，`upstream_requests` 是实际访问 ESI 的次数，
+`cache_hits`、`cache_misses` 和 `cache_hit_rate` 使用同一总请求口径；`request_rate_per_second`
+为最近 60 秒请求率，`endpoints` 提供端点级拆分。`client_metrics` 同样包含 `totals`、
+`endpoints` 和兼容保留的 `counts`/`durations_ms`。
+
 历史报告和观察记录支持显式游标分页。首个请求传 `cursor=start`，后续请求原样传回
 `next_cursor`；`next_cursor` 为 `null` 表示结束。普通列表和分页默认每次最多 100 条，
 `limit` 最大 1000。

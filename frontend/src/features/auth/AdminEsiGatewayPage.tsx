@@ -102,20 +102,27 @@ export function AdminEsiGatewayPage() {
 
   const health = healthOf(snapshot);
   const state = gatewayState(snapshot);
-  const latencyRows = useMemo(() => Object.entries(snapshot.client_metrics.durations_ms || {})
+  const latencyRows = useMemo(() => Object.entries(
+    snapshot.client_metrics.endpoints || snapshot.client_metrics.durations_ms || {},
+  )
     .map(([endpoint, values]) => ({
       key: endpoint,
       endpoint,
-      count: numberValue(values.count),
-      last: numberValue(values.last),
-      p50: numberValue(values.p50),
-      p95: numberValue(values.p95),
+      count: numberValue("requests" in values ? values.requests : values.count),
+      hits: numberValue("cache_hits" in values ? values.cache_hits : 0),
+      misses: numberValue("cache_misses" in values ? values.cache_misses : 0),
+      last: numberValue("last_latency_ms" in values ? values.last_latency_ms : values.last),
+      p50: numberValue("p50_ms" in values ? values.p50_ms : values.p50),
+      p95: numberValue("p95_ms" in values ? values.p95_ms : values.p95),
     }))
-    .sort((a, b) => b.count - a.count), [snapshot.client_metrics.durations_ms]);
+    .sort((a, b) => b.count - a.count), [snapshot.client_metrics.endpoints, snapshot.client_metrics.durations_ms]);
   const requestCount = numberValue(health.requests);
+  const upstreamRequestCount = numberValue(health.upstream_requests ?? health.requests);
   const errors = numberValue(health.errors);
   const cacheHits = numberValue(health.cache_hits);
+  const cacheMisses = numberValue(health.cache_misses ?? upstreamRequestCount);
   const cacheRate = percentValue(health.cache_hit_rate);
+  const requestRate = numberValue(health.request_rate_per_second);
 
   return (
     <div className="admin-shell admin-esi-gateway-page">
@@ -130,6 +137,7 @@ export function AdminEsiGatewayPage() {
 
       <ManagementSummary ariaLabel="ESI 网关摘要" items={[
         { label: "网关请求", value: requestCount },
+        { label: "上游请求", value: upstreamRequestCount },
         { label: "上游错误", value: errors },
         { label: "缓存命中", value: cacheHits },
         { label: "缓存命中率", value: `${cacheRate}%` },
@@ -157,6 +165,7 @@ export function AdminEsiGatewayPage() {
                     { label: "版本", value: health.version || "未知" },
                     { label: "地址", value: snapshot.gateway.url || "未配置" },
                     { label: "运行时间", value: formatUptime(health.uptime_seconds) },
+                    { label: "近 60 秒请求率", value: `${requestRate.toFixed(2)} req/s` },
                     { label: "最后检查", value: formatCheckedAt(snapshot.gateway.checked_at) },
                     { label: "限流", value: `${numberValue(health.rate_limit_per_second)} req/s` },
                   ]}
@@ -178,6 +187,7 @@ export function AdminEsiGatewayPage() {
                 <Progress percent={cacheRate} showText />
               </div>
               <Typography.Text type="secondary">当前缓存条目：{numberValue(health.cache_entries)}</Typography.Text>
+              <Typography.Text type="secondary">缓存未命中：{cacheMisses}</Typography.Text>
             </Space>
           </Card>
         </Grid.Col>
@@ -193,6 +203,8 @@ export function AdminEsiGatewayPage() {
           columns={[
             { title: "端点", dataIndex: "endpoint" },
             { title: "次数", dataIndex: "count" },
+            { title: "命中", dataIndex: "hits" },
+            { title: "未命中", dataIndex: "misses" },
             { title: "最近 (ms)", dataIndex: "last" },
             { title: "P50 (ms)", dataIndex: "p50" },
             { title: "P95 (ms)", dataIndex: "p95" },

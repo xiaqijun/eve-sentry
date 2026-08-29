@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from collections import Counter
+from collections import Counter, deque
 from threading import Lock
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -21,19 +21,96 @@ class EsiRequestMetrics:
         self._lock = Lock()
         self._counts: Counter[str] = Counter()
         self._durations: dict[str, list[float]] = {}
+        self._endpoint_stats: dict[str, dict[str, Any]] = {}
+        self._request_times: deque[float] = deque(maxlen=10000)
 
     def record(self, endpoint: str, duration: float, *, cache: str, fallback: bool) -> None:
         key = f"{endpoint}:{cache}:{'fallback' if fallback else 'remote'}"
+        now = time.monotonic()
         with self._lock:
             self._counts[key] += 1
             self._durations.setdefault(endpoint, []).append(max(0.0, duration))
             if len(self._durations[endpoint]) > 1000:
                 self._durations[endpoint] = self._durations[endpoint][-1000:]
+            stats = self._endpoint_stats.setdefault(
+                endpoint,
+                {
+                    "requests": 0,
+                    "remote_requests": 0,
+                    "cache_hits": 0,
+                    "cache_misses": 0,
+                    "fallback_requests": 0,
+                    "errors": 0,
+                    "total_duration": 0.0,
+                    "last_duration": 0.0,
+                },
+            )
+            stats["requests"] += 1
+            stats["total_duration"] += max(0.0, duration)
+            stats["last_duration"] = max(0.0, duration)
+            if fallback:
+                stats["fallback_requests"] += 1
+            else:
+                stats["remote_requests"] += 1
+                if cache == "hit":
+                    stats["cache_hits"] += 1
+                elif cache == "miss":
+                    stats["cache_misses"] += 1
+                elif cache == "error":
+                    stats["errors"] += 1
+            self._request_times.append(now)
 
     def snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
         with self._lock:
+            window = 60.0
+            request_rate = sum(
+                timestamp >= now - window for timestamp in self._request_times
+            ) / window
+            endpoints = {
+                endpoint: {
+                    "requests": stats["requests"],
+                    "remote_requests": stats["remote_requests"],
+                    "cache_hits": stats["cache_hits"],
+                    "cache_misses": stats["cache_misses"],
+                    "fallback_requests": stats["fallback_requests"],
+                    "errors": stats["errors"],
+                    "cache_hit_rate": round(
+                        stats["cache_hits"] / max(1, stats["remote_requests"]),
+                        4,
+                    ),
+                    "last_ms": round(stats["last_duration"] * 1000, 2),
+                    "average_ms": round(
+                        stats["total_duration"] / max(1, stats["requests"]) * 1000,
+                        2,
+                    ),
+                    "p50_ms": round(_percentile(self._durations.get(endpoint, []), 0.50) * 1000, 2),
+                    "p95_ms": round(_percentile(self._durations.get(endpoint, []), 0.95) * 1000, 2),
+                }
+                for endpoint, stats in self._endpoint_stats.items()
+            }
             return {
                 "counts": dict(self._counts),
+                "totals": {
+                    "requests": sum(self._counts.values()),
+                    "remote_requests": sum(
+                        stats["remote_requests"] for stats in self._endpoint_stats.values()
+                    ),
+                    "cache_hits": sum(
+                        stats["cache_hits"] for stats in self._endpoint_stats.values()
+                    ),
+                    "cache_misses": sum(
+                        stats["cache_misses"] for stats in self._endpoint_stats.values()
+                    ),
+                    "fallback_requests": sum(
+                        stats["fallback_requests"] for stats in self._endpoint_stats.values()
+                    ),
+                    "errors": sum(
+                        stats["errors"] for stats in self._endpoint_stats.values()
+                    ),
+                    "request_rate_per_second": round(request_rate, 4),
+                },
+                "endpoints": endpoints,
                 "durations_ms": {
                     endpoint: {
                         "count": len(values),
@@ -135,6 +212,12 @@ class RemoteEsiClient(EsiClient):
             return result
         except (EsiApiError, OSError, TimeoutError) as exc:
             if self.fallback is None:
+                self.metrics.record(
+                    endpoint,
+                    time.monotonic() - started,
+                    cache="error",
+                    fallback=False,
+                )
                 if isinstance(exc, EsiApiError):
                     raise
                 raise EsiApiError(str(exc)) from exc

@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -108,8 +109,13 @@ def test_gateway_authenticates_caches_and_serves_public_profile():
             headers={"Authorization": f"Bearer {token}"},
         )) as response:
             health = json.loads(response.read())
-        assert health["requests"] == 1
+        assert health["requests"] == 2
+        assert health["total_requests"] == 2
+        assert health["upstream_requests"] == 1
+        assert health["cache_misses"] == 1
         assert health["cache_hits"] == 1
+        assert health["endpoints"]["get_system"]["requests"] == 2
+        assert health["endpoints"]["get_system"]["cache_hits"] == 1
         assert health["cache_hit_rate"] > 0
 
         try:
@@ -122,3 +128,41 @@ def test_gateway_authenticates_caches_and_serves_public_profile():
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_gateway_batch_cache_key_is_order_insensitive():
+    token = "t" * 32
+    state = GatewayState(token, {"127.0.0.1"}, ttl=60, max_requests_per_second=100)
+    calls = []
+    state.client.resolve_ids = lambda names: calls.append(list(names)) or {"characters": []}
+    server = GatewayServer(("127.0.0.1", 0), state)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/v1/universe/ids"
+    try:
+        for names in (["Alice", "Bob"], ["Bob", "Alice"]):
+            request = Request(
+                url,
+                data=json.dumps(names).encode(),
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urlopen(request) as response:
+                json.loads(response.read())
+        assert calls == [["Alice", "Bob"]]
+        assert state.health()["cache_hits"] == 1
+        assert state.health()["cache_misses"] == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_gateway_health_excludes_expired_cache_entries():
+    state = GatewayState("t" * 32, {"127.0.0.1"}, ttl=60, max_requests_per_second=100)
+    state.cache["expired"] = (time.monotonic() - 1, {})
+    state.cache["active"] = (time.monotonic() + 60, {})
+    assert state.health()["cache_entries"] == 1

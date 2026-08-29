@@ -155,10 +155,15 @@ curl -H "Authorization: Bearer $EVE_SENTRY_SERVER_ESI_GATEWAY_TOKEN" \
 失败不会阻塞 OCR、心跳和告警。
 
 管理员可在 Web 的“系统管理 → ESI 网关观测”（`/admin/esi-gateway`）查看 Gateway
-健康摘要和 114 远端客户端延迟。页面调用 114 的
+健康摘要和 114 远端客户端请求指标。页面调用 114 的
 `GET /api/v1/admin/esi-gateway`，不会把 Gateway Bearer token 暴露给浏览器。若页面显示
 “网关不可达”，先检查 114 到 `10.233.53.17:8787` 的 ZeroTier 路由和
 `eve-sentry-esi-gateway.service` 日志。
+
+Gateway 观测中的 `requests` 是进入网关的总请求数，`upstream_requests` 是实际访问 ESI
+的请求数，`cache_hits`/`cache_misses` 用于计算命中率，`request_rate_per_second` 是最近
+60 秒实际请求率，`endpoints` 提供按端点拆分的统计。过期缓存条目不会计入 `cache_entries`；
+批量名称或 ID 的顺序变化不会制造新的缓存键。
 
 启用公共 ESI 后，zKillboard 人员统计默认同时启用；`EVE_SENTRY_SERVER_ENABLE_ZKILL=1`
 可显式开启，`EVE_SENTRY_SERVER_DISABLE_ZKILL=1` 可用于紧急停用，后者优先。服务端对成功
