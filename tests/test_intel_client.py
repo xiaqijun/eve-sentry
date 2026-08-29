@@ -527,10 +527,8 @@ def test_intel_api_client_posts_full_frame_ocr_evidence():
         hostile_icons=[{"left": 6, "top": 20, "right": 16, "bottom": 30}],
     )
 
-    assert api.payload["ocr_candidates"][1]["text"] == "Enemy Pilot"
-    assert api.payload["hostile_icons"] == [
-        {"left": 6, "top": 20, "right": 16, "bottom": 30}
-    ]
+    assert "ocr_candidates" not in api.payload
+    assert "hostile_icons" not in api.payload
 
 
 def test_intel_api_client_posts_zero_hostile_presence_to_clear_state():

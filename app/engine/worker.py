@@ -14,27 +14,21 @@ from app.engine.capturer import (
     Capturer,
     TargetWindowClosed,
 )
-from app.engine.hostile_icons import (
-    extract_hostile_name_row_images,
-    extract_hostile_name_rows,
-    find_hostile_icons,
-)
+from app.engine.hostile_icons import find_hostile_icons
 from app.engine.ocr import OCREngine
-from app.engine.ocr_names import ocr_candidate_names
 from app.engine.ocr_scheduler import OCRRequestSuperseded
 
 logger = logging.getLogger(__name__)
 
 
 def build_scan_status(ocr_results: list[tuple[str, float]]) -> str:
-    """Build monitor status text for the full-frame OCR candidate upload."""
-    member_names = ocr_candidate_names(ocr_results)
-    return f"OCR 识别完成: {len(member_names)} 个文本候选，已进入上报队列"
+    """Build monitor status text for the complete raw OCR upload."""
+    return f"OCR 识别完成: {len(ocr_results)} 个文本候选，已进入上报队列"
 
 
 def build_ocr_snapshot_names(ocr_results: list[tuple[str, float]]) -> list[str]:
-    """Return the cleaned pilot names to publish for the OCR snapshot."""
-    return ocr_candidate_names(ocr_results)
+    """Return every OCR text result without client-side filtering."""
+    return [str(text) for text, _confidence in ocr_results]
 
 
 class MonitorWorker(QThread):
@@ -227,21 +221,10 @@ class MonitorWorker(QThread):
                         self._burst_scans_remaining = 2 if hostile_count > 0 else 0
                     previous_hostile_count = hostile_count
 
-                    # OCR still receives the full member list.  Only the
-                    # lightweight change fingerprint is restricted to hostile
-                    # rows so background animation cannot restart OCR forever.
-                    try:
-                        hostile_rows = extract_hostile_name_rows(
-                            img,
-                            hostile_icons,
-                        )
-                    except (AttributeError, TypeError, ValueError):
-                        hostile_rows = img if hostile_icons else None
-                    rows_fingerprint = (
-                        _image_fingerprint(hostile_rows)
-                        if hostile_rows is not None
-                        else None
-                    )
+                    # OCR receives the full member list. The fingerprint uses
+                    # the name-column view so friendly roster changes are
+                    # noticed without reacting to distance/type animations.
+                    rows_fingerprint = _image_fingerprint(img)
                     rows_changed = rows_fingerprint != previous_hostile_rows_fingerprint
                     previous_hostile_rows_fingerprint = rows_fingerprint
                     if hostile_count == 0:
@@ -290,134 +273,44 @@ class MonitorWorker(QThread):
                         self._wait_for_next_scan()
                         continue
 
-                    if hostile_rows is None:
-                        ocr_results = []
-                        logger.warning(
-                            "Hostile OCR row extraction failed (icons=%d, retries=%d)",
+                    progress = None if ocr_ready else self.status_update.emit
+                    ocr_retry_remaining = max(0, ocr_retry_remaining - 1)
+                    supports_full_frame_ocr = any(
+                        callable(getattr(self._ocr, method, None))
+                        for method in (
+                            "recognize_with_boxes",
+                            "recognize_with_boxes_latest",
+                        )
+                    )
+                    if supports_full_frame_ocr:
+                        full_ocr_results = self._recognize_with_boxes(
+                            img,
+                            progress=progress,
+                            priority=10,
+                        )
+                        ocr_results = [
+                            (text, confidence)
+                            for text, confidence, _bounds in full_ocr_results
+                        ]
+                        logger.info(
+                            "Full-frame OCR roster published (icons=%d, candidates=%d)",
                             hostile_count,
-                            ocr_retry_remaining,
+                            len(full_ocr_results),
                         )
-                        self.status_update.emit(
-                            "敌对图标已上报，姓名区域定位失败，等待下一帧重试"
-                        )
-                        ocr_retry_remaining = max(0, ocr_retry_remaining - 1)
                     else:
-                        progress = None if ocr_ready else self.status_update.emit
-                        ocr_retry_remaining = max(0, ocr_retry_remaining - 1)
-                        supports_full_frame_ocr = any(
-                            callable(getattr(self._ocr, method, None))
-                            for method in (
-                                "recognize_with_boxes",
-                                "recognize_with_boxes_latest",
-                            )
+                        # Legacy backends have no geometry API. OCR the complete
+                        # captured member list so friendly names are retained too.
+                        ocr_results = self._recognize(
+                            img,
+                            progress=progress,
+                            priority=10,
                         )
-                        if supports_full_frame_ocr:
-                            full_ocr_results = self._recognize_with_boxes(
-                                img,
-                                progress=progress,
-                                priority=10,
-                            )
-                            ocr_results = [
-                                (text, confidence)
-                                for text, confidence, _bounds in full_ocr_results
-                            ]
-                            hostile_names = build_ocr_snapshot_names(ocr_results)
-                            evidence = {
-                                "ocr_candidates": [
-                                    {
-                                        "text": text,
-                                        "confidence": confidence,
-                                        "left": bounds[0],
-                                        "top": bounds[1],
-                                        "right": bounds[2],
-                                        "bottom": bounds[3],
-                                    }
-                                    for text, confidence, bounds in full_ocr_results
-                                ],
-                                "hostile_icons": [
-                                    {
-                                        "left": icon.left,
-                                        "top": icon.top,
-                                        "right": icon.right,
-                                        "bottom": icon.bottom,
-                                    }
-                                    for icon in hostile_icons
-                                ],
-                            }
-                            self.ocr_evidence_snapshot.emit(
-                                hostile_names,
-                                hostile_count,
-                                evidence,
-                            )
-                            if full_ocr_results:
-                                ocr_retry_remaining = 0
-                            logger.info(
-                                "Full-frame OCR evidence published "
-                                "(icons=%d, candidates=%d)",
-                                hostile_count,
-                                len(full_ocr_results),
-                            )
-                        else:
-                            try:
-                                row_images = extract_hostile_name_row_images(
-                                    img,
-                                    hostile_icons,
-                                )
-                            except (AttributeError, TypeError, ValueError):
-                                # Keep alternate capture/test providers compatible
-                                # with the legacy stacked-row extractor.
-                                row_images = [hostile_rows]
-
-                            hostile_ocr_results = []
-                            hostile_names = []
-                            row_name_count_matches = len(row_images) == hostile_count
-                            for row_index, row_image in enumerate(row_images):
-                                row_results = self._recognize(
-                                    row_image,
-                                    progress=(
-                                        progress if row_index == 0 else None
-                                    ),
-                                    priority=10,
-                                )
-                                row_names = build_ocr_snapshot_names(row_results)
-                                if len(row_names) != 1:
-                                    row_name_count_matches = False
-                                    logger.warning(
-                                        "Hostile OCR row mismatch "
-                                        "(row=%d, names=%d, icons=%d)",
-                                        row_index + 1,
-                                        len(row_names),
-                                        hostile_count,
-                                    )
-                                    continue
-                                hostile_ocr_results.extend(row_results)
-                                hostile_names.extend(row_names)
-
-                            names_match = (
-                                row_name_count_matches
-                                and len(hostile_names) == hostile_count
-                            )
-                            if names_match:
-                                ocr_results = hostile_ocr_results
-                                self.ocr_snapshot.emit(hostile_names, hostile_count)
-                                ocr_retry_remaining = 0
-                                logger.info(
-                                    "Hostile OCR snapshot accepted (icons=%d, names=%d)",
-                                    hostile_count,
-                                    len(hostile_names),
-                                )
-                            else:
-                                ocr_results = []
-                                logger.warning(
-                                    "Hostile OCR name count mismatch "
-                                    "(icons=%d, names=%d, retries=%d)",
-                                    hostile_count,
-                                    len(hostile_names),
-                                    ocr_retry_remaining,
-                                )
-                                self.status_update.emit(
-                                    "敌对图标已上报，姓名数量不匹配，等待下一帧重试"
-                                )
+                    if ocr_results:
+                        self.ocr_snapshot.emit(
+                            build_ocr_snapshot_names(ocr_results),
+                            hostile_count,
+                        )
+                        ocr_retry_remaining = 0
                     ocr_ready = True
                     if self._stop_requested():
                         break

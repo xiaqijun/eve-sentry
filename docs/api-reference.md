@@ -82,7 +82,7 @@ Authorization: Bearer eve_xxx
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/api/v1/hostile-presence` | 立即上传当前红色敌对图标数量，`0` 表示清空 |
-| `POST` | `/api/v1/ocr/snapshot` | 上传非零数量变化时识别到的 OCR 人员名单；兼容旧客户端红框计数 |
+| `POST` | `/api/v1/ocr/snapshot` | 上传完整 OCR 文本名单；服务端逐名 ESI 分类，`hostile_icon_count` 仅为独立视觉计数 |
 | `POST` | `/api/v1/clients/heartbeats` | 上传客户端状态、窗口目标和最近异常 |
 | `GET` | `/api/v1/clients` | 在线客户端和聚合状态 |
 | `GET` | `/api/v1/active-intel` | 当前实时情报 |
@@ -112,6 +112,13 @@ Authorization: Bearer eve_xxx
 `system_name`、`hostile_icon_count`，并可带 `system_id`、`seen_at`、`snapshot_id`、
 `sequence` 和 `captured_at`。该接口只维护当前星系数量状态，不创建虚假人员报告；同一
 客户端的旧时间戳不会覆盖新状态。
+
+`POST /api/v1/ocr/snapshot` 的请求体包含 `client_id`、`source_instance`、`system_name` 和
+完整 OCR 文本数组 `names`，可带 `system_id`、`seen_at`、`confidence`、`hostile_icon_count`、
+`snapshot_id`、`sequence` 和 `captured_at`。客户端不发送 `ocr_candidates` 或 `hostile_icons`
+坐标；服务端对 `names` 中的每个文本独立请求 ESI，按 standing、军团/联盟和白名单生成
+敌对、友军或未解析状态。`hostile_icon_count` 只表示截图中的视觉红色图标总数，不给单个角色
+直接定性。
 
 历史报告和观察记录支持显式游标分页。首个请求传 `cursor=start`，后续请求原样传回
 `next_cursor`；`next_cursor` 为 `null` 表示结束。普通列表和分页默认每次最多 100 条，

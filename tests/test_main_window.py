@@ -851,7 +851,7 @@ def test_auth_rejection_clears_cached_key_validation():
     assert window._api_key_validated is False
 
 
-def test_publish_ocr_snapshot_posts_only_detected_names():
+def test_publish_ocr_snapshot_posts_names_without_coordinate_evidence():
     class FakeClient:
         def __init__(self):
             self.payload = None
@@ -907,7 +907,8 @@ def test_publish_ocr_snapshot_posts_only_detected_names():
     )
 
     assert window._intel_client.payload["names"] == ["Alice"]
-    assert window._intel_client.payload["ocr_candidates"] == evidence["ocr_candidates"]
+    assert "ocr_candidates" not in window._intel_client.payload
+    assert "hostile_icons" not in window._intel_client.payload
 
 
 def test_hostile_icon_detection_notifies_immediately():
