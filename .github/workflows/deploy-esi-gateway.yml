@@ -17,6 +17,9 @@ permissions:
 
 jobs:
   deploy:
+    # Ordinary pushes build and test the artifact; production deployment is
+    # deliberately opt-in through the manual workflow_dispatch event.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
