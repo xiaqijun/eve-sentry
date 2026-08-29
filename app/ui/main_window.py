@@ -3291,6 +3291,9 @@ class MainWindow(QMainWindow):
         hostile_icon_count: int = 0,
         ocr_evidence: dict | None = None,
     ) -> None:
+        # Coordinates are local detection evidence and are intentionally not
+        # sent. The server classifies the complete OCR roster through ESI.
+        del ocr_evidence
         if (
             self._intel_client is None
             or not _instance_attr(self, "_uploads_enabled", True)
@@ -3321,14 +3324,11 @@ class MainWindow(QMainWindow):
             "source_instance": source_instance,
             "system_name": system_name or "Unknown",
             "system_id": system_id,
-            # Upload every cleaned OCR candidate for server-side ESI lookup.
-            # Geometric evidence still decides which candidates are hostile.
+            # Upload the complete raw OCR roster for server-side ESI lookup.
             "names": list(names),
         }
         if hostile_icon_count > 0:
             payload["hostile_icon_count"] = int(hostile_icon_count)
-        if ocr_evidence:
-            payload.update(ocr_evidence)
         upload_manager = _instance_attr(self, "_upload_manager")
         if upload_manager is not None:
             upload_manager.submit_snapshot(

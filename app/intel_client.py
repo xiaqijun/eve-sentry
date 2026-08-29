@@ -156,10 +156,9 @@ class IntelApiClient:
             payload["confidence"] = confidence
         if hostile_icon_count > 0:
             payload["hostile_icon_count"] = int(hostile_icon_count)
-        if ocr_candidates is not None:
-            payload["ocr_candidates"] = list(ocr_candidates)
-        if hostile_icons is not None:
-            payload["hostile_icons"] = list(hostile_icons)
+        # Deprecated geometry arguments remain accepted for old callers, but
+        # coordinates are no longer part of the OCR snapshot contract.
+        del ocr_candidates, hostile_icons
         if snapshot_id:
             payload["snapshot_id"] = str(snapshot_id)
         if sequence is not None:
