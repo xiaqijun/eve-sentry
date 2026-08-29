@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -59,8 +59,44 @@ jobs:
           npx --yes wrangler@${WRANGLER_VERSION} deploy
           --dry-run
           --config deploy/cloudflare-download/wrangler.jsonc
+      - uses: actions/upload-artifact@v6
+        with:
+          name: download-site-out
+          path: download-site/out
+          if-no-files-found: error
+          retention-days: 3
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      DOWNLOAD_SITE_URL: https://evesentrydownload.kisectool.com
+      WRANGLER_VERSION: 4.116.0
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@v7
+        with:
+          name: download-site-out
+          path: download-site/out
+      - name: Validate Cloudflare configuration
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing Cloudflare deployment secret: $name" >&2
+              exit 1
+            fi
+          done
       - name: Deploy to Cloudflare
-        if: github.event_name != 'pull_request'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
