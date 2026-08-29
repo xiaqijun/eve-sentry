@@ -128,7 +128,42 @@ async def test_explicit_hostile_movement_event_is_deduplicated() -> None:
         }
         assert await relay.process_hostile_movement(payload) is True
         assert await relay.process_hostile_movement(payload) is True
-    assert qq.send_proactive_text.await_count == 1
+        second = {**payload, "movement_id": "move-2"}
+        assert await relay.process_hostile_movement(second) is True
+    assert qq.send_proactive_text.await_count == 2
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_relay_does_not_ack_monitoring_event_after_delivery_failure() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        body = (
+            b"id: node-1\n"
+            b"event: monitoring_node\n"
+            b'data: {"changes":[{"change":"online","node_id":"node-a","system_name":"Jita"}]}\n\n'
+        )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            content=body,
+        )
+
+    async def fail_send(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("QQ unavailable")
+
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(send_proactive_text=fail_send)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        relay = EveSentryAlertRelay(
+            http,
+            redis,
+            qq,
+            "http://sentry.test/api/v1/events",
+        )
+        await relay.subscribe("group-1")
+        await relay._stream_once()
+
+    assert await redis.get(ALERT_EVENT_ID_KEY) is None
     await redis.aclose()
 
 
