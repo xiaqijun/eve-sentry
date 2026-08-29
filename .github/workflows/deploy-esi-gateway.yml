@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "app/esi/**"
       - "scripts/esi_gateway.py"
       - "deploy/linux/eve-sentry-esi-gateway.service"
       - "deploy/ci/deploy_esi_gateway.sh"
@@ -11,6 +12,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - "app/esi/**"
       - "scripts/esi_gateway.py"
       - "deploy/linux/eve-sentry-esi-gateway.service"
       - "deploy/ci/deploy_esi_gateway.sh"
