@@ -170,6 +170,41 @@ export interface EsiGatewaySnapshot {
     error?: string;
     health?: EsiGatewayHealth;
   };
+  resolver_cache?: {
+    personnel?: {
+      lookups?: number;
+      hits?: number;
+      misses?: number;
+      fresh_hits?: number;
+      stale_hits?: number;
+      negative_hits?: number;
+      hit_rate?: number;
+      lookup_rate_per_second?: number;
+    };
+    totals?: {
+      lookups?: number;
+      hits?: number;
+      misses?: number;
+      stale_hits?: number;
+      hit_rate?: number;
+      lookup_rate_per_second?: number;
+    };
+    entries?: {
+      total?: number;
+      active?: number;
+      stale?: number;
+    };
+    namespaces?: Record<string, {
+      lookups?: number;
+      hits?: number;
+      misses?: number;
+      stale_hits?: number;
+      hit_rate?: number;
+      entries?: number;
+      active_entries?: number;
+      stale_entries?: number;
+    }>;
+  };
   client_metrics: {
     counts?: Record<string, number>;
     totals?: {

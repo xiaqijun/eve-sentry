@@ -3592,6 +3592,24 @@ def test_admin_can_read_esi_gateway_observability(tmp_path):
     class GatewayResolver(AuthTestResolver):
         client = GatewayClient()
 
+        class Cache:
+            @staticmethod
+            def snapshot():
+                return {
+                    "totals": {"lookups": 5, "hits": 4, "misses": 1},
+                    "namespaces": {
+                        "name": {"lookups": 5, "hits": 4, "misses": 1},
+                    },
+                }
+
+        cache = Cache()
+
+        def cache_snapshot(self):
+            return {
+                **self.cache.snapshot(),
+                "personnel": {"lookups": 5, "hits": 4, "misses": 1},
+            }
+
     resolver = GatewayResolver()
     store = AuthTestStore(tmp_path / "intel.json")
     store._resolver = resolver
@@ -3613,6 +3631,8 @@ def test_admin_can_read_esi_gateway_observability(tmp_path):
         assert status == 200
         assert payload["gateway"]["reachable"] is True
         assert payload["gateway"]["health"]["cache_hits"] == 3
+        assert payload["resolver_cache"]["personnel"]["hits"] == 4
+        assert payload["resolver_cache"]["namespaces"]["name"]["hits"] == 4
         assert payload["client_metrics"]["counts"]["get_system:miss:remote"] == 1
     finally:
         server.stop()

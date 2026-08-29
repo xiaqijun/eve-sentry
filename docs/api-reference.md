@@ -120,7 +120,11 @@ Authorization: Bearer eve_xxx
 敌对、友军或未解析状态。`hostile_icon_count` 只表示截图中的视觉红色图标总数，不给单个角色
 直接定性。
 
-`GET /api/v1/admin/esi-gateway` 返回 47 Gateway 的运行摘要和 114 进程内远端调用指标。
+`GET /api/v1/admin/esi-gateway` 返回 47 Gateway 的运行摘要、114 业务缓存和进程内远端调用指标。
+`resolver_cache.personnel` 按 114 收到的新 OCR 人员逐个统计 `lookups`、`hits`、`misses`、
+`hit_rate`，是人员名单缓存命中率的主口径，并区分新鲜、过期和负缓存命中；`namespaces`
+提供底层名称、角色、军团、联盟和星系资料缓存以及有效/过期条目。一次包含多个未缓存名称的
+Gateway 批量请求仍只算一次远端请求。
 Gateway 的 `requests` 是总请求数，`upstream_requests` 是实际访问 ESI 的次数，
 `cache_hits`、`cache_misses` 和 `cache_hit_rate` 使用同一总请求口径；`request_rate_per_second`
 为最近 60 秒请求率，`endpoints` 提供端点级拆分。`client_metrics` 同样包含 `totals`、

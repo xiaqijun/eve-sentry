@@ -32,6 +32,21 @@ const snapshot: EsiGatewaySnapshot = {
       latency_ms: { last: 31, average: 94 },
     },
   },
+  resolver_cache: {
+    personnel: { lookups: 16, hits: 12, misses: 4, hit_rate: 0.75 },
+    totals: { lookups: 20, hits: 15, misses: 5, hit_rate: 0.75 },
+    entries: { total: 30, active: 28, stale: 2 },
+    namespaces: {
+      name: {
+        lookups: 16,
+        hits: 12,
+        misses: 4,
+        hit_rate: 0.75,
+        active_entries: 20,
+        stale_entries: 1,
+      },
+    },
+  },
   client_metrics: {
     durations_ms: { get_system: { count: 3, last: 31, p50: 40, p95: 160 } },
   },
@@ -69,6 +84,9 @@ describe("AdminEsiGatewayPage", () => {
     expect(container).toHaveTextContent("网关在线");
     expect(container).toHaveTextContent("12");
     expect(container).toHaveTextContent("67%");
+    expect(container).toHaveTextContent("114 名单命中率");
+    expect(container).toHaveTextContent("人员名称");
+    expect(container).toHaveTextContent("75%");
     expect(container).toHaveTextContent("eve-sentry-esi-gateway");
     expect(container).toHaveTextContent("get_system");
     expect(container).toHaveTextContent("P95 (ms)");

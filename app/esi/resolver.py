@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import threading
+from collections import Counter, deque
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any
 
 from app.core.models import Observation
@@ -35,6 +37,9 @@ class EsiResolver:
         self.ttl_seconds = ttl_seconds
         self.negative_ttl_seconds = max(1, int(negative_ttl_seconds))
         self._resolve_lock = threading.Lock()
+        self._metrics_lock = threading.Lock()
+        self._personnel_cache: Counter[str] = Counter()
+        self._personnel_lookup_times: deque[float] = deque(maxlen=10000)
 
     def resolve_names(self, names: list[str]) -> list[ResolvedName]:
         """Resolve names to ids, preserving the input order where possible."""
@@ -59,8 +64,12 @@ class EsiResolver:
         if value is None and allow_stale:
             value = self.cache.get_stale(key)
         if not isinstance(value, dict):
+            self._record_personnel_cache_lookup("miss")
             return None, "miss"
         if value.get("status") == "not_found":
+            self._record_personnel_cache_lookup(
+                "stale_negative" if status == "stale" else "negative"
+            )
             return None, f"{status}_not_found"
         try:
             resolved = ResolvedName(
@@ -69,8 +78,54 @@ class EsiResolver:
                 entity_id=int(value["id"]),
             )
         except (KeyError, TypeError, ValueError):
+            self._record_personnel_cache_lookup("miss")
             return None, "miss"
+        self._record_personnel_cache_lookup(
+            "stale" if status == "stale" else "fresh"
+        )
         return resolved, status
+
+    def cache_snapshot(self) -> dict[str, Any]:
+        """Return business cache metrics with OCR personnel lookup semantics."""
+        snapshot = getattr(self.cache, "snapshot", None)
+        payload = snapshot() if callable(snapshot) else {}
+        now = monotonic()
+        with self._metrics_lock:
+            lookups = self._personnel_cache["lookups"]
+            hits = self._personnel_cache["hits"]
+            personnel = {
+                "lookups": lookups,
+                "hits": hits,
+                "misses": self._personnel_cache["misses"],
+                "fresh_hits": self._personnel_cache["fresh_hits"],
+                "stale_hits": self._personnel_cache["stale_hits"],
+                "negative_hits": self._personnel_cache["negative_hits"],
+                "hit_rate": round(hits / max(1, lookups), 4),
+                "lookup_rate_per_second": round(
+                    sum(
+                        timestamp >= now - 60.0
+                        for timestamp in self._personnel_lookup_times
+                    )
+                    / 60.0,
+                    4,
+                ),
+            }
+        return {**payload, "personnel": personnel}
+
+    def _record_personnel_cache_lookup(self, result: str) -> None:
+        with self._metrics_lock:
+            self._personnel_cache["lookups"] += 1
+            if result == "miss":
+                self._personnel_cache["misses"] += 1
+            else:
+                self._personnel_cache["hits"] += 1
+                if result == "fresh":
+                    self._personnel_cache["fresh_hits"] += 1
+                elif result in {"stale", "stale_negative"}:
+                    self._personnel_cache["stale_hits"] += 1
+                if result in {"negative", "stale_negative"}:
+                    self._personnel_cache["negative_hits"] += 1
+            self._personnel_lookup_times.append(monotonic())
 
     def cached_character_profile(
         self,

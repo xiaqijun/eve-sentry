@@ -138,6 +138,16 @@ def test_cached_identity_access_never_calls_esi(tmp_path):
     assert profile is not None
     assert profile["corporation_name"] == "Some Corp"
     assert profile["cache_status"] == "cached"
+    assert resolver.cache_snapshot()["personnel"] == {
+        "lookups": 1,
+        "hits": 1,
+        "misses": 0,
+        "fresh_hits": 1,
+        "stale_hits": 0,
+        "negative_hits": 0,
+        "hit_rate": 1.0,
+        "lookup_rate_per_second": 0.0167,
+    }
 
 
 def test_cached_identity_can_return_stale_data_for_background_refresh(tmp_path):
@@ -161,6 +171,10 @@ def test_cached_identity_can_return_stale_data_for_background_refresh(tmp_path):
     assert name_status == "stale"
     assert profile is not None
     assert profile["cache_status"] == "stale"
+    personnel = resolver.cache_snapshot()["personnel"]
+    assert personnel["lookups"] == 1
+    assert personnel["hits"] == 1
+    assert personnel["stale_hits"] == 1
 
 
 def test_resolve_names_negative_caches_unresolved_names(tmp_path):

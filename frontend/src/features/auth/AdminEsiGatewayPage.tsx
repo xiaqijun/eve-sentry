@@ -23,7 +23,16 @@ import type { EsiGatewayHealth, EsiGatewaySnapshot } from "./types";
 
 const EMPTY_SNAPSHOT: EsiGatewaySnapshot = {
   gateway: { configured: false, reachable: false },
+  resolver_cache: {},
   client_metrics: {},
+};
+
+const CACHE_NAMESPACE_LABELS: Record<string, string> = {
+  name: "人员名称",
+  character: "角色资料",
+  corporation: "军团资料",
+  alliance: "联盟资料",
+  system: "星系资料",
 };
 
 function numberValue(value: unknown): number {
@@ -102,6 +111,22 @@ export function AdminEsiGatewayPage() {
 
   const health = healthOf(snapshot);
   const state = gatewayState(snapshot);
+  const resolverTotals = snapshot.resolver_cache?.totals || {};
+  const personnelCache = snapshot.resolver_cache?.personnel;
+  const nameNamespaceCache = snapshot.resolver_cache?.namespaces?.name;
+  const resolverCacheRows = useMemo(() => Object.entries(snapshot.resolver_cache?.namespaces || {})
+    .map(([namespace, values]) => ({
+      key: namespace,
+      namespace: CACHE_NAMESPACE_LABELS[namespace] || namespace,
+      lookups: numberValue(values.lookups),
+      hits: numberValue(values.hits),
+      misses: numberValue(values.misses),
+      staleHits: numberValue(values.stale_hits),
+      hitRate: `${percentValue(values.hit_rate)}%`,
+      activeEntries: numberValue(values.active_entries),
+      staleEntries: numberValue(values.stale_entries),
+    }))
+    .sort((a, b) => b.lookups - a.lookups), [snapshot.resolver_cache?.namespaces]);
   const latencyRows = useMemo(() => Object.entries(
     snapshot.client_metrics.endpoints || snapshot.client_metrics.durations_ms || {},
   )
@@ -111,18 +136,30 @@ export function AdminEsiGatewayPage() {
       count: numberValue("requests" in values ? values.requests : values.count),
       hits: numberValue("cache_hits" in values ? values.cache_hits : 0),
       misses: numberValue("cache_misses" in values ? values.cache_misses : 0),
-      last: numberValue("last_latency_ms" in values ? values.last_latency_ms : values.last),
+      last: numberValue("last_ms" in values
+        ? values.last_ms
+        : "last_latency_ms" in values ? values.last_latency_ms : values.last),
       p50: numberValue("p50_ms" in values ? values.p50_ms : values.p50),
       p95: numberValue("p95_ms" in values ? values.p95_ms : values.p95),
     }))
     .sort((a, b) => b.count - a.count), [snapshot.client_metrics.endpoints, snapshot.client_metrics.durations_ms]);
-  const requestCount = numberValue(health.requests);
   const upstreamRequestCount = numberValue(health.upstream_requests ?? health.requests);
-  const errors = numberValue(health.errors);
-  const cacheHits = numberValue(health.cache_hits);
   const cacheMisses = numberValue(health.cache_misses ?? upstreamRequestCount);
   const cacheRate = percentValue(health.cache_hit_rate);
   const requestRate = numberValue(health.request_rate_per_second);
+  const nameLookups = numberValue(
+    personnelCache?.lookups ?? nameNamespaceCache?.lookups ?? resolverTotals.lookups,
+  );
+  const nameHits = numberValue(
+    personnelCache?.hits ?? nameNamespaceCache?.hits ?? resolverTotals.hits,
+  );
+  const nameMisses = numberValue(
+    personnelCache?.misses ?? nameNamespaceCache?.misses ?? resolverTotals.misses,
+  );
+  const nameHitRate = percentValue(
+    personnelCache?.hit_rate ?? nameNamespaceCache?.hit_rate ?? resolverTotals.hit_rate,
+  );
+  const resolverEntries = snapshot.resolver_cache?.entries || {};
 
   return (
     <div className="admin-shell admin-esi-gateway-page">
@@ -136,12 +173,55 @@ export function AdminEsiGatewayPage() {
       <ManagementError error={error} />
 
       <ManagementSummary ariaLabel="ESI 网关摘要" items={[
-        { label: "网关请求", value: requestCount },
-        { label: "上游请求", value: upstreamRequestCount },
-        { label: "上游错误", value: errors },
-        { label: "缓存命中", value: cacheHits },
-        { label: "缓存命中率", value: `${cacheRate}%` },
+        { label: "114 名单查询", value: nameLookups },
+        { label: "114 缓存命中", value: nameHits },
+        { label: "114 缓存未命中", value: nameMisses },
+        { label: "114 名单命中率", value: `${nameHitRate}%` },
+        { label: "Gateway 上游请求", value: upstreamRequestCount },
       ]} />
+
+      <Card
+        className="arco-management-card"
+        title="114 业务缓存"
+        extra={<Typography.Text type="secondary">按单个人员或资料查询统计</Typography.Text>}
+      >
+        <Space direction="vertical" size={18} style={{ width: "100%" }}>
+          <Descriptions
+            border
+            column={3}
+            data={[
+              { label: "名单新鲜命中", value: numberValue(personnelCache?.fresh_hits) },
+              { label: "名单过期命中", value: numberValue(personnelCache?.stale_hits) },
+              { label: "名单负缓存命中", value: numberValue(personnelCache?.negative_hits) },
+              {
+                label: "近 60 秒名单查询率",
+                value: `${numberValue(personnelCache?.lookup_rate_per_second).toFixed(2)} req/s`,
+              },
+              { label: "有效缓存条目", value: numberValue(resolverEntries.active) },
+              { label: "过期缓存条目", value: numberValue(resolverEntries.stale) },
+            ]}
+            size="small"
+          />
+          <Table
+            border={false}
+            columns={[
+              { title: "缓存类型", dataIndex: "namespace" },
+              { title: "查询", dataIndex: "lookups" },
+              { title: "命中", dataIndex: "hits" },
+              { title: "未命中", dataIndex: "misses" },
+              { title: "使用过期值", dataIndex: "staleHits" },
+              { title: "命中率", dataIndex: "hitRate" },
+              { title: "有效条目", dataIndex: "activeEntries" },
+              { title: "过期条目", dataIndex: "staleEntries" },
+            ]}
+            data={resolverCacheRows}
+            loading={loading}
+            noDataElement="暂无 114 ESI 缓存记录"
+            pagination={false}
+            rowKey="key"
+          />
+        </Space>
+      </Card>
 
       <Grid.Row gutter={16}>
         <Grid.Col flex="1" xs={24} md={14}>

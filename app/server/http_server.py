@@ -1559,8 +1559,12 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             except Exception as exc:
                 gateway["error"] = str(exc)
         metrics = getattr(getattr(client, "metrics", None), "snapshot", None)
+        resolver_cache = getattr(resolver, "cache_snapshot", None)
+        if not callable(resolver_cache):
+            resolver_cache = getattr(getattr(resolver, "cache", None), "snapshot", None)
         return {
             "gateway": gateway,
+            "resolver_cache": resolver_cache() if callable(resolver_cache) else {},
             "client_metrics": metrics() if callable(metrics) else {},
             "esi": self._public_esi_health(),
         }
