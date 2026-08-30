@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 from redis.asyncio import Redis
@@ -15,6 +16,8 @@ from eve_risk.alerts import ALERT_DEDUPE_SECONDS, ALERT_GROUPS_KEY
 from eve_risk.clients.qq import QQOpenAPIClient
 
 logger = logging.getLogger(__name__)
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 SERVER_STATUS_STATE_KEY = "qq:eve-server:status-state"
 SERVER_STATUS_FAILURES_KEY = "qq:eve-server:status-failures"
@@ -125,7 +128,7 @@ class EveServerStartupMonitor:
     async def _deliver_startup(self, status: EveServerStatus) -> None:
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
         groups = sorted(_decode(value) for value in raw_groups if _decode(value))
-        started_at = status.start_time.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        started_at = status.start_time.astimezone(SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
         message = (
             "🟢 EVE 服务器已开服\n"
             f"在线人数｜{status.players}\n"
