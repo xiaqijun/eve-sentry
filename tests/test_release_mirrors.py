@@ -65,12 +65,5 @@ def test_gitcode_release_script_keeps_token_out_of_public_urls():
     assert 'GitCode upload failed for $($asset.Name) (HTTP $status)' in script
 
 
-def test_release_workflow_uses_download_site_without_gitcode_mirror():
-    workflow = Path(".github/workflows/release-client.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert '-GitCodeRepository "xiaqiqi/eve-sentry-releases"' not in workflow
-    assert ".\\scripts\\publish_gitcode_release.ps1 -Version $version" not in workflow
-    assert "GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}" not in workflow
-    assert "https://evesentrydownload.kisectool.com/download" in workflow
+def test_main_repository_has_retired_client_release_workflow():
+    assert not Path(".github/workflows/release-client.yml").exists()

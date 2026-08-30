@@ -50,6 +50,8 @@ on:
       - "requirements-server.txt"
       - "requirements-onnx.txt"
       - "intel_map.json"
+      - "docs/ci-cd.md"
+      - "docs/gitcode-release-mirror.md"
       - ".github/workflows/deploy-server.yml"
   workflow_dispatch:
 
