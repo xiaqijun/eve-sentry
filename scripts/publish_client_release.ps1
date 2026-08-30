@@ -2,6 +2,8 @@ param(
     [string]$Version = "",
     [string]$Python = ".\.venv\Scripts\python.exe",
     [string]$DownloadBaseUrl = "https://github.com/xiaqijun/eve-sentry/releases/latest/download",
+    [string]$Repository = "xiaqijun/eve-sentry",
+    [string]$ReleaseTarget = "main",
     [string]$GitCodeRepository = "",
     [switch]$SkipBuild,
     [switch]$SkipGithub
@@ -17,6 +19,12 @@ try {
     }
     if ($Version -notmatch '^\d+\.\d+\.\d+([+-][0-9A-Za-z.-]+)?$') {
         throw "Invalid release version: $Version"
+    }
+    if ($Repository -notmatch '^[^/\s]+/[^/\s]+$') {
+        throw "Invalid GitHub release repository: $Repository"
+    }
+    if (-not $ReleaseTarget.Trim()) {
+        throw "GitHub release target must be non-empty"
     }
 
     $buildName = "EVE-Sentry-Monitor-ONNX"
@@ -147,15 +155,17 @@ try {
         $tag = "v$Version"
         $previousErrorAction = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        gh release view $tag --json tagName 2>$null | Out-Null
+        gh release view $tag --repo $Repository --json tagName 2>$null | Out-Null
         $releaseExists = $LASTEXITCODE -eq 0
         $ErrorActionPreference = $previousErrorAction
         if ($releaseExists) {
-            gh release upload $tag $assetPath $programAssetPath $channelAssetPath $modelAssetPath $manifestPath --clobber
-        } else {
-            $targetCommit = (git rev-parse HEAD).Trim()
-            gh release create $tag $assetPath $programAssetPath $channelAssetPath $modelAssetPath $manifestPath --target $targetCommit --title "EVE Sentry v$Version" --generate-notes
+            throw "GitHub release $Repository@$tag already exists; refusing to overwrite it"
         }
+        gh release create $tag $assetPath $programAssetPath $channelAssetPath $modelAssetPath $manifestPath `
+            --repo $Repository `
+            --target $ReleaseTarget `
+            --title "EVE Sentry v$Version" `
+            --generate-notes
         if ($LASTEXITCODE -ne 0) { throw "GitHub release failed with exit code $LASTEXITCODE" }
     }
 
