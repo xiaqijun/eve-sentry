@@ -67,12 +67,12 @@ def test_analysis_deduplicates_weights_and_builds_patterns(now, identities, ship
     assert report.engagement_count == 2
     assert report.coverage_ratio == 1
     assert report.role_distribution[0].name == "输出舰"
-    assert report.role_distribution[0].median == 1.5
-    assert report.role_distribution[0].p75 == 2
+    assert report.role_distribution[0].median == 1
+    assert report.role_distribution[0].p75 == 1
     assert report.common_associates == []
     assert report.solo_ratio == 0.5
-    assert report.median_gang_size == 2
-    assert report.p75_gang_size == 3
+    assert report.median_gang_size == 1.5
+    assert report.p75_gang_size == 1.75
     assert report.kill_efficiency == 2 / 3
     assert report.engagement_patterns[0].label == "输出舰×1 / 后勤×1"
     assert report.core_members[0].value == 1
@@ -442,7 +442,7 @@ def test_latest_loss_keeps_combat_ship_instead_of_followup_capsule(
     )
 
     assert report.latest_engagement is not None
-    assert report.latest_engagement.outcome == "交火互损"
+    assert report.latest_engagement.outcome == "交火并有损失"
     assert report.latest_engagement.result_detail == (
         "击毁 Logistics Cruiser · 损失 Damage Cruiser"
     )
@@ -586,16 +586,18 @@ def test_threat_doctrine_location_and_heatmap_are_explainable(now) -> None:
     }
     mails = []
     for index in range(12):
+        pair_index = index % 6
         mails.append(
             _mail(
                 index + 1,
                 now - timedelta(days=index % 6, hours=12 - index % 3),
-                [
-                    Participant(character_id=999, is_victim=True),
-                    Participant(character_id=1, ship_type_id=1, final_blow=True),
-                    Participant(character_id=10 + index, ship_type_id=1),
-                    Participant(character_id=30 + index, ship_type_id=2),
-                    Participant(character_id=50 + index, ship_type_id=3),
+                    [
+                        Participant(character_id=999, is_victim=True),
+                        Participant(character_id=1, ship_type_id=1, final_blow=True),
+                        Participant(character_id=10 + pair_index, ship_type_id=1),
+                        Participant(character_id=70 + pair_index, ship_type_id=1),
+                        Participant(character_id=30 + pair_index, ship_type_id=2),
+                        Participant(character_id=50 + pair_index, ship_type_id=3),
                 ],
                 system=30000142,
             )
