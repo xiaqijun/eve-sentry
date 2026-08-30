@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,7 @@ from app.intel.enrichment import ThreatEnricher, ThreatEnrichment
 from app.intel.scoring import ScoringEngine, Watchlist
 from app.server.intel_store import (
     HeartbeatOwnershipConflict,
+    IntelReport,
     IntelStore,
     StarSystem,
 )
@@ -376,6 +378,67 @@ def test_add_report_persists_and_snapshot_aggregates(tmp_path):
     assert snapshot["observations"][0]["system_name"] == "Tama"
     assert snapshot["alerts"] == []
     assert reloaded.list_alerts()[0]["level"] == "low"
+
+
+def test_legacy_json_reports_gain_stable_stream_positions_on_next_save(tmp_path):
+    path = tmp_path / "intel_reports.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "legacy-1",
+                    "system": "Tama",
+                    "names": ["Pilot 1"],
+                    "source": "manual",
+                    "seen_at": "2026-08-01T10:00:00+00:00",
+                    "received_at": "2026-08-01T10:00:00+00:00",
+                },
+                {
+                    "id": "legacy-2",
+                    "system": "Tama",
+                    "names": ["Pilot 2"],
+                    "source": "manual",
+                    "seen_at": "2026-08-01T10:00:00+00:00",
+                    "received_at": "2026-08-01T10:00:00+00:00",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    store = IntelStore(path, systems={}, links=[])
+    first_cursor = store.resolve_alert_stream_cursor("evt_legacy-1")
+    second_cursor = store.resolve_alert_stream_cursor("evt_legacy-2")
+
+    store.add_report("Tama", ["Pilot 3"])
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    reloaded = IntelStore(path, systems={}, links=[])
+
+    assert first_cursor is not None and second_cursor is not None
+    assert first_cursor < second_cursor
+    assert all(item["_stream_position"] > 0 for item in persisted)
+    assert len({item["_stream_position"] for item in persisted}) == 3
+    assert reloaded.resolve_alert_stream_cursor("evt_legacy-1") == first_cursor
+    assert reloaded.resolve_alert_stream_cursor("evt_legacy-2") == second_cursor
+    assert "_stream_position" not in reloaded.list_reports()[0]["metadata"]
+
+
+def test_json_stream_positions_follow_persistence_order(tmp_path):
+    store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
+    constructed_first = IntelReport(system="Tama", names=["First"])
+    persisted_first = IntelReport(system="Tama", names=["Second"])
+
+    assert constructed_first.stream_position == 0
+    assert persisted_first.stream_position == 0
+    with store._lock:
+        store._reports.append(persisted_first)
+        store._save_reports()
+        store._reports.append(constructed_first)
+        store._save_reports()
+
+    assert persisted_first.stream_position < constructed_first.stream_position
+    assert store._report_stream_cursor(persisted_first) < (
+        store._report_stream_cursor(constructed_first)
+    )
 
 
 def test_snapshot_map_uses_only_active_intel_for_system_hotness(tmp_path):

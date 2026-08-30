@@ -16,6 +16,8 @@ from app.server.postgres_store import (
     POSTGRES_POOL_MIN_SIZE,
     POSTGRES_POOL_TIMEOUT_SECONDS,
     PERSISTED_ALERT_METADATA_KEY,
+    REPORT_STREAM_ADVISORY_LOCK_ID,
+    REPORT_STREAM_POSITION_KEY,
     PostgreSQLIntelStore,
     _PostgresConnection,
     _create_connection_pool,
@@ -157,6 +159,28 @@ def test_postgres_migration_adds_heartbeat_attribution_columns():
     store._migrate()
 
     migration_sql = "\n".join(query for query, _params in queries)
+    lock_query_index = next(
+        index
+        for index, (query, _params) in enumerate(queries)
+        if "pg_advisory_xact_lock" in query
+    )
+    sequence_query_index = next(
+        index
+        for index, (query, _params) in enumerate(queries)
+        if "CREATE SEQUENCE" in query
+    )
+    assert lock_query_index < sequence_query_index
+    assert "CREATE SEQUENCE IF NOT EXISTS intel_reports_stream_position_seq" in (
+        migration_sql
+    )
+    assert "ALTER TABLE intel_reports ADD COLUMN stream_position BIGINT" in migration_sql
+    assert "ALTER COLUMN stream_position SET DEFAULT nextval(" in migration_sql
+    assert "ORDER BY received_at ASC, report_id ASC" in migration_sql
+    assert "ALTER COLUMN stream_position SET NOT NULL" in migration_sql
+    assert "OWNED BY intel_reports.stream_position" in migration_sql
+    assert "SELECT setval(" in migration_sql
+    assert "IS DISTINCT FROM to_jsonb(stream_position)" in migration_sql
+    assert "idx_intel_reports_stream_position" in migration_sql
     assert "ALTER TABLE client_heartbeats ADD COLUMN user_id" in migration_sql
     assert "ALTER TABLE client_heartbeats ADD COLUMN api_key_id" in migration_sql
     assert "ALTER TABLE client_heartbeats ADD COLUMN remote_ip" in migration_sql
@@ -693,9 +717,19 @@ def test_postgres_report_upsert_preserves_existing_alert_snapshot():
     class Result:
         rowcount = 1
 
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
     class FakeConnection:
-        def execute(self, query, params):
+        def execute(self, query, params=None):
             calls.append((" ".join(query.split()), params))
+            if "nextval" in query:
+                return Result({"stream_position": 12345})
+            if "RETURNING stream_position" in query:
+                return Result({"stream_position": 42})
             return Result()
 
     class FakePoolContext:
@@ -716,10 +750,16 @@ def test_postgres_report_upsert_preserves_existing_alert_snapshot():
 
     store._upsert_report(report)
 
-    query, params = calls[0]
+    query, params = next(
+        (query, params)
+        for query, params in calls
+        if "INSERT INTO intel_reports" in query
+    )
     assert "jsonb_strip_nulls(jsonb_build_object(" in query
     assert "-> 'generated_alert'" in query
+    assert "'_stream_position', intel_reports.stream_position" in query
     assert params[0] == report.report_id
+    assert report.stream_position == 42
 
 
 def test_postgres_persisted_alert_scoring_uses_cache_only_profile_fallback():
@@ -848,6 +888,221 @@ def test_postgres_alert_page_query_filters_and_pages_by_received_at():
         "report-2",
         50,
     )
+
+
+def test_postgres_report_row_round_trip_hides_stream_position_metadata():
+    report = IntelReport(
+        report_id="report-stream",
+        system="Tama",
+        names=["Pilot"],
+        metadata={"sender": "Scout"},
+        stream_position=12345,
+    )
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+
+    values = store._row_from_report(report)
+    row = dict(
+        zip(
+            (
+                "report_id",
+                "stream_position",
+                "system",
+                "names_json",
+                "source",
+                "source_instance",
+                "system_id",
+                "character_ids_json",
+                "confidence",
+                "note",
+                "raw_text",
+                "metadata_json",
+                "seen_at",
+                "received_at",
+                "acknowledged_at",
+                "acknowledged_by",
+                "acknowledgement_note",
+            ),
+            values,
+        )
+    )
+
+    persisted_metadata = json.loads(row["metadata_json"])
+    row["metadata_json"] = json.dumps(
+        {"sender": "Scout", REPORT_STREAM_POSITION_KEY: 99999}
+    )
+    restored = store._report_from_row(row)
+
+    assert persisted_metadata[REPORT_STREAM_POSITION_KEY] == 12345
+    assert report.metadata == {"sender": "Scout"}
+    assert restored is not None
+    assert restored.stream_position == 12345
+    assert restored.metadata == {"sender": "Scout"}
+
+
+def test_postgres_stream_positions_are_allocated_under_transaction_lock():
+    calls = []
+    next_position = iter((101, 102))
+
+    class Result:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class FakeConnection:
+        def execute(self, query, params=None):
+            normalized = " ".join(query.split())
+            calls.append((normalized, params))
+            if "nextval" in normalized:
+                return Result({"stream_position": next(next_position)})
+            return Result()
+
+    reports = [
+        IntelReport(system="Tama", names=["Pilot 1"]),
+        IntelReport(system="Tama", names=["Pilot 2"]),
+    ]
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+
+    store._assign_report_stream_positions(FakeConnection(), reports)
+
+    assert "pg_advisory_xact_lock" in calls[0][0]
+    assert calls[0][1] == (REPORT_STREAM_ADVISORY_LOCK_ID,)
+    assert all(
+        "intel_reports_stream_position_seq" in query
+        for query, _params in calls[1:]
+    )
+    assert [report.stream_position for report in reports] == [101, 102]
+
+
+def test_postgres_batch_upsert_refreshes_stream_positions_from_database():
+    calls = []
+
+    class Result:
+        def fetchall(self):
+            return [
+                {"report_id": "report-1", "stream_position": 7},
+                {"report_id": "report-2", "stream_position": 11},
+            ]
+
+    class FakeConnection:
+        def execute(self, query, params):
+            calls.append((" ".join(query.split()), params))
+            return Result()
+
+    reports = [
+        IntelReport(
+            report_id="report-1",
+            system="Tama",
+            names=["Pilot 1"],
+            stream_position=101,
+        ),
+        IntelReport(
+            report_id="report-2",
+            system="Tama",
+            names=["Pilot 2"],
+            stream_position=102,
+        ),
+    ]
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+
+    store._refresh_report_stream_positions(FakeConnection(), reports)
+
+    assert [report.stream_position for report in reports] == [7, 11]
+    assert "SELECT report_id, stream_position" in calls[0][0]
+    assert calls[0][1] == ("report-1", "report-2")
+
+
+def test_postgres_alert_stream_query_uses_position_keyset():
+    calls = []
+
+    class EmptyResult:
+        def fetchall(self):
+            return []
+
+    class FakeConnection:
+        def execute(self, query, params):
+            calls.append((query, params))
+            return EmptyResult()
+
+    class FakePoolContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._connect = lambda: _PostgresConnection(FakePoolContext())
+
+    rows = store._read_alert_stream_report_rows(
+        anchor=(12345, "report-1"),
+        since="",
+        include_since=False,
+        limit=50,
+        descending=False,
+    )
+
+    assert rows == []
+    query, params = calls[0]
+    assert "stream_position" in query
+    assert "ORDER BY" in query and "ASC" in query
+    assert query.count("%s") == 4
+    assert params == (12345, 12345, "report-1", 50)
+
+
+def test_postgres_alert_stream_page_does_not_scan_hot_report_cache():
+    reports = [
+        IntelReport(
+            report_id=f"report-{index:02d}",
+            system="Tama",
+            names=[f"Pilot {index:02d}"],
+            stream_position=index,
+        )
+        for index in range(1, 52)
+    ]
+    rows_by_id = {
+        report.report_id: {
+            "report_id": report.report_id,
+            "stream_position": report.stream_position,
+            "metadata_json": json.dumps(
+                {REPORT_STREAM_POSITION_KEY: report.stream_position}
+            ),
+        }
+        for report in reports
+    }
+    reports_by_id = {report.report_id: report for report in reports}
+    calls = []
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._reports_snapshot = lambda: pytest.fail(
+        "stream pagination must not scan the startup hot report cache"
+    )
+
+    def read_rows(**kwargs):
+        calls.append(kwargs)
+        anchor = kwargs["anchor"] or (0, "")
+        return [
+            rows_by_id[report.report_id]
+            for report in reports
+            if (report.stream_position, report.report_id) > anchor
+        ]
+
+    store._read_alert_stream_report_rows = read_rows
+    store._report_from_row = lambda row: reports_by_id[row["report_id"]]
+    store._alert_from_persisted_report = lambda _report: SimpleNamespace()
+    store._alert_to_dict = lambda report, _alert: {
+        "id": f"evt_{report.report_id}",
+        "score": 100,
+        "level": "critical",
+        "acknowledged": False,
+    }
+
+    first = store.list_alert_stream_page(after=(0, ""), limit=50)
+    second = store.list_alert_stream_page(after=first[-1][0], limit=50)
+
+    assert [cursor[0] for cursor, _ in first] == list(range(1, 51))
+    assert [cursor[0] for cursor, _ in second] == [51]
+    assert calls[0]["descending"] is False
 
 
 def test_postgres_startup_hot_set_is_bounded_and_keeps_active_references():
@@ -1225,6 +1480,11 @@ def test_postgres_ocr_snapshot_persists_old_system_as_inactive():
     store._alert_cache = {}
     store._lock = threading.RLock()
     store._connect = FakeConnection
+    store._assign_report_stream_positions = lambda _connection, reports: [
+        setattr(report, "stream_position", index)
+        for index, report in enumerate(reports, start=1)
+    ]
+    store._refresh_report_stream_positions = lambda _connection, _reports: None
     store._active_row = lambda item: item.to_dict()
     store._upsert_active_intel_rows = (
         lambda _connection, rows: persisted_rows.extend(rows)
@@ -1263,6 +1523,11 @@ def test_postgres_ocr_snapshot_uses_complete_roster_not_coordinate_evidence(tmp_
     store._load_reports = lambda: []
     IntelStore.__init__(store, tmp_path / "intel.json", systems={}, links=[])
     store._connect = FakeConnection
+    store._assign_report_stream_positions = lambda _connection, reports: [
+        setattr(report, "stream_position", index)
+        for index, report in enumerate(reports, start=1)
+    ]
+    store._refresh_report_stream_positions = lambda _connection, _reports: None
     store._upsert_active_intel_rows = lambda _connection, _rows: None
     store._persist_hostile_wave_changes = lambda _connection, _changes: None
 
@@ -1359,6 +1624,11 @@ def test_postgres_ocr_snapshot_persists_fresh_cached_identity_without_queueing(
         resolver=CachedResolver(),
     )
     store._connect = FakeConnection
+    store._assign_report_stream_positions = lambda _connection, reports: [
+        setattr(report, "stream_position", index)
+        for index, report in enumerate(reports, start=1)
+    ]
+    store._refresh_report_stream_positions = lambda _connection, _reports: None
     store._upsert_active_intel_rows = lambda _connection, _rows: None
     store._persist_hostile_wave_changes = lambda _connection, _changes: None
     submitted = []
