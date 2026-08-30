@@ -24,6 +24,10 @@ _TIMESTAMP_RE = re.compile(r"(?P<date>\d{8})[_-](?P<time>\d{6})")
 _TRAILING_ID_RE = re.compile(r"(?:^|[_-])(?P<id>\d+)$")
 
 DISCONNECT_PATTERNS = (
+    "你的计算机已与EVE Online服务器断开网络通信",
+    "无法连接到指定地址",
+    "服务器当前不接受连接",
+    "连接丢失",
     "与服务器的连接已被关闭",
     "与服务器的连接已关闭",
     "与服务器的连接已断开",

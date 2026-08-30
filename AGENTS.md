@@ -1,5 +1,18 @@
 # Repository Guidelines
 
+## Multi-Repository Ownership
+
+This repository is owned by role `10` and contains the desktop warning client:
+UI, OCR/capture, local client state, updates, and the server connection. Server,
+standalone ESI Gateway, bot, and published wire-contract implementations belong
+in their own repositories.
+
+Route new work through role `00`. Any HTTP, SSE, event, cursor, authentication,
+or ESI wire change must be reviewed by role `05` against the
+[multi-repository development workflow](https://github.com/xiaqijun/eve-sentry-contracts/blob/main/docs/development-workflow.md).
+Only one task may write to this repository at a time. Role `90` exclusively owns
+production deployment, health verification, and rollback.
+
 ## Project Structure & Module Organization
 `app/` contains the application code. UI components live in `app/ui/`, OCR and capture logic in `app/engine/`, persistence models in `app/models/`, and the intel web server in `app/server/`. Tests are in `tests/` and follow the runtime modules they cover. Static assets such as `resources/alert.wav` live in `resources/`. Supporting scripts belong in `scripts/`, and design notes or plans are kept in `docs/`.
 
