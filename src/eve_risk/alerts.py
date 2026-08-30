@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 ALERT_GROUPS_KEY = "qq:eve-sentry:alert-groups"
 ALERT_CURSOR_KEY = "qq:eve-sentry:alert-cursor"
+ALERT_EVENT_ID_KEY = "qq:eve-sentry:alert-event-id"
+MOVEMENT_DEDUPE_PREFIX = "qq:eve-sentry:hostile-movement"
 ALERT_DELIVERED_PREFIX = "qq:eve-sentry:alert-delivered"
 ACTIVE_INTEL_STATE_KEY = "qq:eve-sentry:active-intel-state"
 SYSTEM_ALERT_STATE_KEY = "qq:eve-sentry:system-alert-state"
@@ -25,6 +27,10 @@ SYSTEM_ALERT_STATE_READY_KEY = "qq:eve-sentry:system-alert-state-ready"
 MONITORING_NODE_SNAPSHOT_STATE_KEY = "qq:eve-sentry:monitoring-node-snapshot-state"
 ALERT_DEDUPE_SECONDS = 7 * 24 * 60 * 60
 RECONNECT_BACKOFF_SECONDS = (0.2, 1.0, 3.0, 5.0)
+
+
+class SentryAuthenticationError(RuntimeError):
+    """Raised when the integration credential is rejected by EVE Sentry."""
 
 _ENABLE_COMMANDS = {"开启预警", "订阅预警", "打开预警"}
 _DISABLE_COMMANDS = {"关闭预警", "取消预警", "停止预警"}
@@ -306,6 +312,14 @@ class EveSentryAlertRelay:
                 await self._stream_once()
             except asyncio.CancelledError:
                 raise
+            except SentryAuthenticationError as exc:
+                # Credential failures are actionable configuration errors, not
+                # transient network failures. Keep the relay alive so a
+                # rotated key can recover, but avoid the short retry storm.
+                failure_count = 0
+                logger.error("EVE Sentry alert stream authentication failed: %s", exc)
+                await asyncio.sleep(max(5.0, self.reconnect_delay_seconds))
+                continue
             except Exception:
                 delay = min(
                     RECONNECT_BACKOFF_SECONDS[
@@ -490,6 +504,12 @@ class EveSentryAlertRelay:
             to_system,
             failed,
         )
+        if failed == 0:
+            await self.redis.set(
+                f"{MOVEMENT_DEDUPE_PREFIX}:{_movement_fingerprint(from_system, to_system, state.get('personnel', []))}",
+                "1",
+                ex=ALERT_DEDUPE_SECONDS,
+            )
         return failed == 0
 
     async def deliver_system_personnel_update(
@@ -724,7 +744,7 @@ class EveSentryAlertRelay:
         )
         return delivered > 0
 
-    async def process_monitoring_node(self, payload: dict[str, Any]) -> None:
+    async def process_monitoring_node(self, payload: dict[str, Any]) -> bool:
         changes = payload.get("changes")
         occurred_at = str(
             payload.get("generated_at") or datetime.now(UTC).isoformat()
@@ -737,15 +757,64 @@ class EveSentryAlertRelay:
                 nodes_version=str(payload.get("nodes_version") or ""),
                 changes=changes if isinstance(changes, list) else None,
             )
-            return
+            return True
         if not isinstance(changes, list):
             logger.warning("Ignored EVE Sentry monitoring node event without changes")
-            return
+            return True
         for change in changes:
             if isinstance(change, dict):
                 await self.deliver_monitoring_node_change(change, occurred_at)
+        return True
 
-    async def process_bootstrap(self, payload: dict[str, Any]) -> None:
+    async def process_hostile_movement(self, payload: dict[str, Any]) -> bool:
+        """Consume the v1 explicit movement event when the server emits it."""
+        if str(payload.get("schema_version") or "").strip() != "hostile_movement_event.v1":
+            logger.warning("Ignored EVE Sentry hostile movement with unknown schema")
+            return True
+        movement_id = str(payload.get("movement_id") or "").strip()
+        occurred_at = str(payload.get("occurred_at") or "").strip()
+        from_system = payload.get("from_system")
+        to_system = payload.get("to_system")
+        if isinstance(from_system, dict):
+            from_name = str(from_system.get("name") or "").strip()
+        else:
+            from_name = str(from_system or "").strip()
+        if isinstance(to_system, dict):
+            to_name = str(to_system.get("name") or "").strip()
+        else:
+            to_name = str(to_system or "").strip()
+        if not movement_id or not occurred_at or not from_name or not to_name:
+            logger.warning("Ignored malformed EVE Sentry hostile movement event")
+            return True
+        try:
+            hostile_count = max(1, int(payload.get("hostile_count") or 1))
+        except (TypeError, ValueError):
+            hostile_count = 1
+        state = {
+            "episode_id": movement_id,
+            "_movement_id": movement_id,
+            "system_name": to_name,
+            "hostile_count": hostile_count,
+            "personnel": [
+                item for item in payload.get("personnel", []) if isinstance(item, dict)
+            ],
+        }
+        fingerprint = _movement_fingerprint(from_name, to_name, state["personnel"])
+        if await self.redis.exists(f"{MOVEMENT_DEDUPE_PREFIX}:{fingerprint}"):
+            return True
+        delivered = await self.deliver_system_movement(
+            from_name,
+            to_name,
+            state,
+            occurred_at,
+        )
+        if delivered:
+            await self.redis.set(
+                f"{MOVEMENT_DEDUPE_PREFIX}:{fingerprint}", "1", ex=ALERT_DEDUPE_SECONDS
+            )
+        return delivered
+
+    async def process_bootstrap(self, payload: dict[str, Any]) -> bool:
         node_changes = payload.get("monitoring_node_changes")
         monitoring_nodes = payload.get("monitoring_nodes")
         nodes_version = str(payload.get("monitoring_nodes_version") or "").strip()
@@ -780,7 +849,7 @@ class EveSentryAlertRelay:
         active_intel = payload.get("active_intel")
         if not isinstance(active_intel, list):
             logger.warning("Ignored EVE Sentry bootstrap without active_intel list")
-            return
+            return True
 
         generated_at = str(payload.get("generated_at") or datetime.now(UTC).isoformat())
         active_items = {
@@ -830,11 +899,21 @@ class EveSentryAlertRelay:
                     and transitions_succeeded
                 )
             for pair in movement_pairs:
+                movement_state = current[pair["to_key"]]
+                movement_fingerprint = _movement_fingerprint(
+                    pair["from_system"],
+                    pair["to_system"],
+                    movement_state.get("personnel", []),
+                )
+                if await self.redis.exists(
+                    f"{MOVEMENT_DEDUPE_PREFIX}:{movement_fingerprint}"
+                ):
+                    continue
                 transitions_succeeded = (
                     await self.deliver_system_movement(
                         pair["from_system"],
                         pair["to_system"],
-                        current[pair["to_key"]],
+                        movement_state,
                         generated_at,
                         deferred_analysis,
                     )
@@ -843,7 +922,7 @@ class EveSentryAlertRelay:
 
         if not transitions_succeeded:
             logger.warning("EVE Sentry system state update deferred after delivery failure")
-            return
+            return False
 
         if self.analysis_enqueue is not None:
             for group_openid, state, occurred_at, event_id in deferred_analysis:
@@ -895,7 +974,7 @@ class EveSentryAlertRelay:
             logger.warning(
                 "EVE Sentry personnel state update deferred after delivery failure"
             )
-            return
+            return False
 
         await self._save_system_alert_state(current)
         active_ids = set(active_items)
@@ -917,6 +996,7 @@ class EveSentryAlertRelay:
             len(active_items),
             initialized,
         )
+        return True
 
     async def _load_system_alert_state(
         self,
@@ -992,42 +1072,53 @@ class EveSentryAlertRelay:
 
     async def _stream_once(self) -> None:
         cursor = _decode(await self.redis.get(ALERT_CURSOR_KEY))
+        last_event_id = _decode(await self.redis.get(ALERT_EVENT_ID_KEY))
         params = {
             "limit": "50",
             "heartbeat": "15",
             "bootstrap": "1",
-            "since": cursor or datetime.now(UTC).isoformat(),
         }
+        if not last_event_id:
+            params["since"] = cursor or datetime.now(UTC).isoformat()
         if self.min_level:
             params["min_level"] = self.min_level
         timeout = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+        headers = {"Accept": "text/event-stream"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        if last_event_id:
+            headers["Last-Event-ID"] = last_event_id
         async with self.http.stream(
             "GET",
             self.events_url,
             params=params,
-            headers={
-                "Accept": "text/event-stream",
-                **(
-                    {"Authorization": f"Bearer {self.api_key}"}
-                    if self.api_key
-                    else {}
-                ),
-            },
+            headers=headers,
             timeout=timeout,
         ) as response:
+            if response.status_code in {401, 403}:
+                raise SentryAuthenticationError(
+                    f"HTTP {response.status_code} from EVE Sentry events endpoint"
+                )
             response.raise_for_status()
-            async for event_name, _event_id, data in iter_sse_events(
+            async for event_name, event_id, data in iter_sse_events(
                 response.aiter_lines()
             ):
                 payload = json.loads(data)
+                processed = True
                 if event_name == "bootstrap" and isinstance(payload, dict):
-                    await self.process_bootstrap(payload)
+                    processed = await self.process_bootstrap(payload)
                 elif event_name == "alert" and isinstance(payload, dict):
-                    await self.process_alert_event(payload)
+                    processed = await self.process_alert_event(payload)
                 elif event_name == "monitoring_node" and isinstance(payload, dict):
-                    await self.process_monitoring_node(payload)
+                    processed = await self.process_monitoring_node(payload)
+                elif event_name == "hostile_movement" and isinstance(payload, dict):
+                    processed = await self.process_hostile_movement(payload)
+                if processed and event_id:
+                    await self.redis.set(
+                        ALERT_EVENT_ID_KEY, event_id, ex=ALERT_DEDUPE_SECONDS
+                    )
 
-    async def process_alert_event(self, payload: dict[str, Any]) -> None:
+    async def process_alert_event(self, payload: dict[str, Any]) -> bool:
         """Deliver a first-seen system alert before asynchronous enrichment.
 
         Bootstrap remains authoritative for personnel and later state changes,
@@ -1037,7 +1128,7 @@ class EveSentryAlertRelay:
         sending a duplicate entry notification.
         """
         if payload.get("active") is False or not self._allows_transition(payload):
-            return
+            return True
 
         alert_id = str(payload.get("id") or "").strip()
         occurred_at = str(
@@ -1048,7 +1139,7 @@ class EveSentryAlertRelay:
         system_name = _system_label(payload)
         if not alert_id or not occurred_at or not system_name:
             logger.warning("Ignored malformed EVE Sentry alert event")
-            return
+            return True
 
         event_ids = {
             value
@@ -1061,19 +1152,19 @@ class EveSentryAlertRelay:
         }
         if event_ids.intersection(self._active_alert_ids):
             logger.debug("Ignored EVE Sentry alert already delivered by bootstrap")
-            return
+            return True
 
         current, initialized = await self._load_system_alert_state()
         if not initialized:
             # The first bootstrap establishes the current state without
             # backfilling history. Wait for it before accepting live events.
             logger.debug("Ignored alert event before initial bootstrap state")
-            return
+            return True
 
         system_key = system_name.casefold()
         if system_key in current:
             self._active_alert_ids.update(event_ids)
-            return
+            return True
 
         try:
             hostile_count = max(1, int(payload.get("hostile_count") or 1))
@@ -1088,7 +1179,7 @@ class EveSentryAlertRelay:
         }
         if not await self.deliver_system_transition(state, "alert"):
             logger.warning("EVE Sentry alert event delivery deferred")
-            return
+            return False
 
         current[system_key] = state
         await self._save_system_alert_state(current)
@@ -1099,6 +1190,7 @@ class EveSentryAlertRelay:
             system_name,
             hostile_count,
         )
+        return True
 
 
 def _active_intel_map(
@@ -1407,6 +1499,26 @@ def _personnel_movement_pairs(
                 },
             )
     return list(pairs.values())
+
+
+def _movement_fingerprint(
+    from_system: str,
+    to_system: str,
+    personnel: object,
+) -> str:
+    identities = []
+    if isinstance(personnel, list):
+        for item in personnel:
+            if isinstance(item, dict):
+                identities.append(_personnel_identity(item))
+    payload = {
+        "from": str(from_system or "").strip().casefold(),
+        "to": str(to_system or "").strip().casefold(),
+        "personnel": sorted(value for value in identities if value),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:20]
 
 
 def _personnel_identity(item: dict[str, Any]) -> str:
