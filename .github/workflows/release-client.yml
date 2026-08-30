@@ -6,6 +6,17 @@ on:
     paths:
       - app/version.py
   workflow_dispatch:
+    inputs:
+      client_sha:
+        description: Exact eve-sentry-client commit to release
+        required: true
+        default: 71284a130a3777b85967923baf700d975a3dbe85
+        type: string
+      version:
+        description: Version expected in the client source
+        required: true
+        default: 1.0.53
+        type: string
 
 concurrency:
   group: eve-sentry-client-release
@@ -16,67 +27,216 @@ permissions:
 
 jobs:
   release:
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/codex/client-release-bridge-v1.0.53'
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
+    environment: production
     env:
+      CLIENT_REPOSITORY: xiaqijun/eve-sentry-client
+      RELEASE_REPOSITORY: xiaqijun/eve-sentry
       PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v5
+      - name: Check out immutable standalone client source
+        uses: actions/checkout@v5
         with:
+          repository: xiaqijun/eve-sentry-client
+          ref: ${{ inputs.client_sha }}
+          path: client
           fetch-depth: 0
+          persist-credentials: false
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: |
-            requirements-onnx.txt
-            requirements-server.txt
-      - name: Install build dependencies
-        run: python -m pip install -r requirements-onnx.txt -r requirements-server.txt pyinstaller pytest pytest-rerunfailures
-      - name: Run tests
-        run: python -m pytest -q --reruns 1 --reruns-delay 1
-        env:
-          QT_QPA_PLATFORM: offscreen
-      - name: Restore bundled OCR models
-        run: .\scripts\restore_release_models.ps1
+          cache-dependency-path: client/requirements-onnx.txt
+
+      - name: Validate source, version, signing key, and destination
+        working-directory: client
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: Build and publish client
+          EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 }}
+        run: |
+          $expectedSha = "${{ inputs.client_sha }}"
+          $expectedVersion = "${{ inputs.version }}"
+          if ($expectedSha -notmatch '^[0-9a-f]{40}$') {
+              throw "client_sha must be a full 40-character commit SHA"
+          }
+          if ($expectedVersion -notmatch '^\d+\.\d+\.\d+([+-][0-9A-Za-z.-]+)?$') {
+              throw "Invalid release version: $expectedVersion"
+          }
+
+          $resolvedSha = (git rev-parse HEAD).Trim()
+          if ($resolvedSha -ne $expectedSha) {
+              throw "Checked out $resolvedSha instead of $expectedSha"
+          }
+          $origin = (git remote get-url origin).Trim()
+          if ($origin -notmatch 'github\.com[/:]xiaqijun/eve-sentry-client(?:\.git)?$') {
+              throw "Unexpected client source repository: $origin"
+          }
+          $sourceVersion = (python -c "from app.version import APP_VERSION; print(APP_VERSION)").Trim()
+          if ($sourceVersion -ne $expectedVersion) {
+              throw "Client version $sourceVersion does not match requested version $expectedVersion"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64)) {
+              throw "EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 is required"
+          }
+
+          $tag = "v$expectedVersion"
+          $previousErrorAction = $ErrorActionPreference
+          $ErrorActionPreference = "Continue"
+          gh release view $tag --repo $env:RELEASE_REPOSITORY --json tagName 2>$null | Out-Null
+          $releaseExists = $LASTEXITCODE -eq 0
+          $ErrorActionPreference = $previousErrorAction
+          if ($releaseExists) {
+              throw "$env:RELEASE_REPOSITORY@$tag already exists; refusing to overwrite it"
+          }
+
+      - name: Install client build dependencies
+        working-directory: client
+        run: python -m pip install -r requirements-onnx.txt pyinstaller pytest
+
+      - name: Verify signing key matches the standalone client
+        working-directory: client
+        shell: pwsh
+        env:
+          EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 }}
+        run: |
+          $derivedPublicKey = Join-Path $env:RUNNER_TEMP "update-public-key.pem"
+          python scripts/update_signing.py prepare-public $derivedPublicKey
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not derive the configured signing public key"
+          }
+          python -c "from pathlib import Path; from cryptography.hazmat.primitives import serialization; a=serialization.load_pem_public_key(Path(r'$derivedPublicKey').read_bytes()); b=serialization.load_pem_public_key(Path('resources/update_public_key.pem').read_bytes()); assert a.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw) == b.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw), 'configured signing key does not match the client public key'"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Configured signing key does not match the client public key"
+          }
+          Remove-Item -LiteralPath $derivedPublicKey -Force
+
+      - name: Run standalone client tests
+        working-directory: client
+        run: python -m pytest -q --ignore=tests/test_intel_client.py
+
+      - name: Restore bundled OCR models from v1.0.52
+        working-directory: client
+        run: >-
+          .\scripts\restore_release_models.ps1
+          -Repository "xiaqijun/eve-sentry"
+          -Release "v1.0.52"
+          -DownloadBaseUrl "https://evesentrydownload.kisectool.com/download"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Build, sign, and publish v1.0.53
+        working-directory: client
         run: >-
           .\scripts\publish_client_release.ps1
+          -Version "${{ inputs.version }}"
           -Python "python"
+          -Repository "xiaqijun/eve-sentry"
+          -ReleaseTarget "${{ github.sha }}"
           -DownloadBaseUrl "https://evesentrydownload.kisectool.com/download"
         env:
           GH_TOKEN: ${{ github.token }}
           EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 }}
-      - name: Verify release manifest and download range
+
+      - name: Record standalone client provenance
+        working-directory: client
         shell: pwsh
         run: |
-          $version = (python -c "from app.version import APP_VERSION; print(APP_VERSION)").Trim()
-          $manifestUrl = "https://evesentrydownload.kisectool.com/latest.json?run=$env:GITHUB_RUN_ID"
-          $verified = $false
-          for ($attempt = 1; $attempt -le 12; $attempt++) {
-              $manifest = Invoke-RestMethod -Uri "$manifestUrl&attempt=$attempt" -TimeoutSec 30
-              if ($manifest.version -ne $version) {
-                  Start-Sleep -Seconds 5
-                  continue
+          $provenance = [ordered]@{
+              source_repository = $env:CLIENT_REPOSITORY
+              source_commit = "${{ inputs.client_sha }}"
+              release_repository = $env:RELEASE_REPOSITORY
+              release_workflow_commit = "${{ github.sha }}"
+              version = "${{ inputs.version }}"
+          }
+          $path = Join-Path $env:RUNNER_TEMP "eve-sentry-client-source.json"
+          $provenance | ConvertTo-Json | Set-Content -LiteralPath $path -Encoding utf8NoBOM
+          gh release upload "v${{ inputs.version }}" $path --repo $env:RELEASE_REPOSITORY
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not attach client source provenance to the release"
+          }
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Verify release assets, signed manifest, and range downloads
+        working-directory: client
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.version }}"
+          $tag = "v$version"
+          $release = gh release view $tag --repo $env:RELEASE_REPOSITORY `
+              --json url,assets,targetCommitish | ConvertFrom-Json
+          if ($release.targetCommitish -ne "${{ github.sha }}") {
+              throw "Release target $($release.targetCommitish) is not workflow commit ${{ github.sha }}"
+          }
+
+          $requiredNames = @(
+              "EVE-Sentry-Monitor-ONNX-$version.zip",
+              "EVE-Sentry-Monitor-ONNX-program-$version.zip",
+              "EVE-Sentry-Channel-$version.zip",
+              "latest.json",
+              "eve-sentry-client-source.json"
+          )
+          foreach ($name in $requiredNames) {
+              $asset = $release.assets | Where-Object { $_.name -eq $name }
+              if ($null -eq $asset -or $asset.size -le 0) {
+                  throw "Required release asset is missing or empty: $name"
               }
-              $headers = curl.exe -fsS -D - -o NUL -H "Range: bytes=0-1023" $manifest.url
-              $expectedRange = "Content-Range:\s*bytes 0-1023/$([regex]::Escape([string]$manifest.size))"
-              if (
-                  $LASTEXITCODE -eq 0 -and
-                  $headers -match "206 Partial Content" -and
-                  $headers -match $expectedRange
-              ) {
-                  $verified = $true
-                  break
+          }
+          $modelAsset = $release.assets |
+              Where-Object { $_.name -match '^EVE-Sentry-Monitor-ONNX-models-[0-9a-f]{64}\.zip$' }
+          if (@($modelAsset).Count -ne 1 -or $modelAsset.size -le 0) {
+              throw "Exactly one non-empty model asset is required"
+          }
+
+          $manifestPath = Join-Path $env:RUNNER_TEMP "latest.json"
+          $manifestUrl = "https://evesentrydownload.kisectool.com/latest.json?run=$env:GITHUB_RUN_ID"
+          $manifest = $null
+          for ($attempt = 1; $attempt -le 24; $attempt++) {
+              try {
+                  Invoke-WebRequest -Uri "$manifestUrl&attempt=$attempt" `
+                      -OutFile $manifestPath -TimeoutSec 30
+                  $candidate = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+                  if ($candidate.version -eq $version) {
+                      $manifest = $candidate
+                      break
+                  }
+              } catch {
+                  Write-Host "Manifest attempt $attempt failed: $($_.Exception.Message)"
               }
               Start-Sleep -Seconds 5
           }
-          if (-not $verified) {
-              throw "Cloudflare range download verification failed."
+          if ($null -eq $manifest) {
+              throw "Production latest.json did not advance to $version"
           }
-          gh release view "v$version" --json url,assets,targetCommitish
+          python -c "import json; from pathlib import Path; from app.updater import verify_release_manifest_signature; p=json.loads(Path(r'$manifestPath').read_text(encoding='utf-8')); verify_release_manifest_signature(p, Path('resources/update_public_key.pem'))"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Production release manifest signature verification failed"
+          }
+
+          function Assert-Range([string]$Url, [long]$ExpectedSize, [string]$Label) {
+              $headersPath = Join-Path $env:RUNNER_TEMP "$Label-range.headers"
+              curl.exe -fsS -L --range 0-1023 -D $headersPath -o NUL $Url
+              $headers = Get-Content -LiteralPath $headersPath -Raw
+              if ($LASTEXITCODE -ne 0 -or
+                  $headers -notmatch '206 (Partial Content|partial content)' -or
+                  $headers -notmatch "(?im)^content-range:\s*bytes 0-1023/$ExpectedSize\s*$") {
+                  throw "$Label does not support the expected Range 206 response"
+              }
+          }
+
+          Assert-Range $manifest.url ([long]$manifest.size) "program"
+          Assert-Range $manifest.components.models.url `
+              ([long]$manifest.components.models.size) "models"
+          $fullAsset = $release.assets |
+              Where-Object { $_.name -eq "EVE-Sentry-Monitor-ONNX-$version.zip" }
+          Assert-Range $fullAsset.url ([long]$fullAsset.size) "full"
+          Write-Host "RELEASE_URL=$($release.url)"
         env:
           GH_TOKEN: ${{ github.token }}
