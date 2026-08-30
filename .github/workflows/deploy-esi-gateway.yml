@@ -9,15 +9,45 @@ on:
       - "deploy/linux/eve-sentry-esi-gateway.service"
       - "deploy/ci/deploy_esi_gateway.sh"
       - ".github/workflows/deploy-esi-gateway.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "app/esi/**"
+      - "scripts/esi_gateway.py"
+      - "deploy/linux/eve-sentry-esi-gateway.service"
+      - "deploy/ci/deploy_esi_gateway.sh"
+      - ".github/workflows/deploy-esi-gateway.yml"
   workflow_dispatch:
+
+concurrency:
+  group: eve-sentry-esi-gateway-production
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  deploy:
+  validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-server.txt
+      - name: Install Gateway test dependencies
+        run: python -m pip install -r requirements-server.txt pytest
+      - name: Run Gateway tests
+        run: python -m pytest -q tests/test_esi_remote.py
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
     steps:
       - uses: actions/checkout@v5
       - name: Build Gateway archive
@@ -29,6 +59,28 @@ jobs:
           cp -a deploy/linux/eve-sentry-esi-gateway.service deployment/backend/deploy/linux/
           cp -a deploy/ci/deploy_esi_gateway.sh deployment/backend/deploy/ci/
           tar -czf "eve-sentry-esi-gateway-${GITHUB_SHA}.tar.gz" -C deployment .
+      - name: Validate deployment configuration
+        env:
+          DEPLOY_KEY: ${{ secrets.EVE_SENTRY_ESI_GATEWAY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.EVE_SENTRY_ESI_GATEWAY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ vars.EVE_SENTRY_ESI_GATEWAY_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.EVE_SENTRY_ESI_GATEWAY_DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.EVE_SENTRY_ESI_GATEWAY_DEPLOY_PORT }}
+        run: |
+          set -euo pipefail
+          for name in DEPLOY_KEY KNOWN_HOSTS DEPLOY_HOST DEPLOY_USER DEPLOY_PORT; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing GitHub deployment setting: $name" >&2
+              exit 1
+            fi
+          done
+          case "$DEPLOY_PORT" in
+            ''|*[!0-9]*) echo "DEPLOY_PORT must be numeric" >&2; exit 1 ;;
+          esac
+          if [ "$DEPLOY_PORT" -lt 1 ] || [ "$DEPLOY_PORT" -gt 65535 ]; then
+            echo "DEPLOY_PORT must be between 1 and 65535" >&2
+            exit 1
+          fi
       - name: Configure deployment SSH
         env:
           DEPLOY_KEY: ${{ secrets.EVE_SENTRY_ESI_GATEWAY_SSH_KEY }}

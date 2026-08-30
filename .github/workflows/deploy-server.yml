@@ -3,6 +3,54 @@ name: Deploy Server
 on:
   push:
     branches: [main]
+    paths:
+      - "app/server/**"
+      - "app/intel/**"
+      - "app/core/active_intel.py"
+      - "app/core/models.py"
+      - "app/core/heartbeat.py"
+      - "app/channels/parser.py"
+      - "app/engine/ocr_names.py"
+      - "app/esi/**"
+      - "frontend/**"
+      - "scripts/run_server.py"
+      - "scripts/import_intel_json.py"
+      - "scripts/sync_sde.py"
+      - "scripts/integration_status_check.py"
+      - "scripts/live_acceptance_bundle.py"
+      - "deploy/ci/deploy_release.sh"
+      - "deploy/linux/eve-sentry.service"
+      - "deploy/linux/eve-sentry.nginx.conf"
+      - "deploy/linux/eve-sentry.env.example"
+      - "requirements-server.txt"
+      - "requirements-onnx.txt"
+      - "intel_map.json"
+      - ".github/workflows/deploy-server.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "app/server/**"
+      - "app/intel/**"
+      - "app/core/active_intel.py"
+      - "app/core/models.py"
+      - "app/core/heartbeat.py"
+      - "app/channels/parser.py"
+      - "app/engine/ocr_names.py"
+      - "app/esi/**"
+      - "frontend/**"
+      - "scripts/run_server.py"
+      - "scripts/import_intel_json.py"
+      - "scripts/sync_sde.py"
+      - "scripts/integration_status_check.py"
+      - "scripts/live_acceptance_bundle.py"
+      - "deploy/ci/deploy_release.sh"
+      - "deploy/linux/eve-sentry.service"
+      - "deploy/linux/eve-sentry.nginx.conf"
+      - "deploy/linux/eve-sentry.env.example"
+      - "requirements-server.txt"
+      - "requirements-onnx.txt"
+      - "intel_map.json"
+      - ".github/workflows/deploy-server.yml"
   workflow_dispatch:
 
 concurrency:
@@ -90,15 +138,44 @@ jobs:
           tests/test_postgres_integration.py
 
   deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: [validate, postgres-integration]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment: production
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v7
         with:
           name: frontend-dist
           path: frontend-dist
+      - name: Validate deployment configuration
+        env:
+          DEPLOY_KEY: ${{ secrets.EVE_SENTRY_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.EVE_SENTRY_DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ vars.EVE_SENTRY_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.EVE_SENTRY_DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.EVE_SENTRY_DEPLOY_PORT }}
+          PUBLIC_URL: ${{ vars.EVE_SENTRY_PUBLIC_URL }}
+        run: |
+          set -euo pipefail
+          for name in DEPLOY_KEY KNOWN_HOSTS DEPLOY_HOST DEPLOY_USER DEPLOY_PORT PUBLIC_URL; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing GitHub deployment setting: $name" >&2
+              exit 1
+            fi
+          done
+          case "$DEPLOY_PORT" in
+            ''|*[!0-9]*) echo "DEPLOY_PORT must be numeric" >&2; exit 1 ;;
+          esac
+          if [ "$DEPLOY_PORT" -lt 1 ] || [ "$DEPLOY_PORT" -gt 65535 ]; then
+            echo "DEPLOY_PORT must be between 1 and 65535" >&2
+            exit 1
+          fi
+          case "$PUBLIC_URL" in
+            http://*|https://*) ;;
+            *) echo "PUBLIC_URL must start with http:// or https://" >&2; exit 1 ;;
+          esac
       - name: Build deployment archive
         run: |
           set -euo pipefail
