@@ -1,9 +1,9 @@
 param(
     [string]$Version = "",
     [string]$Python = ".\.venv\Scripts\python.exe",
-    [string]$DownloadBaseUrl = "https://github.com/xiaqijun/eve-sentry/releases/latest/download",
-    [string]$Repository = "xiaqijun/eve-sentry",
-    [string]$ReleaseTarget = "main",
+    [string]$DownloadBaseUrl = "https://github.com/xiaqijun/eve-sentry-client/releases/latest/download",
+    [string]$Repository = "xiaqijun/eve-sentry-client",
+    [string]$ReleaseTarget = "",
     [string]$GitCodeRepository = "",
     [switch]$SkipBuild,
     [switch]$SkipGithub
@@ -24,7 +24,10 @@ try {
         throw "Invalid GitHub release repository: $Repository"
     }
     if (-not $ReleaseTarget.Trim()) {
-        throw "GitHub release target must be non-empty"
+        $ReleaseTarget = (git rev-parse HEAD).Trim()
+    }
+    if ($ReleaseTarget -notmatch '^[0-9a-fA-F]{40}$') {
+        throw "GitHub release target must be a full commit SHA: $ReleaseTarget"
     }
 
     $buildName = "EVE-Sentry-Monitor-ONNX"
@@ -36,6 +39,7 @@ try {
     $programAssetName = "$buildName-program-$Version.zip"
     $programAssetPath = Join-Path $repoRoot "dist\$programAssetName"
     $manifestPath = Join-Path $repoRoot "dist\latest.json"
+    $sourceMetadataPath = Join-Path $repoRoot "dist\eve-sentry-client-source.json"
 
     & $Python scripts\update_signing.py prepare-public resources\update_public_key.pem
     if ($LASTEXITCODE -ne 0) { throw "Preparing update signing key failed" }
@@ -151,6 +155,20 @@ try {
     & $Python scripts\update_signing.py sign $manifestPath
     if ($LASTEXITCODE -ne 0) { throw "Signing update manifest failed" }
 
+    $workflowCommit = (git rev-parse HEAD).Trim()
+    $sourceMetadata = [ordered]@{
+        source_repository = $Repository
+        source_commit = $ReleaseTarget.ToLowerInvariant()
+        release_repository = $Repository
+        release_workflow_commit = $workflowCommit
+        version = $Version
+    }
+    [IO.File]::WriteAllText(
+        $sourceMetadataPath,
+        ($sourceMetadata | ConvertTo-Json),
+        [Text.UTF8Encoding]::new($false)
+    )
+
     if (-not $SkipGithub) {
         $tag = "v$Version"
         $previousErrorAction = $ErrorActionPreference
@@ -161,7 +179,7 @@ try {
         if ($releaseExists) {
             throw "GitHub release $Repository@$tag already exists; refusing to overwrite it"
         }
-        gh release create $tag $assetPath $programAssetPath $channelAssetPath $modelAssetPath $manifestPath `
+        gh release create $tag $assetPath $programAssetPath $channelAssetPath $modelAssetPath $manifestPath $sourceMetadataPath `
             --repo $Repository `
             --target $ReleaseTarget `
             --title "EVE Sentry v$Version" `
@@ -175,6 +193,7 @@ try {
         sha256 = $hash
         size = $file.Length
         manifest = $manifestPath
+        source_metadata = $sourceMetadataPath
         download_url = $downloadUrl
         channel_package = $channelAssetPath
     } | ConvertTo-Json

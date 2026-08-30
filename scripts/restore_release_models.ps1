@@ -1,14 +1,18 @@
 param(
-    [string]$Repository = "xiaqijun/eve-sentry",
+    [string]$Repository = "xiaqijun/eve-sentry-client",
     [string]$Release = "",
     [string]$Output = ".\.runtime\onnx-models",
-    [string]$DownloadBaseUrl = "https://evesentrydownload.kisectool.com/download"
+    [string]$DownloadBaseUrl = ""
 )
 
 $ErrorActionPreference = "Stop"
 $modelNames = @("PP-OCRv6_medium_det", "PP-OCRv6_medium_rec")
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$outputRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot $Output))
+$outputRoot = if ([IO.Path]::IsPathRooted($Output)) {
+    [IO.Path]::GetFullPath($Output)
+} else {
+    [IO.Path]::GetFullPath((Join-Path $repoRoot $Output))
+}
 $temporaryBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $temporaryRoot = Join-Path $temporaryBase ("eve-sentry-models-" + [guid]::NewGuid())
 $archivePath = Join-Path $temporaryRoot "client.zip"
@@ -30,11 +34,30 @@ try {
         throw "Release $Release does not contain a client package."
     }
 
-    $downloadUrl = "$($DownloadBaseUrl.TrimEnd('/'))/$($asset.name)"
-    curl.exe -fL --retry 5 --retry-delay 3 --connect-timeout 30 `
-        --output $archivePath $downloadUrl
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not download $($asset.name) from $downloadUrl."
+    if ($DownloadBaseUrl) {
+        $downloadUrl = "$($DownloadBaseUrl.TrimEnd('/'))/$($asset.name)"
+        curl.exe -fL --retry 5 --retry-delay 3 --connect-timeout 30 `
+            --output $archivePath $downloadUrl
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not download $($asset.name) from $downloadUrl."
+        }
+    } else {
+        $downloaded = $false
+        for ($attempt = 1; $attempt -le 5; $attempt++) {
+            Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+            gh release download $Release --repo $Repository `
+                --pattern $asset.name --output $archivePath
+            if ($LASTEXITCODE -eq 0) {
+                $downloaded = $true
+                break
+            }
+            if ($attempt -lt 5) {
+                Start-Sleep -Seconds 3
+            }
+        }
+        if (-not $downloaded) {
+            throw "Could not download $($asset.name) from $Repository@$Release."
+        }
     }
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot -Force
 

@@ -13,7 +13,7 @@ def test_client_ci_is_scoped_to_client_paths_and_windows() -> None:
     assert "permissions:\n  contents: read" in workflow
 
 
-def test_release_workflow_uses_explicit_legacy_release_repository() -> None:
+def test_release_workflow_uses_own_release_repository() -> None:
     workflow = Path(".github/workflows/release-client.yml").read_text(
         encoding="utf-8"
     )
@@ -22,21 +22,38 @@ def test_release_workflow_uses_explicit_legacy_release_repository() -> None:
     assert 'github.ref == \'refs/heads/main\'' in workflow
     assert "startsWith(github.ref, 'refs/tags/v')" in workflow
     assert "environment: client-release" in workflow
-    assert "RELEASE_REPOSITORY: xiaqijun/eve-sentry" in workflow
-    assert '-Repository "xiaqijun/eve-sentry"' in workflow
-    assert '-ReleaseTarget "main"' in workflow
-    assert "secrets.EVE_SENTRY_RELEASE_TOKEN" in workflow
-    assert "github.token" not in workflow
+    assert "RELEASE_REPOSITORY: xiaqijun/eve-sentry-client" in workflow
+    assert '-Repository "xiaqijun/eve-sentry-client"' in workflow
+    assert '-ReleaseTarget "${{ github.sha }}"' in workflow
+    assert "secrets.EVE_SENTRY_RELEASE_TOKEN" not in workflow
+    assert "GH_TOKEN: ${{ github.token }}" in workflow
+    assert "EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 is required" in workflow
+    assert "permissions:\n  contents: write" in workflow
 
 
 def test_publish_script_refuses_to_overwrite_github_release() -> None:
     script = Path("scripts/publish_client_release.ps1").read_text(encoding="utf-8")
 
-    assert '[string]$Repository = "xiaqijun/eve-sentry"' in script
+    assert '[string]$Repository = "xiaqijun/eve-sentry-client"' in script
+    assert (
+        "https://github.com/xiaqijun/eve-sentry-client/releases/latest/download"
+        in script
+    )
     assert "gh release view $tag --repo $Repository" in script
     assert "gh release create $tag" in script
     assert "--repo $Repository" in script
     assert "--target $ReleaseTarget" in script
+    assert "GitHub release target must be a full commit SHA" in script
+    assert "eve-sentry-client-source.json" in script
     assert "refusing to overwrite it" in script
     assert "--clobber" not in script
-    assert "git rev-parse HEAD" not in script
+    assert "$ReleaseTarget = (git rev-parse HEAD).Trim()" in script
+
+
+def test_model_restore_defaults_to_client_release_repository() -> None:
+    script = Path("scripts/restore_release_models.ps1").read_text(encoding="utf-8")
+
+    assert '[string]$Repository = "xiaqijun/eve-sentry-client"' in script
+    assert "gh release view --repo $Repository" in script
+    assert "gh release view $Release --repo $Repository" in script
+    assert "gh release download $Release --repo $Repository" in script

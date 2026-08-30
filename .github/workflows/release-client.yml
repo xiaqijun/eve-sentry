@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   release:
@@ -30,7 +30,7 @@ jobs:
       EVE_SENTRY_OCR_BACKEND: onnx
       PYTHONUTF8: "1"
       QT_QPA_PLATFORM: offscreen
-      RELEASE_REPOSITORY: xiaqijun/eve-sentry
+      RELEASE_REPOSITORY: xiaqijun/eve-sentry-client
     steps:
       - uses: actions/checkout@v5
         with:
@@ -64,11 +64,11 @@ jobs:
       - name: Verify release credentials and destination
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.EVE_SENTRY_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
-              throw "EVE_SENTRY_RELEASE_TOKEN is required"
+              throw "github.token is required"
           }
           if ([string]::IsNullOrWhiteSpace($env:EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64)) {
               throw "EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 is required"
@@ -91,17 +91,17 @@ jobs:
       - name: Restore bundled OCR models from the release repository
         run: >-
           .\scripts\restore_release_models.ps1
-          -Repository "xiaqijun/eve-sentry"
+          -Repository "xiaqijun/eve-sentry-client"
         env:
-          GH_TOKEN: ${{ secrets.EVE_SENTRY_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
       - name: Build, sign, and publish client assets
         run: >-
           .\scripts\publish_client_release.ps1
           -Version "${{ steps.version.outputs.version }}"
           -Python "python"
-          -Repository "xiaqijun/eve-sentry"
-          -ReleaseTarget "main"
+          -Repository "xiaqijun/eve-sentry-client"
+          -ReleaseTarget "${{ github.sha }}"
           -DownloadBaseUrl "https://evesentrydownload.kisectool.com/download"
         env:
-          GH_TOKEN: ${{ secrets.EVE_SENTRY_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 }}
