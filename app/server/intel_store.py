@@ -52,6 +52,25 @@ ALERT_LEVEL_RANKS = {
     "critical": 4,
 }
 STALE_HEARTBEAT_STARTUP_GRACE_SECONDS = 45.0
+_STREAM_POSITION_LOCK = threading.Lock()
+_LAST_STREAM_POSITION = 0
+
+
+def _new_stream_position() -> int:
+    """Return a process-local monotonic position for persisted event order."""
+    global _LAST_STREAM_POSITION
+    with _STREAM_POSITION_LOCK:
+        _LAST_STREAM_POSITION = max(time.time_ns(), _LAST_STREAM_POSITION + 1)
+        return _LAST_STREAM_POSITION
+
+
+def _observe_stream_position(value: int) -> int:
+    """Keep newly generated positions above positions restored from storage."""
+    global _LAST_STREAM_POSITION
+    position = max(0, int(value))
+    with _STREAM_POSITION_LOCK:
+        _LAST_STREAM_POSITION = max(_LAST_STREAM_POSITION, position)
+    return position
 
 
 class HeartbeatOwnershipConflict(ValueError):
@@ -145,6 +164,7 @@ class IntelReport:
     seen_at: str = field(default_factory=utc_now_iso)
     received_at: str = field(default_factory=utc_now_iso)
     report_id: str = field(default_factory=lambda: uuid4().hex)
+    stream_position: int = field(default=0, repr=False)
     acknowledged_at: str = ""
     acknowledged_by: str = ""
     acknowledgement_note: str = ""
@@ -700,6 +720,7 @@ class IntelStore:
             if report_index is None:
                 return
             persisted_report = self._reports[report_index]
+            enriched_report.stream_position = persisted_report.stream_position
             enriched_report.acknowledged_at = persisted_report.acknowledged_at
             enriched_report.acknowledged_by = persisted_report.acknowledged_by
             enriched_report.acknowledgement_note = (
@@ -1769,6 +1790,83 @@ class IntelStore:
             min_score=min_score,
             min_level=min_level,
             include_since=include_since,
+        )
+
+    def resolve_alert_stream_cursor(
+        self,
+        alert_id: str,
+    ) -> tuple[int, str] | None:
+        """Return the stable report cursor represented by an alert id."""
+        alert_id = str(alert_id or "").strip()
+        if not alert_id:
+            return None
+        for report in self._reports_snapshot():
+            alert = self._alert_from_report(report)
+            if alert is None:
+                continue
+            alert_data = self._alert_to_dict(report, alert)
+            if self._alert_matches(alert_id, report, alert_data):
+                return self._report_stream_cursor(report)
+        return None
+
+    def list_alert_stream_page(
+        self,
+        *,
+        after: tuple[int, str] | None = None,
+        since: str = "",
+        include_since: bool = False,
+        limit: int = 50,
+        min_score: int | None = None,
+        min_level: str | None = None,
+    ) -> list[tuple[tuple[int, str], dict[str, Any]]]:
+        """Return the next oldest alert page after a stable stream cursor."""
+        page_limit = max(0, int(limit))
+        if page_limit == 0:
+            return []
+
+        since_query = str(since or "").strip()
+        min_score_value = self._optional_score(min_score)
+        min_level_rank = self._alert_level_rank(min_level)
+        newest_page = after is None and not since_query
+        reports = sorted(
+            self._reports_snapshot(),
+            key=self._report_stream_cursor,
+            reverse=newest_page,
+        )
+        page: list[tuple[tuple[int, str], dict[str, Any]]] = []
+        for report in reports:
+            cursor = self._report_stream_cursor(report)
+            if after is not None and cursor <= after:
+                continue
+            if after is None and since_query:
+                in_window = (
+                    report.received_at >= since_query
+                    if include_since
+                    else report.received_at > since_query
+                )
+                if not in_window:
+                    continue
+            alert = self._alert_from_report(report)
+            if alert is None:
+                continue
+            alert_data = self._alert_to_dict(report, alert)
+            if not self._alert_passes_filters(
+                alert_data,
+                acknowledged=None,
+                min_score=min_score_value,
+                min_level_rank=min_level_rank,
+            ):
+                continue
+            page.append((cursor, alert_data))
+            if len(page) >= page_limit:
+                break
+        return list(reversed(page)) if newest_page else page
+
+    @staticmethod
+    def _report_stream_cursor(report: IntelReport) -> tuple[int, str]:
+        return (
+            max(0, int(report.stream_position)),
+            str(report.report_id or ""),
         )
 
     def _alerts_from_reports(
@@ -3995,6 +4093,10 @@ class IntelStore:
                     received_at=str(
                         item.get("received_at") or item.get("seen_at") or utc_now_iso()
                     ),
+                    stream_position=_observe_stream_position(
+                        self._optional_int(item.get("_stream_position"))
+                        or _new_stream_position()
+                    ),
                     acknowledged_at=str(item.get("acknowledged_at") or ""),
                     acknowledged_by=str(item.get("acknowledged_by") or ""),
                     acknowledgement_note=str(item.get("acknowledgement_note") or ""),
@@ -4004,9 +4106,18 @@ class IntelStore:
         return reports
 
     def _save_reports(self) -> None:
+        for report in self._reports:
+            if report.stream_position <= 0:
+                report.stream_position = _new_stream_position()
         self._filepath.write_text(
             json.dumps(
-                [report.to_dict() for report in self._reports],
+                [
+                    {
+                        **report.to_dict(),
+                        "_stream_position": report.stream_position,
+                    }
+                    for report in self._reports
+                ],
                 ensure_ascii=False,
                 indent=2,
             ),

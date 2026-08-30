@@ -4708,6 +4708,295 @@ def test_events_stream_prefers_last_event_id_over_stale_since(tmp_path):
         server.stop()
 
 
+def test_events_stream_resume_drains_more_than_one_page(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        _, first_created = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Base"],
+                "source": "intel_channel",
+                "seen_at": "2026-06-29T12:00:00+00:00",
+                "received_at": "2026-06-29T12:00:00+00:00",
+            },
+        )
+        expected_ids = []
+        for index in range(51):
+            _, created = request_json(
+                f"{server.url}/api/observations",
+                method="POST",
+                payload={
+                    "system_name": "Tama",
+                    "names": [f"Pilot {index:02d}"],
+                    "source": "intel_channel",
+                    "seen_at": f"2026-06-29T12:00:{index + 1:02d}+00:00",
+                    "received_at": f"2026-06-29T12:00:{index + 1:02d}+00:00",
+                },
+            )
+            expected_ids.append(created["alert"]["id"])
+
+        query = urlencode({"timeout": "0", "limit": "50", "bootstrap": "0"})
+        _, _, first_body = request_text(
+            f"{server.url}/api/events?{query}",
+            headers={"Last-Event-ID": first_created["alert"]["id"]},
+        )
+        first_events = [
+            event for event in sse_events(first_body) if event.get("event") == "alert"
+        ]
+        _, _, second_body = request_text(
+            f"{server.url}/api/events?{query}",
+            headers={"Last-Event-ID": first_events[-1]["id"]},
+        )
+        second_events = [
+            event for event in sse_events(second_body) if event.get("event") == "alert"
+        ]
+
+        assert [event["id"] for event in first_events] == expected_ids[:50]
+        assert [event["id"] for event in second_events] == expected_ids[50:]
+    finally:
+        server.stop()
+
+
+def test_events_stream_resume_drains_same_timestamp_page(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        _, baseline = request_json(
+            f"{server.url}/api/observations",
+            method="POST",
+            payload={
+                "system_name": "Tama",
+                "names": ["Base"],
+                "source": "intel_channel",
+                "seen_at": "2026-06-29T12:29:59+00:00",
+                "received_at": "2026-06-29T12:29:59+00:00",
+            },
+        )
+        created_ids = []
+        for index in range(51):
+            _, created = request_json(
+                f"{server.url}/api/observations",
+                method="POST",
+                payload={
+                    "system_name": "Tama",
+                    "names": [f"Pilot {index:02d}"],
+                    "source": "intel_channel",
+                    "seen_at": "2026-06-29T12:30:00+00:00",
+                    "received_at": "2026-06-29T12:30:00+00:00",
+                },
+            )
+            created_ids.append(created["alert"]["id"])
+
+        query = urlencode({"timeout": "0", "limit": "50", "bootstrap": "0"})
+        _, _, first_body = request_text(
+            f"{server.url}/api/events?{query}",
+            headers={"Last-Event-ID": baseline["alert"]["id"]},
+        )
+        first_events = [
+            event for event in sse_events(first_body) if event.get("event") == "alert"
+        ]
+        _, _, second_body = request_text(
+            f"{server.url}/api/events?{query}",
+            headers={"Last-Event-ID": first_events[-1]["id"]},
+        )
+        second_events = [
+            event for event in sse_events(second_body) if event.get("event") == "alert"
+        ]
+
+        assert [event["id"] for event in first_events] == created_ids[:50]
+        assert [event["id"] for event in second_events] == created_ids[50:]
+    finally:
+        server.stop()
+
+
+def test_v1_events_resume_keeps_bootstrap_before_multi_page_backlog(tmp_path):
+    reinforcement_names = [f"Reinforcement {index:02d}" for index in range(51)]
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=HostileTestResolver(["Base Pilot", *reinforcement_names]),
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        snapshot_url = f"{server.url}/api/v1/ocr/snapshot"
+        request_json(
+            snapshot_url,
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "source_instance": "EVE - Test",
+                "system_name": "S-KSWL",
+                "seen_at": "2026-06-29T12:00:00+00:00",
+                "names": ["Base Pilot"],
+                "hostile_icon_count": 1,
+            },
+        )
+        assert store.wait_for_esi_idle(timeout=2)
+        baseline_id = store.list_alerts(limit=1)[0]["id"]
+        request_json(
+            snapshot_url,
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "source_instance": "EVE - Test",
+                "system_name": "S-KSWL",
+                "seen_at": "2026-06-29T12:01:00+00:00",
+                "names": ["Base Pilot", *reinforcement_names],
+                "hostile_icon_count": 52,
+            },
+        )
+        assert store.wait_for_esi_idle(timeout=2)
+        expected_ids = {
+            alert["id"] for alert in store.list_alerts() if alert["id"] != baseline_id
+        }
+
+        query = urlencode({"timeout": "0", "limit": "50", "bootstrap": "1"})
+        _, _, first_body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": baseline_id},
+        )
+        first_stream = sse_events(first_body)
+        first_bootstrap = next(
+            event for event in first_stream if event.get("event") == "bootstrap"
+        )
+        first_alerts = [
+            event for event in first_stream if event.get("event") == "alert"
+        ]
+        _, _, second_body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": first_alerts[-1]["id"]},
+        )
+        second_alerts = [
+            event for event in sse_events(second_body) if event.get("event") == "alert"
+        ]
+
+        assert first_bootstrap["id"] == baseline_id
+        assert len(first_alerts) == 50
+        assert len(second_alerts) == 1
+        assert {event["id"] for event in first_alerts + second_alerts} == expected_ids
+    finally:
+        server.stop()
+
+
+def test_v1_events_timestamp_cursor_keeps_bootstrap_before_backlog(tmp_path):
+    names = [f"Hostile {index:02d}" for index in range(51)]
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=HostileTestResolver(names),
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        request_json(
+            f"{server.url}/api/v1/ocr/snapshot",
+            method="POST",
+            payload={
+                "client_id": "detector-client:timestamp",
+                "source_instance": "EVE - Timestamp",
+                "system_name": "S-KSWL",
+                "seen_at": "2026-06-29T12:01:00+00:00",
+                "names": names,
+                "hostile_icon_count": len(names),
+            },
+        )
+        assert store.wait_for_esi_idle(timeout=2)
+        timestamp_cursor = "2026-06-29T00:00:00+00:00"
+        query = urlencode({"timeout": "0", "limit": "50", "bootstrap": "1"})
+
+        _, _, header_body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": timestamp_cursor},
+        )
+        header_events = sse_events(header_body)
+        header_bootstrap = next(
+            event for event in header_events if event.get("event") == "bootstrap"
+        )
+        header_alerts = [
+            event for event in header_events if event.get("event") == "alert"
+        ]
+        _, _, since_body = request_text(
+            f"{server.url}/api/v1/events?{query}&"
+            f"{urlencode({'since': timestamp_cursor})}"
+        )
+        since_bootstrap = next(
+            event
+            for event in sse_events(since_body)
+            if event.get("event") == "bootstrap"
+        )
+        _, _, remainder_body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": header_alerts[-1]["id"]},
+        )
+        remainder_alerts = [
+            event
+            for event in sse_events(remainder_body)
+            if event.get("event") == "alert"
+        ]
+
+        assert header_bootstrap["id"] == timestamp_cursor
+        assert since_bootstrap["id"] == timestamp_cursor
+        assert len(header_alerts) == 50
+        assert len(remainder_alerts) == 1
+    finally:
+        server.stop()
+
+
+def test_v1_events_report_page_does_not_hide_presence_alert(tmp_path):
+    names = [f"Hostile {index:02d}" for index in range(50)]
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=HostileTestResolver(names),
+        scorer=ScoringEngine(cooldown_seconds=0),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        request_json(
+            f"{server.url}/api/v1/ocr/snapshot",
+            method="POST",
+            payload={
+                "client_id": "detector-client:reports",
+                "source_instance": "EVE - Reports",
+                "system_name": "S-KSWL",
+                "seen_at": "2026-08-07T10:01:00+00:00",
+                "names": names,
+                "hostile_icon_count": len(names),
+            },
+        )
+        assert store.wait_for_esi_idle(timeout=2)
+        store.record_hostile_presence(
+            {
+                "client_id": "detector-client:presence",
+                "source_instance": "EVE - Presence",
+                "system_name": "Tama",
+                "hostile_icon_count": 2,
+                "seen_at": "2026-08-07T10:00:00+00:00",
+            }
+        )
+
+        query = urlencode({"timeout": "0", "limit": "50", "bootstrap": "0"})
+        _, _, body = request_text(f"{server.url}/api/v1/events?{query}")
+        alerts = [
+            event for event in sse_events(body) if event.get("event") == "alert"
+        ]
+
+        assert len(alerts) == 51
+        assert sum(event["id"].startswith("presence_") for event in alerts) == 1
+    finally:
+        server.stop()
+
+
 def test_v1_events_bootstrap_id_is_resumable_alert_cursor(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
