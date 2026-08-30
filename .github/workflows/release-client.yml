@@ -95,6 +95,8 @@ jobs:
           if ($releaseExists) {
               throw "$env:RELEASE_REPOSITORY@$tag already exists; refusing to overwrite it"
           }
+          $global:LASTEXITCODE = 0
+          Write-Host "$env:RELEASE_REPOSITORY@$tag is available for publication"
 
       - name: Install client build dependencies
         working-directory: client
