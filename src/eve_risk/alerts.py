@@ -461,6 +461,8 @@ class EveSentryAlertRelay:
         state: dict[str, Any],
         occurred_at: str,
         deferred_analysis: list[tuple[str, dict[str, Any], str, str]] | None = None,
+        *,
+        movement_source: str = "explicit",
     ) -> bool:
         """Deliver one compact movement event instead of clear plus re-entry."""
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
@@ -474,6 +476,9 @@ class EveSentryAlertRelay:
             f"movement:{str(from_system).casefold()}:{str(to_system).casefold()}"
             f":{str(state.get('episode_id') or occurred_at)}"
         )
+        movement_id = str(
+            state.get("_movement_id") or state.get("episode_id") or ""
+        ).strip()
         failed = 0
         for group_openid in groups:
             delivered_key = _delivered_key(event_id, group_openid)
@@ -506,11 +511,44 @@ class EveSentryAlertRelay:
         )
         if failed == 0:
             await self.redis.set(
-                f"{MOVEMENT_DEDUPE_PREFIX}:{_movement_fingerprint(from_system, to_system, state.get('personnel', []))}",
+                _movement_event_key(
+                    from_system, to_system, state.get("personnel", []), movement_id
+                ),
                 "1",
                 ex=ALERT_DEDUPE_SECONDS,
             )
+            await self.redis.set(
+                _movement_cross_source_key(
+                    from_system, to_system, state.get("personnel", [])
+                ),
+                str(movement_source or "explicit"),
+                ex=ALERT_DEDUPE_SECONDS,
+            )
         return failed == 0
+
+    async def _movement_was_seen(
+        self,
+        from_system: str,
+        to_system: str,
+        personnel: object,
+        movement_id: str,
+        *,
+        movement_source: str,
+    ) -> bool:
+        if await self.redis.exists(
+            _movement_event_key(from_system, to_system, personnel, movement_id)
+        ):
+            return True
+        cross_key = _movement_cross_source_key(from_system, to_system, personnel)
+        previous_source = _decode(await self.redis.get(cross_key))
+        if previous_source and previous_source != movement_source:
+            await self.redis.set(
+                cross_key,
+                movement_source,
+                ex=ALERT_DEDUPE_SECONDS,
+            )
+            return True
+        return False
 
     async def deliver_system_personnel_update(
         self,
@@ -529,8 +567,8 @@ class EveSentryAlertRelay:
         groups = sorted(_decode(value) for value in raw_groups if _decode(value))
         message = format_personnel_alert_message(state, occurred_at)
         event_id = f"personnel:{system_name.casefold()}:{episode_id}:{fingerprint}"
-        failed = 0
         delivered = 0
+        failed = 0
         for group_openid in groups:
             delivered_key = _delivered_key(event_id, group_openid)
             if await self.redis.exists(delivered_key):
@@ -636,11 +674,11 @@ class EveSentryAlertRelay:
         self,
         change: dict[str, Any],
         occurred_at: str,
-    ) -> None:
+    ) -> bool:
         change_type = str(change.get("change") or "").strip().casefold()
         if change_type not in {"online", "offline", "moved"}:
             logger.warning("Ignored unknown EVE Sentry monitoring node change")
-            return
+            return True
         node_id = str(
             change.get("node_id")
             or change.get("client_id")
@@ -650,7 +688,7 @@ class EveSentryAlertRelay:
         ).strip()
         if not node_id:
             logger.warning("Ignored monitoring node change without identity")
-            return
+            return True
 
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
         groups = sorted(_decode(value) for value in raw_groups if _decode(value))
@@ -666,6 +704,7 @@ class EveSentryAlertRelay:
             )
         )
         delivered = 0
+        failed = 0
         for group_openid in groups:
             delivered_key = _delivered_key(event_id, group_openid)
             if await self.redis.exists(delivered_key):
@@ -673,6 +712,7 @@ class EveSentryAlertRelay:
             try:
                 await self.qq.send_proactive_text(group_openid, message)
             except Exception:
+                failed += 1
                 logger.exception("QQ monitoring node delivery failed")
                 continue
             await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
@@ -683,6 +723,7 @@ class EveSentryAlertRelay:
             change_type,
             delivered,
         )
+        return failed == 0
 
     async def deliver_monitoring_node_snapshot(
         self,
@@ -742,7 +783,7 @@ class EveSentryAlertRelay:
             len(normalized_nodes),
             delivered,
         )
-        return delivered > 0
+        return not failed
 
     async def process_monitoring_node(self, payload: dict[str, Any]) -> bool:
         changes = payload.get("changes")
@@ -751,20 +792,23 @@ class EveSentryAlertRelay:
         ).strip()
         nodes = payload.get("nodes")
         if isinstance(nodes, list):
-            await self.deliver_monitoring_node_snapshot(
+            return await self.deliver_monitoring_node_snapshot(
                 nodes,
                 occurred_at,
                 nodes_version=str(payload.get("nodes_version") or ""),
                 changes=changes if isinstance(changes, list) else None,
             )
-            return True
         if not isinstance(changes, list):
             logger.warning("Ignored EVE Sentry monitoring node event without changes")
             return True
+        succeeded = True
         for change in changes:
             if isinstance(change, dict):
-                await self.deliver_monitoring_node_change(change, occurred_at)
-        return True
+                succeeded = (
+                    await self.deliver_monitoring_node_change(change, occurred_at)
+                    and succeeded
+                )
+        return succeeded
 
     async def process_hostile_movement(self, payload: dict[str, Any]) -> bool:
         """Consume the v1 explicit movement event when the server emits it."""
@@ -799,29 +843,32 @@ class EveSentryAlertRelay:
                 item for item in payload.get("personnel", []) if isinstance(item, dict)
             ],
         }
-        fingerprint = _movement_fingerprint(from_name, to_name, state["personnel"])
-        if await self.redis.exists(f"{MOVEMENT_DEDUPE_PREFIX}:{fingerprint}"):
+        if await self._movement_was_seen(
+            from_name,
+            to_name,
+            state["personnel"],
+            movement_id,
+            movement_source="explicit",
+        ):
             return True
         delivered = await self.deliver_system_movement(
             from_name,
             to_name,
             state,
             occurred_at,
+            movement_source="explicit",
         )
-        if delivered:
-            await self.redis.set(
-                f"{MOVEMENT_DEDUPE_PREFIX}:{fingerprint}", "1", ex=ALERT_DEDUPE_SECONDS
-            )
         return delivered
 
     async def process_bootstrap(self, payload: dict[str, Any]) -> bool:
+        node_delivery_succeeded = True
         node_changes = payload.get("monitoring_node_changes")
         monitoring_nodes = payload.get("monitoring_nodes")
         nodes_version = str(payload.get("monitoring_nodes_version") or "").strip()
         if isinstance(node_changes, list) and node_changes and isinstance(
             monitoring_nodes, list
         ):
-            await self.process_monitoring_node(
+            node_delivery_succeeded = await self.process_monitoring_node(
                 {
                     "generated_at": payload.get("generated_at"),
                     "changes": node_changes,
@@ -830,7 +877,7 @@ class EveSentryAlertRelay:
                 }
             )
         elif isinstance(node_changes, list) and node_changes:
-            await self.process_monitoring_node(
+            node_delivery_succeeded = await self.process_monitoring_node(
                 {
                     "generated_at": payload.get("generated_at"),
                     "changes": node_changes,
@@ -841,11 +888,14 @@ class EveSentryAlertRelay:
                 await self.redis.get(MONITORING_NODE_SNAPSHOT_STATE_KEY)
             )
             if last_version != nodes_version:
-                await self.deliver_monitoring_node_snapshot(
+                node_delivery_succeeded = await self.deliver_monitoring_node_snapshot(
                     monitoring_nodes,
                     str(payload.get("generated_at") or datetime.now(UTC).isoformat()),
                     nodes_version=nodes_version,
                 )
+        if not node_delivery_succeeded:
+            logger.warning("EVE Sentry monitoring node update deferred after delivery failure")
+            return False
         active_intel = payload.get("active_intel")
         if not isinstance(active_intel, list):
             logger.warning("Ignored EVE Sentry bootstrap without active_intel list")
@@ -900,13 +950,13 @@ class EveSentryAlertRelay:
                 )
             for pair in movement_pairs:
                 movement_state = current[pair["to_key"]]
-                movement_fingerprint = _movement_fingerprint(
+                movement_id = str(movement_state.get("episode_id") or "").strip()
+                if await self._movement_was_seen(
                     pair["from_system"],
                     pair["to_system"],
                     movement_state.get("personnel", []),
-                )
-                if await self.redis.exists(
-                    f"{MOVEMENT_DEDUPE_PREFIX}:{movement_fingerprint}"
+                    movement_id,
+                    movement_source="bootstrap",
                 ):
                     continue
                 transitions_succeeded = (
@@ -916,6 +966,7 @@ class EveSentryAlertRelay:
                         movement_state,
                         generated_at,
                         deferred_analysis,
+                        movement_source="bootstrap",
                     )
                     and transitions_succeeded
                 )
@@ -1113,7 +1164,11 @@ class EveSentryAlertRelay:
                     processed = await self.process_monitoring_node(payload)
                 elif event_name == "hostile_movement" and isinstance(payload, dict):
                     processed = await self.process_hostile_movement(payload)
-                if processed and event_id:
+                if not processed:
+                    raise RuntimeError(
+                        "EVE Sentry event processing failed; reconnecting from last acknowledged event"
+                    )
+                if event_id:
                     await self.redis.set(
                         ALERT_EVENT_ID_KEY, event_id, ex=ALERT_DEDUPE_SECONDS
                     )
@@ -1505,6 +1560,7 @@ def _movement_fingerprint(
     from_system: str,
     to_system: str,
     personnel: object,
+    movement_id: str = "",
 ) -> str:
     identities = []
     if isinstance(personnel, list):
@@ -1516,9 +1572,34 @@ def _movement_fingerprint(
         "to": str(to_system or "").strip().casefold(),
         "personnel": sorted(value for value in identities if value),
     }
+    if movement_id:
+        payload["movement_id"] = str(movement_id).strip()
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:20]
+
+
+def _movement_event_key(
+    from_system: str,
+    to_system: str,
+    personnel: object,
+    movement_id: str,
+) -> str:
+    return (
+        f"{MOVEMENT_DEDUPE_PREFIX}:event:"
+        f"{_movement_fingerprint(from_system, to_system, personnel, movement_id)}"
+    )
+
+
+def _movement_cross_source_key(
+    from_system: str,
+    to_system: str,
+    personnel: object,
+) -> str:
+    return (
+        f"{MOVEMENT_DEDUPE_PREFIX}:cross:"
+        f"{_movement_fingerprint(from_system, to_system, personnel)}"
+    )
 
 
 def _personnel_identity(item: dict[str, Any]) -> str:

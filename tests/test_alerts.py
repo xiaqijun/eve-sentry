@@ -128,7 +128,47 @@ async def test_explicit_hostile_movement_event_is_deduplicated() -> None:
         }
         assert await relay.process_hostile_movement(payload) is True
         assert await relay.process_hostile_movement(payload) is True
-    assert qq.send_proactive_text.await_count == 1
+        second = {**payload, "movement_id": "move-2"}
+        assert await relay.process_hostile_movement(second) is True
+    assert qq.send_proactive_text.await_count == 2
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_relay_does_not_ack_monitoring_event_after_delivery_failure() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        body = (
+            b"id: node-1\n"
+            b"event: monitoring_node\n"
+            b'data: {"changes":[{"change":"online","node_id":"node-a","system_name":"Jita"}]}\n\n'
+            b"id: node-2\n"
+            b"event: bootstrap\n"
+            b'data: {"generated_at":"2026-08-30T08:00:00+00:00","active_intel":[],"alerts":[]}\n\n'
+        )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            content=body,
+        )
+
+    async def fail_send(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("QQ unavailable")
+
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(send_proactive_text=AsyncMock(side_effect=fail_send))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        relay = EveSentryAlertRelay(
+            http,
+            redis,
+            qq,
+            "http://sentry.test/api/v1/events",
+        )
+        await relay.subscribe("group-1")
+        with pytest.raises(RuntimeError, match="processing failed"):
+            await relay._stream_once()
+
+    assert await redis.get(ALERT_EVENT_ID_KEY) is None
+    assert qq.send_proactive_text.call_count == 1
     await redis.aclose()
 
 
@@ -1071,6 +1111,94 @@ async def test_relay_compacts_complete_personnel_move_into_one_movement_message(
         ]
         assert qq.send_proactive_markdown.await_count == 1
         assert "Jita → Tama" in qq.send_proactive_markdown.await_args.args[1]
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_and_explicit_movement_events_share_cross_source_dedupe() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+
+        def item(active_id: str, system_name: str) -> dict[str, Any]:
+            return {
+                "id": active_id,
+                "active": True,
+                "source": "eve-sentry-detector",
+                "system_name": system_name,
+                "name": "Alice",
+                "character_id": 12345,
+                "metadata": {
+                    "client_id": "client-1",
+                    "identity_status": "resolved",
+                },
+            }
+
+        await relay.process_bootstrap(
+            {"generated_at": "t0", "active_intel": [], "alerts": []}
+        )
+        await relay.process_bootstrap(
+            {
+                "generated_at": "t1",
+                "active_intel": [item("ocr:jita", "Jita")],
+                "alerts": [{"active_intel_id": "ocr:jita", "classification": "red"}],
+            }
+        )
+        qq.send_proactive_text.reset_mock()
+
+        await relay.process_bootstrap(
+            {
+                "generated_at": "t2",
+                "active_intel": [item("ocr:tama", "Tama")],
+                "alerts": [{"active_intel_id": "ocr:tama", "classification": "red"}],
+            }
+        )
+        assert qq.send_proactive_text.await_count == 1
+
+        explicit = {
+            "schema_version": "hostile_movement_event.v1",
+            "movement_id": "detector-move-1",
+            "occurred_at": "2026-08-30T08:01:00+00:00",
+            "from_system": {"name": "Jita"},
+            "to_system": {"name": "Tama"},
+            "hostile_count": 1,
+            "personnel": [{"character_id": 12345, "name": "Alice"}],
+            "source": "detector",
+        }
+        assert await relay.process_hostile_movement(explicit) is True
+        assert qq.send_proactive_text.await_count == 1
+
+        await redis.flushdb()
+        relay._active_alert_ids.clear()
+        await relay.subscribe("group-1")
+        qq.send_proactive_text.reset_mock()
+        await relay.process_bootstrap(
+            {"generated_at": "t3", "active_intel": [], "alerts": []}
+        )
+        await relay.process_bootstrap(
+            {
+                "generated_at": "t4",
+                "active_intel": [item("ocr:jita", "Jita")],
+                "alerts": [{"active_intel_id": "ocr:jita", "classification": "red"}],
+            }
+        )
+        qq.send_proactive_text.reset_mock()
+        explicit = {**explicit, "movement_id": "detector-move-2"}
+        assert await relay.process_hostile_movement(explicit) is True
+        await relay.process_bootstrap(
+            {
+                "generated_at": "t5",
+                "active_intel": [item("ocr:tama", "Tama")],
+                "alerts": [{"active_intel_id": "ocr:tama", "classification": "red"}],
+            }
+        )
+        assert qq.send_proactive_text.await_count == 1
 
     await redis.aclose()
 
