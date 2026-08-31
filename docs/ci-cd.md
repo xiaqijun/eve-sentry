@@ -1,20 +1,21 @@
 # CI/CD 与仓库边界
 
-本文说明 `eve-sentry` 主服务仓库当前的流水线，以及拆分为五个公开仓库后的发布边界。
+本文说明 `eve-sentry` 主服务仓库当前的流水线，以及拆分为六个公开仓库后的发布边界。
 生产部署只允许来自默认分支的合并提交；Pull Request 只执行验证，不连接生产环境。
 
 ## 仓库归属
 
 | 仓库 | 职责 | 生产入口 |
 |---|---|---|
-| `xiaqijun/eve-sentry` | 情报服务、Web Console、下载站编排 | `deploy-server.yml`、`deploy-download-site.yml` |
+| `xiaqijun/eve-sentry` | 情报服务、Web Console | `deploy-server.yml` |
 | `xiaqijun/eve-sentry-bot` | QQ 机器人、分析 Worker、Docker Compose | 机器人仓库自己的 `deploy.yml` |
 | `xiaqijun/eve-sentry-client` | Windows OCR/监控客户端和更新器 | 客户端仓库自己的 `release-client.yml` |
 | `xiaqijun/eve-sentry-esi-gateway` | 独立 ESI Gateway | Gateway 仓库自己的 `deploy-esi-gateway.yml` |
 | `xiaqijun/eve-sentry-contracts` | HTTP、SSE、JSON Schema 和兼容性 fixture | 只发布契约包，不直接部署服务 |
+| `xiaqijun/eve-sentry-download-site` | 静态下载站和 Cloudflare 下载 Worker | 下载站仓库自己的 `deploy.yml` |
 
-拆分完成前，本仓库仍保留兼容性的 `deploy-esi-gateway.yml`、`release-client.yml` 和下载站
-目录；这些路径只作为迁移期流水线，不代表新仓库的最终代码归属。
+本仓库已经退役客户端 Release 和下载站部署入口。兼容性的 `deploy-esi-gateway.yml`
+仍待独立 Gateway 完成生产配置与回滚验证后再退役。
 
 ## 触发条件与门禁
 
@@ -25,10 +26,10 @@
   运行 Gateway 测试，生产 job 仅接受 `main`。
 - `ci-client.yml`：客户端代码、打包脚本、依赖、资源或测试变化时运行 Windows 测试，
   适用于 push、Pull Request 和手动验证。
-- `release-client.yml`：当前仍由 `app/version.py` 版本变更或手动触发，负责签名和发布
-  GitHub Release；客户端拆分后迁移到 `eve-sentry-client`。
-- `deploy-download-site.yml`：下载站或 Worker 路径变化时，Pull Request 运行构建、Worker
-  测试和 Wrangler dry-run；合并到 `main` 后才部署 Cloudflare 并执行公开 smoke。
+- 客户端 Release 由 `eve-sentry-client/.github/workflows/release-client.yml` 负责；本仓库不再
+  构建或发布客户端。
+- 下载站由 `eve-sentry-download-site` 的 `CI` 和 `Deploy` workflow 负责。生产部署验证首页、
+  Worker、客户端仓库 `latest.json`、302 跳转和 Range 206。
 - `workflow_dispatch` 可以用于重跑验证，但生产 job 会拒绝非默认分支。
 
 所有生产 job 都应保持并发锁，避免同一环境同时发布两个版本。契约仓库发布新版本后，
@@ -51,7 +52,10 @@ ESI Gateway：
 下载站：
 
 - Secrets：`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_API_TOKEN`
-- Wrangler 配置中的 `GITHUB_OWNER` 和 `GITHUB_REPO` 必须指向客户端发布仓库。
+- Secrets 应配置到 `eve-sentry-download-site`；首次拆仓部署由本仓库一次性 bridge 使用旧
+  Secret 完成，独立仓库 Secret 配置前不得手动触发后续生产部署。
+- Wrangler 的 `GITHUB_OWNER=xiaqijun`、`GITHUB_REPO=eve-sentry-client` 指向客户端
+  Release 仓库。
 
 客户端：
 
