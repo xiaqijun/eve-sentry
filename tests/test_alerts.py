@@ -285,7 +285,7 @@ def test_alert_subscription_commands_and_message_format() -> None:
     assert "态势图" not in left
     assert "敌对进入" in format_alert_message(item)
     assert format_system_alert_message("S-KSWL", "alert") == "❗ S-KSWL 来敌"
-    assert format_system_alert_message("S-KSWL", "alert", 3) == "❗ S-KSWL 来敌｜当前敌对 3 人"
+    assert format_system_alert_message("S-KSWL", "alert", 3) == "❗ S-KSWL 来敌"
     assert format_system_alert_message("S-KSWL", "safe") == "✅ S-KSWL 清空"
     assert format_system_movement_message("Jita", "Tama", 2) == (
         "🔵 敌对移动｜Jita → Tama｜当前敌对 2 人"
@@ -615,7 +615,7 @@ async def test_relay_delivers_presence_only_system_alert_without_empty_personnel
         )
 
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
-            "❗ S-KSWL 来敌｜当前敌对 2 人"
+            "❗ S-KSWL 来敌"
         ]
         qq.send_proactive_markdown.assert_not_awaited()
 
@@ -1030,7 +1030,7 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
 
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
             "✅ S-KSWL 清空",
-                "❗ S-KSWL 来敌｜当前敌对 1 人",
+                "❗ S-KSWL 来敌",
             "✅ S-KSWL 清空",
         ]
         assert qq.send_proactive_markdown.await_count == 3
@@ -1594,7 +1594,7 @@ async def test_alert_event_delivers_system_alert_without_legacy_template() -> No
 
         qq.send_proactive_markdown.assert_not_awaited()
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
-            "❗ S-KSWL 来敌｜当前敌对 2 人"
+            "❗ S-KSWL 来敌"
         ]
         assert await redis.get(ALERT_CURSOR_KEY) == b"2026-08-10T01:00:03+00:00"
 
@@ -1663,7 +1663,7 @@ async def test_presence_alert_event_is_not_repeated_by_later_bootstrap() -> None
         )
 
     assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
-        "❗ S-KSWL 来敌｜当前敌对 1 人"
+        "❗ S-KSWL 来敌"
     ]
     qq.send_proactive_markdown.assert_not_awaited()
     await redis.aclose()

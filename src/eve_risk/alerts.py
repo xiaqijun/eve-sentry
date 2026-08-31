@@ -115,12 +115,7 @@ def format_system_alert_message(
     system_name = str(system_name or "").strip() or "未知星系"
     if transition == "safe":
         return f"✅ {system_name} 清空"
-    count_label = (
-        f"｜当前敌对 {hostile_count} 人"
-        if isinstance(hostile_count, int) and hostile_count >= 0
-        else ""
-    )
-    return f"❗ {system_name} 来敌{count_label}"
+    return f"❗ {system_name} 来敌"
 
 
 def format_system_movement_message(
