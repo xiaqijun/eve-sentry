@@ -35,6 +35,8 @@ DEFAULT_HOT_REPORT_LIMIT = 5000
 POSTGRES_ID_LOOKUP_BATCH_SIZE = 1000
 POSTGRES_ALERT_SCAN_BATCH_SIZE = 500
 PERSISTED_ALERT_METADATA_KEY = "generated_alert"
+REPORT_STREAM_POSITION_KEY = "_stream_position"
+REPORT_STREAM_ADVISORY_LOCK_ID = 1163285842
 
 
 logger = logging.getLogger(__name__)
@@ -504,7 +506,6 @@ class PostgreSQLIntelStore(IntelStore):
                 for item in self._active_intel.values()
                 if item.active and item.source == source
             ]
-            report_rows = [self._row_from_report(report) for report in new_reports]
             active_rows = [
                 self._active_row(self._active_intel[active_id])
                 for active_id in sorted(changed_active_ids)
@@ -512,16 +513,18 @@ class PostgreSQLIntelStore(IntelStore):
             ]
             hostile_waves = self._hostile_wave_changes(hostile_before, seen_at)
             with self._connect() as connection:
-                if report_rows:
+                if new_reports:
+                    self._assign_report_stream_positions(connection, new_reports)
                     connection.executemany(
                         """
                         INSERT INTO intel_reports (
-                            report_id, system, names_json, source, source_instance,
-                            system_id, character_ids_json, confidence, note, raw_text,
-                            metadata_json, seen_at, received_at, acknowledged_at,
-                            acknowledged_by, acknowledgement_note
+                            report_id, stream_position, system, names_json, source,
+                            source_instance, system_id, character_ids_json,
+                            confidence, note, raw_text, metadata_json, seen_at,
+                            received_at, acknowledged_at, acknowledged_by,
+                            acknowledgement_note
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(report_id) DO UPDATE SET
                             system = excluded.system,
                             names_json = excluded.names_json,
@@ -534,6 +537,10 @@ class PostgreSQLIntelStore(IntelStore):
                             raw_text = excluded.raw_text,
                             metadata_json = (
                                 COALESCE(NULLIF(excluded.metadata_json, ''), '{}')::jsonb
+                                || jsonb_build_object(
+                                    '_stream_position',
+                                    intel_reports.stream_position
+                                )
                                 || jsonb_strip_nulls(jsonb_build_object(
                                     'generated_alert',
                                     COALESCE(
@@ -548,8 +555,9 @@ class PostgreSQLIntelStore(IntelStore):
                             acknowledged_by = excluded.acknowledged_by,
                             acknowledgement_note = excluded.acknowledgement_note
                         """,
-                        report_rows,
+                        [self._row_from_report(report) for report in new_reports],
                     )
+                    self._refresh_report_stream_positions(connection, new_reports)
                 self._upsert_active_intel_rows(connection, active_rows)
                 self._persist_hostile_wave_changes(connection, hostile_waves)
         for task in esi_tasks:
@@ -1074,6 +1082,25 @@ class PostgreSQLIntelStore(IntelStore):
             return ""
         return str(alert_data.get("created_at") or "")
 
+    def resolve_alert_stream_cursor(
+        self,
+        alert_id: str,
+    ) -> tuple[int, str] | None:
+        """Resolve an alert id without limiting lookup to the hot report set."""
+        hot_cursor = super().resolve_alert_stream_cursor(alert_id)
+        if hot_cursor is not None:
+            return hot_cursor
+        report = self._report_for_alert_id(str(alert_id or "").strip())
+        if report is None:
+            return None
+        alert = self._alert_from_report(report)
+        if alert is None:
+            return None
+        alert_data = self._alert_to_dict(report, alert)
+        if not self._alert_matches(alert_id, report, alert_data):
+            return None
+        return self._report_stream_cursor(report)
+
     def ack_alert(
         self,
         alert_id: str,
@@ -1258,9 +1285,22 @@ class PostgreSQLIntelStore(IntelStore):
     def _migrate(self) -> None:
         with self._connect() as connection:
             connection.execute(
+                "SELECT pg_advisory_xact_lock(?)",
+                (REPORT_STREAM_ADVISORY_LOCK_ID,),
+            )
+            connection.execute(
+                """
+                CREATE SEQUENCE IF NOT EXISTS intel_reports_stream_position_seq
+                AS BIGINT
+                """
+            )
+            connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS intel_reports (
                     report_id TEXT PRIMARY KEY,
+                    stream_position BIGINT NOT NULL DEFAULT nextval(
+                        'intel_reports_stream_position_seq'
+                    ),
                     system TEXT NOT NULL,
                     names_json TEXT NOT NULL,
                     source TEXT NOT NULL,
@@ -1278,6 +1318,12 @@ class PostgreSQLIntelStore(IntelStore):
                     acknowledgement_note TEXT NOT NULL DEFAULT ''
                 )
                 """
+            )
+            self._ensure_column(
+                connection,
+                "intel_reports",
+                "stream_position",
+                "BIGINT",
             )
             self._ensure_column(
                 connection,
@@ -1302,6 +1348,81 @@ class PostgreSQLIntelStore(IntelStore):
                 "intel_reports",
                 "acknowledgement_note",
                 "TEXT NOT NULL DEFAULT ''",
+            )
+            connection.execute(
+                """
+                ALTER TABLE intel_reports
+                ALTER COLUMN stream_position SET DEFAULT nextval(
+                    'intel_reports_stream_position_seq'
+                )
+                """
+            )
+            connection.execute(
+                """
+                WITH current_position AS (
+                    SELECT COALESCE(MAX(stream_position), 0) AS max_position
+                    FROM intel_reports
+                    WHERE stream_position > 0
+                ),
+                missing AS (
+                    SELECT report_id,
+                           current_position.max_position
+                           + ROW_NUMBER() OVER (
+                               ORDER BY received_at ASC, report_id ASC
+                           ) AS stream_position
+                    FROM intel_reports
+                    CROSS JOIN current_position
+                    WHERE stream_position IS NULL OR stream_position <= 0
+                )
+                UPDATE intel_reports AS report
+                SET stream_position = missing.stream_position
+                FROM missing
+                WHERE report.report_id = missing.report_id
+                """
+            )
+            connection.execute(
+                """
+                ALTER TABLE intel_reports
+                ALTER COLUMN stream_position SET NOT NULL
+                """
+            )
+            connection.execute(
+                """
+                ALTER SEQUENCE intel_reports_stream_position_seq
+                OWNED BY intel_reports.stream_position
+                """
+            )
+            connection.execute(
+                """
+                SELECT setval(
+                    'intel_reports_stream_position_seq',
+                    GREATEST(COALESCE(MAX(stream_position), 0), 1),
+                    COALESCE(MAX(stream_position), 0) > 0
+                )
+                FROM intel_reports
+                """
+            )
+            connection.execute(
+                f"""
+                UPDATE intel_reports
+                SET metadata_json = (
+                    COALESCE(NULLIF(metadata_json, ''), '{{}}')::jsonb
+                    || jsonb_build_object(
+                        '{REPORT_STREAM_POSITION_KEY}',
+                        stream_position
+                    )
+                )::text
+                WHERE (
+                    COALESCE(NULLIF(metadata_json, ''), '{{}}')::jsonb
+                    -> '{REPORT_STREAM_POSITION_KEY}'
+                ) IS DISTINCT FROM to_jsonb(stream_position)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_intel_reports_stream_position
+                ON intel_reports(stream_position, report_id)
+                """
             )
             connection.execute(
                 """
@@ -1614,7 +1735,7 @@ class PostgreSQLIntelStore(IntelStore):
                 SELECT report_id, system, names_json, source, source_instance,
                        system_id, character_ids_json, confidence, note, raw_text,
                        metadata_json, seen_at, received_at, acknowledged_at,
-                       acknowledged_by, acknowledgement_note
+                       acknowledged_by, acknowledgement_note, stream_position
                 FROM intel_reports
                 ORDER BY seen_at DESC, received_at DESC, report_id DESC
                 LIMIT ?
@@ -1631,7 +1752,7 @@ class PostgreSQLIntelStore(IntelStore):
                         SELECT report_id, system, names_json, source, source_instance,
                                system_id, character_ids_json, confidence, note, raw_text,
                                metadata_json, seen_at, received_at, acknowledged_at,
-                               acknowledged_by, acknowledgement_note
+                               acknowledged_by, acknowledgement_note, stream_position
                         FROM intel_reports
                         WHERE report_id IN ({placeholders})
                         """,
@@ -1683,7 +1804,7 @@ class PostgreSQLIntelStore(IntelStore):
                 SELECT report_id, system, names_json, source, source_instance,
                        system_id, character_ids_json, confidence, note, raw_text,
                        metadata_json, seen_at, received_at, acknowledged_at,
-                       acknowledged_by, acknowledgement_note
+                       acknowledged_by, acknowledgement_note, stream_position
                 FROM intel_reports
                 {where_clause}
                 ORDER BY seen_at DESC, received_at DESC, report_id DESC
@@ -1817,6 +1938,77 @@ class PostgreSQLIntelStore(IntelStore):
                 break
         return alerts
 
+    def list_alert_stream_page(
+        self,
+        *,
+        after: tuple[int, str] | None = None,
+        since: str = "",
+        include_since: bool = False,
+        limit: int = 50,
+        min_score: int | None = None,
+        min_level: str | None = None,
+    ) -> list[tuple[tuple[int, str], dict[str, Any]]]:
+        """Read a bounded forward alert page directly from PostgreSQL."""
+        page_limit = max(0, int(limit))
+        if page_limit == 0:
+            return []
+
+        since_query = str(since or "").strip()
+        if since_query:
+            parsed_since = self._parse_timestamp(since_query)
+            if parsed_since is None:
+                raise ValueError("since must be an ISO timestamp")
+            since_query = parsed_since.astimezone(timezone.utc).isoformat()
+        if after is not None:
+            after = (max(0, int(after[0])), str(after[1] or ""))
+
+        min_score_value = self._optional_score(min_score)
+        min_level_rank = self._alert_level_rank(min_level)
+        newest_page = after is None and not since_query
+        scan_anchor = after
+        page: list[tuple[tuple[int, str], dict[str, Any]]] = []
+        while len(page) < page_limit:
+            remaining = page_limit - len(page)
+            batch_limit = max(
+                100,
+                min(POSTGRES_ALERT_SCAN_BATCH_SIZE, remaining * 2),
+            )
+            rows = self._read_alert_stream_report_rows(
+                anchor=scan_anchor,
+                since="" if after is not None else since_query,
+                include_since=include_since,
+                limit=batch_limit,
+                descending=newest_page,
+            )
+            if not rows:
+                break
+
+            for row in rows:
+                report = self._report_from_row(row)
+                if report is None:
+                    continue
+                alert = self._alert_from_persisted_report(report)
+                if alert is None:
+                    continue
+                alert_data = self._alert_to_dict(report, alert)
+                if not self._alert_passes_filters(
+                    alert_data,
+                    acknowledged=None,
+                    min_score=min_score_value,
+                    min_level_rank=min_level_rank,
+                ):
+                    continue
+                page.append((self._report_stream_cursor(report), alert_data))
+                if len(page) >= page_limit:
+                    break
+
+            scan_anchor = self._row_stream_cursor(rows[-1])
+            if len(rows) < batch_limit:
+                break
+        if newest_page:
+            page.reverse()
+        return page
+
     def _read_alert_report_rows(
         self,
         *,
@@ -1845,7 +2037,7 @@ class PostgreSQLIntelStore(IntelStore):
                 SELECT report_id, system, names_json, source, source_instance,
                        system_id, character_ids_json, confidence, note, raw_text,
                        metadata_json, seen_at, received_at, acknowledged_at,
-                       acknowledged_by, acknowledgement_note
+                       acknowledged_by, acknowledgement_note, stream_position
                 FROM intel_reports
                 {where_clause}
                 ORDER BY received_at DESC, report_id DESC
@@ -1854,6 +2046,56 @@ class PostgreSQLIntelStore(IntelStore):
                 tuple(params),
             ).fetchall()
         return list(rows)
+
+    def _read_alert_stream_report_rows(
+        self,
+        *,
+        anchor: tuple[int, str] | None,
+        since: str,
+        include_since: bool,
+        limit: int,
+        descending: bool,
+    ) -> list[Any]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        position_sql = "stream_position"
+        if anchor is not None:
+            stream_position, report_id = anchor
+            operator = "<" if descending else ">"
+            clauses.append(
+                f"({position_sql} {operator} ? OR "
+                f"({position_sql} = ? AND report_id {operator} ?))"
+            )
+            params.extend([stream_position, stream_position, report_id])
+        elif since:
+            clauses.append(f"received_at {'>=' if include_since else '>'} ?")
+            params.append(since)
+        where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        order = "DESC" if descending else "ASC"
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT report_id, system, names_json, source, source_instance,
+                       system_id, character_ids_json, confidence, note, raw_text,
+                       metadata_json, seen_at, received_at, acknowledged_at,
+                       acknowledged_by, acknowledgement_note, stream_position
+                FROM intel_reports
+                {where_clause}
+                ORDER BY {position_sql} {order}, report_id {order}
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return list(rows)
+
+    @staticmethod
+    def _row_stream_cursor(row: Any) -> tuple[int, str]:
+        return (
+            max(0, int(row["stream_position"] or 0)),
+            str(row["report_id"] or ""),
+        )
 
     def _alert_from_persisted_report(
         self,
@@ -2058,7 +2300,7 @@ class PostgreSQLIntelStore(IntelStore):
                 SELECT report_id, system, names_json, source, source_instance,
                        system_id, character_ids_json, confidence, note, raw_text,
                        metadata_json, seen_at, received_at, acknowledged_at,
-                       acknowledged_by, acknowledgement_note
+                       acknowledged_by, acknowledgement_note, stream_position
                 FROM intel_reports
                 WHERE report_id = ?
                 """,
@@ -2211,7 +2453,7 @@ class PostgreSQLIntelStore(IntelStore):
                 SELECT report_id, system, names_json, source, source_instance,
                        system_id, character_ids_json, confidence, note, raw_text,
                        metadata_json, seen_at, received_at, acknowledged_at,
-                       acknowledged_by, acknowledgement_note
+                       acknowledged_by, acknowledgement_note, stream_position
                 FROM intel_reports
                 {where_clause}
                 ORDER BY seen_at DESC, received_at DESC, report_id DESC
@@ -2246,16 +2488,19 @@ class PostgreSQLIntelStore(IntelStore):
 
     def _replace_reports(self, reports: list[IntelReport]) -> None:
         with self._connect() as connection:
+            for report in reports:
+                report.stream_position = 0
+            self._assign_report_stream_positions(connection, reports)
             connection.execute("DELETE FROM intel_reports")
             connection.executemany(
                 """
                 INSERT INTO intel_reports (
-                    report_id, system, names_json, source, source_instance,
-                    system_id, character_ids_json, confidence, note, raw_text,
-                    metadata_json, seen_at, received_at, acknowledged_at,
-                    acknowledged_by, acknowledgement_note
+                    report_id, stream_position, system, names_json, source,
+                    source_instance, system_id, character_ids_json, confidence,
+                    note, raw_text, metadata_json, seen_at, received_at,
+                    acknowledged_at, acknowledged_by, acknowledgement_note
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [self._row_from_report(report) for report in reports],
             )
@@ -2322,15 +2567,16 @@ class PostgreSQLIntelStore(IntelStore):
 
     def _upsert_report(self, report: IntelReport) -> None:
         with self._connect() as connection:
-            connection.execute(
+            self._assign_report_stream_positions(connection, [report])
+            row = connection.execute(
                 """
                 INSERT INTO intel_reports (
-                    report_id, system, names_json, source, source_instance,
-                    system_id, character_ids_json, confidence, note, raw_text,
-                    metadata_json, seen_at, received_at, acknowledged_at,
-                    acknowledged_by, acknowledgement_note
+                    report_id, stream_position, system, names_json, source,
+                    source_instance, system_id, character_ids_json, confidence,
+                    note, raw_text, metadata_json, seen_at, received_at,
+                    acknowledged_at, acknowledged_by, acknowledgement_note
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(report_id) DO UPDATE SET
                     system = excluded.system,
                     names_json = excluded.names_json,
@@ -2343,6 +2589,10 @@ class PostgreSQLIntelStore(IntelStore):
                     raw_text = excluded.raw_text,
                     metadata_json = (
                         COALESCE(NULLIF(excluded.metadata_json, ''), '{}')::jsonb
+                        || jsonb_build_object(
+                            '_stream_position',
+                            intel_reports.stream_position
+                        )
                         || jsonb_strip_nulls(jsonb_build_object(
                             'generated_alert',
                             COALESCE(
@@ -2356,9 +2606,58 @@ class PostgreSQLIntelStore(IntelStore):
                     acknowledged_at = excluded.acknowledged_at,
                     acknowledged_by = excluded.acknowledged_by,
                     acknowledgement_note = excluded.acknowledgement_note
+                RETURNING stream_position
                 """,
                 self._row_from_report(report),
-            )
+            ).fetchone()
+            if row is not None:
+                report.stream_position = int(row["stream_position"])
+
+    def _assign_report_stream_positions(
+        self,
+        connection: Any,
+        reports: list[IntelReport],
+    ) -> None:
+        if not reports:
+            return
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(?)",
+            (REPORT_STREAM_ADVISORY_LOCK_ID,),
+        )
+        for report in reports:
+            if report.stream_position > 0:
+                continue
+            row = connection.execute(
+                """
+                SELECT nextval(
+                    'intel_reports_stream_position_seq'
+                ) AS stream_position
+                """
+            ).fetchone()
+            report.stream_position = int(row["stream_position"])
+
+    def _refresh_report_stream_positions(
+        self,
+        connection: Any,
+        reports: list[IntelReport],
+    ) -> None:
+        reports_by_id = {report.report_id: report for report in reports}
+        report_ids = list(reports_by_id)
+        for offset in range(0, len(report_ids), POSTGRES_ID_LOOKUP_BATCH_SIZE):
+            batch = report_ids[offset : offset + POSTGRES_ID_LOOKUP_BATCH_SIZE]
+            placeholders = ", ".join("?" for _ in batch)
+            rows = connection.execute(
+                f"""
+                SELECT report_id, stream_position
+                FROM intel_reports
+                WHERE report_id IN ({placeholders})
+                """,
+                tuple(batch),
+            ).fetchall()
+            for row in rows:
+                report = reports_by_id.get(str(row["report_id"] or ""))
+                if report is not None:
+                    report.stream_position = int(row["stream_position"])
 
     def _delete_report(self, report_id: str) -> bool:
         with self._connect() as connection:
@@ -2544,6 +2843,15 @@ class PostgreSQLIntelStore(IntelStore):
             metadata = self._normalize_metadata(json.loads(str(row["metadata_json"])))
         except json.JSONDecodeError:
             return None
+        metadata_stream_position = self._optional_int(
+            metadata.pop(REPORT_STREAM_POSITION_KEY, None)
+        )
+        stored_stream_position = row.get("stream_position")
+        stream_position = (
+            self._optional_int(stored_stream_position) or 0
+            if stored_stream_position is not None
+            else metadata_stream_position or 0
+        )
         system = self._normalize_system(str(row["system"]))
         if not system or (
             not names and not character_ids and not str(row["raw_text"] or "")
@@ -2563,14 +2871,18 @@ class PostgreSQLIntelStore(IntelStore):
             metadata=metadata,
             seen_at=str(row["seen_at"] or utc_now_iso()),
             received_at=str(row["received_at"] or row["seen_at"] or utc_now_iso()),
+            stream_position=stream_position,
             acknowledged_at=str(row["acknowledged_at"] or ""),
             acknowledged_by=str(row["acknowledged_by"] or ""),
             acknowledgement_note=str(row["acknowledgement_note"] or ""),
         )
 
     def _row_from_report(self, report: IntelReport) -> tuple[Any, ...]:
+        metadata = dict(report.metadata)
+        metadata[REPORT_STREAM_POSITION_KEY] = report.stream_position
         return (
             report.report_id,
+            report.stream_position,
             report.system,
             json.dumps(report.names, ensure_ascii=False),
             report.source,
@@ -2580,7 +2892,7 @@ class PostgreSQLIntelStore(IntelStore):
             report.confidence,
             report.note,
             report.raw_text,
-            json.dumps(report.metadata, ensure_ascii=False),
+            json.dumps(metadata, ensure_ascii=False),
             report.seen_at,
             report.received_at,
             report.acknowledged_at,

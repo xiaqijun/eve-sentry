@@ -431,6 +431,9 @@ class IntelHTTPServer:
         self.map_config_store = map_config_store
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        set_change_notifier = getattr(self.store, "set_change_notifier", None)
+        if callable(set_change_notifier):
+            set_change_notifier(_notify_event_streams)
         add_auth_listener = getattr(
             self.auth_service,
             "add_authorization_change_listener",
@@ -844,12 +847,16 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
-            since, resume_after_id, include_since = self._event_stream_cursor(
-                query.get("since", [""])[0]
-            )
+            (
+                since,
+                resume_after_id,
+                include_since,
+                stream_cursor,
+            ) = self._event_stream_cursor(query.get("since", [""])[0])
             self._stream_events(
                 since=since,
                 resume_after_id=resume_after_id,
+                stream_cursor=stream_cursor,
                 include_since=include_since,
                 limit=50 if parsed_limit is None else parsed_limit,
                 timeout_seconds=parsed_timeout,
@@ -1320,12 +1327,16 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
-            since, resume_after_id, include_since = self._event_stream_cursor(
-                query.get("since", [""])[0]
-            )
+            (
+                since,
+                resume_after_id,
+                include_since,
+                stream_cursor,
+            ) = self._event_stream_cursor(query.get("since", [""])[0])
             self._stream_events(
                 since=since,
                 resume_after_id=resume_after_id,
+                stream_cursor=stream_cursor,
                 include_since=include_since,
                 limit=50 if parsed_limit is None else parsed_limit,
                 timeout_seconds=30.0 if parsed_timeout is None else parsed_timeout,
@@ -2843,27 +2854,37 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return None
         return number if number > 0 else None
 
-    def _event_stream_cursor(self, since: str) -> tuple[str, str, bool]:
+    def _event_stream_cursor(
+        self,
+        since: str,
+    ) -> tuple[str, str, bool, tuple[int, str] | None]:
         """Resolve explicit since or browser Last-Event-ID into a stream cursor."""
         since = str(since or "").strip()
         last_event_id = str(self.headers.get("Last-Event-ID") or "").strip()
         if last_event_id:
-            cursor = self._store().alert_cursor(last_event_id)
-            if cursor:
-                return cursor, last_event_id, True
+            store = self._store()
+            stream_cursor = store.resolve_alert_stream_cursor(last_event_id)
+            if stream_cursor is not None:
+                return (
+                    store.alert_cursor(last_event_id),
+                    last_event_id,
+                    True,
+                    stream_cursor,
+                )
 
             if "T" in last_event_id and last_event_id[:1].isdigit():
-                return last_event_id, "", False
+                return last_event_id, "", False, None
 
         if since:
-            return since, "", False
-        return "", "", False
+            return since, "", False, None
+        return "", "", False, None
 
     @_track_event_stream
     def _stream_events(
         self,
         since: str = "",
         resume_after_id: str = "",
+        stream_cursor: tuple[int, str] | None = None,
         include_since: bool = False,
         limit: int = 50,
         timeout_seconds: float | None = None,
@@ -2884,6 +2905,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
 
         last_seen = since.strip()
         resume_after_id = resume_after_id.strip()
+        stream_event_id = resume_after_id or last_seen
         sent_ids: set[str] = set()
         last_bootstrap_fingerprint = ""
         last_monitoring_target_state: list[dict[str, Any]] | None = None
@@ -2925,6 +2947,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     include_since or bool(sent_ids)
                 )
                 active_items: list[dict[str, Any]] | None = None
+                alert_cursors: dict[str, tuple[int, str]] = {}
                 if active_only:
                     store = self._store()
                     active_items = self._visible_active_items(
@@ -2932,25 +2955,45 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         store.list_active_intel(),
                     )
                     alerts = self._active_alert_list(
-                        since=last_seen,
-                        limit=limit,
+                        since="" if stream_cursor is not None else last_seen,
+                        limit=None if limit > 0 else limit,
                         include_since=current_include_since,
                         min_score=min_score,
                         min_level=min_level,
                         active_items=active_items,
                     )
+                    cursor_alerts: list[
+                        tuple[tuple[int, str], dict[str, Any]]
+                    ] = []
+                    for alert in alerts:
+                        alert_id = str(alert.get("id") or "")
+                        cursor = store.resolve_alert_stream_cursor(alert_id)
+                        if cursor is None:
+                            continue
+                        if stream_cursor is not None and cursor <= stream_cursor:
+                            continue
+                        alert_cursors[alert_id] = cursor
+                        cursor_alerts.append((cursor, alert))
+                    cursor_alerts.sort(key=lambda item: item[0])
+                    if stream_cursor is None and not last_seen and limit > 0:
+                        cursor_alerts = cursor_alerts[-limit:]
+                    ordered_alerts = [alert for _, alert in cursor_alerts]
+                    alerts = list(ordered_alerts)
                 else:
-                    alerts = self._store().list_alerts(
-                        since=last_seen,
-                        limit=limit,
+                    stream_page = self._store().list_alert_stream_page(
+                        after=stream_cursor,
+                        since="" if stream_cursor is not None else last_seen,
                         include_since=current_include_since,
+                        limit=limit,
                         min_score=min_score,
                         min_level=min_level,
                     )
-                ordered_alerts = sorted(
-                    alerts,
-                    key=lambda item: str(item.get("created_at") or ""),
-                )
+                    ordered_alerts = [alert for _, alert in stream_page]
+                    alert_cursors = {
+                        str(alert.get("id") or ""): cursor
+                        for cursor, alert in stream_page
+                    }
+                    alerts = list(ordered_alerts)
                 active_snapshot_alerts: list[dict[str, Any]] = []
                 if active_only:
                     active_presence_alerts = self._active_presence_alerts(
@@ -3013,8 +3056,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     if fingerprint != last_bootstrap_fingerprint:
                         # Keep the browser's Last-Event-ID on a resumable alert
                         # cursor even when bootstrap is the last event emitted.
-                        bootstrap_event_id = ""
-                        if ordered_alerts:
+                        bootstrap_event_id = stream_event_id
+                        if not bootstrap_event_id and ordered_alerts:
                             bootstrap_event_id = str(
                                 ordered_alerts[-1].get("id") or ""
                             ).strip()
@@ -3057,28 +3100,29 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                                 for alert in presence_alerts
                                 if str(alert.get("created_at") or "") > last_seen
                             ]
+                    presence_alerts.sort(
+                        key=lambda item: str(item.get("created_at") or "")
+                    )
                     alerts.extend(presence_alerts)
-                ordered_alerts = sorted(
-                    alerts,
-                    key=lambda item: str(item.get("created_at") or ""),
-                )
-                if resume_after_id and not any(
-                    str(alert.get("id") or "") == resume_after_id
-                    for alert in ordered_alerts
-                ):
-                    resume_after_id = ""
+                ordered_alerts = alerts
+                emitted_alert_count = 0
                 for alert in ordered_alerts:
                     alert_id = str(alert.get("id") or "")
                     if not alert_id or alert_id in sent_ids:
                         continue
-                    if resume_after_id:
-                        sent_ids.add(alert_id)
-                        if alert_id == resume_after_id:
-                            resume_after_id = ""
+                    alert_cursor = alert_cursors.get(alert_id)
+                    if alert_cursor is not None and emitted_alert_count >= limit:
                         continue
                     self._write_sse("alert", alert_id, alert)
                     wrote_event = True
+                    if alert_cursor is not None:
+                        emitted_alert_count += 1
                     sent_ids.add(alert_id)
+                    stream_event_id = alert_id
+                    if alert_cursor is not None and (
+                        stream_cursor is None or alert_cursor > stream_cursor
+                    ):
+                        stream_cursor = alert_cursor
                     created_at = str(alert.get("created_at") or "")
                     if created_at > last_seen:
                         last_seen = created_at
