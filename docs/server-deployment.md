@@ -165,6 +165,23 @@ Gateway 观测中的 `requests` 是进入网关的总请求数，`upstream_reque
 60 秒实际请求率，`endpoints` 提供按端点拆分的统计。过期缓存条目不会计入 `cache_entries`；
 批量名称或 ID 的顺序变化不会制造新的缓存键。
 
+### ESI 缓存策略
+
+服务端名称到角色 ID 的缓存默认有效 24 小时；角色、军团和联盟资料默认有效 6 小时，
+以缩短人员更换军团/联盟后的陈旧窗口；星系静态资料仍使用 24 小时。缓存过期后，
+正常请求会触发刷新；ESI 暂时不可用时，显式允许 stale 的后台流程最多使用 7 天内的旧值。
+
+`esi_cache.json` 保存时会清理超过 7 天 stale 窗口的记录，并使用临时文件原子替换；
+默认最多保留 20,000 条记录。`/api/health` 和管理员 ESI 观测中的 `evictions`、
+`stale_entries` 用于发现缓存膨胀。人员白名单或分类配置发生变更时，应调用对应缓存
+失效流程，不要通过延长 TTL 来规避刷新。
+
+Gateway 默认最多保留 4,096 个响应条目，并按 key 合并并发 miss；上游失败默认负缓存
+30 秒，过期成功值在 300 秒 stale 窗口内可作为 `cache: "stale"` 返回。健康响应中的
+`cache_evictions`、`inflight`、`coalesced`、`negative_hits`、`negative_entries` 和
+`stale_served` 用于判断容量、击穿和上游故障退化情况。Gateway 的
+TTL 只控制网络层响应缓存，不能替代服务端人员资料的业务 TTL。
+
 启用公共 ESI 后，zKillboard 人员统计默认同时启用；`EVE_SENTRY_SERVER_ENABLE_ZKILL=1`
 可显式开启，`EVE_SENTRY_SERVER_DISABLE_ZKILL=1` 可用于紧急停用，后者优先。服务端对成功
 结果缓存 12 小时，对失败或无数据结果缓存 10 分钟，并限制为至少 1.1 秒一次请求。

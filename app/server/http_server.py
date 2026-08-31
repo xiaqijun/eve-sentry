@@ -1033,6 +1033,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
 
         self._store().set_scorer(config.build_scorer())
+        self._invalidate_identity_cache()
         self._send_json({"ok": True, "config": config.to_dict()})
 
     def do_DELETE(self) -> None:  # noqa: N802
@@ -1467,6 +1468,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, _request_error_status(exc))
             return
         self._store().set_scorer(config.build_scorer())
+        self._invalidate_identity_cache()
         self._send_json({"ok": True, "config": config.to_dict()})
 
     def _handle_v1_ingest(self, path: str) -> None:
@@ -2395,6 +2397,16 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
 
     def _config_store(self) -> Any | None:
         return self.server.config_store  # type: ignore[attr-defined,no-any-return]
+
+    def _invalidate_identity_cache(self) -> None:
+        """Drop identity profiles after watchlist/standing rules change."""
+        resolver = getattr(self._store(), "_resolver", None)
+        cache = getattr(resolver, "cache", None)
+        invalidate = getattr(cache, "invalidate_namespace", None)
+        if not callable(invalidate):
+            return
+        for namespace in ("character", "corporation", "alliance"):
+            invalidate(namespace)
 
     def _esi_session(self) -> Any | None:
         return self.server.esi_session  # type: ignore[attr-defined,no-any-return]

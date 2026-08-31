@@ -30,11 +30,13 @@ class EsiResolver:
         client: EsiClient | Any | None = None,
         cache: EsiCache | None = None,
         ttl_seconds: int = 86400,
+        profile_ttl_seconds: int = 21600,
         negative_ttl_seconds: int = 600,
     ) -> None:
         self.client = client or EsiClient()
         self.cache = cache or EsiCache()
         self.ttl_seconds = ttl_seconds
+        self.profile_ttl_seconds = max(1, int(profile_ttl_seconds))
         self.negative_ttl_seconds = max(1, int(negative_ttl_seconds))
         self._resolve_lock = threading.Lock()
         self._metrics_lock = threading.Lock()
@@ -214,7 +216,7 @@ class EsiResolver:
                 f"https://zkillboard.com/character/{int(character_id)}/",
             )
             if self._complete_character_affiliations(profile):
-                self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
+                self.cache.set(key, profile, ttl_seconds=self.profile_ttl_seconds)
                 self.cache.save()
                 profile.update(self.cache.metadata(key))
                 profile["cache_status"] = "refreshed"
@@ -232,7 +234,7 @@ class EsiResolver:
             "security_status": character.get("security_status"),
         }
         self._complete_character_affiliations(profile)
-        self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
+        self.cache.set(key, profile, ttl_seconds=self.profile_ttl_seconds)
         self.cache.save()
         profile.update(self.cache.metadata(key))
         profile["cache_status"] = "refreshed"
@@ -255,7 +257,7 @@ class EsiResolver:
             "ticker": corporation.get("ticker"),
             "alliance_id": _optional_int(corporation.get("alliance_id")),
         }
-        self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
+        self.cache.set(key, profile, ttl_seconds=self.profile_ttl_seconds)
         self.cache.save()
         profile.update(self.cache.metadata(key))
         profile["cache_status"] = "refreshed"
@@ -277,7 +279,7 @@ class EsiResolver:
             "name": str(alliance.get("name", "")),
             "ticker": alliance.get("ticker"),
         }
-        self.cache.set(key, profile, ttl_seconds=self.ttl_seconds)
+        self.cache.set(key, profile, ttl_seconds=self.profile_ttl_seconds)
         self.cache.save()
         profile.update(self.cache.metadata(key))
         profile["cache_status"] = "refreshed"
