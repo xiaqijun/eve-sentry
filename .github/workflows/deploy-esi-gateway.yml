@@ -49,28 +49,6 @@ jobs:
           cp -a scripts/esi_gateway.py deployment/backend/scripts/
           cp -a deploy/linux/eve-sentry-esi-gateway.service deployment/backend/deploy/linux/
           tar -czf "eve-sentry-esi-gateway-${GITHUB_SHA}.tar.gz" -C deployment .
-      - name: Validate deployment configuration
-        env:
-          DEPLOY_KEY: ${{ secrets.EVE_SENTRY_ESI_GATEWAY_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.EVE_SENTRY_ESI_GATEWAY_KNOWN_HOSTS }}
-          DEPLOY_HOST: ${{ vars.EVE_SENTRY_ESI_GATEWAY_DEPLOY_HOST }}
-          DEPLOY_USER: ${{ vars.EVE_SENTRY_ESI_GATEWAY_DEPLOY_USER }}
-          DEPLOY_PORT: ${{ vars.EVE_SENTRY_ESI_GATEWAY_DEPLOY_PORT }}
-        run: |
-          set -euo pipefail
-          for name in DEPLOY_KEY KNOWN_HOSTS DEPLOY_HOST DEPLOY_USER DEPLOY_PORT; do
-            if [ -z "${!name:-}" ]; then
-              echo "Missing GitHub deployment setting: $name" >&2
-              exit 1
-            fi
-          done
-          case "$DEPLOY_PORT" in
-            ''|*[!0-9]*) echo "DEPLOY_PORT must be numeric" >&2; exit 1 ;;
-          esac
-          if [ "$DEPLOY_PORT" -lt 1 ] || [ "$DEPLOY_PORT" -gt 65535 ]; then
-            echo "DEPLOY_PORT must be between 1 and 65535" >&2
-            exit 1
-          fi
       - name: Configure deployment SSH
         env:
           DEPLOY_KEY: ${{ secrets.EVE_SENTRY_ESI_GATEWAY_SSH_KEY }}
