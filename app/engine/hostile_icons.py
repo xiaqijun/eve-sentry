@@ -1,4 +1,4 @@
-"""Detect hostile standing icons and isolate their member-list rows."""
+"""Detect hostile standing icons in a captured member-list image."""
 
 from __future__ import annotations
 
