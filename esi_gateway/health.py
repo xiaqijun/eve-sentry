@@ -20,6 +20,8 @@ class HealthMetrics:
         self._lock = RLock()
         self._request_times: deque[float] = deque(maxlen=10000)
         self.requests = self.upstream_requests = self.cache_hits = self.cache_misses = self.errors = 0
+        self.coalesced = 0
+        self.negative_hits = self.stale_served = 0
         self.total_latency = self.last_latency = 0.0
         self.last_error_at: float | None = None
         self.endpoints: dict[str, dict[str, float | int]] = {}
@@ -48,7 +50,17 @@ class HealthMetrics:
             self.last_error_at = time.time()
             self.endpoints.setdefault(endpoint, _metric())["errors"] += 1
 
-    def snapshot(self, cache_entries: int, rate_limit: float) -> dict[str, Any]:
+    def snapshot(
+        self,
+        cache_entries: int,
+        rate_limit: float,
+        *,
+        cache_evictions: int = 0,
+        inflight: int = 0,
+        negative_hits: int = 0,
+        negative_entries: int = 0,
+        stale_served: int = 0,
+    ) -> dict[str, Any]:
         now = time.monotonic()
         with self._lock:
             uptime = max(0.0, now - self.started_at)
@@ -68,6 +80,10 @@ class HealthMetrics:
                 "uptime_seconds": round(uptime, 1), "requests": self.requests, "total_requests": self.requests,
                 "upstream_requests": self.upstream_requests, "cache_misses": self.cache_misses,
                 "cache_hits": self.cache_hits, "errors": self.errors, "cache_entries": cache_entries,
+                "cache_evictions": cache_evictions, "inflight": inflight,
+                "coalesced": self.coalesced,
+                "negative_hits": negative_hits, "negative_entries": negative_entries,
+                "stale_served": stale_served,
                 "cache_hit_rate": round(self.cache_hits / max(1, self.requests), 4),
                 "request_rate_per_second": round(rate, 4), "rate_limit_per_second": round(rate_limit, 2),
                 "latency_ms": {"last": round(self.last_latency * 1000, 2), "average": round(self.total_latency / max(1, self.upstream_requests) * 1000, 2)},
