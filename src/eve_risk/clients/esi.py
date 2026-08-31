@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from collections import OrderedDict
 from collections.abc import Iterable
 from datetime import datetime
 
@@ -20,16 +22,18 @@ class ESIClient:
         classifier: ShipRoleClassifier,
         sde: SDELocalization | None = None,
         concurrency: int = 10,
+        entity_cache_ttl_seconds: int = 21600,
+        entity_cache_entries: int = 4096,
     ) -> None:
         self.http = http
         self.base_url = base_url.rstrip("/")
         self.classifier = classifier
         self.sde = sde
         self.semaphore = asyncio.Semaphore(concurrency)
+        self.entity_cache_ttl_seconds = max(1, int(entity_cache_ttl_seconds))
+        self.entity_cache_entries = max(16, int(entity_cache_entries))
         self._type_cache: dict[int, ShipTypeInfo] = {}
-        self._group_cache: dict[int, tuple[str, int | None]] = {}
-        self._corporation_cache: dict[int, dict[str, object]] = {}
-        self._alliance_cache: dict[int, dict[str, object]] = {}
+        self._entity_cache: OrderedDict[tuple[str, int], tuple[float, object]] = OrderedDict()
 
     async def resolve_characters(
         self, names: list[str]
@@ -183,7 +187,7 @@ class ESIClient:
             return response.json()
 
     async def _corporation_detail(self, corporation_id: int) -> dict[str, object]:
-        cached = self._corporation_cache.get(corporation_id)
+        cached = self._entity_cache_get("corporation", corporation_id)
         if cached is not None:
             return cached
         async with self.semaphore:
@@ -194,11 +198,11 @@ class ESIClient:
                 params={"datasource": "tranquility"},
             )
             payload = response.json()
-        self._corporation_cache[corporation_id] = payload
+        self._entity_cache_set("corporation", corporation_id, payload)
         return payload
 
     async def _alliance_detail(self, alliance_id: int) -> dict[str, object]:
-        cached = self._alliance_cache.get(alliance_id)
+        cached = self._entity_cache_get("alliance", alliance_id)
         if cached is not None:
             return cached
         async with self.semaphore:
@@ -209,7 +213,7 @@ class ESIClient:
                 params={"datasource": "tranquility"},
             )
             payload = response.json()
-        self._alliance_cache[alliance_id] = payload
+        self._entity_cache_set("alliance", alliance_id, payload)
         return payload
 
     async def _ship_type(self, type_id: int) -> ShipTypeInfo:
@@ -249,7 +253,7 @@ class ESIClient:
         )
 
     async def _group(self, group_id: int) -> tuple[str, int | None]:
-        cached = self._group_cache.get(group_id)
+        cached = self._entity_cache_get("group", group_id)
         if cached is not None:
             return cached
         async with self.semaphore:
@@ -264,8 +268,30 @@ class ESIClient:
             payload["name"],
             int(payload["category_id"]) if payload.get("category_id") else None,
         )
-        self._group_cache[group_id] = result
+        self._entity_cache_set("group", group_id, result)
         return result
+
+    def _entity_cache_get(self, namespace: str, entity_id: int) -> object | None:
+        key = (namespace, int(entity_id))
+        cached = self._entity_cache.get(key)
+        if cached is None:
+            return None
+        expires_at, value = cached
+        if expires_at <= time.monotonic():
+            self._entity_cache.pop(key, None)
+            return None
+        self._entity_cache.move_to_end(key)
+        return value
+
+    def _entity_cache_set(self, namespace: str, entity_id: int, value: object) -> None:
+        key = (namespace, int(entity_id))
+        self._entity_cache[key] = (
+            time.monotonic() + self.entity_cache_ttl_seconds,
+            value,
+        )
+        self._entity_cache.move_to_end(key)
+        while len(self._entity_cache) > self.entity_cache_entries:
+            self._entity_cache.popitem(last=False)
 
 
 def _optional_datetime(value: object) -> datetime | None:

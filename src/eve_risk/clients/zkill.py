@@ -7,6 +7,7 @@ import time
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Literal
+from weakref import WeakValueDictionary
 
 import httpx
 from redis.asyncio import Redis
@@ -73,6 +74,16 @@ class ZKillClient:
         self.cache_ttl_seconds = cache_ttl_seconds
         self._fallback_lock = asyncio.Lock()
         self._fallback_next_slot = 0.0
+        self._inflight_guard = asyncio.Lock()
+        self._inflight: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+    async def _lock_for_key(self, cache_key: str) -> asyncio.Lock:
+        async with self._inflight_guard:
+            lock = self._inflight.get(cache_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._inflight[cache_key] = lock
+            return lock
 
     async def fetch_character(
         self, character_id: int, direction: Literal["kills", "losses"]
@@ -94,25 +105,42 @@ class ZKillClient:
                 from_cache=True,
             )
 
-        await self._wait_for_rate_slot()
-        response = await request_with_retries(
-            self.http,
-            "GET",
-            f"{self.base_url}/{direction}/characterID/{character_id}/",
-            headers={"User-Agent": self.user_agent, "Accept-Encoding": "gzip"},
-            timeout=45.0,
-        )
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise RuntimeError("zKillboard returned a non-list payload")
-        encoded = gzip.compress(json.dumps(payload, separators=(",", ":")).encode())
-        await self.redis.set(cache_key, encoded, ex=self.cache_ttl_seconds)
-        return ZKillFetchResult(
-            character_id,
-            direction,
-            [self._parse_killmail(item) for item in payload],
-            truncated=len(payload) >= 1000,
-        )
+        lock = await self._lock_for_key(cache_key)
+        async with lock:
+            cached = await self.redis.get(cache_key)
+            if cached:
+                raw = cached if isinstance(cached, bytes) else str(cached).encode()
+                try:
+                    raw = gzip.decompress(raw)
+                except gzip.BadGzipFile:
+                    pass
+                payload = json.loads(raw)
+                return ZKillFetchResult(
+                    character_id,
+                    direction,
+                    [self._parse_killmail(item) for item in payload],
+                    truncated=len(payload) >= 1000,
+                    from_cache=True,
+                )
+            await self._wait_for_rate_slot()
+            response = await request_with_retries(
+                self.http,
+                "GET",
+                f"{self.base_url}/{direction}/characterID/{character_id}/",
+                headers={"User-Agent": self.user_agent, "Accept-Encoding": "gzip"},
+                timeout=45.0,
+            )
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise RuntimeError("zKillboard returned a non-list payload")
+            encoded = gzip.compress(json.dumps(payload, separators=(",", ":")).encode())
+            await self.redis.set(cache_key, encoded, ex=self.cache_ttl_seconds)
+            return ZKillFetchResult(
+                character_id,
+                direction,
+                [self._parse_killmail(item) for item in payload],
+                truncated=len(payload) >= 1000,
+            )
 
     async def fetch_character_stats(self, character_id: int) -> ZKillStats:
         cache_key = f"zkill:v1:stats:{character_id}"
@@ -121,30 +149,36 @@ class ZKillClient:
             raw = cached if isinstance(cached, bytes) else str(cached).encode()
             return ZKillStats.model_validate_json(raw)
 
-        await self._wait_for_rate_slot()
-        response = await request_with_retries(
-            self.http,
-            "GET",
-            f"{self.base_url}/stats/characterID/{character_id}/",
-            headers={"User-Agent": self.user_agent, "Accept-Encoding": "gzip"},
-            timeout=45.0,
-        )
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise RuntimeError("zKillboard returned invalid character stats")
-        stats = ZKillStats(
-            character_id=character_id,
-            ships_destroyed=int(payload.get("shipsDestroyed") or 0),
-            ships_lost=int(payload.get("shipsLost") or 0),
-            points_destroyed=int(payload.get("pointsDestroyed") or 0),
-            isk_destroyed=float(payload.get("iskDestroyed") or 0),
-            isk_lost=float(payload.get("iskLost") or 0),
-            solo_kills=int(payload.get("soloKills") or 0),
-            danger_ratio=float(payload.get("dangerRatio") or 0),
-            gang_ratio=float(payload.get("gangRatio") or 0),
-        )
-        await self.redis.set(cache_key, stats.model_dump_json(), ex=self.cache_ttl_seconds)
-        return stats
+        lock = await self._lock_for_key(cache_key)
+        async with lock:
+            cached = await self.redis.get(cache_key)
+            if cached:
+                raw = cached if isinstance(cached, bytes) else str(cached).encode()
+                return ZKillStats.model_validate_json(raw)
+            await self._wait_for_rate_slot()
+            response = await request_with_retries(
+                self.http,
+                "GET",
+                f"{self.base_url}/stats/characterID/{character_id}/",
+                headers={"User-Agent": self.user_agent, "Accept-Encoding": "gzip"},
+                timeout=45.0,
+            )
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise RuntimeError("zKillboard returned invalid character stats")
+            stats = ZKillStats(
+                character_id=character_id,
+                ships_destroyed=int(payload.get("shipsDestroyed") or 0),
+                ships_lost=int(payload.get("shipsLost") or 0),
+                points_destroyed=int(payload.get("pointsDestroyed") or 0),
+                isk_destroyed=float(payload.get("iskDestroyed") or 0),
+                isk_lost=float(payload.get("iskLost") or 0),
+                solo_kills=int(payload.get("soloKills") or 0),
+                danger_ratio=float(payload.get("dangerRatio") or 0),
+                gang_ratio=float(payload.get("gangRatio") or 0),
+            )
+            await self.redis.set(cache_key, stats.model_dump_json(), ex=self.cache_ttl_seconds)
+            return stats
 
     async def fetch_related_battle(
         self, ref: RelatedBattleRef
@@ -157,26 +191,32 @@ class ZKillClient:
             raw = cached if isinstance(cached, bytes) else str(cached).encode()
             return RelatedBattleSummary.model_validate_json(raw)
 
-        await self._wait_for_rate_slot()
-        response = await request_with_retries(
-            self.http,
-            "GET",
-            f"{self.base_url}/related/{ref.system_id}/{stamp}/",
-            headers={"User-Agent": self.user_agent, "Accept-Encoding": "gzip"},
-            timeout=45.0,
-        )
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise RuntimeError("zKillboard returned invalid related battle data")
-        summary = payload.get("summary") or {}
-        result = RelatedBattleSummary(
-            system_id=ref.system_id,
-            occurred_at=occurred_at,
-            team_a=_parse_related_side(summary.get("teamA") or {}),
-            team_b=_parse_related_side(summary.get("teamB") or {}),
-        )
-        await self.redis.set(cache_key, result.model_dump_json(), ex=self.cache_ttl_seconds)
-        return result
+        lock = await self._lock_for_key(cache_key)
+        async with lock:
+            cached = await self.redis.get(cache_key)
+            if cached:
+                raw = cached if isinstance(cached, bytes) else str(cached).encode()
+                return RelatedBattleSummary.model_validate_json(raw)
+            await self._wait_for_rate_slot()
+            response = await request_with_retries(
+                self.http,
+                "GET",
+                f"{self.base_url}/related/{ref.system_id}/{stamp}/",
+                headers={"User-Agent": self.user_agent, "Accept-Encoding": "gzip"},
+                timeout=45.0,
+            )
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise RuntimeError("zKillboard returned invalid related battle data")
+            summary = payload.get("summary") or {}
+            result = RelatedBattleSummary(
+                system_id=ref.system_id,
+                occurred_at=occurred_at,
+                team_a=_parse_related_side(summary.get("teamA") or {}),
+                team_b=_parse_related_side(summary.get("teamB") or {}),
+            )
+            await self.redis.set(cache_key, result.model_dump_json(), ex=self.cache_ttl_seconds)
+            return result
 
     async def enrich_related_battles(
         self,

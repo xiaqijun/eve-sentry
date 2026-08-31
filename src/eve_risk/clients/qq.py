@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 
@@ -29,6 +30,7 @@ class QQOpenAPIClient:
         self.app_secret = app_secret
         self.token_url = token_url
         self.api_base_url = api_base_url.rstrip("/")
+        self._token_lock = asyncio.Lock()
 
     async def send_text(
         self, group_openid: str, msg_id: str, content: str, msg_seq: int
@@ -135,18 +137,22 @@ class QQOpenAPIClient:
         if cached:
             return cached.decode() if isinstance(cached, bytes) else str(cached)
 
-        response = await request_with_retries(
-            self.http,
-            "POST",
-            self.token_url,
-            json={"appId": self.app_id, "clientSecret": self.app_secret},
-            timeout=10.0,
-        )
-        payload = response.json()
-        token = str(payload["access_token"])
-        expires_in = max(60, int(payload.get("expires_in", 7200)) - 60)
-        await self.redis.set(cache_key, token, ex=expires_in)
-        return token
+        async with self._token_lock:
+            cached = await self.redis.get(cache_key)
+            if cached:
+                return cached.decode() if isinstance(cached, bytes) else str(cached)
+            response = await request_with_retries(
+                self.http,
+                "POST",
+                self.token_url,
+                json={"appId": self.app_id, "clientSecret": self.app_secret},
+                timeout=10.0,
+            )
+            payload = response.json()
+            token = str(payload["access_token"])
+            expires_in = max(60, int(payload.get("expires_in", 7200)) - 60)
+            await self.redis.set(cache_key, token, ex=expires_in)
+            return token
 
     def _headers(self, token: str) -> dict[str, str]:
         return {

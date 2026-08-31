@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -7,6 +8,7 @@ import httpx
 import pytest
 import respx
 
+import eve_risk.clients.zkill as zkill_module
 from eve_risk.clients.base import request_with_retries
 from eve_risk.clients.esi import ESIClient
 from eve_risk.clients.images import EveImageClient
@@ -196,6 +198,42 @@ async def test_zkill_related_battle_enriches_fleet_values() -> None:
             assert first[0].fleet_size == 2
             assert first[0].lost_ships[0].id == 1002
             assert first[0].destroyed_ships[0].id == 1003
+
+
+@pytest.mark.asyncio
+async def test_zkill_client_coalesces_concurrent_cache_misses(monkeypatch) -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    calls = 0
+
+    class Response:
+        def json(self):
+            return [{
+                "killmail_id": 123,
+                "killmail_time": "2026-07-13T10:00:00Z",
+                "solar_system_id": 30000142,
+                "victim": {},
+                "attackers": [],
+                "zkb": {},
+            }]
+
+    async def request(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.02)
+        return Response()
+
+    monkeypatch.setattr(zkill_module, "request_with_retries", request)
+    client = ZKillClient(
+        None, redis, "https://zkillboard.com/api", "Test contact@example.com", 0, 60
+    )
+
+    first, second = await asyncio.gather(
+        client.fetch_character(42, "kills"), client.fetch_character(42, "kills")
+    )
+
+    assert calls == 1
+    assert first.from_cache is False
+    assert second.from_cache is True
 
 
 @pytest.mark.asyncio
