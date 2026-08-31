@@ -5281,6 +5281,36 @@ def test_config_api_rejects_invalid_payload(tmp_path):
         server.stop()
 
 
+def test_config_api_invalidates_identity_cache_namespaces(tmp_path):
+    cache = EsiCache(tmp_path / "esi_cache.json")
+    cache.set("character:101", {"character_id": 101}, ttl_seconds=3600)
+    cache.set("corporation:202", {"corporation_id": 202}, ttl_seconds=3600)
+    cache.set("alliance:303", {"alliance_id": 303}, ttl_seconds=3600)
+    cache.set("name:Alice", {"id": 101}, ttl_seconds=3600)
+    resolver = EsiResolver(client=SimpleNamespace(), cache=cache)
+    config_store = IntelConfigStore(tmp_path / "intel_config.json")
+    store = IntelStore(
+        tmp_path / "intel.json",
+        resolver=resolver,
+        scorer=config_store.build_scorer(),
+    )
+    server = IntelHTTPServer(store, port=0, config_store=config_store)
+    server.start()
+    try:
+        status, _payload = request_json(
+            f"{server.url}/api/config",
+            method="PUT",
+            payload={"friendly_corporation_ids": [202]},
+        )
+        assert status == 200
+        assert cache.get("character:101") is None
+        assert cache.get("corporation:202") is None
+        assert cache.get("alliance:303") is None
+        assert cache.get("name:Alice") == {"id": 101}
+    finally:
+        server.stop()
+
+
 def test_map_config_api_updates_active_topology(tmp_path):
     map_config_store = MapConfigStore(tmp_path / "intel_map.json")
     server = IntelHTTPServer(

@@ -166,3 +166,43 @@ def test_gateway_health_excludes_expired_cache_entries():
     state.cache["expired"] = (time.monotonic() - 1, {})
     state.cache["active"] = (time.monotonic() + 60, {})
     assert state.health()["cache_entries"] == 1
+
+
+def test_legacy_gateway_negative_hit_with_stale_value_returns_stale():
+    state = GatewayState("t" * 32, {"127.0.0.1"}, ttl=60, max_requests_per_second=100)
+    now = time.monotonic()
+    with state.lock:
+        state.cache["stale"] = (now - 1, {"name": "Jita"})
+        state.negative["stale"] = now + 30
+
+    def loader():
+        raise AssertionError("negative stale hit must not call upstream")
+
+    value, status = state.fetch("stale", loader, endpoint="get_system")
+    assert value == {"name": "Jita"}
+    assert status == "stale"
+
+
+def test_gateway_coalesces_concurrent_misses_per_key():
+    state = GatewayState("t" * 32, {"127.0.0.1"}, ttl=60, max_requests_per_second=100)
+    calls = []
+
+    def loader():
+        calls.append(1)
+        time.sleep(0.05)
+        return {"name": "Jita"}
+
+    results = []
+
+    def run():
+        results.append(state.fetch("same-key", loader, endpoint="get_system"))
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert calls == [1]
+    assert sorted(result[1] for result in results) == ["hit", "miss"]
+    assert state.health()["coalesced"] == 1

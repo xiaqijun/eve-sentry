@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from collections import deque
 import hashlib
 import hmac
 import json
@@ -13,6 +12,7 @@ import re
 import sys
 import threading
 import time
+from collections import OrderedDict, deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -33,15 +33,24 @@ ID_PATHS = {
 
 
 class GatewayState:
-    def __init__(self, token: str, allowed_clients: set[str], ttl: float, max_requests_per_second: float) -> None:
+    def __init__(self, token: str, allowed_clients: set[str], ttl: float, max_requests_per_second: float, *, max_cache_entries: int = 4096, negative_ttl: float = 30.0, stale_grace: float = 300.0) -> None:
         self.token = token
         self.allowed_clients = allowed_clients
         self.ttl = max(1.0, ttl)
+        self.stale_grace = max(0.0, float(stale_grace))
         self.min_interval = 1.0 / max(0.1, max_requests_per_second)
         self.client = EsiClient(timeout=10.0, user_agent="eve-sentry-esi-gateway/1.0")
-        self.cache: dict[str, tuple[float, Any]] = {}
+        self.cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+        self.cache_max_entries = max(1, int(max_cache_entries))
+        self.negative_ttl = max(0.0, float(negative_ttl))
+        self.negative: OrderedDict[str, float] = OrderedDict()
+        self.negative_hits = 0
+        self.stale_served = 0
+        self.cache_evictions = 0
         self.lock = threading.RLock()
-        self.request_lock = threading.Lock()
+        self.inflight_lock = threading.Lock()
+        self.inflight: dict[str, threading.Event] = {}
+        self.coalesced = 0
         self.started_at = time.monotonic()
         self.last_request_at = 0.0
         self.requests = 0
@@ -57,9 +66,10 @@ class GatewayState:
         self._endpoint_metrics: dict[str, dict[str, Any]] = {}
 
     def _purge_expired_locked(self, now: float) -> None:
-        expired = [key for key, (expires_at, _value) in self.cache.items() if expires_at <= now]
+        expired = [key for key, (expires_at, _value) in self.cache.items() if expires_at <= now and now - expires_at > self.stale_grace]
         for key in expired:
             self.cache.pop(key, None)
+            self.cache_evictions += 1
 
     def _endpoint_metric_locked(self, endpoint: str) -> dict[str, Any]:
         return self._endpoint_metrics.setdefault(
@@ -85,46 +95,115 @@ class GatewayState:
             metric["requests"] += 1
             cached = self.cache.get(key)
             if cached and cached[0] > now:
+                self.cache.move_to_end(key)
                 self.cache_hits += 1
                 metric["cache_hits"] += 1
                 return cached[1], "hit"
-        with self.request_lock:
-            now = time.monotonic()
-            with self.lock:
-                self._purge_expired_locked(now)
-                cached = self.cache.get(key)
-                if cached and cached[0] > now:
-                    self.cache_hits += 1
-                    self._endpoint_metric_locked(endpoint)["cache_hits"] += 1
-                    return cached[1], "hit"
+            stale = self.cache.get(key)
+            if stale and stale[0] <= now and now - stale[0] <= self.stale_grace:
+                stale_value = stale[1]
+            else:
+                stale_value = None
+            negative_expiry = self.negative.get(key)
+            if negative_expiry and negative_expiry > now:
+                self.negative_hits += 1
                 self.cache_misses += 1
-                metric = self._endpoint_metric_locked(endpoint)
                 metric["cache_misses"] += 1
-                self.upstream_requests += 1
-                self._upstream_request_times.append(now)
-                metric["upstream_requests"] += 1
-            remaining = self.min_interval - (now - self.last_request_at)
-            if remaining > 0:
-                time.sleep(remaining)
-            self.last_request_at = time.monotonic()
-            request_started = time.monotonic()
-            try:
-                value = loader()
-            except Exception:
+                if stale_value is not None:
+                    self.stale_served += 1
+                    return stale_value, "stale"
+                raise EsiApiError("cached_upstream_error")
+            if negative_expiry:
+                self.negative.pop(key, None)
+        while True:
+            with self.inflight_lock:
+                event = self.inflight.get(key)
+                if event is None:
+                    event = threading.Event()
+                    self.inflight[key] = event
+                    owner = True
+                else:
+                    owner = False
+
+            if not owner:
                 with self.lock:
-                    self.errors += 1
-                    self._endpoint_metric_locked(endpoint)["errors"] += 1
-                    self.last_error_at = time.time()
-                raise
-            duration = time.monotonic() - request_started
-            with self.lock:
-                self.cache[key] = (time.monotonic() + self.ttl, value)
-                self.total_latency += duration
-                self.last_latency = duration
-                metric = self._endpoint_metric_locked(endpoint)
-                metric["total_latency"] += duration
-                metric["last_latency"] = duration
-            return value, "miss"
+                    self.coalesced += 1
+                event.wait(timeout=60.0)
+                with self.lock:
+                    cached = self.cache.get(key)
+                    if cached and cached[0] > time.monotonic():
+                        self.cache.move_to_end(key)
+                        self.cache_hits += 1
+                        self._endpoint_metric_locked(endpoint)["cache_hits"] += 1
+                        return cached[1], "hit"
+                    negative_expiry = self.negative.get(key)
+                    if negative_expiry and negative_expiry > time.monotonic():
+                        self.negative_hits += 1
+                        self.cache_misses += 1
+                        self._endpoint_metric_locked(endpoint)["cache_misses"] += 1
+                        if stale_value is not None:
+                            self.stale_served += 1
+                            return stale_value, "stale"
+                        raise EsiApiError("cached_upstream_error")
+                    stale = self.cache.get(key)
+                    if stale and stale[0] <= time.monotonic() and time.monotonic() - stale[0] <= self.stale_grace:
+                        stale_value = stale[1]
+                continue
+
+            try:
+                now = time.monotonic()
+                with self.lock:
+                    self._purge_expired_locked(now)
+                    cached = self.cache.get(key)
+                    if cached and cached[0] > now:
+                        self.cache.move_to_end(key)
+                        self.cache_hits += 1
+                        self._endpoint_metric_locked(endpoint)["cache_hits"] += 1
+                        return cached[1], "hit"
+                    self.cache_misses += 1
+                    metric = self._endpoint_metric_locked(endpoint)
+                    metric["cache_misses"] += 1
+                    self.upstream_requests += 1
+                    self._upstream_request_times.append(now)
+                    metric["upstream_requests"] += 1
+                remaining = self.min_interval - (now - self.last_request_at)
+                if remaining > 0:
+                    time.sleep(remaining)
+                self.last_request_at = time.monotonic()
+                request_started = time.monotonic()
+                try:
+                    value = loader()
+                except EsiApiError:
+                    with self.lock:
+                        self.errors += 1
+                        self._endpoint_metric_locked(endpoint)["errors"] += 1
+                        self.last_error_at = time.time()
+                        self.negative[key] = time.monotonic() + self.negative_ttl
+                        self.negative.move_to_end(key)
+                        while len(self.negative) > self.cache_max_entries:
+                            self.negative.popitem(last=False)
+                        if stale_value is not None:
+                            self.stale_served += 1
+                            return stale_value, "stale"
+                    raise
+                duration = time.monotonic() - request_started
+                with self.lock:
+                    self.cache[key] = (time.monotonic() + self.ttl, value)
+                    self.negative.pop(key, None)
+                    self.cache.move_to_end(key)
+                    while len(self.cache) > self.cache_max_entries:
+                        self.cache.popitem(last=False)
+                        self.cache_evictions += 1
+                    self.total_latency += duration
+                    self.last_latency = duration
+                    metric = self._endpoint_metric_locked(endpoint)
+                    metric["total_latency"] += duration
+                    metric["last_latency"] = duration
+                return value, "miss"
+            finally:
+                with self.inflight_lock:
+                    self.inflight.pop(key, None)
+                    event.set()
 
     def health(self) -> dict[str, Any]:
         now = time.monotonic()
@@ -168,7 +247,13 @@ class GatewayState:
                 "cache_misses": self.cache_misses,
                 "errors": self.errors,
                 "cache_hits": self.cache_hits,
-                "cache_entries": len(self.cache),
+                "cache_entries": sum(expiry > now for expiry, _value in self.cache.values()),
+                "cache_evictions": self.cache_evictions,
+                "inflight": len(self.inflight),
+                "coalesced": self.coalesced,
+                "negative_hits": self.negative_hits,
+                "negative_entries": sum(expiry > now for expiry in self.negative.values()),
+                "stale_served": self.stale_served,
                 "cache_hit_rate": round(self.cache_hits / max(1, self.requests), 4),
                 "request_rate_per_second": round(request_rate, 4),
                 "upstream_rate_per_second": round(upstream_rate, 4),
@@ -186,7 +271,7 @@ class GatewayState:
 
 
 class GatewayHandler(BaseHTTPRequestHandler):
-    server: "GatewayServer"
+    server: GatewayServer
 
     def do_GET(self) -> None:
         if self.path == "/health":
@@ -290,6 +375,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--token", default=os.environ.get("EVE_SENTRY_ESI_GATEWAY_TOKEN", ""))
     parser.add_argument("--allowed-client", action="append", default=None)
     parser.add_argument("--cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_CACHE_TTL", "86400")))
+    parser.add_argument("--cache-max-entries", type=int, default=int(os.environ.get("EVE_SENTRY_ESI_GATEWAY_CACHE_MAX_ENTRIES", "4096")))
+    parser.add_argument("--negative-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_NEGATIVE_TTL", "30")))
+    parser.add_argument("--stale-grace", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_STALE_GRACE", "300")))
     parser.add_argument("--rate", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_RATE", "2")))
     return parser
 
@@ -301,7 +389,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--token or EVE_SENTRY_ESI_GATEWAY_TOKEN must be at least 32 characters")
     allowed = set(args.allowed_client or os.environ.get("EVE_SENTRY_ESI_GATEWAY_ALLOWED_CLIENTS", "").replace(",", " ").split())
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    server = GatewayServer((args.host, args.port), GatewayState(token, allowed, args.cache_ttl, args.rate))
+    state = GatewayState(token, allowed, args.cache_ttl, args.rate, max_cache_entries=args.cache_max_entries, negative_ttl=args.negative_ttl, stale_grace=args.stale_grace)
+    server = GatewayServer((args.host, args.port), state)
     logger.info("ESI Gateway listening on %s:%s", args.host, args.port)
     try:
         server.serve_forever()
