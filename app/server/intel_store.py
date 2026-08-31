@@ -269,6 +269,7 @@ class IntelStore:
         self._ocr_missing_counts: dict[str, int] = {}
         self._ocr_name_corrections: dict[str, str] = {}
         self._character_profile_cache: dict[int, dict[str, Any]] = {}
+        self._change_notifier: Any | None = None
         self._reports: list[IntelReport] = self._load_reports()
         self._esi_worker = EsiWorker(self._process_ocr_esi_task)
 
@@ -328,6 +329,10 @@ class IntelStore:
             self._enricher = enricher
             self._alert_cache.clear()
             self._character_profile_cache.clear()
+
+    def set_change_notifier(self, notifier: Any | None) -> None:
+        """Register a callback for asynchronous state changes."""
+        self._change_notifier = notifier if callable(notifier) else None
 
     def set_map_data(
         self,
@@ -819,6 +824,13 @@ class IntelStore:
                 item,
                 previous_active_id=previous_active_id,
             )
+
+        notifier = self._change_notifier
+        if callable(notifier):
+            try:
+                notifier()
+            except Exception:
+                logger.exception("Asynchronous OCR identity change notification failed")
 
     def _apply_hostile_icon_metadata(
         self,

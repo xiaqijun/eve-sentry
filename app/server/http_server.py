@@ -431,6 +431,9 @@ class IntelHTTPServer:
         self.map_config_store = map_config_store
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        set_change_notifier = getattr(self.store, "set_change_notifier", None)
+        if callable(set_change_notifier):
+            set_change_notifier(_notify_event_streams)
         add_auth_listener = getattr(
             self.auth_service,
             "add_authorization_change_listener",

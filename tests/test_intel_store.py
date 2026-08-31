@@ -68,6 +68,36 @@ def test_record_ocr_snapshot_resolves_every_full_roster_name_through_esi(tmp_pat
     }
 
 
+def test_async_ocr_identity_resolution_notifies_state_consumers(tmp_path):
+    class Resolver:
+        def enrich_observation(self, observation):
+            observation.character_ids = [123]
+            return observation
+
+    notifications = []
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        resolver=Resolver(),
+    )
+    store.set_change_notifier(lambda: notifications.append(True))
+    try:
+        store.record_ocr_snapshot(
+            {
+                "client_id": "detector-client:test",
+                "system_name": "S-KSWL",
+                "names": ["Pilot"],
+                "hostile_icon_count": 1,
+            }
+        )
+        assert store.wait_for_esi_idle(timeout=1.0)
+    finally:
+        store.close()
+
+    assert notifications == [True]
+
+
 def test_resume_pending_ocr_identity_tasks_after_restart(tmp_path):
     store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
     observation = store.add_observation(
