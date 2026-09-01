@@ -90,6 +90,8 @@ def test_status_command_aliases_and_empty_snapshot() -> None:
     assert is_sentry_status_command("查询预警") is True
     assert is_sentry_status_command("<@!bot> 预警详情") is True
     assert is_sentry_status_command("@机器人 敌对详情") is True
+    assert is_sentry_status_command("/查询预警") is True
+    assert is_sentry_status_command("<@!bot> /敌对详情") is True
     assert is_sentry_status_command("预警状态") is False
     assert format_sentry_status({}) == "预警节点｜当前无在线监控节点"
 

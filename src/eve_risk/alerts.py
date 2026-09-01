@@ -53,6 +53,7 @@ _SOURCE_LABELS = {
 def alert_subscription_action(content: str) -> str | None:
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
     normalized = re.sub(r"^\s*<@!?\w+>\s*", "", normalized, count=1).strip()
+    normalized = re.sub(r"^/", "", normalized, count=1).strip()
     if normalized in _ENABLE_COMMANDS:
         return "enable"
     if normalized in _DISABLE_COMMANDS:
