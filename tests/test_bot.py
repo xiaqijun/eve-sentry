@@ -82,6 +82,8 @@ async def test_analysis_query_is_enqueued_without_intermediate_text_reply() -> N
         await client.on_group_at_message_create(Message())
 
         client.queue.enqueue.assert_awaited_once()
+        request = client.queue.enqueue.await_args.args[0]
+        assert request.character_names == ["MP5K"]
         client.qq.send_text.assert_not_awaited()
     finally:
         await client.http_client.aclose()
@@ -90,27 +92,65 @@ async def test_analysis_query_is_enqueued_without_intermediate_text_reply() -> N
 
 
 @pytest.mark.asyncio
-async def test_hostile_transition_enqueues_proactive_analysis() -> None:
+async def test_multi_character_analysis_enqueues_one_request_per_character() -> None:
     client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
     original_redis = client.redis
+    redis = fakeredis.aioredis.FakeRedis()
+    client.redis = redis
     client.admission.admit = AsyncMock(return_value=AdmissionResult.OK)
+    client.admission.admit_batch = AsyncMock(return_value=AdmissionResult.OK)
     client.queue.enqueue = AsyncMock()
-    try:
-        accepted = await client._enqueue_sentry_analysis(
-            "group-1",
-            {"personnel": [{"name": "Alice"}, {"name": "Alice"}]},
-            "2026-08-25T00:00:00+00:00",
-            "system:alert:s-kswl:episode-1",
-        )
 
-        assert accepted is True
-        client.queue.enqueue.assert_awaited_once()
-        request = client.queue.enqueue.await_args.args[0]
-        assert request.character_names == ["Alice"]
-        assert request.proactive is True
-        assert request.msg_id == ""
+    class Author:
+        member_openid = "member-1"
+
+    class Message:
+        id = "analysis-batch-message-1"
+        group_openid = "group-1"
+        content = "分析 Alice，Bob"
+        author = Author()
+
+    try:
+        await client.on_group_at_message_create(Message())
+
+        assert client.queue.enqueue.await_count == 2
+        requests = [call.args[0] for call in client.queue.enqueue.await_args_list]
+        assert [request.character_names for request in requests] == [["Alice"], ["Bob"]]
+        assert len({request.request_id for request in requests}) == 2
+        assert [request.reply_seq for request in requests] == [1, 2]
+        assert all(request.admission_batch_id == "message:analysis-batch-message-1" for request in requests)
     finally:
         await client.http_client.aclose()
+        await redis.aclose()
+        await original_redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_non_analysis_mention_does_not_enqueue_analysis() -> None:
+    client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
+    original_redis = client.redis
+    redis = fakeredis.aioredis.FakeRedis()
+    client.redis = redis
+    client.queue.enqueue = AsyncMock()
+    client.qq.send_text = AsyncMock(return_value={"id": "reply"})
+
+    class Author:
+        member_openid = "member-1"
+
+    class Message:
+        id = "ordinary-message-1"
+        group_openid = "group-1"
+        content = "Alice"
+        author = Author()
+
+    try:
+        await client.on_group_at_message_create(Message())
+
+        client.queue.enqueue.assert_not_awaited()
+        client.qq.send_text.assert_awaited_once()
+    finally:
+        await client.http_client.aclose()
+        await redis.aclose()
         await original_redis.aclose()
 
 

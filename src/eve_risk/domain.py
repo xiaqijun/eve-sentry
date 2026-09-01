@@ -301,4 +301,6 @@ class AnalysisRequest(BaseModel):
     received_at: datetime
     fetch_deadline_at: datetime
     reply_deadline_at: datetime
+    reply_seq: int = 1
+    admission_batch_id: str | None = None
     proactive: bool = False

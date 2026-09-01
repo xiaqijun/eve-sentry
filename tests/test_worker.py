@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import fakeredis.aioredis
 import pytest
 
+import eve_risk.worker as worker_module
 from eve_risk.domain import AnalysisRequest, Killmail
 from eve_risk.worker import (
     REPORT_CACHE_TTL_SECONDS,
@@ -77,7 +78,102 @@ async def test_cached_query_replies_with_one_image_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_proactive_cached_query_uses_proactive_image_delivery() -> None:
+async def test_cached_query_uses_request_reply_sequence() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(send_image=AsyncMock(), send_text=AsyncMock())
+    admission = SimpleNamespace(release=AsyncMock())
+    repository = SimpleNamespace(
+        record_job_started=AsyncMock(),
+        record_job_finished=AsyncMock(),
+    )
+    now = datetime.now(UTC)
+    request = AnalysisRequest(
+        request_id="cached-sequence-request",
+        msg_id="source-message",
+        group_openid="group-1",
+        member_openid="member-1",
+        character_names=["MP5K"],
+        received_at=now,
+        fetch_deadline_at=now + timedelta(minutes=4),
+        reply_deadline_at=now + timedelta(minutes=4, seconds=30),
+        reply_seq=2,
+    )
+    await _set_cached_report(redis, request.character_names, b"png-data", 1, 241)
+    ctx = {
+        "settings": SimpleNamespace(),
+        "redis": redis,
+        "esi": SimpleNamespace(),
+        "images": SimpleNamespace(),
+        "zkill": SimpleNamespace(),
+        "qq": qq,
+        "analyzer": SimpleNamespace(),
+        "renderer": SimpleNamespace(),
+        "admission": admission,
+        "repository": repository,
+    }
+
+    try:
+        await run_analysis_job(ctx, request.model_dump())
+
+        qq.send_image.assert_awaited_once_with(
+            "group-1", "source-message", b"png-data", msg_seq=2
+        )
+    finally:
+        await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_failed_report_fallback_uses_request_reply_sequence(monkeypatch) -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(send_image=AsyncMock(), send_text=AsyncMock())
+    admission = SimpleNamespace(release=AsyncMock())
+    repository = SimpleNamespace(
+        record_job_started=AsyncMock(),
+        record_job_finished=AsyncMock(),
+    )
+    now = datetime.now(UTC)
+    request = AnalysisRequest(
+        request_id="failed-sequence-request",
+        msg_id="source-message",
+        group_openid="group-1",
+        member_openid="member-1",
+        character_names=["MP5K"],
+        received_at=now,
+        fetch_deadline_at=now + timedelta(minutes=4),
+        reply_deadline_at=now + timedelta(minutes=4, seconds=30),
+        reply_seq=2,
+    )
+    await _set_cached_report(redis, request.character_names, b"png-data", 1, 241)
+    send_report_image = AsyncMock(side_effect=RuntimeError("send failed"))
+    monkeypatch.setattr(worker_module, "_send_report_image", send_report_image)
+    ctx = {
+        "settings": SimpleNamespace(),
+        "redis": redis,
+        "esi": SimpleNamespace(),
+        "images": SimpleNamespace(),
+        "zkill": SimpleNamespace(),
+        "qq": qq,
+        "analyzer": SimpleNamespace(),
+        "renderer": SimpleNamespace(),
+        "admission": admission,
+        "repository": repository,
+    }
+
+    try:
+        await run_analysis_job(ctx, request.model_dump())
+
+        qq.send_text.assert_awaited_once_with(
+            "group-1",
+            "source-message",
+            "分析失败，上游服务可能暂时不可用，请稍后重试。",
+            msg_seq=2,
+        )
+    finally:
+        await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_legacy_proactive_query_is_rejected_without_image_delivery() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     qq = SimpleNamespace(send_proactive_image=AsyncMock(), send_proactive_text=AsyncMock())
     admission = SimpleNamespace(release=AsyncMock())
@@ -114,8 +210,12 @@ async def test_proactive_cached_query_uses_proactive_image_delivery() -> None:
     try:
         await run_analysis_job(ctx, request.model_dump())
 
-        qq.send_proactive_image.assert_awaited_once_with("group-1", b"png-data")
+        qq.send_proactive_image.assert_not_awaited()
         qq.send_proactive_text.assert_not_awaited()
+        repository.record_job_finished.assert_awaited_once()
+        assert repository.record_job_finished.await_args.kwargs["error_code"] == (
+            "proactive_analysis_disabled"
+        )
         admission.release.assert_awaited_once_with(
             "cached-proactive-request", "group-1"
         )

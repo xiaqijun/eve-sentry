@@ -136,6 +136,22 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
     job_start_task = asyncio.create_task(_record_job_start(repository, request))
 
     try:
+        if request.proactive:
+            logger.warning(
+                "request_id=%s rejected_legacy_proactive_analysis",
+                request.request_id,
+            )
+            await job_start_task
+            await _record_job_finish(
+                repository,
+                request.request_id,
+                status="failed",
+                resolved_count=0,
+                data_events=0,
+                error_code="proactive_analysis_disabled",
+            )
+            return
+
         cached_report = await _get_cached_report(redis, request.character_names)
         if cached_report is not None:
             image, resolved_count, data_events = cached_report
@@ -326,12 +342,7 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
                 )
             except Exception:
                 logger.exception("request_id=%s image_send_failed", request.request_id)
-                await qq.send_text(
-                    request.group_openid,
-                    request.msg_id,
-                    "报告图片发送失败，请稍后重试。",
-                    msg_seq=1,
-                )
+                await _send_report_text(qq, request, "报告图片发送失败，请稍后重试。")
         await job_start_task
         await _record_job_finish(
             repository,
@@ -372,7 +383,14 @@ async def run_analysis_job(ctx: dict[str, object], request_payload: dict[str, ob
     finally:
         if persistence_task is not None:
             await persistence_task
-        await admission.release(request.request_id, request.group_openid)
+        if request.admission_batch_id:
+            await admission.release(
+                request.request_id,
+                request.group_openid,
+                request.admission_batch_id,
+            )
+        else:
+            await admission.release(request.request_id, request.group_openid)
 
 
 async def _fetch_with_deadline(
@@ -465,7 +483,12 @@ async def _send_report_image(
     if request.proactive:
         await qq.send_proactive_image(request.group_openid, image)
     else:
-        await qq.send_image(request.group_openid, request.msg_id, image, msg_seq=1)
+        await qq.send_image(
+            request.group_openid,
+            request.msg_id,
+            image,
+            msg_seq=request.reply_seq,
+        )
 
 
 async def _send_report_text(
@@ -474,7 +497,12 @@ async def _send_report_text(
     if request.proactive:
         await qq.send_proactive_text(request.group_openid, content)
     else:
-        await qq.send_text(request.group_openid, request.msg_id, content, msg_seq=1)
+        await qq.send_text(
+            request.group_openid,
+            request.msg_id,
+            content,
+            msg_seq=request.reply_seq,
+        )
 
 
 def _report_cache_key(character_names: list[str]) -> str:
