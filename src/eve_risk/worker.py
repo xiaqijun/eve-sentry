@@ -480,7 +480,9 @@ async def _send_report_text(
 def _report_cache_key(character_names: list[str]) -> str:
     normalized = "\0".join(name.strip().casefold() for name in character_names)
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    return f"report:image:v2:{digest}"
+    # Bump the namespace when report identity semantics change so an image
+    # generated from a stale/mis-resolved character cannot be reused.
+    return f"report:image:v3:{digest}"
 
 
 async def _get_cached_report(
