@@ -2843,7 +2843,7 @@ def test_record_ocr_snapshot_isolates_missing_names_by_client_id(tmp_path):
     assert inactive[0]["source_instance"] == "EVE - Pilot A"
 
 
-def test_detector_idle_heartbeat_does_not_deactivate_ocr_active_intel(tmp_path):
+def test_detector_stopped_heartbeat_expires_ocr_active_intel_after_grace(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
     store.record_ocr_snapshot(
         {
@@ -2866,6 +2866,7 @@ def test_detector_idle_heartbeat_does_not_deactivate_ocr_active_intel(tmp_path):
     )
 
     assert heartbeat["status"] == "idle"
+    store.expire_active_intel("2099-07-03T10:00:08+00:00")
     active = store.list_active_intel(source="eve-sentry-detector")
     assert [item["name"] for item in active] == ["Alice"]
     assert store.list_active_intel(
@@ -2873,15 +2874,24 @@ def test_detector_idle_heartbeat_does_not_deactivate_ocr_active_intel(tmp_path):
         active=False,
     ) == []
 
+    assert store.expire_active_intel("2099-07-03T10:00:12+00:00") == 1
+    assert store.list_active_intel(source="eve-sentry-detector") == []
+    inactive = store.list_active_intel(
+        source="eve-sentry-detector",
+        active=False,
+    )
+    assert [item["name"] for item in inactive] == ["Alice"]
+    assert inactive[0]["metadata"]["left_reason"] == "monitor_stopped"
 
-def test_detector_idle_heartbeat_does_not_deactivate_window_scoped_ocr(tmp_path):
+
+def test_detector_stopped_heartbeat_expires_window_scoped_presence(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
-    store.record_ocr_snapshot(
+    store.record_hostile_presence(
         {
             "client_id": "detector-client:test:hwnd-123-eve-pilot",
             "source_instance": "EVE - Pilot",
             "system_name": "S-KSWL",
-            "names": ["Alice"],
+            "hostile_icon_count": 1,
             "seen_at": "2099-07-03T10:00:00+00:00",
         }
     )
@@ -2896,14 +2906,220 @@ def test_detector_idle_heartbeat_does_not_deactivate_window_scoped_ocr(tmp_path)
         }
     )
 
-    active = store.list_active_intel(source="eve-sentry-detector")
-    assert active[0]["metadata"] == {
-        "client_id": "detector-client:test:hwnd-123-eve-pilot"
-    }
-    assert store.list_active_intel(
+    assert store.expire_active_intel("2099-07-03T10:00:40+00:00") == 1
+    assert store.list_active_intel(source="eve-sentry-detector") == []
+    inactive = store.list_active_intel(
         source="eve-sentry-detector",
         active=False,
-    ) == []
+    )
+    assert inactive[0]["metadata"]["client_id"] == (
+        "detector-client:test:hwnd-123-eve-pilot"
+    )
+    assert inactive[0]["metadata"]["hostile_icon_count"] == 1
+    assert inactive[0]["metadata"]["left_reason"] == "monitor_stopped"
+    assert inactive[0]["metadata"]["presence_only"] is True
+
+
+def test_repeated_stopped_heartbeat_does_not_extend_presence_grace(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.record_hostile_presence(
+        {
+            "client_id": "detector-client:test:pilot-a",
+            "source_instance": "EVE - Pilot A",
+            "system_name": "HB-FSO",
+            "hostile_icon_count": 1,
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    heartbeat = {
+        "client_id": "detector-client:test",
+        "client_type": "detector_client",
+        "status": "idle",
+        "details": {"monitoring": False, "last_action": "monitor_stopped"},
+    }
+    store.record_heartbeat(
+        heartbeat | {"seen_at": "2099-07-03T10:00:01+00:00"}
+    )
+    store.record_heartbeat(
+        heartbeat | {"seen_at": "2099-07-03T10:00:06+00:00"}
+    )
+
+    assert store.expire_active_intel("2099-07-03T10:00:08+00:00") == 1
+    assert store.list_active_intel(source="eve-sentry-detector") == []
+    inactive = store.list_active_intel(
+        source="eve-sentry-detector",
+        active=False,
+    )
+    assert inactive[0]["left_at"] == "2099-07-03T10:00:07+00:00"
+    assert inactive[0]["metadata"]["left_reason"] == "monitor_stopped"
+
+
+def test_stopped_state_survives_later_diagnostic_heartbeat(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.record_hostile_presence(
+        {
+            "client_id": "detector-client:test:pilot-a",
+            "source_instance": "EVE - Pilot A",
+            "system_name": "HB-FSO",
+            "hostile_icon_count": 1,
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    common = {
+        "client_id": "detector-client:test",
+        "client_type": "detector_client",
+        "status": "idle",
+    }
+    store.record_heartbeat(
+        common
+        | {
+            "seen_at": "2099-07-03T10:00:01+00:00",
+            "details": {"monitoring": False, "last_action": "monitor_stopped"},
+        }
+    )
+    heartbeat = store.record_heartbeat(
+        common
+        | {
+            "seen_at": "2099-07-03T10:00:06+00:00",
+            "details": {"monitoring": False, "last_action": "ocr_snapshot:1"},
+        }
+    )
+
+    assert heartbeat["details"] == {
+        "monitoring": False,
+        "last_action": "ocr_snapshot:1",
+    }
+    assert store.expire_active_intel("2099-07-03T10:00:08+00:00") == 1
+    assert store.list_active_intel(source="eve-sentry-detector") == []
+
+
+def test_idle_without_explicit_stop_does_not_expire_detector_state(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test:pilot-a",
+            "source_instance": "EVE - Pilot A",
+            "system_name": "HB-FSO",
+            "names": ["Alice"],
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "idle",
+            "seen_at": "2099-07-03T10:00:01+00:00",
+            "details": {"monitoring": False, "last_action": "startup_idle"},
+        }
+    )
+
+    assert store.expire_active_intel("2099-07-03T10:01:00+00:00") == 0
+    assert [
+        item["name"]
+        for item in store.list_active_intel(source="eve-sentry-detector")
+    ] == ["Alice"]
+
+
+def test_monitoring_resume_clears_stable_stopped_state(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.record_hostile_presence(
+        {
+            "client_id": "detector-client:test:pilot-a",
+            "source_instance": "EVE - Pilot A",
+            "system_name": "HB-FSO",
+            "hostile_icon_count": 1,
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    common = {
+        "client_id": "detector-client:test",
+        "client_type": "detector_client",
+    }
+    store.record_heartbeat(
+        common
+        | {
+            "status": "idle",
+            "seen_at": "2099-07-03T10:00:01+00:00",
+            "details": {"monitoring": False, "last_action": "monitor_stopped"},
+        }
+    )
+    store.record_heartbeat(
+        common
+        | {
+            "status": "running",
+            "seen_at": "2099-07-03T10:00:02+00:00",
+            "details": {"monitoring": True, "last_action": "monitor_started"},
+        }
+    )
+
+    assert store.expire_active_intel("2099-07-03T10:01:00+00:00") == 0
+    assert len(store.list_active_intel(source="eve-sentry-detector")) == 1
+
+
+def test_stopped_parent_expires_ocr_and_presence_without_touching_other_parent(
+    tmp_path,
+):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.record_hostile_presence(
+        {
+            "client_id": "detector-client:test:pilot-a",
+            "source_instance": "EVE - Pilot A",
+            "system_name": "HB-FSO",
+            "hostile_icon_count": 1,
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test:pilot-a",
+            "source_instance": "EVE - Pilot A",
+            "system_name": "HB-FSO",
+            "names": ["Good Spirit"],
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    store.record_hostile_presence(
+        {
+            "client_id": "detector-client:other:pilot-b",
+            "source_instance": "EVE - Pilot B",
+            "system_name": "S-KSWL",
+            "hostile_icon_count": 1,
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "idle",
+            "seen_at": "2099-07-03T10:00:01+00:00",
+            "details": {"monitoring": False, "last_action": "monitor_stopped"},
+        }
+    )
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:other",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": "2099-07-03T10:00:01+00:00",
+            "details": {"monitoring": True, "last_action": "ocr_snapshot:1"},
+        }
+    )
+
+    assert store.expire_active_intel("2099-07-03T10:00:08+00:00") == 2
+    active = store.list_active_intel(source="eve-sentry-detector")
+    assert len(active) == 1
+    assert active[0]["metadata"]["client_id"] == "detector-client:other:pilot-b"
+    inactive = store.list_active_intel(
+        source="eve-sentry-detector",
+        active=False,
+    )
+    assert {item["target_type"] for item in inactive} == {"character", "system"}
+    assert {
+        item["metadata"]["client_id"]
+        for item in inactive
+    } == {"detector-client:test:pilot-a"}
 
 
 def test_detector_heartbeat_target_flags_do_not_change_ocr_state(tmp_path):
