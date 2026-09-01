@@ -25,13 +25,14 @@ def test_ocr_snapshot_names_keep_complete_raw_ocr_results():
         ("+ Alice", 0.95),
         ("alice", 0.90),
         ("Bob, + Carol", 0.88),
+        ("= Zana Fehrnah", 0.97),
     ]
 
     assert build_ocr_snapshot_names(ocr_results) == [
-        "+",
-        "+ Alice",
-        "alice",
-        "Bob, + Carol",
+        "Alice",
+        "Bob",
+        "Carol",
+        "Zana Fehrnah",
     ]
 
 

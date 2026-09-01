@@ -16,6 +16,7 @@ from app.engine.capturer import (
 )
 from app.engine.hostile_icons import find_hostile_icons
 from app.engine.ocr import OCREngine
+from app.engine.ocr_names import ocr_candidate_names
 from app.engine.ocr_scheduler import OCRRequestSuperseded
 
 logger = logging.getLogger(__name__)
@@ -27,8 +28,8 @@ def build_scan_status(ocr_results: list[tuple[str, float]]) -> str:
 
 
 def build_ocr_snapshot_names(ocr_results: list[tuple[str, float]]) -> list[str]:
-    """Return every OCR text result without client-side filtering."""
-    return [str(text) for text, _confidence in ocr_results]
+    """Return the complete OCR roster after removing row-icon noise."""
+    return ocr_candidate_names(ocr_results)
 
 
 class MonitorWorker(QThread):
