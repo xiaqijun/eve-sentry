@@ -54,6 +54,13 @@ ALERT_LEVEL_RANKS = {
 }
 STALE_HEARTBEAT_STARTUP_GRACE_SECONDS = 45.0
 _DETECTOR_MONITOR_STOPPED_AT_KEY = "_server_monitor_stopped_at"
+_DETECTOR_MONITOR_TARGET_IDS_KEY = "_server_monitor_target_ids"
+_DETECTOR_MISSING_TARGETS_KEY = "_server_missing_targets"
+_DETECTOR_PRIVATE_DETAIL_KEYS = (
+    _DETECTOR_MONITOR_STOPPED_AT_KEY,
+    _DETECTOR_MONITOR_TARGET_IDS_KEY,
+    _DETECTOR_MISSING_TARGETS_KEY,
+)
 _STREAM_POSITION_LOCK = threading.Lock()
 _LAST_STREAM_POSITION = 0
 
@@ -2337,7 +2344,8 @@ class IntelStore:
             raise ValueError("details must be a JSON object")
 
         heartbeat_details = dict(details or {})
-        heartbeat_details.pop(_DETECTOR_MONITOR_STOPPED_AT_KEY, None)
+        for private_key in _DETECTOR_PRIVATE_DETAIL_KEYS:
+            heartbeat_details.pop(private_key, None)
         heartbeat = {
             "client_id": client_id,
             "client_type": client_type,
@@ -2366,6 +2374,42 @@ class IntelStore:
                     if isinstance((existing or {}).get("details"), dict)
                     else {}
                 )
+                target_ids = self._authoritative_detector_target_ids(
+                    client_id,
+                    heartbeat_details,
+                )
+                if target_ids is not None:
+                    previous_target_ids = self._detector_private_target_ids(
+                        client_id,
+                        existing_details,
+                    )
+                    missing_targets = self._detector_private_missing_targets(
+                        client_id,
+                        existing_details,
+                    )
+                    known_target_ids = (
+                        previous_target_ids
+                        | set(missing_targets)
+                        | self._active_detector_child_ids(client_id)
+                    )
+                    for target_id in target_ids:
+                        missing_targets.pop(target_id, None)
+                    for target_id in known_target_ids - target_ids:
+                        missing_targets.setdefault(target_id, seen_at)
+                    heartbeat_details[_DETECTOR_MONITOR_TARGET_IDS_KEY] = sorted(
+                        target_ids
+                    )
+                    if missing_targets:
+                        heartbeat_details[_DETECTOR_MISSING_TARGETS_KEY] = dict(
+                            sorted(missing_targets.items())
+                        )
+                else:
+                    for private_key in (
+                        _DETECTOR_MONITOR_TARGET_IDS_KEY,
+                        _DETECTOR_MISSING_TARGETS_KEY,
+                    ):
+                        if private_key in existing_details:
+                            heartbeat_details[private_key] = existing_details[private_key]
                 stopped_at = str(
                     existing_details.get(_DETECTOR_MONITOR_STOPPED_AT_KEY) or ""
                 ).strip()
@@ -2504,34 +2548,47 @@ class IntelStore:
         now_at = self._parse_timestamp(left_at)
         if now_at is None:
             return 0
-        expiring_client_ids: dict[str, tuple[str, str]] = {}
+        expiring_parent_client_ids: dict[str, tuple[str, str]] = {}
+        expiring_child_client_ids: dict[str, tuple[str, str]] = {}
         for heartbeat in self._heartbeats.values():
             if str(heartbeat.get("client_type") or "").strip() != "detector_client":
                 continue
             view = self._heartbeat_view(heartbeat)
             heartbeat_seen_at = str(view.get("seen_at") or left_at).strip() or left_at
+            client_id = str(view.get("client_id") or "").strip()
+            details = heartbeat.get("details")
+            details = details if isinstance(details, dict) else {}
             if view.get("online"):
-                details = heartbeat.get("details")
                 stopped_at = str(
-                    details.get(_DETECTOR_MONITOR_STOPPED_AT_KEY)
-                    if isinstance(details, dict)
-                    else ""
+                    details.get(_DETECTOR_MONITOR_STOPPED_AT_KEY) or ""
                 ).strip()
-                if not stopped_at:
-                    continue
-                expiry_left_at = stopped_at
-                left_reason = "monitor_stopped"
+                if stopped_at and client_id:
+                    expiring_parent_client_ids[client_id] = (
+                        stopped_at,
+                        "monitor_stopped",
+                    )
             else:
                 expiry_left_at = self._detector_heartbeat_stale_left_at(
                     view,
                     heartbeat_seen_at,
                 )
-                left_reason = "heartbeat_stale"
-            client_id = str(view.get("client_id") or "").strip()
-            if client_id:
-                expiring_client_ids[client_id] = (expiry_left_at, left_reason)
+                if client_id:
+                    expiring_parent_client_ids[client_id] = (
+                        expiry_left_at,
+                        "heartbeat_stale",
+                    )
 
-        if not expiring_client_ids:
+            missing_targets = self._detector_private_missing_targets(
+                client_id,
+                details,
+            )
+            for target_id, missing_at in missing_targets.items():
+                expiring_child_client_ids[target_id] = (
+                    missing_at,
+                    "target_removed",
+                )
+
+        if not expiring_parent_client_ids and not expiring_child_client_ids:
             return 0
 
         expired = 0
@@ -2541,16 +2598,20 @@ class IntelStore:
             if item.source != "eve-sentry-detector":
                 continue
             client_id = str(item.metadata.get("client_id") or "").strip()
-            expiry_state = expiring_client_ids.get(client_id)
+            expiry_state = expiring_parent_client_ids.get(client_id)
             if not expiry_state:
-                for parent_client_id, candidate_state in expiring_client_ids.items():
+                for parent_client_id, candidate_state in (
+                    expiring_parent_client_ids.items()
+                ):
                     if client_id.startswith(f"{parent_client_id}:"):
                         expiry_state = candidate_state
                         break
             if not expiry_state:
+                expiry_state = expiring_child_client_ids.get(client_id)
+            if not expiry_state:
                 continue
             expiry_seen_at, left_reason = expiry_state
-            if left_reason == "monitor_stopped":
+            if left_reason in {"monitor_stopped", "target_removed"}:
                 stopped_at = self._parse_timestamp(expiry_seen_at)
                 last_seen_at = self._parse_timestamp(item.last_seen_at)
                 if stopped_at is None or last_seen_at is None:
@@ -2693,7 +2754,8 @@ class IntelStore:
 
     def _heartbeat_view(self, heartbeat: dict[str, Any]) -> dict[str, Any]:
         details = dict(heartbeat.get("details") or {})
-        details.pop(_DETECTOR_MONITOR_STOPPED_AT_KEY, None)
+        for private_key in _DETECTOR_PRIVATE_DETAIL_KEYS:
+            details.pop(private_key, None)
         item = {
             "client_id": str(heartbeat.get("client_id") or "").strip(),
             "client_type": str(heartbeat.get("client_type") or "client").strip(),
@@ -2713,6 +2775,69 @@ class IntelStore:
         item["stale_after_seconds"] = stale_after
         item["online"] = age_seconds is not None and age_seconds <= stale_after
         return item
+
+    def _authoritative_detector_target_ids(
+        self,
+        parent_client_id: str,
+        details: dict[str, Any],
+    ) -> set[str] | None:
+        if details.get("monitoring") is not True:
+            return None
+        targets = details.get("targets")
+        if not isinstance(targets, list) or not targets:
+            return None
+        target_ids: set[str] = set()
+        child_prefix = f"{parent_client_id}:"
+        for target in targets:
+            if not isinstance(target, dict):
+                return None
+            target_id = str(target.get("client_id") or "").strip()
+            if not target_id or not target_id.startswith(child_prefix):
+                return None
+            target_ids.add(target_id)
+        return target_ids
+
+    def _detector_private_target_ids(
+        self,
+        parent_client_id: str,
+        details: dict[str, Any],
+    ) -> set[str]:
+        values = details.get(_DETECTOR_MONITOR_TARGET_IDS_KEY)
+        if not isinstance(values, list):
+            return set()
+        child_prefix = f"{parent_client_id}:"
+        return {
+            target_id
+            for value in values
+            if (target_id := str(value or "").strip()).startswith(child_prefix)
+        }
+
+    def _detector_private_missing_targets(
+        self,
+        parent_client_id: str,
+        details: dict[str, Any],
+    ) -> dict[str, str]:
+        values = details.get(_DETECTOR_MISSING_TARGETS_KEY)
+        if not isinstance(values, dict):
+            return {}
+        child_prefix = f"{parent_client_id}:"
+        missing_targets: dict[str, str] = {}
+        for raw_target_id, raw_missing_at in values.items():
+            target_id = str(raw_target_id or "").strip()
+            missing_at = str(raw_missing_at or "").strip()
+            if target_id.startswith(child_prefix) and missing_at:
+                missing_targets[target_id] = missing_at
+        return missing_targets
+
+    def _active_detector_child_ids(self, parent_client_id: str) -> set[str]:
+        child_prefix = f"{parent_client_id}:"
+        return {
+            client_id
+            for item in self._active_intel.values()
+            if item.active and item.source == "eve-sentry-detector"
+            if (client_id := str(item.metadata.get("client_id") or "").strip())
+            and client_id.startswith(child_prefix)
+        }
 
     def _heartbeat_age_seconds(self, seen_at: str) -> float | None:
         seen = self._parse_iso_datetime(seen_at)
