@@ -265,6 +265,8 @@ class EveSentryAlertRelay:
         public_url: str = "",
         reconnect_delay_seconds: float = 5.0,
         personnel_push_interval_seconds: float = 0.0,
+        # Kept for compatibility with older bot deployments; automatic
+        # analysis is intentionally disabled and this callback is ignored.
         analysis_enqueue: Callable[[str, dict[str, Any], str, str], Awaitable[bool]]
         | None = None,
     ) -> None:
@@ -279,7 +281,6 @@ class EveSentryAlertRelay:
         self.personnel_push_interval_seconds = max(
             0.0, float(personnel_push_interval_seconds)
         )
-        self.analysis_enqueue = analysis_enqueue
         self._active_alert_ids: set[str] = set()
         self._personnel_last_sent_at: dict[str, float] = {}
         self._personnel_pending: dict[str, tuple[dict[str, Any], str]] = {}
@@ -397,6 +398,7 @@ class EveSentryAlertRelay:
         self,
         state: dict[str, Any],
         transition: str,
+        # Kept for compatibility; no automatic analysis work is deferred.
         deferred_analysis: list[tuple[str, dict[str, Any], str, str]] | None = None,
     ) -> bool:
         system_name = _system_label(state)
@@ -418,8 +420,6 @@ class EveSentryAlertRelay:
         for group_openid in groups:
             delivered_key = _delivered_key(event_id, group_openid)
             if await self.redis.exists(delivered_key):
-                if transition == "alert" and deferred_analysis is not None:
-                    deferred_analysis.append((group_openid, state, "", event_id))
                 continue
             try:
                 await self.qq.send_proactive_text(group_openid, message)
@@ -429,17 +429,6 @@ class EveSentryAlertRelay:
                 continue
             await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
             delivered += 1
-            if transition == "alert" and self.analysis_enqueue is not None:
-                occurred_at = datetime.now(UTC).isoformat()
-                if deferred_analysis is None:
-                    try:
-                        await self.analysis_enqueue(
-                            group_openid, state, occurred_at, event_id
-                        )
-                    except Exception:
-                        logger.exception("EVE Sentry hostile analysis enqueue failed")
-                else:
-                    deferred_analysis.append((group_openid, state, occurred_at, event_id))
 
         logger.info(
             "EVE Sentry system transition processed transition=%s deliveries=%d failures=%d",
@@ -455,6 +444,7 @@ class EveSentryAlertRelay:
         to_system: str,
         state: dict[str, Any],
         occurred_at: str,
+        # Kept for compatibility; no automatic analysis work is deferred.
         deferred_analysis: list[tuple[str, dict[str, Any], str, str]] | None = None,
         *,
         movement_source: str = "explicit",
@@ -478,8 +468,6 @@ class EveSentryAlertRelay:
         for group_openid in groups:
             delivered_key = _delivered_key(event_id, group_openid)
             if await self.redis.exists(delivered_key):
-                if deferred_analysis is not None:
-                    deferred_analysis.append((group_openid, state, occurred_at, event_id))
                 continue
             try:
                 await self.qq.send_proactive_text(group_openid, message)
@@ -488,16 +476,6 @@ class EveSentryAlertRelay:
                 logger.exception("QQ proactive movement delivery failed")
                 continue
             await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
-            if self.analysis_enqueue is not None:
-                if deferred_analysis is None:
-                    try:
-                        await self.analysis_enqueue(
-                            group_openid, state, occurred_at, event_id
-                        )
-                    except Exception:
-                        logger.exception("EVE Sentry movement analysis enqueue failed")
-                else:
-                    deferred_analysis.append((group_openid, state, occurred_at, event_id))
         logger.info(
             "EVE Sentry movement processed from=%s to=%s failures=%d",
             from_system,
@@ -921,8 +899,6 @@ class EveSentryAlertRelay:
         movement_pairs = _personnel_movement_pairs(previous, current)
         moved_from = {pair["from_system"].casefold() for pair in movement_pairs}
         moved_to = {pair["to_system"].casefold() for pair in movement_pairs}
-        deferred_analysis: list[tuple[str, dict[str, Any], str, str]] = []
-
         transitions_succeeded = True
         if initialized:
             for system_key in sorted(previous.keys() - current.keys()):
@@ -939,7 +915,6 @@ class EveSentryAlertRelay:
                     await self.deliver_system_transition(
                         current[system_key],
                         "alert",
-                        deferred_analysis,
                     )
                     and transitions_succeeded
                 )
@@ -960,7 +935,6 @@ class EveSentryAlertRelay:
                         pair["to_system"],
                         movement_state,
                         generated_at,
-                        deferred_analysis,
                         movement_source="bootstrap",
                     )
                     and transitions_succeeded
@@ -969,18 +943,6 @@ class EveSentryAlertRelay:
         if not transitions_succeeded:
             logger.warning("EVE Sentry system state update deferred after delivery failure")
             return False
-
-        if self.analysis_enqueue is not None:
-            for group_openid, state, occurred_at, event_id in deferred_analysis:
-                try:
-                    await self.analysis_enqueue(
-                        group_openid,
-                        state,
-                        occurred_at or generated_at,
-                        event_id,
-                    )
-                except Exception:
-                    logger.exception("EVE Sentry hostile analysis enqueue failed")
 
         personnel_updates_succeeded = True
         if initialized:

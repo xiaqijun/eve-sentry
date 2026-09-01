@@ -702,7 +702,7 @@ async def test_relay_publishes_personnel_once_after_esi_resolution() -> None:
 
 
 @pytest.mark.asyncio
-async def test_relay_enqueues_analysis_for_new_hostile_system() -> None:
+async def test_relay_does_not_enqueue_analysis_for_new_hostile_system() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     qq = SimpleNamespace(send_proactive_text=AsyncMock(return_value={"id": "text"}))
     enqueue = AsyncMock(return_value=True)
@@ -712,7 +712,6 @@ async def test_relay_enqueues_analysis_for_new_hostile_system() -> None:
             redis,
             qq,
             "http://sentry.test/events",
-            analysis_enqueue=enqueue,
         )
         await relay.subscribe("group-1")
         await relay.process_bootstrap(
@@ -744,9 +743,8 @@ async def test_relay_enqueues_analysis_for_new_hostile_system() -> None:
             }
         )
 
-    enqueue.assert_awaited_once()
-    assert enqueue.await_args.args[0] == "group-1"
-    assert enqueue.await_args.args[1]["personnel"][0]["name"] == "Alice"
+    enqueue.assert_not_awaited()
+    assert qq.send_proactive_text.await_count == 2
     await redis.aclose()
 
 
@@ -1204,7 +1202,7 @@ async def test_bootstrap_and_explicit_movement_events_share_cross_source_dedupe(
 
 
 @pytest.mark.asyncio
-async def test_relay_enqueues_analysis_after_system_message_without_skipping_personnel(
+async def test_relay_does_not_enqueue_analysis_after_system_message_without_skipping_personnel(
 ) -> None:
     redis = fakeredis.aioredis.FakeRedis()
     delivery_order: list[str] = []
@@ -1212,10 +1210,6 @@ async def test_relay_enqueues_analysis_after_system_message_without_skipping_per
     async def send_text(_group: str, _message: str) -> dict[str, str]:
         delivery_order.append("event")
         return {"id": "event"}
-
-    async def enqueue_analysis(*_args: object) -> bool:
-        delivery_order.append("analysis")
-        return True
 
     async def send_markdown(_group: str, _message: str) -> dict[str, str]:
         delivery_order.append("personnel")
@@ -1231,7 +1225,6 @@ async def test_relay_enqueues_analysis_after_system_message_without_skipping_per
             redis,
             qq,
             "http://sentry.test/events",
-            analysis_enqueue=enqueue_analysis,
         )
         await relay.subscribe("group-1")
         await relay.process_bootstrap(
@@ -1263,7 +1256,8 @@ async def test_relay_enqueues_analysis_after_system_message_without_skipping_per
             }
         )
 
-    assert delivery_order[0:2] == ["event", "analysis"]
+    assert delivery_order[0] == "event"
+    assert "analysis" not in delivery_order
     assert delivery_order.count("personnel") == 1
     await redis.aclose()
 

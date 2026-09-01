@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import threading
 import uuid
@@ -83,7 +82,6 @@ class RiskBotClient(botpy.Client):
             personnel_push_interval_seconds=(
                 settings.eve_sentry_personnel_push_interval_seconds
             ),
-            analysis_enqueue=self._enqueue_sentry_analysis,
         )
         self.alert_task: asyncio.Task[None] | None = None
         status_url = settings.eve_server_status_url if settings.eve_server_status_enabled else ""
@@ -96,78 +94,6 @@ class RiskBotClient(botpy.Client):
             offline_threshold=settings.eve_server_offline_threshold,
         )
         self.server_status_task: asyncio.Task[None] | None = None
-
-    async def _enqueue_sentry_analysis(
-        self,
-        group_openid: str,
-        state: dict[str, object],
-        occurred_at: str,
-        event_id: str,
-    ) -> bool:
-        names: list[str] = []
-        seen: set[str] = set()
-        personnel = state.get("personnel")
-        if isinstance(personnel, list):
-            for item in personnel:
-                if not isinstance(item, dict):
-                    continue
-                name = str(item.get("name") or "").strip()
-                key = name.casefold()
-                if not name or key in seen or key in {"未知人员", "unknown"}:
-                    continue
-                seen.add(key)
-                names.append(name)
-                if len(names) >= self.settings.max_characters:
-                    break
-        if not names:
-            logger.info("Skipping hostile analysis without identified personnel")
-            return False
-
-        now = datetime.now(UTC)
-        request_id = "sentry-" + hashlib.sha256(
-            f"{event_id}:{group_openid}".encode()
-        ).hexdigest()[:32]
-        request = AnalysisRequest(
-            request_id=request_id,
-            msg_id="",
-            group_openid=group_openid,
-            member_openid=f"eve-sentry:{group_openid}",
-            character_names=names,
-            received_at=now,
-            fetch_deadline_at=now
-            + timedelta(seconds=self.settings.analysis_fetch_deadline_seconds),
-            reply_deadline_at=now
-            + timedelta(seconds=self.settings.analysis_reply_deadline_seconds),
-            proactive=True,
-        )
-        admission = await self.admission.admit(
-            job_id=request.request_id,
-            msg_id="",
-            member_openid=request.member_openid,
-            group_openid=group_openid,
-            now_epoch=int(now.timestamp()),
-            deadline_epoch=int(request.reply_deadline_at.timestamp()),
-        )
-        if admission != AdmissionResult.OK:
-            logger.info(
-                "Skipping hostile analysis admission result=%s group=%s",
-                admission.value,
-                group_openid,
-            )
-            return False
-        try:
-            await self.queue.enqueue(request)
-        except Exception:
-            await self.admission.release(request.request_id, group_openid)
-            logger.exception("Hostile analysis enqueue failed")
-            return False
-        logger.info(
-            "Hostile analysis enqueued group=%s characters=%d occurred_at=%s",
-            group_openid,
-            len(names),
-            occurred_at,
-        )
-        return True
 
     async def on_ready(self) -> None:
         if not self.alert_relay.enabled:
@@ -243,43 +169,96 @@ class RiskBotClient(botpy.Client):
             await self.qq.send_text(group_openid, msg_id, str(exc), msg_seq=1)
             return
 
-        now = datetime.now(UTC)
-        request_id = str(uuid.uuid4())
-        request = AnalysisRequest(
-            request_id=request_id,
-            msg_id=msg_id,
-            group_openid=group_openid,
-            member_openid=member_openid,
-            character_names=names,
-            received_at=now,
-            fetch_deadline_at=now
-            + timedelta(seconds=self.settings.analysis_fetch_deadline_seconds),
-            reply_deadline_at=now
-            + timedelta(seconds=self.settings.analysis_reply_deadline_seconds),
-        )
-        result = await self.admission.admit(
-            job_id=request_id,
-            msg_id=msg_id,
-            member_openid=member_openid,
-            group_openid=group_openid,
-            now_epoch=int(now.timestamp()),
-            deadline_epoch=int(request.reply_deadline_at.timestamp()),
-        )
-        if result == AdmissionResult.DUPLICATE:
-            return
-        if result != AdmissionResult.OK:
-            await self.qq.send_text(group_openid, msg_id, ADMISSION_MESSAGES[result], msg_seq=1)
-            return
+        batch_id = f"message:{msg_id}" if len(names) > 1 else None
+        admitted = 0
+        first_failure: AdmissionResult | None = None
+        enqueue_failed = False
+        for index, name in enumerate(names):
+            now = datetime.now(UTC)
+            request_id = str(uuid.uuid4())
+            request = AnalysisRequest(
+                request_id=request_id,
+                msg_id=msg_id,
+                group_openid=group_openid,
+                member_openid=member_openid,
+                character_names=[name],
+                received_at=now,
+                fetch_deadline_at=now
+                + timedelta(seconds=self.settings.analysis_fetch_deadline_seconds),
+                reply_deadline_at=now
+                + timedelta(seconds=self.settings.analysis_reply_deadline_seconds),
+                reply_seq=index + 1,
+                admission_batch_id=batch_id,
+            )
+            if batch_id is None:
+                result = await self.admission.admit(
+                    job_id=request_id,
+                    msg_id=msg_id,
+                    member_openid=member_openid,
+                    group_openid=group_openid,
+                    now_epoch=int(now.timestamp()),
+                    deadline_epoch=int(request.reply_deadline_at.timestamp()),
+                )
+            else:
+                result = await self.admission.admit_batch(
+                    job_id=request_id,
+                    msg_id=f"{msg_id}:{index}",
+                    member_openid=member_openid,
+                    group_openid=group_openid,
+                    batch_id=batch_id,
+                    now_epoch=int(now.timestamp()),
+                    deadline_epoch=int(request.reply_deadline_at.timestamp()),
+                )
+            if result == AdmissionResult.DUPLICATE:
+                continue
+            if result != AdmissionResult.OK:
+                first_failure = first_failure or result
+                break
 
-        try:
-            await self.queue.enqueue(request)
-        except Exception:
-            await self.admission.release(request_id, group_openid)
-            logger.exception("request_id=%s enqueue_failed", request_id)
-            await self.qq.send_text(group_openid, msg_id, "任务创建失败，请稍后重试。", msg_seq=1)
-            return
+            try:
+                await self.queue.enqueue(request)
+            except Exception:
+                enqueue_failed = True
+                if request.admission_batch_id:
+                    await self.admission.release(
+                        request_id, group_openid, request.admission_batch_id
+                    )
+                else:
+                    await self.admission.release(request_id, group_openid)
+                logger.exception("request_id=%s enqueue_failed", request_id)
+                break
+            admitted += 1
+            logger.info(
+                "request_id=%s admitted character=%s batch=%s",
+                request_id,
+                name,
+                batch_id or "none",
+            )
 
-        logger.info("request_id=%s admitted characters=%d", request_id, len(names))
+        if admitted:
+            if first_failure is not None or enqueue_failed:
+                logger.warning(
+                    "analysis batch partially admitted group=%s admitted=%d total=%d",
+                    group_openid,
+                    admitted,
+                    len(names),
+                )
+            return
+        if first_failure is not None:
+            await self.qq.send_text(
+                group_openid,
+                msg_id,
+                ADMISSION_MESSAGES[first_failure],
+                msg_seq=1,
+            )
+            return
+        if enqueue_failed:
+            await self.qq.send_text(
+                group_openid,
+                msg_id,
+                "任务创建失败，请稍后重试。",
+                msg_seq=1,
+            )
 
 
 def _start_health_server() -> None:
