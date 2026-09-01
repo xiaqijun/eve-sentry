@@ -14,6 +14,10 @@ def is_help_command(content: str) -> bool:
     return bool(HELP_RE.match(_clean_mention_prefix(content).strip()))
 
 
+def is_analysis_command(content: str) -> bool:
+    return bool(re.fullmatch(r"(?:/)?分析", _clean_mention_prefix(content).strip(), re.IGNORECASE))
+
+
 def parse_roster(content: str, max_characters: int = 30) -> list[str]:
     cleaned = _clean_mention_prefix(content).strip()
     match = re.match(r"^(?:/)?分析(?:\s+|$)", cleaned, re.IGNORECASE)
@@ -47,4 +51,4 @@ def _clean_mention_prefix(content: str) -> str:
     # QQ group events usually remove the @ token from content, while tests and
     # alternative adapters may leave it in place.
     content = content.replace("\r\n", "\n").replace("\r", "\n")
-    return re.sub(r"^\s*<@!?\w+>\s*", "", content, count=1)
+    return re.sub(r"^\s*(?:<@!?\w+>|@\S+)\s*", "", content, count=1)

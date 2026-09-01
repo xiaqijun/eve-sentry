@@ -1024,6 +1024,34 @@ class EveSentryAlertRelay:
                 result[system_key] = item
         return result, bool(ready)
 
+    async def current_analysis_names(self, max_characters: int = 30) -> list[str]:
+        """Return confirmed hostile names from the latest synchronized state."""
+        limit = max(0, int(max_characters))
+        if limit == 0:
+            return []
+        states, initialized = await self._load_system_alert_state()
+        if not initialized:
+            return []
+
+        names: list[str] = []
+        seen: set[str] = set()
+        for system_key in sorted(states):
+            personnel = states[system_key].get("personnel")
+            if not isinstance(personnel, list):
+                continue
+            for item in personnel:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                key = name.casefold()
+                if not name or key in seen or key in {"未知人员", "unknown"}:
+                    continue
+                seen.add(key)
+                names.append(name)
+                if len(names) >= limit:
+                    return names
+        return names
+
     async def _save_system_alert_state(
         self, items: dict[str, dict[str, Any]]
     ) -> None:

@@ -1,6 +1,11 @@
 import pytest
 
-from eve_risk.parser import RosterParseError, is_help_command, parse_roster
+from eve_risk.parser import (
+    RosterParseError,
+    is_analysis_command,
+    is_help_command,
+    parse_roster,
+)
 
 
 def test_parse_multiline_names_and_preserve_internal_spaces() -> None:
@@ -27,3 +32,9 @@ def test_parse_rejects_empty_and_over_limit() -> None:
 def test_help_command() -> None:
     assert is_help_command("帮助")
     assert is_help_command("@机器人 帮助")
+
+
+def test_bare_analysis_command() -> None:
+    assert is_analysis_command("分析")
+    assert is_analysis_command("<@!bot> /分析")
+    assert not is_analysis_command("分析 Alice")

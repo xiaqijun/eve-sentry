@@ -17,7 +17,12 @@ from eve_risk.clients.qq import QQOpenAPIClient
 from eve_risk.config import get_settings
 from eve_risk.domain import AnalysisRequest
 from eve_risk.health import app as health_app
-from eve_risk.parser import RosterParseError, is_help_command, parse_roster
+from eve_risk.parser import (
+    RosterParseError,
+    is_analysis_command,
+    is_help_command,
+    parse_roster,
+)
 from eve_risk.queueing import AnalysisQueue
 from eve_risk.sentry_status import (
     EveSentryStatusClient,
@@ -30,7 +35,8 @@ logger = logging.getLogger(__name__)
 
 HELP_TEXT = (
     "EVE 敌对舰队分析（Tranquility）\n"
-    "用法：@机器人 分析，然后每行一个角色名；也支持逗号或分号分隔。\n"
+    "用法：@机器人 分析可分析当前预警中的已确认人员；也可在分析后输入角色名。\n"
+    "多人会分别生成报告，角色名支持换行、逗号或分号分隔。\n"
     "一次最多 30 人，默认分析近 90 天公开战报。\n"
     "预警：@机器人 开启预警 / 关闭预警 / 预警状态。\n"
     "节点敌对：@机器人 查询预警。"
@@ -163,11 +169,24 @@ class RiskBotClient(botpy.Client):
                 reply = str(exc)
             await self.qq.send_text(group_openid, msg_id, reply, msg_seq=1)
             return
-        try:
-            names = parse_roster(content, self.settings.max_characters)
-        except RosterParseError as exc:
-            await self.qq.send_text(group_openid, msg_id, str(exc), msg_seq=1)
-            return
+        if is_analysis_command(content):
+            names = await self.alert_relay.current_analysis_names(
+                self.settings.max_characters
+            )
+            if not names:
+                await self.qq.send_text(
+                    group_openid,
+                    msg_id,
+                    "当前没有已确认的敌对人员可供分析。",
+                    msg_seq=1,
+                )
+                return
+        else:
+            try:
+                names = parse_roster(content, self.settings.max_characters)
+            except RosterParseError as exc:
+                await self.qq.send_text(group_openid, msg_id, str(exc), msg_seq=1)
+                return
 
         batch_id = f"message:{msg_id}" if len(names) > 1 else None
         admitted = 0
