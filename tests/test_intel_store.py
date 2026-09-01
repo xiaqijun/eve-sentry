@@ -856,6 +856,53 @@ def test_detector_hostility_uses_resolved_identity_instead_of_aggregate_icon_cou
     )
 
 
+def test_detector_hostility_uses_esi_hostile_affiliation_without_standing(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(
+            watchlist=Watchlist(
+                hostile_corporation_ids={42},
+                hostile_alliance_ids={77},
+            ),
+            cooldown_seconds=0,
+        ),
+    )
+
+    base = {
+        "source": "eve-sentry-detector",
+        "target_type": "character",
+        "system_name": "S-KSWL",
+        "character_id": 123,
+        "metadata": {
+            "hostile_icon_count": 1,
+            "identity_status": "resolved",
+        },
+    }
+
+    assert store._active_item_is_hostile(
+        {
+            **base,
+            "name": "Hostile Corp Pilot",
+            "metadata": {
+                **base["metadata"],
+                "character_profiles": [{"character_id": 123, "corporation_id": 42}],
+            },
+        }
+    )
+    assert store._active_item_is_hostile(
+        {
+            **base,
+            "name": "Hostile Alliance Pilot",
+            "metadata": {
+                **base["metadata"],
+                "character_profiles": [{"character_id": 123, "alliance_id": 77}],
+            },
+        }
+    )
+
+
 def test_active_character_summary_keeps_generated_zkill_link(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
 

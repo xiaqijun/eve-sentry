@@ -4271,12 +4271,63 @@ class IntelStore:
         if source not in {"local_ocr", "ocr", "eve-sentry-detector"}:
             return False
 
+        # OCR rows are enriched asynchronously. Once ESI has resolved a
+        # character, activity aggregation must apply the same hostile identity
+        # rules as report scoring. Contact standing is optional, so relying on
+        # it alone silently drops hostile corporation/alliance matches.
+        scorer = self._scorer
+        watchlist = getattr(scorer, "watchlist", None)
+        if watchlist is not None:
+            name = str(item.get("name") or "").strip().casefold()
+            blacklist = {
+                str(value).strip().casefold()
+                for value in (getattr(watchlist, "blacklist", set()) or set())
+                if str(value).strip()
+            }
+            if name and name in blacklist:
+                return True
+
+            profiles = metadata.get("character_profiles")
+            if isinstance(profiles, list):
+                hostile_corporations = set(
+                    getattr(watchlist, "hostile_corporation_ids", set()) or set()
+                )
+                hostile_alliances = set(
+                    getattr(watchlist, "hostile_alliance_ids", set()) or set()
+                )
+                hostile_threshold = getattr(
+                    watchlist,
+                    "hostile_standing_threshold",
+                    0.0,
+                )
+                for profile in profiles:
+                    if not isinstance(profile, dict):
+                        continue
+                    corporation_id = self._optional_int(profile.get("corporation_id"))
+                    alliance_id = self._optional_int(profile.get("alliance_id"))
+                    if (
+                        corporation_id is not None
+                        and corporation_id in hostile_corporations
+                    ) or (
+                        alliance_id is not None
+                        and alliance_id in hostile_alliances
+                    ):
+                        return True
+                    standing = self._optional_float(
+                        profile.get("contact_standing", profile.get("standing"))
+                    )
+                    if (
+                        standing is not None
+                        and hostile_threshold is not None
+                        and standing <= float(hostile_threshold)
+                    ):
+                        return True
+
         standing = self._optional_float(
             metadata.get("contact_standing", metadata.get("standing"))
         )
         if standing is None:
             return False
-        scorer = self._scorer
         watchlist = getattr(scorer, "watchlist", None)
         friendly_threshold = getattr(watchlist, "friendly_standing_threshold", 5.0)
         hostile_threshold = getattr(watchlist, "hostile_standing_threshold", 0.0)
