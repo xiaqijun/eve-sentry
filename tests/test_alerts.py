@@ -748,6 +748,34 @@ async def test_relay_does_not_enqueue_analysis_for_new_hostile_system() -> None:
     await redis.aclose()
 
 
+@pytest.mark.asyncio
+async def test_current_analysis_names_returns_confirmed_unique_personnel() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, SimpleNamespace(), "")
+        await relay._save_system_alert_state(
+            {
+                "jita": {
+                    "personnel": [
+                        {"name": "Alice"},
+                        {"name": "Unknown"},
+                    ]
+                },
+                "tama": {
+                    "personnel": [
+                        {"name": " alice "},
+                        {"name": "Bob"},
+                        {"name": "Charlie"},
+                    ]
+                },
+            }
+        )
+
+        assert await relay.current_analysis_names(2) == ["Alice", "Bob"]
+
+    await redis.aclose()
+
+
 def test_monitoring_node_message_formats_online_offline_and_move() -> None:
     assert format_monitoring_node_message(
         {

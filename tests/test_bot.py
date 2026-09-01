@@ -126,6 +126,79 @@ async def test_multi_character_analysis_enqueues_one_request_per_character() -> 
 
 
 @pytest.mark.asyncio
+async def test_bare_analysis_uses_current_hostile_personnel() -> None:
+    client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
+    original_redis = client.redis
+    redis = fakeredis.aioredis.FakeRedis()
+    client.redis = redis
+    client.alert_relay.current_analysis_names = AsyncMock(
+        return_value=["Alice", "Bob"]
+    )
+    client.admission.admit_batch = AsyncMock(return_value=AdmissionResult.OK)
+    client.queue.enqueue = AsyncMock()
+    client.qq.send_text = AsyncMock(return_value={"id": "reply"})
+
+    class Author:
+        member_openid = "member-1"
+
+    class Message:
+        id = "current-hostiles-message-1"
+        group_openid = "group-1"
+        content = "分析"
+        author = Author()
+
+    try:
+        await client.on_group_at_message_create(Message())
+
+        client.alert_relay.current_analysis_names.assert_awaited_once_with(
+            client.settings.max_characters
+        )
+        requests = [call.args[0] for call in client.queue.enqueue.await_args_list]
+        assert [request.character_names for request in requests] == [["Alice"], ["Bob"]]
+        assert [request.reply_seq for request in requests] == [1, 2]
+        client.qq.send_text.assert_not_awaited()
+    finally:
+        await client.http_client.aclose()
+        await redis.aclose()
+        await original_redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_bare_analysis_without_current_personnel_does_not_enqueue() -> None:
+    client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
+    original_redis = client.redis
+    redis = fakeredis.aioredis.FakeRedis()
+    client.redis = redis
+    client.alert_relay.current_analysis_names = AsyncMock(return_value=[])
+    client.queue.enqueue = AsyncMock()
+    client.qq.send_text = AsyncMock(return_value={"id": "reply"})
+
+    class Author:
+        member_openid = "member-1"
+
+    class Message:
+        id = "current-hostiles-empty-message-1"
+        group_openid = "group-1"
+        content = "分析"
+        author = Author()
+
+    try:
+        await client.on_group_at_message_create(Message())
+
+        client.queue.enqueue.assert_not_awaited()
+        client.qq.send_text.assert_awaited_once_with(
+            "group-1",
+            "current-hostiles-empty-message-1",
+            "当前没有已确认的敌对人员可供分析。",
+            msg_seq=1,
+        )
+    finally:
+        await client.http_client.aclose()
+        await redis.aclose()
+        await original_redis.aclose()
+
+
+@pytest.mark.asyncio
 async def test_non_analysis_mention_does_not_enqueue_analysis() -> None:
     client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
     original_redis = client.redis
