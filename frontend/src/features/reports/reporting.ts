@@ -210,6 +210,7 @@ function buildWaves(
       return {
         id,
         systemName,
+        systemKey: systemName.toLocaleLowerCase(),
         peakHostileCount,
         incidentCount: 0,
         uniqueTargets: 0,
@@ -226,13 +227,19 @@ function buildWaves(
     .filter((item): item is NonNullable<typeof item> => item !== null)
     .sort((left, right) => right.startedMs - left.startedMs);
 
+  const wavesBySystem = new Map<string, typeof waves>();
+  waves.forEach((wave) => {
+    const systemWaves = wavesBySystem.get(wave.systemKey) || [];
+    systemWaves.push(wave);
+    wavesBySystem.set(wave.systemKey, systemWaves);
+  });
+
   alerts.forEach((alert) => {
     const timestamp = parsedTime(alert.created_at);
     if (timestamp === null) return;
     const systemKey = cleanSystem(alert).toLocaleLowerCase();
-    const wave = waves.find((item) => (
-      item.systemName.toLocaleLowerCase() === systemKey
-      && timestamp >= item.startedMs
+    const wave = (wavesBySystem.get(systemKey) || []).find((item) => (
+      timestamp >= item.startedMs
       && (item.endedMs === null || timestamp <= item.endedMs)
     ));
     if (!wave) return;
@@ -282,6 +289,7 @@ function buildWaves(
     targetMap,
     startedMs: _startedMs,
     endedMs: _endedMs,
+    systemKey: _systemKey,
     ...wave
   }) => ({
     ...wave,
