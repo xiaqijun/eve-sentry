@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isclose
 from time import time
 from typing import Any, Callable
 
@@ -95,15 +96,6 @@ class ClassificationEngine:
 
         hostile = self._hostile_evidence(event_names, profiles)
         friendly = self._friendly_evidence(event_names, profiles)
-        # Detector icon counts describe the whole screenshot, not each OCR
-        # identity. Once ESI has confirmed a friendly identity, do not attach
-        # that shared visual evidence to the friendly pilot.
-        if friendly and not hostile:
-            return ClassificationResult(
-                classification="white",
-                reason=friendly[0].summary,
-                evidence=friendly,
-            )
         hostile_icon_count = _optional_int(
             observation.metadata.get("hostile_icon_count")
         )
@@ -113,14 +105,75 @@ class ClassificationEngine:
             and hostile_icon_count is not None
             and hostile_icon_count > 0
         ):
-            hostile.insert(
-                0,
+            hostile.append(
                 Evidence(
                     "hostile_icon",
                     100,
                     f"Client detected {hostile_icon_count} red standing icon(s) in "
                     f"{observation.system_name}",
                 ),
+            )
+
+        explicit_hostile = any(
+            item.evidence_type
+            in {"hostile_name", "hostile_corporation", "hostile_alliance"}
+            for item in hostile
+        )
+        hostile_standing = any(
+            item.evidence_type == "hostile_standing" for item in hostile
+        )
+        non_neutral_hostile_standing = self._has_non_neutral_hostile_standing(
+            profiles
+        )
+        unprotected_neutral_hostile_standing = (
+            self._has_unprotected_neutral_hostile_standing(profiles)
+        )
+        friendly_affiliation = any(
+            item.evidence_type
+            in {"friendly_corporation", "friendly_alliance"}
+            for item in friendly
+        )
+        friendly_standing = any(
+            item.evidence_type == "friendly_standing" for item in friendly
+        )
+
+        # Explicit hostile identity evidence and configured hostile standing
+        # always win. A configured friendly corporation/alliance may override
+        # only neutral standing (0) and the screenshot-wide icon count, which
+        # cannot be attributed to an individual OCR identity.
+        if (
+            explicit_hostile
+            or non_neutral_hostile_standing
+            or unprotected_neutral_hostile_standing
+        ):
+            return ClassificationResult(
+                classification="red",
+                reason=hostile[0].summary,
+                evidence=hostile,
+            )
+        if friendly_affiliation:
+            return ClassificationResult(
+                classification="white",
+                reason=friendly[0].summary,
+                evidence=friendly,
+            )
+
+        # Positive standing may protect a shared red icon, but must not hide
+        # any hostile-standing evidence when a custom threshold is configured.
+        if friendly_standing and not hostile_standing:
+            return ClassificationResult(
+                classification="white",
+                reason=friendly[0].summary,
+                evidence=friendly,
+            )
+
+        # Name-only whitelist evidence is intentionally weaker: it must not
+        # swallow a red icon or neutral-standing hostile evidence.
+        if friendly and not hostile:
+            return ClassificationResult(
+                classification="white",
+                reason=friendly[0].summary,
+                evidence=friendly,
             )
         if hostile:
             return ClassificationResult(
@@ -136,6 +189,53 @@ class ClassificationEngine:
                 evidence=friendly,
             )
         return None
+
+    def _has_non_neutral_hostile_standing(
+        self,
+        profiles: list[dict[str, Any]],
+    ) -> bool:
+        """Return whether a threshold match is more severe than neutral 0.0."""
+        threshold = self.watchlist.hostile_standing_threshold
+        if threshold is None:
+            return False
+        for profile in profiles:
+            standing = _optional_float(profile.get("contact_standing"))
+            if standing is None:
+                standing = _optional_float(profile.get("standing"))
+            if (
+                standing is not None
+                and standing <= threshold
+                and not isclose(standing, 0.0, abs_tol=1e-9)
+            ):
+                return True
+        return False
+
+    def _has_unprotected_neutral_hostile_standing(
+        self,
+        profiles: list[dict[str, Any]],
+    ) -> bool:
+        """Return whether a neutral threshold match lacks friendly affiliation."""
+        threshold = self.watchlist.hostile_standing_threshold
+        if threshold is None:
+            return False
+        for profile in profiles:
+            standing = _optional_float(profile.get("contact_standing"))
+            if standing is None:
+                standing = _optional_float(profile.get("standing"))
+            if not (
+                standing is not None
+                and standing <= threshold
+                and isclose(standing, 0.0, abs_tol=1e-9)
+            ):
+                continue
+            corporation_id = _optional_int(profile.get("corporation_id"))
+            alliance_id = _optional_int(profile.get("alliance_id"))
+            if (
+                corporation_id not in self.watchlist.friendly_corporation_ids
+                and alliance_id not in self.watchlist.friendly_alliance_ids
+            ):
+                return True
+        return False
 
     def suppresses_observation(
         self,
