@@ -53,6 +53,7 @@ ALERT_LEVEL_RANKS = {
     "critical": 4,
 }
 STALE_HEARTBEAT_STARTUP_GRACE_SECONDS = 45.0
+_DETECTOR_MONITOR_STOPPED_AT_KEY = "_server_monitor_stopped_at"
 _STREAM_POSITION_LOCK = threading.Lock()
 _LAST_STREAM_POSITION = 0
 
@@ -2335,6 +2336,8 @@ class IntelStore:
         if details is not None and not isinstance(details, dict):
             raise ValueError("details must be a JSON object")
 
+        heartbeat_details = dict(details or {})
+        heartbeat_details.pop(_DETECTOR_MONITOR_STOPPED_AT_KEY, None)
         heartbeat = {
             "client_id": client_id,
             "client_type": client_type,
@@ -2342,7 +2345,7 @@ class IntelStore:
             "status": status,
             "seen_at": seen_at,
             "heartbeat_interval_seconds": interval_seconds,
-            "details": dict(details or {}),
+            "details": heartbeat_details,
             "user_id": str(payload.get("user_id") or "").strip(),
             "api_key_id": str(payload.get("api_key_id") or "").strip(),
             "remote_ip": str(payload.get("remote_ip") or "").strip(),
@@ -2357,6 +2360,24 @@ class IntelStore:
                 raise HeartbeatOwnershipConflict(
                     "client_id is already owned by another user"
                 )
+            if client_type == "detector_client":
+                existing_details = (
+                    (existing or {}).get("details")
+                    if isinstance((existing or {}).get("details"), dict)
+                    else {}
+                )
+                stopped_at = str(
+                    existing_details.get(_DETECTOR_MONITOR_STOPPED_AT_KEY) or ""
+                ).strip()
+                monitoring = heartbeat_details.get("monitoring")
+                if monitoring is True:
+                    stopped_at = ""
+                elif not stopped_at and monitoring is False and str(
+                    heartbeat_details.get("last_action") or ""
+                ).strip() == "monitor_stopped":
+                    stopped_at = seen_at
+                if stopped_at:
+                    heartbeat_details[_DETECTOR_MONITOR_STOPPED_AT_KEY] = stopped_at
             self._heartbeats[client_id] = heartbeat
         return self._heartbeat_view(heartbeat)
 
@@ -2483,20 +2504,34 @@ class IntelStore:
         now_at = self._parse_timestamp(left_at)
         if now_at is None:
             return 0
-        stale_client_ids: dict[str, str] = {}
+        expiring_client_ids: dict[str, tuple[str, str]] = {}
         for heartbeat in self._heartbeats.values():
             if str(heartbeat.get("client_type") or "").strip() != "detector_client":
                 continue
             view = self._heartbeat_view(heartbeat)
             heartbeat_seen_at = str(view.get("seen_at") or left_at).strip() or left_at
-            stale_left_at = self._detector_heartbeat_stale_left_at(view, heartbeat_seen_at)
             if view.get("online"):
-                continue
+                details = heartbeat.get("details")
+                stopped_at = str(
+                    details.get(_DETECTOR_MONITOR_STOPPED_AT_KEY)
+                    if isinstance(details, dict)
+                    else ""
+                ).strip()
+                if not stopped_at:
+                    continue
+                expiry_left_at = stopped_at
+                left_reason = "monitor_stopped"
+            else:
+                expiry_left_at = self._detector_heartbeat_stale_left_at(
+                    view,
+                    heartbeat_seen_at,
+                )
+                left_reason = "heartbeat_stale"
             client_id = str(view.get("client_id") or "").strip()
             if client_id:
-                stale_client_ids[client_id] = stale_left_at
+                expiring_client_ids[client_id] = (expiry_left_at, left_reason)
 
-        if not stale_client_ids:
+        if not expiring_client_ids:
             return 0
 
         expired = 0
@@ -2506,25 +2541,40 @@ class IntelStore:
             if item.source != "eve-sentry-detector":
                 continue
             client_id = str(item.metadata.get("client_id") or "").strip()
-            stale_seen_at = stale_client_ids.get(client_id)
-            if not stale_seen_at:
-                for stale_client_id, candidate_seen_at in stale_client_ids.items():
-                    if client_id.startswith(f"{stale_client_id}:"):
-                        stale_seen_at = candidate_seen_at
+            expiry_state = expiring_client_ids.get(client_id)
+            if not expiry_state:
+                for parent_client_id, candidate_state in expiring_client_ids.items():
+                    if client_id.startswith(f"{parent_client_id}:"):
+                        expiry_state = candidate_state
                         break
-            if not stale_seen_at:
+            if not expiry_state:
                 continue
-            if self._channel_seen_after(item.last_seen_at, stale_seen_at):
+            expiry_seen_at, left_reason = expiry_state
+            if left_reason == "monitor_stopped":
+                stopped_at = self._parse_timestamp(expiry_seen_at)
+                last_seen_at = self._parse_timestamp(item.last_seen_at)
+                if stopped_at is None or last_seen_at is None:
+                    continue
+                grace_anchor = max(stopped_at, last_seen_at)
+                if now_at <= grace_anchor + timedelta(
+                    seconds=DEFAULT_OCR_GRACE_SECONDS
+                ):
+                    continue
+                expiry_seen_at = (
+                    grace_anchor + timedelta(seconds=DEFAULT_OCR_GRACE_SECONDS)
+                ).isoformat()
+            elif self._channel_seen_after(item.last_seen_at, expiry_seen_at):
                 last_seen_at = self._parse_timestamp(item.last_seen_at)
                 if last_seen_at is None or now_at <= last_seen_at + timedelta(
                     seconds=DEFAULT_OCR_GRACE_SECONDS
                 ):
                     continue
-                stale_seen_at = (
+                expiry_seen_at = (
                     last_seen_at + timedelta(seconds=DEFAULT_OCR_GRACE_SECONDS)
                 ).isoformat()
             item.active = False
-            item.left_at = stale_seen_at
+            item.left_at = expiry_seen_at
+            item.metadata["left_reason"] = left_reason
             self._ocr_missing_counts.pop(item.active_id, None)
             self._reset_ocr_alert_cooldown(item)
             expired += 1
@@ -2642,6 +2692,8 @@ class IntelStore:
         }
 
     def _heartbeat_view(self, heartbeat: dict[str, Any]) -> dict[str, Any]:
+        details = dict(heartbeat.get("details") or {})
+        details.pop(_DETECTOR_MONITOR_STOPPED_AT_KEY, None)
         item = {
             "client_id": str(heartbeat.get("client_id") or "").strip(),
             "client_type": str(heartbeat.get("client_type") or "client").strip(),
@@ -2652,7 +2704,7 @@ class IntelStore:
                 heartbeat.get("heartbeat_interval_seconds", 0),
                 "heartbeat_interval_seconds",
             ),
-            "details": dict(heartbeat.get("details") or {}),
+            "details": details,
         }
         age_seconds = self._heartbeat_age_seconds(item["seen_at"])
         if age_seconds is not None:

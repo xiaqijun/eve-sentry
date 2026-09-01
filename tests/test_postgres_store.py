@@ -210,6 +210,40 @@ def test_postgres_heartbeat_row_accepts_legacy_empty_attribution():
     assert store._heartbeat_row(heartbeat)[-3:] == ("", "", "")
 
 
+def test_postgres_heartbeat_roundtrip_keeps_private_stop_state_out_of_view():
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    heartbeat = store._heartbeat_from_row(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "label": "Detector",
+            "status": "idle",
+            "seen_at": "2099-07-03T10:00:06+00:00",
+            "heartbeat_interval_seconds": 5,
+            "details_json": (
+                '{"monitoring":false,"last_action":"ocr_snapshot:1",'
+                '"_server_monitor_stopped_at":"2099-07-03T10:00:01+00:00"}'
+            ),
+            "user_id": "user-1",
+            "api_key_id": "key-1",
+            "remote_ip": "127.0.0.1",
+        }
+    )
+
+    assert heartbeat is not None
+    assert heartbeat["details"]["_server_monitor_stopped_at"] == (
+        "2099-07-03T10:00:01+00:00"
+    )
+    persisted_details = json.loads(store._heartbeat_row(heartbeat)[6])
+    assert persisted_details["_server_monitor_stopped_at"] == (
+        "2099-07-03T10:00:01+00:00"
+    )
+    assert store._heartbeat_view(heartbeat)["details"] == {
+        "monitoring": False,
+        "last_action": "ocr_snapshot:1",
+    }
+
+
 def test_postgres_refresh_detector_heartbeat_persists_parent(monkeypatch):
     store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
     store._lock = threading.RLock()
