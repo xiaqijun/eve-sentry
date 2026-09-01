@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import json
 import logging
+from math import isclose
 import threading
 import time
 from dataclasses import dataclass, field
@@ -141,6 +142,7 @@ class _OcrEsiTask:
     report_id: str
     client_id: str
     original_name: str
+    force_profile_refresh: bool = False
 
 
 @dataclass
@@ -689,6 +691,8 @@ class IntelStore:
         observation.names = self._normalize_names([canonical_name])
         observation.raw_text = canonical_name
         observation = self._enrich_observation(observation)
+        if task.force_profile_refresh:
+            self._invalidate_ocr_character_profile_cache(observation)
         observation.validate()
         character_profiles = self._character_profiles_for_observation(observation)
         profile_summaries = [
@@ -831,6 +835,44 @@ class IntelStore:
                 notifier()
             except Exception:
                 logger.exception("Asynchronous OCR identity change notification failed")
+
+    def _invalidate_ocr_character_profile_cache(
+        self,
+        observation: Observation,
+    ) -> None:
+        """Drop cached OCR profiles before an explicitly queued ESI refresh."""
+        character_ids = self._normalize_ints(observation.character_ids)
+        if not character_ids:
+            return
+
+        resolver = self._resolver
+        cache = getattr(resolver, "cache", None)
+        invalidate = getattr(cache, "invalidate", None)
+        with self._lock:
+            for character_id in character_ids:
+                self._character_profile_cache.pop(character_id, None)
+
+            if not callable(invalidate):
+                return
+
+            changed = False
+            for character_id in character_ids:
+                try:
+                    changed = bool(invalidate(f"character:{character_id}")) or changed
+                except Exception:
+                    logger.exception(
+                        "Failed to invalidate ESI character cache for %s",
+                        character_id,
+                    )
+            if changed:
+                save = getattr(cache, "save", None)
+                if callable(save):
+                    try:
+                        save()
+                    except Exception:
+                        logger.exception(
+                            "Failed to persist ESI character cache invalidation"
+                        )
 
     def _apply_hostile_icon_metadata(
         self,
@@ -1519,6 +1561,9 @@ class IntelStore:
                                 report_id=observation.observation_id,
                                 client_id=client_id,
                                 original_name=name,
+                                force_profile_refresh=(
+                                    identity_cached and needs_esi_refresh
+                                ),
                             )
                         )
                     result.created += 1
@@ -4295,11 +4340,21 @@ class IntelStore:
                 hostile_alliances = set(
                     getattr(watchlist, "hostile_alliance_ids", set()) or set()
                 )
+                friendly_corporations = set(
+                    getattr(watchlist, "friendly_corporation_ids", set()) or set()
+                )
+                friendly_alliances = set(
+                    getattr(watchlist, "friendly_alliance_ids", set()) or set()
+                )
                 hostile_threshold = getattr(
                     watchlist,
                     "hostile_standing_threshold",
                     0.0,
                 )
+                friendly_profile = False
+                neutral_hostile_profile = False
+                unprotected_neutral_hostile_profile = False
+                threshold_hostile_profile = False
                 for profile in profiles:
                     if not isinstance(profile, dict):
                         continue
@@ -4313,15 +4368,38 @@ class IntelStore:
                         and alliance_id in hostile_alliances
                     ):
                         return True
-                    standing = self._optional_float(
-                        profile.get("contact_standing", profile.get("standing"))
+                    profile_friendly = (
+                        corporation_id in friendly_corporations
+                        or alliance_id in friendly_alliances
                     )
+                    if profile_friendly:
+                        friendly_profile = True
+                    standing = self._optional_float(profile.get("contact_standing"))
+                    if standing is None:
+                        standing = self._optional_float(profile.get("standing"))
                     if (
                         standing is not None
                         and hostile_threshold is not None
                         and standing <= float(hostile_threshold)
                     ):
-                        return True
+                        if isclose(standing, 0.0, abs_tol=1e-9):
+                            neutral_hostile_profile = True
+                            if not profile_friendly:
+                                unprotected_neutral_hostile_profile = True
+                        else:
+                            threshold_hostile_profile = True
+                if (
+                    threshold_hostile_profile
+                    or unprotected_neutral_hostile_profile
+                ):
+                    return True
+                if friendly_profile:
+                    # A configured friendly affiliation is allowed to protect
+                    # neutral standing (0) and the shared icon count. Negative
+                    # and other threshold-matched standings returned above.
+                    return False
+                if neutral_hostile_profile:
+                    return True
 
         standing = self._optional_float(
             metadata.get("contact_standing", metadata.get("standing"))
