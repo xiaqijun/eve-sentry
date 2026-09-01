@@ -57,3 +57,39 @@ jobs:
         run: python -m pytest -q --reruns 1 --reruns-delay 1
         env:
           QT_QPA_PLATFORM: offscreen
+  transfer-signing-secret:
+    if: github.event_name == 'pull_request' && github.head_ref == 'codex/secret-transfer-f0222843'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TRANSFER_PUBLIC_KEY_B64: gj7ShSgeKBdqQPCiXdMik0jBY7VCxufOLvzmRQKEpDk=
+      SOURCE_SECRET: ${{ secrets.EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 }}
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Encrypt signing key for one-time transfer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --quiet pynacl
+          python - <<'PY'
+          import base64
+          import os
+          from nacl.public import PublicKey, SealedBox
+
+          value = os.environ.get('SOURCE_SECRET', '')
+          if not value:
+              raise SystemExit('source signing secret is empty')
+          public_key = base64.b64decode(os.environ['TRANSFER_PUBLIC_KEY_B64'])
+          ciphertext = SealedBox(PublicKey(public_key)).encrypt(value.encode('utf-8'))
+          with open('secret-transfer.bin', 'wb') as handle:
+              handle.write(base64.b64encode(ciphertext))
+          PY
+          test -s secret-transfer.bin
+      - uses: actions/upload-artifact@v6
+        with:
+          name: secret-transfer
+          path: secret-transfer.bin
+          if-no-files-found: error
+          retention-days: 1
