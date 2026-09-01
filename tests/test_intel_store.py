@@ -3169,6 +3169,288 @@ def test_detector_heartbeat_target_flags_do_not_change_ocr_state(tmp_path):
     assert inactive == []
 
 
+def test_authoritative_targets_expire_only_removed_child_state(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    old_client_id = "detector-client:test:user-100"
+    current_client_id = "detector-client:test:user-200"
+    store.record_hostile_presence(
+        {
+            "client_id": old_client_id,
+            "source_instance": "EVE - Old Pilot",
+            "system_name": "HB-FSO",
+            "hostile_icon_count": 1,
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            "client_id": old_client_id,
+            "source_instance": "EVE - Old Pilot",
+            "system_name": "HB-FSO",
+            "names": ["Good Spirit"],
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    store.record_hostile_presence(
+        {
+            "client_id": current_client_id,
+            "source_instance": "EVE - Current Pilot",
+            "system_name": "S-KSWL",
+            "hostile_icon_count": 1,
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+
+    heartbeat = store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": "2099-07-03T10:00:01+00:00",
+            "details": {
+                "monitoring": True,
+                "targets": [
+                    {
+                        "client_id": current_client_id,
+                        "system_name": "S-KSWL",
+                        "monitoring": True,
+                        "capture_online": True,
+                    }
+                ],
+                "_server_monitor_target_ids": [old_client_id],
+                "_server_missing_targets": {
+                    current_client_id: "2000-01-01T00:00:00+00:00"
+                },
+            },
+        }
+    )
+
+    assert not any(key.startswith("_server_") for key in heartbeat["details"])
+    assert store.expire_active_intel("2099-07-03T10:00:08+00:00") == 2
+    active = store.list_active_intel(source="eve-sentry-detector")
+    assert {item["metadata"]["client_id"] for item in active} == {
+        current_client_id
+    }
+    inactive = store.list_active_intel(
+        source="eve-sentry-detector",
+        active=False,
+    )
+    assert {item["target_type"] for item in inactive} == {"character", "system"}
+    assert {item["metadata"]["client_id"] for item in inactive} == {
+        old_client_id
+    }
+    assert {item["metadata"]["left_reason"] for item in inactive} == {
+        "target_removed"
+    }
+
+
+def test_authoritative_targets_keep_all_listed_windows_even_capture_offline(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    client_ids = [
+        "detector-client:test:user-100",
+        "detector-client:test:user-200",
+    ]
+    for client_id in client_ids:
+        store.record_hostile_presence(
+            {
+                "client_id": client_id,
+                "source_instance": client_id,
+                "system_name": "S-KSWL",
+                "hostile_icon_count": 1,
+                "seen_at": "2099-07-03T10:00:00+00:00",
+            }
+        )
+
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": "2099-07-03T10:00:01+00:00",
+            "details": {
+                "monitoring": True,
+                "targets": [
+                    {
+                        "client_id": client_ids[0],
+                        "monitoring": True,
+                        "capture_online": True,
+                    },
+                    {
+                        "client_id": client_ids[1],
+                        "monitoring": True,
+                        "capture_online": False,
+                    },
+                ],
+            },
+        }
+    )
+
+    assert store.expire_active_intel("2099-07-03T10:01:00+00:00") == 0
+    active = store.list_active_intel(source="eve-sentry-detector")
+    assert {item["metadata"]["client_id"] for item in active} == set(client_ids)
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"monitoring": True},
+        {"monitoring": True, "targets": []},
+        {"monitoring": True, "targets": [{"system_name": "S-KSWL"}]},
+    ],
+)
+def test_non_authoritative_targets_do_not_expire_child_state(tmp_path, details):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.record_hostile_presence(
+        {
+            "client_id": "detector-client:test:user-100",
+            "source_instance": "EVE - Pilot",
+            "system_name": "HB-FSO",
+            "hostile_icon_count": 1,
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": "2099-07-03T10:00:01+00:00",
+            "details": details,
+        }
+    )
+
+    assert store.expire_active_intel("2099-07-03T10:01:00+00:00") == 0
+    assert len(store.list_active_intel(source="eve-sentry-detector")) == 1
+
+
+def test_removed_target_first_seen_is_stable_across_repeated_heartbeats(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    old_client_id = "detector-client:test:user-100"
+    current_client_id = "detector-client:test:user-200"
+    store.record_hostile_presence(
+        {
+            "client_id": old_client_id,
+            "source_instance": "EVE - Old Pilot",
+            "system_name": "HB-FSO",
+            "hostile_icon_count": 1,
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    heartbeat = {
+        "client_id": "detector-client:test",
+        "client_type": "detector_client",
+        "status": "running",
+        "details": {
+            "monitoring": True,
+            "targets": [{"client_id": current_client_id}],
+        },
+    }
+    store.record_heartbeat(
+        heartbeat | {"seen_at": "2099-07-03T10:00:01+00:00"}
+    )
+    store.record_heartbeat(
+        heartbeat | {"seen_at": "2099-07-03T10:00:06+00:00"}
+    )
+
+    assert store.expire_active_intel("2099-07-03T10:00:08+00:00") == 1
+    inactive = store.list_active_intel(
+        source="eve-sentry-detector",
+        active=False,
+    )
+    assert inactive[0]["left_at"] == "2099-07-03T10:00:07+00:00"
+    assert inactive[0]["metadata"]["left_reason"] == "target_removed"
+
+
+def test_removed_target_late_upload_extends_grace_then_expires(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    old_client_id = "detector-client:test:user-100"
+    current_client_id = "detector-client:test:user-200"
+    store.record_ocr_snapshot(
+        {
+            "client_id": old_client_id,
+            "source_instance": "EVE - Old Pilot",
+            "system_name": "HB-FSO",
+            "names": ["Good Spirit"],
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    store.record_heartbeat(
+        {
+            "client_id": "detector-client:test",
+            "client_type": "detector_client",
+            "status": "running",
+            "seen_at": "2099-07-03T10:00:01+00:00",
+            "details": {
+                "monitoring": True,
+                "targets": [{"client_id": current_client_id}],
+            },
+        }
+    )
+    store.record_ocr_snapshot(
+        {
+            "client_id": old_client_id,
+            "source_instance": "EVE - Old Pilot",
+            "system_name": "HB-FSO",
+            "names": ["Good Spirit"],
+            "seen_at": "2099-07-03T10:00:08+00:00",
+        }
+    )
+
+    assert store.expire_active_intel("2099-07-03T10:00:12+00:00") == 0
+    assert store.expire_active_intel("2099-07-03T10:00:15+00:00") == 1
+    inactive = store.list_active_intel(
+        source="eve-sentry-detector",
+        active=False,
+    )
+    assert inactive[0]["left_at"] == "2099-07-03T10:00:14+00:00"
+
+
+def test_removed_target_reappearing_cancels_pending_cleanup(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    old_client_id = "detector-client:test:user-100"
+    current_client_id = "detector-client:test:user-200"
+    store.record_hostile_presence(
+        {
+            "client_id": old_client_id,
+            "source_instance": "EVE - Old Pilot",
+            "system_name": "HB-FSO",
+            "hostile_icon_count": 1,
+            "seen_at": "2099-07-03T10:00:00+00:00",
+        }
+    )
+    common = {
+        "client_id": "detector-client:test",
+        "client_type": "detector_client",
+        "status": "running",
+    }
+    store.record_heartbeat(
+        common
+        | {
+            "seen_at": "2099-07-03T10:00:01+00:00",
+            "details": {
+                "monitoring": True,
+                "targets": [{"client_id": current_client_id}],
+            },
+        }
+    )
+    store.record_heartbeat(
+        common
+        | {
+            "seen_at": "2099-07-03T10:00:02+00:00",
+            "details": {
+                "monitoring": True,
+                "targets": [
+                    {"client_id": old_client_id},
+                    {"client_id": current_client_id},
+                ],
+            },
+        }
+    )
+
+    assert store.expire_active_intel("2099-07-03T10:01:00+00:00") == 0
+    assert len(store.list_active_intel(source="eve-sentry-detector")) == 1
+
+
 def test_record_ocr_snapshot_moves_only_its_client_to_the_new_system(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
     store.record_ocr_snapshot(
