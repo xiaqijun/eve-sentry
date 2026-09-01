@@ -27,6 +27,7 @@ async def test_rendered_report_cache_reuses_normalized_roster() -> None:
         assert cached == (b"png-data", 1, 241)
         assert await redis.ttl(_report_cache_key(["MP5K"])) <= REPORT_CACHE_TTL_SECONDS
         assert await _get_cached_report(redis, ["Another Pilot"]) is None
+        assert _report_cache_key(["MP5K"]).startswith("report:image:v3:")
     finally:
         await redis.aclose()
 
