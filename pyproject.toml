@@ -36,6 +36,7 @@ dev = [
 [project.scripts]
 eve-risk-bot = "eve_risk.bot:main"
 eve-risk-health = "eve_risk.health:main"
+eve-risk-configure-qq-panel = "eve_risk.qq_panel:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/eve_risk"]
