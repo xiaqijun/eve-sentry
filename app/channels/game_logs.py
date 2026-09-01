@@ -94,6 +94,7 @@ class GameConnectionLogWatcher:
         active_names: set[str] = set()
         events: list[GameConnectionEvent] = []
         available = list(paths)
+        assignments: dict[str, Path] = {}
         for target in target_list:
             key = str(target.get("key") or target.get("client_id") or "").strip()
             client_id = str(target.get("client_id") or key).strip()
@@ -116,8 +117,51 @@ class GameConnectionLogWatcher:
             if path is None:
                 continue
             active_names.add(path.name.casefold())
-            available = [item for item in available if item.name.casefold() != path.name.casefold()]
-            events.extend(self._read_path(path, key, client_id))
+            assignments[key] = path
+            # Files with an explicit character suffix are one-to-one. A
+            # timestamp-only file has no identity and may be shared when the
+            # launcher exposes a single log stream for multiple windows.
+            if trailing_game_log_id(path):
+                available = [
+                    item
+                    for item in available
+                    if item.name.casefold() != path.name.casefold()
+                ]
+
+        events_by_path: dict[str, list[GameConnectionEvent]] = {}
+        targets_by_key = {
+            str(item.get("key") or item.get("client_id") or "").strip(): item
+            for item in target_list
+        }
+        for key, path in assignments.items():
+            path_key = path.name.casefold()
+            if path_key in events_by_path:
+                continue
+            target = targets_by_key[key]
+            events_by_path[path_key] = self._read_path(
+                path,
+                key,
+                str(target.get("client_id") or key).strip(),
+            )
+        for key, path in assignments.items():
+            path_events = events_by_path.get(path.name.casefold(), [])
+            if not path_events:
+                continue
+            target = targets_by_key[key]
+            client_id = str(target.get("client_id") or key).strip()
+            for event in path_events:
+                events.append(
+                    event
+                    if event.target_key == key and event.client_id == client_id
+                    else GameConnectionEvent(
+                        target_key=key,
+                        client_id=client_id,
+                        log_id=event.log_id,
+                        state=event.state,
+                        message=event.message,
+                        occurred_at=event.occurred_at,
+                    )
+                )
 
         # Forget sessions that are no longer among the newest files.  This lets
         # a restarted EVE process acquire its new log instance cleanly.
@@ -267,7 +311,11 @@ def game_log_id(path: str | Path) -> str:
 
 
 def trailing_game_log_id(path: str | Path) -> str:
-    match = _TRAILING_ID_RE.search(game_log_id(path))
+    stem = game_log_id(path)
+    # The final six digits of a timestamp are not a character identifier.
+    if _TIMESTAMP_RE.fullmatch(stem):
+        return ""
+    match = _TRAILING_ID_RE.search(stem)
     return match.group("id") if match else ""
 
 

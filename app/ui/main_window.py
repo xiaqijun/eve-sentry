@@ -837,10 +837,9 @@ class MainWindow(QMainWindow):
                     "system_source": (
                         "env" if configured_system != "Unknown" else "default"
                     ),
-                    # Gamelog connection state is independent from capture
-                    # state.  It starts as unknown/online until a log
-                    # transition is observed for this window's log instance.
-                    "game_connection_online": True,
+                    # Do not assume the game is online before a matching
+                    # Gamelog transition has been observed.
+                    "game_connection_online": None,
                     "game_connection_log_id": "",
                     "game_connection_last_event_at": "",
                     "_location_next_check": 0.0,
@@ -2297,6 +2296,7 @@ class MainWindow(QMainWindow):
                     "Gamelog 检测到服务器连接已断开",
                     error=event.message,
                 )
+                self._clear_hostile_presence(context)
             else:
                 self._heartbeat_last_action = "game_connection_restored"
                 self._heartbeat_last_error = ""
@@ -2310,6 +2310,10 @@ class MainWindow(QMainWindow):
                         "运行中",
                         "Gamelog 检测到服务器连接已恢复",
                     )
+                worker = _instance_attr(self, "_workers", {}).get(event.target_key)
+                request_refresh = getattr(worker, "request_presence_refresh", None)
+                if callable(request_refresh):
+                    request_refresh()
             if _instance_attr(self, "_uploads_enabled", False):
                 self._publish_heartbeat(
                     monitoring_override=True,
@@ -2811,7 +2815,18 @@ class MainWindow(QMainWindow):
         connection_restored = getattr(worker, "connection_restored", None)
         if connection_restored is not None:
             connection_restored.connect(
-                lambda context=target: self._on_worker_connection_restored(context)
+                lambda context=target, worker=worker: self._on_worker_connection_restored(
+                    context,
+                    worker,
+                )
+            )
+        finished = getattr(worker, "finished", None)
+        if finished is not None:
+            finished.connect(
+                lambda context=target, worker=worker: self._on_monitor_worker_finished(
+                    context,
+                    worker,
+                )
             )
         worker.scan_complete.connect(self._update_scan_count)
         target["runtime_status"] = "准备中"
@@ -2831,8 +2846,12 @@ class MainWindow(QMainWindow):
         removed_keys = set(workers) - set(target_by_key)
 
         for key in removed_keys:
-            worker = workers.pop(key, None)
-            context = contexts.pop(key, None)
+            worker = workers.get(key)
+            context = contexts.get(key)
+            if context:
+                self._clear_hostile_presence(context)
+            workers.pop(key, None)
+            contexts.pop(key, None)
             if worker is None:
                 continue
             if context:
@@ -2884,6 +2903,8 @@ class MainWindow(QMainWindow):
                     worker.set_region(region["x"], region["y"], region["w"], region["h"])
                 continue
             if worker is not None:
+                if context is not None:
+                    self._clear_hostile_presence(context)
                 self._disconnect_worker_signals(worker)
                 worker.stop()
                 if worker.isRunning():
@@ -2980,13 +3001,18 @@ class MainWindow(QMainWindow):
         self._heartbeat_last_error = text
         self._log_message(f"{context.get('window_title', 'EVE')}: 监控掉线：{text}")
         self._update_window_status(context, "掉线", "等待窗口/画面恢复", error=text)
+        self._clear_hostile_presence(context)
         if _instance_attr(self, "_uploads_enabled", False):
             self._publish_heartbeat(
                 monitoring_override=True,
                 task_key=f"heartbeat:{context.get('key', 'window')}:offline",
             )
 
-    def _on_worker_connection_restored(self, context: dict) -> None:
+    def _on_worker_connection_restored(
+        self,
+        context: dict,
+        worker: MonitorWorker | None = None,
+    ) -> None:
         """Record capture recovery and publish a fresh online heartbeat."""
         context["capture_online"] = True
         context["capture_failure_count"] = 0
@@ -2995,11 +3021,36 @@ class MainWindow(QMainWindow):
         self._heartbeat_last_success_at = heartbeat_now_iso()
         self._log_message(f"{context.get('window_title', 'EVE')}: 监控已恢复")
         self._update_window_status(context, "运行中", "后台画面已恢复")
+        request_refresh = getattr(worker, "request_presence_refresh", None)
+        if callable(request_refresh):
+            request_refresh()
         if _instance_attr(self, "_uploads_enabled", False):
             self._publish_heartbeat(
                 monitoring_override=True,
                 task_key=f"heartbeat:{context.get('key', 'window')}:restored",
             )
+
+    def _on_monitor_worker_finished(
+        self,
+        context: dict,
+        worker: MonitorWorker,
+    ) -> None:
+        """Clear stale hostile state when a current worker exits unexpectedly."""
+        key = str(context.get("key") or "")
+        if _instance_attr(self, "_workers", {}).get(key) is not worker:
+            return
+        if worker in _instance_attr(self, "_stopping_monitor_workers", set()):
+            return
+        if _instance_attr(self, "_shutdown_in_progress", False):
+            return
+        if context.get("capture_online") is not False:
+            self._on_worker_connection_lost(
+                "监控线程已退出，等待自动重连",
+                context,
+                worker,
+            )
+            return
+        self._clear_hostile_presence(context)
 
     def _on_hostile_icon_detected(self, count: int, context: dict) -> None:
         """Update the local system alert as soon as its red-icon count changes."""
@@ -3088,6 +3139,52 @@ class MainWindow(QMainWindow):
                 metadata,
             )
 
+    def _clear_hostile_presence(
+        self,
+        context: dict,
+        *,
+        clear_local: bool = True,
+    ) -> None:
+        """Clear one monitor's server presence and recompute its local map tile."""
+        context["_hostile_icon_count"] = 0
+        self._publish_hostile_presence(0, context, refresh_location=False)
+        if not clear_local:
+            return
+
+        system_name = str(context.get("system_name") or "Unknown").strip() or "Unknown"
+        system_key = system_name.casefold()
+        remaining_count = 0
+        for candidate in _instance_attr(self, "_worker_contexts", {}).values():
+            candidate_system = str(
+                candidate.get("system_name") or "Unknown"
+            ).strip().casefold()
+            if candidate_system != system_key:
+                continue
+            try:
+                candidate_count = max(
+                    0,
+                    int(candidate.get("_hostile_icon_count") or 0),
+                )
+            except (TypeError, ValueError):
+                candidate_count = 0
+            remaining_count = max(remaining_count, candidate_count)
+
+        controller = _instance_attr(self, "_alert_controller")
+        if controller is None:
+            return
+        if remaining_count > 0:
+            update = getattr(controller, "update_local_hostile_count", None)
+            if callable(update):
+                update(system_name, remaining_count)
+            return
+        forget = getattr(controller, "forget_local_monitoring_systems", None)
+        if callable(forget):
+            forget([system_name])
+            return
+        update = getattr(controller, "update_local_hostile_count", None)
+        if callable(update):
+            update(system_name, 0)
+
     def _disconnect_worker_signals(self, worker: MonitorWorker | None = None) -> None:
         """Safely disconnect all signals from the current worker."""
         worker = worker or self._worker
@@ -3126,13 +3223,15 @@ class MainWindow(QMainWindow):
 
     def _stop_monitor(self, *, wait_for_workers: bool = False) -> None:
         monitoring_systems = self._monitoring_system_names()
+        network_tasks = _instance_attr(self, "_network_tasks")
+        if network_tasks is not None:
+            network_tasks.cancel_latest()
+        for context in list(_instance_attr(self, "_worker_contexts", {}).values()):
+            self._clear_hostile_presence(context, clear_local=False)
         controller = _instance_attr(self, "_alert_controller")
         forget_systems = getattr(controller, "forget_local_monitoring_systems", None)
         if callable(forget_systems):
             forget_systems(monitoring_systems)
-        network_tasks = _instance_attr(self, "_network_tasks")
-        if network_tasks is not None:
-            network_tasks.cancel_latest()
         self._heartbeat_last_action = "monitor_stopped"
         if _instance_attr(self, "_uploads_enabled", False):
             self._publish_heartbeat(
@@ -3560,8 +3659,13 @@ class MainWindow(QMainWindow):
             self._disable_authenticated_features(label)
         elif state in {"reconnecting", "offline_cached"}:
             self._last_heartbeat_error = label
-        else:
+        elif state == "online":
             self._last_heartbeat_error = ""
+
+    def _on_upload_queue_state_changed(self, state: str, label: str) -> None:
+        """Keep OCR/presence queue failures out of server connection status."""
+        if state in {"reconnecting", "offline_cached"}:
+            self._log_message(f"业务上报暂不可用：{label}")
 
     def _reset_upload_manager(self) -> None:
         """Rebuild reliable uploads after server URL or credentials change."""
@@ -3578,6 +3682,9 @@ class MainWindow(QMainWindow):
             # Some focused tests construct MainWindow without QObject.__init__.
             self._upload_manager = ReliableUploadManager(client, parent=None)
         self._upload_manager.state_changed.connect(self._on_upload_state_changed)
+        upload_state_signal = getattr(self._upload_manager, "upload_state_changed", None)
+        if upload_state_signal is not None:
+            upload_state_signal.connect(self._on_upload_queue_state_changed)
         self._upload_manager.snapshot_uploaded.connect(
             self._handle_ocr_publish_success
         )
@@ -3887,10 +3994,6 @@ class MainWindow(QMainWindow):
         network_tasks = _instance_attr(self, "_network_tasks")
         if network_tasks is not None:
             network_tasks.shutdown()
-        upload_manager = _instance_attr(self, "_upload_manager")
-        if upload_manager is not None:
-            upload_manager.shutdown(timeout=0.0)
-            self._upload_manager = None
         QTimer.singleShot(0, self._finish_quit_when_workers_stop)
 
     def _finish_quit_when_workers_stop(self) -> None:
@@ -3918,22 +4021,54 @@ class MainWindow(QMainWindow):
             updater is not None
             and getattr(updater, "has_running_file_tasks", False)
         )
-        if monitor_running or alert_running or preview_running or updater_running:
+        upload_manager = _instance_attr(self, "_upload_manager")
+        pending_presence = getattr(upload_manager, "pending_presence_count", None)
+        pending_heartbeat = getattr(upload_manager, "pending_heartbeat_count", None)
+        try:
+            presence_pending = bool(
+                callable(pending_presence) and pending_presence() > 0
+            )
+            heartbeat_pending = bool(
+                callable(pending_heartbeat) and pending_heartbeat() > 0
+            )
+        except Exception:
+            logger.exception("Unable to inspect pending detector state during shutdown")
+            presence_pending = False
+            heartbeat_pending = False
+        if (
+            monitor_running
+            or alert_running
+            or preview_running
+            or updater_running
+            or presence_pending
+            or heartbeat_pending
+        ):
             deadline = float(
                 _instance_attr(self, "_shutdown_deadline", float("inf"))
             )
             if time.monotonic() >= deadline:
                 logger.error(
-                    "Shutdown deadline reached: monitor=%s alert=%s preview=%s updater=%s",
+                    "Shutdown deadline reached: monitor=%s alert=%s preview=%s updater=%s presence=%s heartbeat=%s",
                     monitor_running,
                     alert_running,
                     preview_running,
                     updater_running,
+                    presence_pending,
+                    heartbeat_pending,
                 )
+                if upload_manager is not None:
+                    upload_manager.shutdown(timeout=0.0)
+                    self._upload_manager = None
+                completed = _instance_attr(self, "_shutdown_complete")
+                if completed is not None:
+                    completed.set()
                 QApplication.quit()
                 return
             QTimer.singleShot(50, self._finish_quit_when_workers_stop)
             return
+        if upload_manager is not None:
+            upload_manager.shutdown(timeout=0.0)
+            self._upload_manager = None
         completed = _instance_attr(self, "_shutdown_complete")
         if completed is not None:
             completed.set()

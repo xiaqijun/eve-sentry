@@ -321,6 +321,47 @@ def test_shutdown_poll_quits_only_after_qt_workers_exit(monkeypatch):
     assert calls == ["quit"]
 
 
+def test_shutdown_poll_waits_for_pending_presence_clear(monkeypatch):
+    callbacks = []
+    calls = []
+
+    class FakeUploadManager:
+        pending = 1
+
+        def pending_presence_count(self):
+            return self.pending
+
+        def shutdown(self, timeout=0.0):
+            calls.append(("upload_shutdown", timeout))
+
+    class FakeWindow:
+        def __init__(self):
+            self._stopping_monitor_workers = set()
+            self._stopping_alert_controllers = set()
+            self._upload_manager = FakeUploadManager()
+            self._finish_quit_when_workers_stop = (
+                lambda: MainWindow._finish_quit_when_workers_stop(self)
+            )
+
+    window = FakeWindow()
+    monkeypatch.setattr(
+        "app.ui.main_window.QTimer.singleShot",
+        lambda delay, callback: callbacks.append((delay, callback)),
+    )
+    monkeypatch.setattr(QApplication, "quit", lambda: calls.append("quit"))
+
+    MainWindow._finish_quit_when_workers_stop(window)
+
+    assert callbacks and callbacks[0][0] == 50
+    assert calls == []
+
+    window._upload_manager.pending = 0
+    callbacks.pop()[1]()
+
+    assert calls == [("upload_shutdown", 0.0), "quit"]
+    assert window._upload_manager is None
+
+
 def test_alert_toggle_starts_and_stops_embedded_controller(monkeypatch):
     calls = []
     qt_app()
@@ -981,6 +1022,130 @@ def test_hostile_icon_detection_logs_when_alerts_are_disabled():
             "敌对告警",
             "S-KSWL 检测到 2 个敌对图标",
         )
+    ]
+
+
+def test_worker_connection_loss_clears_presence_and_local_map_state():
+    class UploadManager:
+        def __init__(self):
+            self.calls = []
+
+        def submit_presence(self, key, payload, metadata):
+            self.calls.append((key, payload, metadata))
+
+    class AlertController:
+        def __init__(self):
+            self.forgotten = []
+
+        def forget_local_monitoring_systems(self, systems):
+            self.forgotten.append(list(systems))
+
+    manager = UploadManager()
+    controller = AlertController()
+    context = {
+        "key": "pilot-a",
+        "client_id": "detector:device:pilot-a",
+        "source_instance": "EVE - Pilot A",
+        "window_title": "EVE - Pilot A",
+        "system_name": "HB-FSO",
+        "system_id": 30000142,
+        "_hostile_icon_count": 1,
+    }
+    worker = SimpleNamespace(_capture_failure_count=3)
+    window = MainWindow.__new__(MainWindow)
+    window._intel_client = object()
+    window._uploads_enabled = True
+    window._upload_manager = manager
+    window._alert_controller = controller
+    window._worker_contexts = {"pilot-a": context}
+    window._log_message = lambda _message: None
+    window._update_window_status = lambda *_args, **_kwargs: None
+    heartbeat_calls = []
+    window._publish_heartbeat = lambda **kwargs: heartbeat_calls.append(kwargs)
+
+    MainWindow._on_worker_connection_lost(
+        window,
+        "EVE 窗口已关闭，等待自动重连",
+        context,
+        worker,
+    )
+
+    assert context["_hostile_icon_count"] == 0
+    assert context["capture_online"] is False
+    assert controller.forgotten == [["HB-FSO"]]
+    assert len(manager.calls) == 1
+    key, payload, metadata = manager.calls[0]
+    assert key == "detector:device:pilot-a"
+    assert payload["system_name"] == "HB-FSO"
+    assert payload["hostile_icon_count"] == 0
+    assert metadata["hostile_icon_count"] == 0
+    assert heartbeat_calls == [
+        {
+            "monitoring_override": True,
+            "task_key": "heartbeat:pilot-a:offline",
+        }
+    ]
+
+
+def test_game_connection_offline_clears_presence_and_online_refreshes_worker():
+    events = [
+        SimpleNamespace(
+            target_key="pilot-a",
+            state="offline",
+            log_id="gamelog-a",
+            occurred_at="2026-09-02T10:00:00+00:00",
+            message="connection lost",
+        ),
+        SimpleNamespace(
+            target_key="pilot-a",
+            state="online",
+            log_id="gamelog-a",
+            occurred_at="2026-09-02T10:00:05+00:00",
+            message="connection restored",
+        ),
+    ]
+
+    class Watcher:
+        def poll(self, _contexts):
+            return [events.pop(0)]
+
+    class Worker:
+        def __init__(self):
+            self.refresh_calls = 0
+
+        def request_presence_refresh(self):
+            self.refresh_calls += 1
+
+    worker = Worker()
+    context = {
+        "key": "pilot-a",
+        "system_name": "HB-FSO",
+        "_hostile_icon_count": 1,
+    }
+    window = MainWindow.__new__(MainWindow)
+    window._game_connection_watcher = Watcher()
+    window._worker_contexts = {"pilot-a": context}
+    window._workers = {"pilot-a": worker}
+    window._uploads_enabled = True
+    window._heartbeat_last_error = ""
+    window._clear_hostile_presence = lambda target: target.update(
+        _hostile_icon_count=0
+    )
+    heartbeat_calls = []
+    window._publish_heartbeat = lambda **kwargs: heartbeat_calls.append(kwargs)
+    window._log_message = lambda _message: None
+    window._update_window_status = lambda *_args, **_kwargs: None
+    window._refresh_status_cards = lambda: None
+
+    MainWindow._poll_game_connection_logs(window)
+    MainWindow._poll_game_connection_logs(window)
+
+    assert context["_hostile_icon_count"] == 0
+    assert context["game_connection_online"] is True
+    assert worker.refresh_calls == 1
+    assert [call["task_key"] for call in heartbeat_calls] == [
+        "heartbeat:pilot-a:game-connection",
+        "heartbeat:pilot-a:game-connection",
     ]
 
 
@@ -3111,6 +3276,8 @@ def test_reconcile_adds_and_removes_windows_without_restarting_survivor(monkeypa
     window._refresh_window_status_table = lambda: None
     window._log_message = lambda _message: None
     window._uploads_enabled = True
+    cleared_contexts = []
+    window._clear_hostile_presence = lambda context: cleared_contexts.append(context)
     monkeypatch.setattr(
         "app.ui.main_window.QTimer.singleShot",
         lambda _delay, _callback: None,
@@ -3133,6 +3300,7 @@ def test_reconcile_adds_and_removes_windows_without_restarting_survivor(monkeypa
     assert first_worker.stop_calls == 0
     assert created_workers[0].stop_calls == 1
     assert window._ocr_scheduler is scheduler
+    assert cleared_contexts == [window._worker_contexts.get(second_key, second_target)]
 
 
 def test_transient_missing_window_does_not_override_running_monitor_status():
@@ -3909,7 +4077,10 @@ def test_stop_monitor_keeps_connection_timer_and_publishes_idle_status():
     window._network_tasks = FakeNetworkTasks()
     window._workers = {"eve-hajimi6": object()}
     window._worker_contexts = {
-        "eve-hajimi6": {"system_name": "S-KSWL"},
+        "eve-hajimi6": {
+            "system_name": "S-KSWL",
+            "_hostile_icon_count": 1,
+        },
     }
     window._alert_controller = FakeAlertController()
     window._monitor_btn = FakeButton()
@@ -3920,8 +4091,14 @@ def test_stop_monitor_keeps_connection_timer_and_publishes_idle_status():
     window._heartbeat_last_success_at = "previous-success"
     window._refresh_status_cards = lambda: None
     heartbeat_calls = []
+    presence_calls = []
     stop_worker_timeouts = []
     window._publish_heartbeat = lambda **kwargs: heartbeat_calls.append(kwargs)
+    window._publish_hostile_presence = (
+        lambda count, context, refresh_location=False: presence_calls.append(
+            (count, context["system_name"], refresh_location, window._uploads_enabled)
+        )
+    )
     window._stop_monitor_workers = (
         lambda timeout_ms: stop_worker_timeouts.append(timeout_ms) or True
     )
@@ -3944,6 +4121,7 @@ def test_stop_monitor_keeps_connection_timer_and_publishes_idle_status():
             "task_key": "heartbeat:offline",
         }
     ]
+    assert presence_calls == [(0, "S-KSWL", False, True)]
     assert window._log_messages == ["监控已停止"]
 
 

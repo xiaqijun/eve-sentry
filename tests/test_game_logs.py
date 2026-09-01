@@ -98,7 +98,27 @@ def test_newer_log_instance_replaces_previous_id_assignment(tmp_path) -> None:
     assert events[0].log_id == second.stem
 
 
+def test_timestamp_only_log_is_shared_by_multiple_windows(tmp_path) -> None:
+    logs = tmp_path / "Gamelogs"
+    logs.mkdir()
+    log = logs / "20260831_110656.txt"
+    log.write_text("你的计算机已与EVE Online服务器断开网络通信\n", encoding="utf-8")
+    watcher = GameConnectionLogWatcher(logs)
+
+    events = watcher.poll(
+        [
+            {"key": "a", "client_id": "a", "character_id": 1001},
+            {"key": "b", "client_id": "b", "character_id": 2002},
+        ]
+    )
+
+    assert {(event.target_key, event.log_id) for event in events} == {
+        ("a", log.stem),
+        ("b", log.stem),
+    }
+
+
 def test_log_id_helpers() -> None:
     assert game_log_id("20260826_120000_1001.txt") == "20260826_120000_1001"
     assert trailing_game_log_id("20260826_120000_1001.txt") == "1001"
-    assert trailing_game_log_id("20260826_120000.txt") == "120000"
+    assert trailing_game_log_id("20260826_120000.txt") == ""
