@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.active_intel import ActiveIntelItem
-from app.core.models import Evidence, ThreatEvent
+from app.core.models import Evidence, Observation, ThreatEvent
 from app.esi.cache import EsiCache
 from app.esi.resolver import EsiResolver
 from app.intel.enrichment import ThreatEnricher, ThreatEnrichment
@@ -96,6 +96,47 @@ def test_async_ocr_identity_resolution_notifies_state_consumers(tmp_path):
         store.close()
 
     assert notifications == [True]
+
+
+def test_ocr_esi_refresh_invalidates_character_profile_layers(tmp_path):
+    cache = EsiCache(tmp_path / "esi_cache.json")
+    cache.set(
+        "character:2115746410",
+        {
+            "character_id": 2115746410,
+            "corporation_id": 1000168,
+            "alliance_id": None,
+        },
+        ttl_seconds=3600,
+    )
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        resolver=SimpleNamespace(cache=cache),
+    )
+    store._character_profile_cache[2115746410] = {
+        "character_id": 2115746410,
+        "corporation_id": 1000168,
+    }
+    observation = Observation(
+        source="eve-sentry-detector",
+        system_name="HB-FSO",
+        names=["Samcat"],
+        character_ids=[2115746410],
+        raw_text="Samcat",
+        seen_at="2026-09-01T13:48:02+00:00",
+        received_at="2026-09-01T13:48:03+00:00",
+        observation_id="obs-samcat-cache-refresh",
+    )
+
+    try:
+        store._invalidate_ocr_character_profile_cache(observation)
+
+        assert 2115746410 not in store._character_profile_cache
+        assert cache.get("character:2115746410") is None
+    finally:
+        store.close()
 
 
 def test_resume_pending_ocr_identity_tasks_after_restart(tmp_path):
@@ -903,6 +944,184 @@ def test_detector_hostility_uses_esi_hostile_affiliation_without_standing(tmp_pa
     )
 
 
+def test_detector_hostility_allows_friendly_alliance_with_neutral_standing(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(
+            watchlist=Watchlist(friendly_alliance_ids={99003581}),
+            cooldown_seconds=0,
+        ),
+    )
+
+    assert not store._active_item_is_hostile(
+        {
+            "source": "eve-sentry-detector",
+            "target_type": "character",
+            "system_name": "HB-FSO",
+            "name": "Samcat",
+            "character_id": 2115746410,
+            "metadata": {
+                "hostile_icon_count": 2,
+                "identity_status": "resolved",
+                "character_profiles": [
+                    {
+                        "character_id": 2115746410,
+                        "corporation_id": 98524084,
+                        "alliance_id": 99003581,
+                        "contact_standing": 0.0,
+                    }
+                ],
+            },
+        }
+    )
+
+
+def test_detector_hostility_keeps_non_neutral_threshold_match_hostile(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(
+            watchlist=Watchlist(
+                friendly_alliance_ids={99003581},
+                hostile_standing_threshold=3.0,
+            ),
+            cooldown_seconds=0,
+        ),
+    )
+
+    assert store._active_item_is_hostile(
+        {
+            "source": "eve-sentry-detector",
+            "target_type": "character",
+            "system_name": "HB-FSO",
+            "name": "Samcat",
+            "character_id": 2115746410,
+            "metadata": {
+                "hostile_icon_count": 2,
+                "identity_status": "resolved",
+                "character_profiles": [
+                    {
+                        "character_id": 2115746410,
+                        "corporation_id": 98524084,
+                        "alliance_id": 99003581,
+                        "contact_standing": 2.0,
+                    }
+                ],
+            },
+        }
+    )
+
+
+def test_detector_hostility_does_not_hide_another_neutral_profile(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(
+            watchlist=Watchlist(friendly_alliance_ids={99003581}),
+            cooldown_seconds=0,
+        ),
+    )
+
+    assert store._active_item_is_hostile(
+        {
+            "source": "eve-sentry-detector",
+            "target_type": "character",
+            "system_name": "HB-FSO",
+            "name": "Samcat",
+            "character_id": 2115746410,
+            "metadata": {
+                "hostile_icon_count": 2,
+                "identity_status": "resolved",
+                "character_profiles": [
+                    {
+                        "character_id": 2115746410,
+                        "alliance_id": 99003581,
+                        "contact_standing": 0.0,
+                    },
+                    {"character_id": 123, "contact_standing": 0.0},
+                ],
+            },
+        }
+    )
+
+
+def test_detector_hostility_ignores_negative_standing_when_rule_disabled(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(
+            watchlist=Watchlist(hostile_standing_threshold=None),
+            cooldown_seconds=0,
+        ),
+    )
+
+    assert not store._active_item_is_hostile(
+        {
+            "source": "eve-sentry-detector",
+            "target_type": "character",
+            "system_name": "HB-FSO",
+            "name": "Pilot",
+            "character_id": 123,
+            "metadata": {
+                "identity_status": "resolved",
+                "character_profiles": [
+                    {
+                        "character_id": 123,
+                        "contact_standing": -5.0,
+                    }
+                ],
+            },
+        }
+    )
+
+
+def test_detector_hostility_uses_configured_negative_threshold(tmp_path):
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        scorer=ScoringEngine(
+            watchlist=Watchlist(hostile_standing_threshold=-10.0),
+            cooldown_seconds=0,
+        ),
+    )
+    base = {
+        "source": "eve-sentry-detector",
+        "target_type": "character",
+        "system_name": "HB-FSO",
+        "name": "Pilot",
+        "character_id": 123,
+        "metadata": {"identity_status": "resolved"},
+    }
+
+    below_threshold = {
+        **base,
+        "metadata": {
+            **base["metadata"],
+            "character_profiles": [
+                {"character_id": 123, "contact_standing": -5.0}
+            ],
+        },
+    }
+    at_threshold = {
+        **base,
+        "metadata": {
+            **base["metadata"],
+            "character_profiles": [
+                {"character_id": 123, "contact_standing": -10.0}
+            ],
+        },
+    }
+
+    assert not store._active_item_is_hostile(below_threshold)
+    assert store._active_item_is_hostile(at_threshold)
+
+
 def test_active_character_summary_keeps_generated_zkill_link(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
 
@@ -1454,6 +1673,7 @@ def test_record_ocr_snapshot_uses_stale_identity_then_queues_refresh(tmp_path):
     assert active["metadata"]["identity_status"] == "resolved"
     assert active["metadata"]["esi_resolution"]["cache_status"] == "stale"
     assert len(submitted) == 1
+    assert submitted[0][1].force_profile_refresh is True
 
 
 def test_record_ocr_snapshot_uses_fresh_negative_cache_without_queueing(tmp_path):
