@@ -74,6 +74,7 @@ def is_sentry_status_command(content: str) -> bool:
     normalized = re.sub(
         r"^\s*(?:<@!?\w+>|@\S+)\s*", "", normalized, count=1
     ).strip()
+    normalized = re.sub(r"^/", "", normalized, count=1).strip()
     return normalized in QUERY_COMMANDS
 
 
