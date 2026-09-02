@@ -180,6 +180,9 @@ database_url=${database_url/@postgres:/@127.0.0.1:}
 redis_url=$(sed -n 's/^REDIS_URL=//p' "$deploy_root/.env" | tail -n 1)
 redis_url=${redis_url:-redis://127.0.0.1:6379/0}
 redis_url=${redis_url/redis:\/\/redis:/redis:\/\/127.0.0.1:}
+sentry_events_url=$(sed -n 's/^EVE_SENTRY_EVENTS_URL=//p' "$deploy_root/.env" | tail -n 1)
+sentry_events_url=${sentry_events_url/host.docker.internal/127.0.0.1}
+sentry_api_key=$(sed -n 's/^EVE_SENTRY_API_KEY=//p' "$deploy_root/.env" | tail -n 1)
 bootstrap_local_postgres=false
 bootstrap_docker_postgres=false
 
@@ -242,8 +245,10 @@ if [[ -z "${postgres_container:-}" && -n "$(getent passwd postgres || true)" ]];
 fi
 sed -e '/^DATABASE_URL=/d' -e '/^REDIS_URL=/d' \
     -e '/^POSTGRES_PASSWORD=/d' -e '/^REDIS_PASSWORD=/d' \
+    -e '/^EVE_SENTRY_EVENTS_URL=/d' \
     "$deploy_root/.env" > "$runtime_env"
-printf 'DATABASE_URL=%s\nREDIS_URL=%s\n' "$database_url" "$redis_url" >> "$runtime_env"
+printf 'DATABASE_URL=%s\nREDIS_URL=%s\nEVE_SENTRY_EVENTS_URL=%s\n' \
+    "$database_url" "$redis_url" "$sentry_events_url" >> "$runtime_env"
 chmod 0600 "$runtime_env"
 uv_bin=$(command -v uv || true)
 exec 9>"$deploy_root/.deploy.lock"
@@ -443,6 +448,34 @@ run_release_setup() {
         SDE_INDEX_PATH="$data_dir/sde.sqlite3" .venv/bin/python -m eve_risk.sde) || return 1
 }
 
+verify_sentry_connection() {
+    local bootstrap_url
+    local curl_args
+    local http_status
+    if [[ -z "$sentry_events_url" ]]; then
+        return 0
+    fi
+    bootstrap_url=$(EVE_SENTRY_EVENTS_URL_VALUE="$sentry_events_url" python3 -c '
+import os
+import re
+from urllib.parse import urlsplit, urlunsplit
+
+parsed = urlsplit(os.environ["EVE_SENTRY_EVENTS_URL_VALUE"])
+path = re.sub(r"/events/?$", "/bootstrap", parsed.path)
+print(urlunsplit((parsed.scheme, parsed.netloc, path, "", "")))
+')
+    curl_args=(--silent --output /dev/null --write-out '%{http_code}' \
+        --connect-timeout 5 --max-time 15 --header 'Accept: application/json')
+    if [[ -n "$sentry_api_key" ]]; then
+        curl_args+=(--header "Authorization: Bearer $sentry_api_key")
+    fi
+    http_status=$(curl "${curl_args[@]}" "$bootstrap_url" || true)
+    if [[ "$http_status" != "200" ]]; then
+        echo "EVE Sentry bootstrap check failed with HTTP status ${http_status:-000}." >&2
+        return 1
+    fi
+}
+
 health_port=$(awk -F= '$1 == "HEALTH_PORT" {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$deploy_root/.env")
 health_port=${health_port:-8080}
 if [[ ! "$health_port" =~ ^[0-9]+$ ]]; then
@@ -474,7 +507,8 @@ wait_until_ready() {
     return 1
 }
 
-if run_release_setup "$release_dir" && activate_release "$release_dir" \
+if run_release_setup "$release_dir" && verify_sentry_connection \
+    && activate_release "$release_dir" \
     && wait_until_ready; then
     ln -sfn "$release_dir" "$deploy_root/current"
     systemctl_cmd --no-pager --full status \
