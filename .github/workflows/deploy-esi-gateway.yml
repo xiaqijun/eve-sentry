@@ -75,7 +75,7 @@ jobs:
           cd dist
           sha256sum --check "eve-sentry-esi-gateway-${GITHUB_SHA}.tar.gz.sha256"
           tar -tzf "eve-sentry-esi-gateway-${GITHUB_SHA}.tar.gz"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: eve-sentry-esi-gateway-${{ github.sha }}
           path: |
@@ -93,7 +93,7 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: eve-sentry-esi-gateway-${{ github.sha }}
           path: dist
