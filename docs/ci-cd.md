@@ -11,26 +11,30 @@
 | `xiaqijun/eve-sentry-bot` | QQ 机器人、分析 Worker、Docker Compose | 机器人仓库自己的 `deploy.yml` |
 | `xiaqijun/eve-sentry-client` | Windows OCR/监控客户端和更新器 | 客户端仓库自己的 `release-client.yml` |
 | `xiaqijun/eve-sentry-esi-gateway` | 独立 ESI Gateway | Gateway 仓库自己的 `deploy-esi-gateway.yml` |
-| `xiaqijun/eve-sentry-contracts` | HTTP、SSE、JSON Schema 和兼容性 fixture | 只发布契约包，不直接部署服务 |
+| `xiaqijun/eve-sentry-contracts` | HTTP、SSE、JSON Schema 和兼容性 fixture | `Contract CI`，只发布契约包 |
 | `xiaqijun/eve-sentry-download-site` | 静态下载站和 Cloudflare 下载 Worker | 下载站仓库自己的 `deploy.yml` |
 
-本仓库已经退役客户端 Release 和下载站部署入口。兼容性的 `deploy-esi-gateway.yml`
-仍待独立 Gateway 完成生产配置与回滚验证后再退役。
+本仓库已退役客户端 CI、客户端 Release、下载站部署和独立 Gateway 部署入口，避免
+拆仓后同一组件被两个仓库重复发布。服务端只保留 `deploy-server.yml`。
 
 ## 触发条件与门禁
 
 - `deploy-server.yml`：`main` 的服务端运行时路径变化时触发 `push`；同一组路径的
   Pull Request 只运行 Python、前端和 PostgreSQL 验证。生产 job 仅接受 `main`，并使用
   `production` Environment。
-- `deploy-esi-gateway.yml`：Gateway 代码、服务单元或部署脚本变化时触发；Pull Request
-  运行 Gateway 测试，生产 job 仅接受 `main`。
-- `ci-client.yml`：客户端代码、打包脚本、依赖、资源或测试变化时运行 Windows 测试，
-  适用于 push、Pull Request 和手动验证。
+- `eve-sentry-esi-gateway/.github/workflows/deploy-esi-gateway.yml`：独立 Gateway 的
+  Pull Request 和 `main` push 自动测试；`main` push 通过验证后自动进入 production Environment。
+- `eve-sentry-client/.github/workflows/ci-client.yml`：客户端 Pull Request 和 `main` push 自动测试。
 - 客户端 Release 由 `eve-sentry-client/.github/workflows/release-client.yml` 负责；本仓库不再
   构建或发布客户端。
 - 下载站由 `eve-sentry-download-site` 的 `CI` 和 `Deploy` workflow 负责。生产部署验证首页、
   Worker、客户端仓库 `latest.json`、302 跳转和 Range 206。
-- `workflow_dispatch` 可以用于重跑验证，但生产 job 会拒绝非默认分支。
+- `eve-sentry-contracts/.github/workflows/ci.yml`：契约、Schema、DTO 和 fixture 变化时自动运行
+  兼容性测试。
+- `eve-sentry-bot/.github/workflows/deploy.yml`：`codex/main`（当前默认分支）和 `main` 的
+  Pull Request 自动验证；两者 push 通过后进入 production Environment。
+- `workflow_dispatch` 可以用于重跑验证；生产 job 只接受默认分支。下载站按仓库规则保持
+  production 部署手动触发，避免 Cloudflare Worker 被无审批覆盖。
 
 所有生产 job 都应保持并发锁，避免同一环境同时发布两个版本。契约仓库发布新版本后，
 消费者仓库必须先通过契约兼容性矩阵，再进入生产发布。
