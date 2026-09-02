@@ -77,6 +77,8 @@ find_redis_container() {
 
 find_redis_admin_password() {
     local container_id=$1
+    local command_json
+    local config_password
     local password_variable
     local password_value
     for password_variable in \
@@ -88,6 +90,39 @@ find_redis_admin_password() {
             return 0
         fi
     done
+    command_json=$(docker inspect --format '{{json .Config.Cmd}}' "$container_id")
+    password_value=$(REDIS_COMMAND_JSON="$command_json" python3 - <<'PY'
+import json
+import os
+import shlex
+
+command = json.loads(os.environ["REDIS_COMMAND_JSON"] or "[]")
+tokens = []
+for item in command:
+    tokens.extend(shlex.split(item))
+for index, token in enumerate(tokens):
+    if token in {"--requirepass", "requirepass"} and index + 1 < len(tokens):
+        print(tokens[index + 1])
+        break
+    if token.startswith("--requirepass="):
+        print(token.split("=", 1)[1])
+        break
+PY
+    )
+    if [[ -n "$password_value" ]]; then
+        printf '%s\n' "$password_value"
+        return 0
+    fi
+    config_password=$(docker exec "$container_id" sh -c '
+        for file in /etc/redis/redis.conf /usr/local/etc/redis/redis.conf /etc/redis.conf /data/redis.conf; do
+            [ -r "$file" ] || continue
+            sed -n "s/^[[:space:]]*requirepass[[:space:]]\+//p" "$file" | tail -n 1
+        done
+    ' 2>/dev/null | sed -n '/./{s/^"//; s/"$//; p; q;}')
+    if [[ -n "$config_password" ]]; then
+        printf '%s\n' "$config_password"
+        return 0
+    fi
     return 1
 }
 
