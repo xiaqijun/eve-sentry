@@ -1041,9 +1041,20 @@ def build_heartbeat_details(
     return details
 
 
-def play_alert_sound(volume: float = 1.0) -> None:
-    """Play the bundled alert sound once if the resource exists."""
-    sound_path = Path(__file__).parent.parent / "resources" / "alert.wav"
+def play_alert_sound(
+    volume: float = 1.0,
+    sound_path: str | Path | None = None,
+) -> None:
+    """Play a configured WAV alert sound, falling back to the bundled resource."""
+    bundled_path = Path(__file__).parent.parent / "resources" / "alert.wav"
+    candidate = Path(sound_path).expanduser() if str(sound_path or "").strip() else None
+    sound_path = (
+        candidate
+        if candidate is not None
+        and candidate.is_file()
+        and candidate.suffix.casefold() == ".wav"
+        else bundled_path
+    )
     if not sound_path.exists():
         return
     try:
@@ -2244,6 +2255,9 @@ class AlertTrayController:
         ).casefold()
         if self._alert_sound_mode not in {"interval", "continuous"}:
             self._alert_sound_mode = "interval"
+        self._alert_sound_path = str(
+            getattr(args, "alert_sound_path", "") or ""
+        ).strip()
         self._alert_cooldown = max(0.0, float(getattr(args, "alert_cooldown", 15.0)))
         repeat_interval = max(
             1.0,
@@ -2795,8 +2809,13 @@ class AlertTrayController:
         if remaining <= 0:
             return
         volume = getattr(self, "_alert_volume", None)
-        if volume is None:
+        sound_path = str(getattr(self, "_alert_sound_path", "") or "").strip()
+        if volume is None and not sound_path:
             play_alert_sound()
+        elif volume is None:
+            play_alert_sound(sound_path=sound_path)
+        elif sound_path:
+            play_alert_sound(volume, sound_path)
         else:
             play_alert_sound(volume)
         remaining -= 1
@@ -2809,8 +2828,17 @@ class AlertTrayController:
         sound = getattr(self, "_continuous_sound", None)
         if sound is not None:
             return
-        sound_path = Path(__file__).parent.parent / "resources" / "alert.wav"
-        if not sound_path.exists():
+        bundled_path = Path(__file__).parent.parent / "resources" / "alert.wav"
+        configured_path = str(getattr(self, "_alert_sound_path", "") or "").strip()
+        candidate = Path(configured_path).expanduser() if configured_path else None
+        sound_path = (
+            candidate
+            if candidate is not None
+            and candidate.is_file()
+            and candidate.suffix.casefold() == ".wav"
+            else bundled_path
+        )
+        if not sound_path.is_file():
             return
         try:
             sound = QSoundEffect()

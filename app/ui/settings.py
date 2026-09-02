@@ -13,6 +13,7 @@ from PyQt6.QtGui import QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -225,6 +226,20 @@ class SettingsPanel(QWidget):
         self._alert_sound_check = QCheckBox("告警声音")
         self._alert_sound_check.setChecked(bool(config["alert_sound_enabled"]))
         alert_layout.addWidget(self._alert_sound_check)
+        sound_file_label = QLabel("告警声音文件")
+        sound_file_label.setObjectName("fieldLabel")
+        alert_layout.addWidget(sound_file_label)
+        sound_file_row = QHBoxLayout()
+        self._alert_sound_path_edit = QLineEdit(str(config["alert_sound_path"]))
+        self._alert_sound_path_edit.setPlaceholderText("未设置，使用内置声音")
+        self._alert_sound_path_edit.setClearButtonEnabled(True)
+        self._alert_sound_path_edit.setToolTip("支持 WAV 音频；留空时使用内置告警声音")
+        sound_file_row.addWidget(self._alert_sound_path_edit, 1)
+        choose_sound_button = QPushButton("选择...")
+        choose_sound_button.setToolTip("选择一个 WAV 音频文件作为告警声音")
+        choose_sound_button.clicked.connect(self._choose_alert_sound)
+        sound_file_row.addWidget(choose_sound_button)
+        alert_layout.addLayout(sound_file_row)
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("播放方式"))
         mode_row.addStretch()
@@ -269,11 +284,15 @@ class SettingsPanel(QWidget):
         alert_layout.addLayout(count_row)
         for signal in (
             self._alert_sound_check.toggled,
+            self._alert_sound_path_edit.editingFinished,
             self._alert_sound_mode_combo.currentIndexChanged,
             self._alert_repeat_interval_spin.valueChanged,
             self._alert_repeat_count_spin.valueChanged,
         ):
             signal.connect(self._on_behavior_settings_changed)
+        self._alert_sound_path_edit.textChanged.connect(
+            self._on_alert_sound_path_changed
+        )
         layout.addWidget(alert_group)
 
         version_group = QGroupBox()
@@ -358,6 +377,7 @@ class SettingsPanel(QWidget):
             "muted": not self._alert_sound_check.isChecked(),
             "volume": DEFAULT_ALERT_VOLUME,
             "sound_mode": self._alert_sound_mode_combo.currentData() or DEFAULT_ALERT_SOUND_MODE,
+            "sound_path": self._clean_alert_sound_path(self._alert_sound_path_edit.text()),
             "repeat_interval": float(self._alert_repeat_interval_spin.value()),
             "repeat_count": self._alert_repeat_count_spin.value(),
         }
@@ -494,6 +514,9 @@ class SettingsPanel(QWidget):
             "alert_sound_mode": self._clean_alert_sound_mode(
                 payload.get("alert_sound_mode", DEFAULT_ALERT_SOUND_MODE)
             ),
+            "alert_sound_path": self._clean_alert_sound_path(
+                payload.get("alert_sound_path", "")
+            ),
             "alert_repeat_interval": self._clean_alert_repeat_interval(
                 payload.get("alert_repeat_interval", DEFAULT_ALERT_REPEAT_INTERVAL)
             ),
@@ -515,6 +538,7 @@ class SettingsPanel(QWidget):
             "restore_monitor_state": self.get_restore_monitor_state(),
             "alert_sound_enabled": self._alert_sound_check.isChecked(),
             "alert_sound_mode": self._alert_sound_mode_combo.currentData() or DEFAULT_ALERT_SOUND_MODE,
+            "alert_sound_path": self._clean_alert_sound_path(self._alert_sound_path_edit.text()),
             "alert_repeat_interval": self._alert_repeat_interval_spin.value(),
             "alert_repeat_count": self._alert_repeat_count_spin.value(),
         }
@@ -534,6 +558,30 @@ class SettingsPanel(QWidget):
     def _clean_alert_sound_mode(self, value: Any) -> str:
         mode = str(value or "").strip().casefold()
         return mode if mode in {"interval", "continuous"} else DEFAULT_ALERT_SOUND_MODE
+
+    def _clean_alert_sound_path(self, value: Any) -> str:
+        """Normalize a user-selected sound path without requiring it to exist."""
+        path = str(value or "").strip()
+        if not path:
+            return ""
+        return os.path.expandvars(os.path.expanduser(path))
+
+    def _choose_alert_sound(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择告警声音",
+            self._alert_sound_path_edit.text().strip() or str(Path.home()),
+            "WAV 音频 (*.wav)",
+        )
+        if not path:
+            return
+        self._alert_sound_path_edit.setText(self._clean_alert_sound_path(path))
+        self._on_behavior_settings_changed()
+
+    def _on_alert_sound_path_changed(self, value: str) -> None:
+        """Persist clearing the path immediately via the line edit clear button."""
+        if not str(value or "").strip():
+            self._on_behavior_settings_changed()
 
     def _clean_alert_repeat_count(self, value: Any) -> int:
         try:

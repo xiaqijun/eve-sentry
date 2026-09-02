@@ -1642,6 +1642,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
         "restore_monitor_state": True,
         "alert_sound_enabled": True,
         "alert_sound_mode": "interval",
+        "alert_sound_path": "",
         "alert_repeat_interval": 2,
         "alert_repeat_count": 3,
     }
@@ -1689,6 +1690,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
         "muted": False,
         "volume": 1.0,
         "sound_mode": "interval",
+        "sound_path": "",
         "repeat_interval": 2.0,
         "repeat_count": 3,
     }
@@ -1731,6 +1733,24 @@ def test_settings_panel_persists_continuous_alert_sound_mode(tmp_path):
     )
 
 
+def test_settings_panel_persists_custom_alert_sound_path(tmp_path):
+    qt_app()
+    config_path = tmp_path / "channel_settings.json"
+    sound_path = tmp_path / "warning.wav"
+    sound_path.write_bytes(b"RIFF")
+    panel = SettingsPanel(config_path=config_path)
+
+    panel._alert_sound_path_edit.setText(str(sound_path))
+    panel.save_channel_config()
+
+    assert panel.get_alert_preferences()["sound_path"] == str(sound_path)
+    assert json.loads(config_path.read_text(encoding="utf-8"))["alert_sound_path"] == str(
+        sound_path
+    )
+    restored = SettingsPanel(config_path=config_path)
+    assert restored.get_alert_preferences()["sound_path"] == str(sound_path)
+
+
 def test_settings_panel_environment_overrides_saved_chatlog_dir(
     tmp_path,
     monkeypatch,
@@ -1770,6 +1790,7 @@ def test_settings_panel_migrates_legacy_muted_alert_setting(tmp_path):
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["alert_sound_enabled"] is False
     assert saved["alert_sound_mode"] == "interval"
+    assert saved["alert_sound_path"] == ""
     assert saved["alert_repeat_interval"] == 2
     assert saved["alert_repeat_count"] == 3
     assert "alert_muted" not in saved

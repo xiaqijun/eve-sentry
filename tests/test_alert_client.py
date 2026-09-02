@@ -581,10 +581,11 @@ def test_alert_sound_sequence_uses_configured_interval_and_count(monkeypatch):
     controller._alert_volume = 0.75
     controller._alert_repeat_count = 3
     controller._alert_repeat_interval_ms = 1500
+    controller._alert_sound_path = "C:/Sounds/custom.wav"
     controller._sound_repeat_timer = FakeTimer()
     monkeypatch.setattr(
         "app.alert_client.play_alert_sound",
-        lambda volume: calls.append(("sound", volume)),
+        lambda volume, sound_path: calls.append(("sound", volume, sound_path)),
     )
 
     controller._play_alert_sound_sequence()
@@ -593,15 +594,15 @@ def test_alert_sound_sequence_uses_configured_interval_and_count(monkeypatch):
 
     assert calls == [
         "timer_stop",
-        ("sound", 0.75),
+        ("sound", 0.75, "C:/Sounds/custom.wav"),
         ("timer_start", 1500),
-        ("sound", 0.75),
+        ("sound", 0.75, "C:/Sounds/custom.wav"),
         ("timer_start", 1500),
-        ("sound", 0.75),
+        ("sound", 0.75, "C:/Sounds/custom.wav"),
     ]
 
 
-def test_continuous_alert_sound_uses_looping_effect(monkeypatch):
+def test_continuous_alert_sound_uses_looping_effect(monkeypatch, tmp_path):
     class FakeSound:
         def __init__(self):
             self.calls = []
@@ -630,12 +631,19 @@ def test_continuous_alert_sound_uses_looping_effect(monkeypatch):
 
     controller = AlertTrayController.__new__(AlertTrayController)
     controller._alert_volume = 0.6
+    custom_path = tmp_path / "custom.wav"
+    custom_path.write_bytes(b"RIFF")
+    controller._alert_sound_path = str(custom_path)
     controller._continuous_sound = None
     monkeypatch.setattr("app.alert_client.QSoundEffect", factory)
 
     controller._start_continuous_alert_sound()
 
     assert len(sounds) == 1
+    assert sounds[0].calls[0][0] == "source"
+    assert sounds[0].calls[0][1].toLocalFile().replace("/", "\\") == str(
+        custom_path.resolve()
+    )
     assert ("volume", 0.6) in sounds[0].calls
     assert ("loop_count", -2) in sounds[0].calls
     assert sounds[0].calls[-1] == "play"
