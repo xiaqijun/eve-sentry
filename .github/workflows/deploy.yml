@@ -45,7 +45,8 @@ jobs:
         run: |
           cp .env.example .env
           uv sync --frozen --no-dev
-          uv run python -c "from eve_risk.config import Settings; Settings(_env_file='.env')"
+          ZKILL_USER_AGENT="EveRiskAnalysis/0.1 Maintainer: CI <ci@example.invalid>" \
+            uv run python -c "from eve_risk.config import Settings; Settings(_env_file='.env')"
 
   deploy:
     if: github.event_name != 'pull_request'
