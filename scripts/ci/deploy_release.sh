@@ -24,7 +24,7 @@ case "$deploy_root" in
         exit 2
         ;;
 esac
-for command in python3 uv systemctl curl flock tar; do
+for command in python3 systemctl curl flock tar; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Required command is missing: $command" >&2
         exit 2
@@ -40,6 +40,20 @@ if [[ ! -f "$deploy_root/.env" ]]; then
 fi
 
 mkdir -p "$deploy_root/releases" "$data_dir" "$unit_dir"
+uv_bin=$(command -v uv || true)
+if [[ -z "$uv_bin" ]]; then
+    uv_bin="$deploy_root/.uv/bin/uv"
+    mkdir -p "$(dirname "$uv_bin")"
+    if [[ ! -x "$uv_bin" ]]; then
+        echo "uv is not installed; bootstrapping uv 0.11.6 under $deploy_root/.uv" >&2
+        curl --fail --silent --show-error --location https://astral.sh/uv/install.sh \
+            | env UV_INSTALL_DIR="$(dirname "$uv_bin")" UV_VERSION=0.11.6 sh
+    fi
+fi
+if [[ ! -x "$uv_bin" ]]; then
+    echo "Unable to locate uv executable: $uv_bin" >&2
+    exit 2
+fi
 exec 9>"$deploy_root/.deploy.lock"
 if ! flock -w 900 9; then
     echo "Another deployment still holds the production lock." >&2
@@ -140,7 +154,7 @@ EOF
 
 run_release_setup() {
     local source_dir=$1
-    (cd "$source_dir" && uv sync --frozen --no-dev)
+    (cd "$source_dir" && "$uv_bin" sync --frozen --no-dev)
     (cd "$source_dir" && .venv/bin/alembic upgrade head)
     (cd "$source_dir" && env SDE_INDEX_PATH="$data_dir/sde.sqlite3" .venv/bin/python -m eve_risk.sde)
 }
