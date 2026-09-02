@@ -6,7 +6,8 @@ Authenticated ESI methods deliberately do not exist in this package.
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
