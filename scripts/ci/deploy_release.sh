@@ -146,6 +146,37 @@ for command in python3 systemctl curl flock tar; do
         exit 2
     fi
 done
+
+ensure_chinese_font() {
+    local source_dir=$1
+    local configured_font
+    configured_font=$(sed -n 's/^FONT_PATH=//p' "$deploy_root/.env" | tail -n 1)
+    if [[ -n "$configured_font" && -f "$configured_font" ]]; then
+        return 0
+    fi
+    for candidate in \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
+        /usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf; do
+        if [[ -f "$candidate" ]]; then
+            return 0
+        fi
+    done
+    if [[ "${EUID:-$(id -u)}" -eq 0 && -x "$(command -v apt-get || true)" ]]; then
+        echo "Chinese font is missing; installing fonts-noto-cjk."
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fonts-noto-cjk
+    fi
+    for candidate in \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
+        /usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf; do
+        if [[ -f "$candidate" ]]; then
+            echo "Using Chinese-capable font: $candidate"
+            return 0
+        fi
+    done
+    echo "No Chinese-capable font found; configure FONT_PATH or install fonts-noto-cjk." >&2
+    return 1
+}
 if [[ ! -f "$archive" ]]; then
     echo "Deployment archive does not exist: $archive" >&2
     exit 2
@@ -441,6 +472,7 @@ run_release_setup() {
             --no-cache-dir --index-url "${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}" .) \
             || return 1
     fi
+    ensure_chinese_font "$source_dir" || return 1
     ensure_postgres "$source_dir" || return 1
     (cd "$source_dir" && env DATABASE_URL="$database_url" REDIS_URL="$redis_url" \
         .venv/bin/alembic upgrade head) || return 1
