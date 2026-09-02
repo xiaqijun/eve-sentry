@@ -11,6 +11,30 @@ data_dir="$deploy_root/data"
 unit_dir="$deploy_root/systemd"
 runtime_env="$deploy_root/.runtime.env"
 
+docker_env_value() {
+    local container_id=$1
+    local variable_name=$2
+    docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" \
+        | sed -n "s/^${variable_name}=//p" | tail -n 1
+}
+
+docker_container_ip() {
+    local container_id=$1
+    docker inspect --format '{{range .NetworkSettings.Networks}}{{println .IPAddress}}{{end}}' \
+        "$container_id" | sed -n '/./{p;q;}'
+}
+
+find_eve_risk_postgres_container() {
+    local container_id
+    while IFS= read -r container_id; do
+        if [[ "$(docker_env_value "$container_id" POSTGRES_DB)" == "eve_risk" ]]; then
+            printf '%s\n' "$container_id"
+            return 0
+        fi
+    done < <(docker ps --quiet)
+    return 1
+}
+
 if [[ ! "$release_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
     echo "Invalid release SHA: $release_sha" >&2
     exit 2
@@ -45,18 +69,63 @@ database_url=$(sed -n 's/^DATABASE_URL=//p' "$deploy_root/.env" | tail -n 1)
 database_url=${database_url:-postgresql+asyncpg://eve_risk:eve_risk@127.0.0.1:5432/eve_risk}
 database_url=${database_url/@postgres:/@127.0.0.1:}
 postgres_password=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$deploy_root/.env" | tail -n 1)
-if [[ -z "$postgres_password" ]]; then
-    postgres_password=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-    printf '\nPOSTGRES_PASSWORD=%s\n' "$postgres_password" >> "$deploy_root/.env"
-    chmod 0600 "$deploy_root/.env"
-    echo "Generated and stored a PostgreSQL password in $deploy_root/.env"
-fi
-encoded_password=$(POSTGRES_PASSWORD_VALUE="$postgres_password" python3 -c \
-    'import os, urllib.parse; print(urllib.parse.quote(os.environ["POSTGRES_PASSWORD_VALUE"], safe=""))')
-database_url="postgresql+asyncpg://eve_risk:${encoded_password}@127.0.0.1:5432/eve_risk"
 redis_url=$(sed -n 's/^REDIS_URL=//p' "$deploy_root/.env" | tail -n 1)
 redis_url=${redis_url:-redis://127.0.0.1:6379/0}
 redis_url=${redis_url/redis:\/\/redis:/redis:\/\/127.0.0.1:}
+bootstrap_local_postgres=false
+
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    postgres_container=$(find_eve_risk_postgres_container || true)
+    if [[ -n "$postgres_container" ]]; then
+        postgres_host=$(docker_container_ip "$postgres_container")
+        postgres_user=$(docker_env_value "$postgres_container" POSTGRES_USER)
+        postgres_database=$(docker_env_value "$postgres_container" POSTGRES_DB)
+        postgres_password=$(docker_env_value "$postgres_container" POSTGRES_PASSWORD)
+        postgres_user=${postgres_user:-eve_risk}
+        postgres_database=${postgres_database:-eve_risk}
+        if [[ -z "$postgres_host" || -z "$postgres_password" ]]; then
+            echo "The eve_risk PostgreSQL container is missing its IP address or password." >&2
+            exit 2
+        fi
+        encoded_connection=$(POSTGRES_USER_VALUE="$postgres_user" \
+            POSTGRES_PASSWORD_VALUE="$postgres_password" POSTGRES_DATABASE_VALUE="$postgres_database" \
+            python3 -c 'import os, urllib.parse; print(":".join((urllib.parse.quote(os.environ["POSTGRES_USER_VALUE"], safe=""), urllib.parse.quote(os.environ["POSTGRES_PASSWORD_VALUE"], safe=""))) + "@" + os.environ["POSTGRES_DATABASE_VALUE"] )')
+        encoded_user_password=${encoded_connection%@*}
+        encoded_database=${encoded_connection#*@}
+        database_url="postgresql+asyncpg://${encoded_user_password}@${postgres_host}:5432/${encoded_database}"
+
+        postgres_project=$(docker inspect --format \
+            '{{index .Config.Labels "com.docker.compose.project"}}' "$postgres_container")
+        redis_container=""
+        if [[ -n "$postgres_project" ]]; then
+            redis_container=$(docker ps --quiet \
+                --filter "label=com.docker.compose.project=$postgres_project" \
+                --filter 'label=com.docker.compose.service=redis' | head -n 1)
+        fi
+        if [[ -n "$redis_container" ]]; then
+            redis_host=$(docker_container_ip "$redis_container")
+            if [[ -z "$redis_host" ]]; then
+                echo "The Redis container is missing its bridge IP address." >&2
+                exit 2
+            fi
+            redis_url="redis://${redis_host}:6379/0"
+        fi
+        echo "Using the existing Docker PostgreSQL and Redis infrastructure."
+    fi
+fi
+
+if [[ -z "${postgres_container:-}" && -n "$(getent passwd postgres || true)" ]]; then
+    bootstrap_local_postgres=true
+    if [[ -z "$postgres_password" ]]; then
+        postgres_password=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+        printf '\nPOSTGRES_PASSWORD=%s\n' "$postgres_password" >> "$deploy_root/.env"
+        chmod 0600 "$deploy_root/.env"
+        echo "Generated and stored a PostgreSQL password in $deploy_root/.env"
+    fi
+    encoded_password=$(POSTGRES_PASSWORD_VALUE="$postgres_password" python3 -c \
+        'import os, urllib.parse; print(urllib.parse.quote(os.environ["POSTGRES_PASSWORD_VALUE"], safe=""))')
+    database_url="postgresql+asyncpg://eve_risk:${encoded_password}@127.0.0.1:5432/eve_risk"
+fi
 sed -e '/^DATABASE_URL=/d' -e '/^REDIS_URL=/d' "$deploy_root/.env" > "$runtime_env"
 printf 'DATABASE_URL=%s\nREDIS_URL=%s\n' "$database_url" "$redis_url" >> "$runtime_env"
 chmod 0600 "$runtime_env"
@@ -161,6 +230,9 @@ EOF
 
 ensure_postgres() {
     local source_dir=$1
+    if [[ "$bootstrap_local_postgres" != true ]]; then
+        return 0
+    fi
     if [[ "$postgres_password" == *$'\n'* || "$postgres_password" == *$'\r'* ]]; then
         echo "POSTGRES_PASSWORD must not contain line breaks." >&2
         return 1
