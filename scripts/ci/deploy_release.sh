@@ -9,6 +9,7 @@ deploy_root=${3:?deployment root is required}
 service_prefix=${SERVICE_PREFIX:-eve-risk-analysis}
 data_dir="$deploy_root/data"
 unit_dir="$deploy_root/systemd"
+runtime_env="$deploy_root/.runtime.env"
 
 if [[ ! "$release_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
     echo "Invalid release SHA: $release_sha" >&2
@@ -40,6 +41,10 @@ if [[ ! -f "$deploy_root/.env" ]]; then
 fi
 
 mkdir -p "$deploy_root/releases" "$data_dir" "$unit_dir"
+sed -e 's/@postgres:/@127.0.0.1:/g' \
+    -e 's#redis://redis:#redis://127.0.0.1:#g' \
+    "$deploy_root/.env" > "$runtime_env"
+chmod 0600 "$runtime_env"
 uv_bin=$(command -v uv || true)
 exec 9>"$deploy_root/.deploy.lock"
 if ! flock -w 900 9; then
@@ -97,7 +102,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$source_dir
-EnvironmentFile=-$deploy_root/.env
+EnvironmentFile=-$runtime_env
 Environment=SDE_INDEX_PATH=$data_dir/sde.sqlite3
 Environment=PYTHONUNBUFFERED=1
 ExecStart=$source_dir/.venv/bin/python -m eve_risk.bot
@@ -118,7 +123,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$source_dir
-EnvironmentFile=-$deploy_root/.env
+EnvironmentFile=-$runtime_env
 Environment=SDE_INDEX_PATH=$data_dir/sde.sqlite3
 Environment=PYTHONUNBUFFERED=1
 ExecStart=$source_dir/.venv/bin/arq eve_risk.worker.WorkerSettings
@@ -142,18 +147,18 @@ EOF
 run_release_setup() {
     local source_dir=$1
     if [[ -n "$uv_bin" ]]; then
-        (cd "$source_dir" && "$uv_bin" sync --frozen --no-dev)
+        (cd "$source_dir" && set -a && source "$runtime_env" && set +a && "$uv_bin" sync --frozen --no-dev)
     else
         echo "uv is not installed; creating a Python venv with pip" >&2
         python3 -m venv "$source_dir/.venv"
-        (cd "$source_dir" && .venv/bin/python -m pip install --disable-pip-version-check \
+        (cd "$source_dir" && set -a && source "$runtime_env" && set +a && .venv/bin/python -m pip install --disable-pip-version-check \
             --no-cache-dir --index-url "${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}" \
             --upgrade pip)
-        (cd "$source_dir" && .venv/bin/python -m pip install --disable-pip-version-check \
+        (cd "$source_dir" && set -a && source "$runtime_env" && set +a && .venv/bin/python -m pip install --disable-pip-version-check \
             --no-cache-dir --index-url "${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}" .)
     fi
-    (cd "$source_dir" && .venv/bin/alembic upgrade head)
-    (cd "$source_dir" && env SDE_INDEX_PATH="$data_dir/sde.sqlite3" .venv/bin/python -m eve_risk.sde)
+    (cd "$source_dir" && set -a && source "$runtime_env" && set +a && .venv/bin/alembic upgrade head)
+    (cd "$source_dir" && set -a && source "$runtime_env" && set +a && env SDE_INDEX_PATH="$data_dir/sde.sqlite3" .venv/bin/python -m eve_risk.sde)
 }
 
 health_port=$(awk -F= '$1 == "HEALTH_PORT" {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$deploy_root/.env")
