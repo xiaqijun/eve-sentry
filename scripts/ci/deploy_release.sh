@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Deploy one immutable EVE Risk Analysis release on the production host.
+# Deploy one immutable EVE Risk Analysis release without containers.
 
 set -euo pipefail
 
 archive=${1:?deployment archive is required}
 release_sha=${2:?release SHA is required}
 deploy_root=${3:?deployment root is required}
-project_name="eve-risk-analysis"
+service_prefix=${SERVICE_PREFIX:-eve-risk-analysis}
+data_dir="$deploy_root/data"
+unit_dir="$deploy_root/systemd"
 
 if [[ ! "$release_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
     echo "Invalid release SHA: $release_sha" >&2
@@ -14,17 +16,20 @@ if [[ ! "$release_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
 fi
 case "$deploy_root" in
     /*) ;;
-    *)
-        echo "Deployment root must be an absolute path." >&2
-        exit 2
-        ;;
+    *) echo "Deployment root must be an absolute path." >&2; exit 2 ;;
 esac
 case "$deploy_root" in
-    /|/opt|/root|/home)
+    /|/opt|/root|/home|/var)
         echo "Deployment root is too broad: $deploy_root" >&2
         exit 2
         ;;
 esac
+for command in python3 uv systemctl curl flock tar; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        echo "Required command is missing: $command" >&2
+        exit 2
+    fi
+done
 if [[ ! -f "$archive" ]]; then
     echo "Deployment archive does not exist: $archive" >&2
     exit 2
@@ -34,7 +39,7 @@ if [[ ! -f "$deploy_root/.env" ]]; then
     exit 2
 fi
 
-mkdir -p "$deploy_root/releases"
+mkdir -p "$deploy_root/releases" "$data_dir" "$unit_dir"
 exec 9>"$deploy_root/.deploy.lock"
 if ! flock -w 900 9; then
     echo "Another deployment still holds the production lock." >&2
@@ -42,11 +47,16 @@ if ! flock -w 900 9; then
 fi
 
 release_dir="$deploy_root/releases/$release_sha"
+case "$release_dir" in
+    "$deploy_root/releases/"*) ;;
+    *) echo "Invalid release path." >&2; exit 2 ;;
+esac
+rm -rf -- "$release_dir"
 mkdir -p "$release_dir"
 tar -xzf "$archive" -C "$release_dir"
-rm -f "$archive"
+rm -f -- "$archive"
 
-for required in Dockerfile docker-compose.yml pyproject.toml uv.lock; do
+for required in pyproject.toml uv.lock README.md alembic.ini; do
     if [[ ! -f "$release_dir/$required" ]]; then
         echo "Release is missing $required" >&2
         exit 4
@@ -54,32 +64,108 @@ for required in Dockerfile docker-compose.yml pyproject.toml uv.lock; do
 done
 ln -sfn "$deploy_root/.env" "$release_dir/.env"
 
-previous_dir=""
 if [[ -L "$deploy_root/current" ]]; then
     previous_dir=$(readlink -f "$deploy_root/current" || true)
-elif [[ -f "$deploy_root/docker-compose.yml" ]]; then
-    previous_dir="$deploy_root"
+else
+    previous_dir=""
 fi
 
-compose() {
+systemctl_cmd() {
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+        systemctl "$@"
+    else
+        systemctl --user "$@"
+    fi
+}
+
+unit_path() {
+    printf '%s/%s.service\n' "$unit_dir" "$1"
+}
+
+write_units() {
     local source_dir=$1
-    shift
-    docker compose \
-        --project-name "$project_name" \
-        --env-file "$deploy_root/.env" \
-        --file "$source_dir/docker-compose.yml" \
-        "$@"
+    local bot_unit worker_unit
+    bot_unit=$(unit_path "$service_prefix-bot")
+    worker_unit=$(unit_path "$service_prefix-worker")
+    cat > "$bot_unit" <<EOF
+[Unit]
+Description=EVE Risk Analysis QQ bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$source_dir
+EnvironmentFile=-$deploy_root/.env
+Environment=SDE_INDEX_PATH=$data_dir/sde.sqlite3
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$source_dir/.venv/bin/python -m eve_risk.bot
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+EOF
+    cat > "$worker_unit" <<EOF
+[Unit]
+Description=EVE Risk Analysis worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$source_dir
+EnvironmentFile=-$deploy_root/.env
+Environment=SDE_INDEX_PATH=$data_dir/sde.sqlite3
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$source_dir/.venv/bin/arq eve_risk.worker.WorkerSettings
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+EOF
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+        install -m 0644 "$bot_unit" "/etc/systemd/system/$service_prefix-bot.service"
+        install -m 0644 "$worker_unit" "/etc/systemd/system/$service_prefix-worker.service"
+    else
+        systemctl_cmd link "$bot_unit" "$worker_unit"
+    fi
+    systemctl_cmd daemon-reload
+}
+
+run_release_setup() {
+    local source_dir=$1
+    (cd "$source_dir" && uv sync --frozen --no-dev)
+    (cd "$source_dir" && .venv/bin/alembic upgrade head)
+    (cd "$source_dir" && env SDE_INDEX_PATH="$data_dir/sde.sqlite3" .venv/bin/python -m eve_risk.sde)
+}
+
+health_port=$(awk -F= '$1 == "HEALTH_PORT" {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$deploy_root/.env")
+health_port=${health_port:-8080}
+if [[ ! "$health_port" =~ ^[0-9]+$ ]]; then
+    echo "HEALTH_PORT must be numeric: $health_port" >&2
+    exit 2
+fi
+
+activate_release() {
+    local source_dir=$1
+    write_units "$source_dir"
+    systemctl_cmd enable --now "$service_prefix-bot.service" "$service_prefix-worker.service"
 }
 
 wait_until_ready() {
-    local source_dir=$1
     local attempt
     for attempt in $(seq 1 30); do
-        if compose "$source_dir" ps --status running --services | grep -Fxq bot \
-            && compose "$source_dir" ps --status running --services | grep -Fxq worker \
-            && compose "$source_dir" exec -T bot python -c \
-                'import json, urllib.request; payload=json.load(urllib.request.urlopen("http://127.0.0.1:8080/health/ready", timeout=5)); raise SystemExit(0 if payload.get("status") == "ok" else 1)' \
-                >/dev/null 2>&1; then
+        if systemctl_cmd is-active --quiet "$service_prefix-bot.service" \
+            && systemctl_cmd is-active --quiet "$service_prefix-worker.service" \
+            && curl --fail --silent --show-error \
+                "http://127.0.0.1:${health_port}/health/ready" \
+                | python3 -c 'import json, sys; raise SystemExit(0 if json.load(sys.stdin).get("status") == "ok" else 1)'; then
             return 0
         fi
         sleep 2
@@ -87,27 +173,21 @@ wait_until_ready() {
     return 1
 }
 
-start_release() {
-    local source_dir=$1
-    compose "$source_dir" up -d --build --remove-orphans
-    wait_until_ready "$source_dir"
-}
-
-if start_release "$release_dir"; then
+if run_release_setup "$release_dir" && activate_release "$release_dir" && wait_until_ready; then
     ln -sfn "$release_dir" "$deploy_root/current"
-    compose "$release_dir" ps
+    systemctl_cmd --no-pager --full status \
+        "$service_prefix-bot.service" "$service_prefix-worker.service" || true
     echo "EVE Risk Analysis deployed successfully: $release_sha"
     exit 0
 fi
 
 echo "Deployment health check failed for $release_sha" >&2
-compose "$release_dir" logs --no-color --tail 120 bot worker >&2 || true
-if [[ -n "$previous_dir" && -f "$previous_dir/docker-compose.yml" ]]; then
+systemctl_cmd --no-pager --full status \
+    "$service_prefix-bot.service" "$service_prefix-worker.service" >&2 || true
+if [[ -n "$previous_dir" && -d "$previous_dir/.venv" ]]; then
     echo "Rolling back to $previous_dir" >&2
-    if start_release "$previous_dir"; then
-        if [[ "$previous_dir" != "$deploy_root" ]]; then
-            ln -sfn "$previous_dir" "$deploy_root/current"
-        fi
+    if activate_release "$previous_dir" && wait_until_ready; then
+        ln -sfn "$previous_dir" "$deploy_root/current"
         echo "Rollback completed." >&2
     else
         echo "Rollback failed; manual recovery is required." >&2

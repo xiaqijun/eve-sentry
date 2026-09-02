@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     qq_app_secret: str = ""
     zkill_user_agent: str = ""
 
-    database_url: str = "postgresql+asyncpg://eve_risk:eve_risk@postgres:5432/eve_risk"
-    redis_url: str = "redis://redis:6379/0"
+    database_url: str = "postgresql+asyncpg://eve_risk:eve_risk@127.0.0.1:5432/eve_risk"
+    redis_url: str = "redis://127.0.0.1:6379/0"
     log_level: str = "INFO"
 
     health_host: str = "0.0.0.0"
@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     sde_url: str = (
         "https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip"
     )
-    sde_index_path: str = "/data/sde.sqlite3"
+    sde_index_path: str = "./data/sde.sqlite3"
     zkill_base_url: str = "https://zkillboard.com/api"
     qq_token_url: str = "https://bots.qq.com/app/getAppAccessToken"
     qq_api_base_url: str = "https://api.sgroup.qq.com"
