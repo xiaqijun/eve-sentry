@@ -2015,6 +2015,63 @@ def test_record_ocr_snapshot_keeps_exact_i_l_name_when_esi_resolves_it(tmp_path)
     assert active[0]["character_id"] == 90000001
 
 
+def test_record_ocr_snapshot_canonicalizes_zero_letter_ocr_name(tmp_path):
+    class FakeResolver:
+        def __init__(self):
+            self.resolve_calls = []
+
+        def resolve_names(self, names):
+            self.resolve_calls.append(list(names))
+            if names == ["LOSER18q", "L0SER18q"]:
+                return [
+                    SimpleNamespace(
+                        name="L0SER18q",
+                        category="character",
+                        entity_id=331832684,
+                    )
+                ]
+            return []
+
+        def character_profile(self, character_id):
+            return {
+                "character_id": int(character_id),
+                "name": "L0SER18q",
+                "corporation_id": 456,
+                "alliance_id": 789,
+            }
+
+        def enrich_observation(self, observation):
+            if observation.names == ["L0SER18q"]:
+                observation.character_ids = [331832684]
+            return observation
+
+    resolver = FakeResolver()
+    store = IntelStore(
+        tmp_path / "intel_reports.json",
+        systems={},
+        links=[],
+        resolver=resolver,
+    )
+
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector:test",
+            "system_name": "S-KSWL",
+            "names": ["LOSER18q"],
+            "seen_at": "2026-07-03T10:00:00+00:00",
+        }
+    )
+    assert store.wait_for_esi_idle(timeout=1)
+
+    active = store.list_active_intel()
+    assert active[0]["name"] == "L0SER18q"
+    assert active[0]["character_id"] == 331832684
+    assert store.list_observations(include_suppressed=True)[0]["names"] == [
+        "L0SER18q"
+    ]
+    assert resolver.resolve_calls == [["LOSER18q"], ["LOSER18q", "L0SER18q"]]
+
+
 def test_record_ocr_snapshot_resolves_new_names_without_i_l_once(tmp_path):
     class FakeResolver:
         def __init__(self):

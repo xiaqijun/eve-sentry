@@ -169,8 +169,9 @@ class RapidOCROnnxAdapter:
         texts = list(getattr(output, "txts", None) or [])
         scores = [float(score) for score in (getattr(output, "scores", None) or [])]
         # RapidOCR exposes geometry as ``boxes`` (older releases use ``polys``).
-        # Preserve it because the server uses text/icon row alignment to select
-        # hostile names from the full-frame OCR result.
+        # Keep it for local OCR diagnostics. The monitor strips geometry before
+        # publishing the complete OCR text list; boxes are not in the snapshot
+        # contract.
         boxes = getattr(output, "boxes", None)
         if boxes is None:
             boxes = getattr(output, "polys", None)

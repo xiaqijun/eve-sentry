@@ -122,6 +122,35 @@ def _ocr_i_l_candidates(name: str) -> list[str]:
     return candidates
 
 
+def _ocr_confusion_candidates(name: str) -> list[str]:
+    """Return bounded OCR alternatives for common zero/letter confusion."""
+    text = str(name or "").strip()
+    if not text:
+        return []
+
+    candidates = _ocr_i_l_candidates(text)
+    seen = {candidate.casefold() for candidate in candidates}
+    positions = [
+        index
+        for index, char in enumerate(text)
+        if char in {"0", "O", "o"}
+    ][:8]
+    for mask in range(1, 1 << len(positions)):
+        chars = list(text)
+        for bit, position in enumerate(positions):
+            if not mask & (1 << bit):
+                continue
+            char = chars[position]
+            chars[position] = "0" if char in {"O", "o"} else "O"
+        candidate = "".join(chars)
+        key = candidate.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+    return candidates
+
+
 @dataclass(frozen=True)
 class StarSystem:
     """A map node in the lightweight intel map."""
@@ -4130,8 +4159,14 @@ class IntelStore:
             return cached
 
         candidates = _ocr_i_l_candidates(text)
+        canonical = self._resolve_character_name_candidate(candidates)
+        if canonical is None:
+            confusion_candidates = _ocr_confusion_candidates(text)
+            if confusion_candidates != candidates:
+                candidates = confusion_candidates
+                canonical = self._resolve_character_name_candidate(candidates)
         canonical = (
-            self._resolve_character_name_candidate(candidates)
+            canonical
             or self._resolve_truncated_esi_name(candidates)
             or text
         )
