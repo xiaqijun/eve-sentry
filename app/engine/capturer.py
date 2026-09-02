@@ -175,7 +175,10 @@ class Capturer:
             # Pre-create and start the zbl capture session.
             try:
                 from zbl import Capture
-                self._bg_capture = Capture(window_handle=hwnd)
+                self._bg_capture = Capture(
+                    window_handle=hwnd,
+                    is_border_required=False,
+                )
                 self._bg_capture.__enter__()
                 self._bg_capture_started = True
                 logger.info("zbl capture ready for hwnd=%d", hwnd)

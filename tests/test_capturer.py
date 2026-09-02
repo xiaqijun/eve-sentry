@@ -448,7 +448,10 @@ class TestBackgroundCaptureLifecycle:
             capturer = Capturer()
             capturer.select_window(123, "EVE - Pilot", 800, 600)
 
-            fake_factory.assert_called_once_with(window_handle=123)
+            fake_factory.assert_called_once_with(
+                window_handle=123,
+                is_border_required=False,
+            )
             fake_capture.__enter__.assert_called_once_with()
             assert capturer._bg_capture_started is True
 

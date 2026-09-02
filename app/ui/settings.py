@@ -12,6 +12,7 @@ from PyQt6.QtCore import QRegularExpression, pyqtSignal
 from PyQt6.QtGui import QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -31,6 +32,7 @@ from app.version import current_version
 DEFAULT_ALERT_VOLUME = 1.0
 DEFAULT_ALERT_REPEAT_INTERVAL = 2
 DEFAULT_ALERT_REPEAT_COUNT = 3
+DEFAULT_ALERT_SOUND_MODE = "interval"
 SETTINGS_INPUT_HEIGHT = 30
 SETTINGS_LONG_INPUT_WIDTH = 198
 SETTINGS_INLINE_INPUT_WIDTH = 136
@@ -223,6 +225,18 @@ class SettingsPanel(QWidget):
         self._alert_sound_check = QCheckBox("告警声音")
         self._alert_sound_check.setChecked(bool(config["alert_sound_enabled"]))
         alert_layout.addWidget(self._alert_sound_check)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("播放方式"))
+        mode_row.addStretch()
+        self._alert_sound_mode_combo = QComboBox()
+        self._alert_sound_mode_combo.addItem("按间隔响", "interval")
+        self._alert_sound_mode_combo.addItem("持续响", "continuous")
+        mode_index = self._alert_sound_mode_combo.findData(config["alert_sound_mode"])
+        self._alert_sound_mode_combo.setCurrentIndex(max(0, mode_index))
+        self._alert_sound_mode_combo.setFixedHeight(SETTINGS_INPUT_HEIGHT)
+        self._alert_sound_mode_combo.setToolTip("持续响会在仍有敌对目标时循环播放")
+        mode_row.addWidget(self._alert_sound_mode_combo)
+        alert_layout.addLayout(mode_row)
         interval_row = QHBoxLayout()
         interval_row.addWidget(QLabel("播放间隔"))
         interval_row.addStretch()
@@ -255,6 +269,7 @@ class SettingsPanel(QWidget):
         alert_layout.addLayout(count_row)
         for signal in (
             self._alert_sound_check.toggled,
+            self._alert_sound_mode_combo.currentIndexChanged,
             self._alert_repeat_interval_spin.valueChanged,
             self._alert_repeat_count_spin.valueChanged,
         ):
@@ -342,6 +357,7 @@ class SettingsPanel(QWidget):
         return {
             "muted": not self._alert_sound_check.isChecked(),
             "volume": DEFAULT_ALERT_VOLUME,
+            "sound_mode": self._alert_sound_mode_combo.currentData() or DEFAULT_ALERT_SOUND_MODE,
             "repeat_interval": float(self._alert_repeat_interval_spin.value()),
             "repeat_count": self._alert_repeat_count_spin.value(),
         }
@@ -475,6 +491,9 @@ class SettingsPanel(QWidget):
                     not bool(payload.get("alert_muted", False)),
                 )
             ),
+            "alert_sound_mode": self._clean_alert_sound_mode(
+                payload.get("alert_sound_mode", DEFAULT_ALERT_SOUND_MODE)
+            ),
             "alert_repeat_interval": self._clean_alert_repeat_interval(
                 payload.get("alert_repeat_interval", DEFAULT_ALERT_REPEAT_INTERVAL)
             ),
@@ -495,6 +514,7 @@ class SettingsPanel(QWidget):
             "close_to_tray": self.get_close_to_tray(),
             "restore_monitor_state": self.get_restore_monitor_state(),
             "alert_sound_enabled": self._alert_sound_check.isChecked(),
+            "alert_sound_mode": self._alert_sound_mode_combo.currentData() or DEFAULT_ALERT_SOUND_MODE,
             "alert_repeat_interval": self._alert_repeat_interval_spin.value(),
             "alert_repeat_count": self._alert_repeat_count_spin.value(),
         }
@@ -510,6 +530,10 @@ class SettingsPanel(QWidget):
             return max(1, min(60, int(value)))
         except (TypeError, ValueError):
             return DEFAULT_ALERT_REPEAT_INTERVAL
+
+    def _clean_alert_sound_mode(self, value: Any) -> str:
+        mode = str(value or "").strip().casefold()
+        return mode if mode in {"interval", "continuous"} else DEFAULT_ALERT_SOUND_MODE
 
     def _clean_alert_repeat_count(self, value: Any) -> int:
         try:

@@ -1886,6 +1886,7 @@ class MainWindow(QMainWindow):
             ),
             alert_volume=alert_preferences.get("volume", 1.0),
             alert_muted=alert_preferences.get("muted", False),
+            alert_sound_mode=alert_preferences.get("sound_mode", "interval"),
             alert_cooldown=15.0,
             alert_repeat_interval=alert_preferences.get("repeat_interval", 2.0),
             alert_repeat_count=alert_preferences.get("repeat_count", 3),

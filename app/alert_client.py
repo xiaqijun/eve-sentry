@@ -933,8 +933,8 @@ class LocalStarMapWidget(QWidget):
                     inner_radius * 2,
                 )
 
-            if focused:
-                star_color = QColor("#ff5965") if hostile else QColor("#ffd166")
+            if focused and hostile:
+                star_color = QColor("#ff5965")
                 painter.setPen(QPen(star_color.lighter(125), 1))
                 painter.setBrush(QBrush(star_color))
                 painter.drawPath(self._star_path(x, y))
@@ -2239,6 +2239,11 @@ class AlertTrayController:
         self._stopped = False
         self._alert_volume = max(0.0, min(1.0, float(getattr(args, "alert_volume", 1.0))))
         self._alert_muted = bool(getattr(args, "alert_muted", False))
+        self._alert_sound_mode = str(
+            getattr(args, "alert_sound_mode", "interval") or "interval"
+        ).casefold()
+        if self._alert_sound_mode not in {"interval", "continuous"}:
+            self._alert_sound_mode = "interval"
         self._alert_cooldown = max(0.0, float(getattr(args, "alert_cooldown", 15.0)))
         repeat_interval = max(
             1.0,
@@ -2250,6 +2255,8 @@ class AlertTrayController:
             min(10, int(getattr(args, "alert_repeat_count", 3))),
         )
         self._remaining_sound_plays = 0
+        self._continuous_sound: QSoundEffect | None = None
+        self._active_alert_systems: set[str] = set()
         self._sound_repeat_timer = QTimer(self.overlay)
         self._sound_repeat_timer.setSingleShot(True)
         self._sound_repeat_timer.timeout.connect(self._play_next_alert_sound)
@@ -2294,6 +2301,7 @@ class AlertTrayController:
         if sound_timer is not None:
             sound_timer.stop()
         self._remaining_sound_plays = 0
+        self._stop_continuous_alert_sound()
         self._worker.stop()
         map_worker = getattr(self, "_map_worker", None)
         if map_worker is not None and map_worker.isRunning() and wait_for_worker:
@@ -2740,6 +2748,10 @@ class AlertTrayController:
         self.overlay.show_summaries(self._recent_summaries)
         self.overlay.set_status("新告警", "danger")
         hostile_count = int(summary.get("hostile_count") or 0)
+        if hostile_count > 0:
+            active_systems = getattr(self, "_active_alert_systems", set())
+            active_systems.add(system_key)
+            self._active_alert_systems = active_systems
         notification_key = system.casefold()
         last_notified = getattr(self, "_last_notified", {})
         self._last_notified = last_notified
@@ -2751,8 +2763,11 @@ class AlertTrayController:
             < float(getattr(self, "_alert_cooldown", 0.0))
         )
         muted = bool(getattr(self, "_alert_muted", False))
-        if not muted and not in_cooldown:
-            self._play_alert_sound_sequence()
+        if not muted:
+            if getattr(self, "_alert_sound_mode", "interval") == "continuous":
+                self._start_continuous_alert_sound()
+            elif not in_cooldown:
+                self._play_alert_sound_sequence()
         if in_cooldown:
             return
         last_notified[notification_key] = (now, hostile_count)
@@ -2790,6 +2805,32 @@ class AlertTrayController:
         if remaining > 0 and timer is not None:
             timer.start(int(getattr(self, "_alert_repeat_interval_ms", 2000)))
 
+    def _start_continuous_alert_sound(self) -> None:
+        sound = getattr(self, "_continuous_sound", None)
+        if sound is not None:
+            return
+        sound_path = Path(__file__).parent.parent / "resources" / "alert.wav"
+        if not sound_path.exists():
+            return
+        try:
+            sound = QSoundEffect()
+            sound.setSource(QUrl.fromLocalFile(str(sound_path.resolve())))
+            sound.setVolume(max(0.0, min(1.0, float(getattr(self, "_alert_volume", 1.0)))))
+            sound.setLoopCount(-2)
+            sound.play()
+            self._continuous_sound = sound
+        except Exception as exc:
+            logger.warning("Failed to start continuous alert sound: %s", exc)
+
+    def _stop_continuous_alert_sound(self) -> None:
+        sound = getattr(self, "_continuous_sound", None)
+        self._continuous_sound = None
+        if sound is not None:
+            try:
+                sound.stop()
+            except Exception:
+                pass
+
     def _on_safe(self, event: dict[str, Any]) -> None:
         """Notify once after the final hostile leaves a solar system."""
         system_name = str(
@@ -2797,6 +2838,11 @@ class AlertTrayController:
         ).strip() or "Unknown"
         if system_name.casefold() in getattr(self, "_local_hostile_counts", {}):
             return
+        active_systems = getattr(self, "_active_alert_systems", set())
+        active_systems.discard(system_name.casefold())
+        self._active_alert_systems = active_systems
+        if not active_systems:
+            self._stop_continuous_alert_sound()
         for item in self._recent_summaries:
             if str(item.get("system_name") or "Unknown").casefold() != (
                 system_name.casefold()

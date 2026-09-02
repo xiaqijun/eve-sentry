@@ -1763,7 +1763,7 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
         image = widget.grab().toImage()
         online_center = image.pixelColor(24, 80)
         focused_monitor_ring = image.pixelColor(155, 80)
-        focused_star = image.pixelColor(148, 80)
+        focused_marker = image.pixelColor(148, 80)
         warning_center = image.pixelColor(272, 80)
         warning_body = image.pixelColor(278, 80)
         both_center = image.pixelColor(396, 80)
@@ -1771,8 +1771,8 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
 
         assert online_center.green() > online_center.red() * 1.5
         assert focused_monitor_ring.green() > focused_monitor_ring.red() * 1.5
-        assert focused_star.red() > focused_star.blue() * 1.4
-        assert focused_star.green() > focused_star.blue() * 1.2
+        assert focused_marker.green() > focused_marker.red() * 1.5
+        assert focused_marker.green() > focused_marker.blue() * 1.5
         assert warning_center.red() > warning_center.green() * 1.5
         assert warning_body.red() > warning_body.green()
         assert both_center.red() > both_center.green() * 1.5

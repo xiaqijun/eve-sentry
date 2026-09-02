@@ -1641,6 +1641,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
         "close_to_tray": True,
         "restore_monitor_state": True,
         "alert_sound_enabled": True,
+        "alert_sound_mode": "interval",
         "alert_repeat_interval": 2,
         "alert_repeat_count": 3,
     }
@@ -1664,6 +1665,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
     assert panel._api_key_edit.width() == SETTINGS_LONG_INPUT_WIDTH
     assert panel._api_key_edit.maxLength() == 128
     assert panel._keyword_edit.width() == SETTINGS_INLINE_INPUT_WIDTH
+    assert panel._alert_sound_mode_combo.currentData() == "interval"
     assert all(
         widget.width() == SETTINGS_NUMBER_INPUT_WIDTH
         for widget in (
@@ -1686,6 +1688,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
     assert panel.get_alert_preferences() == {
         "muted": False,
         "volume": 1.0,
+        "sound_mode": "interval",
         "repeat_interval": 2.0,
         "repeat_count": 3,
     }
@@ -1710,6 +1713,22 @@ def test_settings_panel_rejects_multiline_key_and_redacts_header_error(tmp_path)
 
     assert panel._auth_status_label.text() == "设备密钥格式无效，请重新复制完整密钥"
     assert "eve_secret" not in panel._auth_status_label.text()
+
+
+def test_settings_panel_persists_continuous_alert_sound_mode(tmp_path):
+    qt_app()
+    config_path = tmp_path / "channel_settings.json"
+    panel = SettingsPanel(config_path=config_path)
+
+    panel._alert_sound_mode_combo.setCurrentIndex(
+        panel._alert_sound_mode_combo.findData("continuous")
+    )
+    panel.save_channel_config()
+
+    assert panel.get_alert_preferences()["sound_mode"] == "continuous"
+    assert json.loads(config_path.read_text(encoding="utf-8"))["alert_sound_mode"] == (
+        "continuous"
+    )
 
 
 def test_settings_panel_environment_overrides_saved_chatlog_dir(
@@ -1750,6 +1769,7 @@ def test_settings_panel_migrates_legacy_muted_alert_setting(tmp_path):
     panel.save_channel_config()
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["alert_sound_enabled"] is False
+    assert saved["alert_sound_mode"] == "interval"
     assert saved["alert_repeat_interval"] == 2
     assert saved["alert_repeat_count"] == 3
     assert "alert_muted" not in saved

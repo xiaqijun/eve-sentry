@@ -601,6 +601,48 @@ def test_alert_sound_sequence_uses_configured_interval_and_count(monkeypatch):
     ]
 
 
+def test_continuous_alert_sound_uses_looping_effect(monkeypatch):
+    class FakeSound:
+        def __init__(self):
+            self.calls = []
+
+        def setSource(self, source):
+            self.calls.append(("source", source))
+
+        def setVolume(self, volume):
+            self.calls.append(("volume", volume))
+
+        def setLoopCount(self, count):
+            self.calls.append(("loop_count", count))
+
+        def play(self):
+            self.calls.append("play")
+
+        def stop(self):
+            self.calls.append("stop")
+
+    sounds = []
+
+    def factory():
+        sound = FakeSound()
+        sounds.append(sound)
+        return sound
+
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller._alert_volume = 0.6
+    controller._continuous_sound = None
+    monkeypatch.setattr("app.alert_client.QSoundEffect", factory)
+
+    controller._start_continuous_alert_sound()
+
+    assert len(sounds) == 1
+    assert ("volume", 0.6) in sounds[0].calls
+    assert ("loop_count", -2) in sounds[0].calls
+    assert sounds[0].calls[-1] == "play"
+    controller._stop_continuous_alert_sound()
+    assert sounds[0].calls[-1] == "stop"
+
+
 def test_alert_controller_uses_compact_hostile_and_safe_messages(monkeypatch):
     notifications = []
 
