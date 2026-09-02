@@ -45,11 +45,15 @@ database_url=$(sed -n 's/^DATABASE_URL=//p' "$deploy_root/.env" | tail -n 1)
 database_url=${database_url:-postgresql+asyncpg://eve_risk:eve_risk@127.0.0.1:5432/eve_risk}
 database_url=${database_url/@postgres:/@127.0.0.1:}
 postgres_password=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$deploy_root/.env" | tail -n 1)
-if [[ -n "$postgres_password" ]]; then
-    encoded_password=$(POSTGRES_PASSWORD_VALUE="$postgres_password" python3 -c \
-        'import os, urllib.parse; print(urllib.parse.quote(os.environ["POSTGRES_PASSWORD_VALUE"], safe=""))')
-    database_url="postgresql+asyncpg://eve_risk:${encoded_password}@127.0.0.1:5432/eve_risk"
+if [[ -z "$postgres_password" ]]; then
+    postgres_password=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+    printf '\nPOSTGRES_PASSWORD=%s\n' "$postgres_password" >> "$deploy_root/.env"
+    chmod 0600 "$deploy_root/.env"
+    echo "Generated and stored a PostgreSQL password in $deploy_root/.env"
 fi
+encoded_password=$(POSTGRES_PASSWORD_VALUE="$postgres_password" python3 -c \
+    'import os, urllib.parse; print(urllib.parse.quote(os.environ["POSTGRES_PASSWORD_VALUE"], safe=""))')
+database_url="postgresql+asyncpg://eve_risk:${encoded_password}@127.0.0.1:5432/eve_risk"
 redis_url=$(sed -n 's/^REDIS_URL=//p' "$deploy_root/.env" | tail -n 1)
 redis_url=${redis_url:-redis://127.0.0.1:6379/0}
 redis_url=${redis_url/redis:\/\/redis:/redis:\/\/127.0.0.1:}
@@ -157,10 +161,6 @@ EOF
 
 ensure_postgres() {
     local source_dir=$1
-    if [[ -z "$postgres_password" ]]; then
-        echo "POSTGRES_PASSWORD is required for local PostgreSQL deployment." >&2
-        return 1
-    fi
     if [[ "$postgres_password" == *$'\n'* || "$postgres_password" == *$'\r'* ]]; then
         echo "POSTGRES_PASSWORD must not contain line breaks." >&2
         return 1
