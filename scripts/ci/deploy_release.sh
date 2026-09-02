@@ -41,19 +41,6 @@ fi
 
 mkdir -p "$deploy_root/releases" "$data_dir" "$unit_dir"
 uv_bin=$(command -v uv || true)
-if [[ -z "$uv_bin" ]]; then
-    uv_bin="$deploy_root/.uv/bin/uv"
-    mkdir -p "$(dirname "$uv_bin")"
-    if [[ ! -x "$uv_bin" ]]; then
-        echo "uv is not installed; bootstrapping uv 0.11.6 under $deploy_root/.uv" >&2
-        curl --fail --silent --show-error --location https://astral.sh/uv/install.sh \
-            | env UV_INSTALL_DIR="$(dirname "$uv_bin")" UV_VERSION=0.11.6 sh
-    fi
-fi
-if [[ ! -x "$uv_bin" ]]; then
-    echo "Unable to locate uv executable: $uv_bin" >&2
-    exit 2
-fi
 exec 9>"$deploy_root/.deploy.lock"
 if ! flock -w 900 9; then
     echo "Another deployment still holds the production lock." >&2
@@ -154,7 +141,17 @@ EOF
 
 run_release_setup() {
     local source_dir=$1
-    (cd "$source_dir" && "$uv_bin" sync --frozen --no-dev)
+    if [[ -n "$uv_bin" ]]; then
+        (cd "$source_dir" && "$uv_bin" sync --frozen --no-dev)
+    else
+        echo "uv is not installed; creating a Python venv with pip" >&2
+        python3 -m venv "$source_dir/.venv"
+        (cd "$source_dir" && .venv/bin/python -m pip install --disable-pip-version-check \
+            --no-cache-dir --index-url "${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}" \
+            --upgrade pip)
+        (cd "$source_dir" && .venv/bin/python -m pip install --disable-pip-version-check \
+            --no-cache-dir --index-url "${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}" .)
+    fi
     (cd "$source_dir" && .venv/bin/alembic upgrade head)
     (cd "$source_dir" && env SDE_INDEX_PATH="$data_dir/sde.sqlite3" .venv/bin/python -m eve_risk.sde)
 }

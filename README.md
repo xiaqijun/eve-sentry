@@ -129,7 +129,7 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
    也可设置为 `low`、`medium`、`high` 或 `critical`。
    `EVE_SENTRY_PERSONNEL_PUSH_INTERVAL_SECONDS` 控制同一星系名单更新的最小推送间隔；
    间隔内的变化会合并并在到期后推送最新完整名单，设为 `0` 可关闭合并。
-4. 在已安装 PostgreSQL、Redis、Python 3.12 和 uv 的 Linux 主机上部署：
+4. 在已安装 PostgreSQL、Redis、Python 3.12、`python3-venv` 和 pip 的 Linux 主机上部署：
 
    ```bash
    sudo bash scripts/deploy.sh /opt/eve-risk-analysis
