@@ -37,6 +37,7 @@ DEFAULT_ALERT_REPEAT_COUNT = 3
 DEFAULT_ALERT_SOUND_MODE = "interval"
 SETTINGS_INPUT_HEIGHT = 30
 SETTINGS_COMPACT_BUTTON_HEIGHT = 26
+SETTINGS_COMPACT_BUTTON_WIDTH = 48
 SETTINGS_LONG_INPUT_WIDTH = 198
 SETTINGS_INLINE_INPUT_WIDTH = 136
 SETTINGS_NUMBER_INPUT_WIDTH = 60
@@ -237,16 +238,30 @@ class SettingsPanel(QWidget):
         self._alert_sound_path_edit.setClearButtonEnabled(True)
         self._alert_sound_path_edit.setToolTip("支持 WAV 音频；留空时使用内置告警声音")
         sound_file_row.addWidget(self._alert_sound_path_edit, 1)
-        self._choose_alert_sound_button = QPushButton("选择...")
+        self._choose_alert_sound_button = QPushButton("选择")
         self._choose_alert_sound_button.setObjectName("compactAction")
-        self._choose_alert_sound_button.setFixedHeight(
-            SETTINGS_COMPACT_BUTTON_HEIGHT
+        self._choose_alert_sound_button.setFixedSize(
+            SETTINGS_COMPACT_BUTTON_WIDTH,
+            SETTINGS_COMPACT_BUTTON_HEIGHT,
         )
         self._choose_alert_sound_button.setToolTip(
             "选择一个 WAV 音频文件作为告警声音"
         )
         self._choose_alert_sound_button.clicked.connect(self._choose_alert_sound)
         sound_file_row.addWidget(self._choose_alert_sound_button)
+        self._preview_alert_sound_button = QPushButton("试听")
+        self._preview_alert_sound_button.setObjectName("compactAction")
+        self._preview_alert_sound_button.setFixedSize(
+            SETTINGS_COMPACT_BUTTON_WIDTH,
+            SETTINGS_COMPACT_BUTTON_HEIGHT,
+        )
+        self._preview_alert_sound_button.setToolTip(
+            "按当前文件和音量播放一次告警声音"
+        )
+        self._preview_alert_sound_button.clicked.connect(
+            self._preview_alert_sound
+        )
+        sound_file_row.addWidget(self._preview_alert_sound_button)
         alert_layout.addLayout(sound_file_row)
         volume_row = QHBoxLayout()
         volume_label = QLabel("音量")
@@ -276,8 +291,8 @@ class SettingsPanel(QWidget):
         mode_row.addWidget(QLabel("播放方式"))
         mode_row.addStretch()
         self._alert_sound_mode_combo = QComboBox()
-        self._alert_sound_mode_combo.addItem("按间隔响", "interval")
-        self._alert_sound_mode_combo.addItem("持续响", "continuous")
+        self._alert_sound_mode_combo.addItem("间隔", "interval")
+        self._alert_sound_mode_combo.addItem("持续", "continuous")
         mode_index = self._alert_sound_mode_combo.findData(config["alert_sound_mode"])
         self._alert_sound_mode_combo.setCurrentIndex(max(0, mode_index))
         self._alert_sound_mode_combo.setFixedHeight(SETTINGS_INPUT_HEIGHT)
@@ -623,6 +638,16 @@ class SettingsPanel(QWidget):
             return
         self._alert_sound_path_edit.setText(self._clean_alert_sound_path(path))
         self._on_behavior_settings_changed()
+
+    def _preview_alert_sound(self) -> None:
+        """Play the selected alert sound once using the current volume."""
+        from app.alert_client import play_alert_sound
+
+        preferences = self.get_alert_preferences()
+        play_alert_sound(
+            float(preferences["volume"]),
+            str(preferences["sound_path"]),
+        )
 
     def _on_alert_sound_path_changed(self, value: str) -> None:
         """Persist clearing the path immediately via the line edit clear button."""

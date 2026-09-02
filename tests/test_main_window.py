@@ -1690,8 +1690,14 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
     assert panel._api_key_edit.maxLength() == 128
     assert panel._keyword_edit.width() == SETTINGS_INLINE_INPUT_WIDTH
     assert panel._alert_sound_mode_combo.currentData() == "interval"
+    assert panel._alert_sound_mode_combo.itemText(0) == "间隔"
+    assert panel._alert_sound_mode_combo.itemText(1) == "持续"
     assert (
         panel._choose_alert_sound_button.height()
+        == SETTINGS_COMPACT_BUTTON_HEIGHT
+    )
+    assert (
+        panel._preview_alert_sound_button.height()
         == SETTINGS_COMPACT_BUTTON_HEIGHT
     )
     assert panel._alert_volume_slider.value() == 100
@@ -1798,6 +1804,24 @@ def test_settings_panel_persists_alert_volume(tmp_path):
     restored = SettingsPanel(config_path=config_path)
     assert restored._alert_volume_slider.value() == 35
     assert restored.get_alert_preferences()["volume"] == 0.35
+
+
+def test_settings_panel_previews_current_sound_and_volume(tmp_path, monkeypatch):
+    calls = []
+    sound_path = tmp_path / "warning.wav"
+    sound_path.write_bytes(b"RIFF")
+    monkeypatch.setattr(
+        "app.alert_client.play_alert_sound",
+        lambda volume, path: calls.append((volume, path)),
+    )
+    qt_app()
+    panel = SettingsPanel(config_path=tmp_path / "channel_settings.json")
+    panel._alert_sound_path_edit.setText(str(sound_path))
+    panel._alert_volume_slider.setValue(45)
+
+    panel._preview_alert_sound_button.click()
+
+    assert calls == [(0.45, str(sound_path))]
 
 
 def test_settings_panel_environment_overrides_saved_chatlog_dir(
