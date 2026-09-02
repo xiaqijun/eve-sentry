@@ -48,7 +48,7 @@ QQ 群聊可配置指令面板，让用户直接选择常用指令。面板配�
 不会在 bot 启动时修改 QQ 平台：
 
 ```bash
-docker compose run --rm bot python -m eve_risk.qq_panel
+uv run --frozen python -m eve_risk.qq_panel
 ```
 
 该命令使用生产 `.env` 中的 `QQ_APP_ID` 和 `QQ_APP_SECRET`，将全局群聊面板设置为
@@ -117,7 +117,7 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
    如需主动预警，还应配置：
 
    ```dotenv
-   EVE_SENTRY_EVENTS_URL=http://host.docker.internal:8765/api/v1/events
+   EVE_SENTRY_EVENTS_URL=http://127.0.0.1:8765/api/v1/events
    EVE_SENTRY_API_KEY=eve_请填写管理员签发的只读服务密钥
    EVE_SENTRY_PUBLIC_URL=http://YOUR_EVE_SENTRY_HOST
    EVE_SENTRY_ALERT_MIN_LEVEL=
@@ -129,11 +129,15 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
    也可设置为 `low`、`medium`、`high` 或 `critical`。
    `EVE_SENTRY_PERSONNEL_PUSH_INTERVAL_SECONDS` 控制同一星系名单更新的最小推送间隔；
    间隔内的变化会合并并在到期后推送最新完整名单，设为 `0` 可关闭合并。
-4. 启动服务：
+4. 在已安装 PostgreSQL、Redis、Python 3.12 和 uv 的 Linux 主机上部署：
 
    ```bash
-   docker compose up -d --build
+   sudo bash scripts/deploy.sh /opt/eve-risk-analysis
    ```
+
+   部署脚本会创建隔离虚拟环境、执行 Alembic 迁移和 SDE 同步，并注册
+   `eve-risk-analysis-bot` 与 `eve-risk-analysis-worker` 两个 systemd 服务。
+   非 root 用户可使用 `systemctl --user`，并需要预先启用 user service linger。
 
 5. 检查状态：
 
@@ -142,9 +146,9 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
    curl http://127.0.0.1:8080/health/ready
    ```
 
-镜像构建严格使用仓库中的 `uv.lock`。`migrate` 服务会在 bot 与 worker 启动前自动执行 Alembic 迁移。`sde-sync` 服务会从 CCP 官方 JSONL SDE 生成持久化的精简中文索引，构建号未变化时不会重复下载。QQ 群被动回复有效期为 5 分钟，因此不要将抓取截止时间配置到 240 秒以上。
+部署严格使用仓库中的 `uv.lock`。脚本会在 bot 与 worker 启动前执行 Alembic 迁移和 SDE 同步，SDE 索引保存在部署根目录的 `data/sde.sqlite3`。QQ 群被动回复有效期为 5 分钟，因此不要将抓取截止时间配置到 240 秒以上。
 
-向默认分支 `codex/main` 推送后，GitHub Actions 会自动执行测试、镜像构建、SSH 部署和生产健康检查。生产 `.env` 不进入部署包，Compose 项目名保持固定以复用现有数据卷。所需 Secrets、Variables、失败回滚和手动触发方式见 [机器人 CI/CD](docs/ci-cd.md)。
+向默认分支 `codex/main` 推送后，GitHub Actions 会自动执行测试、打包、SSH 部署和生产健康检查。生产 `.env` 不进入部署包。所需 Secrets、Variables、失败回滚和手动触发方式见 [机器人 CI/CD](docs/ci-cd.md)。
 
 ## 本地开发
 

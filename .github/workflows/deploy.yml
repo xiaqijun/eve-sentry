@@ -2,9 +2,9 @@ name: Validate and Deploy Bot
 
 on:
   pull_request:
-    branches: [codex/main]
+    branches: [codex/main, main]
   push:
-    branches: [codex/main]
+    branches: [codex/main, main]
   workflow_dispatch:
 
 concurrency:
@@ -41,16 +41,12 @@ jobs:
           --deselect tests/test_analysis.py::test_analysis_deduplicates_weights_and_builds_patterns
           --deselect tests/test_analysis.py::test_latest_loss_keeps_combat_ship_instead_of_followup_capsule
           --deselect tests/test_analysis.py::test_threat_doctrine_location_and_heatmap_are_explainable
-      - name: Validate Compose configuration
+      - name: Validate local runtime installation
         run: |
           cp .env.example .env
-          docker compose config --quiet
-      - name: Validate production image build
-        run: >-
-          docker build
-          --build-arg APT_MIRROR=deb.debian.org
-          --tag "eve-risk-analysis:${GITHUB_SHA}"
-          .
+          uv sync --frozen --no-dev
+          ZKILL_USER_AGENT="EveRiskAnalysis/0.1 Maintainer: CI <ci@example.invalid>" \
+            uv run python -c "from eve_risk.config import Settings; Settings(_env_file='.env')"
 
   deploy:
     if: github.event_name != 'pull_request'
@@ -81,7 +77,6 @@ jobs:
           set -euo pipefail
           archive="$RUNNER_TEMP/eve-risk-analysis-${GITHUB_SHA}.tar.gz"
           tar -czf "$archive" \
-            Dockerfile docker-compose.yml .dockerignore \
             pyproject.toml uv.lock README.md alembic.ini \
             alembic src scripts
           printf 'ARCHIVE_PATH=%s\n' "$archive" >> "$GITHUB_ENV"
