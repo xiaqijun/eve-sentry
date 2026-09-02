@@ -683,6 +683,69 @@ def test_alert_preferences_update_active_sound_volume_immediately():
     assert controller._alert_repeat_count == 5
 
 
+def test_stop_current_alert_sound_snoozes_until_safe():
+    class FakeSound:
+        def __init__(self):
+            self.stopped = False
+
+        def stop(self):
+            self.stopped = True
+
+    class FakeOverlay:
+        def __init__(self):
+            self.availability = []
+
+        def set_sound_stop_available(self, available):
+            self.availability.append(available)
+
+    controller = AlertTrayController.__new__(AlertTrayController)
+    sound = FakeSound()
+    controller.overlay = FakeOverlay()
+    controller._continuous_sound = sound
+    controller._continuous_sound_snoozed = False
+
+    controller._stop_current_alert_sound()
+
+    assert sound.stopped is True
+    assert controller._continuous_sound is None
+    assert controller._continuous_sound_snoozed is True
+    assert controller.overlay.availability == [False]
+
+
+def test_snoozed_continuous_sound_restarts_after_safe(monkeypatch):
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller._alert_sound_mode = "continuous"
+    controller._alert_muted = False
+    controller._continuous_sound_snoozed = True
+    controller._active_alert_systems = {"tama"}
+    controller._recent_summaries = []
+    controller._last_notified = {}
+    controller._alert_cooldown = 0.0
+    controller._notification_callback = None
+    controller._tray = None
+    controller._stop_continuous_alert_sound = lambda: None
+    controller._apply_local_hostile_counts = lambda: None
+    controller.overlay = type(
+        "Overlay",
+        (),
+        {
+            "show_summaries": lambda *_args: None,
+            "set_status": lambda *_args: None,
+        },
+    )()
+    calls = []
+    controller._start_continuous_alert_sound = lambda: calls.append("start")
+
+    controller._on_alert({"id": "evt-2", "system_name": "Tama", "hostile_count": 1})
+    assert calls == []
+
+    controller._on_safe({"system_name": "Tama", "hostile_count": 0})
+    assert controller._continuous_sound_snoozed is False
+
+    controller._on_alert({"id": "evt-3", "system_name": "Tama", "hostile_count": 1})
+    assert calls == ["start"]
+
+
 def test_alert_controller_uses_compact_hostile_and_safe_messages(monkeypatch):
     notifications = []
 

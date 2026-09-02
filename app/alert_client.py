@@ -1080,6 +1080,7 @@ class AlertOverlay(QWidget):
 
     ACTIVE_SOUNDS: list[QSoundEffect] = []
     map_options_changed = pyqtSignal(list, int)
+    sound_stop_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1097,6 +1098,7 @@ class AlertOverlay(QWidget):
         self._account_menu: QMenu | None = None
         self._account_actions: list[QAction] = []
         self._view_buttons: list[QPushButton] = []
+        self._sound_stop_button: QPushButton | None = None
         self._hops_spinbox: QSpinBox | None = None
         self._map_accounts: list[dict[str, Any]] = []
         self._map_alerts: list[dict[str, Any]] = []
@@ -1172,6 +1174,19 @@ class AlertOverlay(QWidget):
         header.addWidget(view_selector, 0, Qt.AlignmentFlag.AlignTop)
         header.addWidget(self._status)
         layout.addLayout(header)
+
+        sound_control = QHBoxLayout()
+        sound_control.setContentsMargins(0, 0, 0, 0)
+        sound_control.addStretch(1)
+        sound_stop_button = QPushButton("停止本轮")
+        sound_stop_button.setObjectName("alertSoundStopButton")
+        sound_stop_button.setFixedHeight(24)
+        sound_stop_button.setToolTip("停止当前持续告警声音，本轮敌对清空前不再响")
+        sound_stop_button.clicked.connect(self.sound_stop_requested.emit)
+        sound_stop_button.setVisible(False)
+        sound_control.addWidget(sound_stop_button)
+        layout.addLayout(sound_control)
+        self._sound_stop_button = sound_stop_button
 
         row_container = QWidget()
         row_container.setObjectName("rowContainer")
@@ -1385,6 +1400,15 @@ class AlertOverlay(QWidget):
             }
             QPushButton:hover {
                 background: rgba(28, 61, 76, 230);
+            }
+            QPushButton#alertSoundStopButton {
+                color: #ffe9e5;
+                background: rgba(104, 39, 39, 220);
+                border: 1px solid rgba(239, 116, 109, 150);
+                padding: 1px 8px;
+            }
+            QPushButton#alertSoundStopButton:hover {
+                background: rgba(139, 49, 48, 235);
             }
             QFrame#mapToolbar {
                 background: rgba(10, 25, 34, 175);
@@ -1621,6 +1645,13 @@ class AlertOverlay(QWidget):
         }.get(tone, "#9fb7c3")
         self._status.setText(text)
         self._status.setStyleSheet(f"color: {color};")
+
+    def set_sound_stop_available(self, available: bool) -> None:
+        """Show or hide the one-click stop control for continuous alerts."""
+        button = getattr(self, "_sound_stop_button", None)
+        if button is not None:
+            button.setVisible(bool(available))
+            button.setEnabled(bool(available))
 
     def mousePressEvent(self, event) -> None:
         if self._handle_drag_event(event):
@@ -2221,6 +2252,7 @@ class AlertTrayController:
         self.overlay = AlertOverlay()
         self.overlay.set_map_selection_memory(self.state.map_selected_account_keys())
         self.overlay.map_options_changed.connect(self._on_map_options_changed)
+        self.overlay.sound_stop_requested.connect(self._stop_current_alert_sound)
         self.overlay.set_status("连接中", "warn")
         self.overlay.show()
         self.overlay.move_to_default_position()
@@ -2271,6 +2303,7 @@ class AlertTrayController:
         self._remaining_sound_plays = 0
         self._continuous_sound: QSoundEffect | None = None
         self._active_alert_systems: set[str] = set()
+        self._continuous_sound_snoozed = False
         self._sound_repeat_timer = QTimer(self.overlay)
         self._sound_repeat_timer.setSingleShot(True)
         self._sound_repeat_timer.timeout.connect(self._play_next_alert_sound)
@@ -2805,6 +2838,8 @@ class AlertTrayController:
         hostile_count = int(summary.get("hostile_count") or 0)
         if hostile_count > 0:
             active_systems = getattr(self, "_active_alert_systems", set())
+            if not active_systems:
+                self._continuous_sound_snoozed = False
             active_systems.add(system_key)
             self._active_alert_systems = active_systems
         notification_key = system.casefold()
@@ -2819,7 +2854,10 @@ class AlertTrayController:
         )
         muted = bool(getattr(self, "_alert_muted", False))
         if not muted:
-            if getattr(self, "_alert_sound_mode", "interval") == "continuous":
+            if (
+                getattr(self, "_alert_sound_mode", "interval") == "continuous"
+                and not getattr(self, "_continuous_sound_snoozed", False)
+            ):
                 self._start_continuous_alert_sound()
             elif not in_cooldown:
                 self._play_alert_sound_sequence()
@@ -2866,6 +2904,8 @@ class AlertTrayController:
             timer.start(int(getattr(self, "_alert_repeat_interval_ms", 2000)))
 
     def _start_continuous_alert_sound(self) -> None:
+        if bool(getattr(self, "_continuous_sound_snoozed", False)):
+            return
         sound = getattr(self, "_continuous_sound", None)
         if sound is not None:
             return
@@ -2888,12 +2928,26 @@ class AlertTrayController:
             sound.setLoopCount(-2)
             sound.play()
             self._continuous_sound = sound
+            self._set_sound_stop_available(True)
         except Exception as exc:
             logger.warning("Failed to start continuous alert sound: %s", exc)
+
+    def _stop_current_alert_sound(self) -> None:
+        """Stop and snooze the current continuous alert wave until it is safe."""
+        self._continuous_sound_snoozed = True
+        self._stop_continuous_alert_sound()
+
+    def _set_sound_stop_available(self, available: bool) -> None:
+        """Reflect continuous sound availability in the overlay when present."""
+        overlay = getattr(self, "overlay", None)
+        setter = getattr(overlay, "set_sound_stop_available", None)
+        if callable(setter):
+            setter(bool(available))
 
     def _stop_continuous_alert_sound(self) -> None:
         sound = getattr(self, "_continuous_sound", None)
         self._continuous_sound = None
+        self._set_sound_stop_available(False)
         if sound is not None:
             try:
                 sound.stop()
@@ -2911,6 +2965,7 @@ class AlertTrayController:
         active_systems.discard(system_name.casefold())
         self._active_alert_systems = active_systems
         if not active_systems:
+            self._continuous_sound_snoozed = False
             self._stop_continuous_alert_sound()
         for item in self._recent_summaries:
             if str(item.get("system_name") or "Unknown").casefold() != (
