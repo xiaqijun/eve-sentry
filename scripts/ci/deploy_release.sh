@@ -24,15 +24,54 @@ docker_container_ip() {
         "$container_id" | sed -n '/./{p;q;}'
 }
 
-find_eve_risk_postgres_container() {
+find_postgres_container() {
     local container_id
+    local fallback_container=""
+    local image_name
+    local service_name
     while IFS= read -r container_id; do
         if [[ "$(docker_env_value "$container_id" POSTGRES_DB)" == "eve_risk" ]]; then
             printf '%s\n' "$container_id"
             return 0
         fi
+        service_name=$(docker inspect --format \
+            '{{index .Config.Labels "com.docker.compose.service"}}' "$container_id")
+        image_name=$(docker inspect --format '{{.Config.Image}}' "$container_id")
+        if [[ -z "$fallback_container" \
+            && ( "$service_name" == "postgres" || "$image_name" == *postgres* ) ]]; then
+            fallback_container=$container_id
+        fi
     done < <(docker ps --quiet)
+    if [[ -n "$fallback_container" ]]; then
+        printf '%s\n' "$fallback_container"
+        return 0
+    fi
     return 1
+}
+
+find_redis_container() {
+    local compose_project=$1
+    local candidate_id
+    local container_id=""
+    if [[ -n "$compose_project" && "$compose_project" != "<no value>" ]]; then
+        container_id=$(docker ps --quiet \
+            --filter "label=com.docker.compose.project=$compose_project" \
+            --filter 'label=com.docker.compose.service=redis' | head -n 1)
+    fi
+    if [[ -z "$container_id" ]]; then
+        container_id=$(docker ps --quiet \
+            --filter 'label=com.docker.compose.service=redis' | head -n 1)
+    fi
+    if [[ -z "$container_id" ]]; then
+        while IFS= read -r candidate_id; do
+            if [[ "$(docker inspect --format '{{.Config.Image}}' "$candidate_id")" == *redis* ]]; then
+                container_id=$candidate_id
+                break
+            fi
+        done < <(docker ps --quiet)
+    fi
+    [[ -n "$container_id" ]] || return 1
+    printf '%s\n' "$container_id"
 }
 
 if [[ ! "$release_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
@@ -73,44 +112,47 @@ redis_url=$(sed -n 's/^REDIS_URL=//p' "$deploy_root/.env" | tail -n 1)
 redis_url=${redis_url:-redis://127.0.0.1:6379/0}
 redis_url=${redis_url/redis:\/\/redis:/redis:\/\/127.0.0.1:}
 bootstrap_local_postgres=false
+bootstrap_docker_postgres=false
 
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    postgres_container=$(find_eve_risk_postgres_container || true)
+    postgres_container=$(find_postgres_container || true)
     if [[ -n "$postgres_container" ]]; then
         postgres_host=$(docker_container_ip "$postgres_container")
-        postgres_user=$(docker_env_value "$postgres_container" POSTGRES_USER)
-        postgres_database=$(docker_env_value "$postgres_container" POSTGRES_DB)
-        postgres_password=$(docker_env_value "$postgres_container" POSTGRES_PASSWORD)
-        postgres_user=${postgres_user:-eve_risk}
-        postgres_database=${postgres_database:-eve_risk}
-        if [[ -z "$postgres_host" || -z "$postgres_password" ]]; then
-            echo "The eve_risk PostgreSQL container is missing its IP address or password." >&2
+        postgres_admin_user=$(docker_env_value "$postgres_container" POSTGRES_USER)
+        postgres_admin_user=${postgres_admin_user:-postgres}
+        postgres_admin_database=$(docker_env_value "$postgres_container" POSTGRES_DB)
+        postgres_admin_database=${postgres_admin_database:-$postgres_admin_user}
+        if [[ -z "$postgres_host" ]]; then
+            echo "The PostgreSQL container is missing its bridge IP address." >&2
             exit 2
         fi
-        encoded_connection=$(POSTGRES_USER_VALUE="$postgres_user" \
-            POSTGRES_PASSWORD_VALUE="$postgres_password" POSTGRES_DATABASE_VALUE="$postgres_database" \
-            python3 -c 'import os, urllib.parse; print(":".join((urllib.parse.quote(os.environ["POSTGRES_USER_VALUE"], safe=""), urllib.parse.quote(os.environ["POSTGRES_PASSWORD_VALUE"], safe=""))) + "@" + os.environ["POSTGRES_DATABASE_VALUE"] )')
-        encoded_user_password=${encoded_connection%@*}
-        encoded_database=${encoded_connection#*@}
-        database_url="postgresql+asyncpg://${encoded_user_password}@${postgres_host}:5432/${encoded_database}"
+        if [[ -z "$postgres_password" ]]; then
+            postgres_password=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+            printf '\nPOSTGRES_PASSWORD=%s\n' "$postgres_password" >> "$deploy_root/.env"
+            chmod 0600 "$deploy_root/.env"
+            echo "Generated and stored a PostgreSQL password in $deploy_root/.env"
+        fi
+        encoded_password=$(POSTGRES_PASSWORD_VALUE="$postgres_password" python3 -c \
+            'import os, urllib.parse; print(urllib.parse.quote(os.environ["POSTGRES_PASSWORD_VALUE"], safe=""))')
+        database_url="postgresql+asyncpg://eve_risk:${encoded_password}@${postgres_host}:5432/eve_risk"
+        bootstrap_docker_postgres=true
 
         postgres_project=$(docker inspect --format \
             '{{index .Config.Labels "com.docker.compose.project"}}' "$postgres_container")
-        redis_container=""
-        if [[ -n "$postgres_project" ]]; then
-            redis_container=$(docker ps --quiet \
-                --filter "label=com.docker.compose.project=$postgres_project" \
-                --filter 'label=com.docker.compose.service=redis' | head -n 1)
+        redis_container=$(find_redis_container "$postgres_project" || true)
+        if [[ -z "$redis_container" ]]; then
+            echo "No running Redis container was found." >&2
+            exit 2
         fi
-        if [[ -n "$redis_container" ]]; then
-            redis_host=$(docker_container_ip "$redis_container")
-            if [[ -z "$redis_host" ]]; then
-                echo "The Redis container is missing its bridge IP address." >&2
-                exit 2
-            fi
-            redis_url="redis://${redis_host}:6379/0"
+        redis_host=$(docker_container_ip "$redis_container")
+        if [[ -z "$redis_host" ]]; then
+            echo "The Redis container is missing its bridge IP address." >&2
+            exit 2
         fi
-        echo "Using the existing Docker PostgreSQL and Redis infrastructure."
+        redis_url="redis://${redis_host}:6379/0"
+        postgres_container_name=$(docker inspect --format '{{.Name}}' "$postgres_container")
+        redis_container_name=$(docker inspect --format '{{.Name}}' "$redis_container")
+        echo "Using PostgreSQL container ${postgres_container_name#/} and Redis container ${redis_container_name#/}."
     fi
 fi
 
@@ -230,6 +272,32 @@ EOF
 
 ensure_postgres() {
     local source_dir=$1
+    if [[ "$bootstrap_docker_postgres" == true ]]; then
+        POSTGRES_PASSWORD_VALUE="$postgres_password" python3 - <<'PY' | \
+            docker exec --interactive --user postgres "$postgres_container" \
+                psql --username "$postgres_admin_user" --dbname "$postgres_admin_database" \
+                --set ON_ERROR_STOP=1
+import os
+
+password = os.environ["POSTGRES_PASSWORD_VALUE"].replace("'", "''")
+print(
+    "DO $block$ BEGIN "
+    "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'eve_risk') THEN "
+    "CREATE ROLE eve_risk LOGIN; "
+    "END IF; END $block$;"
+)
+print(f"ALTER ROLE eve_risk WITH LOGIN PASSWORD '{password}';")
+PY
+        database_exists=$(docker exec --user postgres "$postgres_container" \
+            psql --username "$postgres_admin_user" --dbname "$postgres_admin_database" \
+                --tuples-only --no-align --command \
+                "SELECT 1 FROM pg_database WHERE datname = 'eve_risk'")
+        if [[ "$database_exists" != "1" ]]; then
+            docker exec --user postgres "$postgres_container" \
+                createdb --username "$postgres_admin_user" --owner eve_risk eve_risk
+        fi
+        return 0
+    fi
     if [[ "$bootstrap_local_postgres" != true ]]; then
         return 0
     fi
