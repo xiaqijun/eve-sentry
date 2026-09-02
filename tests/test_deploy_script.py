@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="deployment script targets Linux")
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
