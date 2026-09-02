@@ -70,6 +70,7 @@ jobs:
           $ErrorActionPreference = "SilentlyContinue"
           gh release view "v$version" --repo $env:GITHUB_REPOSITORY --json tagName | Out-Null
           $exists = $LASTEXITCODE -eq 0
+          $global:LASTEXITCODE = 0
           $ErrorActionPreference = "Stop"
           if ($exists) {
               Write-Host "Release v$version already exists; treating this run as a successful no-op."

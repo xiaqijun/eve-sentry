@@ -38,6 +38,7 @@ def test_release_workflow_uses_own_release_repository() -> None:
     assert "if: needs.check-release.outputs.run_tests == 'true'" in workflow
     assert "secrets.EVE_SENTRY_RELEASE_TOKEN" not in workflow
     assert "GH_TOKEN: ${{ github.token }}" in workflow
+    assert "$global:LASTEXITCODE = 0" in workflow
     assert "EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64 is required" in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "permissions:\n      contents: write" in workflow
