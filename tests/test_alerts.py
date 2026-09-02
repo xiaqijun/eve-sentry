@@ -932,6 +932,26 @@ async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event()
 
 
 @pytest.mark.asyncio
+async def test_monitoring_snapshot_without_subscribers_does_not_fail_stream() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(send_proactive_text=AsyncMock())
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+
+        delivered = await relay.deliver_monitoring_node_snapshot(
+            [{"client_id": "client:alpha", "system_name": "Jita"}],
+            "2026-08-10T01:00:00+00:00",
+            nodes_version="v1",
+        )
+
+        assert delivered is True
+        qq.send_proactive_text.assert_not_awaited()
+        assert await redis.get("qq:eve-sentry:monitoring-node-snapshot-state") == b"v1"
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
 async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     qq = SimpleNamespace(

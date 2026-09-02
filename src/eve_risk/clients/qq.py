@@ -127,9 +127,15 @@ class QQOpenAPIClient:
                 json=payload,
                 timeout=10.0,
             )
+            response_payload = response.json()
         except Exception:
             raise QQAPIError("QQ group message request failed") from None
-        return response.json()
+        if not isinstance(response_payload, dict):
+            raise QQAPIError("QQ group message returned an invalid response")
+        error_code = response_payload.get("code")
+        if error_code is not None and str(error_code).strip() != "0":
+            raise QQAPIError(f"QQ group message rejected (code={error_code})")
+        return response_payload
 
     async def _access_token(self) -> str:
         cache_key = f"qq:access-token:{self.app_id}"

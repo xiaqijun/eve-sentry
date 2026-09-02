@@ -12,7 +12,7 @@ import eve_risk.clients.zkill as zkill_module
 from eve_risk.clients.base import request_with_retries
 from eve_risk.clients.esi import ESIClient
 from eve_risk.clients.images import EveImageClient
-from eve_risk.clients.qq import QQOpenAPIClient
+from eve_risk.clients.qq import QQAPIError, QQOpenAPIClient
 from eve_risk.clients.zkill import ZKillClient
 from eve_risk.domain import LatestEngagement, RelatedBattleRef
 from eve_risk.ship_roles import ShipRoleClassifier
@@ -74,6 +74,37 @@ async def test_qq_client_reuses_token_and_sends_media() -> None:
                 "msg_type": 7,
                 "media": {"file_info": "file-token"},
             }
+
+
+@pytest.mark.asyncio
+async def test_qq_client_rejects_http_200_business_error() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    async with httpx.AsyncClient() as http:
+        client = QQOpenAPIClient(
+            http,
+            redis,
+            "appid",
+            "secret",
+            "https://bots.qq.com/app/getAppAccessToken",
+            "https://api.sgroup.qq.com",
+        )
+        with respx.mock(assert_all_called=True) as router:
+            router.post("https://bots.qq.com/app/getAppAccessToken").mock(
+                return_value=httpx.Response(
+                    200, json={"access_token": "token", "expires_in": "7200"}
+                )
+            )
+            router.post("https://api.sgroup.qq.com/v2/groups/group/messages").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"code": 304023, "message": "proactive message rejected"},
+                )
+            )
+
+            with pytest.raises(QQAPIError, match=r"code=304023"):
+                await client.send_proactive_markdown("group", "**alert**")
+
+    await redis.aclose()
 
 
 @pytest.mark.asyncio

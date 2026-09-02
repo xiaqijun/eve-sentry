@@ -729,8 +729,6 @@ class EveSentryAlertRelay:
 
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
         groups = sorted(_decode(value) for value in raw_groups if _decode(value))
-        if not groups:
-            return False
         message = format_monitoring_nodes_message(normalized_nodes, changes)
         delivered = 0
         failed = False
