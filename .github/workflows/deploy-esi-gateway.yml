@@ -124,7 +124,10 @@ jobs:
           [[ "$gateway_root" =~ ^/[A-Za-z0-9._/-]+$ && "$gateway_root" != "/" && "$gateway_root" != *".."* ]] || { echo "::error::EVE_SENTRY_ESI_GATEWAY_ROOT is invalid"; exit 1; }
           [[ "$service_name" =~ ^[A-Za-z0-9_.@-]+$ ]] || { echo "::error::EVE_SENTRY_ESI_GATEWAY_SERVICE_NAME is invalid"; exit 1; }
           [[ "$health_url" =~ ^https?://[^[:space:]]+$ ]] || { echo "::error::EVE_SENTRY_ESI_GATEWAY_HEALTH_URL is invalid"; exit 1; }
-          [[ "$keep_releases" =~ ^[0-9]+$ ]] && (( keep_releases >= 2 && keep_releases <= 20 )) || { echo "::error::EVE_SENTRY_ESI_GATEWAY_KEEP_RELEASES must be between 2 and 20"; exit 1; }
+          if [[ ! "$keep_releases" =~ ^[0-9]+$ ]] || (( keep_releases < 2 || keep_releases > 20 )); then
+            echo "::error::EVE_SENTRY_ESI_GATEWAY_KEEP_RELEASES must be between 2 and 20"
+            exit 1
+          fi
 
           {
             echo "GATEWAY_ROOT=$gateway_root"

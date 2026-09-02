@@ -35,8 +35,12 @@ trap cleanup EXIT
 [[ "$gateway_root" =~ ^/[A-Za-z0-9._/-]+$ && "$gateway_root" != "/" && "$gateway_root" != *".."* ]] || fail "Invalid gateway root: $gateway_root"
 [[ "$service_name" =~ ^[A-Za-z0-9_.@-]+$ ]] || fail "Invalid service name: $service_name"
 [[ "$health_url" =~ ^https?://[^[:space:]]+$ ]] || fail "Invalid health URL: $health_url"
-[[ "$keep_releases" =~ ^[0-9]+$ ]] && (( keep_releases >= 2 && keep_releases <= 20 )) || fail "keep_releases must be between 2 and 20"
-[[ "$health_attempts" =~ ^[0-9]+$ ]] && (( health_attempts >= 1 )) || fail "DEPLOY_HEALTH_ATTEMPTS must be positive"
+if [[ ! "$keep_releases" =~ ^[0-9]+$ ]] || (( keep_releases < 2 || keep_releases > 20 )); then
+    fail "keep_releases must be between 2 and 20"
+fi
+if [[ ! "$health_attempts" =~ ^[0-9]+$ ]] || (( health_attempts < 1 )); then
+    fail "DEPLOY_HEALTH_ATTEMPTS must be positive"
+fi
 [[ "$health_delay" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "DEPLOY_HEALTH_DELAY must be non-negative"
 if [[ "$unit_dir" == "/etc/systemd/system" && "$EUID" -ne 0 ]]; then
     fail "Deployment must run as root when installing a system service"
