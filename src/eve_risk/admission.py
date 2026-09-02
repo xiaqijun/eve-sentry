@@ -50,19 +50,19 @@ if redis.call('EXISTS', dedupe) == 1 then return 'duplicate' end
 redis.call('SET', dedupe, '1', 'EX', context_ttl)
 local group_owner = redis.call('GET', group)
 if group_owner and group_owner ~= batch_id then return 'group_busy' end
-if not group_owner and redis.call('EXISTS', member) == 1 then return 'member_rate' end
-redis.call('ZREMRANGEBYSCORE', active, '-inf', now)
-if redis.call('ZCARD', active) >= max_jobs then return 'global_busy' end
-
 if not group_owner then
+  if redis.call('EXISTS', member) == 1 then return 'member_rate' end
+  redis.call('ZREMRANGEBYSCORE', active, '-inf', now)
+  if redis.call('ZCARD', active) >= max_jobs then return 'global_busy' end
   redis.call('SET', member, '1', 'EX', member_ttl)
   redis.call('SET', group, batch_id, 'EX', group_ttl)
   redis.call('SET', batch, '1', 'EX', group_ttl)
+  -- A batch consumes one global slot; its individual jobs share this marker.
+  redis.call('ZADD', active, deadline, batch_id)
 else
-redis.call('INCR', batch)
-redis.call('EXPIRE', batch, group_ttl)
+  redis.call('INCR', batch)
+  redis.call('EXPIRE', batch, group_ttl)
 end
-redis.call('ZADD', active, deadline, job_id)
 redis.call('SET', job_marker, '1', 'EX', group_ttl)
 return 'ok'
 """
@@ -90,9 +90,9 @@ if redis.call('GET', group) == batch_id then
   if remaining <= 0 then
     redis.call('DEL', group)
     redis.call('DEL', batch)
+    redis.call('ZREM', active, batch_id)
   end
 end
-redis.call('ZREM', active, job_id)
 return 1
 """
 

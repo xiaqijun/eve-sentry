@@ -27,7 +27,7 @@ class FakeAdmissionRedis:
             self.groups[group] = batch_id
             self.batches[batch] = self.batches.get(batch, 0) + 1
             self.members.add(member)
-            self.active.add(job_id)
+            self.active.add(batch_id)
             self.job_markers.add(job_marker)
             return b"ok"
         if number_of_keys == 4 and len(args) == 6:
@@ -42,7 +42,8 @@ class FakeAdmissionRedis:
                     self.batches.pop(batch, None)
                 else:
                     self.batches[batch] = remaining
-            self.active.discard(job_id)
+                if remaining <= 0:
+                    self.active.discard(batch_id)
             return 1
         if number_of_keys == 4:
             dedupe, member, group, _active, job_id, *_rest = args
@@ -94,6 +95,9 @@ async def test_batch_admission_allows_same_message_and_releases_after_last_job()
 
     assert await controller.admit_batch(job_id="job-1", msg_id="message:0", **kwargs) == AdmissionResult.OK
     assert await controller.admit_batch(job_id="job-2", msg_id="message:1", **kwargs) == AdmissionResult.OK
+    assert await controller.admit_batch(job_id="job-3", msg_id="message:2", **kwargs) == AdmissionResult.OK
+    assert await controller.admit_batch(job_id="job-4", msg_id="message:3", **kwargs) == AdmissionResult.OK
+    assert redis.active == {"batch-1"}
     assert (
         await controller.admit_batch(
             job_id="job-3",
@@ -108,4 +112,9 @@ async def test_batch_admission_allows_same_message_and_releases_after_last_job()
     await controller.release("job-1", "group", "batch-1")
     assert redis.groups["limit:group:group"] == "batch-1"
     await controller.release("job-2", "group", "batch-1")
+    assert redis.groups["limit:group:group"] == "batch-1"
+    await controller.release("job-3", "group", "batch-1")
+    assert redis.groups["limit:group:group"] == "batch-1"
+    await controller.release("job-4", "group", "batch-1")
     assert "limit:group:group" not in redis.groups
+    assert not redis.active

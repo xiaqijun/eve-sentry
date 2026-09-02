@@ -107,17 +107,22 @@ async def test_multi_character_analysis_enqueues_one_request_per_character() -> 
     class Message:
         id = "analysis-batch-message-1"
         group_openid = "group-1"
-        content = "分析 Alice，Bob"
+        content = "分析 Alice，Bob，Carol，Dave"
         author = Author()
 
     try:
         await client.on_group_at_message_create(Message())
 
-        assert client.queue.enqueue.await_count == 2
+        assert client.queue.enqueue.await_count == 4
         requests = [call.args[0] for call in client.queue.enqueue.await_args_list]
-        assert [request.character_names for request in requests] == [["Alice"], ["Bob"]]
-        assert len({request.request_id for request in requests}) == 2
-        assert [request.reply_seq for request in requests] == [1, 2]
+        assert [request.character_names for request in requests] == [
+            ["Alice"],
+            ["Bob"],
+            ["Carol"],
+            ["Dave"],
+        ]
+        assert len({request.request_id for request in requests}) == 4
+        assert [request.reply_seq for request in requests] == [1, 2, 3, 4]
         assert all(request.admission_batch_id == "message:analysis-batch-message-1" for request in requests)
     finally:
         await client.http_client.aclose()
