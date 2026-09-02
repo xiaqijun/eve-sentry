@@ -2,9 +2,9 @@ name: Validate and Deploy Bot
 
 on:
   pull_request:
-    branches: [codex/main]
+    branches: [codex/main, main]
   push:
-    branches: [codex/main]
+    branches: [codex/main, main]
   workflow_dispatch:
 
 concurrency:
