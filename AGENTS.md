@@ -1,5 +1,18 @@
 # Repository Guidelines
 
+## Multi-Repository Ownership
+
+This repository is owned by role `20` and contains the warning server: HTTP/SSE,
+authentication, PostgreSQL persistence, the web console, and server-side
+business logic. Client, standalone ESI Gateway, bot, and published wire-contract
+implementations belong in their own repositories.
+
+Route new work through role `00`. Any HTTP, SSE, event, cursor, authentication,
+or ESI wire change must be reviewed by role `05` against the
+[multi-repository development workflow](https://github.com/xiaqijun/eve-sentry-contracts/blob/main/docs/development-workflow.md).
+Only one task may write to this repository at a time. Role `90` exclusively owns
+production deployment, health verification, and rollback.
+
 ## Project Structure & Module Organization
 `app/` contains the application code. UI components live in `app/ui/`, OCR and capture logic in `app/engine/`, persistence models in `app/models/`, and the intel web server in `app/server/`. Tests are in `tests/` and follow the runtime modules they cover. Static assets such as `resources/alert.wav` live in `resources/`. Supporting scripts belong in `scripts/`, and design notes or plans are kept in `docs/`.
 
@@ -27,7 +40,7 @@ Do not commit local runtime data such as `whitelist.json`, virtual environments,
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **eve-sentry** (6002 symbols, 15325 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **eve-sentry** (6142 symbols, 15951 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
