@@ -124,10 +124,16 @@ Windows 用户直接下载并解压完整便携包即可使用。连接服务端
 固定下载入口：[下载最新版 Windows 客户端](https://evesentrydownload.kisectool.com/download/latest)。
 该地址不包含版本号，会自动跳转到最新完整客户端包，并支持 HTTP Range 断点续传。
 
-`main` 分支由 GitHub Actions 自动测试并部署服务端；修改 `app/version.py` 的版本号会
-额外触发 Windows 客户端构建，并发布到 GitHub Release 与 Cloudflare 下载站。
+客户端相关变更进入 `main` 后会先运行 Windows CI。只有本仓库 `main` 的 push 对应 CI
+成功完成，发布工作流才会检查 `app/version.py` 中的版本；版本尚未发布时才进入受保护的
+`client-release` 环境，构建、签名并发布 Windows 客户端。已有同版本 Release 时工作流会
+成功跳过，不会覆盖现有资产。标签和手动发布仍会独立执行客户端测试。
+
+本仓库不部署服务端、ESI Gateway、机器人或 Web 管理系统。完整触发条件、权限边界、版本
+发布步骤和失败处理见 [客户端 CI/CD 与发布流程](docs/release-process.md)。生产发布审批、
+健康检查和回滚由 role `90` 负责。
+
 客户端从签名清单中的下载站主地址下载程序和模型，支持断点续传与 SHA-256 校验。
-GitCode 镜像当前已暂停，详情见 [GitCode 镜像状态](docs/gitcode-release-mirror.md)。
 
 ONNX 模型应位于：
 
@@ -136,41 +142,23 @@ ONNX 模型应位于：
 .runtime/onnx-models/PP-OCRv6_medium_rec/model.onnx
 ```
 
-本地服务端使用 PostgreSQL；启动时仅加载有界近期报告与活跃情报引用：
-
-```powershell
-python -m pip install -r requirements-server.txt
-python -m app.server --host 127.0.0.1 --port 8765 --postgres-dsn postgresql://eve_sentry:password@127.0.0.1:5432/eve_sentry
-```
-
-前端开发：
-
-```powershell
-cd frontend
-npm ci
-npm run dev
-```
-
 ## 测试
 
 ```powershell
-pytest
-cd frontend
-npm test
-npm run build
+.\.venv\Scripts\python -m pytest
+.\.venv\Scripts\python -m pytest -q tests/test_release_workflows.py
 ```
+
+GitHub Actions 工作流可使用 `actionlint` 做静态校验；CI 在 Windows runner 上使用 Python
+3.13 和 ONNX 依赖运行测试，并暂时忽略仍引用已迁移服务端模块的
+`tests/test_intel_client.py`。
 
 ## 文档
 
 - [客户端操作指南](docs/client.md)
-- [系统架构](docs/architecture.md)
-- [服务端部署](docs/server-deployment.md)
-- [认证与 EVE 身份校验](docs/authentication.md)
-- [Web 管理系统](docs/web-console.md)
-- [完整 API 参考](docs/api-reference.md)
-- [预警消息 API 接入指南](docs/alert-api.md)
-- [GitCode 镜像状态](docs/gitcode-release-mirror.md)
+- [客户端 CI/CD 与发布流程](docs/release-process.md)
+- [客户端仓库迁移记录](docs/client-migration-phase1.md)
 
-完整文档索引见 [docs/README.md](docs/README.md)。
+服务端、ESI Gateway、机器人和共享协议的文档由各自仓库维护。
 
 运行时数据库、配置、EVE SSO token、本地密钥状态和模型缓存均不应提交到仓库。
