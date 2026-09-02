@@ -20,7 +20,7 @@ from app.channels.identity_logs import IdentityScanResult
 from app.ui.main_window import MainWindow, PreviewCaptureWorker
 from app.ui.settings import SettingsPanel
 from app.ui.settings import SETTINGS_INLINE_INPUT_WIDTH
-from app.ui.settings import SETTINGS_INPUT_HEIGHT
+from app.ui.settings import SETTINGS_COMPACT_BUTTON_HEIGHT, SETTINGS_INPUT_HEIGHT
 from app.ui.settings import SETTINGS_LONG_INPUT_WIDTH
 from app.ui.settings import SETTINGS_NUMBER_INPUT_WIDTH
 from app.ui.theme import APP_QSS
@@ -431,6 +431,28 @@ def test_alert_toggle_starts_and_stops_embedded_controller(monkeypatch):
     assert window._alert_controller is None
     assert window._stopping_alert_controllers == set()
     assert ("text", "开启预警") in calls
+
+
+def test_behavior_settings_update_running_alert_preferences(monkeypatch):
+    calls = []
+    preferences = {"volume": 0.4, "sound_mode": "interval"}
+    window = MainWindow.__new__(MainWindow)
+    window._settings = SimpleNamespace(
+        get_start_with_windows=lambda: False,
+        get_alert_preferences=lambda: preferences,
+    )
+    window._alert_controller = SimpleNamespace(
+        update_alert_preferences=lambda value: calls.append(value)
+    )
+    window._log_message = lambda _message: None
+    monkeypatch.setattr(
+        "app.ui.main_window.set_start_with_windows",
+        lambda enabled: calls.append(("startup", enabled)),
+    )
+
+    MainWindow._apply_behavior_settings(window)
+
+    assert calls == [("startup", False), preferences]
 
 
 def test_detector_client_has_no_local_threat_handler():
@@ -1643,6 +1665,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
         "alert_sound_enabled": True,
         "alert_sound_mode": "interval",
         "alert_sound_path": "",
+        "alert_volume": 1.0,
         "alert_repeat_interval": 2,
         "alert_repeat_count": 3,
     }
@@ -1667,6 +1690,13 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
     assert panel._api_key_edit.maxLength() == 128
     assert panel._keyword_edit.width() == SETTINGS_INLINE_INPUT_WIDTH
     assert panel._alert_sound_mode_combo.currentData() == "interval"
+    assert (
+        panel._choose_alert_sound_button.height()
+        == SETTINGS_COMPACT_BUTTON_HEIGHT
+    )
+    assert panel._alert_volume_slider.value() == 100
+    assert panel._alert_volume_slider.accessibleName() == "告警音量"
+    assert panel._alert_volume_value_label.text() == "100%"
     assert all(
         widget.width() == SETTINGS_NUMBER_INPUT_WIDTH
         for widget in (
@@ -1685,7 +1715,7 @@ def test_settings_panel_removes_channel_alert_controls(tmp_path, monkeypatch):
     )
     assert [
         label.text() for label in panel.findChildren(QLabel, "inputUnit")
-    ] == ["秒", "秒", "次"]
+    ] == ["秒", "100%", "秒", "次"]
     assert panel.get_alert_preferences() == {
         "muted": False,
         "volume": 1.0,
@@ -1751,6 +1781,25 @@ def test_settings_panel_persists_custom_alert_sound_path(tmp_path):
     assert restored.get_alert_preferences()["sound_path"] == str(sound_path)
 
 
+def test_settings_panel_persists_alert_volume(tmp_path):
+    qt_app()
+    config_path = tmp_path / "channel_settings.json"
+    panel = SettingsPanel(config_path=config_path)
+
+    panel._alert_volume_slider.setValue(35)
+    panel.save_channel_config()
+
+    assert panel._alert_volume_value_label.text() == "35%"
+    assert panel.get_alert_preferences()["volume"] == 0.35
+    assert (
+        json.loads(config_path.read_text(encoding="utf-8"))["alert_volume"]
+        == 0.35
+    )
+    restored = SettingsPanel(config_path=config_path)
+    assert restored._alert_volume_slider.value() == 35
+    assert restored.get_alert_preferences()["volume"] == 0.35
+
+
 def test_settings_panel_environment_overrides_saved_chatlog_dir(
     tmp_path,
     monkeypatch,
@@ -1791,6 +1840,7 @@ def test_settings_panel_migrates_legacy_muted_alert_setting(tmp_path):
     assert saved["alert_sound_enabled"] is False
     assert saved["alert_sound_mode"] == "interval"
     assert saved["alert_sound_path"] == ""
+    assert saved["alert_volume"] == 1.0
     assert saved["alert_repeat_interval"] == 2
     assert saved["alert_repeat_count"] == 3
     assert "alert_muted" not in saved

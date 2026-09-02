@@ -2036,6 +2036,11 @@ class MainWindow(QMainWindow):
             set_start_with_windows(self._settings.get_start_with_windows())
         except OSError as exc:
             self._log_message(f"无法更新开机启动设置：{exc}")
+        controller = _instance_attr(self, "_alert_controller")
+        if controller is not None:
+            controller.update_alert_preferences(
+                self._settings.get_alert_preferences()
+            )
 
     def _export_diagnostics(self) -> None:
         """Export version, OCR health, window state and redacted logs."""

@@ -2303,6 +2303,47 @@ class AlertTrayController:
             self._tray.show()
         self._worker.start()
 
+    def update_alert_preferences(self, preferences: dict[str, Any]) -> None:
+        """Apply sound preferences immediately while the alert client is running."""
+        previous_path = str(getattr(self, "_alert_sound_path", "") or "")
+        self._alert_muted = bool(preferences.get("muted", False))
+        self._alert_volume = max(
+            0.0,
+            min(1.0, float(preferences.get("volume", 1.0))),
+        )
+        mode = str(
+            preferences.get("sound_mode", "interval") or "interval"
+        ).casefold()
+        self._alert_sound_mode = (
+            mode if mode in {"interval", "continuous"} else "interval"
+        )
+        self._alert_sound_path = str(
+            preferences.get("sound_path", "") or ""
+        ).strip()
+        self._alert_repeat_interval_ms = int(
+            max(1.0, min(60.0, float(preferences.get("repeat_interval", 2.0))))
+            * 1000
+        )
+        self._alert_repeat_count = max(
+            1,
+            min(10, int(preferences.get("repeat_count", 3))),
+        )
+
+        sound = getattr(self, "_continuous_sound", None)
+        if sound is not None:
+            sound.setVolume(self._alert_volume)
+        active_systems = getattr(self, "_active_alert_systems", set())
+        if (
+            self._alert_muted
+            or self._alert_sound_mode != "continuous"
+            or not active_systems
+        ):
+            self._stop_continuous_alert_sound()
+            return
+        if sound is not None and previous_path != self._alert_sound_path:
+            self._stop_continuous_alert_sound()
+        self._start_continuous_alert_sound()
+
     def stop(self, *, wait_for_worker: bool = True) -> None:
         """Request shutdown, optionally waiting for the SSE worker to exit."""
         self._stopped = True

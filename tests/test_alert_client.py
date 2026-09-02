@@ -651,6 +651,38 @@ def test_continuous_alert_sound_uses_looping_effect(monkeypatch, tmp_path):
     assert sounds[0].calls[-1] == "stop"
 
 
+def test_alert_preferences_update_active_sound_volume_immediately():
+    class FakeSound:
+        def __init__(self):
+            self.volumes = []
+
+        def setVolume(self, volume):
+            self.volumes.append(volume)
+
+    controller = AlertTrayController.__new__(AlertTrayController)
+    sound = FakeSound()
+    controller._continuous_sound = sound
+    controller._active_alert_systems = {"tama"}
+    controller._alert_sound_path = "C:/Sounds/custom.wav"
+
+    controller.update_alert_preferences(
+        {
+            "muted": False,
+            "volume": 0.35,
+            "sound_mode": "continuous",
+            "sound_path": "C:/Sounds/custom.wav",
+            "repeat_interval": 4,
+            "repeat_count": 5,
+        }
+    )
+
+    assert sound.volumes == [0.35]
+    assert controller._continuous_sound is sound
+    assert controller._alert_volume == 0.35
+    assert controller._alert_repeat_interval_ms == 4000
+    assert controller._alert_repeat_count == 5
+
+
 def test_alert_controller_uses_compact_hostile_and_safe_messages(monkeypatch):
     notifications = []
 

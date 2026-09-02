@@ -62,6 +62,11 @@ QWidget#settingsPanel QPushButton {
     min-height: 28px;
     padding: 4px 10px;
 }
+QWidget#settingsPanel QPushButton#compactAction {
+    min-height: 24px;
+    max-height: 24px;
+    padding: 0 8px;
+}
 QLabel#brandTitle {
     color: #f4f7fa;
     font-size: 17px;

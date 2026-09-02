@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from PyQt6.QtCore import QRegularExpression, pyqtSignal
+from PyQt6.QtCore import QRegularExpression, Qt, pyqtSignal
 from PyQt6.QtGui import QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -35,6 +36,7 @@ DEFAULT_ALERT_REPEAT_INTERVAL = 2
 DEFAULT_ALERT_REPEAT_COUNT = 3
 DEFAULT_ALERT_SOUND_MODE = "interval"
 SETTINGS_INPUT_HEIGHT = 30
+SETTINGS_COMPACT_BUTTON_HEIGHT = 26
 SETTINGS_LONG_INPUT_WIDTH = 198
 SETTINGS_INLINE_INPUT_WIDTH = 136
 SETTINGS_NUMBER_INPUT_WIDTH = 60
@@ -235,11 +237,41 @@ class SettingsPanel(QWidget):
         self._alert_sound_path_edit.setClearButtonEnabled(True)
         self._alert_sound_path_edit.setToolTip("支持 WAV 音频；留空时使用内置告警声音")
         sound_file_row.addWidget(self._alert_sound_path_edit, 1)
-        choose_sound_button = QPushButton("选择...")
-        choose_sound_button.setToolTip("选择一个 WAV 音频文件作为告警声音")
-        choose_sound_button.clicked.connect(self._choose_alert_sound)
-        sound_file_row.addWidget(choose_sound_button)
+        self._choose_alert_sound_button = QPushButton("选择...")
+        self._choose_alert_sound_button.setObjectName("compactAction")
+        self._choose_alert_sound_button.setFixedHeight(
+            SETTINGS_COMPACT_BUTTON_HEIGHT
+        )
+        self._choose_alert_sound_button.setToolTip(
+            "选择一个 WAV 音频文件作为告警声音"
+        )
+        self._choose_alert_sound_button.clicked.connect(self._choose_alert_sound)
+        sound_file_row.addWidget(self._choose_alert_sound_button)
         alert_layout.addLayout(sound_file_row)
+        volume_row = QHBoxLayout()
+        volume_label = QLabel("音量")
+        volume_label.setObjectName("fieldLabel")
+        volume_row.addWidget(volume_label)
+        self._alert_volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self._alert_volume_slider.setRange(0, 100)
+        self._alert_volume_slider.setSingleStep(5)
+        self._alert_volume_slider.setPageStep(10)
+        self._alert_volume_slider.setValue(
+            round(float(config["alert_volume"]) * 100)
+        )
+        self._alert_volume_slider.setAccessibleName("告警音量")
+        self._alert_volume_slider.setToolTip("调整告警声音音量")
+        volume_row.addWidget(self._alert_volume_slider, 1)
+        self._alert_volume_value_label = QLabel(
+            f"{self._alert_volume_slider.value()}%"
+        )
+        self._alert_volume_value_label.setObjectName("inputUnit")
+        self._alert_volume_value_label.setMinimumWidth(34)
+        self._alert_volume_value_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        volume_row.addWidget(self._alert_volume_value_label)
+        alert_layout.addLayout(volume_row)
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("播放方式"))
         mode_row.addStretch()
@@ -285,6 +317,7 @@ class SettingsPanel(QWidget):
         for signal in (
             self._alert_sound_check.toggled,
             self._alert_sound_path_edit.editingFinished,
+            self._alert_volume_slider.valueChanged,
             self._alert_sound_mode_combo.currentIndexChanged,
             self._alert_repeat_interval_spin.valueChanged,
             self._alert_repeat_count_spin.valueChanged,
@@ -292,6 +325,9 @@ class SettingsPanel(QWidget):
             signal.connect(self._on_behavior_settings_changed)
         self._alert_sound_path_edit.textChanged.connect(
             self._on_alert_sound_path_changed
+        )
+        self._alert_volume_slider.valueChanged.connect(
+            lambda value: self._alert_volume_value_label.setText(f"{value}%")
         )
         layout.addWidget(alert_group)
 
@@ -375,7 +411,7 @@ class SettingsPanel(QWidget):
     def get_alert_preferences(self) -> dict[str, Any]:
         return {
             "muted": not self._alert_sound_check.isChecked(),
-            "volume": DEFAULT_ALERT_VOLUME,
+            "volume": self._alert_volume_slider.value() / 100.0,
             "sound_mode": self._alert_sound_mode_combo.currentData() or DEFAULT_ALERT_SOUND_MODE,
             "sound_path": self._clean_alert_sound_path(self._alert_sound_path_edit.text()),
             "repeat_interval": float(self._alert_repeat_interval_spin.value()),
@@ -517,6 +553,9 @@ class SettingsPanel(QWidget):
             "alert_sound_path": self._clean_alert_sound_path(
                 payload.get("alert_sound_path", "")
             ),
+            "alert_volume": self._clean_alert_volume(
+                payload.get("alert_volume", DEFAULT_ALERT_VOLUME)
+            ),
             "alert_repeat_interval": self._clean_alert_repeat_interval(
                 payload.get("alert_repeat_interval", DEFAULT_ALERT_REPEAT_INTERVAL)
             ),
@@ -539,6 +578,7 @@ class SettingsPanel(QWidget):
             "alert_sound_enabled": self._alert_sound_check.isChecked(),
             "alert_sound_mode": self._alert_sound_mode_combo.currentData() or DEFAULT_ALERT_SOUND_MODE,
             "alert_sound_path": self._clean_alert_sound_path(self._alert_sound_path_edit.text()),
+            "alert_volume": self._alert_volume_slider.value() / 100.0,
             "alert_repeat_interval": self._alert_repeat_interval_spin.value(),
             "alert_repeat_count": self._alert_repeat_count_spin.value(),
         }
@@ -558,6 +598,12 @@ class SettingsPanel(QWidget):
     def _clean_alert_sound_mode(self, value: Any) -> str:
         mode = str(value or "").strip().casefold()
         return mode if mode in {"interval", "continuous"} else DEFAULT_ALERT_SOUND_MODE
+
+    def _clean_alert_volume(self, value: Any) -> float:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return DEFAULT_ALERT_VOLUME
 
     def _clean_alert_sound_path(self, value: Any) -> str:
         """Normalize a user-selected sound path without requiring it to exist."""
