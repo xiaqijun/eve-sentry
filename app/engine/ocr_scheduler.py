@@ -106,7 +106,7 @@ class SharedOCRScheduler:
         request_key: str,
         priority: int = 0,
     ):
-        """Run only the newest queued OCR request and retain text geometry."""
+        """Run the newest OCR request and retain geometry for local consumers."""
         key = str(request_key or "window")
         with self._lock:
             if self._closed:

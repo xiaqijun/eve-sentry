@@ -94,7 +94,7 @@ class MonitorWorker(QThread):
         return self._ocr.recognize(image, progress=progress)
 
     def _recognize_with_boxes(self, image, progress=None, *, priority: int = 0):
-        """Run OCR with geometry when the configured backend supports it."""
+        """Run internal OCR with optional geometry; upload only text names."""
         recognize_latest = getattr(self._ocr, "recognize_with_boxes_latest", None)
         if callable(recognize_latest) and self._ocr_request_key:
             return recognize_latest(

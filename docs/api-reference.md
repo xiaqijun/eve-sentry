@@ -116,7 +116,8 @@ Authorization: Bearer eve_xxx
 `POST /api/v1/ocr/snapshot` 的请求体包含 `client_id`、`source_instance`、`system_name` 和
 完整 OCR 文本数组 `names`，可带 `system_id`、`seen_at`、`confidence`、`hostile_icon_count`、
 `snapshot_id`、`sequence` 和 `captured_at`。客户端不发送 `ocr_candidates` 或 `hostile_icons`
-坐标；服务端对 `names` 中的每个文本独立请求 ESI，按 standing、军团/联盟和白名单生成
+坐标。OCR 后端即使在客户端内部产生文字框，也会在序列化前丢弃；服务端只接收 `names`
+文本数组，并对其中每个文本独立请求 ESI，按 standing、军团/联盟和白名单生成
 敌对、友军或未解析状态。`hostile_icon_count` 只表示截图中的视觉红色图标总数，不给单个角色
 直接定性。
 
