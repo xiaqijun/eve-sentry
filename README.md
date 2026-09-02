@@ -112,7 +112,7 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
 
 1. 在 QQ 开放平台创建机器人，启用群聊消息能力，取得 `AppID` 与 `AppSecret`。
 2. 复制 `.env.example` 为 `.env`，填写 QQ 凭据和包含真实维护者联系方式的 `ZKILL_USER_AGENT`。
-3. 设置一个非默认的 `POSTGRES_PASSWORD`。
+3. 设置 `EVE_RISK_POSTGRES_PASSWORD` 与 `EVE_RISK_REDIS_PASSWORD` 环境变量。
    如需排除己方成员，可填写逗号分隔的 `FRIENDLY_CHARACTER_IDS`、`FRIENDLY_CORPORATION_IDS` 和 `FRIENDLY_ALLIANCE_IDS`。公共战报不包含游戏内联系人声望，因此需要显式配置这些 ID。
    如需主动预警，还应配置：
 
@@ -129,10 +129,11 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
    也可设置为 `low`、`medium`、`high` 或 `critical`。
    `EVE_SENTRY_PERSONNEL_PUSH_INTERVAL_SECONDS` 控制同一星系名单更新的最小推送间隔；
    间隔内的变化会合并并在到期后推送最新完整名单，设为 `0` 可关闭合并。
-4. 在已安装 PostgreSQL、Redis、Python 3.12、`python3-venv` 和 pip 的 Linux 主机上部署：
+4. 在已有 PostgreSQL/Redis 容器，并安装了 Python 3.12、`python3-venv` 和 pip 的 Linux 主机上部署：
 
    ```bash
-   sudo bash scripts/deploy.sh /opt/eve-risk-analysis
+   sudo --preserve-env=EVE_RISK_POSTGRES_PASSWORD,EVE_RISK_REDIS_PASSWORD \
+     bash scripts/deploy.sh /opt/eve-risk-analysis
    ```
 
    部署脚本会创建隔离虚拟环境、执行 Alembic 迁移和 SDE 同步，并注册
@@ -148,7 +149,7 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
 
 部署严格使用仓库中的 `uv.lock`。脚本会在 bot 与 worker 启动前执行 Alembic 迁移和 SDE 同步，SDE 索引保存在部署根目录的 `data/sde.sqlite3`。QQ 群被动回复有效期为 5 分钟，因此不要将抓取截止时间配置到 240 秒以上。
 
-向默认分支 `codex/main` 推送后，GitHub Actions 会自动执行测试、打包、SSH 部署和生产健康检查。生产 `.env` 不进入部署包。所需 Secrets、Variables、失败回滚和手动触发方式见 [机器人 CI/CD](docs/ci-cd.md)。
+向默认分支 `main` 推送后，GitHub Actions 会自动执行测试、打包、SSH 部署和生产健康检查。生产 `.env` 不进入部署包。所需 Secrets、Variables、失败回滚和手动触发方式见 [机器人 CI/CD](docs/ci-cd.md)。
 
 ## 本地开发
 

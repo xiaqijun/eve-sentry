@@ -6,6 +6,7 @@ set -euo pipefail
 archive=${1:?deployment archive is required}
 release_sha=${2:?release SHA is required}
 deploy_root=${3:?deployment root is required}
+credentials_file=${4:?deployment credentials file is required}
 service_prefix=${SERVICE_PREFIX:-eve-risk-analysis}
 data_dir="$deploy_root/data"
 unit_dir="$deploy_root/systemd"
@@ -74,6 +75,22 @@ find_redis_container() {
     printf '%s\n' "$container_id"
 }
 
+find_redis_admin_password() {
+    local container_id=$1
+    local password_variable
+    local password_value
+    for password_variable in \
+        REDIS_PASSWORD REDIS_ROOT_PASSWORD REDISCLI_AUTH \
+        PANEL_REDIS_ROOT_PASSWORD PANEL_REDIS_PASSWORD PANEL_DB_ROOT_PASSWORD; do
+        password_value=$(docker_env_value "$container_id" "$password_variable")
+        if [[ -n "$password_value" ]]; then
+            printf '%s\n' "$password_value"
+            return 0
+        fi
+    done
+    return 1
+}
+
 if [[ ! "$release_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
     echo "Invalid release SHA: $release_sha" >&2
     exit 2
@@ -102,12 +119,29 @@ if [[ ! -f "$deploy_root/.env" ]]; then
     echo "Production environment file is missing: $deploy_root/.env" >&2
     exit 2
 fi
+if [[ ! -f "$credentials_file" ]]; then
+    echo "Deployment credentials file is missing: $credentials_file" >&2
+    exit 2
+fi
+
+chmod 0600 "$credentials_file"
+postgres_password=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$credentials_file" | tail -n 1)
+redis_password=$(sed -n 's/^REDIS_PASSWORD=//p' "$credentials_file" | tail -n 1)
+rm -f -- "$credentials_file"
+if [[ -z "$postgres_password" || -z "$redis_password" ]]; then
+    echo "PostgreSQL and Redis deployment credentials are required." >&2
+    exit 2
+fi
+if [[ "$postgres_password" == *$'\n'* || "$postgres_password" == *$'\r'* \
+    || "$redis_password" == *$'\n'* || "$redis_password" == *$'\r'* ]]; then
+    echo "Deployment credentials must not contain line breaks." >&2
+    exit 2
+fi
 
 mkdir -p "$deploy_root/releases" "$data_dir" "$unit_dir"
 database_url=$(sed -n 's/^DATABASE_URL=//p' "$deploy_root/.env" | tail -n 1)
 database_url=${database_url:-postgresql+asyncpg://eve_risk:eve_risk@127.0.0.1:5432/eve_risk}
 database_url=${database_url/@postgres:/@127.0.0.1:}
-postgres_password=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$deploy_root/.env" | tail -n 1)
 redis_url=$(sed -n 's/^REDIS_URL=//p' "$deploy_root/.env" | tail -n 1)
 redis_url=${redis_url:-redis://127.0.0.1:6379/0}
 redis_url=${redis_url/redis:\/\/redis:/redis:\/\/127.0.0.1:}
@@ -126,12 +160,6 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
             echo "The PostgreSQL container is missing its bridge IP address." >&2
             exit 2
         fi
-        if [[ -z "$postgres_password" ]]; then
-            postgres_password=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-            printf '\nPOSTGRES_PASSWORD=%s\n' "$postgres_password" >> "$deploy_root/.env"
-            chmod 0600 "$deploy_root/.env"
-            echo "Generated and stored a PostgreSQL password in $deploy_root/.env"
-        fi
         encoded_password=$(POSTGRES_PASSWORD_VALUE="$postgres_password" python3 -c \
             'import os, urllib.parse; print(urllib.parse.quote(os.environ["POSTGRES_PASSWORD_VALUE"], safe=""))')
         database_url="postgresql+asyncpg://eve_risk:${encoded_password}@${postgres_host}:5432/eve_risk"
@@ -149,7 +177,22 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
             echo "The Redis container is missing its bridge IP address." >&2
             exit 2
         fi
-        redis_url="redis://${redis_host}:6379/0"
+        redis_admin_password=$(find_redis_admin_password "$redis_container" || true)
+        if [[ -z "$redis_admin_password" ]]; then
+            echo "Redis administrator credentials were not found in the container environment." >&2
+            exit 2
+        fi
+        printf '>%s' "$redis_password" | docker exec --interactive \
+            --env REDISCLI_AUTH="$redis_admin_password" "$redis_container" \
+            redis-cli -x ACL SETUSER eve_risk on '~*' '+@all' >/dev/null
+        if ! docker exec --env REDISCLI_AUTH="$redis_password" "$redis_container" \
+            redis-cli --user eve_risk ping 2>/dev/null | grep -qx PONG; then
+            echo "The dedicated eve_risk Redis ACL user could not authenticate." >&2
+            exit 2
+        fi
+        encoded_redis_password=$(REDIS_PASSWORD_VALUE="$redis_password" python3 -c \
+            'import os, urllib.parse; print(urllib.parse.quote(os.environ["REDIS_PASSWORD_VALUE"], safe=""))')
+        redis_url="redis://eve_risk:${encoded_redis_password}@${redis_host}:6379/0"
         postgres_container_name=$(docker inspect --format '{{.Name}}' "$postgres_container")
         redis_container_name=$(docker inspect --format '{{.Name}}' "$redis_container")
         echo "Using PostgreSQL container ${postgres_container_name#/} and Redis container ${redis_container_name#/}."
@@ -158,17 +201,13 @@ fi
 
 if [[ -z "${postgres_container:-}" && -n "$(getent passwd postgres || true)" ]]; then
     bootstrap_local_postgres=true
-    if [[ -z "$postgres_password" ]]; then
-        postgres_password=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-        printf '\nPOSTGRES_PASSWORD=%s\n' "$postgres_password" >> "$deploy_root/.env"
-        chmod 0600 "$deploy_root/.env"
-        echo "Generated and stored a PostgreSQL password in $deploy_root/.env"
-    fi
     encoded_password=$(POSTGRES_PASSWORD_VALUE="$postgres_password" python3 -c \
         'import os, urllib.parse; print(urllib.parse.quote(os.environ["POSTGRES_PASSWORD_VALUE"], safe=""))')
     database_url="postgresql+asyncpg://eve_risk:${encoded_password}@127.0.0.1:5432/eve_risk"
 fi
-sed -e '/^DATABASE_URL=/d' -e '/^REDIS_URL=/d' "$deploy_root/.env" > "$runtime_env"
+sed -e '/^DATABASE_URL=/d' -e '/^REDIS_URL=/d' \
+    -e '/^POSTGRES_PASSWORD=/d' -e '/^REDIS_PASSWORD=/d' \
+    "$deploy_root/.env" > "$runtime_env"
 printf 'DATABASE_URL=%s\nREDIS_URL=%s\n' "$database_url" "$redis_url" >> "$runtime_env"
 chmod 0600 "$runtime_env"
 uv_bin=$(command -v uv || true)

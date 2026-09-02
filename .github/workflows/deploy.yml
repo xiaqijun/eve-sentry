@@ -2,9 +2,9 @@ name: Validate and Deploy Bot
 
 on:
   pull_request:
-    branches: [codex/main, main]
+    branches: [main]
   push:
-    branches: [codex/main, main]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -64,9 +64,12 @@ jobs:
           DEPLOY_USER: ${{ vars.EVE_RISK_DEPLOY_USER }}
           DEPLOY_PORT: ${{ vars.EVE_RISK_DEPLOY_PORT }}
           DEPLOY_ROOT: ${{ vars.EVE_RISK_DEPLOY_ROOT }}
+          POSTGRES_PASSWORD: ${{ secrets.EVE_RISK_POSTGRES_PASSWORD }}
+          REDIS_PASSWORD: ${{ secrets.EVE_RISK_REDIS_PASSWORD }}
         run: |
           set -euo pipefail
-          for name in DEPLOY_KEY KNOWN_HOSTS DEPLOY_HOST DEPLOY_USER DEPLOY_PORT DEPLOY_ROOT; do
+          for name in DEPLOY_KEY KNOWN_HOSTS DEPLOY_HOST DEPLOY_USER DEPLOY_PORT DEPLOY_ROOT \
+            POSTGRES_PASSWORD REDIS_PASSWORD; do
             if [ -z "${!name:-}" ]; then
               echo "Missing GitHub deployment setting: $name" >&2
               exit 1
@@ -96,17 +99,26 @@ jobs:
           DEPLOY_USER: ${{ vars.EVE_RISK_DEPLOY_USER }}
           DEPLOY_PORT: ${{ vars.EVE_RISK_DEPLOY_PORT }}
           DEPLOY_ROOT: ${{ vars.EVE_RISK_DEPLOY_ROOT }}
+          POSTGRES_PASSWORD: ${{ secrets.EVE_RISK_POSTGRES_PASSWORD }}
+          REDIS_PASSWORD: ${{ secrets.EVE_RISK_REDIS_PASSWORD }}
         run: |
           set -euo pipefail
           target="${DEPLOY_USER}@${DEPLOY_HOST}"
           remote_archive="/tmp/eve-risk-analysis-${GITHUB_SHA}.tar.gz"
           remote_script="/tmp/eve-risk-analysis-deploy-${GITHUB_SHA}.sh"
+          remote_credentials="/tmp/eve-risk-analysis-credentials-${GITHUB_SHA}.env"
           ssh_options=(-i ~/.ssh/eve-risk-analysis -p "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes)
           scp_options=(-i ~/.ssh/eve-risk-analysis -P "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes)
           normalized_script="$RUNNER_TEMP/deploy_release.sh"
+          credentials_file="$RUNNER_TEMP/deploy_credentials.env"
           sed 's/\r$//' scripts/ci/deploy_release.sh > "$normalized_script"
+          umask 077
+          printf 'POSTGRES_PASSWORD=%s\nREDIS_PASSWORD=%s\n' \
+            "$POSTGRES_PASSWORD" "$REDIS_PASSWORD" > "$credentials_file"
           scp "${scp_options[@]}" "$ARCHIVE_PATH" "$target:$remote_archive"
           scp "${scp_options[@]}" "$normalized_script" "$target:$remote_script"
-          printf -v remote_command 'bash %q %q %q %q' \
-            "$remote_script" "$remote_archive" "$GITHUB_SHA" "$DEPLOY_ROOT"
+          scp "${scp_options[@]}" "$credentials_file" "$target:$remote_credentials"
+          rm -f -- "$credentials_file"
+          printf -v remote_command 'bash %q %q %q %q %q' \
+            "$remote_script" "$remote_archive" "$GITHUB_SHA" "$DEPLOY_ROOT" "$remote_credentials"
           ssh "${ssh_options[@]}" "$target" "$remote_command"
