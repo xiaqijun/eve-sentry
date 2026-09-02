@@ -25,7 +25,7 @@ case "$deploy_root" in
         exit 2
         ;;
 esac
-for command in python3 systemctl curl flock tar psql; do
+for command in python3 systemctl curl flock tar; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Required command is missing: $command" >&2
         exit 2
@@ -156,6 +156,7 @@ EOF
 }
 
 ensure_postgres() {
+    local source_dir=$1
     if [[ -z "$postgres_password" ]]; then
         echo "POSTGRES_PASSWORD is required for local PostgreSQL deployment." >&2
         return 1
@@ -172,23 +173,39 @@ ensure_postgres() {
         echo "Required command is missing: runuser" >&2
         return 1
     fi
-    password_literal=$(POSTGRES_PASSWORD_VALUE="$postgres_password" python3 -c \
-        'import os; print("\x27" + os.environ["POSTGRES_PASSWORD_VALUE"].replace("\x27", "\x27\x27") + "\x27")')
-    runuser -u postgres -- psql --set ON_ERROR_STOP=1 --quiet <<SQL
-DO \$\$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'eve_risk') THEN
-        CREATE ROLE eve_risk LOGIN;
-    END IF;
-END
-\$\$;
-ALTER ROLE eve_risk WITH LOGIN PASSWORD $password_literal;
-SQL
-    if ! runuser -u postgres -- psql --tuples-only --no-align \
-        --command "SELECT 1 FROM pg_database WHERE datname = 'eve_risk'" \
-        | grep -Fxq 1; then
-        runuser -u postgres -- createdb --owner=eve_risk eve_risk
-    fi
+    POSTGRES_PASSWORD_VALUE="$postgres_password" runuser -u postgres -- \
+        "$source_dir/.venv/bin/python" - <<'PY'
+import asyncio
+import os
+
+import asyncpg
+
+
+async def main() -> None:
+    connection = await asyncpg.connect(user="postgres", database="postgres")
+    try:
+        role_exists = await connection.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'eve_risk')"
+        )
+        if not role_exists:
+            await connection.execute("CREATE ROLE eve_risk LOGIN")
+        password_literal = await connection.fetchval(
+            "SELECT quote_literal($1)", os.environ["POSTGRES_PASSWORD_VALUE"]
+        )
+        await connection.execute(
+            f"ALTER ROLE eve_risk WITH LOGIN PASSWORD {password_literal}"
+        )
+        database_exists = await connection.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'eve_risk')"
+        )
+        if not database_exists:
+            await connection.execute("CREATE DATABASE eve_risk OWNER eve_risk")
+    finally:
+        await connection.close()
+
+
+asyncio.run(main())
+PY
 }
 
 run_release_setup() {
@@ -205,6 +222,7 @@ run_release_setup() {
             --no-cache-dir --index-url "${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}" .) \
             || return 1
     fi
+    ensure_postgres "$source_dir" || return 1
     (cd "$source_dir" && env DATABASE_URL="$database_url" REDIS_URL="$redis_url" \
         .venv/bin/alembic upgrade head) || return 1
     (cd "$source_dir" && env DATABASE_URL="$database_url" REDIS_URL="$redis_url" \
@@ -242,8 +260,8 @@ wait_until_ready() {
     return 1
 }
 
-if ensure_postgres && run_release_setup "$release_dir" \
-    && activate_release "$release_dir" && wait_until_ready; then
+if run_release_setup "$release_dir" && activate_release "$release_dir" \
+    && wait_until_ready; then
     ln -sfn "$release_dir" "$deploy_root/current"
     systemctl_cmd --no-pager --full status \
         "$service_prefix-bot.service" "$service_prefix-worker.service" || true
