@@ -43,4 +43,5 @@ Variables：
 非 root 部署使用 `systemctl --user`，生产用户需要预先执行 `loginctl enable-linger <user>`，并确保
 该用户拥有部署目录和 systemd user manager。生产主机需预先安装 Python 3.12、PostgreSQL、Redis、
 `curl`、`flock` 与 `python3-venv`。主机如已安装 uv，脚本会优先使用锁定依赖；否则使用 pip
-从 `PIP_INDEX_URL`（默认阿里云镜像）安装项目。
+从 `PIP_INDEX_URL`（默认阿里云镜像）安装项目。root 部署会按生产 `.env` 的
+`POSTGRES_PASSWORD` 创建或更新本机 `eve_risk` PostgreSQL 角色，并在缺失时创建同名数据库。

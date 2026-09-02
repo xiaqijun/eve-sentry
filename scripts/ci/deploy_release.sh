@@ -25,7 +25,7 @@ case "$deploy_root" in
         exit 2
         ;;
 esac
-for command in python3 systemctl curl flock tar; do
+for command in python3 systemctl curl flock tar psql; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Required command is missing: $command" >&2
         exit 2
@@ -41,9 +41,20 @@ if [[ ! -f "$deploy_root/.env" ]]; then
 fi
 
 mkdir -p "$deploy_root/releases" "$data_dir" "$unit_dir"
-sed -e 's/@postgres:/@127.0.0.1:/g' \
-    -e 's#redis://redis:#redis://127.0.0.1:#g' \
-    "$deploy_root/.env" > "$runtime_env"
+database_url=$(sed -n 's/^DATABASE_URL=//p' "$deploy_root/.env" | tail -n 1)
+database_url=${database_url:-postgresql+asyncpg://eve_risk:eve_risk@127.0.0.1:5432/eve_risk}
+database_url=${database_url/@postgres:/@127.0.0.1:}
+postgres_password=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$deploy_root/.env" | tail -n 1)
+if [[ -n "$postgres_password" ]]; then
+    encoded_password=$(POSTGRES_PASSWORD_VALUE="$postgres_password" python3 -c \
+        'import os, urllib.parse; print(urllib.parse.quote(os.environ["POSTGRES_PASSWORD_VALUE"], safe=""))')
+    database_url="postgresql+asyncpg://eve_risk:${encoded_password}@127.0.0.1:5432/eve_risk"
+fi
+redis_url=$(sed -n 's/^REDIS_URL=//p' "$deploy_root/.env" | tail -n 1)
+redis_url=${redis_url:-redis://127.0.0.1:6379/0}
+redis_url=${redis_url/redis:\/\/redis:/redis:\/\/127.0.0.1:}
+sed -e '/^DATABASE_URL=/d' -e '/^REDIS_URL=/d' "$deploy_root/.env" > "$runtime_env"
+printf 'DATABASE_URL=%s\nREDIS_URL=%s\n' "$database_url" "$redis_url" >> "$runtime_env"
 chmod 0600 "$runtime_env"
 uv_bin=$(command -v uv || true)
 exec 9>"$deploy_root/.deploy.lock"
@@ -144,21 +155,60 @@ EOF
     systemctl_cmd daemon-reload
 }
 
+ensure_postgres() {
+    if [[ -z "$postgres_password" ]]; then
+        echo "POSTGRES_PASSWORD is required for local PostgreSQL deployment." >&2
+        return 1
+    fi
+    if [[ "$postgres_password" == *$'\n'* || "$postgres_password" == *$'\r'* ]]; then
+        echo "POSTGRES_PASSWORD must not contain line breaks." >&2
+        return 1
+    fi
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+        echo "Non-root deployment expects the eve_risk PostgreSQL role and database to exist." >&2
+        return 0
+    fi
+    if ! command -v runuser >/dev/null 2>&1; then
+        echo "Required command is missing: runuser" >&2
+        return 1
+    fi
+    password_literal=$(POSTGRES_PASSWORD_VALUE="$postgres_password" python3 -c \
+        'import os; print("\x27" + os.environ["POSTGRES_PASSWORD_VALUE"].replace("\x27", "\x27\x27") + "\x27")')
+    runuser -u postgres -- psql --set ON_ERROR_STOP=1 --quiet <<SQL
+DO \$\$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'eve_risk') THEN
+        CREATE ROLE eve_risk LOGIN;
+    END IF;
+END
+\$\$;
+ALTER ROLE eve_risk WITH LOGIN PASSWORD $password_literal;
+SQL
+    if ! runuser -u postgres -- psql --tuples-only --no-align \
+        --command "SELECT 1 FROM pg_database WHERE datname = 'eve_risk'" \
+        | grep -Fxq 1; then
+        runuser -u postgres -- createdb --owner=eve_risk eve_risk
+    fi
+}
+
 run_release_setup() {
     local source_dir=$1
     if [[ -n "$uv_bin" ]]; then
-        (cd "$source_dir" && set -a && source "$runtime_env" && set +a && "$uv_bin" sync --frozen --no-dev)
+        (cd "$source_dir" && "$uv_bin" sync --frozen --no-dev) || return 1
     else
         echo "uv is not installed; creating a Python venv with pip" >&2
-        python3 -m venv "$source_dir/.venv"
-        (cd "$source_dir" && set -a && source "$runtime_env" && set +a && .venv/bin/python -m pip install --disable-pip-version-check \
+        python3 -m venv "$source_dir/.venv" || return 1
+        (cd "$source_dir" && .venv/bin/python -m pip install --disable-pip-version-check \
             --no-cache-dir --index-url "${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}" \
-            --upgrade pip)
-        (cd "$source_dir" && set -a && source "$runtime_env" && set +a && .venv/bin/python -m pip install --disable-pip-version-check \
-            --no-cache-dir --index-url "${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}" .)
+            --upgrade pip) || return 1
+        (cd "$source_dir" && .venv/bin/python -m pip install --disable-pip-version-check \
+            --no-cache-dir --index-url "${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}" .) \
+            || return 1
     fi
-    (cd "$source_dir" && set -a && source "$runtime_env" && set +a && .venv/bin/alembic upgrade head)
-    (cd "$source_dir" && set -a && source "$runtime_env" && set +a && env SDE_INDEX_PATH="$data_dir/sde.sqlite3" .venv/bin/python -m eve_risk.sde)
+    (cd "$source_dir" && env DATABASE_URL="$database_url" REDIS_URL="$redis_url" \
+        .venv/bin/alembic upgrade head) || return 1
+    (cd "$source_dir" && env DATABASE_URL="$database_url" REDIS_URL="$redis_url" \
+        SDE_INDEX_PATH="$data_dir/sde.sqlite3" .venv/bin/python -m eve_risk.sde) || return 1
 }
 
 health_port=$(awk -F= '$1 == "HEALTH_PORT" {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$deploy_root/.env")
@@ -171,25 +221,29 @@ fi
 activate_release() {
     local source_dir=$1
     write_units "$source_dir"
-    systemctl_cmd enable --now "$service_prefix-bot.service" "$service_prefix-worker.service"
+    systemctl_cmd enable "$service_prefix-bot.service" "$service_prefix-worker.service"
+    systemctl_cmd restart "$service_prefix-bot.service" "$service_prefix-worker.service"
 }
 
 wait_until_ready() {
     local attempt
     for attempt in $(seq 1 30); do
         if systemctl_cmd is-active --quiet "$service_prefix-bot.service" \
-            && systemctl_cmd is-active --quiet "$service_prefix-worker.service" \
-            && curl --fail --silent --show-error \
-                "http://127.0.0.1:${health_port}/health/ready" \
+            && systemctl_cmd is-active --quiet "$service_prefix-worker.service"; then
+            health_payload=$(curl --fail --silent \
+                "http://127.0.0.1:${health_port}/health/ready" || true)
+            if [[ -n "$health_payload" ]] && printf '%s' "$health_payload" \
                 | python3 -c 'import json, sys; raise SystemExit(0 if json.load(sys.stdin).get("status") == "ok" else 1)'; then
-            return 0
+                return 0
+            fi
         fi
         sleep 2
     done
     return 1
 }
 
-if run_release_setup "$release_dir" && activate_release "$release_dir" && wait_until_ready; then
+if ensure_postgres && run_release_setup "$release_dir" \
+    && activate_release "$release_dir" && wait_until_ready; then
     ln -sfn "$release_dir" "$deploy_root/current"
     systemctl_cmd --no-pager --full status \
         "$service_prefix-bot.service" "$service_prefix-worker.service" || true
