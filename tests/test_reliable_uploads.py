@@ -258,7 +258,7 @@ def test_reliable_uploader_prioritizes_presence_without_replacing_ocr(tmp_path):
             },
         )
         assert first_failed.wait(1)
-        assert wait_until(lambda: manager.state == "offline_cached")
+        assert manager.state == "reconnecting"
 
         manager.submit_presence(
             "window-1",
@@ -369,7 +369,8 @@ def test_reliable_uploader_coalesces_presence_to_one_item_per_eight_windows(tmp_
                 )
 
         assert first_failed.wait(1)
-        assert wait_until(lambda: manager.state == "offline_cached")
+        assert wait_until(lambda: manager.pending_presence_count() == 8)
+        assert manager.state == "reconnecting"
         assert manager.pending_presence_count() == 8
         assert manager.pending_snapshot_count() == 0
         assert {

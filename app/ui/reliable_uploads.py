@@ -42,6 +42,7 @@ class ReliableUploadManager(QObject):
     """Keep only current client state and retry it without blocking Qt."""
 
     state_changed = pyqtSignal(str, str)
+    upload_state_changed = pyqtSignal(str, str)
     presence_uploaded = pyqtSignal(object)
     snapshot_uploaded = pyqtSignal(object)
     heartbeat_uploaded = pyqtSignal(object)
@@ -197,6 +198,11 @@ class ReliableUploadManager(QObject):
         with self._condition:
             return len(self._presence)
 
+    def pending_heartbeat_count(self) -> int:
+        """Return whether the latest detector heartbeat is still queued."""
+        with self._condition:
+            return int(self._heartbeat is not None)
+
     def _run(self) -> None:
         try:
             while True:
@@ -241,16 +247,21 @@ class ReliableUploadManager(QObject):
                 jitter = 0.8 + self._random() * 0.4
                 self._retry_at = self._clock() + base * jitter
                 cached = bool(self._presence or self._snapshots)
-            self._set_state(
-                "offline_cached" if cached else "reconnecting",
-                "离线缓存" if cached else "重连中",
-            )
+            state = "offline_cached" if cached else "reconnecting"
+            label = "离线缓存" if cached else "重连中"
+            if upload.key == "heartbeat":
+                self._set_state(state, label)
+            else:
+                self.upload_state_changed.emit(state, label)
             return
 
         self._retry_index = 0
         self._retry_at = 0.0
         self._discard(upload)
-        self._set_state("online", "在线")
+        if upload.key == "heartbeat":
+            self._set_state("online", "在线")
+        else:
+            self.upload_state_changed.emit("online", "上报已同步")
         metadata = dict(upload.metadata)
         metadata["generation"] = upload.generation
         if upload.key == "heartbeat":
