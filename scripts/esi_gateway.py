@@ -11,7 +11,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from esi_gateway.cache import TtlCache
 from esi_gateway.server import GatewayServer, GatewayState
 
 

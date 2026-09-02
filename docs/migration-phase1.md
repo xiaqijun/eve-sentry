@@ -20,5 +20,9 @@ The package deliberately does not include `EveSsoClient`,
 `EsiAuthenticatedSession`, `EsiResolver`, authenticated ESI methods, or any
 application/server storage code. Those remain owned by `eve-sentry`.
 
-Production deployment is intentionally not performed by this change; the
-systemd unit and deployment workflow are release artifacts only.
+Production releases are built and validated from `main`, then pass through the
+protected GitHub `production` environment. The deployment uses an immutable
+release directory and atomic `current` symlink. The previous systemd unit and
+release are restored automatically when restart or health verification fails.
+Production approval, verification, and any operator-initiated rollback remain
+owned by role `90`.

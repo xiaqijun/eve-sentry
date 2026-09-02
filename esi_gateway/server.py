@@ -190,14 +190,19 @@ class GatewayHandler(BaseHTTPRequestHandler):
             if route.endswith("/ids"):
                 if not all(isinstance(item, str) and item.strip() for item in payload):
                     raise ValueError
-                loader = lambda: self.server.state.client.resolve_ids(payload)
+                def loader() -> Any:
+                    return self.server.state.client.resolve_ids(payload)
+
                 canonical = sorted({item.strip() for item in payload}, key=str.casefold)
                 endpoint = "resolve_ids"
             else:
                 ids = [int(item) for item in payload]
                 if any(item <= 0 for item in ids):
                     raise ValueError
-                loader = lambda: self.server.state.client.resolve_names(ids)
+
+                def loader() -> Any:
+                    return self.server.state.client.resolve_names(ids)
+
                 canonical = sorted(set(ids))
                 endpoint = "resolve_names"
             key = f"POST:{endpoint}:" + hashlib.sha256(json.dumps(canonical).encode()).hexdigest()
