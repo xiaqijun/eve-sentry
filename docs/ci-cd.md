@@ -19,9 +19,10 @@
 
 ## 触发条件与门禁
 
-- `deploy-server.yml`：`main` 的服务端运行时路径变化时触发 `push`；同一组路径的
-  Pull Request 只运行 Python、前端和 PostgreSQL 验证。生产 job 仅接受 `main`，并使用
-  `production` Environment。
+- `deploy-server.yml`：Pull Request 始终运行 Python、前端、PostgreSQL、源码编译和部署脚本
+  语法验证，避免路径过滤导致必需检查缺失；`main` 的运行时路径变化时自动执行同一套门禁。
+  验证通过后先生成带 SHA-256 校验的不可变部署包，再由生产 job 复用该包发布。生产 job
+  仅接受 `main`，并使用 `production` Environment。
 - `eve-sentry-esi-gateway/.github/workflows/deploy-esi-gateway.yml`：独立 Gateway 的
   Pull Request 和 `main` push 自动测试；`main` push 通过验证后自动进入 production Environment。
 - `eve-sentry-client/.github/workflows/ci-client.yml`：客户端 Pull Request 和 `main` push 自动测试。
@@ -36,7 +37,8 @@
 - `workflow_dispatch` 可以用于重跑验证；生产 job 只接受默认分支。下载站按仓库规则保持
   production 部署手动触发，避免 Cloudflare Worker 被无审批覆盖。
 
-所有生产 job 都应保持并发锁，避免同一环境同时发布两个版本。契约仓库发布新版本后，
+生产发布保持并发锁，避免同一环境同时发布两个版本；同一 Pull Request 的旧验证会自动取消，
+不同 PR 之间互不阻塞。契约仓库发布新版本后，
 消费者仓库必须先通过契约兼容性矩阵，再进入生产发布。
 
 ## GitHub Secrets / Variables
