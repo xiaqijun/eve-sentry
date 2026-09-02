@@ -103,8 +103,10 @@ jobs:
           remote_script="/tmp/eve-risk-analysis-deploy-${GITHUB_SHA}.sh"
           ssh_options=(-i ~/.ssh/eve-risk-analysis -p "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes)
           scp_options=(-i ~/.ssh/eve-risk-analysis -P "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes)
+          normalized_script="$RUNNER_TEMP/deploy_release.sh"
+          sed 's/\r$//' scripts/ci/deploy_release.sh > "$normalized_script"
           scp "${scp_options[@]}" "$ARCHIVE_PATH" "$target:$remote_archive"
-          scp "${scp_options[@]}" scripts/ci/deploy_release.sh "$target:$remote_script"
+          scp "${scp_options[@]}" "$normalized_script" "$target:$remote_script"
           printf -v remote_command 'bash %q %q %q %q' \
             "$remote_script" "$remote_archive" "$GITHUB_SHA" "$DEPLOY_ROOT"
           ssh "${ssh_options[@]}" "$target" "$remote_command"
