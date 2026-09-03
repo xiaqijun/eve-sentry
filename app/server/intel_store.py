@@ -1722,6 +1722,40 @@ class IntelStore:
                 "hostile_icon_seen_at": seen_at,
             }
             if hostile_count == 0:
+                # A single OCR frame can miss the red-icon row while the
+                # monitored window is still healthy.  Do not turn that
+                # transient zero into a server-wide clear when the latest
+                # detector evidence is still inside the normal OCR grace
+                # window.  The next positive snapshot keeps the state alive;
+                # a later zero (or heartbeat expiry) performs the real clear.
+                incoming_seen_at = self._parse_timestamp(seen_at)
+                latest_seen_at = None
+                for candidate in self._active_intel.values():
+                    if not candidate.active or candidate.source != source:
+                        continue
+                    if candidate.metadata.get("client_id") != client_id:
+                        continue
+                    if candidate.system_name.casefold() != system_name.casefold():
+                        continue
+                    candidate_seen_at = self._parse_timestamp(candidate.last_seen_at)
+                    if candidate_seen_at is None:
+                        continue
+                    if latest_seen_at is None or candidate_seen_at > latest_seen_at:
+                        latest_seen_at = candidate_seen_at
+                if incoming_seen_at is not None and latest_seen_at is not None:
+                    elapsed = (incoming_seen_at - latest_seen_at).total_seconds()
+                    if 0 <= elapsed <= DEFAULT_OCR_GRACE_SECONDS:
+                        response = result.to_dict(include_active=False)
+                        response.update(
+                            {
+                                "accepted": True,
+                                "hostile_icon_count": 0,
+                                "seen_at": seen_at,
+                                "clear_deferred": True,
+                            }
+                        )
+                        return response
+
                 for candidate in self._active_intel.values():
                     if not candidate.active or candidate.source != source:
                         continue
