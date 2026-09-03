@@ -1109,68 +1109,6 @@ def test_worker_connection_loss_clears_presence_and_local_map_state():
     ]
 
 
-def test_game_connection_offline_clears_presence_and_online_refreshes_worker():
-    events = [
-        SimpleNamespace(
-            target_key="pilot-a",
-            state="offline",
-            log_id="gamelog-a",
-            occurred_at="2026-09-02T10:00:00+00:00",
-            message="connection lost",
-        ),
-        SimpleNamespace(
-            target_key="pilot-a",
-            state="online",
-            log_id="gamelog-a",
-            occurred_at="2026-09-02T10:00:05+00:00",
-            message="connection restored",
-        ),
-    ]
-
-    class Watcher:
-        def poll(self, _contexts):
-            return [events.pop(0)]
-
-    class Worker:
-        def __init__(self):
-            self.refresh_calls = 0
-
-        def request_presence_refresh(self):
-            self.refresh_calls += 1
-
-    worker = Worker()
-    context = {
-        "key": "pilot-a",
-        "system_name": "HB-FSO",
-        "_hostile_icon_count": 1,
-    }
-    window = MainWindow.__new__(MainWindow)
-    window._game_connection_watcher = Watcher()
-    window._worker_contexts = {"pilot-a": context}
-    window._workers = {"pilot-a": worker}
-    window._uploads_enabled = True
-    window._heartbeat_last_error = ""
-    window._clear_hostile_presence = lambda target: target.update(
-        _hostile_icon_count=0
-    )
-    heartbeat_calls = []
-    window._publish_heartbeat = lambda **kwargs: heartbeat_calls.append(kwargs)
-    window._log_message = lambda _message: None
-    window._update_window_status = lambda *_args, **_kwargs: None
-    window._refresh_status_cards = lambda: None
-
-    MainWindow._poll_game_connection_logs(window)
-    MainWindow._poll_game_connection_logs(window)
-
-    assert context["_hostile_icon_count"] == 0
-    assert context["game_connection_online"] is True
-    assert worker.refresh_calls == 1
-    assert [call["task_key"] for call in heartbeat_calls] == [
-        "heartbeat:pilot-a:game-connection",
-        "heartbeat:pilot-a:game-connection",
-    ]
-
-
 def test_worker_status_logs_ocr_queue_without_claiming_server_confirmation():
     window = MainWindow.__new__(MainWindow)
     window._messages = []

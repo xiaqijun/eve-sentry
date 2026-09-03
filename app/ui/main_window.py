@@ -45,7 +45,6 @@ from app.alert_client import (
     default_state_path,
 )
 from app.channels.identity_logs import EveIdentityLogScanner
-from app.channels.game_logs import GameConnectionLogWatcher
 from app.channels.local_system import find_latest_local_system
 from app.core.client_identity import persistent_client_id
 from app.diagnostics import default_log_path, export_diagnostic_bundle
@@ -263,15 +262,6 @@ class MainWindow(QMainWindow):
         self._listener_retry_delay = 0.0
         self._listener_last_api_key = ""
         self._identity_timer.start()
-        gamelog_dir = Path(self._identity_scanner.log_dir).parent / "Gamelogs"
-        configured_gamelog_dir = str(os.environ.get("EVE_SENTRY_GAMELOG_DIR") or "").strip()
-        self._game_connection_watcher = GameConnectionLogWatcher(
-            configured_gamelog_dir or gamelog_dir
-        )
-        self._game_log_timer = QTimer(self)
-        self._game_log_timer.setInterval(3000)
-        self._game_log_timer.timeout.connect(self._poll_game_connection_logs)
-        self._game_log_timer.start()
         self._alert_controller: AlertTrayController | None = None
         self._stopping_monitor_workers: set[MonitorWorker] = set()
         self._preview_capture_worker: PreviewCaptureWorker | None = None
@@ -837,11 +827,6 @@ class MainWindow(QMainWindow):
                     "system_source": (
                         "env" if configured_system != "Unknown" else "default"
                     ),
-                    # Do not assume the game is online before a matching
-                    # Gamelog transition has been observed.
-                    "game_connection_online": None,
-                    "game_connection_log_id": "",
-                    "game_connection_last_event_at": "",
                     "_location_next_check": 0.0,
                 }
             )
@@ -2260,75 +2245,6 @@ class MainWindow(QMainWindow):
             {"kind": "listener"},
         )
 
-    def _poll_game_connection_logs(self) -> None:
-        """Read only the newest Gamelog tails and update matching targets."""
-        watcher = _instance_attr(self, "_game_connection_watcher")
-        contexts = list(_instance_attr(self, "_worker_contexts", {}).values())
-        if watcher is None or not contexts:
-            return
-        try:
-            events = watcher.poll(contexts)
-        except Exception:
-            logger.exception("Game connection log scan failed")
-            return
-        # A newly selected log is read from a bounded tail.  It may contain
-        # several historical transitions; only the final transition represents
-        # the current connection state and should produce one heartbeat.
-        latest_events = {event.target_key: event for event in events}
-        for event in latest_events.values():
-            context = next(
-                (
-                    item
-                    for item in contexts
-                    if str(item.get("key") or "") == event.target_key
-                ),
-                None,
-            )
-            if context is None:
-                continue
-            context["game_connection_online"] = event.state == "online"
-            context["game_connection_log_id"] = event.log_id
-            context["game_connection_last_event_at"] = (
-                event.occurred_at or heartbeat_now_iso()
-            )
-            if event.state == "offline":
-                self._heartbeat_last_action = "game_connection_offline"
-                self._heartbeat_last_error = event.message
-                self._log_message(
-                    f"{context.get('window_title', 'EVE')}: 游戏连接掉线：{event.message}"
-                )
-                self._update_window_status(
-                    context,
-                    "游戏掉线",
-                    "Gamelog 检测到服务器连接已断开",
-                    error=event.message,
-                )
-                self._clear_hostile_presence(context)
-            else:
-                self._heartbeat_last_action = "game_connection_restored"
-                self._heartbeat_last_error = ""
-                self._heartbeat_last_success_at = heartbeat_now_iso()
-                self._log_message(
-                    f"{context.get('window_title', 'EVE')}: 游戏连接已恢复"
-                )
-                if context.get("capture_online") is not False:
-                    self._update_window_status(
-                        context,
-                        "运行中",
-                        "Gamelog 检测到服务器连接已恢复",
-                    )
-                worker = _instance_attr(self, "_workers", {}).get(event.target_key)
-                request_refresh = getattr(worker, "request_presence_refresh", None)
-                if callable(request_refresh):
-                    request_refresh()
-            if _instance_attr(self, "_uploads_enabled", False):
-                self._publish_heartbeat(
-                    monitoring_override=True,
-                    task_key=f"heartbeat:{context.get('key', 'window')}:game-connection",
-                )
-        if events:
-            self._refresh_status_cards()
-
     def _handle_identity_check_success(self, result: object, metadata: dict) -> None:
         self._identity_check_running = False
         self._api_key_validated = True
@@ -3524,13 +3440,6 @@ class MainWindow(QMainWindow):
             )
             if capture_offline_count:
                 details["capture_offline_count"] = capture_offline_count
-            game_connection_offline_count = sum(
-                1
-                for context in contexts
-                if context.get("game_connection_online") is False
-            )
-            if game_connection_offline_count:
-                details["game_connection_offline_count"] = game_connection_offline_count
             details["targets"] = [
                 {
                     "client_id": context["client_id"],
@@ -3569,33 +3478,6 @@ class MainWindow(QMainWindow):
                             )
                         }
                         if context.get("capture_failure_count") is not None
-                        else {}
-                    ),
-                    **(
-                        {
-                            "game_connection_online": bool(
-                                context["game_connection_online"]
-                            )
-                        }
-                        if context.get("game_connection_online") is not None
-                        else {}
-                    ),
-                    **(
-                        {
-                            "game_connection_log_id": str(
-                                context.get("game_connection_log_id") or ""
-                            )
-                        }
-                        if str(context.get("game_connection_log_id") or "").strip()
-                        else {}
-                    ),
-                    **(
-                        {
-                            "game_connection_last_event_at": str(
-                                context.get("game_connection_last_event_at") or ""
-                            )
-                        }
-                        if str(context.get("game_connection_last_event_at") or "").strip()
                         else {}
                     ),
                 }
