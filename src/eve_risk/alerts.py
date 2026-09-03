@@ -1236,7 +1236,9 @@ def _active_intel_map(
         if not active_id:
             continue
         if is_detector and not is_presence_only:
-            if alert is None or alert_classification != "red":
+            if alert is not None and alert_classification != "red":
+                continue
+            if alert is None and not _detector_item_is_hostile(raw_item):
                 continue
         elif alert is None and not detector_icon_evidence:
             continue
@@ -1274,6 +1276,37 @@ def _active_intel_map(
             item["metadata"] = merged_metadata
         result[active_id] = item
     return result
+
+
+def _detector_item_is_hostile(item: dict[str, Any]) -> bool:
+    """Match the star map's hostile OCR rule when no report alert exists."""
+    metadata = item.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    try:
+        if int(metadata.get("hostile_count") or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    standings: list[object] = [
+        metadata.get("contact_standing"),
+        metadata.get("standing"),
+    ]
+    profiles = metadata.get("character_profiles")
+    if isinstance(profiles, list):
+        for profile in profiles:
+            if isinstance(profile, dict):
+                standings.extend(
+                    (profile.get("contact_standing"), profile.get("standing"))
+                )
+    for value in standings:
+        if value in (None, ""):
+            continue
+        try:
+            return float(value) <= 0
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def _active_system_state(

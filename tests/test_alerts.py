@@ -590,6 +590,33 @@ def test_named_detector_ocr_requires_corresponding_red_alert() -> None:
     assert red["ocr:shazzza"]["classification"] == "red"
 
 
+def test_named_detector_ocr_without_alert_uses_hostile_standing() -> None:
+    hostile = {
+        "id": "ocr:hostile",
+        "active": True,
+        "source": "eve-sentry-detector",
+        "system_name": "S-KSWL",
+        "name": "Hostile",
+        "character_id": 12345,
+        "metadata": {
+            "client_id": "client-1",
+            "identity_status": "resolved",
+            "contact_standing": 0,
+        },
+    }
+    friendly = {
+        **hostile,
+        "id": "ocr:friendly",
+        "name": "Friendly",
+        "character_id": 12346,
+        "metadata": {**hostile["metadata"], "contact_standing": 10},
+    }
+
+    merged = _active_intel_map([hostile, friendly], [])
+
+    assert list(merged) == ["ocr:hostile"]
+
+
 def test_detector_aggregate_icon_count_does_not_include_friendly_roster() -> None:
     def item(name: str, character_id: int) -> dict[str, Any]:
         return {
