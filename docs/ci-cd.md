@@ -29,16 +29,16 @@
   构建或发布客户端。
 - 下载站由 `eve-sentry-download-site` 的 `CI` 和 `Deploy` workflow 负责。生产部署验证首页、
   Worker、客户端仓库 `latest.json`、302 跳转和 Range 206。
-- `eve-sentry/.github/workflows/deploy-server.yml`：服务端实现与 `docs/contracts/` 中的契约、Schema、DTO 和 fixture 一起验证
-  兼容性测试。
+- `eve-sentry/.github/workflows/deploy-server.yml`：服务端实现与跨仓库联动文档一起验证服务端测试、
+  构建和部署脚本。
 - `eve-sentry-bot/.github/workflows/deploy.yml`：`codex/main`（当前默认分支）和 `main` 的
   Pull Request 自动验证；两者 push 通过后进入 production Environment。
 - `workflow_dispatch` 可以用于重跑验证；生产 job 只接受默认分支。下载站按仓库规则保持
   production 部署手动触发，避免 Cloudflare Worker 被无审批覆盖。
 
 生产发布保持并发锁，避免同一环境同时发布两个版本；同一 Pull Request 的旧验证会自动取消，
-不同 PR 之间互不阻塞。服务端 `docs/contracts/` 发生协议变更时，
-消费者仓库必须先通过兼容性矩阵，再进入生产发布。
+不同 PR 之间互不阻塞。跨仓库接口发生变化时，先更新服务端
+`docs/multi-repository-development.md` 和 API 文档，再分别在消费者仓库完成联调。
 
 ## GitHub Secrets / Variables
 
