@@ -111,6 +111,21 @@ class EsiClient:
             raise EsiApiError("ESI returned invalid contacts payload")
         return payload
 
+    def get_character_standings(
+        self,
+        character_id: int,
+        access_token: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch the complete authenticated character standings snapshot."""
+        payload = self._request(
+            "GET",
+            f"/characters/{int(character_id)}/standings/",
+            access_token=access_token,
+        )
+        if not isinstance(payload, list):
+            raise EsiApiError("ESI returned invalid standings payload")
+        return payload
+
     def get_corporation_contacts(
         self,
         corporation_id: int,

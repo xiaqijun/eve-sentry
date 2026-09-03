@@ -271,8 +271,14 @@ Authorization: Bearer eve_xxx
 | `GET` | `/api/v1/systems/{system_id}` | 星系资料 |
 | `GET` | `/api/v1/systems/by-name/{name}` | 按名称解析星系 |
 | `GET` | `/api/v1/esi/status` | ESI 配置和授权状态 |
-| `GET` | `/api/v1/esi/session` | 可选位置和 contacts 快照 |
+| `GET` | `/api/v1/esi/session` | 位置、contacts 和授权账号声望快照 |
 | `GET/POST` | `/api/v1/esi/login` | 态势页 ESI 授权状态和启动 |
+
+`/api/v1/esi/session` 的 `standings` 来自授权角色的 ESI standings 接口，服务端按
+`character_id` 保存一份完整快照，默认缓存 600 秒，可通过
+`EVE_SENTRY_SERVER_ESI_STANDINGS_TTL` 配置为 300–900 秒。缓存命中时不重复请求；过期刷新
+失败时返回最近一次旧快照。该请求始终由服务端携带授权 token 发起，公共 ESI Gateway 不接收
+授权 token，也不按联系人数量拆分请求。
 
 `/api/v1/kill-activity/*` 仅保留兼容行为；人员 zKillboard 统计通过告警的
 `verified_characters[].zkill` 返回，不新增同步查询接口。

@@ -29,6 +29,10 @@ def test_authenticated_esi_requests_send_bearer_token(monkeypatch):
             return FakeResponse([{"contact_id": 789, "standing": 5.0}])
         if request.full_url.endswith("/alliances/789/contacts/"):
             return FakeResponse([{"contact_id": 900, "standing": 10.0}])
+        if request.full_url.endswith("/characters/123/standings/"):
+            return FakeResponse(
+                [{"from_id": 456, "from_type": "corporation", "standing": -5.0}]
+            )
         return FakeResponse([{"contact_id": 42, "standing": -10.0}])
 
     monkeypatch.setattr("app.esi.client.urlopen", fake_urlopen)
@@ -38,11 +42,13 @@ def test_authenticated_esi_requests_send_bearer_token(monkeypatch):
     contacts = client.get_character_contacts(123, "access-token")
     corp_contacts = client.get_corporation_contacts(456, "access-token")
     alliance_contacts = client.get_alliance_contacts(789, "access-token")
+    standings = client.get_character_standings(123, "access-token")
 
     assert location == {"solar_system_id": 30002813}
     assert contacts == [{"contact_id": 42, "standing": -10.0}]
     assert corp_contacts == [{"contact_id": 789, "standing": 5.0}]
     assert alliance_contacts == [{"contact_id": 900, "standing": 10.0}]
+    assert standings == [{"from_id": 456, "from_type": "corporation", "standing": -5.0}]
     assert all(
         request.get_header("Authorization") == "Bearer access-token"
         for request in requests
@@ -51,6 +57,7 @@ def test_authenticated_esi_requests_send_bearer_token(monkeypatch):
     assert requests[1].full_url == "https://esi.test/latest/characters/123/contacts/"
     assert requests[2].full_url == "https://esi.test/latest/corporations/456/contacts/"
     assert requests[3].full_url == "https://esi.test/latest/alliances/789/contacts/"
+    assert requests[4].full_url == "https://esi.test/latest/characters/123/standings/"
 
 
 def test_authenticated_esi_character_search_returns_valid_ids(monkeypatch):

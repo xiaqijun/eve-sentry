@@ -6,10 +6,12 @@ import pytest
 from app.esi.session import (
     ContactStanding,
     EsiAuthenticatedSession,
+    EsiStanding,
     SEARCH_SCOPE,
     apply_contact_standing,
     contact_standings_from_payload,
     matching_contact_standing,
+    standings_from_payload,
 )
 from app.esi.sso import EsiSsoError, EsiTokenStore, TokenSet
 
@@ -42,6 +44,21 @@ def test_contact_standings_normalize_payload_and_skip_invalid_rows():
     assert contacts[0].contact_type == "character"
     assert contacts[0].standing == -10.0
     assert contacts[0].to_dict()["source"] == "esi_contacts"
+
+
+def test_character_standings_normalize_complete_snapshot():
+    standings = standings_from_payload(
+        [
+            {"from_id": 456, "from_type": "corporation", "standing": -5},
+            {"from_id": 789, "from_type": "alliance", "standing": "7.5"},
+            {"from_id": "bad", "from_type": "agent", "standing": 1},
+        ]
+    )
+
+    assert standings == [
+        EsiStanding(from_id=456, from_type="corporation", standing=-5.0),
+        EsiStanding(from_id=789, from_type="alliance", standing=7.5),
+    ]
 
 
 def test_contact_standing_matching_prefers_character_then_corporation():
@@ -251,6 +268,80 @@ def test_authenticated_session_requires_saved_tokens(tmp_path):
 
     with pytest.raises(EsiSsoError):
         session.load_tokens()
+
+
+def test_authenticated_session_caches_standings_and_uses_stale_on_failure(tmp_path):
+    access = jwt(
+        {
+            "sub": "CHARACTER:EVE:123",
+            "owner": "owner",
+            "scp": ["esi-characters.read_standings.v1"],
+        }
+    )
+    store = EsiTokenStore(tmp_path / "tokens.json")
+    store.save(
+        TokenSet.from_payload(
+            {
+                "access_token": access,
+                "expires_at": 2000,
+                "refresh_token": "refresh",
+            }
+        )
+    )
+
+    class FakeCache:
+        def __init__(self):
+            self.values = {}
+            self.stale = {}
+            self.set_calls = []
+
+        def get(self, key):
+            return self.values.get(key)
+
+        def get_stale(self, key):
+            return self.stale.get(key, self.values.get(key))
+
+        def set(self, key, value, ttl_seconds):
+            self.set_calls.append((key, ttl_seconds))
+            self.values[key] = value
+            self.stale[key] = value
+
+        def save(self):
+            return None
+
+    class FakeEsi:
+        def __init__(self):
+            self.calls = 0
+            self.fail = False
+
+        def get_character_standings(self, character_id, access_token):
+            self.calls += 1
+            if self.fail:
+                raise RuntimeError("temporary ESI failure")
+            return [{"from_id": 456, "from_type": "corporation", "standing": -5}]
+
+    cache = FakeCache()
+    esi = FakeEsi()
+    session = EsiAuthenticatedSession(
+        sso_client=object(),
+        esi_client=esi,
+        token_store=store,
+        cache=cache,
+        now=lambda: 1000.0,
+    )
+
+    first = session.standings()
+    second = session.standings()
+    assert first == second == [
+        EsiStanding(from_id=456, from_type="corporation", standing=-5.0)
+    ]
+    assert esi.calls == 1
+    assert cache.set_calls == [("standings:character:123", 600)]
+
+    session._standings_memory.clear()
+    cache.values.clear()
+    esi.fail = True
+    assert session.standings() == first
 
 
 def test_authenticated_session_completes_unique_character_prefix(tmp_path):

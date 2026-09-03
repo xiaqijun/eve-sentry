@@ -94,6 +94,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--esi-token-file", default="esi_tokens.json")
     parser.add_argument(
+        "--esi-standings-ttl",
+        type=float,
+        default=600.0,
+        help="authenticated character standings cache TTL in seconds (300-900)",
+    )
+    parser.add_argument(
         "--esi-token-storage",
         choices=["auto", "secure", "plain"],
         default="auto",
@@ -144,17 +150,19 @@ def main(argv: list[str] | None = None) -> int:
     resolver = None
     esi_session = None
     esi_login = None
+    esi_cache = None
     enable_esi = _should_enable_esi(args)
     if enable_esi:
         from app.esi.cache import EsiCache
+        esi_cache = EsiCache(args.esi_cache)
 
     if enable_esi:
         from app.esi.resolver import EsiResolver
         resolver_client = _build_public_esi_client(args)
 
-        resolver = EsiResolver(client=resolver_client, cache=EsiCache(args.esi_cache))
+        resolver = EsiResolver(client=resolver_client, cache=esi_cache)
         if args.esi_client_id:
-            esi_session = _build_esi_session(args)
+            esi_session = _build_esi_session(args, cache=esi_cache)
             esi_login = _build_esi_login(args)
 
     enricher = None
@@ -338,6 +346,8 @@ def _validate_args(
         parser.error("--report-retention-days must not be negative")
     if args.inactive_intel_retention_days < 0:
         parser.error("--inactive-intel-retention-days must not be negative")
+    if not 300.0 <= float(getattr(args, "esi_standings_ttl", 600.0)) <= 900.0:
+        parser.error("--esi-standings-ttl must be between 300 and 900 seconds")
     if args.hot_report_limit <= 0:
         parser.error("--hot-report-limit must be positive")
     if args.auth_mode != "off" and args.storage == "json":
@@ -430,7 +440,10 @@ def _build_auth_esi_sso_client(args: argparse.Namespace) -> Any | None:
     )
 
 
-def _build_esi_session(args: argparse.Namespace) -> Any:
+def _build_esi_session(
+    args: argparse.Namespace,
+    cache: Any | None = None,
+) -> Any:
     from app.esi.session import EsiAuthenticatedSession
     from app.esi.sso import build_token_store
 
@@ -440,6 +453,8 @@ def _build_esi_session(args: argparse.Namespace) -> Any:
             args.esi_token_file,
             storage=args.esi_token_storage,
         ),
+        cache=cache,
+        standing_ttl_seconds=float(getattr(args, "esi_standings_ttl", 600.0)),
     )
 
 

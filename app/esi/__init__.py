@@ -2,6 +2,7 @@
 
 _EXPORTS = {
     "ContactStanding": ("app.esi.session", "ContactStanding"),
+    "EsiStanding": ("app.esi.session", "EsiStanding"),
     "DEFAULT_SCOPES": ("app.esi.sso", "DEFAULT_SCOPES"),
     "EsiAuthenticatedSession": ("app.esi.session", "EsiAuthenticatedSession"),
     "EsiSessionSnapshot": ("app.esi.session", "EsiSessionSnapshot"),
@@ -23,6 +24,7 @@ _EXPORTS = {
     ),
     "default_token_protector": ("app.esi.sso", "default_token_protector"),
     "matching_contact_standing": ("app.esi.session", "matching_contact_standing"),
+    "standings_from_payload": ("app.esi.session", "standings_from_payload"),
     "run_local_sso_login": ("app.esi.sso", "run_local_sso_login"),
 }
 

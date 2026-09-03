@@ -115,6 +115,11 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
         "--esi-token-storage",
         values.get("EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE", ""),
     )
+    _append_option(
+        argv,
+        "--esi-standings-ttl",
+        values.get("EVE_SENTRY_SERVER_ESI_STANDINGS_TTL", ""),
+    )
     if _env_flag(values.get("EVE_SENTRY_SERVER_ESI_LOGIN")):
         argv.append("--esi-login")
     if _env_flag(values.get("EVE_SENTRY_SERVER_ESI_LOGIN_ONLY")):

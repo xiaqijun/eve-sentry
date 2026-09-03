@@ -209,7 +209,8 @@ sudo -u eve-sentry .venv-server/bin/python scripts/sync_sde.py \
 
 ```dotenv
 EVE_SENTRY_SERVER_ESI_REDIRECT_URI=http://YOUR_SERVER/api/v1/auth/esi/callback
-EVE_SENTRY_SERVER_ESI_SCOPES=esi-location.read_location.v1,esi-characters.read_contacts.v1,esi-corporations.read_contacts.v1,esi-alliances.read_contacts.v1,esi-search.search_structures.v1
+EVE_SENTRY_SERVER_ESI_SCOPES=esi-location.read_location.v1,esi-characters.read_contacts.v1,esi-characters.read_standings.v1,esi-corporations.read_contacts.v1,esi-alliances.read_contacts.v1,esi-search.search_structures.v1
+EVE_SENTRY_SERVER_ESI_STANDINGS_TTL=600
 ```
 
 普通用户登录只接受允许军团中的角色。态势页授权需要的 scopes 由同一回调根据 OAuth
