@@ -1278,7 +1278,8 @@ async def test_relay_compacts_complete_personnel_move_into_one_movement_message(
             }
         )
 
-        assert qq.send_proactive_text.await_count == 0
+        assert qq.send_proactive_text.await_count == 1
+        assert qq.send_proactive_text.await_args.args[1] == "✅ Jita 清空"
         assert qq.send_proactive_markdown.await_count == 1
         assert "Jita → Tama" in qq.send_proactive_markdown.await_args.args[1]
 
@@ -1329,7 +1330,8 @@ async def test_bootstrap_and_explicit_movement_events_share_cross_source_dedupe(
                 "alerts": [{"active_intel_id": "ocr:tama", "classification": "red"}],
             }
         )
-        assert qq.send_proactive_text.await_count == 0
+        assert qq.send_proactive_text.await_count == 1
+        assert qq.send_proactive_text.await_args.args[1] == "✅ Jita 清空"
 
         explicit = {
             "schema_version": "hostile_movement_event.v1",
@@ -1342,7 +1344,8 @@ async def test_bootstrap_and_explicit_movement_events_share_cross_source_dedupe(
             "source": "detector",
         }
         assert await relay.process_hostile_movement(explicit) is True
-        assert qq.send_proactive_text.await_count == 0
+        assert qq.send_proactive_text.await_count == 1
+        assert qq.send_proactive_text.await_args.args[1] == "✅ Jita 清空"
 
         await redis.flushdb()
         relay._active_alert_ids.clear()
@@ -1368,7 +1371,8 @@ async def test_bootstrap_and_explicit_movement_events_share_cross_source_dedupe(
                 "alerts": [{"active_intel_id": "ocr:tama", "classification": "red"}],
             }
         )
-        assert qq.send_proactive_text.await_count == 0
+        assert qq.send_proactive_text.await_count == 1
+        assert qq.send_proactive_text.await_args.args[1] == "✅ Jita 清空"
 
     await redis.aclose()
 

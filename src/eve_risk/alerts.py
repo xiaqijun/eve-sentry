@@ -905,13 +905,10 @@ class EveSentryAlertRelay:
             current[system_key]["episode_id"] = previous[system_key]["episode_id"]
 
         movement_pairs = _personnel_movement_pairs(previous, current)
-        moved_from = {pair["from_system"].casefold() for pair in movement_pairs}
         moved_to = {pair["to_system"].casefold() for pair in movement_pairs}
         transitions_succeeded = True
         if initialized:
             for system_key in sorted(previous.keys() - current.keys()):
-                if system_key in moved_from:
-                    continue
                 transitions_succeeded = (
                     await self.deliver_system_transition(previous[system_key], "safe")
                     and transitions_succeeded
