@@ -1262,6 +1262,37 @@ def test_hostile_presence_rejects_stale_updates_and_zero_clears_client_state(
     assert all(item["left_at"] == "2026-08-07T10:00:20+00:00" for item in inactive)
 
 
+def test_transient_zero_presence_does_not_clear_recent_hostile_state(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    base = {
+        "client_id": "detector-client:test",
+        "source_instance": "EVE - Pilot",
+        "system_name": "S-KSWL",
+    }
+
+    store.record_hostile_presence(
+        {
+            **base,
+            "hostile_icon_count": 2,
+            "seen_at": "2026-08-07T10:00:00+00:00",
+        }
+    )
+    deferred = store.record_hostile_presence(
+        {
+            **base,
+            "hostile_icon_count": 0,
+            "seen_at": "2026-08-07T10:00:02+00:00",
+        }
+    )
+
+    active = store.list_active_intel(source="eve-sentry-detector")
+    assert deferred["accepted"] is True
+    assert deferred["clear_deferred"] is True
+    assert len(active) == 1
+    assert active[0]["active"] is True
+    assert active[0]["metadata"]["hostile_icon_count"] == 2
+
+
 def test_ocr_missing_confirmations_do_not_clear_presence_state(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
     base = {
