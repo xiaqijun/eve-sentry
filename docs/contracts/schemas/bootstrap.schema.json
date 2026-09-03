@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.evesentry.invalid/schemas/bootstrap.schema.json",
+  "title": "EVE Sentry bootstrap",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "map", "alerts", "active_intel", "clients", "monitoring_nodes", "monitoring_nodes_version"],
+  "properties": {
+    "schema_version": {"const": "intel_bootstrap.v1"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "map": {
+      "type": "object",
+      "required": ["systems", "summary"],
+      "properties": {
+        "systems": {"type": "array", "items": {"$ref": "#/$defs/system"}},
+        "summary": {
+          "type": "object",
+          "required": ["system_count", "alert_count"],
+          "properties": {"system_count": {"type": "integer", "minimum": 0}, "alert_count": {"type": "integer", "minimum": 0}},
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "alerts": {"type": "array", "items": {"$ref": "#/$defs/alert"}},
+    "active_intel": {"type": "array", "items": {"type": "object"}},
+    "hostile_personnel": {"type": "array", "items": {"$ref": "#/$defs/hostile_roster"}},
+    "clients": {"type": "object"},
+    "monitoring_nodes": {"type": "array", "items": {"$ref": "#/$defs/node"}},
+    "monitoring_nodes_version": {"type": "string", "minLength": 1},
+    "monitoring_node_changes": {"type": "array", "items": {"$ref": "#/$defs/node_change"}}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "system": {
+      "type": "object",
+      "required": ["name", "hostile_count"],
+      "properties": {"name": {"type": "string", "minLength": 1}, "system_name": {"type": "string"}, "system_id": {"type": ["integer", "null"]}, "hostile_count": {"type": "integer", "minimum": 0}},
+      "additionalProperties": true
+    },
+    "node": {
+      "type": "object",
+      "required": ["client_id", "system_name"],
+      "properties": {"client_id": {"type": "string", "minLength": 1}, "system_name": {"type": "string", "minLength": 1}, "system_id": {"type": ["integer", "null"]}},
+      "additionalProperties": true
+    },
+    "node_change": {
+      "type": "object",
+      "required": ["change", "node_id"],
+      "properties": {"change": {"enum": ["online", "offline", "moved"]}, "node_id": {"type": "string", "minLength": 1}, "from_system": {"type": "string"}, "to_system": {"type": "string"}, "system_name": {"type": "string"}},
+      "additionalProperties": true
+    },
+    "alert": {
+      "type": "object",
+      "required": ["id", "system_name", "level", "score", "created_at"],
+      "properties": {"id": {"type": "string", "minLength": 1}, "system_name": {"type": "string", "minLength": 1}, "system_id": {"type": ["integer", "null"]}, "level": {"enum": ["low", "medium", "high", "critical"]}, "score": {"type": "integer"}, "hostile_count": {"type": "integer", "minimum": 0}, "created_at": {"type": "string", "format": "date-time"}},
+      "additionalProperties": true
+    },
+    "hostile_roster": {
+      "type": "object",
+      "required": ["system_name", "hostile_count", "personnel"],
+      "properties": {
+        "system_name": {"type": "string", "minLength": 1},
+        "system_id": {"type": ["integer", "null"]},
+        "hostile_count": {"type": "integer", "minimum": 0},
+        "personnel": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string", "minLength": 1},
+              "character_id": {"type": ["integer", "null"]},
+              "identity_status": {"type": "string"},
+              "first_seen_at": {"type": "string"}
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

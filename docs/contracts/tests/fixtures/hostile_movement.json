@@ -1,0 +1,10 @@
+{
+  "schema_version": "hostile_movement_event.v1",
+  "movement_id": "move-20260830-1",
+  "occurred_at": "2026-08-30T08:01:00Z",
+  "from_system": {"name": "Jita", "system_id": 30000142},
+  "to_system": {"name": "Tama", "system_id": 30002813},
+  "hostile_count": 2,
+  "personnel": [{"character_id": 443630591, "name": "Example Pilot"}],
+  "source": "bootstrap_reconciliation"
+}

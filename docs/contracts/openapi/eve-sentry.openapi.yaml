@@ -1,0 +1,363 @@
+openapi: 3.1.0
+info:
+  title: EVE Sentry Integration API
+  version: 1.0.0
+  description: Stable HTTP contract for detector clients, alert consumers and the ESI Gateway.
+servers:
+  - url: https://YOUR_SERVER
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/bootstrap:
+    get:
+      operationId: getBootstrap
+      summary: Read the complete integration snapshot
+      responses:
+        '200':
+          description: Bootstrap snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/bootstrap.schema.json'
+  /api/v1/events:
+    get:
+      operationId: streamEvents
+      summary: Stream bootstrap and alert events using SSE
+      parameters:
+        - {name: bootstrap, in: query, schema: {type: boolean, default: false}}
+        - {name: since, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 50}}
+        - {name: timeout, in: query, schema: {type: integer, minimum: 0, maximum: 300}}
+        - {name: heartbeat, in: query, schema: {type: integer, minimum: 0, maximum: 60, default: 15}}
+        - {name: min_level, in: query, schema: {type: string, enum: [low, medium, high, critical]}}
+      responses:
+        '200':
+          description: Server-sent event stream
+          content:
+            text/event-stream:
+              schema: {type: string}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/v1/integrations/hostile-systems:
+    get:
+      operationId: listHostileSystems
+      summary: Read names of systems with current hostile evidence
+      responses:
+        '200':
+          description: Current hostile systems
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schema_version, generated_at, count, systems]
+                properties:
+                  schema_version: {const: hostile_systems.v1}
+                  generated_at: {type: string, format: date-time}
+                  count: {type: integer, minimum: 0}
+                  systems: {type: array, items: {type: string}}
+  /api/v1/hostile-presence:
+    post:
+      operationId: reportHostilePresence
+      summary: Report the detector's current red-icon count
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostilePresenceRequest'
+      responses:
+        '202': {description: Accepted}
+        '400': {description: Invalid payload}
+  /api/v1/ocr/snapshot:
+    post:
+      operationId: reportOcrSnapshot
+      summary: Report a complete OCR roster snapshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OcrSnapshotRequest'
+      responses:
+        '202': {description: Accepted}
+        '400': {description: Invalid payload}
+  /api/v1/ocr/queries:
+    post:
+      operationId: createOcrQuery
+      summary: Create an idempotent one-time OCR query task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OcrQueryCreateRequest'
+      responses:
+        '201':
+          description: OCR query task created (or existing task returned for the same request_id)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OcrQueryTask'
+        '400': {description: Invalid payload}
+  /api/v1/ocr/queries/{request_id}:
+    get:
+      operationId: getOcrQueryStatus
+      summary: Read one-time OCR query status and aggregate result
+      parameters:
+        - {name: request_id, in: path, required: true, schema: {type: string, minLength: 1}}
+      responses:
+        '200':
+          description: OCR query status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OcrQueryTask'
+        '404': {description: Unknown request_id}
+  /api/v1/ocr/queries/{request_id}/result:
+    get:
+      operationId: getOcrQueryResult
+      summary: Read the aggregate result of a one-time OCR query
+      parameters:
+        - {name: request_id, in: path, required: true, schema: {type: string, minLength: 1}}
+      responses:
+        '200':
+          description: Aggregate OCR result (may be partial while the task is running)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OcrQueryAggregateResult'
+        '404': {description: Unknown request_id}
+    post:
+      operationId: reportOcrQueryResult
+      summary: Report one client/window's one-time OCR result
+      parameters:
+        - {name: request_id, in: path, required: true, schema: {type: string, minLength: 1}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OcrQueryResult'
+      responses:
+        '202': {description: Accepted; duplicate request_id/client_id/window_id reports are idempotent}
+        '400': {description: Invalid payload}
+        '404': {description: Unknown or expired request_id}
+  /api/v1/clients/heartbeats:
+    post:
+      operationId: reportHeartbeat
+      summary: Report detector/client health
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatRequest'
+      responses:
+        '200':
+          description: Accepted heartbeat with optional commands
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatResponse'
+        '202': {description: Accepted}
+  /api/v1/admin/esi-gateway:
+    get:
+      operationId: getEsiGatewayObservability
+      summary: Read admin-only ESI Gateway and resolver metrics
+      responses:
+        '200':
+          description: Gateway observability snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EsiGatewaySnapshot'
+  /health:
+    get:
+      operationId: gatewayHealth
+      summary: ESI Gateway health and counters
+      security: []
+      responses:
+        '200':
+          description: Gateway health
+          content:
+            application/json:
+              schema:
+                $ref: '../schemas/esi-gateway.schema.json'
+  /v1/{entity}/{id}:
+    get:
+      operationId: gatewayEntityById
+      summary: Resolve one public ESI entity through the private Gateway
+      parameters:
+        - {name: entity, in: path, required: true, schema: {type: string, enum: [characters, corporations, alliances, systems]}}
+        - {name: id, in: path, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '200': {description: ESI data envelope}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {description: Unknown route}
+  /v1/universe/ids:
+    post:
+      operationId: gatewayResolveIds
+      summary: Resolve names to ESI IDs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: array, maxItems: 1000, items: {type: string, minLength: 1}}
+      responses: {'200': {description: ESI resolution envelope}, '400': {description: Invalid payload}}
+  /v1/universe/names:
+    post:
+      operationId: gatewayResolveNames
+      summary: Resolve ESI IDs to names
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: array, maxItems: 1000, items: {type: integer, minimum: 1}}
+      responses: {'200': {description: ESI resolution envelope}, '400': {description: Invalid payload}}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: eve_xxx}
+  responses:
+    Unauthorized: {description: Missing, invalid or revoked credential}
+    Forbidden: {description: Credential is not allowed to read this resource}
+  schemas:
+    HostilePresenceRequest:
+      type: object
+      required: [client_id, source_instance, system_name, hostile_icon_count]
+      properties:
+        client_id: {type: string, minLength: 1}
+        source_instance: {type: string}
+        system_name: {type: string, minLength: 1}
+        system_id: {type: [integer, 'null']}
+        hostile_icon_count: {type: integer, minimum: 0}
+        seen_at: {type: string, format: date-time}
+        snapshot_id: {type: string}
+        sequence: {type: integer, minimum: 0}
+        captured_at: {type: string, format: date-time}
+      additionalProperties: true
+    OcrSnapshotRequest:
+      type: object
+      required: [client_id, source_instance, system_name, names]
+      properties:
+        client_id: {type: string, minLength: 1}
+        source_instance: {type: string}
+        system_name: {type: string, minLength: 1}
+        system_id: {type: [integer, 'null']}
+        names: {type: array, items: {type: string}}
+        confidence: {type: [number, 'null']}
+        hostile_icon_count: {type: integer, minimum: 0}
+        seen_at: {type: string, format: date-time}
+        snapshot_id: {type: string}
+        sequence: {type: integer, minimum: 0}
+        captured_at: {type: string, format: date-time}
+      additionalProperties: true
+    HeartbeatRequest:
+      type: object
+      required: [client_id, status]
+      properties:
+        client_id: {type: string, minLength: 1}
+        status: {type: string}
+        details: {type: object, additionalProperties: true}
+        seen_at: {type: string, format: date-time}
+      additionalProperties: true
+    OcrQueryCreateRequest:
+      type: object
+      required: [request_id, query_type]
+      properties:
+        request_id: {type: string, minLength: 1, description: Client-generated idempotency key}
+        query_type: {type: string, enum: [all, person, corporation, alliance]}
+        target_name: {type: string, minLength: 1}
+        target_id: {type: [integer, 'null'], minimum: 1}
+        client_id: {type: string, minLength: 1}
+        source_instance: {type: string}
+        window_ids: {type: array, uniqueItems: true, items: {type: string, minLength: 1}}
+        expires_in_seconds: {type: integer, minimum: 1, maximum: 86400}
+      additionalProperties: true
+    OcrName:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, minLength: 1}
+        entity_id: {type: [integer, 'null'], minimum: 1}
+        confidence: {type: [number, 'null'], minimum: 0, maximum: 1}
+      additionalProperties: true
+    OcrQueryNode:
+      type: object
+      required: [node_id, client_id, window_id, status]
+      properties:
+        node_id: {type: string, minLength: 1}
+        client_id: {type: string, minLength: 1}
+        source_instance: {type: string}
+        window_id: {type: string, minLength: 1}
+        status: {type: string, enum: [pending, captured, timeout, ocr_failed, unavailable]}
+        names: {type: array, items: {$ref: '#/components/schemas/OcrName'}}
+        error_code: {type: string}
+        error_message: {type: string}
+        captured_at: {type: string, format: date-time}
+      additionalProperties: true
+    OcrQueryAggregateResult:
+      type: object
+      required: [names, received_nodes, timed_out_nodes, failed_nodes]
+      properties:
+        names: {type: array, items: {$ref: '#/components/schemas/OcrName'}}
+        received_nodes: {type: integer, minimum: 0}
+        timed_out_nodes: {type: integer, minimum: 0}
+        failed_nodes: {type: integer, minimum: 0}
+      additionalProperties: true
+    OcrQueryTask:
+      type: object
+      required: [request_id, query_type, status, created_at, expires_at, nodes]
+      properties:
+        request_id: {type: string, minLength: 1}
+        task_id: {type: string, minLength: 1}
+        query_type: {type: string, enum: [all, person, corporation, alliance]}
+        target_name: {type: string}
+        target_id: {type: [integer, 'null'], minimum: 1}
+        status: {type: string, enum: [pending, running, partial, completed, failed, expired]}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        nodes: {type: array, items: {$ref: '#/components/schemas/OcrQueryNode'}}
+        result: {$ref: '#/components/schemas/OcrQueryAggregateResult'}
+        error_code: {type: string}
+        error_message: {type: string}
+      additionalProperties: true
+    OcrQueryResult:
+      type: object
+      required: [request_id, client_id, window_id, query_type, status, captured_at, names]
+      properties:
+        request_id: {type: string, minLength: 1}
+        client_id: {type: string, minLength: 1}
+        source_instance: {type: string}
+        window_id: {type: string, minLength: 1}
+        query_type: {type: string, enum: [all, person, corporation, alliance]}
+        status: {type: string, enum: [success, ocr_failed]}
+        captured_at: {type: string, format: date-time}
+        names: {type: array, items: {$ref: '#/components/schemas/OcrName'}}
+        error_code: {type: string}
+        error_message: {type: string}
+      additionalProperties: true
+    CaptureOcrOnceCommand:
+      type: object
+      required: [command, request_id, query_type, expires_at]
+      properties:
+        command: {const: capture_ocr_once}
+        request_id: {type: string, minLength: 1}
+        query_type: {type: string, enum: [all, person, corporation, alliance]}
+        target_name: {type: string}
+        target_id: {type: [integer, 'null'], minimum: 1}
+        window_ids: {type: array, uniqueItems: true, items: {type: string, minLength: 1}}
+        expires_at: {type: string, format: date-time}
+      additionalProperties: true
+    HeartbeatResponse:
+      type: object
+      properties:
+        commands: {type: array, items: {$ref: '#/components/schemas/CaptureOcrOnceCommand'}}
+      additionalProperties: true
+    EsiGatewaySnapshot:
+      type: object
+      required: [gateway, client_metrics]
+      properties:
+        gateway: {type: object, additionalProperties: true}
+        resolver_cache: {type: object, additionalProperties: true}
+        client_metrics: {type: object, additionalProperties: true}
+        esi: {type: object, additionalProperties: true}

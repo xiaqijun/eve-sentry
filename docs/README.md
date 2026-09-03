@@ -20,6 +20,7 @@
 
 - [预警消息 API 接入指南](alert-api.md)：第三方软件通过 SSE 或 JSON 获取实时预警和当前敌对星系。
 - [完整 API 参考](api-reference.md)：服务端全部 HTTP 接口、参数和数据约定。
+- [跨仓库线协议](contracts/README.md)：OpenAPI、JSON Schema、DTO、fixture 和版本策略。
 - [GitCode 镜像状态](gitcode-release-mirror.md)：客户端发布镜像的当前状态和限制。
 
 规划文档不再作为项目文档维护；已完成的设计内容已合并到架构、Web 管理系统和 API 文档。

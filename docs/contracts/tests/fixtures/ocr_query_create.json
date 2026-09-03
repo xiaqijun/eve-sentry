@@ -1,0 +1,9 @@
+{
+  "request_id": "ocr-req-20260903-0001",
+  "query_type": "all",
+  "client_id": "client-alpha",
+  "source_instance": "desktop-1",
+  "window_ids": ["main", "alt-1"],
+  "expires_in_seconds": 30,
+  "future_field": "ignored-by-older-consumers"
+}

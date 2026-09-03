@@ -1,0 +1,9 @@
+{
+  "commands": [
+    {"command": "capture_ocr_once", "request_id": "ocr-all-1", "query_type": "all", "expires_at": "2026-09-03T12:00:30Z", "window_ids": ["main"]},
+    {"command": "capture_ocr_once", "request_id": "ocr-person-1", "query_type": "person", "target_name": "Jane Doe", "expires_at": "2026-09-03T12:01:00Z", "window_ids": ["main", "alt-1"]},
+    {"command": "capture_ocr_once", "request_id": "ocr-corp-1", "query_type": "corporation", "target_id": 98000001, "expires_at": "2026-09-03T12:01:30Z"},
+    {"command": "capture_ocr_once", "request_id": "ocr-alliance-1", "query_type": "alliance", "target_name": "Example Alliance", "expires_at": "2026-09-03T12:02:00Z"}
+  ],
+  "server_time": "2026-09-03T12:00:00Z"
+}

@@ -11,7 +11,6 @@
 | `xiaqijun/eve-sentry-bot` | QQ 机器人、分析 Worker、Docker Compose | 机器人仓库自己的 `deploy.yml` |
 | `xiaqijun/eve-sentry-client` | Windows OCR/监控客户端和更新器 | 客户端仓库自己的 `release-client.yml` |
 | `xiaqijun/eve-sentry-esi-gateway` | 独立 ESI Gateway | Gateway 仓库自己的 `deploy-esi-gateway.yml` |
-| `xiaqijun/eve-sentry-contracts` | HTTP、SSE、JSON Schema 和兼容性 fixture | `Contract CI`，只发布契约包 |
 | `xiaqijun/eve-sentry-download-site` | 静态下载站和 Cloudflare 下载 Worker | 下载站仓库自己的 `deploy.yml` |
 
 本仓库已退役客户端 CI、客户端 Release、下载站部署和独立 Gateway 部署入口，避免
@@ -30,7 +29,7 @@
   构建或发布客户端。
 - 下载站由 `eve-sentry-download-site` 的 `CI` 和 `Deploy` workflow 负责。生产部署验证首页、
   Worker、客户端仓库 `latest.json`、302 跳转和 Range 206。
-- `eve-sentry-contracts/.github/workflows/ci.yml`：契约、Schema、DTO 和 fixture 变化时自动运行
+- `eve-sentry/.github/workflows/deploy-server.yml`：服务端实现与 `docs/contracts/` 中的契约、Schema、DTO 和 fixture 一起验证
   兼容性测试。
 - `eve-sentry-bot/.github/workflows/deploy.yml`：`codex/main`（当前默认分支）和 `main` 的
   Pull Request 自动验证；两者 push 通过后进入 production Environment。
@@ -38,8 +37,8 @@
   production 部署手动触发，避免 Cloudflare Worker 被无审批覆盖。
 
 生产发布保持并发锁，避免同一环境同时发布两个版本；同一 Pull Request 的旧验证会自动取消，
-不同 PR 之间互不阻塞。契约仓库发布新版本后，
-消费者仓库必须先通过契约兼容性矩阵，再进入生产发布。
+不同 PR 之间互不阻塞。服务端 `docs/contracts/` 发生协议变更时，
+消费者仓库必须先通过兼容性矩阵，再进入生产发布。
 
 ## GitHub Secrets / Variables
 
