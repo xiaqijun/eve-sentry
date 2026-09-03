@@ -102,6 +102,16 @@ class ThreatEnricher:
                 include_contacts=True,
             )
         except Exception:
+            # Keep the last successful contact snapshot during a transient
+            # ESI/authentication failure.  Dropping it immediately turns
+            # every resolved OCR character into an unclassified neutral and
+            # can make active hostile personnel disappear from the roster.
+            if self._contact_standings is not None:
+                self._contact_standings_until = now + min(
+                    60.0,
+                    max(1.0, self.standing_ttl_seconds),
+                )
+                return list(self._contact_standings)
             return []
 
         contacts = _normalize_contact_standings(getattr(snapshot, "contacts", []))
