@@ -16,6 +16,14 @@ successful value is available within the 300-second stale grace window, the gate
 serves it as `cache: "stale"` during an ESI outage. Health output exposes negative
 cache hits/entries and stale responses.
 
+The optional large-scale ID cache adds PostgreSQL as the durable store and Redis
+as the hot store. `/v1/universe/names` and `/v1/universe/ids` responses are split
+into per-ID/per-normalized-name records before persistence. A daemon refresher
+runs every 5–10 seconds, caps each batch at 1,000 IDs, uses Redis refresh locks,
+retries failures with exponential backoff, and retains stale values until the
+stale grace period ends. Health metrics expose cache-layer hits, refresh batches,
+retry counts, and PostgreSQL/Redis errors.
+
 The package deliberately does not include `EveSsoClient`,
 `EsiAuthenticatedSession`, `EsiResolver`, authenticated ESI methods, or any
 application/server storage code. Those remain owned by `eve-sentry`.

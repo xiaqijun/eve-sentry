@@ -8,7 +8,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -17,6 +17,7 @@ from .auth import Authorizer
 from .cache import TtlCache
 from .client import EsiApiError, EsiClient
 from .health import HealthMetrics
+from .id_cache import IdCacheCoordinator
 from .rate_limit import RateLimiter
 
 MAX_BODY_BYTES = 64 * 1024
@@ -25,7 +26,7 @@ ID_PATHS = {"characters": ("get_character", "/characters/{id}"), "corporations":
 
 
 class GatewayState:
-    def __init__(self, token: str, allowed_clients: set[str], ttl: float, max_requests_per_second: float, client: EsiClient | None = None, *, max_cache_entries: int = 4096, negative_ttl: float = 30.0, stale_grace: float = 300.0) -> None:
+    def __init__(self, token: str, allowed_clients: set[str], ttl: float, max_requests_per_second: float, client: EsiClient | None = None, *, max_cache_entries: int = 4096, negative_ttl: float = 30.0, stale_grace: float = 300.0, id_cache: IdCacheCoordinator | None = None) -> None:
         self.authorizer = Authorizer(token, allowed_clients)
         self.cache = TtlCache(ttl, max_entries=max_cache_entries, stale_grace=stale_grace)
         self.negative_ttl = max(0.0, float(negative_ttl))
@@ -36,6 +37,10 @@ class GatewayState:
         self.rate_limiter = RateLimiter(max_requests_per_second)
         self.client = client or EsiClient(timeout=10.0)
         self.metrics = HealthMetrics()
+        self.id_cache = id_cache
+        if self.id_cache is not None:
+            self.id_cache.metrics = self.metrics
+            self.id_cache.refresh_gate = self.rate_limiter.wait
         self._inflight_lock = threading.Lock()
         self._inflight: dict[str, threading.Event] = {}
 
@@ -139,7 +144,7 @@ class GatewayState:
         with self._negative_lock:
             now = time.monotonic()
             negative_entries = sum(expires_at > now for expires_at in self._negative.values())
-        return self.metrics.snapshot(
+        result = self.metrics.snapshot(
             self.cache.size(),
             self.rate_limiter.requests_per_second,
             cache_evictions=self.cache.evictions,
@@ -148,6 +153,13 @@ class GatewayState:
             negative_entries=negative_entries,
             stale_served=self.stale_served,
         )
+        if self.id_cache is not None:
+            result["id_cache"].update(self.id_cache.health())
+        return result
+
+    def close(self) -> None:
+        if self.id_cache is not None:
+            self.id_cache.close()
 
 
 class GatewayHandler(BaseHTTPRequestHandler):
@@ -167,7 +179,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
         entity_id = int(raw_id)
         method_name, esi_path = ID_PATHS[kind]
         try:
-            data, cache = self.server.state.fetch(f"GET:{kind}:{entity_id}", lambda: getattr(self.server.state.client, method_name)(entity_id), endpoint=method_name)
+            if self.server.state.id_cache is not None:
+                data, cache = self.server.state.id_cache.fetch_single(method_name, entity_id, lambda: getattr(self.server.state.client, method_name)(entity_id))
+                self.server.state.metrics.record_request(method_name, cached=cache == "hit")
+            else:
+                data, cache = self.server.state.fetch(f"GET:{kind}:{entity_id}", lambda: getattr(self.server.state.client, method_name)(entity_id), endpoint=method_name)
         except (EsiApiError, ValueError):
             self._send_error(HTTPStatus.BAD_GATEWAY, "esi_unavailable")
             return
@@ -190,23 +206,48 @@ class GatewayHandler(BaseHTTPRequestHandler):
             if route.endswith("/ids"):
                 if not all(isinstance(item, str) and item.strip() for item in payload):
                     raise ValueError
-                def loader() -> Any:
-                    return self.server.state.client.resolve_ids(payload)
-
-                canonical = sorted({item.strip() for item in payload}, key=str.casefold)
+                normalized = [item.strip() for item in payload]
+                canonical_names = {item.casefold(): item for item in normalized}
+                canonical = sorted(canonical_names)
                 endpoint = "resolve_ids"
+                if self.server.state.id_cache is not None:
+                    values, statuses = self.server.state.id_cache.fetch_batch(
+                        endpoint,
+                        canonical,
+                        lambda names: self.server.state.client.resolve_ids([canonical_names[name] for name in names]),
+                        _split_ids_payload,
+                    )
+                    data = _assemble_ids_payload(normalized, values)
+                    cache = _batch_cache_status(statuses)
+                    self.server.state.metrics.record_request(endpoint, cached=cache == "hit")
+                else:
+                    def loader() -> Any:
+                        return self.server.state.client.resolve_ids(payload)
+
+                    key = f"POST:{endpoint}:" + hashlib.sha256(json.dumps(canonical).encode()).hexdigest()
+                    data, cache = self.server.state.fetch(key, loader, endpoint=endpoint)
             else:
                 ids = [int(item) for item in payload]
                 if any(item <= 0 for item in ids):
                     raise ValueError
-
-                def loader() -> Any:
-                    return self.server.state.client.resolve_names(ids)
-
                 canonical = sorted(set(ids))
                 endpoint = "resolve_names"
-            key = f"POST:{endpoint}:" + hashlib.sha256(json.dumps(canonical).encode()).hexdigest()
-            data, cache = self.server.state.fetch(key, loader, endpoint=endpoint)
+                if self.server.state.id_cache is not None:
+                    values, statuses = self.server.state.id_cache.fetch_batch(
+                        endpoint,
+                        canonical,
+                        lambda missing_ids: self.server.state.client.resolve_names([int(item) for item in missing_ids]),
+                        _split_names_payload,
+                    )
+                    data = [values[str(item)] for item in ids if str(item) in values]
+                    cache = _batch_cache_status(statuses)
+                    self.server.state.metrics.record_request(endpoint, cached=cache == "hit")
+                else:
+                    def loader() -> Any:
+                        return self.server.state.client.resolve_names(ids)
+
+                    key = f"POST:{endpoint}:" + hashlib.sha256(json.dumps(canonical).encode()).hexdigest()
+                    data, cache = self.server.state.fetch(key, loader, endpoint=endpoint)
         except (ValueError, TypeError, json.JSONDecodeError):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_payload")
             return
@@ -241,3 +282,47 @@ class GatewayServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], state: GatewayState) -> None:
         super().__init__(address, GatewayHandler)
         self.state = state
+
+
+def _split_ids_payload(payload: Any) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    if not isinstance(payload, dict):
+        return values
+    for category, items in payload.items():
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict) and item.get("name"):
+                values[str(item["name"]).strip().casefold()] = {"category": category, "data": item}
+    return values
+
+
+def _split_names_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, list):
+        return {}
+    return {str(item["id"]): item for item in payload if isinstance(item, dict) and item.get("id") is not None}
+
+
+def _assemble_ids_payload(requested: Sequence[str], values: dict[str, Any]) -> dict[str, list[Any]]:
+    result: dict[str, list[Any]] = {}
+    seen: set[tuple[str, str]] = set()
+    for name in requested:
+        value = values.get(name.casefold())
+        if not isinstance(value, dict):
+            continue
+        category = str(value.get("category", "unknown"))
+        item = value.get("data")
+        marker = (category, json.dumps(item, sort_keys=True, ensure_ascii=False))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.setdefault(category, []).append(item)
+    return result
+
+
+def _batch_cache_status(statuses: dict[str, str]) -> str:
+    if statuses and all(status == "hit" for status in statuses.values()):
+        return "hit"
+    if any(status == "stale" for status in statuses.values()):
+        return "stale"
+    return "miss"

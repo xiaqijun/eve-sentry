@@ -11,6 +11,7 @@ dependencies = []
 
 [project.optional-dependencies]
 test = ["pytest>=8,<9", "ruff==0.15.14"]
+storage = ["psycopg[binary,pool]>=3.2,<4", "redis>=5,<6"]
 
 [tool.setuptools]
 packages = ["esi_gateway"]

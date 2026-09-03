@@ -7,6 +7,13 @@ authentication, caching, rate limiting, and health metrics. EVE SSO,
 authenticated sessions, tokens, and application resolvers remain in the
 `eve-sentry` service.
 
+For large-scale ESI ID lookups, configure the optional `storage` extra. PostgreSQL
+is the long-term source of truth and Redis is a bounded hot tier. Batch responses
+are split into one record per requested ID (or normalized name for `/v1/universe/ids`)
+before being written to both stores. Expired records remain eligible for stale
+serving during the configured grace period while a background refresher retries
+them in bounded batches.
+
 ## Run locally
 
 ```powershell
@@ -21,6 +28,15 @@ python -m pip install '.[test]'
 python -m ruff check .
 python -m pytest
 ```
+
+Install production storage drivers with `python -m pip install '.[storage]'`.
+Set `EVE_SENTRY_ESI_GATEWAY_POSTGRES_DSN` and
+`EVE_SENTRY_ESI_GATEWAY_REDIS_URL` in the service environment to enable the
+two-tier ID cache. The refresher is intentionally bounded for a 4 vCPU/4 GiB
+host: it runs every 5–10 seconds and processes at most 1,000 IDs per batch.
+Retries use exponential backoff up to `EVE_SENTRY_ESI_GATEWAY_CACHE_RETRY_MAX`.
+The `/health` response keeps its existing fields and adds an `id_cache` object
+with hot-hit, refresh, retry, and backend-error counters.
 
 ## CI/CD
 

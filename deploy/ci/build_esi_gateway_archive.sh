@@ -22,6 +22,7 @@ git -C "$repository_root" archive "$revision" \
     esi_gateway \
     scripts/esi_gateway.py \
     deploy/linux/eve-sentry-esi-gateway.service \
+    deploy/postgres/001_esi_id_cache.sql \
     pyproject.toml | tar -x -C "$backend"
 
 cat > "$payload/manifest.json" <<EOF

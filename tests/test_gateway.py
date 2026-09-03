@@ -9,6 +9,7 @@ import pytest
 from esi_gateway.auth import Authorizer
 from esi_gateway.cache import TtlCache
 from esi_gateway.client import EsiApiError, EsiClient
+from esi_gateway.id_cache import IdCacheCoordinator, MemoryStore
 from esi_gateway.server import GatewayServer, GatewayState
 
 
@@ -181,3 +182,56 @@ def test_gateway_serves_recent_stale_value_when_esi_fails():
     assert value == {"name": "Jita"}
     assert status == "stale"
     assert state.health()["stale_served"] == 2
+
+
+def test_gateway_preserves_batch_response_shape_with_per_id_cache():
+    token = "t" * 32
+    coordinator = IdCacheCoordinator(MemoryStore(), MemoryStore(), refresh_interval_seconds=10)
+    state = GatewayState(token, {"127.0.0.1"}, 60, 100, id_cache=coordinator)
+    name_calls = []
+    id_calls = []
+    state.client.resolve_names = lambda ids: name_calls.append(ids) or [
+        {"category": "character", "id": item, "name": f"Pilot {item}"} for item in ids
+    ]
+    state.client.resolve_ids = lambda names: id_calls.append(names) or {
+        "characters": [{"id": index + 1, "name": name} for index, name in enumerate(names)]
+    }
+    server = GatewayServer(("127.0.0.1", 0), state)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    try:
+        for ids in ([2, 1], [1, 2]):
+            request = Request(
+                f"{base}/v1/universe/names",
+                data=json.dumps(ids).encode(),
+                method="POST",
+                headers=headers,
+            )
+            with urlopen(request) as response:
+                payload = json.loads(response.read())
+            assert list(payload) == ["data", "cache"]
+            assert [item["id"] for item in payload["data"]] == ids
+        assert name_calls == [[1, 2]]
+
+        for names in (["Alice", "Bob"], ["bob", "ALICE"]):
+            request = Request(
+                f"{base}/v1/universe/ids",
+                data=json.dumps(names).encode(),
+                method="POST",
+                headers=headers,
+            )
+            with urlopen(request) as response:
+                payload = json.loads(response.read())
+            assert list(payload) == ["data", "cache"]
+            assert set(payload["data"]) == {"characters"}
+        assert id_calls == [["Alice", "Bob"]]
+        health = state.health()
+        assert health["id_cache"]["enabled"] is True
+        assert health["id_cache"]["hot_hits"] >= 4
+    finally:
+        server.shutdown()
+        server.server_close()
+        state.close()
+        thread.join(timeout=2)
