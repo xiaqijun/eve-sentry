@@ -18,14 +18,12 @@ from eve_risk.alerts import (
     SentryAuthenticationError,
     _active_intel_map,
     _active_system_state,
-    _personnel_movement_pairs,
     alert_subscription_action,
     format_active_intel_message,
     format_alert_message,
     format_monitoring_node_message,
     format_personnel_alert_message,
     format_system_alert_message,
-    format_system_movement_message,
     iter_sse_events,
 )
 
@@ -106,31 +104,6 @@ async def test_relay_surfaces_authentication_failures_separately() -> None:
         relay = EveSentryAlertRelay(http, redis, SimpleNamespace(), "http://sentry.test/events")
         with pytest.raises(SentryAuthenticationError):
             await relay._stream_once()
-    await redis.aclose()
-
-
-@pytest.mark.asyncio
-async def test_explicit_hostile_movement_event_is_deduplicated() -> None:
-    redis = fakeredis.aioredis.FakeRedis()
-    qq = SimpleNamespace(send_proactive_text=AsyncMock())
-    async with httpx.AsyncClient() as http:
-        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
-        await relay.subscribe("group-1")
-        payload = {
-            "schema_version": "hostile_movement_event.v1",
-            "movement_id": "move-1",
-            "occurred_at": "2026-08-30T08:01:00+00:00",
-            "from_system": {"name": "Jita"},
-            "to_system": {"name": "Tama"},
-            "hostile_count": 2,
-            "personnel": [{"character_id": 1, "name": "Pilot"}],
-            "source": "detector",
-        }
-        assert await relay.process_hostile_movement(payload) is True
-        assert await relay.process_hostile_movement(payload) is True
-        second = {**payload, "movement_id": "move-2"}
-        assert await relay.process_hostile_movement(second) is True
-    assert qq.send_proactive_text.await_count == 0
     await redis.aclose()
 
 
@@ -385,10 +358,6 @@ def test_alert_subscription_commands_and_message_format() -> None:
     assert format_system_alert_message("S-KSWL", "alert") == "❗ S-KSWL 来敌"
     assert format_system_alert_message("S-KSWL", "alert", 3) == "❗ S-KSWL 来敌"
     assert format_system_alert_message("S-KSWL", "safe") == "✅ S-KSWL 清空"
-    assert format_system_movement_message("Jita", "Tama", 2) == (
-        "🔵 敌对移动｜Jita → Tama｜当前敌对 2 人"
-    )
-
     personnel = format_personnel_alert_message(
         {
             "system_name": "S-KSWL",
@@ -479,34 +448,6 @@ def test_personnel_affiliations_fall_back_to_alert_metadata_and_profiles() -> No
     assert "Glory Navy" not in message
     assert "Fraternity." not in message
     assert "**时间**" not in message
-
-
-def test_personnel_movement_matches_existing_destination_and_partial_identity() -> None:
-    previous = {
-        "jita": {
-            "system_name": "Jita",
-            "personnel": [{"name": "Tom Sisko", "character_id": 9001}],
-        },
-        "r-y": {
-            "system_name": "R-Y",
-            "personnel": [{"name": "Other Pilot", "character_id": 9002}],
-        },
-    }
-    current = {
-        "r-y": {
-            "system_name": "R-Y",
-            "personnel": [
-                {"name": "Tom Sisko"},
-                {"name": "Other Pilot", "character_id": 9002},
-            ],
-        }
-    }
-
-    pairs = _personnel_movement_pairs(previous, current)
-
-    assert pairs == [
-        {"from_system": "Jita", "to_system": "R-Y", "to_key": "r-y"}
-    ]
 
 
 def test_presence_only_intel_creates_system_alert_without_personnel_row() -> None:
@@ -1222,7 +1163,7 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
 
 
 @pytest.mark.asyncio
-async def test_relay_compacts_complete_personnel_move_into_one_movement_message() -> None:
+async def test_relay_embeds_personnel_move_in_event_message() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     qq = SimpleNamespace(
         send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
@@ -1278,101 +1219,13 @@ async def test_relay_compacts_complete_personnel_move_into_one_movement_message(
             }
         )
 
-        assert qq.send_proactive_text.await_count == 1
-        assert qq.send_proactive_text.await_args.args[1] == "✅ Jita 清空"
+        assert qq.send_proactive_text.await_count == 2
+        assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
+            "✅ Jita 清空",
+            "❗ Tama 来敌",
+        ]
         assert qq.send_proactive_markdown.await_count == 1
         assert "Jita → Tama" in qq.send_proactive_markdown.await_args.args[1]
-
-    await redis.aclose()
-
-
-@pytest.mark.asyncio
-async def test_bootstrap_and_explicit_movement_events_share_cross_source_dedupe() -> None:
-    redis = fakeredis.aioredis.FakeRedis()
-    qq = SimpleNamespace(
-        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
-        send_proactive_text=AsyncMock(return_value={"id": "text"}),
-    )
-    async with httpx.AsyncClient() as http:
-        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
-        await relay.subscribe("group-1")
-
-        def item(active_id: str, system_name: str) -> dict[str, Any]:
-            return {
-                "id": active_id,
-                "active": True,
-                "source": "eve-sentry-detector",
-                "system_name": system_name,
-                "name": "Alice",
-                "character_id": 12345,
-                "metadata": {
-                    "client_id": "client-1",
-                    "identity_status": "resolved",
-                },
-            }
-
-        await relay.process_bootstrap(
-            {"generated_at": "t0", "active_intel": [], "alerts": []}
-        )
-        await relay.process_bootstrap(
-            {
-                "generated_at": "t1",
-                "active_intel": [item("ocr:jita", "Jita")],
-                "alerts": [{"active_intel_id": "ocr:jita", "classification": "red"}],
-            }
-        )
-        qq.send_proactive_text.reset_mock()
-
-        await relay.process_bootstrap(
-            {
-                "generated_at": "t2",
-                "active_intel": [item("ocr:tama", "Tama")],
-                "alerts": [{"active_intel_id": "ocr:tama", "classification": "red"}],
-            }
-        )
-        assert qq.send_proactive_text.await_count == 1
-        assert qq.send_proactive_text.await_args.args[1] == "✅ Jita 清空"
-
-        explicit = {
-            "schema_version": "hostile_movement_event.v1",
-            "movement_id": "detector-move-1",
-            "occurred_at": "2026-08-30T08:01:00+00:00",
-            "from_system": {"name": "Jita"},
-            "to_system": {"name": "Tama"},
-            "hostile_count": 1,
-            "personnel": [{"character_id": 12345, "name": "Alice"}],
-            "source": "detector",
-        }
-        assert await relay.process_hostile_movement(explicit) is True
-        assert qq.send_proactive_text.await_count == 1
-        assert qq.send_proactive_text.await_args.args[1] == "✅ Jita 清空"
-
-        await redis.flushdb()
-        relay._active_alert_ids.clear()
-        await relay.subscribe("group-1")
-        qq.send_proactive_text.reset_mock()
-        await relay.process_bootstrap(
-            {"generated_at": "t3", "active_intel": [], "alerts": []}
-        )
-        await relay.process_bootstrap(
-            {
-                "generated_at": "t4",
-                "active_intel": [item("ocr:jita", "Jita")],
-                "alerts": [{"active_intel_id": "ocr:jita", "classification": "red"}],
-            }
-        )
-        qq.send_proactive_text.reset_mock()
-        explicit = {**explicit, "movement_id": "detector-move-2"}
-        assert await relay.process_hostile_movement(explicit) is True
-        await relay.process_bootstrap(
-            {
-                "generated_at": "t5",
-                "active_intel": [item("ocr:tama", "Tama")],
-                "alerts": [{"active_intel_id": "ocr:tama", "classification": "red"}],
-            }
-        )
-        assert qq.send_proactive_text.await_count == 1
-        assert qq.send_proactive_text.await_args.args[1] == "✅ Jita 清空"
 
     await redis.aclose()
 

@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 ALERT_GROUPS_KEY = "qq:eve-sentry:alert-groups"
 ALERT_CURSOR_KEY = "qq:eve-sentry:alert-cursor"
 ALERT_EVENT_ID_KEY = "qq:eve-sentry:alert-event-id"
-MOVEMENT_DEDUPE_PREFIX = "qq:eve-sentry:hostile-movement"
 ALERT_DELIVERED_PREFIX = "qq:eve-sentry:alert-delivered"
 ACTIVE_INTEL_STATE_KEY = "qq:eve-sentry:active-intel-state"
 SYSTEM_ALERT_STATE_KEY = "qq:eve-sentry:system-alert-state"
@@ -117,21 +116,6 @@ def format_system_alert_message(
     if transition == "safe":
         return f"✅ {system_name} 清空"
     return f"❗ {system_name} 来敌"
-
-
-def format_system_movement_message(
-    from_system: str,
-    to_system: str,
-    hostile_count: int | None = None,
-) -> str:
-    from_label = str(from_system or "未知星系").strip() or "未知星系"
-    to_label = str(to_system or "未知星系").strip() or "未知星系"
-    count_label = (
-        f"｜当前敌对 {hostile_count} 人"
-        if isinstance(hostile_count, int) and hostile_count >= 0
-        else ""
-    )
-    return f"🔵 敌对移动｜{from_label} → {to_label}{count_label}"
 
 
 def format_personnel_alert_message(
@@ -439,50 +423,6 @@ class EveSentryAlertRelay:
         )
         return failed == 0
 
-    async def deliver_system_movement(
-        self,
-        from_system: str,
-        to_system: str,
-        state: dict[str, Any],
-        occurred_at: str,
-        # Kept for compatibility; no automatic analysis work is deferred.
-        deferred_analysis: list[tuple[str, dict[str, Any], str, str]] | None = None,
-        *,
-        movement_source: str = "explicit",
-    ) -> bool:
-        """Keep movement state compatibility without sending a redundant message."""
-        logger.info(
-            "EVE Sentry movement notification suppressed from=%s to=%s source=%s",
-            from_system,
-            to_system,
-            movement_source,
-        )
-        return True
-
-    async def _movement_was_seen(
-        self,
-        from_system: str,
-        to_system: str,
-        personnel: object,
-        movement_id: str,
-        *,
-        movement_source: str,
-    ) -> bool:
-        if await self.redis.exists(
-            _movement_event_key(from_system, to_system, personnel, movement_id)
-        ):
-            return True
-        cross_key = _movement_cross_source_key(from_system, to_system, personnel)
-        previous_source = _decode(await self.redis.get(cross_key))
-        if previous_source and previous_source != movement_source:
-            await self.redis.set(
-                cross_key,
-                movement_source,
-                ex=ALERT_DEDUPE_SECONDS,
-            )
-            return True
-        return False
-
     async def deliver_system_personnel_update(
         self,
         state: dict[str, Any],
@@ -741,56 +681,6 @@ class EveSentryAlertRelay:
                 )
         return succeeded
 
-    async def process_hostile_movement(self, payload: dict[str, Any]) -> bool:
-        """Consume the v1 explicit movement event when the server emits it."""
-        if str(payload.get("schema_version") or "").strip() != "hostile_movement_event.v1":
-            logger.warning("Ignored EVE Sentry hostile movement with unknown schema")
-            return True
-        movement_id = str(payload.get("movement_id") or "").strip()
-        occurred_at = str(payload.get("occurred_at") or "").strip()
-        from_system = payload.get("from_system")
-        to_system = payload.get("to_system")
-        if isinstance(from_system, dict):
-            from_name = str(from_system.get("name") or "").strip()
-        else:
-            from_name = str(from_system or "").strip()
-        if isinstance(to_system, dict):
-            to_name = str(to_system.get("name") or "").strip()
-        else:
-            to_name = str(to_system or "").strip()
-        if not movement_id or not occurred_at or not from_name or not to_name:
-            logger.warning("Ignored malformed EVE Sentry hostile movement event")
-            return True
-        try:
-            hostile_count = max(1, int(payload.get("hostile_count") or 1))
-        except (TypeError, ValueError):
-            hostile_count = 1
-        state = {
-            "episode_id": movement_id,
-            "_movement_id": movement_id,
-            "system_name": to_name,
-            "hostile_count": hostile_count,
-            "personnel": [
-                item for item in payload.get("personnel", []) if isinstance(item, dict)
-            ],
-        }
-        if await self._movement_was_seen(
-            from_name,
-            to_name,
-            state["personnel"],
-            movement_id,
-            movement_source="explicit",
-        ):
-            return True
-        delivered = await self.deliver_system_movement(
-            from_name,
-            to_name,
-            state,
-            occurred_at,
-            movement_source="explicit",
-        )
-        return delivered
-
     async def process_bootstrap(self, payload: dict[str, Any]) -> bool:
         node_delivery_succeeded = True
         node_changes = payload.get("monitoring_node_changes")
@@ -904,8 +794,6 @@ class EveSentryAlertRelay:
         for system_key in current.keys() & previous.keys():
             current[system_key]["episode_id"] = previous[system_key]["episode_id"]
 
-        movement_pairs = _personnel_movement_pairs(previous, current)
-        moved_to = {pair["to_system"].casefold() for pair in movement_pairs}
         transitions_succeeded = True
         if initialized:
             for system_key in sorted(previous.keys() - current.keys()):
@@ -914,8 +802,6 @@ class EveSentryAlertRelay:
                     and transitions_succeeded
                 )
             for system_key in sorted(current.keys() - previous.keys()):
-                if system_key in moved_to:
-                    continue
                 transitions_succeeded = (
                     await self.deliver_system_transition(
                         current[system_key],
@@ -923,28 +809,6 @@ class EveSentryAlertRelay:
                     )
                     and transitions_succeeded
                 )
-            for pair in movement_pairs:
-                movement_state = current[pair["to_key"]]
-                movement_id = str(movement_state.get("episode_id") or "").strip()
-                if await self._movement_was_seen(
-                    pair["from_system"],
-                    pair["to_system"],
-                    movement_state.get("personnel", []),
-                    movement_id,
-                    movement_source="bootstrap",
-                ):
-                    continue
-                transitions_succeeded = (
-                    await self.deliver_system_movement(
-                        pair["from_system"],
-                        pair["to_system"],
-                        movement_state,
-                        generated_at,
-                        movement_source="bootstrap",
-                    )
-                    and transitions_succeeded
-                )
-
         if not transitions_succeeded:
             logger.warning("EVE Sentry system state update deferred after delivery failure")
             return False
@@ -1152,8 +1016,6 @@ class EveSentryAlertRelay:
                     processed = await self.process_alert_event(payload)
                 elif event_name == "monitoring_node" and isinstance(payload, dict):
                     processed = await self.process_monitoring_node(payload)
-                elif event_name == "hostile_movement" and isinstance(payload, dict):
-                    processed = await self.process_hostile_movement(payload)
                 if not processed:
                     raise RuntimeError(
                         "EVE Sentry event processing failed; reconnecting from last acknowledged event"
@@ -1579,96 +1441,6 @@ def _personnel_display_state(
         rows.append(row)
     displayed["personnel"] = rows
     return displayed
-
-
-def _personnel_movement_pairs(
-    previous: dict[str, dict[str, Any]],
-    current: dict[str, dict[str, Any]],
-) -> list[dict[str, str]]:
-    """Find complete system-to-system personnel moves in one snapshot."""
-    previous_by_identity: dict[str, str] = {}
-    for system_key, state in previous.items():
-        system_name = str(state.get("system_name") or system_key).strip()
-        for item in state.get("personnel", []):
-            if isinstance(item, dict):
-                for alias in _personnel_aliases(item):
-                    previous_by_identity.setdefault(alias, system_name)
-
-    pairs: dict[tuple[str, str], dict[str, str]] = {}
-    for state in current.values():
-        to_system = str(state.get("system_name") or "").strip()
-        to_key = to_system.casefold()
-        for item in state.get("personnel", []):
-            if not isinstance(item, dict):
-                continue
-            from_system = next(
-                (
-                    previous_by_identity[alias]
-                    for alias in _personnel_aliases(item)
-                    if alias in previous_by_identity
-                ),
-                "",
-            )
-            if not from_system or from_system.casefold() == to_key:
-                continue
-            from_key = from_system.casefold()
-            if from_key not in previous:
-                continue
-            pairs.setdefault(
-                (from_key, to_key),
-                {
-                    "from_system": from_system,
-                    "to_system": to_system,
-                    "to_key": to_key,
-                },
-            )
-    return list(pairs.values())
-
-
-def _movement_fingerprint(
-    from_system: str,
-    to_system: str,
-    personnel: object,
-    movement_id: str = "",
-) -> str:
-    identities = []
-    if isinstance(personnel, list):
-        for item in personnel:
-            if isinstance(item, dict):
-                identities.append(_personnel_identity(item))
-    payload = {
-        "from": str(from_system or "").strip().casefold(),
-        "to": str(to_system or "").strip().casefold(),
-        "personnel": sorted(value for value in identities if value),
-    }
-    if movement_id:
-        payload["movement_id"] = str(movement_id).strip()
-    return hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()[:20]
-
-
-def _movement_event_key(
-    from_system: str,
-    to_system: str,
-    personnel: object,
-    movement_id: str,
-) -> str:
-    return (
-        f"{MOVEMENT_DEDUPE_PREFIX}:event:"
-        f"{_movement_fingerprint(from_system, to_system, personnel, movement_id)}"
-    )
-
-
-def _movement_cross_source_key(
-    from_system: str,
-    to_system: str,
-    personnel: object,
-) -> str:
-    return (
-        f"{MOVEMENT_DEDUPE_PREFIX}:cross:"
-        f"{_movement_fingerprint(from_system, to_system, personnel)}"
-    )
 
 
 def _personnel_identity(item: dict[str, Any]) -> str:
