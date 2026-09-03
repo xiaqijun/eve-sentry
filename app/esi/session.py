@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from time import time
 from typing import Any, Callable
 
+from app.esi.cache import EsiCache
 from app.esi.client import EsiClient
 from app.esi.sso import EsiSsoError, EsiTokenStore, EveSsoClient, TokenSet
 
@@ -13,6 +14,7 @@ CHARACTER_CONTACT_SCOPE = "esi-characters.read_contacts.v1"
 CORPORATION_CONTACT_SCOPE = "esi-corporations.read_contacts.v1"
 ALLIANCE_CONTACT_SCOPE = "esi-alliances.read_contacts.v1"
 SEARCH_SCOPE = "esi-search.search_structures.v1"
+CHARACTER_STANDINGS_SCOPE = "esi-characters.read_standings.v1"
 
 
 @dataclass(frozen=True)
@@ -36,12 +38,29 @@ class ContactStanding:
 
 
 @dataclass(frozen=True)
+class EsiStanding:
+    """One row from an authenticated character standings snapshot."""
+
+    from_id: int
+    from_type: str
+    standing: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "from_id": self.from_id,
+            "from_type": self.from_type,
+            "standing": self.standing,
+        }
+
+
+@dataclass(frozen=True)
 class EsiSessionSnapshot:
     """Current authenticated ESI data for the logged-in character."""
 
     tokens: TokenSet
     location: dict[str, Any] = field(default_factory=dict)
     contacts: list[ContactStanding] = field(default_factory=list)
+    standings: list[EsiStanding] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,6 +69,7 @@ class EsiSessionSnapshot:
             "scopes": list(self.tokens.scopes),
             "location": dict(self.location),
             "contacts": [contact.to_dict() for contact in self.contacts],
+            "standings": [standing.to_dict() for standing in self.standings],
         }
 
 
@@ -62,11 +82,16 @@ class EsiAuthenticatedSession:
         esi_client: EsiClient | Any | None = None,
         token_store: EsiTokenStore | None = None,
         now: Callable[[], float] | None = None,
+        cache: EsiCache | Any | None = None,
+        standing_ttl_seconds: float = 600.0,
     ) -> None:
         self.sso_client = sso_client
         self.esi_client = esi_client or EsiClient()
         self.token_store = token_store or EsiTokenStore()
         self._now = now or time
+        self.cache = cache
+        self.standing_ttl_seconds = min(900.0, max(300.0, float(standing_ttl_seconds)))
+        self._standings_memory: dict[int, tuple[float, list[EsiStanding]]] = {}
 
     def load_tokens(self, refresh_if_needed: bool = True) -> TokenSet:
         """Load saved tokens and refresh them when they are near expiry."""
@@ -93,8 +118,9 @@ class EsiAuthenticatedSession:
         self,
         include_location: bool = True,
         include_contacts: bool = True,
+        include_standings: bool = True,
     ) -> EsiSessionSnapshot:
-        """Fetch current authenticated location and contact standings."""
+        """Fetch current authenticated location, contacts, and reputation standings."""
         tokens = self.load_tokens()
         character_id = tokens.character_id
         if character_id is None:
@@ -102,6 +128,7 @@ class EsiAuthenticatedSession:
 
         location: dict[str, Any] = {}
         contacts: list[ContactStanding] = []
+        standings: list[EsiStanding] = []
         if include_location:
             location = self.esi_client.get_character_location(
                 character_id,
@@ -169,7 +196,70 @@ class EsiAuthenticatedSession:
                         source="esi_self",
                     )
                 )
-        return EsiSessionSnapshot(tokens=tokens, location=location, contacts=contacts)
+        if include_standings:
+            standings = self._cached_character_standings(tokens)
+        return EsiSessionSnapshot(
+            tokens=tokens,
+            location=location,
+            contacts=contacts,
+            standings=standings,
+        )
+
+    def standings(self) -> list[EsiStanding]:
+        """Return the cached character standings snapshot for the authorized account."""
+        return self._cached_character_standings(self.load_tokens())
+
+    def _cached_character_standings(self, tokens: TokenSet) -> list[EsiStanding]:
+        character_id = tokens.character_id
+        if character_id is None or CHARACTER_STANDINGS_SCOPE not in set(tokens.scopes):
+            return []
+        now = float(self._now())
+        memory = self._standings_memory.get(character_id)
+        if memory is not None and now < memory[0]:
+            return list(memory[1])
+
+        key = f"standings:character:{character_id}"
+        cached = self.cache.get(key) if self.cache is not None else None
+        if isinstance(cached, list):
+            standings = standings_from_payload(cached)
+            self._standings_memory[character_id] = (
+                now + self.standing_ttl_seconds,
+                standings,
+            )
+            return list(standings)
+
+        try:
+            rows = self.esi_client.get_character_standings(
+                character_id,
+                tokens.access_token,
+            )
+            standings = standings_from_payload(rows)
+            if self.cache is not None:
+                self.cache.set(
+                    key,
+                    [standing.to_dict() for standing in standings],
+                    ttl_seconds=int(self.standing_ttl_seconds),
+                )
+                save = getattr(self.cache, "save", None)
+                if callable(save):
+                    save()
+            self._standings_memory[character_id] = (
+                now + self.standing_ttl_seconds,
+                standings,
+            )
+            return list(standings)
+        except Exception:
+            stale = self.cache.get_stale(key) if self.cache is not None else None
+            if isinstance(stale, list):
+                standings = standings_from_payload(stale)
+                self._standings_memory[character_id] = (
+                    now + min(60.0, self.standing_ttl_seconds),
+                    standings,
+                )
+                return list(standings)
+            if memory is not None:
+                return list(memory[1])
+            return []
 
     def complete_character_name(self, prefix: str) -> str | None:
         """Return one unique full character name matching a clipped prefix."""
@@ -259,6 +349,29 @@ def contact_standings_from_payload(rows: Any) -> list[ContactStanding]:
                 contact_type=str(row.get("contact_type") or "").strip(),
                 standing=standing,
                 label=str(row.get("label") or row.get("name") or "").strip(),
+            )
+        )
+    return standings
+
+
+def standings_from_payload(rows: Any) -> list[EsiStanding]:
+    """Normalize the complete character standings response from ESI."""
+    if not isinstance(rows, list):
+        return []
+    standings: list[EsiStanding] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        from_id = _optional_positive_int(row.get("from_id"))
+        from_type = str(row.get("from_type") or "").strip()
+        standing = _optional_float(row.get("standing"))
+        if from_id is None or not from_type or standing is None:
+            continue
+        standings.append(
+            EsiStanding(
+                from_id=from_id,
+                from_type=from_type,
+                standing=standing,
             )
         )
     return standings

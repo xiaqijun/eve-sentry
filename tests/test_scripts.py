@@ -1891,6 +1891,7 @@ def test_run_server_builds_argv_from_environment():
             "EVE_SENTRY_SERVER_ESI_CLIENT_ID": "client-id",
             "EVE_SENTRY_SERVER_ESI_TOKEN_FILE": "/srv/eve/esi_tokens.json",
             "EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE": "plain",
+            "EVE_SENTRY_SERVER_ESI_STANDINGS_TTL": "600",
             "EVE_SENTRY_SERVER_ESI_SCOPES": (
                 "esi-location.read_location.v1,esi-characters.read_contacts.v1"
             ),
@@ -1930,6 +1931,8 @@ def test_run_server_builds_argv_from_environment():
         "/srv/eve/esi_tokens.json",
         "--esi-token-storage",
         "plain",
+        "--esi-standings-ttl",
+        "600",
         "--esi-scope",
         "esi-location.read_location.v1",
         "--esi-scope",

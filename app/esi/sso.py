@@ -30,6 +30,7 @@ DEFAULT_METADATA_URL = "https://login.eveonline.com/.well-known/oauth-authorizat
 DEFAULT_SCOPES = (
     "esi-location.read_location.v1",
     "esi-characters.read_contacts.v1",
+    "esi-characters.read_standings.v1",
     "esi-corporations.read_contacts.v1",
     "esi-alliances.read_contacts.v1",
     "esi-search.search_structures.v1",
