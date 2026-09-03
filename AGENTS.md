@@ -8,8 +8,9 @@ business logic. Client, standalone ESI Gateway, bot, and published wire-contract
 implementations belong in their own repositories.
 
 Route new work through role `00`. Any HTTP, SSE, event, cursor, authentication,
-or ESI wire change must be reviewed by role `05` against the
-[multi-repository development workflow](https://github.com/xiaqijun/eve-sentry-contracts/blob/main/docs/development-workflow.md).
+or ESI wire change must be reviewed against the
+[multi-repository development workflow](docs/multi-repository-development.md)
+and the API documentation in `docs/`.
 Only one task may write to this repository at a time. Role `90` exclusively owns
 production deployment, health verification, and rollback.
 
@@ -40,7 +41,7 @@ Do not commit local runtime data such as `whitelist.json`, virtual environments,
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **eve-sentry** (6142 symbols, 15951 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **eve-sentry** (6145 symbols, 15956 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
