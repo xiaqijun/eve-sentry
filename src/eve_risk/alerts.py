@@ -450,55 +450,14 @@ class EveSentryAlertRelay:
         *,
         movement_source: str = "explicit",
     ) -> bool:
-        """Deliver one compact movement event instead of clear plus re-entry."""
-        raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
-        groups = sorted(_decode(value) for value in raw_groups if _decode(value))
-        message = format_system_movement_message(
-            from_system,
-            to_system,
-            state.get("hostile_count"),
-        )
-        event_id = (
-            f"movement:{str(from_system).casefold()}:{str(to_system).casefold()}"
-            f":{str(state.get('episode_id') or occurred_at)}"
-        )
-        movement_id = str(
-            state.get("_movement_id") or state.get("episode_id") or ""
-        ).strip()
-        failed = 0
-        for group_openid in groups:
-            delivered_key = _delivered_key(event_id, group_openid)
-            if await self.redis.exists(delivered_key):
-                continue
-            try:
-                await self.qq.send_proactive_text(group_openid, message)
-            except Exception:
-                failed += 1
-                logger.exception("QQ proactive movement delivery failed")
-                continue
-            await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
+        """Keep movement state compatibility without sending a redundant message."""
         logger.info(
-            "EVE Sentry movement processed from=%s to=%s failures=%d",
+            "EVE Sentry movement notification suppressed from=%s to=%s source=%s",
             from_system,
             to_system,
-            failed,
+            movement_source,
         )
-        if failed == 0:
-            await self.redis.set(
-                _movement_event_key(
-                    from_system, to_system, state.get("personnel", []), movement_id
-                ),
-                "1",
-                ex=ALERT_DEDUPE_SECONDS,
-            )
-            await self.redis.set(
-                _movement_cross_source_key(
-                    from_system, to_system, state.get("personnel", [])
-                ),
-                str(movement_source or "explicit"),
-                ex=ALERT_DEDUPE_SECONDS,
-            )
-        return failed == 0
+        return True
 
     async def _movement_was_seen(
         self,
@@ -1292,7 +1251,13 @@ def _active_intel_map(
                 "active_names",
                 "active_character_ids",
             ):
-                if item.get(key) in (None, "", []) and alert.get(key) not in (
+                alert_value = alert.get(key)
+                if key in {"active_names", "active_character_ids"}:
+                    # The server derives these fields from the complete live
+                    # detector roster; prefer them over a stale item snapshot.
+                    if alert_value not in (None, "", []):
+                        item[key] = alert_value
+                elif item.get(key) in (None, "", []) and alert_value not in (
                     None,
                     "",
                     [],
@@ -1335,6 +1300,7 @@ def _active_system_state(
                 "episode_id": fallback_episode_id,
                 "personnel": [],
                 "_detector_counts": {},
+                "_roster_names": set(),
             },
         )
         source = str(item.get("source") or "").strip().casefold()
@@ -1358,6 +1324,14 @@ def _active_system_state(
             )
         else:
             state["hostile_count"] += item_count
+        if source == "eve-sentry-detector":
+            active_names = item.get("active_names")
+            if isinstance(active_names, list):
+                state["_roster_names"].update(
+                    str(name).strip()
+                    for name in active_names
+                    if str(name).strip()
+                )
         # Red-icon presence has no character identity until optional OCR runs.
         if (
             not is_presence or str(item.get("name") or "").strip()
@@ -1368,8 +1342,39 @@ def _active_system_state(
             max(counts["presence"], counts["ocr"], counts["reported"])
             for counts in state.pop("_detector_counts", {}).values()
         )
+        roster_names = {
+            name.casefold(): name
+            for name in state.pop("_roster_names", set())
+            if str(name).strip()
+        }
+        personnel_by_identity: dict[str, dict[str, Any]] = {}
+        for item in state["personnel"]:
+            name = str(item.get("name") or "").strip()
+            if roster_names and name.casefold() not in roster_names:
+                continue
+            identity = _personnel_identity(item)
+            existing = personnel_by_identity.get(identity)
+            if existing is None or (
+                not existing.get("character_id") and item.get("character_id")
+            ):
+                personnel_by_identity[identity] = item
+        for name in roster_names.values():
+            if not any(
+                str(item.get("name") or "").strip().casefold() == name.casefold()
+                for item in personnel_by_identity.values()
+            ):
+                personnel_by_identity[f"name:{name.casefold()}"] = {
+                    "id": "",
+                    "name": name,
+                    "character_id": None,
+                    "system_name": state["system_name"],
+                    "first_seen_at": "",
+                    "metadata": {},
+                    "level": "",
+                    "score": None,
+                }
         personnel = sorted(
-            state["personnel"],
+            personnel_by_identity.values(),
             key=lambda item: (
                 str(item.get("id") or "").casefold(),
                 str(item.get("name") or "").casefold(),

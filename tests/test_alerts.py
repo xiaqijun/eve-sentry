@@ -130,7 +130,7 @@ async def test_explicit_hostile_movement_event_is_deduplicated() -> None:
         assert await relay.process_hostile_movement(payload) is True
         second = {**payload, "movement_id": "move-2"}
         assert await relay.process_hostile_movement(second) is True
-    assert qq.send_proactive_text.await_count == 2
+    assert qq.send_proactive_text.await_count == 0
     await redis.aclose()
 
 
@@ -226,6 +226,49 @@ def test_detector_count_uses_server_snapshot_when_active_roster_is_partial() -> 
     state = _active_system_state(mapped.values(), "snapshot-1")
 
     assert state["s-kswl"]["hostile_count"] == 4
+
+
+def test_detector_personnel_uses_server_active_roster_and_deduplicates() -> None:
+    raw_items = [
+        {
+            "id": "ocr:alpha",
+            "active": True,
+            "system_name": "S-KSWL",
+            "name": "Alpha",
+            "character_id": 101,
+            "source": "eve-sentry-detector",
+            "metadata": {
+                "client_id": "detector-1",
+                "identity_status": "resolved",
+            },
+            "active_names": ["Stale"],
+        },
+        {
+            "id": "ocr:alpha-duplicate",
+            "active": True,
+            "system_name": "S-KSWL",
+            "name": "Alpha",
+            "character_id": 101,
+            "source": "eve-sentry-detector",
+            "metadata": {
+                "client_id": "detector-1",
+                "identity_status": "resolved",
+            },
+        },
+    ]
+    raw_alerts = [
+        {
+            "active_intel_id": item["id"],
+            "classification": "red",
+            "active_names": ["Alpha", "Bravo"],
+        }
+        for item in raw_items
+    ]
+
+    mapped = _active_intel_map(raw_items, raw_alerts)
+    state = _active_system_state(mapped.values(), "snapshot-1")["s-kswl"]
+
+    assert {item["name"] for item in state["personnel"]} == {"Alpha", "Bravo"}
 
 
 def test_alert_subscription_commands_and_message_format() -> None:
@@ -987,6 +1030,7 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
             **item,
             "id": "ocr:bob",
             "name": "Bob",
+            "character_id": 12346,
         }
         existing_bootstrap = {
             "generated_at": "2026-07-20T16:20:24+00:00",
@@ -1155,9 +1199,7 @@ async def test_relay_compacts_complete_personnel_move_into_one_movement_message(
             }
         )
 
-        assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
-            "🔵 敌对移动｜Jita → Tama｜当前敌对 1 人"
-        ]
+        assert qq.send_proactive_text.await_count == 0
         assert qq.send_proactive_markdown.await_count == 1
         assert "Jita → Tama" in qq.send_proactive_markdown.await_args.args[1]
 
@@ -1208,7 +1250,7 @@ async def test_bootstrap_and_explicit_movement_events_share_cross_source_dedupe(
                 "alerts": [{"active_intel_id": "ocr:tama", "classification": "red"}],
             }
         )
-        assert qq.send_proactive_text.await_count == 1
+        assert qq.send_proactive_text.await_count == 0
 
         explicit = {
             "schema_version": "hostile_movement_event.v1",
@@ -1221,7 +1263,7 @@ async def test_bootstrap_and_explicit_movement_events_share_cross_source_dedupe(
             "source": "detector",
         }
         assert await relay.process_hostile_movement(explicit) is True
-        assert qq.send_proactive_text.await_count == 1
+        assert qq.send_proactive_text.await_count == 0
 
         await redis.flushdb()
         relay._active_alert_ids.clear()
@@ -1247,7 +1289,7 @@ async def test_bootstrap_and_explicit_movement_events_share_cross_source_dedupe(
                 "alerts": [{"active_intel_id": "ocr:tama", "classification": "red"}],
             }
         )
-        assert qq.send_proactive_text.await_count == 1
+        assert qq.send_proactive_text.await_count == 0
 
     await redis.aclose()
 
