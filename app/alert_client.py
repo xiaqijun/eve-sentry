@@ -911,6 +911,11 @@ class LocalStarMapWidget(QWidget):
                 for item in accounts_by_system.get(key, [])
             )
             focused = key in centers
+            local_focused = any(
+                bool(item.get("local"))
+                and bool(item.get("selected", True))
+                for item in accounts_by_system.get(key, [])
+            )
             radius = 12 if hostile else 10 if focused else 9 if monitoring else 4
             if hostile:
                 outer_radius = 11
@@ -933,8 +938,8 @@ class LocalStarMapWidget(QWidget):
                     inner_radius * 2,
                 )
 
-            if focused and hostile:
-                star_color = QColor("#ff5965")
+            if local_focused:
+                star_color = QColor("#ff5965") if hostile else QColor("#ffd166")
                 painter.setPen(QPen(star_color.lighter(125), 1))
                 painter.setBrush(QBrush(star_color))
                 painter.drawPath(self._star_path(x, y))

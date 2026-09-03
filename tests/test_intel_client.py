@@ -1733,7 +1733,7 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
                     "label": "Carol",
                     "system_name": "Focused",
                     "selected": True,
-                    "local": False,
+                    "local": True,
                 },
                 {
                     "key": "bob",
@@ -1771,8 +1771,8 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
 
         assert online_center.green() > online_center.red() * 1.5
         assert focused_monitor_ring.green() > focused_monitor_ring.red() * 1.5
-        assert focused_marker.green() > focused_marker.red() * 1.5
-        assert focused_marker.green() > focused_marker.blue() * 1.5
+        assert focused_marker.red() > focused_marker.green() * 1.2
+        assert focused_marker.red() > focused_marker.blue() * 1.2
         assert warning_center.red() > warning_center.green() * 1.5
         assert warning_body.red() > warning_body.green()
         assert both_center.red() > both_center.green() * 1.5
