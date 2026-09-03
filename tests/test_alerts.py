@@ -12,6 +12,9 @@ from eve_risk.alerts import (
     ACTIVE_INTEL_STATE_KEY,
     ALERT_CURSOR_KEY,
     ALERT_EVENT_ID_KEY,
+    ALERT_GROUPS_KEY,
+    MONITORING_NODE_SNAPSHOT_DATA_KEY,
+    MONITORING_NODE_SNAPSHOT_STATE_KEY,
     SYSTEM_ALERT_STATE_KEY,
     SYSTEM_ALERT_STATE_READY_KEY,
     EveSentryAlertRelay,
@@ -1011,6 +1014,65 @@ async def test_monitoring_snapshot_without_subscribers_does_not_fail_stream() ->
         qq.send_proactive_text.assert_not_awaited()
         assert await redis.get("qq:eve-sentry:monitoring-node-snapshot-state") == b"v1"
 
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_subscribe_pushes_latest_cached_monitoring_snapshot() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(send_proactive_text=AsyncMock(return_value={"id": "snapshot"}))
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.deliver_monitoring_node_snapshot(
+            [{"client_id": "client:alpha", "system_name": "Jita"}],
+            "2026-08-10T01:00:00+00:00",
+            nodes_version="v1",
+        )
+
+        assert await redis.get(MONITORING_NODE_SNAPSHOT_DATA_KEY)
+        await relay.subscribe("group-1")
+
+        qq.send_proactive_text.assert_awaited_once_with(
+            "group-1",
+            "在线监控节点｜1\n🟢 监控节点 1｜Jita",
+        )
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_first_bootstrap_refreshes_groups_after_relay_restart() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    await redis.sadd(ALERT_GROUPS_KEY, "group-1")
+    await redis.set(
+        MONITORING_NODE_SNAPSHOT_DATA_KEY,
+        json.dumps(
+            {
+                "nodes": [{"client_id": "client:alpha", "system_name": "Jita"}],
+                "version": "v1",
+            }
+        ),
+    )
+    await redis.set(MONITORING_NODE_SNAPSHOT_STATE_KEY, "v1")
+    qq = SimpleNamespace(send_proactive_text=AsyncMock(return_value={"id": "snapshot"}))
+
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.process_bootstrap(
+            {
+                "generated_at": "2026-08-10T01:00:00+00:00",
+                "monitoring_nodes": [
+                    {"client_id": "client:alpha", "system_name": "Jita"}
+                ],
+                "monitoring_nodes_version": "v1",
+                "active_intel": [],
+                "alerts": [],
+            }
+        )
+
+    qq.send_proactive_text.assert_awaited_once_with(
+        "group-1", "在线监控节点｜1\n🟢 监控节点 1｜Jita"
+    )
     await redis.aclose()
 
 

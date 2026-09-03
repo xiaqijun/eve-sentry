@@ -24,6 +24,7 @@ ACTIVE_INTEL_STATE_KEY = "qq:eve-sentry:active-intel-state"
 SYSTEM_ALERT_STATE_KEY = "qq:eve-sentry:system-alert-state"
 SYSTEM_ALERT_STATE_READY_KEY = "qq:eve-sentry:system-alert-state-ready"
 MONITORING_NODE_SNAPSHOT_STATE_KEY = "qq:eve-sentry:monitoring-node-snapshot-state"
+MONITORING_NODE_SNAPSHOT_DATA_KEY = "qq:eve-sentry:monitoring-node-snapshot-data"
 ALERT_DEDUPE_SECONDS = 7 * 24 * 60 * 60
 RECONNECT_BACKOFF_SECONDS = (0.2, 1.0, 3.0, 5.0)
 
@@ -270,6 +271,11 @@ class EveSentryAlertRelay:
         self._personnel_last_sent_at: dict[str, float] = {}
         self._personnel_pending: dict[str, tuple[dict[str, Any], str]] = {}
         self._personnel_flush_tasks: dict[str, asyncio.Task[None]] = {}
+        # A reconnect starts a fresh SSE session.  The server emits a
+        # bootstrap even when the node list has not changed, so use that first
+        # authoritative snapshot to refresh groups that were already
+        # subscribed before this process (or connection) restarted.
+        self._monitoring_snapshot_initialized = False
 
     @property
     def enabled(self) -> bool:
@@ -277,12 +283,43 @@ class EveSentryAlertRelay:
 
     async def subscribe(self, group_openid: str) -> None:
         await self.redis.sadd(ALERT_GROUPS_KEY, group_openid)
+        await self._deliver_latest_monitoring_snapshot(group_openid)
 
     async def unsubscribe(self, group_openid: str) -> None:
         await self.redis.srem(ALERT_GROUPS_KEY, group_openid)
 
     async def is_subscribed(self, group_openid: str) -> bool:
         return bool(await self.redis.sismember(ALERT_GROUPS_KEY, group_openid))
+
+    async def _deliver_latest_monitoring_snapshot(self, group_openid: str) -> bool:
+        """Send the cached node list once when a group enables active alerts."""
+        raw_snapshot = await self.redis.get(MONITORING_NODE_SNAPSHOT_DATA_KEY)
+        if not raw_snapshot:
+            return True
+        try:
+            snapshot = json.loads(_decode(raw_snapshot))
+        except json.JSONDecodeError:
+            logger.warning("Ignored malformed cached monitoring node snapshot")
+            return True
+        if not isinstance(snapshot, dict):
+            return True
+        nodes = snapshot.get("nodes")
+        if not isinstance(nodes, list):
+            return True
+        message = format_monitoring_nodes_message(
+            [item for item in nodes if isinstance(item, dict)]
+        )
+        try:
+            await self.qq.send_proactive_text(group_openid, message)
+        except Exception:
+            logger.exception("QQ cached monitoring node snapshot delivery failed")
+            return False
+        logger.info(
+            "EVE Sentry cached monitoring node snapshot delivered group=%s nodes=%d",
+            group_openid,
+            len(nodes),
+        )
+        return True
 
     async def run_forever(self) -> None:
         if not self.enabled:
@@ -617,6 +654,14 @@ class EveSentryAlertRelay:
                 separators=(",", ":"),
             ).encode("utf-8")
             version = hashlib.sha256(version_payload).hexdigest()[:16]
+        await self.redis.set(
+            MONITORING_NODE_SNAPSHOT_DATA_KEY,
+            json.dumps(
+                {"nodes": normalized_nodes, "version": version},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
         change_payload = json.dumps(
             changes or [],
             ensure_ascii=False,
@@ -686,6 +731,11 @@ class EveSentryAlertRelay:
         node_changes = payload.get("monitoring_node_changes")
         monitoring_nodes = payload.get("monitoring_nodes")
         nodes_version = str(payload.get("monitoring_nodes_version") or "").strip()
+        force_initial_snapshot = (
+            isinstance(monitoring_nodes, list)
+            and bool(nodes_version)
+            and not self._monitoring_snapshot_initialized
+        )
         if isinstance(node_changes, list) and node_changes and isinstance(
             monitoring_nodes, list
         ):
@@ -708,12 +758,16 @@ class EveSentryAlertRelay:
             last_version = _decode(
                 await self.redis.get(MONITORING_NODE_SNAPSHOT_STATE_KEY)
             )
-            if last_version != nodes_version:
+            if force_initial_snapshot or last_version != nodes_version:
                 node_delivery_succeeded = await self.deliver_monitoring_node_snapshot(
                     monitoring_nodes,
                     str(payload.get("generated_at") or datetime.now(UTC).isoformat()),
                     nodes_version=nodes_version,
                 )
+        if isinstance(monitoring_nodes, list) and nodes_version:
+            if node_delivery_succeeded:
+                self._monitoring_snapshot_initialized = True
+
         if not node_delivery_succeeded:
             logger.warning("EVE Sentry monitoring node update deferred after delivery failure")
             return False
