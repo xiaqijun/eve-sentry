@@ -1386,6 +1386,59 @@ def test_postgres_hostile_wave_state_excludes_friendly_ocr_from_visual_counts():
     assert state["s-kswl"]["hostile_count"] == 2
 
 
+def test_postgres_hostile_wave_state_tracks_resolved_hostile_personnel():
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._active_intel = {}
+    item = ActiveIntelItem(
+        active_id="ocr:hostile",
+        source="eve-sentry-detector",
+        source_instance="client-a",
+        system_name="S-KSWL",
+        target_type="character",
+        name="CEKC HA MOPE",
+        character_id=2118213032,
+        metadata={
+            "identity_status": "resolved",
+            "hostile_count": 1,
+            "client_id": "client-a",
+        },
+        first_seen_at="2026-09-03T17:26:37+00:00",
+        last_seen_at="2026-09-03T17:26:37+00:00",
+    )
+
+    state = store._hostile_system_state([item])
+
+    assert state["s-kswl"]["personnel"] == [{
+        "name": "CEKC HA MOPE",
+        "character_id": 2118213032,
+        "identity_status": "resolved",
+        "first_seen_at": "2026-09-03T17:26:37+00:00",
+    }]
+
+
+def test_postgres_hostile_wave_row_decodes_personnel_with_legacy_rows():
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+
+    wave = store._hostile_wave_from_row({
+        "wave_id": "wave-1",
+        "system_name": "S-KSWL",
+        "system_id": 30004759,
+        "started_at": "2026-09-03T17:26:27+00:00",
+        "last_seen_at": "2026-09-03T17:28:19+00:00",
+        "cleared_at": "2026-09-03T17:28:19+00:00",
+        "active": 0,
+        "peak_hostile_count": 1,
+        "personnel_json": '{"character:2118213032":{"name":"CEKC HA MOPE","character_id":2118213032}}',
+    })
+
+    assert wave["personnel"] == [{
+        "name": "CEKC HA MOPE",
+        "character_id": 2118213032,
+        "identity_status": "resolved",
+        "first_seen_at": "",
+    }]
+
+
 def test_postgres_hostile_wave_persistence_tracks_visual_peak():
     calls = []
 
@@ -1422,10 +1475,13 @@ def test_postgres_hostile_wave_persistence_tracks_visual_peak():
 
     assert "peak_hostile_count" in calls[0][0]
     assert "GREATEST" in calls[0][0]
-    assert calls[0][1][-1] == 2
-    assert calls[1][1][-1] == 3
+    assert calls[0][1][-2] == 2
+    assert calls[0][1][-1] == "{}"
+    assert calls[1][1][-2] == 3
+    assert calls[1][1][-1] == "{}"
     assert "peak_hostile_count = GREATEST" in calls[2][0]
     assert calls[2][1][2] == 3
+    assert calls[2][1][3] == "{}"
 
 
 def test_postgres_hostile_wave_row_exposes_visual_peak():

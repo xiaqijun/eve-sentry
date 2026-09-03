@@ -259,6 +259,36 @@ describe("hostile reporting", () => {
     });
   });
 
+  it("uses personnel persisted on a wave when its alert history has no verified row", () => {
+    const report = buildHostileReport(
+      [],
+      "24h",
+      NOW,
+      [{
+        id: "wave-with-personnel",
+        system_name: "S-KSWL",
+        started_at: "2026-07-22T10:00:00Z",
+        last_seen_at: "2026-07-22T10:05:00Z",
+        cleared_at: "2026-07-22T10:06:00Z",
+        active: false,
+        peak_hostile_count: 1,
+        personnel: [{
+          character_id: 2118213032,
+          name: "CEKC HA MOPE",
+          identity_status: "resolved",
+        }],
+      }],
+    );
+
+    expect(report.waves[0]).toMatchObject({
+      uniqueTargets: 1,
+      targets: [{
+        characterId: 2118213032,
+        name: "CEKC HA MOPE",
+      }],
+    });
+  });
+
   it("starts a new wave after clear even when the next appearance is one minute later", () => {
     const lifecycle: HostileWaveLifecycle[] = [
       {

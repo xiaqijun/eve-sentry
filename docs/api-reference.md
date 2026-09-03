@@ -176,7 +176,15 @@ GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
       "last_seen_at": "2026-08-11T09:34:12+00:00",
       "cleared_at": "2026-08-11T09:35:03+00:00",
       "active": false,
-      "peak_hostile_count": 3
+      "peak_hostile_count": 3,
+      "personnel": [
+        {
+          "character_id": 2118213032,
+          "name": "CEKC HA MOPE",
+          "identity_status": "resolved",
+          "first_seen_at": "2026-08-11T09:31:04+00:00"
+        }
+      ]
     }
   ],
   "count": 1,
@@ -184,9 +192,10 @@ GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
 }
 ```
 
-`peak_hostile_count` 是视觉峰值，不等于 OCR 已识别人员数；人员明细需要按波次时间范围与
-`/api/v1/alert-history` 中的 `verified_characters` 关联。只有 ESI 已确认且当前分类为
-`red` 的 detector 角色才属于敌对人员明细。
+`peak_hostile_count` 是视觉峰值，不等于 OCR 已识别人员数。`personnel` 是服务端在波次生命
+周期内累计的、已由 ESI 确认且当前分类为 `red` 的 detector 角色；它不会因后续 OCR 行消失
+或告警历史快照不完整而丢失。客户端仍可将 `/api/v1/alert-history` 中的
+`verified_characters` 作为补充信息来源。
 
 敌对告警的 `verified_characters` 始终保留 `character_id` 和 `name`。取得外部统计时会额外
 包含可选的 `zkill` 对象：

@@ -680,7 +680,8 @@ class PostgreSQLIntelStore(IntelStore):
             rows = connection.execute(
                 f"""
                 SELECT wave_id, system_name, system_id, started_at,
-                       last_seen_at, cleared_at, active, peak_hostile_count
+                       last_seen_at, cleared_at, active, peak_hostile_count,
+                       personnel_json
                 FROM hostile_waves
                 {where_clause}
                 ORDER BY started_at DESC, wave_id DESC
@@ -754,6 +755,7 @@ class PostgreSQLIntelStore(IntelStore):
                     "first_seen_at": first_seen_at,
                     "last_seen_at": last_seen_at,
                     "hostile_count": 0,
+                    "personnel": {},
                 }
                 state = systems[system_key]
             else:
@@ -767,6 +769,16 @@ class PostgreSQLIntelStore(IntelStore):
                 )
                 if state.get("system_id") is None and item.system_id is not None:
                     state["system_id"] = item.system_id
+
+            personnel = self._hostile_personnel_entry(item, metadata, is_hostile)
+            if personnel is not None:
+                identity_key = f"character:{personnel['character_id']}"
+                existing = state["personnel"].get(identity_key)
+                if existing is None or (
+                    not existing.get("first_seen_at")
+                    and personnel.get("first_seen_at")
+                ):
+                    state["personnel"][identity_key] = personnel
 
             if detector_count is not None:
                 client_id = str(
@@ -796,9 +808,33 @@ class PostgreSQLIntelStore(IntelStore):
                     count for _, count in client_counts.values()
                 )
         return {
-            system_key: state
+            system_key: {
+                **state,
+                "personnel": list(state.get("personnel", {}).values()),
+            }
             for system_key, state in systems.items()
             if int(state.get("hostile_count") or 0) > 0
+        }
+
+    def _hostile_personnel_entry(
+        self,
+        item: ActiveIntelItem,
+        metadata: dict[str, Any],
+        is_hostile: bool,
+    ) -> dict[str, Any] | None:
+        if not is_hostile or item.target_type.casefold() != "character":
+            return None
+        if str(metadata.get("identity_status") or "").strip().casefold() != "resolved":
+            return None
+        character_id = self._optional_positive_int(item.character_id)
+        name = str(item.name or "").strip()
+        if character_id is None or not name:
+            return None
+        return {
+            "name": name,
+            "character_id": character_id,
+            "identity_status": "resolved",
+            "first_seen_at": str(item.first_seen_at or item.last_seen_at or ""),
         }
 
     def _database_hostile_system_state(
@@ -884,9 +920,9 @@ class PostgreSQLIntelStore(IntelStore):
                     INSERT INTO hostile_waves (
                         wave_id, system_key, system_name, system_id,
                         started_at, last_seen_at, cleared_at, active,
-                        peak_hostile_count
+                        peak_hostile_count, personnel_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, '', 1, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, '', 1, ?, ?)
                     ON CONFLICT (system_key) WHERE active = 1 DO UPDATE SET
                         system_name = excluded.system_name,
                         system_id = COALESCE(excluded.system_id, hostile_waves.system_id),
@@ -894,6 +930,10 @@ class PostgreSQLIntelStore(IntelStore):
                             hostile_waves.peak_hostile_count,
                             excluded.peak_hostile_count
                         ),
+                        personnel_json = (
+                            COALESCE(NULLIF(hostile_waves.personnel_json, ''), '{}')::jsonb
+                            || COALESCE(NULLIF(excluded.personnel_json, ''), '{}')::jsonb
+                        )::text,
                         last_seen_at = CASE
                             WHEN hostile_waves.last_seen_at::timestamptz
                                >= excluded.last_seen_at::timestamptz
@@ -909,6 +949,7 @@ class PostgreSQLIntelStore(IntelStore):
                         change["started_at"],
                         change["last_seen_at"],
                         max(0, int(change.get("hostile_count") or 0)),
+                        self._hostile_personnel_json(change.get("personnel")),
                     ),
                 )
                 continue
@@ -922,6 +963,10 @@ class PostgreSQLIntelStore(IntelStore):
                         ELSE ?
                     END,
                     peak_hostile_count = GREATEST(peak_hostile_count, ?),
+                    personnel_json = (
+                        COALESCE(NULLIF(personnel_json, ''), '{}')::jsonb
+                        || ?::jsonb
+                    )::text,
                     cleared_at = ?,
                     active = 0
                 WHERE system_key = ? AND active = 1
@@ -930,6 +975,7 @@ class PostgreSQLIntelStore(IntelStore):
                     change["last_seen_at"],
                     change["last_seen_at"],
                     max(0, int(change.get("hostile_count") or 0)),
+                    self._hostile_personnel_json(change.get("personnel")),
                     change["cleared_at"],
                     change["system_key"],
                 ),
@@ -941,9 +987,9 @@ class PostgreSQLIntelStore(IntelStore):
                 INSERT INTO hostile_waves (
                     wave_id, system_key, system_name, system_id,
                     started_at, last_seen_at, cleared_at, active,
-                    peak_hostile_count
+                    peak_hostile_count, personnel_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
                 (
                     uuid4().hex,
@@ -954,6 +1000,7 @@ class PostgreSQLIntelStore(IntelStore):
                     change["last_seen_at"],
                     change["cleared_at"],
                     max(0, int(change.get("hostile_count") or 0)),
+                    self._hostile_personnel_json(change.get("personnel")),
                 ),
             )
 
@@ -963,7 +1010,7 @@ class PostgreSQLIntelStore(IntelStore):
             rows = connection.execute(
                 """
                 SELECT system_key, system_name, system_id, started_at,
-                       last_seen_at, peak_hostile_count
+                       last_seen_at, peak_hostile_count, personnel_json
                 FROM hostile_waves
                 WHERE active = 1
                 """
@@ -978,6 +1025,9 @@ class PostgreSQLIntelStore(IntelStore):
                     "hostile_count": max(
                         0,
                         self._strict_int(row["peak_hostile_count"]),
+                    ),
+                    "personnel": self._decode_hostile_personnel(
+                        row.get("personnel_json") if hasattr(row, "get") else None
                     ),
                 }
                 for row in rows
@@ -998,6 +1048,9 @@ class PostgreSQLIntelStore(IntelStore):
             peak_hostile_count = self._strict_int(row["peak_hostile_count"])
         except (KeyError, IndexError):
             peak_hostile_count = 0
+        personnel = self._decode_hostile_personnel(
+            row.get("personnel_json") if hasattr(row, "get") else None
+        )
         return {
             "id": str(row["wave_id"]),
             "system_name": str(row["system_name"]),
@@ -1007,7 +1060,53 @@ class PostgreSQLIntelStore(IntelStore):
             "cleared_at": str(row["cleared_at"] or ""),
             "active": bool(self._strict_int(row["active"])),
             "peak_hostile_count": max(0, peak_hostile_count),
+            "personnel": personnel,
         }
+
+    def _hostile_personnel_json(self, personnel: Any) -> str:
+        entries = personnel if isinstance(personnel, list) else []
+        keyed = {
+            f"character:{item['character_id']}": item
+            for item in entries
+            if isinstance(item, dict) and self._optional_positive_int(item.get("character_id")) is not None
+        }
+        return json.dumps(keyed, ensure_ascii=False)
+
+    def _optional_positive_int(self, value: Any) -> int | None:
+        parsed = self._optional_int(value)
+        return parsed if parsed is not None and parsed > 0 else None
+
+    def _decode_hostile_personnel(self, value: Any) -> list[dict[str, Any]]:
+        try:
+            parsed = (
+                json.loads(str(value or "{}"))
+                if not isinstance(value, (dict, list))
+                else value
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        values = (
+            parsed.values()
+            if isinstance(parsed, dict)
+            else parsed
+            if isinstance(parsed, list)
+            else []
+        )
+        result: dict[int, dict[str, Any]] = {}
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            character_id = self._optional_positive_int(item.get("character_id"))
+            name = str(item.get("name") or "").strip()
+            if character_id is None or not name:
+                continue
+            result[character_id] = {
+                "name": name,
+                "character_id": character_id,
+                "identity_status": str(item.get("identity_status") or "resolved"),
+                "first_seen_at": str(item.get("first_seen_at") or ""),
+            }
+        return sorted(result.values(), key=lambda item: str(item["name"]).casefold())
 
     def _earlier_iso(self, left: str, right: str) -> str:
         if not left:
@@ -1641,7 +1740,8 @@ class PostgreSQLIntelStore(IntelStore):
                     last_seen_at TEXT NOT NULL,
                     cleared_at TEXT NOT NULL DEFAULT '',
                     active INTEGER NOT NULL DEFAULT 1,
-                    peak_hostile_count INTEGER NOT NULL DEFAULT 0
+                    peak_hostile_count INTEGER NOT NULL DEFAULT 0,
+                    personnel_json TEXT NOT NULL DEFAULT '{}'
                 )
                 """
             )
@@ -1650,6 +1750,12 @@ class PostgreSQLIntelStore(IntelStore):
                 "hostile_waves",
                 "peak_hostile_count",
                 "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                "hostile_waves",
+                "personnel_json",
+                "TEXT NOT NULL DEFAULT '{}'",
             )
             connection.execute(
                 """
