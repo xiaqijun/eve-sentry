@@ -1,8 +1,9 @@
 # Phase 1 migration design
 
 This repository is the standalone deployment unit for the public ESI Gateway.
-It exposes only `/health`, the two `/v1/universe` batch routes, and public
-character, corporation, alliance, and system profile routes.
+It exposes only `/health`, the two `/v1/universe` batch routes, the
+`/v1/characters/affiliation` batch route, and public character, corporation,
+alliance, and system profile routes.
 
 The gateway accepts a bearer service token and optional source-address allow-list,
 limits request bodies to 64 KiB and batches to 1,000 items, caches successful
@@ -17,8 +18,11 @@ serves it as `cache: "stale"` during an ESI outage. Health output exposes negati
 cache hits/entries and stale responses.
 
 The optional large-scale ID cache adds PostgreSQL as the durable store and Redis
-as the hot store. `/v1/universe/names` and `/v1/universe/ids` responses are split
-into per-ID/per-normalized-name records before persistence. A daemon refresher
+as the hot store. `/v1/universe/names`, `/v1/universe/ids`, and
+`/v1/characters/affiliation` responses are split into per-ID/per-normalized-name
+records before persistence. Affiliation records use a one-hour TTL to match the
+ESI route's documented cache age; the other endpoints retain their configured
+TTLs. A daemon refresher
 runs every 5–10 seconds, caps each batch at 1,000 IDs, uses Redis refresh locks,
 retries failures with exponential backoff, and retains stale values until the
 stale grace period ends. Health metrics expose cache-layer hits, refresh batches,

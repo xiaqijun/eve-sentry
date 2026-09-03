@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--redis-url", default=os.environ.get("EVE_SENTRY_ESI_GATEWAY_REDIS_URL", ""))
     parser.add_argument("--id-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_ID_CACHE_TTL", str(30 * SECONDS_PER_DAY))))
     parser.add_argument("--character-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_CHARACTER_CACHE_TTL", str(2 * SECONDS_PER_DAY))))
+    parser.add_argument("--affiliation-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_AFFILIATION_CACHE_TTL", "3600")))
     parser.add_argument("--corporation-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_CORPORATION_CACHE_TTL", str(7 * SECONDS_PER_DAY))))
     parser.add_argument("--alliance-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_ALLIANCE_CACHE_TTL", str(7 * SECONDS_PER_DAY))))
     parser.add_argument("--system-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_SYSTEM_CACHE_TTL", str(30 * SECONDS_PER_DAY))))
@@ -66,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
                 "resolve_names": args.id_cache_ttl,
                 "resolve_ids": args.id_cache_ttl,
                 "get_character": args.character_cache_ttl,
+                "get_character_affiliations": args.affiliation_cache_ttl,
                 "get_corporation": args.corporation_cache_ttl,
                 "get_alliance": args.alliance_cache_ttl,
                 "get_system": args.system_cache_ttl,

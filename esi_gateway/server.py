@@ -193,7 +193,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         route = self.path.split("?", 1)[0].rstrip("/")
-        if route not in {"/v1/universe/ids", "/v1/universe/names"}:
+        if route not in {
+            "/v1/universe/ids",
+            "/v1/universe/names",
+            "/v1/characters/affiliation",
+        }:
             self._send_error(HTTPStatus.NOT_FOUND, "route_not_found")
             return
         try:
@@ -226,7 +230,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
                     key = f"POST:{endpoint}:" + hashlib.sha256(json.dumps(canonical).encode()).hexdigest()
                     data, cache = self.server.state.fetch(key, loader, endpoint=endpoint)
-            else:
+            elif route.endswith("/names"):
                 ids = [int(item) for item in payload]
                 if any(item <= 0 for item in ids):
                     raise ValueError
@@ -245,6 +249,30 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 else:
                     def loader() -> Any:
                         return self.server.state.client.resolve_names(ids)
+
+                    key = f"POST:{endpoint}:" + hashlib.sha256(json.dumps(canonical).encode()).hexdigest()
+                    data, cache = self.server.state.fetch(key, loader, endpoint=endpoint)
+            else:
+                ids = [int(item) for item in payload]
+                if any(item <= 0 for item in ids):
+                    raise ValueError
+                canonical = sorted(set(ids))
+                endpoint = "get_character_affiliations"
+                if self.server.state.id_cache is not None:
+                    values, statuses = self.server.state.id_cache.fetch_batch(
+                        endpoint,
+                        canonical,
+                        lambda missing_ids: self.server.state.client.get_character_affiliations(
+                            [int(item) for item in missing_ids]
+                        ),
+                        _split_affiliations_payload,
+                    )
+                    data = [values[str(item)] for item in ids if str(item) in values]
+                    cache = _batch_cache_status(statuses)
+                    self.server.state.metrics.record_request(endpoint, cached=cache == "hit")
+                else:
+                    def loader() -> Any:
+                        return self.server.state.client.get_character_affiliations(ids)
 
                     key = f"POST:{endpoint}:" + hashlib.sha256(json.dumps(canonical).encode()).hexdigest()
                     data, cache = self.server.state.fetch(key, loader, endpoint=endpoint)
@@ -301,6 +329,16 @@ def _split_names_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, list):
         return {}
     return {str(item["id"]): item for item in payload if isinstance(item, dict) and item.get("id") is not None}
+
+
+def _split_affiliations_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, list):
+        return {}
+    return {
+        str(item["character_id"]): item
+        for item in payload
+        if isinstance(item, dict) and item.get("character_id") is not None
+    }
 
 
 def _assemble_ids_payload(requested: Sequence[str], values: dict[str, Any]) -> dict[str, list[Any]]:

@@ -38,6 +38,18 @@ def test_public_client_uses_public_paths_and_maps_transport_errors():
     assert client.get_system(30000142) == {"name": "Jita"}
     assert requests == [("https://esi.evetech.net/latest/universe/systems/30000142/", "GET", 10.0)]
 
+
+def test_public_client_uses_bulk_affiliation_path():
+    requests = []
+
+    def opener(request, timeout):
+        requests.append((request.full_url, request.method, json.loads(request.data.decode())))
+        return FakeResponse([{"character_id": 123, "corporation_id": 456}])
+
+    client = EsiClient(opener=opener)
+    assert client.get_character_affiliations([123]) == [{"character_id": 123, "corporation_id": 456}]
+    assert requests == [("https://esi.evetech.net/latest/characters/affiliation/", "POST", [123])]
+
     def offline(*_args, **_kwargs):
         raise OSError("offline")
 
@@ -123,6 +135,38 @@ def test_gateway_batch_cache_key_is_order_insensitive():
     finally:
         server.shutdown()
         server.server_close()
+        thread.join(timeout=2)
+
+
+def test_gateway_affiliation_route_uses_per_id_cache():
+    token = "t" * 32
+    coordinator = IdCacheCoordinator(
+        MemoryStore(),
+        MemoryStore(),
+        ttl_by_endpoint={"get_character_affiliations": 3600},
+        refresh_interval_seconds=10,
+    )
+    state = GatewayState(token, {"127.0.0.1"}, 60, 100, id_cache=coordinator)
+    calls = []
+    state.client.get_character_affiliations = lambda ids: calls.append(list(ids)) or [
+        {"character_id": item, "corporation_id": item + 100} for item in ids
+    ]
+    server = GatewayServer(("127.0.0.1", 0), state)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/v1/characters/affiliation"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    try:
+        for ids in ([123, 456], [456, 123]):
+            request = Request(base, data=json.dumps(ids).encode(), method="POST", headers=headers)
+            with urlopen(request) as response:
+                payload = json.loads(response.read())
+            assert [item["character_id"] for item in payload["data"]] == ids
+        assert calls == [[123, 456]]
+    finally:
+        server.shutdown()
+        server.server_close()
+        state.close()
         thread.join(timeout=2)
 
 
