@@ -1036,6 +1036,8 @@ async def test_subscribe_pushes_latest_cached_monitoring_snapshot() -> None:
             "group-1",
             "在线监控节点｜1\n🟢 监控节点 1｜Jita",
         )
+        await relay.subscribe("group-1")
+        qq.send_proactive_text.assert_awaited_once()
 
     await redis.aclose()
 

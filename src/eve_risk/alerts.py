@@ -25,6 +25,7 @@ SYSTEM_ALERT_STATE_KEY = "qq:eve-sentry:system-alert-state"
 SYSTEM_ALERT_STATE_READY_KEY = "qq:eve-sentry:system-alert-state-ready"
 MONITORING_NODE_SNAPSHOT_STATE_KEY = "qq:eve-sentry:monitoring-node-snapshot-state"
 MONITORING_NODE_SNAPSHOT_DATA_KEY = "qq:eve-sentry:monitoring-node-snapshot-data"
+MONITORING_NODE_SUBSCRIPTION_PREFIX = "monitoring-node-subscription"
 ALERT_DEDUPE_SECONDS = 7 * 24 * 60 * 60
 RECONNECT_BACKOFF_SECONDS = (0.2, 1.0, 3.0, 5.0)
 
@@ -306,6 +307,15 @@ class EveSentryAlertRelay:
         nodes = snapshot.get("nodes")
         if not isinstance(nodes, list):
             return True
+        version = str(snapshot.get("version") or "").strip()
+        if not version:
+            return True
+        delivered_key = _delivered_key(
+            f"{MONITORING_NODE_SUBSCRIPTION_PREFIX}:{version}",
+            group_openid,
+        )
+        if await self.redis.exists(delivered_key):
+            return True
         message = format_monitoring_nodes_message(
             [item for item in nodes if isinstance(item, dict)]
         )
@@ -314,6 +324,7 @@ class EveSentryAlertRelay:
         except Exception:
             logger.exception("QQ cached monitoring node snapshot delivery failed")
             return False
+        await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
         logger.info(
             "EVE Sentry cached monitoring node snapshot delivered group=%s nodes=%d",
             group_openid,
