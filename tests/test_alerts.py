@@ -271,6 +271,58 @@ def test_detector_personnel_uses_server_active_roster_and_deduplicates() -> None
     assert {item["name"] for item in state["personnel"]} == {"Alpha", "Bravo"}
 
 
+@pytest.mark.asyncio
+async def test_relay_prefers_authoritative_hostile_personnel_roster() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {"generated_at": "t0", "active_intel": [], "alerts": [], "hostile_personnel": []}
+        )
+        await relay.process_bootstrap(
+            {
+                "generated_at": "t1",
+                "active_intel": [
+                    {
+                        "id": "ocr:stale",
+                        "active": True,
+                        "source": "eve-sentry-detector",
+                        "system_name": "S-KSWL",
+                        "name": "Stale OCR",
+                        "character_id": 1,
+                        "metadata": {
+                            "client_id": "client-1",
+                            "identity_status": "resolved",
+                        },
+                    }
+                ],
+                "alerts": [],
+                "hostile_personnel": [
+                    {
+                        "system_name": "S-KSWL",
+                        "hostile_count": 2,
+                        "personnel": [
+                            {"name": "Alice", "character_id": 101},
+                            {"name": "Bob", "character_id": 102},
+                        ],
+                    }
+                ],
+            }
+        )
+
+        message = qq.send_proactive_markdown.await_args.args[1]
+        assert "Alice" in message
+        assert "Bob" in message
+        assert "Stale OCR" not in message
+
+    await redis.aclose()
+
+
 def test_alert_subscription_commands_and_message_format() -> None:
     assert alert_subscription_action("开启预警") == "enable"
     assert alert_subscription_action("<@!bot> 关闭预警") == "disable"

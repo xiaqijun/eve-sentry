@@ -841,6 +841,56 @@ class EveSentryAlertRelay:
             if self._allows_transition(item)
         }
         current = _active_system_state(active_items.values(), generated_at)
+        authoritative_rosters = payload.get("hostile_personnel")
+        if isinstance(authoritative_rosters, list):
+            rosters_by_system = {
+                str(roster.get("system_name") or "").strip().casefold(): roster
+                for roster in authoritative_rosters
+                if isinstance(roster, dict)
+                and str(roster.get("system_name") or "").strip()
+            }
+            for system_key, state in current.items():
+                roster = rosters_by_system.get(system_key)
+                if roster is None:
+                    state["personnel"] = []
+                    state["personnel_fingerprint"] = ""
+                    continue
+                personnel = [
+                    dict(item)
+                    for item in roster.get("personnel", [])
+                    if isinstance(item, dict) and str(item.get("name") or "").strip()
+                ]
+                for item in personnel:
+                    item.setdefault("system_name", state["system_name"])
+                state["personnel"] = personnel
+                try:
+                    state["hostile_count"] = max(
+                        0, int(roster.get("hostile_count") or 0)
+                    )
+                except (TypeError, ValueError):
+                    pass
+                state["personnel_fingerprint"] = _personnel_fingerprint(personnel)
+            for system_key, roster in rosters_by_system.items():
+                if system_key in current:
+                    continue
+                personnel = [
+                    dict(item)
+                    for item in roster.get("personnel", [])
+                    if isinstance(item, dict) and str(item.get("name") or "").strip()
+                ]
+                for item in personnel:
+                    item.setdefault("system_name", roster["system_name"])
+                try:
+                    hostile_count = max(0, int(roster.get("hostile_count") or 0))
+                except (TypeError, ValueError):
+                    hostile_count = len(personnel)
+                current[system_key] = {
+                    "system_name": roster["system_name"],
+                    "hostile_count": hostile_count,
+                    "episode_id": generated_at,
+                    "personnel": personnel,
+                    "personnel_fingerprint": _personnel_fingerprint(personnel),
+                }
         previous, initialized = await self._load_system_alert_state()
 
         active_personnel_systems = {
