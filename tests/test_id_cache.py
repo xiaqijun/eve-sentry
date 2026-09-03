@@ -27,6 +27,31 @@ def test_batch_cache_is_split_per_id_and_reuses_hot_records() -> None:
         coordinator.close()
 
 
+def test_endpoint_ttls_follow_the_data_lifetime_policy() -> None:
+    durable = MemoryStore()
+    coordinator = IdCacheCoordinator(
+        durable,
+        ttl_seconds=60,
+        ttl_by_endpoint={"resolve_names": 30 * 86400, "get_character": 2 * 86400},
+        refresh_interval_seconds=10,
+    )
+
+    try:
+        def loader(keys: list[str]) -> dict[str, str]:
+            return {key: f"value-{key}" for key in keys}
+
+        for endpoint in ("resolve_names", "get_character"):
+            coordinator.fetch_batch(endpoint, ["42"], loader, lambda payload: dict(payload))
+
+        names = durable.get_many([("resolve_names", "42")])[('resolve_names', '42')]
+        character = durable.get_many([("get_character", "42")])[('get_character', '42')]
+        assert 30 * 86400 - 1 <= names.expires_at - names.fetched_at <= 30 * 86400 + 1
+        assert 2 * 86400 - 1 <= character.expires_at - character.fetched_at <= 2 * 86400 + 1
+        assert coordinator.health()["ttl_by_endpoint"]["resolve_names"] == 30 * 86400
+    finally:
+        coordinator.close()
+
+
 def test_stale_value_is_served_and_queued_for_background_refresh() -> None:
     durable = MemoryStore()
     coordinator = IdCacheCoordinator(

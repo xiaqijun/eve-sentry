@@ -7,7 +7,7 @@ import secrets
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -339,6 +339,7 @@ class IdCacheCoordinator:
         hot: HotStore | None = None,
         *,
         ttl_seconds: float = 86400.0,
+        ttl_by_endpoint: Mapping[str, float] | None = None,
         stale_grace_seconds: float = 300.0,
         refresh_interval_seconds: float = 5.0,
         refresh_batch_size: int = 1000,
@@ -350,6 +351,10 @@ class IdCacheCoordinator:
         self.durable = durable
         self.hot = hot
         self.ttl_seconds = max(1.0, float(ttl_seconds))
+        self.ttl_by_endpoint = {
+            str(endpoint): max(1.0, float(ttl))
+            for endpoint, ttl in (ttl_by_endpoint or {}).items()
+        }
         self.stale_grace_seconds = max(0.0, float(stale_grace_seconds))
         self.refresh_interval_seconds = min(10.0, max(5.0, float(refresh_interval_seconds)))
         self.refresh_batch_size = min(1000, max(1, int(refresh_batch_size)))
@@ -366,6 +371,9 @@ class IdCacheCoordinator:
     @staticmethod
     def key(endpoint: str, entity_key: str | int) -> CacheKey:
         return str(endpoint), str(entity_key)
+
+    def _ttl_for(self, endpoint: str) -> float:
+        return self.ttl_by_endpoint.get(endpoint, self.ttl_seconds)
 
     def fetch_single(
         self,
@@ -462,8 +470,8 @@ class IdCacheCoordinator:
                         entity_key=value,
                         payload=loaded[value],
                         fetched_at=fetched_at,
-                        expires_at=fetched_at + self.ttl_seconds,
-                        stale_until=fetched_at + self.ttl_seconds + self.stale_grace_seconds,
+                        expires_at=fetched_at + self._ttl_for(endpoint),
+                        stale_until=fetched_at + self._ttl_for(endpoint) + self.stale_grace_seconds,
                     )
                     for value in to_load
                     if value in loaded
@@ -513,6 +521,7 @@ class IdCacheCoordinator:
             "refresh_interval_seconds": self.refresh_interval_seconds,
             "refresh_batch_size": self.refresh_batch_size,
             "ttl_seconds": self.ttl_seconds,
+            "ttl_by_endpoint": dict(self.ttl_by_endpoint),
             "stale_grace_seconds": self.stale_grace_seconds,
         }
 
@@ -581,8 +590,8 @@ class IdCacheCoordinator:
                     entity_key=key,
                     payload=payloads[key],
                     fetched_at=fetched_at,
-                    expires_at=fetched_at + self.ttl_seconds,
-                    stale_until=fetched_at + self.ttl_seconds + self.stale_grace_seconds,
+                    expires_at=fetched_at + self._ttl_for(task.endpoint),
+                    stale_until=fetched_at + self._ttl_for(task.endpoint) + self.stale_grace_seconds,
                 )
                 for key in keys
                 if key in payloads

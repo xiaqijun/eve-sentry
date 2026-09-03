@@ -34,6 +34,12 @@ Set `EVE_SENTRY_ESI_GATEWAY_POSTGRES_DSN` and
 `EVE_SENTRY_ESI_GATEWAY_REDIS_URL` in the service environment to enable the
 two-tier ID cache. The refresher is intentionally bounded for a 4 vCPU/4 GiB
 host: it runs every 5–10 seconds and processes at most 1,000 IDs per batch.
+The default cache policy follows the low-speed refresh design: ID/name mappings
+(`resolve_names` and `resolve_ids`) use a 30-day TTL, character profiles use
+2 days, corporation/alliance profiles use 7 days, and universe systems use
+30 days. Override these with the `*_CACHE_TTL` environment variables in the
+deployment example. Expired records remain available for the configured stale
+grace period (5 minutes by default).
 Retries use exponential backoff up to `EVE_SENTRY_ESI_GATEWAY_CACHE_RETRY_MAX`.
 The `/health` response keeps its existing fields and adds an `id_cache` object
 with hot-hit, refresh, retry, and backend-error counters.

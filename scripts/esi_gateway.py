@@ -15,6 +15,9 @@ from esi_gateway.server import GatewayServer, GatewayState
 from esi_gateway.id_cache import IdCacheCoordinator, MemoryStore, PostgresStore, RedisHotStore
 
 
+SECONDS_PER_DAY = 24 * 60 * 60
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the private ESI Gateway")
     parser.add_argument("--host", default=os.environ.get("EVE_SENTRY_ESI_GATEWAY_HOST", "127.0.0.1"))
@@ -28,6 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rate", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_RATE", "2")))
     parser.add_argument("--postgres-dsn", default=os.environ.get("EVE_SENTRY_ESI_GATEWAY_POSTGRES_DSN", ""))
     parser.add_argument("--redis-url", default=os.environ.get("EVE_SENTRY_ESI_GATEWAY_REDIS_URL", ""))
+    parser.add_argument("--id-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_ID_CACHE_TTL", str(30 * SECONDS_PER_DAY))))
+    parser.add_argument("--character-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_CHARACTER_CACHE_TTL", str(2 * SECONDS_PER_DAY))))
+    parser.add_argument("--corporation-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_CORPORATION_CACHE_TTL", str(7 * SECONDS_PER_DAY))))
+    parser.add_argument("--alliance-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_ALLIANCE_CACHE_TTL", str(7 * SECONDS_PER_DAY))))
+    parser.add_argument("--system-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_SYSTEM_CACHE_TTL", str(30 * SECONDS_PER_DAY))))
     parser.add_argument("--refresh-interval", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_REFRESH_INTERVAL", "5")))
     parser.add_argument("--refresh-batch-size", type=int, default=int(os.environ.get("EVE_SENTRY_ESI_GATEWAY_REFRESH_BATCH_SIZE", "1000")))
     parser.add_argument("--cache-retry-base", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_CACHE_RETRY_BASE", "5")))
@@ -53,7 +61,15 @@ def main(argv: list[str] | None = None) -> int:
         id_cache = IdCacheCoordinator(
             durable,
             hot,
-            ttl_seconds=args.cache_ttl,
+            ttl_seconds=args.id_cache_ttl,
+            ttl_by_endpoint={
+                "resolve_names": args.id_cache_ttl,
+                "resolve_ids": args.id_cache_ttl,
+                "get_character": args.character_cache_ttl,
+                "get_corporation": args.corporation_cache_ttl,
+                "get_alliance": args.alliance_cache_ttl,
+                "get_system": args.system_cache_ttl,
+            },
             stale_grace_seconds=args.stale_grace,
             refresh_interval_seconds=args.refresh_interval,
             refresh_batch_size=args.refresh_batch_size,
