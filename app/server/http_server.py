@@ -1520,6 +1520,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             "observations": snapshot.get("observations", []),
             "alerts": snapshot.get("alerts", []),
             "active_intel": snapshot.get("active_intel", []),
+            "hostile_personnel": snapshot.get("hostile_personnel", []),
             "clients": self._store().heartbeat_snapshot(),
             "config": self._config_store().to_dict() if self._config_store() else None,
             "esi": self._esi_status_payload(),
@@ -1611,10 +1612,84 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             },
             "alerts": alerts,
             "active_intel": active_items,
+            "hostile_personnel": self._hostile_personnel_snapshot(active_items),
             "clients": clients,
             "monitoring_nodes": monitoring_nodes,
             "monitoring_nodes_version": _monitoring_nodes_version(monitoring_nodes),
         }
+
+    def _hostile_personnel_snapshot(
+        self,
+        active_items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Return the current hostile roster using the map's server-side rules."""
+        store = self._store()
+        system_intel = store._aggregate_active_by_system(active_items)
+        rosters: dict[str, dict[str, Any]] = {}
+        for item in active_items:
+            if not isinstance(item, dict) or not bool(item.get("active", True)):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name or not store._active_item_is_hostile(item):
+                continue
+            source = str(item.get("source") or "").strip().casefold()
+            metadata = item.get("metadata")
+            metadata = metadata if isinstance(metadata, dict) else {}
+            if source == "eve-sentry-detector":
+                if metadata.get("presence_only"):
+                    continue
+                if (
+                    metadata.get("identity_status") != "resolved"
+                    or self._optional_positive_int(item.get("character_id")) is None
+                ):
+                    continue
+            system_name = str(
+                item.get("system_name") or item.get("system") or "Unknown"
+            ).strip() or "Unknown"
+            system_key = system_name.casefold()
+            roster = rosters.setdefault(
+                system_key,
+                {
+                    "system_name": system_name,
+                    "system_id": item.get("system_id"),
+                    "hostile_count": 0,
+                    "personnel": {},
+                },
+            )
+            character_id = self._optional_positive_int(item.get("character_id"))
+            identity_key = (
+                f"character:{character_id}"
+                if character_id is not None
+                else f"name:{name.casefold()}"
+            )
+            personnel = {
+                "name": name,
+                "character_id": character_id,
+                "identity_status": str(metadata.get("identity_status") or "resolved"),
+                "first_seen_at": str(item.get("first_seen_at") or ""),
+            }
+            existing = roster["personnel"].get(identity_key)
+            if existing is None or (
+                not existing.get("first_seen_at")
+                and personnel["first_seen_at"]
+            ):
+                roster["personnel"][identity_key] = personnel
+
+        result: list[dict[str, Any]] = []
+        for system_key, roster in rosters.items():
+            system_data = system_intel.get(system_key) or system_intel.get(
+                roster["system_name"]
+            )
+            roster["hostile_count"] = int(
+                (system_data or {}).get("hostile_count") or 0
+            )
+            roster["personnel"] = sorted(
+                roster["personnel"].values(),
+                key=lambda item: str(item.get("name") or "").casefold(),
+            )
+            result.append(roster)
+        result.sort(key=lambda item: str(item.get("system_name") or "").casefold())
+        return result
 
     def _map_snapshot_payload(self) -> dict[str, Any]:
         return self._map_snapshot_from_snapshot(
@@ -1749,6 +1824,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             if include_alerts
             else []
         )
+        hostile_personnel = self._hostile_personnel_snapshot(active_items)
         return {
             "generated_at": utc_now_iso(),
             "systems": systems,
@@ -1761,6 +1837,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             "observations": observations,
             "alerts": alerts,
             "active_intel": active_items,
+            "hostile_personnel": hostile_personnel,
             "summary": {
                 "system_count": len(system_items),
                 "active_system_count": sum(
@@ -3167,6 +3244,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             {
                 "active_intel": payload.get("active_intel"),
                 "alerts": payload.get("alerts"),
+                "hostile_personnel": payload.get("hostile_personnel"),
                 "monitoring_targets": _monitoring_target_state(
                     payload.get("clients")
                 ),

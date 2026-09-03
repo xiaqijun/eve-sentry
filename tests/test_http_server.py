@@ -1265,6 +1265,28 @@ def test_remote_alert_count_uses_latest_detector_snapshot_total(tmp_path):
             if item["name"] == "S-KSWL"
         )
         assert remote_system["hostile_count"] == 2
+        assert remote_bootstrap["hostile_personnel"] == bootstrap["hostile_personnel"]
+        assert bootstrap["hostile_personnel"] == [
+            {
+                "system_name": "S-KSWL",
+                "system_id": None,
+                "hostile_count": 2,
+                "personnel": [
+                    {
+                        "name": "AddisonW",
+                        "character_id": 1002,
+                        "identity_status": "resolved",
+                        "first_seen_at": "2026-07-24T09:09:30+00:00",
+                    },
+                    {
+                        "name": "Shisen Hanomaa",
+                        "character_id": 1001,
+                        "identity_status": "resolved",
+                        "first_seen_at": "2026-07-24T09:09:16+00:00",
+                    },
+                ],
+            }
+        ]
         assert {
             item["data"]["hostile_count"]
             for item in events
