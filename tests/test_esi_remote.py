@@ -46,6 +46,26 @@ def test_remote_client_uses_gateway_and_records_cache_status():
     assert metrics.snapshot()["counts"]["resolve_ids:miss:remote"] == 1
 
 
+def test_remote_client_uses_bulk_affiliation_gateway_route():
+    requests = []
+
+    def opener(request, timeout):
+        requests.append(request)
+        return FakeResponse(
+            {
+                "data": [{"character_id": 123, "corporation_id": 456}],
+                "cache": "miss",
+            }
+        )
+
+    client = RemoteEsiClient("http://gateway.test", "x" * 32, opener=opener)
+    assert client.get_character_affiliations([123]) == [
+        {"character_id": 123, "corporation_id": 456}
+    ]
+    assert requests[0].full_url == "http://gateway.test/v1/characters/affiliation"
+    assert json.loads(requests[0].data.decode("utf-8")) == [123]
+
+
 def test_remote_client_falls_back_to_local_client_on_gateway_error(monkeypatch):
     def opener(request, timeout):
         raise OSError("gateway offline")

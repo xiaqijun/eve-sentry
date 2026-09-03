@@ -32,7 +32,7 @@
 
 ## 阶段 0：冻结契约与基线
 
-1. 在 `app/esi/client.py` 抽象公共 ESI 后端接口，保持现有 `resolve_ids`、`resolve_names`、`get_character`、`get_corporation`、`get_alliance`、`get_system` 方法签名。
+1. 在 `app/esi/client.py` 抽象公共 ESI 后端接口，保持现有 `resolve_ids`、`resolve_names`、`get_character`、`get_character_affiliations`、`get_corporation`、`get_alliance`、`get_system` 方法签名。
 2. 为每个请求记录结构化耗时：后端、端点、状态、缓存命中、总耗时；禁止记录 Authorization、token 和完整请求体。
 3. 增加基线测试：本地客户端请求、JSON 错误、HTTP 错误、超时、空结果和批量解析。
 4. 在 114 记录一周公共 ESI 请求的数量、P50/P95/P99、错误率和缓存命中率，作为迁移对照。
@@ -51,6 +51,7 @@
 | `POST` | `/v1/universe/ids` | 名称批量解析 |
 | `POST` | `/v1/universe/names` | ID 批量解析 |
 | `GET` | `/v1/characters/{id}` | 角色资料 |
+| `POST` | `/v1/characters/affiliation` | 批量角色当前军团、联盟和派系归属（最多 1000 个 ID） |
 | `GET` | `/v1/corporations/{id}` | 军团资料 |
 | `GET` | `/v1/alliances/{id}` | 联盟资料 |
 | `GET` | `/v1/systems/{id}` | 星系资料 |
