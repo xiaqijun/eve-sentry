@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from dto.python.eve_sentry_contracts.dto import (
+from docs.contracts.dto.python.eve_sentry_contracts.dto import (
     BootstrapPayload,
     HeartbeatResponse,
     HostileMovementEvent,
