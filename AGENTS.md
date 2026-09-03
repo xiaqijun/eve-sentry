@@ -8,8 +8,9 @@ standalone ESI Gateway, bot, and published wire-contract implementations belong
 in their own repositories.
 
 Route new work through role `00`. Any HTTP, SSE, event, cursor, authentication,
-or ESI wire change must be reviewed by role `05` against the
-[multi-repository development workflow](https://github.com/xiaqijun/eve-sentry-contracts/blob/main/docs/development-workflow.md).
+or ESI wire change must be reviewed against the server's
+[multi-repository development workflow](https://github.com/xiaqijun/eve-sentry/blob/main/docs/multi-repository-development.md)
+and API documentation in `eve-sentry/docs/`.
 Only one task may write to this repository at a time. Role `90` exclusively owns
 production deployment, health verification, and rollback.
 
