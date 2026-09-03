@@ -61,8 +61,9 @@ EVE_SENTRY_SERVER_POSTGRES_DSN=postgresql://eve_sentry:CHANGE_ME@127.0.0.1:5432/
 sudo -u postgres pg_dump -Fc eve_sentry > /var/lib/eve-sentry/eve_sentry.dump
 ```
 
-升级到包含视觉波次峰值的版本后，启动迁移会为 `hostile_waves` 自动增加
-`peak_hostile_count`。当前仍活跃的波次会在启动协调时用 active intel 回填峰值；已经关闭
+升级到包含视觉波次峰值和波次人员快照的版本后，启动迁移会为 `hostile_waves` 自动增加
+`peak_hostile_count`、`personnel_json`。当前仍活跃的波次会在启动协调时用 active intel 回填峰值
+和已解析人员；已经关闭
 的旧波次无法从现有数据反推出历史红色图标数量，只有能关联到已验证人员告警的旧波次会
 继续参与报表统计。升级不需要手工执行 SQL。
 

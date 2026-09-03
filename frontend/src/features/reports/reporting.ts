@@ -53,6 +53,10 @@ export interface HostileWaveLifecycle {
   cleared_at?: string;
   active?: boolean;
   peak_hostile_count?: number;
+  personnel?: Array<VerifiedCharacter & {
+    identity_status?: string;
+    first_seen_at?: string;
+  }>;
 }
 
 export interface SeverityReportRow {
@@ -148,6 +152,26 @@ function cleanVerifiedCharacters(alert: AlertItem): VerifiedCharacter[] {
   return characters;
 }
 
+function cleanWavePersonnel(value: HostileWaveLifecycle["personnel"]): VerifiedCharacter[] {
+  const seen = new Set<number>();
+  const personnel: VerifiedCharacter[] = [];
+  (value || []).forEach((item) => {
+    const characterId = Number(item?.character_id);
+    const name = String(item?.name || "").trim();
+    if (!Number.isInteger(characterId) || characterId <= 0 || !name || seen.has(characterId)) {
+      return;
+    }
+    seen.add(characterId);
+    const zkill = cleanZkillStats(item?.zkill);
+    personnel.push({
+      character_id: characterId,
+      name,
+      ...(zkill ? { zkill } : {}),
+    });
+  });
+  return personnel;
+}
+
 function cleanZkillStats(value: unknown): ZkillStats | undefined {
   if (typeof value !== "object" || value === null) {
     return undefined;
@@ -207,19 +231,31 @@ function buildWaves(
         return null;
       }
       seenIds.add(id);
+      const targetMap = new Map<number, TargetReportRow>();
+      cleanWavePersonnel(item.personnel).forEach((character) => {
+        targetMap.set(character.character_id, {
+          characterId: character.character_id,
+          name: character.name,
+          incidentCount: 0,
+          systems: [systemName],
+          lastSeen: String(item.last_seen_at || startedAt),
+          zkill: character.zkill,
+          dangerRatio: character.zkill?.danger_ratio ?? null,
+        });
+      });
       return {
         id,
         systemName,
         systemKey: systemName.toLocaleLowerCase(),
         peakHostileCount,
         incidentCount: 0,
-        uniqueTargets: 0,
+        uniqueTargets: targetMap.size,
         startedAt,
         lastSeen: String(item.last_seen_at || startedAt),
         endedAt: endedAt || undefined,
         active: Boolean(item.active) && !endedAt,
-        targetIds: new Set<number>(),
-        targetMap: new Map<number, TargetReportRow>(),
+        targetIds: new Set<number>(targetMap.keys()),
+        targetMap,
         startedMs,
         endedMs,
       };
