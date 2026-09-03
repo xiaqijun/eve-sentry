@@ -118,6 +118,48 @@ def test_timestamp_only_log_is_shared_by_multiple_windows(tmp_path) -> None:
     }
 
 
+def test_reused_timestamp_only_log_matches_current_file_activity(tmp_path) -> None:
+    logs = tmp_path / "Gamelogs"
+    logs.mkdir()
+    stale = logs / "20260826_120000_1001.txt"
+    reused = logs / "20260826_120001.txt"
+    stale.write_text("normal\n", encoding="utf-8")
+    reused.write_text("与服务器的连接已被关闭\n", encoding="utf-8")
+    now = time.time()
+    os.utime(stale, (now - 300, now - 300))
+    os.utime(reused, (now, now))
+
+    watcher = GameConnectionLogWatcher(logs)
+    target = {"key": "window-a", "process_started_at": now - 1}
+
+    assert watcher._match_path(target, [stale, reused]) == reused
+
+
+def test_reused_timestamp_only_log_rebinds_and_reports_disconnect(tmp_path) -> None:
+    logs = tmp_path / "Gamelogs"
+    logs.mkdir()
+    previous = logs / "20260826_120000.txt"
+    current = logs / "20260826_120001.txt"
+    previous.write_text("normal\n", encoding="utf-8")
+    current.write_text("normal\n", encoding="utf-8")
+    now = time.time()
+    os.utime(previous, (now - 300, now - 300))
+    os.utime(current, (now - 300, now - 300))
+
+    watcher = GameConnectionLogWatcher(logs)
+    target = {"key": "window-a", "process_started_at": now - 300}
+    assert watcher.poll([target]) == []
+
+    with current.open("a", encoding="utf-8") as stream:
+        stream.write("与服务器的连接已被关闭\n")
+    os.utime(current, (now, now))
+
+    events = watcher.poll([{**target, "process_started_at": now - 1}])
+    assert len(events) == 1
+    assert events[0].state == "offline"
+    assert events[0].log_id == current.stem
+
+
 def test_log_id_helpers() -> None:
     assert game_log_id("20260826_120000_1001.txt") == "20260826_120000_1001"
     assert trailing_game_log_id("20260826_120000_1001.txt") == "1001"

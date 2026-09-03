@@ -190,8 +190,8 @@ class GameConnectionLogWatcher:
             started = 0.0
         if not started:
             return False
-        current_stamp = game_log_timestamp(current)
-        candidate_stamp = game_log_timestamp(candidate)
+        current_stamp = _game_log_match_timestamp(current)
+        candidate_stamp = _game_log_match_timestamp(candidate)
         if current_stamp is None or candidate_stamp is None:
             return False
         return abs(candidate_stamp - started) < abs(
@@ -247,7 +247,7 @@ class GameConnectionLogWatcher:
             if started:
                 scored = []
                 for path in paths:
-                    stamp = game_log_timestamp(path)
+                    stamp = _game_log_match_timestamp(path)
                     if stamp is not None:
                         scored.append((abs(stamp - started), path))
                 if scored:
@@ -329,6 +329,22 @@ def game_log_timestamp(path: str | Path) -> float | None:
         ).timestamp()
     except ValueError:
         return None
+
+
+def _game_log_match_timestamp(path: str | Path) -> float | None:
+    """Return the best timestamp for binding a log to a running EVE window.
+
+    EVE may reuse timestamp-only filenames after reconnecting. Their filename
+    timestamp describes the original session, while the file mtime tracks the
+    current activity. Logs with a trailing client/character ID remain safely
+    attributable by filename and keep using that stable timestamp.
+    """
+    if trailing_game_log_id(path):
+        return game_log_timestamp(path)
+    try:
+        return Path(path).stat().st_mtime
+    except OSError:
+        return game_log_timestamp(path)
 
 
 def connection_state_from_line(line: str) -> str | None:
