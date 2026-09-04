@@ -2092,7 +2092,13 @@ class AlertEventWorker(QThread):
     def run(self) -> None:
         api = self.api_factory(
             self.server,
-            timeout=min(3.0, self.timeout),
+            # Heartbeats share this client with the SSE stream.  A three-second
+            # request timeout is too aggressive when the server is briefly
+            # busy (for example, while persisting OCR data), which makes a
+            # healthy alert connection report a false timeout.  Keep the
+            # request bounded so shutdown remains responsive, but allow the
+            # same short load spikes tolerated by the detector client.
+            timeout=min(15.0, max(5.0, self.timeout)),
             api_key=self.api_key,
         )
         backoff = 1.0

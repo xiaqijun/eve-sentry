@@ -274,6 +274,31 @@ def test_alert_worker_connects_sse_before_posting_heartbeat(tmp_path):
     assert bootstraps == [{"active_intel": []}]
 
 
+def test_alert_worker_uses_bounded_request_timeout_for_heartbeats(tmp_path):
+    created = []
+    worker = None
+
+    class FakeApi:
+        def __init__(self, server, timeout, api_key):
+            created.append((server, timeout, api_key))
+
+        def iter_events(self, **_kwargs):
+            worker._stop_requested = True
+            yield
+
+    worker = AlertEventWorker(
+        "http://intel.example",
+        AlertClientState(tmp_path / "alerts.json"),
+        timeout=30.0,
+        api_key="eve_valid",
+        api_factory=FakeApi,
+    )
+
+    worker.run()
+
+    assert created == [("http://intel.example", 15.0, "eve_valid")]
+
+
 def test_alert_worker_keeps_online_status_during_normal_stream_rollover(tmp_path):
     worker = None
     stream_count = 0
