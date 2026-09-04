@@ -9,6 +9,7 @@
 
 - [机器人 CI/CD](ci-cd.md)：`main` 推送、自动部署、生产环境变量和回滚。
 - [SSE 重连约束](sse-reconnect-guardrails.md)：首字节、心跳、游标和节点快照去重规则。
+- [指令新增约束](command-guidelines.md)：命名、标准化解析、参数校验、面板同步和测试要求。
 
 ## 查询命令
 
@@ -17,6 +18,9 @@
 @机器人 查询预警 人员 Alice
 @机器人 查询预警 军团 Blue Corp
 @机器人 查询预警 联盟 Example Alliance
+@机器人 查询人员 Alice
+@机器人 查询军团 Blue Corp
+@机器人 查询联盟 Example Alliance
 ```
 
 查询由服务端创建一次性 OCR 任务，在线客户端执行并上传单次快照；机器人不直接读取
