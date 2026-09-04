@@ -21,6 +21,7 @@ from eve_risk.alerts import (
     SentryAuthenticationError,
     _active_intel_map,
     _active_system_state,
+    _iter_lines_with_idle_timeout,
     alert_subscription_action,
     format_active_intel_message,
     format_alert_message,
@@ -173,6 +174,17 @@ async def test_iter_sse_events_ignores_comments_and_parses_alerts() -> None:
     events = [event async for event in iter_sse_events(_sse_lines())]
 
     assert events == [("alert", "evt-1", '{"id":"evt-1"}')]
+
+
+@pytest.mark.asyncio
+async def test_sse_line_reader_times_out_when_server_stops_sending() -> None:
+    async def stalled_lines():
+        await asyncio.sleep(0.2)
+        yield "data: never-received"
+
+    reader = _iter_lines_with_idle_timeout(stalled_lines(), 0.1)
+    with pytest.raises(asyncio.TimeoutError):
+        await anext(reader)
 
 
 def test_detector_count_uses_server_snapshot_when_active_roster_is_partial() -> None:

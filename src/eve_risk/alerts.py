@@ -27,6 +27,7 @@ MONITORING_NODE_SNAPSHOT_STATE_KEY = "qq:eve-sentry:monitoring-node-snapshot-sta
 MONITORING_NODE_SNAPSHOT_DATA_KEY = "qq:eve-sentry:monitoring-node-snapshot-data"
 MONITORING_NODE_SUBSCRIPTION_PREFIX = "monitoring-node-subscription"
 ALERT_DEDUPE_SECONDS = 7 * 24 * 60 * 60
+SSE_IDLE_TIMEOUT_SECONDS = 45.0
 RECONNECT_BACKOFF_SECONDS = (0.2, 1.0, 3.0, 5.0)
 
 
@@ -237,6 +238,21 @@ async def iter_sse_events(
             data_lines.append(value)
     if data_lines:
         yield event_name, event_id, "\n".join(data_lines)
+
+
+async def _iter_lines_with_idle_timeout(
+    lines: AsyncIterable[str],
+    timeout_seconds: float,
+) -> AsyncIterator[str]:
+    """Abort an SSE stream that stops producing bytes between lines."""
+    iterator = lines.__aiter__()
+    timeout = max(0.1, float(timeout_seconds))
+    while True:
+        try:
+            line = await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
+        except StopAsyncIteration:
+            return
+        yield line
 
 
 class EveSentryAlertRelay:
@@ -1052,7 +1068,12 @@ class EveSentryAlertRelay:
             params["since"] = cursor or datetime.now(UTC).isoformat()
         if self.min_level:
             params["min_level"] = self.min_level
-        timeout = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+        timeout = httpx.Timeout(
+            connect=10.0,
+            read=SSE_IDLE_TIMEOUT_SECONDS,
+            write=10.0,
+            pool=10.0,
+        )
         headers = {"Accept": "text/event-stream"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -1071,7 +1092,10 @@ class EveSentryAlertRelay:
                 )
             response.raise_for_status()
             async for event_name, event_id, data in iter_sse_events(
-                response.aiter_lines()
+                _iter_lines_with_idle_timeout(
+                    response.aiter_lines(),
+                    SSE_IDLE_TIMEOUT_SECONDS,
+                )
             ):
                 payload = json.loads(data)
                 processed = True
