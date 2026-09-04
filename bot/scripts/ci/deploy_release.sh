@@ -1,0 +1,564 @@
+#!/usr/bin/env bash
+# Deploy one immutable EVE Risk Analysis release without containers.
+
+set -euo pipefail
+
+archive=${1:?deployment archive is required}
+release_sha=${2:?release SHA is required}
+deploy_root=${3:?deployment root is required}
+credentials_file=${4:?deployment credentials file is required}
+service_prefix=${SERVICE_PREFIX:-eve-risk-analysis}
+data_dir="$deploy_root/data"
+unit_dir="$deploy_root/systemd"
+runtime_env="$deploy_root/.runtime.env"
+
+docker_env_value() {
+    local container_id=$1
+    local variable_name=$2
+    docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" \
+        | sed -n "s/^${variable_name}=//p" | tail -n 1
+}
+
+docker_container_ip() {
+    local container_id=$1
+    docker inspect --format '{{range .NetworkSettings.Networks}}{{println .IPAddress}}{{end}}' \
+        "$container_id" | sed -n '/./{p;q;}'
+}
+
+find_postgres_container() {
+    local container_id
+    local fallback_container=""
+    local image_name
+    local service_name
+    while IFS= read -r container_id; do
+        if [[ "$(docker_env_value "$container_id" POSTGRES_DB)" == "eve_risk" ]]; then
+            printf '%s\n' "$container_id"
+            return 0
+        fi
+        service_name=$(docker inspect --format \
+            '{{index .Config.Labels "com.docker.compose.service"}}' "$container_id")
+        image_name=$(docker inspect --format '{{.Config.Image}}' "$container_id")
+        if [[ -z "$fallback_container" \
+            && ( "$service_name" == "postgres" || "$image_name" == *postgres* ) ]]; then
+            fallback_container=$container_id
+        fi
+    done < <(docker ps --quiet)
+    if [[ -n "$fallback_container" ]]; then
+        printf '%s\n' "$fallback_container"
+        return 0
+    fi
+    return 1
+}
+
+find_redis_container() {
+    local compose_project=$1
+    local candidate_id
+    local container_id=""
+    if [[ -n "$compose_project" && "$compose_project" != "<no value>" ]]; then
+        container_id=$(docker ps --quiet \
+            --filter "label=com.docker.compose.project=$compose_project" \
+            --filter 'label=com.docker.compose.service=redis' | head -n 1)
+    fi
+    if [[ -z "$container_id" ]]; then
+        container_id=$(docker ps --quiet \
+            --filter 'label=com.docker.compose.service=redis' | head -n 1)
+    fi
+    if [[ -z "$container_id" ]]; then
+        while IFS= read -r candidate_id; do
+            if [[ "$(docker inspect --format '{{.Config.Image}}' "$candidate_id")" == *redis* ]]; then
+                container_id=$candidate_id
+                break
+            fi
+        done < <(docker ps --quiet)
+    fi
+    [[ -n "$container_id" ]] || return 1
+    printf '%s\n' "$container_id"
+}
+
+find_redis_admin_password() {
+    local container_id=$1
+    local command_json
+    local config_password
+    local password_variable
+    local password_value
+    for password_variable in \
+        REDIS_PASSWORD REDIS_ROOT_PASSWORD REDISCLI_AUTH \
+        PANEL_REDIS_ROOT_PASSWORD PANEL_REDIS_PASSWORD PANEL_DB_ROOT_PASSWORD; do
+        password_value=$(docker_env_value "$container_id" "$password_variable")
+        if [[ -n "$password_value" ]]; then
+            printf '%s\n' "$password_value"
+            return 0
+        fi
+    done
+    command_json=$(docker inspect --format '{{json .Config.Cmd}}' "$container_id")
+    password_value=$(REDIS_COMMAND_JSON="$command_json" python3 - <<'PY'
+import json
+import os
+import shlex
+
+command = json.loads(os.environ["REDIS_COMMAND_JSON"] or "[]")
+tokens = []
+for item in command:
+    tokens.extend(shlex.split(item))
+for index, token in enumerate(tokens):
+    if token in {"--requirepass", "requirepass"} and index + 1 < len(tokens):
+        print(tokens[index + 1])
+        break
+    if token.startswith("--requirepass="):
+        print(token.split("=", 1)[1])
+        break
+PY
+    )
+    if [[ -n "$password_value" ]]; then
+        printf '%s\n' "$password_value"
+        return 0
+    fi
+    config_password=$(docker exec "$container_id" sh -c '
+        for file in /etc/redis/redis.conf /usr/local/etc/redis/redis.conf /etc/redis.conf /data/redis.conf; do
+            [ -r "$file" ] || continue
+            sed -n "s/^[[:space:]]*requirepass[[:space:]]\+//p" "$file" | tail -n 1
+        done
+    ' 2>/dev/null | sed -n '/./{s/^"//; s/"$//; p; q;}')
+    if [[ -n "$config_password" ]]; then
+        printf '%s\n' "$config_password"
+        return 0
+    fi
+    return 1
+}
+
+if [[ ! "$release_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
+    echo "Invalid release SHA: $release_sha" >&2
+    exit 2
+fi
+case "$deploy_root" in
+    /*) ;;
+    *) echo "Deployment root must be an absolute path." >&2; exit 2 ;;
+esac
+case "$deploy_root" in
+    /|/opt|/root|/home|/var)
+        echo "Deployment root is too broad: $deploy_root" >&2
+        exit 2
+        ;;
+esac
+for command in python3 systemctl curl flock tar; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        echo "Required command is missing: $command" >&2
+        exit 2
+    fi
+done
+
+ensure_chinese_font() {
+    local source_dir=$1
+    local configured_font
+    configured_font=$(sed -n 's/^FONT_PATH=//p' "$deploy_root/.env" | tail -n 1)
+    if [[ -n "$configured_font" && -f "$configured_font" ]]; then
+        return 0
+    fi
+    for candidate in \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
+        /usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf; do
+        if [[ -f "$candidate" ]]; then
+            return 0
+        fi
+    done
+    if [[ "${EUID:-$(id -u)}" -eq 0 && -x "$(command -v apt-get || true)" ]]; then
+        echo "Chinese font is missing; installing fonts-noto-cjk."
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fonts-noto-cjk
+    fi
+    for candidate in \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
+        /usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf; do
+        if [[ -f "$candidate" ]]; then
+            echo "Using Chinese-capable font: $candidate"
+            return 0
+        fi
+    done
+    echo "No Chinese-capable font found; configure FONT_PATH or install fonts-noto-cjk." >&2
+    return 1
+}
+if [[ ! -f "$archive" ]]; then
+    echo "Deployment archive does not exist: $archive" >&2
+    exit 2
+fi
+if [[ ! -f "$deploy_root/.env" ]]; then
+    echo "Production environment file is missing: $deploy_root/.env" >&2
+    exit 2
+fi
+if [[ ! -f "$credentials_file" ]]; then
+    echo "Deployment credentials file is missing: $credentials_file" >&2
+    exit 2
+fi
+
+chmod 0600 "$credentials_file"
+postgres_password=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$credentials_file" | tail -n 1)
+redis_password=$(sed -n 's/^REDIS_PASSWORD=//p' "$credentials_file" | tail -n 1)
+rm -f -- "$credentials_file"
+if [[ -z "$postgres_password" || -z "$redis_password" ]]; then
+    echo "PostgreSQL and Redis deployment credentials are required." >&2
+    exit 2
+fi
+if [[ "$postgres_password" == *$'\n'* || "$postgres_password" == *$'\r'* \
+    || "$redis_password" == *$'\n'* || "$redis_password" == *$'\r'* ]]; then
+    echo "Deployment credentials must not contain line breaks." >&2
+    exit 2
+fi
+
+mkdir -p "$deploy_root/releases" "$data_dir" "$unit_dir"
+database_url=$(sed -n 's/^DATABASE_URL=//p' "$deploy_root/.env" | tail -n 1)
+database_url=${database_url:-postgresql+asyncpg://eve_risk:eve_risk@127.0.0.1:5432/eve_risk}
+database_url=${database_url/@postgres:/@127.0.0.1:}
+redis_url=$(sed -n 's/^REDIS_URL=//p' "$deploy_root/.env" | tail -n 1)
+redis_url=${redis_url:-redis://127.0.0.1:6379/0}
+redis_url=${redis_url/redis:\/\/redis:/redis:\/\/127.0.0.1:}
+sentry_events_url=$(sed -n 's/^EVE_SENTRY_EVENTS_URL=//p' "$deploy_root/.env" | tail -n 1)
+sentry_events_url=${sentry_events_url/host.docker.internal/127.0.0.1}
+sentry_api_key=$(sed -n 's/^EVE_SENTRY_API_KEY=//p' "$deploy_root/.env" | tail -n 1)
+bootstrap_local_postgres=false
+bootstrap_docker_postgres=false
+
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    postgres_container=$(find_postgres_container || true)
+    if [[ -n "$postgres_container" ]]; then
+        postgres_host=$(docker_container_ip "$postgres_container")
+        postgres_admin_user=$(docker_env_value "$postgres_container" POSTGRES_USER)
+        postgres_admin_user=${postgres_admin_user:-postgres}
+        postgres_admin_database=$(docker_env_value "$postgres_container" POSTGRES_DB)
+        postgres_admin_database=${postgres_admin_database:-$postgres_admin_user}
+        if [[ -z "$postgres_host" ]]; then
+            echo "The PostgreSQL container is missing its bridge IP address." >&2
+            exit 2
+        fi
+        encoded_password=$(POSTGRES_PASSWORD_VALUE="$postgres_password" python3 -c \
+            'import os, urllib.parse; print(urllib.parse.quote(os.environ["POSTGRES_PASSWORD_VALUE"], safe=""))')
+        database_url="postgresql+asyncpg://eve_risk:${encoded_password}@${postgres_host}:5432/eve_risk"
+        bootstrap_docker_postgres=true
+
+        postgres_project=$(docker inspect --format \
+            '{{index .Config.Labels "com.docker.compose.project"}}' "$postgres_container")
+        redis_container=$(find_redis_container "$postgres_project" || true)
+        if [[ -z "$redis_container" ]]; then
+            echo "No running Redis container was found." >&2
+            exit 2
+        fi
+        redis_host=$(docker_container_ip "$redis_container")
+        if [[ -z "$redis_host" ]]; then
+            echo "The Redis container is missing its bridge IP address." >&2
+            exit 2
+        fi
+        redis_admin_password=$(find_redis_admin_password "$redis_container" || true)
+        if [[ -z "$redis_admin_password" ]]; then
+            echo "Redis administrator credentials were not found in the container environment." >&2
+            exit 2
+        fi
+        printf '>%s' "$redis_password" | docker exec --interactive \
+            --env REDISCLI_AUTH="$redis_admin_password" "$redis_container" \
+            redis-cli -x ACL SETUSER eve_risk on '~*' '+@all' >/dev/null
+        if ! docker exec --env REDISCLI_AUTH="$redis_password" "$redis_container" \
+            redis-cli --user eve_risk ping 2>/dev/null | grep -qx PONG; then
+            echo "The dedicated eve_risk Redis ACL user could not authenticate." >&2
+            exit 2
+        fi
+        encoded_redis_password=$(REDIS_PASSWORD_VALUE="$redis_password" python3 -c \
+            'import os, urllib.parse; print(urllib.parse.quote(os.environ["REDIS_PASSWORD_VALUE"], safe=""))')
+        redis_url="redis://eve_risk:${encoded_redis_password}@${redis_host}:6379/0"
+        postgres_container_name=$(docker inspect --format '{{.Name}}' "$postgres_container")
+        redis_container_name=$(docker inspect --format '{{.Name}}' "$redis_container")
+        echo "Using PostgreSQL container ${postgres_container_name#/} and Redis container ${redis_container_name#/}."
+    fi
+fi
+
+if [[ -z "${postgres_container:-}" && -n "$(getent passwd postgres || true)" ]]; then
+    bootstrap_local_postgres=true
+    encoded_password=$(POSTGRES_PASSWORD_VALUE="$postgres_password" python3 -c \
+        'import os, urllib.parse; print(urllib.parse.quote(os.environ["POSTGRES_PASSWORD_VALUE"], safe=""))')
+    database_url="postgresql+asyncpg://eve_risk:${encoded_password}@127.0.0.1:5432/eve_risk"
+fi
+sed -e '/^DATABASE_URL=/d' -e '/^REDIS_URL=/d' \
+    -e '/^POSTGRES_PASSWORD=/d' -e '/^REDIS_PASSWORD=/d' \
+    -e '/^EVE_SENTRY_EVENTS_URL=/d' \
+    "$deploy_root/.env" > "$runtime_env"
+printf 'DATABASE_URL=%s\nREDIS_URL=%s\nEVE_SENTRY_EVENTS_URL=%s\n' \
+    "$database_url" "$redis_url" "$sentry_events_url" >> "$runtime_env"
+chmod 0600 "$runtime_env"
+uv_bin=$(command -v uv || true)
+exec 9>"$deploy_root/.deploy.lock"
+if ! flock -w 900 9; then
+    echo "Another deployment still holds the production lock." >&2
+    exit 3
+fi
+
+release_dir="$deploy_root/releases/$release_sha"
+case "$release_dir" in
+    "$deploy_root/releases/"*) ;;
+    *) echo "Invalid release path." >&2; exit 2 ;;
+esac
+rm -rf -- "$release_dir"
+mkdir -p "$release_dir"
+tar -xzf "$archive" -C "$release_dir"
+rm -f -- "$archive"
+
+for required in pyproject.toml uv.lock README.md alembic.ini; do
+    if [[ ! -f "$release_dir/$required" ]]; then
+        echo "Release is missing $required" >&2
+        exit 4
+    fi
+done
+ln -sfn "$deploy_root/.env" "$release_dir/.env"
+
+if [[ -L "$deploy_root/current" ]]; then
+    previous_dir=$(readlink -f "$deploy_root/current" || true)
+else
+    previous_dir=""
+fi
+
+systemctl_cmd() {
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+        systemctl "$@"
+    else
+        systemctl --user "$@"
+    fi
+}
+
+unit_path() {
+    printf '%s/%s.service\n' "$unit_dir" "$1"
+}
+
+write_units() {
+    local source_dir=$1
+    local bot_unit worker_unit
+    bot_unit=$(unit_path "$service_prefix-bot")
+    worker_unit=$(unit_path "$service_prefix-worker")
+    cat > "$bot_unit" <<EOF
+[Unit]
+Description=EVE Risk Analysis QQ bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$source_dir
+EnvironmentFile=-$runtime_env
+Environment=SDE_INDEX_PATH=$data_dir/sde.sqlite3
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$source_dir/.venv/bin/python -m eve_risk.bot
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+EOF
+    cat > "$worker_unit" <<EOF
+[Unit]
+Description=EVE Risk Analysis worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$source_dir
+EnvironmentFile=-$runtime_env
+Environment=SDE_INDEX_PATH=$data_dir/sde.sqlite3
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$source_dir/.venv/bin/arq eve_risk.worker.WorkerSettings
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+EOF
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+        install -m 0644 "$bot_unit" "/etc/systemd/system/$service_prefix-bot.service"
+        install -m 0644 "$worker_unit" "/etc/systemd/system/$service_prefix-worker.service"
+    else
+        systemctl_cmd link "$bot_unit" "$worker_unit"
+    fi
+    systemctl_cmd daemon-reload
+}
+
+ensure_postgres() {
+    local source_dir=$1
+    if [[ "$bootstrap_docker_postgres" == true ]]; then
+        POSTGRES_PASSWORD_VALUE="$postgres_password" python3 - <<'PY' | \
+            docker exec --interactive --user postgres "$postgres_container" \
+                psql --username "$postgres_admin_user" --dbname "$postgres_admin_database" \
+                --set ON_ERROR_STOP=1
+import os
+
+password = os.environ["POSTGRES_PASSWORD_VALUE"].replace("'", "''")
+print(
+    "DO $block$ BEGIN "
+    "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'eve_risk') THEN "
+    "CREATE ROLE eve_risk LOGIN; "
+    "END IF; END $block$;"
+)
+print(f"ALTER ROLE eve_risk WITH LOGIN PASSWORD '{password}';")
+PY
+        database_exists=$(docker exec --user postgres "$postgres_container" \
+            psql --username "$postgres_admin_user" --dbname "$postgres_admin_database" \
+                --tuples-only --no-align --command \
+                "SELECT 1 FROM pg_database WHERE datname = 'eve_risk'")
+        if [[ "$database_exists" != "1" ]]; then
+            docker exec --user postgres "$postgres_container" \
+                createdb --username "$postgres_admin_user" --owner eve_risk eve_risk
+        fi
+        return 0
+    fi
+    if [[ "$bootstrap_local_postgres" != true ]]; then
+        return 0
+    fi
+    if [[ "$postgres_password" == *$'\n'* || "$postgres_password" == *$'\r'* ]]; then
+        echo "POSTGRES_PASSWORD must not contain line breaks." >&2
+        return 1
+    fi
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+        echo "Non-root deployment expects the eve_risk PostgreSQL role and database to exist." >&2
+        return 0
+    fi
+    if ! command -v runuser >/dev/null 2>&1; then
+        echo "Required command is missing: runuser" >&2
+        return 1
+    fi
+    POSTGRES_PASSWORD_VALUE="$postgres_password" runuser -u postgres -- \
+        "$source_dir/.venv/bin/python" - <<'PY'
+import asyncio
+import os
+
+import asyncpg
+
+
+async def main() -> None:
+    connection = await asyncpg.connect(user="postgres", database="postgres")
+    try:
+        role_exists = await connection.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'eve_risk')"
+        )
+        if not role_exists:
+            await connection.execute("CREATE ROLE eve_risk LOGIN")
+        password_literal = await connection.fetchval(
+            "SELECT quote_literal($1)", os.environ["POSTGRES_PASSWORD_VALUE"]
+        )
+        await connection.execute(
+            f"ALTER ROLE eve_risk WITH LOGIN PASSWORD {password_literal}"
+        )
+        database_exists = await connection.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'eve_risk')"
+        )
+        if not database_exists:
+            await connection.execute("CREATE DATABASE eve_risk OWNER eve_risk")
+    finally:
+        await connection.close()
+
+
+asyncio.run(main())
+PY
+}
+
+run_release_setup() {
+    local source_dir=$1
+    if [[ -n "$uv_bin" ]]; then
+        (cd "$source_dir" && "$uv_bin" sync --frozen --no-dev) || return 1
+    else
+        echo "uv is not installed; creating a Python venv with pip" >&2
+        python3 -m venv "$source_dir/.venv" || return 1
+        (cd "$source_dir" && .venv/bin/python -m pip install --disable-pip-version-check \
+            --no-cache-dir --index-url "${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}" \
+            --upgrade pip) || return 1
+        (cd "$source_dir" && .venv/bin/python -m pip install --disable-pip-version-check \
+            --no-cache-dir --index-url "${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}" .) \
+            || return 1
+    fi
+    ensure_chinese_font "$source_dir" || return 1
+    ensure_postgres "$source_dir" || return 1
+    (cd "$source_dir" && env DATABASE_URL="$database_url" REDIS_URL="$redis_url" \
+        .venv/bin/alembic upgrade head) || return 1
+    (cd "$source_dir" && env DATABASE_URL="$database_url" REDIS_URL="$redis_url" \
+        SDE_INDEX_PATH="$data_dir/sde.sqlite3" .venv/bin/python -m eve_risk.sde) || return 1
+}
+
+verify_sentry_connection() {
+    local bootstrap_url
+    local curl_args
+    local http_status
+    if [[ -z "$sentry_events_url" ]]; then
+        return 0
+    fi
+    bootstrap_url=$(EVE_SENTRY_EVENTS_URL_VALUE="$sentry_events_url" python3 -c '
+import os
+import re
+from urllib.parse import urlsplit, urlunsplit
+
+parsed = urlsplit(os.environ["EVE_SENTRY_EVENTS_URL_VALUE"])
+path = re.sub(r"/events/?$", "/bootstrap", parsed.path)
+print(urlunsplit((parsed.scheme, parsed.netloc, path, "", "")))
+')
+    curl_args=(--silent --output /dev/null --write-out '%{http_code}' \
+        --connect-timeout 5 --max-time 15 --header 'Accept: application/json')
+    if [[ -n "$sentry_api_key" ]]; then
+        curl_args+=(--header "Authorization: Bearer $sentry_api_key")
+    fi
+    http_status=$(curl "${curl_args[@]}" "$bootstrap_url" || true)
+    if [[ "$http_status" != "200" ]]; then
+        echo "EVE Sentry bootstrap check failed with HTTP status ${http_status:-000}." >&2
+        return 1
+    fi
+}
+
+health_port=$(awk -F= '$1 == "HEALTH_PORT" {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$deploy_root/.env")
+health_port=${health_port:-8080}
+if [[ ! "$health_port" =~ ^[0-9]+$ ]]; then
+    echo "HEALTH_PORT must be numeric: $health_port" >&2
+    exit 2
+fi
+
+activate_release() {
+    local source_dir=$1
+    write_units "$source_dir"
+    systemctl_cmd enable "$service_prefix-bot.service" "$service_prefix-worker.service"
+    systemctl_cmd restart "$service_prefix-bot.service" "$service_prefix-worker.service"
+}
+
+wait_until_ready() {
+    local attempt
+    for attempt in $(seq 1 30); do
+        if systemctl_cmd is-active --quiet "$service_prefix-bot.service" \
+            && systemctl_cmd is-active --quiet "$service_prefix-worker.service"; then
+            health_payload=$(curl --fail --silent \
+                "http://127.0.0.1:${health_port}/health/ready" || true)
+            if [[ -n "$health_payload" ]] && printf '%s' "$health_payload" \
+                | python3 -c 'import json, sys; raise SystemExit(0 if json.load(sys.stdin).get("status") == "ok" else 1)'; then
+                return 0
+            fi
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+if run_release_setup "$release_dir" && verify_sentry_connection \
+    && activate_release "$release_dir" \
+    && wait_until_ready; then
+    ln -sfn "$release_dir" "$deploy_root/current"
+    systemctl_cmd --no-pager --full status \
+        "$service_prefix-bot.service" "$service_prefix-worker.service" || true
+    echo "EVE Risk Analysis deployed successfully: $release_sha"
+    exit 0
+fi
+
+echo "Deployment health check failed for $release_sha" >&2
+systemctl_cmd --no-pager --full status \
+    "$service_prefix-bot.service" "$service_prefix-worker.service" >&2 || true
+if [[ -n "$previous_dir" && -d "$previous_dir/.venv" ]]; then
+    echo "Rolling back to $previous_dir" >&2
+    if activate_release "$previous_dir" && wait_until_ready; then
+        ln -sfn "$previous_dir" "$deploy_root/current"
+        echo "Rollback completed." >&2
+    else
+        echo "Rollback failed; manual recovery is required." >&2
+    fi
+fi
+exit 5
