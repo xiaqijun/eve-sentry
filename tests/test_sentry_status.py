@@ -7,6 +7,7 @@ from eve_risk.sentry_status import (
     SentryStatusError,
     format_sentry_status,
     is_sentry_status_command,
+    parse_sentry_query,
 )
 
 
@@ -94,6 +95,14 @@ def test_status_command_aliases_and_empty_snapshot() -> None:
     assert is_sentry_status_command("<@!bot> /敌对详情") is True
     assert is_sentry_status_command("预警状态") is False
     assert format_sentry_status({}) == "预警节点｜当前无在线监控节点"
+
+
+def test_parse_sentry_query_supports_person_and_affiliation_filters() -> None:
+    assert parse_sentry_query("查询预警") == {}
+    assert parse_sentry_query("@机器人 查询预警 人员 Alice") == {"name": "Alice"}
+    assert parse_sentry_query("/查询预警 军团 Blue Corp") == {"corporation": "Blue Corp"}
+    assert parse_sentry_query("查询预警 Alliance Name") == {"name": "Alliance Name"}
+    assert parse_sentry_query("预警状态") is None
 
 
 @pytest.mark.asyncio

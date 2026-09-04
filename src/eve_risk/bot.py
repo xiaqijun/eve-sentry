@@ -27,7 +27,7 @@ from eve_risk.queueing import AnalysisQueue
 from eve_risk.sentry_status import (
     EveSentryStatusClient,
     SentryStatusError,
-    is_sentry_status_command,
+    parse_sentry_query,
 )
 from eve_risk.server_status import EveServerStartupMonitor
 
@@ -39,7 +39,7 @@ HELP_TEXT = (
     "多人会分别生成报告，角色名支持换行、逗号或分号分隔。\n"
     "一次最多 30 人，默认分析近 90 天公开战报。\n"
     "预警：@机器人 开启预警 / 关闭预警 / 预警状态。\n"
-    "节点敌对：@机器人 查询预警。"
+    "查询：@机器人 查询预警；也可附加 人员/军团/联盟 名称。"
 )
 
 ADMISSION_MESSAGES = {
@@ -162,9 +162,10 @@ class RiskBotClient(botpy.Client):
         if is_help_command(content):
             await self.qq.send_text(group_openid, msg_id, HELP_TEXT, msg_seq=1)
             return
-        if is_sentry_status_command(content):
+        sentry_query = parse_sentry_query(content)
+        if sentry_query is not None:
             try:
-                reply = await self.sentry_status.query()
+                reply = await self.sentry_status.query(sentry_query, refresh=True)
             except SentryStatusError as exc:
                 reply = str(exc)
             await self.qq.send_text(group_openid, msg_id, reply, msg_seq=1)

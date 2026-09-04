@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -48,9 +49,16 @@ class EveSentryStatusClient:
     def enabled(self) -> bool:
         return bool(self.bootstrap_url)
 
-    async def query(self) -> str:
+    async def query(
+        self,
+        filters: dict[str, str] | None = None,
+        *,
+        refresh: bool = False,
+    ) -> str:
         if not self.enabled:
             raise SentryStatusError("预警服务尚未配置，请联系机器人管理员。")
+        if refresh:
+            return await self._query_ocr(filters or {})
         try:
             response = await self.http.get(
                 self.bootstrap_url,
@@ -68,6 +76,40 @@ class EveSentryStatusClient:
             raise SentryStatusError("预警服务返回数据异常，请稍后重试。")
         return format_sentry_status(bootstrap)
 
+    async def _query_ocr(self, filters: dict[str, str]) -> str:
+        query_url = _ocr_query_url(self.bootstrap_url)
+        try:
+            response = await self.http.post(
+                query_url,
+                headers=_sentry_headers(self.api_key),
+                json={key: value for key, value in filters.items() if value},
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            created = response.json()
+            query_id = str(created.get("query_id") or "").strip()
+            if not query_id:
+                raise SentryStatusError("预警服务未返回 OCR 查询编号。")
+            status_url = f"{query_url}/{query_id}"
+            deadline = asyncio.get_running_loop().time() + 35.0
+            while asyncio.get_running_loop().time() < deadline:
+                status_response = await self.http.get(
+                    status_url,
+                    headers=_sentry_headers(self.api_key),
+                    timeout=10.0,
+                )
+                status_response.raise_for_status()
+                status = status_response.json()
+                if str(status.get("status") or "") in {"completed", "timed_out"}:
+                    return format_ocr_query(status, filters)
+                await asyncio.sleep(0.5)
+        except SentryStatusError:
+            raise
+        except Exception:
+            logger.exception("EVE Sentry OCR query failed")
+            raise SentryStatusError("OCR 查询失败或客户端未响应，请稍后重试。") from None
+        raise SentryStatusError("OCR 查询超时，当前没有收到客户端回传。")
+
 
 def is_sentry_status_command(content: str) -> bool:
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
@@ -76,6 +118,71 @@ def is_sentry_status_command(content: str) -> bool:
     ).strip()
     normalized = re.sub(r"^/", "", normalized, count=1).strip()
     return normalized in QUERY_COMMANDS
+
+
+def parse_sentry_query(content: str) -> dict[str, str] | None:
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = re.sub(r"^\s*(?:<@!?\w+>|@\S+)\s*", "", normalized, count=1)
+    normalized = re.sub(r"^/", "", normalized, count=1).strip()
+    match = re.match(
+        r"^(?:查询预警|预警详情|敌对详情|节点敌对)(?:\s+(.+))?$",
+        normalized,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    argument = str(match.group(1) or "").strip()
+    if not argument:
+        return {}
+    key = "name"
+    for prefix, candidate_key in (("人员", "name"), ("角色", "name"), ("军团", "corporation"), ("联盟", "alliance")):
+        if argument.startswith(prefix):
+            argument = argument[len(prefix):].strip()
+            key = candidate_key
+            break
+    return {key: argument} if argument else {}
+
+
+def format_ocr_query(payload: dict[str, Any], filters: dict[str, str] | None = None) -> str:
+    results = payload.get("results")
+    results = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
+    lines = [
+        f"OCR 查询｜节点 {len(results)}/{int(payload.get('expected_clients') or len(results))}"
+    ]
+    displayed = 0
+    for result in results:
+        system = str(result.get("system_name") or "未知星系").strip()
+        recognized = result.get("recognized")
+        recognized = [item for item in recognized if isinstance(item, dict)] if isinstance(recognized, list) else []
+        selected = [item for item in recognized if _query_item_matches(item, filters or {})]
+        raw_names = [str(name).strip() for name in result.get("names", []) if str(name).strip()]
+        if not selected and filters and raw_names:
+            continue
+        lines.append(f"\n{system}｜识别 {len(selected) if filters else len(recognized)} 人")
+        if selected:
+            for item in selected[:MAX_HOSTILES]:
+                lines.extend(_hostile_lines(item))
+                displayed += 1
+        elif raw_names:
+            lines.append(f"  OCR 原始名单｜{'、'.join(raw_names[:MAX_HOSTILES])}")
+    if len(lines) == 1:
+        return "OCR 查询｜没有收到符合条件的人员名单。"
+    return "\n".join(lines)
+
+
+def _query_item_matches(item: dict[str, Any], filters: dict[str, str]) -> bool:
+    metadata = item.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    name_filter = str(filters.get("name") or "").strip().casefold()
+    if name_filter and name_filter not in str(item.get("name") or "").casefold():
+        return False
+    for key, field in (("corporation", "corporation"), ("alliance", "alliance")):
+        value = str(filters.get(key) or "").strip().casefold()
+        if value:
+            affiliation = _affiliation(metadata, field).casefold()
+            if value not in affiliation:
+                return False
+    return True
 
 
 def format_sentry_status(bootstrap: dict[str, Any]) -> str:
@@ -318,6 +425,12 @@ def _bootstrap_url(events_url: str) -> str:
     path = re.sub(r"/events/?$", "/bootstrap", parsed.path)
     if path == parsed.path:
         return ""
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _ocr_query_url(bootstrap_url: str) -> str:
+    parsed = urlsplit(str(bootstrap_url or "").strip())
+    path = re.sub(r"/bootstrap/?$", "/ocr/query", parsed.path)
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
