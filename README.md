@@ -7,6 +7,12 @@ authentication, caching, rate limiting, and health metrics. EVE SSO,
 authenticated sessions, tokens, and application resolvers remain in the
 `eve-sentry` service.
 
+Documentation:
+
+- [Phase 1 migration design](docs/migration-phase1.md)
+- [Cache and storage design](docs/cache-and-storage.md)
+- [Operations runbook](docs/operations.md)
+
 For large-scale ESI ID lookups, configure the optional `storage` extra. PostgreSQL
 is the long-term source of truth and Redis is a bounded hot tier. Batch responses
 are split into one record per requested ID (or normalized name for `/v1/universe/ids`)
@@ -20,6 +26,24 @@ them in bounded batches.
 $env:EVE_SENTRY_ESI_GATEWAY_TOKEN = 'use-a-random-secret-at-least-32-bytes'
 python scripts/esi_gateway.py --host 127.0.0.1 --port 8787
 ```
+
+The public gateway routes are:
+
+```text
+GET  /health
+GET  /v1/characters/{id}
+GET  /v1/corporations/{id}
+GET  /v1/alliances/{id}
+GET  /v1/systems/{id}
+POST /v1/universe/names
+POST /v1/universe/ids
+POST /v1/characters/affiliation
+```
+
+All routes except `/health` require the configured bearer token and optional
+source-address allow-list. Request bodies are limited to 64 KiB and 1,000
+items. The gateway preserves the existing JSON response shape, including the
+`data` and `cache` fields.
 
 ## Test
 
@@ -43,6 +67,10 @@ remain available for the configured stale grace period (5 minutes by default).
 Retries use exponential backoff up to `EVE_SENTRY_ESI_GATEWAY_CACHE_RETRY_MAX`.
 The `/health` response keeps its existing fields and adds an `id_cache` object
 with hot-hit, refresh, retry, and backend-error counters.
+
+For the complete cache path, PostgreSQL pool behavior, Redis memory guidance,
+stale-value semantics, and operational limits, see
+[Cache and storage design](docs/cache-and-storage.md).
 
 ## CI/CD
 
