@@ -2766,10 +2766,20 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             ):
                 state = cache["state"]
             else:
-                active_items = self._visible_active_items(
-                    store,
-                    store.list_active_intel(),
-                )
+                if store.__class__.__module__ == "app.server.postgres_store":
+                    # Do not run the PostgreSQL-backed expiry path while
+                    # building an SSE snapshot. Expiry may wait for a queued
+                    # database write and would stall every connected stream;
+                    # regular heartbeat/ingestion paths perform expiry.
+                    with store._lock:
+                        active_items = [
+                            item.to_dict()
+                            for item in store._active_intel.values()
+                            if item.active
+                        ]
+                else:
+                    active_items = store.list_active_intel()
+                active_items = self._visible_active_items(store, active_items)
                 alerts = self._active_alert_list(
                     since="",
                     limit=None,
