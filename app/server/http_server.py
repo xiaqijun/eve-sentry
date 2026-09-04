@@ -2222,6 +2222,13 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             for source_id in self._active_item_source_ids(item):
                 active_by_source_id[source_id] = item
 
+        # Presence-only state is emitted separately and does not reference a
+        # persisted report. Avoid materializing the entire hot report set when
+        # there are no active source reports to match, especially during the
+        # first SSE bootstrap after a server restart.
+        if not active_by_source_id:
+            return []
+
         # A detector can publish one OCR report per character.  Keep the
         # report-level ``names`` field unchanged, but also expose the complete
         # current detector snapshot so integrations do not mistake one report

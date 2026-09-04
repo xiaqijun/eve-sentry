@@ -5171,6 +5171,40 @@ def test_v1_events_presence_cursor_skips_report_cursor_lookup(tmp_path):
         server.stop()
 
 
+def test_v1_events_presence_only_bootstrap_skips_hot_report_snapshot(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    store.record_hostile_presence(
+        {
+            "client_id": "detector-client:presence-only",
+            "source_instance": "EVE - Presence Only",
+            "system_name": "Tama",
+            "hostile_icon_count": 2,
+            "seen_at": "2026-08-07T10:00:00+00:00",
+        }
+    )
+
+    def fail_hot_report_snapshot():
+        raise AssertionError("presence-only bootstrap must not scan hot reports")
+
+    store._reports_snapshot = fail_hot_report_snapshot
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        query = urlencode({"timeout": "0", "limit": "5", "bootstrap": "1"})
+        status, _, body = request_text(f"{server.url}/api/v1/events?{query}")
+
+        assert status == 200
+        events = sse_events(body)
+        assert any(event.get("event") == "bootstrap" for event in events)
+        assert any(
+            event.get("event") == "alert"
+            and event.get("id", "").startswith("presence_")
+            for event in events
+        )
+    finally:
+        server.stop()
+
+
 def test_v1_events_bootstrap_id_is_resumable_alert_cursor(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
