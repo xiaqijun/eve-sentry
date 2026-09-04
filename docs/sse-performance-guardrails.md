@@ -3,6 +3,9 @@
 本文记录 2026-09-04 发现并修复的预警事件流阻塞问题，作为后续修改
 `/api/v1/events`、活动告警快照和 SSE 客户端兼容行为的约束。
 
+机器人端对应的读取超时、游标和节点快照规则见
+[eve-sentry-bot SSE 重连约束](https://github.com/xiaqijun/eve-sentry-bot/blob/main/docs/sse-reconnect-guardrails.md)。
+
 ## 已确认的根因
 
 - `/api/v1/events` 返回 HTTP 200 后，首个 SSE 数据写入前会构建活动快照。

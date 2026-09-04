@@ -103,6 +103,15 @@ PostgreSQL 连接由 `psycopg_pool` 复用，默认最小 2、最大 8 个连接
 客户端从本地聊天日志确认星系变化时，会立即清除旧星系的本地预警，并强制下一帧把当前红色
 图标数量重新上报到新星系；即使前后数量相同，也不会把旧星系的红色状态遗留在星图上。
 
+公共 ESI 的角色、军团、联盟和星系资料可经独立 Gateway 访问；Gateway 只处理无令牌的
+公共接口，服务端保留本地回退。认证 ESI（SSO、contacts、standings、location）及其
+按授权账号隔离的声望快照仍由服务端直接请求，默认 TTL 为 600 秒。缓存和部署参数以
+[服务端部署](server-deployment.md#公共-esi-gateway) 和 Gateway 仓库文档为准。
+
+机器人“查询预警”会创建一次性 OCR 任务，服务端通过 detector heartbeat 下发给目标客户端，
+客户端上传带 `query_id` 的快照后再由服务端聚合返回。协议细节见客户端仓库的
+[按需 OCR 对接说明](https://github.com/xiaqijun/eve-sentry-client/blob/main/docs/on-demand-ocr-query.md)。
+
 ## 数据来源
 
 - OCR：当前 EVE 成员列表快照和红色敌对图标计数。

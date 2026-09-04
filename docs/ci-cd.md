@@ -1,7 +1,8 @@
 # CI/CD 与仓库边界
 
-本文说明 `eve-sentry` 主服务仓库当前的流水线，以及拆分为六个公开仓库后的发布边界。
-生产部署只允许来自默认分支的合并提交；Pull Request 只执行验证，不连接生产环境。
+本文说明各仓库当前的流水线和发布边界。项目约定后续直接在 `main` 开发并推送，
+由对应仓库的 CI/CD 自动验证和部署；不创建额外开发分支或 Pull Request。若平台保留
+Pull Request 触发器，它只作为兼容性的只读验证入口，不改变 `main` 的发布路径。
 
 ## 仓库归属
 
@@ -18,8 +19,8 @@
 
 ## 触发条件与门禁
 
-- `deploy-server.yml`：Pull Request 始终运行 Python、前端、PostgreSQL、源码编译和部署脚本
-  语法验证，避免路径过滤导致必需检查缺失；`main` 的运行时路径变化时自动执行同一套门禁。
+- `deploy-server.yml`：`main` 推送时运行 Python、前端、PostgreSQL、源码编译和部署脚本
+  语法验证；验证通过后自动部署。保留的 Pull Request 触发器只运行同一套门禁，不部署生产。
   验证通过后先生成带 SHA-256 校验的不可变部署包，再由生产 job 复用该包发布。生产 job
   仅接受 `main`，并使用 `production` Environment。
 - `eve-sentry-esi-gateway/.github/workflows/deploy-esi-gateway.yml`：独立 Gateway 的
@@ -31,8 +32,8 @@
   Worker、客户端仓库 `latest.json`、302 跳转和 Range 206。
 - `eve-sentry/.github/workflows/deploy-server.yml`：服务端实现与跨仓库联动文档一起验证服务端测试、
   构建和部署脚本。
-- `eve-sentry-bot/.github/workflows/deploy.yml`：`codex/main`（当前默认分支）和 `main` 的
-  Pull Request 自动验证；两者 push 通过后进入 production Environment。
+- `eve-sentry-bot/.github/workflows/deploy.yml`：`main` 推送自动验证并进入 production
+  Environment；其他分支或 Pull Request（如触发）仅验证。
 - `workflow_dispatch` 可以用于重跑验证；生产 job 只接受默认分支。下载站按仓库规则保持
   production 部署手动触发，避免 Cloudflare Worker 被无审批覆盖。
 
@@ -83,4 +84,4 @@ ESI Gateway：
 - 机器人仓库使用 immutable `releases/<commit-sha>` 和 `current` 链接回滚；数据库迁移
   不会反向回滚，schema 必须保持向后兼容。
 
-生产验证失败时应保留工作流日志、发布 SHA、契约版本和上一版本标识，便于人工回滚和审计。
+生产验证失败时应保留工作流日志、发布 SHA、API 文档版本和上一版本标识，便于人工回滚和审计。
