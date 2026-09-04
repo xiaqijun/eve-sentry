@@ -317,6 +317,7 @@ def test_alert_subscription_commands_and_message_format() -> None:
     assert alert_subscription_action("预警状态") == "status"
     assert alert_subscription_action("/开启预警") == "enable"
     assert alert_subscription_action("<@!bot> /关闭预警") == "disable"
+    assert alert_subscription_action("<@!bot-user>/关闭预警") == "disable"
     assert alert_subscription_action("/预警状态") == "status"
     assert alert_subscription_action("分析 Alice") is None
 

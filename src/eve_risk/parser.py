@@ -5,22 +5,22 @@ class RosterParseError(ValueError):
     pass
 
 
-COMMAND_RE = re.compile(r"^(?:\s*@\S+\s*)?(?:/)?分析(?:\s+|$)", re.IGNORECASE)
-HELP_RE = re.compile(r"^(?:\s*@\S+\s*)?(?:/)?帮助\s*$", re.IGNORECASE)
+COMMAND_RE = re.compile(r"^分析(?:\s+|$)", re.IGNORECASE)
+HELP_RE = re.compile(r"^帮助\s*$", re.IGNORECASE)
 SEPARATOR_RE = re.compile(r"[\n,，;；]+")
 
 
 def is_help_command(content: str) -> bool:
-    return bool(HELP_RE.match(_clean_mention_prefix(content).strip()))
+    return bool(HELP_RE.fullmatch(normalize_command_content(content)))
 
 
 def is_analysis_command(content: str) -> bool:
-    return bool(re.fullmatch(r"(?:/)?分析", _clean_mention_prefix(content).strip(), re.IGNORECASE))
+    return bool(re.fullmatch(r"分析", normalize_command_content(content), re.IGNORECASE))
 
 
 def parse_roster(content: str, max_characters: int = 30) -> list[str]:
-    cleaned = _clean_mention_prefix(content).strip()
-    match = re.match(r"^(?:/)?分析(?:\s+|$)", cleaned, re.IGNORECASE)
+    cleaned = normalize_command_content(content)
+    match = COMMAND_RE.match(cleaned)
     if not match:
         raise RosterParseError("请使用“@机器人 分析”后跟角色名单。")
 
@@ -54,4 +54,10 @@ def _clean_mention_prefix(content: str) -> str:
     # Some QQ adapters concatenate the mention and slash command without a
     # space (for example, ``@哨兵/查询人员``). Do not consume the command as
     # part of the mention token in that form.
-    return re.sub(r"^\s*(?:<@!?\w+>|@[^\s/]+)\s*", "", content, count=1)
+    return re.sub(r"^\s*(?:<@!?[^>]+>|@[^\s/]+)\s*", "", content, count=1)
+
+
+def normalize_command_content(content: str) -> str:
+    """Normalize a QQ command by removing the bot mention and slash prefix."""
+    normalized = _clean_mention_prefix(str(content or "")).strip()
+    return re.sub(r"^/\s*", "", normalized, count=1).strip()

@@ -33,10 +33,12 @@ def test_help_command() -> None:
     assert is_help_command("帮助")
     assert is_help_command("@机器人 帮助")
     assert is_help_command("@机器人/帮助")
+    assert is_help_command("<@!bot-user>/帮助")
 
 
 def test_bare_analysis_command() -> None:
     assert is_analysis_command("分析")
     assert is_analysis_command("<@!bot> /分析")
     assert is_analysis_command("@机器人/分析")
+    assert is_analysis_command("<@!bot-user>/分析")
     assert not is_analysis_command("分析 Alice")

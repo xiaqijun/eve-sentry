@@ -118,6 +118,7 @@ def test_parse_sentry_query_supports_person_and_affiliation_filters() -> None:
     assert parse_sentry_query("查询军团") == {"corporation": ""}
     assert parse_sentry_query("查询联盟") == {"alliance": ""}
     assert parse_sentry_query("@哨兵/查询人员 Hajimi1") == {"name": "Hajimi1"}
+    assert parse_sentry_query("<@!bot-user>/查询人员 Hajimi1") == {"name": "Hajimi1"}
     assert parse_sentry_query("@哨兵/查询军团 Blue Corp") == {
         "corporation": "Blue Corp"
     }

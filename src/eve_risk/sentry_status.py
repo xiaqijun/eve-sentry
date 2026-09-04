@@ -10,6 +10,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from eve_risk.parser import normalize_command_content
+
 logger = logging.getLogger(__name__)
 
 # Keep the full command names for readability while also accepting short
@@ -139,18 +141,11 @@ class EveSentryStatusClient:
 
 
 def is_sentry_status_command(content: str) -> bool:
-    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
-    normalized = re.sub(
-        r"^\s*(?:<@!?\w+>|@[^\s/]+)\s*", "", normalized, count=1
-    ).strip()
-    normalized = re.sub(r"^/", "", normalized, count=1).strip()
-    return normalized in QUERY_COMMANDS
+    return normalize_command_content(content) in QUERY_COMMANDS
 
 
 def parse_sentry_query(content: str) -> dict[str, str] | None:
-    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
-    normalized = re.sub(r"^\s*(?:<@!?\w+>|@[^\s/]+)\s*", "", normalized, count=1)
-    normalized = re.sub(r"^/", "", normalized, count=1).strip()
+    normalized = normalize_command_content(content)
     for command, (key, _label) in TARGETED_QUERY_COMMANDS.items():
         if normalized == command:
             return {key: ""}

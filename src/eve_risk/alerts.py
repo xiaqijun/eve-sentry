@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import re
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -13,6 +12,7 @@ import httpx
 from redis.asyncio import Redis
 
 from eve_risk.clients.qq import QQOpenAPIClient
+from eve_risk.parser import normalize_command_content
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +53,7 @@ _SOURCE_LABELS = {
 
 
 def alert_subscription_action(content: str) -> str | None:
-    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
-    normalized = re.sub(r"^\s*<@!?\w+>\s*", "", normalized, count=1).strip()
-    normalized = re.sub(r"^/", "", normalized, count=1).strip()
+    normalized = normalize_command_content(content)
     if normalized in _ENABLE_COMMANDS:
         return "enable"
     if normalized in _DISABLE_COMMANDS:
