@@ -2749,7 +2749,16 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
 
         now = time.monotonic()
         generation = _event_stream_generation()
-        with cache["lock"]:
+        # A single slow snapshot build must not serialize every SSE client.
+        # Reuse the previous snapshot when available; on cold start return an
+        # empty state and let the builder publish the real snapshot once ready.
+        # This keeps the stream responsive while preserving eventual updates.
+        if not cache["lock"].acquire(timeout=0.1):
+            state = cache.get("state")
+            if state is None:
+                return [], [], []
+            return copy.deepcopy(state)
+        try:
             if (
                 cache["state"] is not None
                 and cache["generation"] == generation
@@ -2772,6 +2781,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 cache["created_at"] = now
                 cache["state"] = state
             return copy.deepcopy(state)
+        finally:
+            cache["lock"].release()
 
     def _active_presence_alerts(
         self,

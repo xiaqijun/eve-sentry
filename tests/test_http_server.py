@@ -5205,6 +5205,28 @@ def test_v1_events_presence_only_bootstrap_skips_hot_report_snapshot(tmp_path):
         server.stop()
 
 
+def test_cached_active_event_state_does_not_wait_on_slow_builder(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    cached_state = ([{"id": "active-1"}], [{"id": "alert-1"}], [])
+    lock = threading.Lock()
+    store._sse_active_event_cache = {
+        "lock": lock,
+        "generation": -1,
+        "created_at": 0.0,
+        "state": cached_state,
+    }
+    lock.acquire()
+    handler = object.__new__(IntelRequestHandler)
+    started = time.monotonic()
+    try:
+        result = handler._cached_active_event_state(store)
+    finally:
+        lock.release()
+
+    assert time.monotonic() - started < 0.5
+    assert result == cached_state
+
+
 def test_v1_events_bootstrap_id_is_resumable_alert_cursor(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
