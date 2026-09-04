@@ -3324,6 +3324,15 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         since = str(since or "").strip()
         last_event_id = str(self.headers.get("Last-Event-ID") or "").strip()
         if last_event_id:
+            # Presence-only events are synthesized from the active OCR state
+            # and have no persisted report cursor. Resolving one through the
+            # PostgreSQL store falls back to scanning the hot report set
+            # before querying history, delaying SSE response headers long
+            # enough for consumers to time out and reconnect repeatedly.
+            # Bootstrap is authoritative for this state, so resume from the
+            # optional timestamp cursor without attempting a report lookup.
+            if last_event_id.startswith("presence_"):
+                return since, "", False, None
             store = self._store()
             stream_cursor = store.resolve_alert_stream_cursor(last_event_id)
             if stream_cursor is not None:

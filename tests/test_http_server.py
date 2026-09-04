@@ -5146,6 +5146,31 @@ def test_v1_events_report_page_does_not_hide_presence_alert(tmp_path):
         server.stop()
 
 
+def test_v1_events_presence_cursor_skips_report_cursor_lookup(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+
+    def fail_report_cursor_lookup(_alert_id):
+        raise AssertionError("presence cursor must not scan persisted reports")
+
+    store.resolve_alert_stream_cursor = fail_report_cursor_lookup
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        query = urlencode({"timeout": "0", "limit": "5", "bootstrap": "1"})
+        status, _, body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": "presence_deadbeef"},
+        )
+
+        assert status == 200
+        assert body.startswith(": connected\n\n")
+        assert any(
+            event.get("event") == "bootstrap" for event in sse_events(body)
+        )
+    finally:
+        server.stop()
+
+
 def test_v1_events_bootstrap_id_is_resumable_alert_cursor(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
