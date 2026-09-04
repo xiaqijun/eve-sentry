@@ -157,7 +157,6 @@ GitHub Actions 工作流可使用 `actionlint` 做静态校验；CI 在 Windows 
 
 - [客户端操作指南](docs/client.md)
 - [客户端 CI/CD 与发布流程](docs/release-process.md)
-- [客户端仓库迁移记录](docs/client-migration-phase1.md)
 
 服务端、ESI Gateway、机器人和共享协议的文档由各自仓库维护。
 
