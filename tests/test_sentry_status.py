@@ -89,6 +89,12 @@ def test_formats_online_nodes_and_only_alerted_hostiles() -> None:
 
 def test_status_command_aliases_and_empty_snapshot() -> None:
     assert is_sentry_status_command("查询预警") is True
+    assert is_sentry_status_command("查询") is True
+    assert is_sentry_status_command("查") is True
+    assert is_sentry_status_command("查预警") is True
+    assert is_sentry_status_command("查询人员") is True
+    assert is_sentry_status_command("查询军团") is True
+    assert is_sentry_status_command("查询联盟") is True
     assert is_sentry_status_command("<@!bot> 预警详情") is True
     assert is_sentry_status_command("@机器人 敌对详情") is True
     assert is_sentry_status_command("/查询预警") is True
@@ -99,6 +105,18 @@ def test_status_command_aliases_and_empty_snapshot() -> None:
 
 def test_parse_sentry_query_supports_person_and_affiliation_filters() -> None:
     assert parse_sentry_query("查询预警") == {}
+    assert parse_sentry_query("查") == {}
+    assert parse_sentry_query("查询 人员 Alice") == {"name": "Alice"}
+    assert parse_sentry_query("查预警 军团 Blue Corp") == {"corporation": "Blue Corp"}
+    assert parse_sentry_query("查询人员 Alice") == {"name": "Alice"}
+    assert parse_sentry_query("查询人员：Alice") == {"name": "Alice"}
+    assert parse_sentry_query("查询军团 Blue Corp") == {"corporation": "Blue Corp"}
+    assert parse_sentry_query("查询联盟 Example Alliance") == {
+        "alliance": "Example Alliance"
+    }
+    assert parse_sentry_query("查询人员") == {"name": ""}
+    assert parse_sentry_query("查询军团") == {"corporation": ""}
+    assert parse_sentry_query("查询联盟") == {"alliance": ""}
     assert parse_sentry_query("@机器人 查询预警 人员 Alice") == {"name": "Alice"}
     assert parse_sentry_query("/查询预警 军团 Blue Corp") == {"corporation": "Blue Corp"}
     assert parse_sentry_query("查询预警 Alliance Name") == {"name": "Alliance Name"}
@@ -130,3 +148,21 @@ async def test_status_client_reports_missing_configuration() -> None:
         client = EveSentryStatusClient(http, "")
         with pytest.raises(SentryStatusError, match="尚未配置"):
             await client.query()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filters", "message"),
+    [
+        ({"name": ""}, "人员名称"),
+        ({"corporation": ""}, "军团名称"),
+        ({"alliance": ""}, "联盟名称"),
+    ],
+)
+async def test_targeted_query_requires_a_target(
+    filters: dict[str, str], message: str
+) -> None:
+    async with httpx.AsyncClient() as http:
+        client = EveSentryStatusClient(http, "http://sentry.test/api/v1/events")
+        with pytest.raises(SentryStatusError, match=message):
+            await client.query(filters, refresh=True)

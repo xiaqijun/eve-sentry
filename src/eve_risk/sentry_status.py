@@ -12,7 +12,26 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-QUERY_COMMANDS = {"查询预警", "预警详情", "敌对详情", "节点敌对"}
+# Keep the full command names for readability while also accepting short
+# aliases that are convenient to type in a busy group chat.
+QUERY_COMMANDS = {
+    "查询预警",
+    "预警详情",
+    "敌对详情",
+    "节点敌对",
+    "查预警",
+    "查询",
+    "查",
+    "查询人员",
+    "查询军团",
+    "查询联盟",
+}
+QUERY_COMMAND_PATTERN = r"(?:查询预警|查预警|预警详情|敌对详情|节点敌对|查询|查)"
+TARGETED_QUERY_COMMANDS = {
+    "查询人员": ("name", "人员名称"),
+    "查询军团": ("corporation", "军团名称"),
+    "查询联盟": ("alliance", "联盟名称"),
+}
 DETECTOR_SOURCES = {"eve-sentry-detector", "local_ocr", "ocr"}
 MAX_NODES = 20
 MAX_HOSTILES = 30
@@ -58,7 +77,15 @@ class EveSentryStatusClient:
         if not self.enabled:
             raise SentryStatusError("预警服务尚未配置，请联系机器人管理员。")
         if refresh:
-            return await self._query_ocr(filters or {})
+            query_filters = filters or {}
+            for key, label in (
+                ("name", "人员名称"),
+                ("corporation", "军团名称"),
+                ("alliance", "联盟名称"),
+            ):
+                if key in query_filters and not str(query_filters[key]).strip():
+                    raise SentryStatusError(f"请指定要查询的{label}。")
+            return await self._query_ocr(query_filters)
         try:
             response = await self.http.get(
                 self.bootstrap_url,
@@ -124,8 +151,18 @@ def parse_sentry_query(content: str) -> dict[str, str] | None:
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
     normalized = re.sub(r"^\s*(?:<@!?\w+>|@\S+)\s*", "", normalized, count=1)
     normalized = re.sub(r"^/", "", normalized, count=1).strip()
+    for command, (key, _label) in TARGETED_QUERY_COMMANDS.items():
+        if normalized == command:
+            return {key: ""}
+        match = re.match(
+            rf"^{re.escape(command)}(?:\s+|[：:]\s*)(.+)$",
+            normalized,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if match:
+            return {key: str(match.group(1) or "").strip()}
     match = re.match(
-        r"^(?:查询预警|预警详情|敌对详情|节点敌对)(?:\s+(.+))?$",
+        rf"^{QUERY_COMMAND_PATTERN}(?:\s+(.+))?$",
         normalized,
         flags=re.IGNORECASE | re.DOTALL,
     )
