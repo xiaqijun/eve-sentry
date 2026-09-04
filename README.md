@@ -155,9 +155,11 @@ GitHub Actions 工作流可使用 `actionlint` 做静态校验；CI 在 Windows 
 
 ## 文档
 
+- [文档索引](docs/README.md)
 - [客户端操作指南](docs/client.md)
+- [按需 OCR 查询对接](docs/on-demand-ocr-query.md)
 - [客户端 CI/CD 与发布流程](docs/release-process.md)
 
-服务端、ESI Gateway、机器人和共享协议的文档由各自仓库维护。
+服务端 API、ESI Gateway 和机器人的文档由各自仓库维护；跨仓库接口以服务端 API 文档为准。
 
 运行时数据库、配置、EVE SSO token、本地密钥状态和模型缓存均不应提交到仓库。

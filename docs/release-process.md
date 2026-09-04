@@ -1,7 +1,7 @@
 # 客户端 CI/CD 与发布流程
 
 本文说明 `eve-sentry-client` 仓库的测试、构建和发布流程。本仓库只负责 Windows 桌面
-客户端；服务端、独立 ESI Gateway、机器人和共享协议由各自仓库维护。
+客户端；服务端 API、独立 ESI Gateway 和机器人由各自仓库维护，跨仓库接口以服务端 API 文档为准。
 
 ## 工作流概览
 
@@ -18,7 +18,7 @@
 以下情况会触发 `.github/workflows/ci-client.yml`：
 
 - 客户端相关路径 push 到 `main`；
-- 目标为 `main` 的 pull request 修改了客户端相关路径；
+- 目标为 `main` 的 pull request（如平台触发）修改了客户端相关路径；
 - 在 GitHub Actions 中手动运行。
 
 工作流使用 `windows-latest`、Python 3.13 和 `requirements-onnx.txt`，并缓存 pip 下载。
@@ -74,12 +74,11 @@ python -m pytest -q --ignore=tests/test_intel_client.py
 
 ## 标准版本发布步骤
 
-1. 从最新 `main` 开始开发并完成 pull request。
+1. 从最新 `main` 开始开发，完成本地检查后直接提交到 `main`。
 2. 修改 `app/version.py` 中的 `APP_VERSION`，同时提交版本相关变更。
-3. 等待 pull request 的 `Client CI` 通过后合并到 `main`。
-4. 等待 `main` 的 `Client CI` 再次通过。
-5. 由 role `90` 审批 `client-release` 环境中的生产发布。
-6. 验证 GitHub Release、固定下载入口、签名清单和客户端更新检查。
+3. 等待 `main` 的 `Client CI` 通过。
+4. 由 role `90` 审批 `client-release` 环境中的生产发布。
+5. 验证 GitHub Release、固定下载入口、签名清单和客户端更新检查。
 
 不要为同一个版本反复创建或覆盖 Release。若同版本已经存在，重复运行会作为成功的 no-op
 结束；若发布失败且 Release 尚未创建，可以在修复后重新运行。删除发布、回滚或重新签名属于
