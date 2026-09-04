@@ -130,7 +130,9 @@ Authorization: Bearer eve_xxx
 `query_id` 后，会在后续客户端心跳响应中下发 `ocr_query` 命令；客户端执行一次全帧 OCR，
 并在上传中携带相同的 `query_id`。调用方通过 `GET /api/v1/ocr/query/{query_id}` 轮询，
 直到 `status` 为 `completed` 或 `timed_out`。请求体可携带 `name`、`corporation` 或
-`alliance` 过滤条件；过滤仍以服务端识别结果为准。
+`alliance` 过滤条件；过滤仍以服务端识别结果为准。服务端会在目标上传结果前的后续心跳中
+重试下发同一命令，客户端必须按 `query_id` 幂等去重；目标客户端 ID 与父 detector
+heartbeat ID 均可用于领取命令。
 
 `GET /api/v1/admin/esi-gateway` 返回 47 Gateway 的运行摘要、114 业务缓存和进程内远端调用指标。
 `resolver_cache.personnel` 按 114 收到的新 OCR 人员逐个统计 `lookups`、`hits`、`misses`、

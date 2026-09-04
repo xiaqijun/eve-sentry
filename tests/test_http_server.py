@@ -507,6 +507,16 @@ def test_ocr_query_round_trip_claims_command_and_collects_snapshot(tmp_path):
         )
         assert heartbeat["commands"][0]["query_id"] == query_id
 
+        # Delivery must be retryable when the first heartbeat races worker
+        # startup or the client drops the response before dispatching it.
+        retry = api.post_heartbeat(
+            client_id="detector-client:query",
+            client_type="detector_client",
+            status="running",
+            details={"monitoring": True},
+        )
+        assert retry["commands"][0]["query_id"] == query_id
+
         api.post_ocr_snapshot(
             client_id="detector-client:query:window-1",
             source_instance="EVE - Query",
@@ -517,6 +527,35 @@ def test_ocr_query_round_trip_claims_command_and_collects_snapshot(tmp_path):
         _, result = request_json(f"{server.url}/api/v1/ocr/query/{query_id}")
         assert result["status"] == "completed"
         assert result["results"][0]["names"] == ["Alice"]
+    finally:
+        server.stop()
+
+
+def test_ocr_query_can_be_claimed_by_target_heartbeat_id(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        api = IntelApiClient(server.url)
+        parent = "detector-client:query-child"
+        target = f"{parent}:window-1"
+        api.post_heartbeat(
+            client_id=parent,
+            client_type="detector_client",
+            status="running",
+            details={
+                "monitoring": True,
+                "targets": [{"client_id": target, "monitoring": True}],
+            },
+        )
+        created = api._request("POST", "/api/v1/ocr/query", payload={})
+        heartbeat = api.post_heartbeat(
+            client_id=target,
+            client_type="detector_client",
+            status="running",
+            details={"monitoring": True},
+        )
+        assert heartbeat["commands"][0]["target_client_id"] == target
+        assert heartbeat["commands"][0]["query_id"] == created["query_id"]
     finally:
         server.stop()
 

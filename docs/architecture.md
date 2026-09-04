@@ -111,6 +111,8 @@ PostgreSQL 连接由 `psycopg_pool` 复用，默认最小 2、最大 8 个连接
 机器人“查询预警”会创建一次性 OCR 任务，服务端通过 detector heartbeat 下发给目标客户端，
 客户端上传带 `query_id` 的快照后再由服务端聚合返回。协议细节见客户端仓库的
 [按需 OCR 对接说明](https://github.com/xiaqijun/eve-sentry-client/blob/main/docs/on-demand-ocr-query.md)。
+命令在目标客户端回传结果前可随后续心跳重复下发；客户端应按 `query_id` 去重。这样即使
+心跳响应丢失、窗口线程正在重启或客户端短暂重连，也不会把一次性查询永久丢弃。
 
 ## 数据来源
 

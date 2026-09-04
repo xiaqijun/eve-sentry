@@ -190,11 +190,35 @@ def _claim_ocr_query_commands(client_id: str) -> list[dict[str, Any]]:
             for target_client_id, client in job.get("clients", {}).items():
                 if not isinstance(client, dict):
                     continue
-                if client.get("heartbeat_client_id") != normalized:
+                heartbeat_client_id = str(
+                    client.get("heartbeat_client_id") or ""
+                ).strip()
+                # The detector normally heartbeats with its parent ID, but
+                # older/single-window clients may heartbeat with the target
+                # child ID. Accept either form so a valid query is not lost
+                # merely because the runtime identity format changed.
+                if normalized != heartbeat_client_id and not _query_client_matches(
+                    target_client_id,
+                    normalized,
+                ):
                     continue
-                if client.get("claimed"):
+                # A delivery is deliberately retryable until that target has
+                # uploaded a result. The previous one-shot `claimed` gate
+                # dropped commands when a heartbeat raced worker startup,
+                # reconnect, or a transient UI dispatch failure.
+                if any(
+                    _query_client_matches(
+                        target_client_id,
+                        str(result.get("client_id") or "").strip(),
+                    )
+                    for result in job.get("results", {}).values()
+                    if isinstance(result, dict)
+                ):
                     continue
                 client["claimed"] = True
+                client["delivery_attempts"] = int(
+                    client.get("delivery_attempts") or 0
+                ) + 1
                 commands.append(
                     {
                         "command": "ocr_query",
