@@ -51,4 +51,7 @@ def _clean_mention_prefix(content: str) -> str:
     # QQ group events usually remove the @ token from content, while tests and
     # alternative adapters may leave it in place.
     content = content.replace("\r\n", "\n").replace("\r", "\n")
-    return re.sub(r"^\s*(?:<@!?\w+>|@\S+)\s*", "", content, count=1)
+    # Some QQ adapters concatenate the mention and slash command without a
+    # space (for example, ``@哨兵/查询人员``). Do not consume the command as
+    # part of the mention token in that form.
+    return re.sub(r"^\s*(?:<@!?\w+>|@[^\s/]+)\s*", "", content, count=1)

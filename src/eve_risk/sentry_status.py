@@ -141,7 +141,7 @@ class EveSentryStatusClient:
 def is_sentry_status_command(content: str) -> bool:
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
     normalized = re.sub(
-        r"^\s*(?:<@!?\w+>|@\S+)\s*", "", normalized, count=1
+        r"^\s*(?:<@!?\w+>|@[^\s/]+)\s*", "", normalized, count=1
     ).strip()
     normalized = re.sub(r"^/", "", normalized, count=1).strip()
     return normalized in QUERY_COMMANDS
@@ -149,7 +149,7 @@ def is_sentry_status_command(content: str) -> bool:
 
 def parse_sentry_query(content: str) -> dict[str, str] | None:
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
-    normalized = re.sub(r"^\s*(?:<@!?\w+>|@\S+)\s*", "", normalized, count=1)
+    normalized = re.sub(r"^\s*(?:<@!?\w+>|@[^\s/]+)\s*", "", normalized, count=1)
     normalized = re.sub(r"^/", "", normalized, count=1).strip()
     for command, (key, _label) in TARGETED_QUERY_COMMANDS.items():
         if normalized == command:
