@@ -97,7 +97,20 @@ EVE_SENTRY_ESI_LOCAL_FALLBACK=1
 
 验收：公共解析结果与本地实现一致；代理故障时 OCR、心跳和告警仍可用；P95 不高于直连基线；没有 token 泄漏。
 
-## 阶段 3：认证 ESI 单独评估
+## 阶段 3（待做）：Gateway 支持认证 ESI 请求
+
+当前认证 ESI 仍由 114 服务端直连，Gateway 不接触用户 OAuth token。本阶段登记为后续工作，
+不得与公共 ESI 代理改造混合上线。
+
+待完成事项：
+
+- 设计 Gateway 认证请求协议和服务间身份校验，禁止通用 URL 转发。
+- 明确 access token / refresh token 的存储、传输、轮换、撤销和审计边界。
+- 为 standings、contacts、location 等私有接口建立按授权角色隔离的缓存键，禁止跨账号复用。
+- 增加 token 脱敏、内存生命周期控制、限流、超时、失败回退和监控指标。
+- 完成安全评审、密钥轮换演练、故障回滚和真实 ESI 集成测试后再实施。
+
+在该阶段完成前，继续采用下面的现行方案：
 
 不在第一阶段迁移 `EveSsoClient`、`EsiAuthenticatedSession` 和 `EsiLoginManager`。如确实需要统一出口，另立设计：
 
