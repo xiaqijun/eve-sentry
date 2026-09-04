@@ -1057,13 +1057,15 @@ class EveSentryAlertRelay:
     async def _stream_once(self) -> None:
         cursor = _decode(await self.redis.get(ALERT_CURSOR_KEY))
         last_event_id = _decode(await self.redis.get(ALERT_EVENT_ID_KEY))
+        resume_at = cursor
+        if not resume_at and _parse_datetime(last_event_id) is not None:
+            resume_at = last_event_id
         params = {
             "limit": "50",
             "heartbeat": "15",
             "bootstrap": "1",
+            "since": resume_at or datetime.now(UTC).isoformat(),
         }
-        if not last_event_id:
-            params["since"] = cursor or datetime.now(UTC).isoformat()
         if self.min_level:
             params["min_level"] = self.min_level
         timeout = httpx.Timeout(
@@ -1075,8 +1077,10 @@ class EveSentryAlertRelay:
         headers = {"Accept": "text/event-stream"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        if last_event_id:
-            headers["Last-Event-ID"] = last_event_id
+        # The current EVE Sentry endpoint stops emitting bootstrap and heartbeat
+        # frames whenever Last-Event-ID is present. Resume with the timestamp
+        # cursor instead so reconnects remain live while event IDs are retained
+        # as delivery acknowledgements for diagnostics and future compatibility.
         async with self.http.stream(
             "GET",
             self.events_url,

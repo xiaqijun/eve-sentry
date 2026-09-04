@@ -73,7 +73,7 @@ async def test_relay_stream_uses_long_lived_sse_request() -> None:
 
 
 @pytest.mark.asyncio
-async def test_relay_persists_event_id_and_reuses_it_on_reconnect() -> None:
+async def test_relay_persists_event_id_but_reconnects_with_timestamp_cursor() -> None:
     requests: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -93,8 +93,36 @@ async def test_relay_persists_event_id_and_reuses_it_on_reconnect() -> None:
         await relay._stream_once()
 
     assert requests[0].headers.get("Last-Event-ID") is None
-    assert requests[1].headers["Last-Event-ID"] == "evt-1"
-    assert "since" not in requests[1].url.params
+    assert requests[1].headers.get("Last-Event-ID") is None
+    assert requests[1].url.params["since"] == "2026-08-30T08:00:00+00:00"
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_relay_recovers_from_legacy_timestamp_event_id_without_cursor() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            content=b": keepalive\n\n",
+        )
+
+    redis = fakeredis.aioredis.FakeRedis()
+    await redis.set(ALERT_EVENT_ID_KEY, "2026-09-04T08:39:00+00:00")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        relay = EveSentryAlertRelay(
+            http,
+            redis,
+            SimpleNamespace(),
+            "http://sentry.test/api/v1/events",
+        )
+        await relay._stream_once()
+
+    assert requests[0].headers.get("Last-Event-ID") is None
+    assert requests[0].url.params["since"] == "2026-09-04T08:39:00+00:00"
     await redis.aclose()
 
 
