@@ -3982,6 +3982,184 @@ def test_publish_heartbeat_includes_multi_window_targets():
     )
 
 
+def test_heartbeat_ocr_query_routes_to_exact_window_and_deduplicates():
+    class FakeWorker:
+        def __init__(self):
+            self.queries = []
+
+        def isRunning(self):
+            return True
+
+        def request_ocr_query(self, query_id):
+            self.queries.append(query_id)
+            return True
+
+    first = FakeWorker()
+    second = FakeWorker()
+    window = MainWindow.__new__(MainWindow)
+    window._workers = {"a": first, "b": second}
+    window._worker_contexts = {
+        "a": {
+            "client_id": "detector-client:test:pilot-a",
+            "window_title": "EVE - Pilot A",
+        },
+        "b": {
+            "client_id": "detector-client:test:pilot-b",
+            "window_title": "EVE - Pilot B",
+        },
+    }
+    window._ocr_query_inflight = {}
+    window._ocr_query_completed = {}
+    window._messages = []
+    window._log_message = window._messages.append
+    response = {
+        "commands": [
+            {
+                "command": "ocr_query",
+                "query_id": "ocrq_target_b",
+                "target_client_id": "detector-client:test:pilot-b",
+                "expires_at": "2099-09-04T03:00:00+00:00",
+            },
+            {
+                "command": "ignored",
+                "query_id": "ocrq_ignored",
+                "expires_at": "2099-09-04T03:00:00+00:00",
+            },
+            {
+                "command": "ocr_query",
+                "query_id": "ocrq_expired",
+                "target_client_id": "detector-client:test:pilot-a",
+                "expires_at": "2020-09-04T03:00:00+00:00",
+            },
+        ]
+    }
+
+    MainWindow._handle_heartbeat_response(window, response)
+    MainWindow._handle_heartbeat_response(window, response)
+
+    assert first.queries == []
+    assert second.queries == ["ocrq_target_b"]
+    assert window._ocr_query_inflight["ocrq_target_b"]["client_id"] == (
+        "detector-client:test:pilot-b"
+    )
+    assert window._messages == ["EVE - Pilot B: 已接收按需 OCR 查询"]
+
+
+def test_disconnect_worker_signals_includes_ocr_query_callbacks():
+    class FakeSignal:
+        def __init__(self):
+            self.disconnected = False
+
+        def disconnect(self):
+            self.disconnected = True
+
+    class FakeWorker:
+        def __init__(self):
+            self.ocr_snapshot = FakeSignal()
+            self.ocr_evidence_snapshot = FakeSignal()
+            self.ocr_query_snapshot = FakeSignal()
+            self.ocr_query_failed = FakeSignal()
+            self.hostile_detected = FakeSignal()
+            self.status_update = FakeSignal()
+            self.scan_complete = FakeSignal()
+            self.connection_lost = FakeSignal()
+            self.connection_restored = FakeSignal()
+
+    worker = FakeWorker()
+    window = MainWindow.__new__(MainWindow)
+
+    MainWindow._disconnect_worker_signals(window, worker)
+
+    assert worker.ocr_query_snapshot.disconnected is True
+    assert worker.ocr_query_failed.disconnected is True
+
+
+def test_query_ocr_upload_uses_independent_key_and_allows_empty_names():
+    class FakeUploadManager:
+        def __init__(self):
+            self.calls = []
+
+        def submit_snapshot(self, key, payload, metadata, ttl=15.0):
+            self.calls.append((key, payload, metadata, ttl))
+
+    class FakeCombo:
+        def currentText(self):
+            return "EVE - Pilot A"
+
+    manager = FakeUploadManager()
+    window = MainWindow.__new__(MainWindow)
+    window._intel_client = object()
+    window._uploads_enabled = True
+    window._upload_manager = manager
+    window._heartbeat_client_id = "detector-client:test"
+    window._window_combo = FakeCombo()
+    window._refresh_intel_location = lambda force=False, context=None: True
+    window._ocr_query_inflight = {
+        "ocrq_empty": {
+            "client_id": "detector-client:test:pilot-a",
+            "expires_at": 4_000_000_000.0,
+        }
+    }
+    window._ocr_query_completed = {}
+    context = {
+        "client_id": "detector-client:test:pilot-a",
+        "source_instance": "EVE - Pilot A",
+        "window_title": "EVE - Pilot A",
+        "system_name": "S-KSWL",
+        "system_id": 30000123,
+    }
+
+    MainWindow._publish_ocr_query_snapshot(
+        window,
+        [],
+        0,
+        "ocrq_empty",
+        context,
+    )
+
+    key, payload, metadata, ttl = manager.calls[0]
+    assert key == "query:ocrq_empty:detector-client:test:pilot-a"
+    assert payload == {
+        "client_id": "detector-client:test:pilot-a",
+        "source_instance": "EVE - Pilot A",
+        "system_name": "S-KSWL",
+        "system_id": 30000123,
+        "names": [],
+        "query_id": "ocrq_empty",
+    }
+    assert metadata["query_id"] == "ocrq_empty"
+    assert ttl > 0
+
+
+def test_query_ocr_marks_completed_only_after_upload_success():
+    window = MainWindow.__new__(MainWindow)
+    window._ocr_query_inflight = {
+        "ocrq_done": {
+            "client_id": "detector-client:test:pilot-a",
+            "expires_at": 4_000_000_000.0,
+        }
+    }
+    window._ocr_query_completed = {}
+    window._messages = []
+    window._log_message = window._messages.append
+    window._update_window_status = lambda *args, **kwargs: None
+    window._refresh_status_cards = lambda: None
+
+    MainWindow._handle_ocr_publish_success(
+        window,
+        {
+            "query_id": "ocrq_done",
+            "expires_at": 4_000_000_000.0,
+            "names": [],
+            "context": {"window_title": "EVE - Pilot A"},
+        },
+    )
+
+    assert "ocrq_done" not in window._ocr_query_inflight
+    assert window._ocr_query_completed["ocrq_done"] == 4_000_000_000.0
+    assert window._messages == ["EVE - Pilot A: 按需 OCR 查询已完成（0 人）"]
+
+
 def test_stopped_monitor_skips_ocr_but_publishes_idle_heartbeat():
     class Client:
         def __init__(self):

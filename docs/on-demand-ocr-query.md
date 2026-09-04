@@ -1,7 +1,7 @@
 # 按需 OCR 查询客户端对接说明
 
-本文只记录客户端需要实现的对接内容，不包含本次代码实现。服务端和 QQ 机器人
-已经支持以下流程：
+本文记录客户端按需 OCR 查询的协议和实现。客户端、服务端和 QQ 机器人已经支持
+以下流程：
 
 ```text
 QQ 机器人创建查询
@@ -14,7 +14,7 @@ QQ 机器人创建查询
 服务端接口的完整说明见
 [`eve-sentry/docs/api-reference.md`](https://github.com/xiaqijun/eve-sentry/blob/main/docs/api-reference.md)。
 
-## 客户端需要实现的内容
+## 客户端实现
 
 ### 1. 读取 heartbeat 响应中的命令
 
@@ -44,7 +44,7 @@ POST /api/v1/clients/heartbeats
 }
 ```
 
-客户端需要：
+客户端当前实现：
 
 - 兼容没有 `commands` 字段的旧服务端；
 - 只处理 `command == "ocr_query"` 的命令；
@@ -105,7 +105,7 @@ POST /api/v1/ocr/snapshot
 服务端收到快照后会完成 ESI 识别和当前 active 名单聚合，客户端不需要实现额外的
 角色、军团或联盟查询逻辑。
 
-## 推荐的本地状态机
+## 本地状态机
 
 ```text
 收到命令
@@ -119,7 +119,7 @@ POST /api/v1/ocr/snapshot
        └─ 失败 → 保留 query_id，按有效期重试
 ```
 
-建议状态只保留在内存中，不需要持久化查询任务。服务端查询任务是短生命周期任务，
+查询状态只保留在内存中，不持久化查询任务。服务端查询任务是短生命周期任务，
 服务端重启后正在进行的查询可能失效；普通 OCR 和预警上报不受影响。
 
 ## 兼容性与验收
@@ -134,5 +134,17 @@ POST /api/v1/ocr/snapshot
 6. 正常 OCR、敌对数量上报和查询 OCR 三类队列互不覆盖；
 7. 上传失败时沿用现有可靠上传和退避机制，并在查询有效期内重试。
 
-客户端完成实现后，应在客户端仓库增加 HTTP contract tests，至少覆盖 heartbeat
-命令解析、target 路由、query_id 透传、空 OCR 名单和重复命令去重。
+## 实现映射与测试
+
+- `app/intel_client.py` 保留 heartbeat 顶层 `commands`，并在 OCR 快照中透传
+  `query_id`；
+- `app/ui/reliable_uploads.py` 将 heartbeat 响应送回 UI，同时为查询 OCR 保留独立的
+  可靠上传键和有效期；
+- `app/ui/main_window.py` 负责命令校验、过期过滤、内存去重、target 路由和查询上传；
+- `app/engine/worker.py` 负责不受常规 OCR 开关和敌对图标影响的一次性 OCR，并在
+  OCR 执行失败时重试一次；
+- `tests/test_on_demand_ocr_query.py` 覆盖 heartbeat 命令保留、`query_id` 透传和空名单；
+- `tests/test_main_window.py` 覆盖 target 精确路由、过期过滤、重复命令去重、独立队列
+  和上传成功后完成；
+- `tests/test_worker.py` 覆盖 OCR 关闭、无敌对图标和失败重试；
+- `tests/test_reliable_uploads.py` 覆盖 heartbeat 命令从上传线程返回 UI。

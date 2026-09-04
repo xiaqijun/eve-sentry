@@ -7,7 +7,7 @@ import threading
 import time
 from argparse import Namespace
 from concurrent.futures import Future
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PyQt6.QtCore import QSettings, QThread, QTimer, pyqtSignal
@@ -73,6 +73,55 @@ logger = logging.getLogger(__name__)
 
 LISTENER_RETRY_INITIAL_SECONDS = 30.0
 LISTENER_RETRY_MAX_SECONDS = 600.0
+
+
+def _ocr_query_commands(
+    response: object,
+    *,
+    now: float | None = None,
+) -> list[dict]:
+    """Return valid, unexpired one-shot OCR commands from a heartbeat response."""
+    if not isinstance(response, dict):
+        return []
+    raw_commands = response.get("commands")
+    if not isinstance(raw_commands, list):
+        return []
+    current_time = time.time() if now is None else float(now)
+    commands: list[dict] = []
+    seen: set[str] = set()
+    for item in raw_commands:
+        if not isinstance(item, dict) or item.get("command") != "ocr_query":
+            continue
+        query_id = str(item.get("query_id") or "").strip()
+        if not query_id or query_id in seen:
+            continue
+        expires_at = _ocr_query_expiry(item.get("expires_at"))
+        if expires_at is None or expires_at <= current_time:
+            continue
+        seen.add(query_id)
+        commands.append(
+            {
+                "query_id": query_id,
+                "target_client_id": str(
+                    item.get("target_client_id") or ""
+                ).strip(),
+                "expires_at": expires_at,
+            }
+        )
+    return commands
+
+
+def _ocr_query_expiry(value: object) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 def _force_exit_if_shutdown_stalls(
@@ -2385,6 +2434,7 @@ class MainWindow(QMainWindow):
     def _handle_ocr_publish_success(self, metadata: dict) -> None:
         names = list(metadata.get("names") or [])
         context = metadata.get("context")
+        query_id = str(metadata.get("query_id") or "").strip()
         window_title = "EVE"
         if isinstance(context, dict):
             window_title = str(
@@ -2392,12 +2442,30 @@ class MainWindow(QMainWindow):
                 or context.get("source_instance")
                 or window_title
             ).strip()
-        self._heartbeat_last_action = f"ocr_snapshot:{len(names)}"
+        self._heartbeat_last_action = (
+            f"ocr_query:{len(names)}" if query_id else f"ocr_snapshot:{len(names)}"
+        )
         self._heartbeat_last_error = ""
         self._heartbeat_last_success_at = heartbeat_now_iso()
-        self._log_message(
-            f"{window_title}: 服务器已确认 OCR 敌对名单（{len(names)} 人）"
-        )
+        if query_id:
+            inflight = _instance_attr(self, "_ocr_query_inflight", {})
+            request = inflight.pop(query_id, None)
+            completed = _instance_attr(self, "_ocr_query_completed", {})
+            expires_at = float(
+                metadata.get("expires_at")
+                or (request or {}).get("expires_at")
+                or time.time() + 60.0
+            )
+            completed[query_id] = expires_at
+            self._ocr_query_inflight = inflight
+            self._ocr_query_completed = completed
+            self._log_message(
+                f"{window_title}: 按需 OCR 查询已完成（{len(names)} 人）"
+            )
+        else:
+            self._log_message(
+                f"{window_title}: 服务器已确认 OCR 敌对名单（{len(names)} 人）"
+            )
         self._update_window_status(context, "运行中", f"OCR 名单 {len(names)}")
         self._refresh_status_cards()
 
@@ -2718,6 +2786,25 @@ class MainWindow(QMainWindow):
                     context=context,
                     hostile_icon_count=hostile_icon_count,
                     ocr_evidence=evidence,
+                )
+            )
+        query_snapshot = getattr(worker, "ocr_query_snapshot", None)
+        if query_snapshot is not None:
+            query_snapshot.connect(
+                lambda names, hostile_icon_count, query_id, context=target: self._publish_ocr_query_snapshot(
+                    names,
+                    hostile_icon_count,
+                    query_id,
+                    context,
+                )
+            )
+        query_failed = getattr(worker, "ocr_query_failed", None)
+        if query_failed is not None:
+            query_failed.connect(
+                lambda query_id, message, context=target: self._handle_ocr_query_failed(
+                    query_id,
+                    message,
+                    context,
                 )
             )
         worker.hostile_detected.connect(
@@ -3135,7 +3222,12 @@ class MainWindow(QMainWindow):
             worker.scan_complete.disconnect()
         except TypeError:
             pass
-        for signal_name in ("connection_lost", "connection_restored"):
+        for signal_name in (
+            "ocr_query_snapshot",
+            "ocr_query_failed",
+            "connection_lost",
+            "connection_restored",
+        ):
             signal = getattr(worker, signal_name, None)
             if signal is None:
                 continue
@@ -3312,6 +3404,9 @@ class MainWindow(QMainWindow):
         context: dict | None = None,
         hostile_icon_count: int = 0,
         ocr_evidence: dict | None = None,
+        query_id: str = "",
+        upload_key: str = "",
+        upload_ttl: float | None = None,
     ) -> None:
         # Coordinates are local detection evidence and are intentionally not
         # sent. The server classifies the complete OCR roster through ESI.
@@ -3349,31 +3444,39 @@ class MainWindow(QMainWindow):
             # Upload the complete raw OCR roster for server-side ESI lookup.
             "names": list(names),
         }
+        normalized_query_id = str(query_id or "").strip()
+        if normalized_query_id:
+            payload["query_id"] = normalized_query_id
         if hostile_icon_count > 0:
             payload["hostile_icon_count"] = int(hostile_icon_count)
+        metadata = {
+            "kind": "ocr",
+            "context": context,
+            "names": list(names),
+        }
+        if normalized_query_id:
+            metadata["query_id"] = normalized_query_id
+            inflight = _instance_attr(self, "_ocr_query_inflight", {})
+            request = inflight.get(normalized_query_id, {})
+            metadata["expires_at"] = float(
+                request.get("expires_at") or time.time() + 60.0
+            )
         upload_manager = _instance_attr(self, "_upload_manager")
         if upload_manager is not None:
             upload_manager.submit_snapshot(
-                client_id,
+                upload_key or client_id,
                 payload,
-                {
-                    "kind": "ocr",
-                    "context": context,
-                    "names": list(names),
-                },
+                metadata,
+                ttl=15.0 if upload_ttl is None else max(0.1, float(upload_ttl)),
             )
             return
         runner = _instance_attr(self, "_network_tasks")
         if runner is not None:
             client = self._intel_client
             runner.submit_latest(
-                f"ocr:{client_id}",
+                upload_key or f"ocr:{client_id}",
                 lambda: client.post_ocr_snapshot(**payload),
-                {
-                    "kind": "ocr",
-                    "context": context,
-                    "names": list(names),
-                },
+                metadata,
             )
             return
         try:
@@ -3388,6 +3491,9 @@ class MainWindow(QMainWindow):
         self._heartbeat_last_action = f"ocr_snapshot:{len(names)}"
         self._heartbeat_last_error = ""
         self._heartbeat_last_success_at = heartbeat_now_iso()
+        if normalized_query_id:
+            self._handle_ocr_publish_success(metadata)
+            return
         self._update_window_status(context, "运行中", f"OCR 名单 {len(names)}")
         self._refresh_status_cards()
 
@@ -3586,10 +3692,133 @@ class MainWindow(QMainWindow):
         self._set_heartbeat_enabled(True)
         QTimer.singleShot(0, self._publish_heartbeat)
 
-    def _on_reliable_heartbeat_uploaded(self, _metadata: object) -> None:
+    def _on_reliable_heartbeat_uploaded(self, metadata: object) -> None:
         self._last_heartbeat_error = ""
         self._heartbeat_last_success_at = heartbeat_now_iso()
+        details = metadata if isinstance(metadata, dict) else {}
+        self._handle_heartbeat_response(details.get("response"))
         self._refresh_status_cards()
+
+    def _handle_heartbeat_response(self, response: object) -> None:
+        """Route one-shot OCR commands returned by a detector heartbeat."""
+        now = time.time()
+        inflight = {
+            query_id: request
+            for query_id, request in _instance_attr(
+                self,
+                "_ocr_query_inflight",
+                {},
+            ).items()
+            if float(request.get("expires_at") or 0.0) > now
+        }
+        completed = {
+            query_id: expires_at
+            for query_id, expires_at in _instance_attr(
+                self,
+                "_ocr_query_completed",
+                {},
+            ).items()
+            if float(expires_at or 0.0) > now
+        }
+        self._ocr_query_inflight = inflight
+        self._ocr_query_completed = completed
+        for command in _ocr_query_commands(response, now=now):
+            query_id = command["query_id"]
+            if query_id in inflight or query_id in completed:
+                continue
+            if self._dispatch_ocr_query(command):
+                inflight = self._ocr_query_inflight
+
+    def _dispatch_ocr_query(self, command: dict) -> bool:
+        query_id = str(command.get("query_id") or "").strip()
+        target_client_id = str(command.get("target_client_id") or "").strip()
+        workers = getattr(self, "_workers", {})
+        contexts = getattr(self, "_worker_contexts", {})
+        selected: tuple[object, dict] | None = None
+        for key, context in contexts.items():
+            if target_client_id and str(context.get("client_id") or "") != target_client_id:
+                continue
+            worker = workers.get(key)
+            is_running = getattr(worker, "isRunning", None)
+            if worker is None or (callable(is_running) and not is_running()):
+                continue
+            selected = (worker, context)
+            break
+        if selected is None:
+            return False
+
+        worker, context = selected
+        request = getattr(worker, "request_ocr_query", None)
+        if not callable(request):
+            return False
+        if not request(query_id):
+            return False
+        client_id = target_client_id or str(context.get("client_id") or "").strip()
+        self._ocr_query_inflight[query_id] = {
+            "client_id": client_id,
+            "expires_at": float(command["expires_at"]),
+        }
+        window_title = str(
+            context.get("window_title")
+            or context.get("source_instance")
+            or client_id
+            or "EVE"
+        )
+        self._log_message(f"{window_title}: 已接收按需 OCR 查询")
+        return True
+
+    def _publish_ocr_query_snapshot(
+        self,
+        names: list[str],
+        hostile_icon_count: int,
+        query_id: str,
+        context: dict,
+    ) -> None:
+        normalized_query_id = str(query_id or "").strip()
+        request = _instance_attr(self, "_ocr_query_inflight", {}).get(
+            normalized_query_id
+        )
+        if not request:
+            return
+        remaining = float(request.get("expires_at") or 0.0) - time.time()
+        if remaining <= 0:
+            self._ocr_query_inflight.pop(normalized_query_id, None)
+            return
+        query_context = dict(context)
+        query_context["client_id"] = str(
+            request.get("client_id") or query_context.get("client_id") or ""
+        )
+        client_id = query_context["client_id"]
+        self._publish_ocr_snapshot(
+            list(names),
+            context=query_context,
+            hostile_icon_count=hostile_icon_count,
+            query_id=normalized_query_id,
+            upload_key=f"query:{normalized_query_id}:{client_id}",
+            upload_ttl=remaining,
+        )
+
+    def _handle_ocr_query_failed(
+        self,
+        query_id: str,
+        message: str,
+        context: dict,
+    ) -> None:
+        normalized_query_id = str(query_id or "").strip()
+        if not normalized_query_id:
+            return
+        request = _instance_attr(self, "_ocr_query_inflight", {}).pop(
+            normalized_query_id,
+            None,
+        )
+        if request is None:
+            return
+        window_title = str(
+            context.get("window_title")
+            or context.get("source_instance")
+            or "EVE"
+        )
+        self._log_message(f"{window_title}: 按需 OCR 查询失败：{message}")
 
     def _refresh_intel_location(
         self,

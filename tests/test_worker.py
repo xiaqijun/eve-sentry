@@ -272,6 +272,95 @@ def test_monitor_worker_discards_ocr_names_when_no_red_icon_exists():
     assert alerts == [0]
 
 
+def test_monitor_worker_runs_one_shot_query_with_ocr_disabled_and_no_red_icons():
+    frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
+
+    class FrameCapturer:
+        def __init__(self):
+            self.calls = 0
+
+        def screenshot(self, _x, _y, _w, _h):
+            self.calls += 1
+            if self.calls == 1:
+                return frame
+            raise TargetWindowClosed("done")
+
+    class QueryOcr:
+        def recognize(self, image, progress=None):
+            _ = image, progress
+            return [("Friendly Pilot", 0.99)]
+
+    worker = MonitorWorker(FrameCapturer(), QueryOcr())
+    worker.set_region(0, 0, frame.width, frame.height)
+    worker.set_ocr_enabled(False)
+    assert worker.request_ocr_query("ocrq_abc123") is True
+    queries = []
+    normal_snapshots = []
+    worker.ocr_query_snapshot.connect(
+        lambda names, hostile_count, query_id: queries.append(
+            (names, hostile_count, query_id)
+        )
+    )
+    worker.ocr_snapshot.connect(
+        lambda names, hostile_count: normal_snapshots.append(
+            (names, hostile_count)
+        )
+    )
+
+    worker.run()
+
+    assert queries == [(["Friendly Pilot"], 0, "ocrq_abc123")]
+    assert normal_snapshots == []
+
+
+def test_monitor_worker_retries_failed_one_shot_query_once(monkeypatch):
+    frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
+
+    class FrameCapturer:
+        def __init__(self):
+            self.calls = 0
+
+        def screenshot(self, _x, _y, _w, _h):
+            self.calls += 1
+            if self.calls <= 2:
+                return frame
+            raise TargetWindowClosed("done")
+
+    class RecoveringOcr:
+        def __init__(self):
+            self.calls = 0
+
+        def recognize(self, image, progress=None):
+            _ = image, progress
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary OCR failure")
+            return []
+
+    monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
+    ocr = RecoveringOcr()
+    worker = MonitorWorker(FrameCapturer(), ocr)
+    worker.set_region(0, 0, frame.width, frame.height)
+    worker.set_ocr_enabled(False)
+    worker.request_ocr_query("ocrq_retry")
+    queries = []
+    failures = []
+    worker.ocr_query_snapshot.connect(
+        lambda names, hostile_count, query_id: queries.append(
+            (names, hostile_count, query_id)
+        )
+    )
+    worker.ocr_query_failed.connect(
+        lambda query_id, message: failures.append((query_id, message))
+    )
+
+    worker.run()
+
+    assert ocr.calls == 2
+    assert queries == [([], 0, "ocrq_retry")]
+    assert failures == []
+
+
 def test_monitor_worker_does_not_publish_full_list_after_red_row_mismatches():
     frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
     draw = ImageDraw.Draw(frame)

@@ -225,9 +225,12 @@ class ReliableUploadManager(QObject):
                 close()
 
     def _send(self, upload: _PendingUpload) -> None:
+        response: dict[str, Any] | None = None
         try:
             if upload.key == "heartbeat":
-                self._client.post_heartbeat(**upload.payload)
+                result = self._client.post_heartbeat(**upload.payload)
+                if isinstance(result, dict):
+                    response = result
             elif upload.key.startswith("presence:"):
                 self._client.post_hostile_presence(**upload.payload)
             else:
@@ -265,6 +268,8 @@ class ReliableUploadManager(QObject):
         metadata = dict(upload.metadata)
         metadata["generation"] = upload.generation
         if upload.key == "heartbeat":
+            if response is not None:
+                metadata["response"] = response
             self.heartbeat_uploaded.emit(metadata)
         elif upload.key.startswith("presence:"):
             self.presence_uploaded.emit(metadata)

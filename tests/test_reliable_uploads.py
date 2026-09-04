@@ -1,6 +1,8 @@
 import threading
 import time
 
+from PyQt6.QtCore import Qt
+
 from app.intel_client import IntelApiError
 from app.ui.reliable_uploads import ReliableUploadManager
 
@@ -334,6 +336,42 @@ def test_reliable_uploader_prioritizes_presence_then_heartbeat_then_ocr(tmp_path
 
         assert wait_until(lambda: len(calls) == 3)
         assert calls == ["presence", "heartbeat", "ocr"]
+    finally:
+        manager.shutdown()
+
+
+def test_reliable_uploader_exposes_heartbeat_commands_to_ui(tmp_path):
+    class Client:
+        def post_heartbeat(self, **payload):
+            return {
+                "client_id": payload["client_id"],
+                "commands": [
+                    {
+                        "command": "ocr_query",
+                        "query_id": "ocrq_abc123",
+                    }
+                ],
+            }
+
+    manager = ReliableUploadManager(
+        Client(),
+        state_path=tmp_path / "uploads.json",
+    )
+    uploaded = []
+    manager.heartbeat_uploaded.connect(
+        uploaded.append,
+        Qt.ConnectionType.DirectConnection,
+    )
+    try:
+        manager.submit_heartbeat(
+            {"client_id": "detector-client:test"},
+            {"kind": "heartbeat"},
+        )
+
+        assert wait_until(lambda: bool(uploaded))
+        assert uploaded[0]["response"]["commands"][0]["query_id"] == (
+            "ocrq_abc123"
+        )
     finally:
         manager.shutdown()
 

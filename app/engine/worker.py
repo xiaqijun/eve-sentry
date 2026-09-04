@@ -41,6 +41,8 @@ class MonitorWorker(QThread):
     scan_complete = pyqtSignal(int)       # total scan count
     ocr_snapshot = pyqtSignal(list, int)  # names, verified hostile-icon count
     ocr_evidence_snapshot = pyqtSignal(list, int, object)
+    ocr_query_snapshot = pyqtSignal(list, int, str)
+    ocr_query_failed = pyqtSignal(str, str)
     hostile_detected = pyqtSignal(int)    # emitted when the visible count changes
     connection_lost = pyqtSignal(str)     # capture/window connection is offline
     connection_restored = pyqtSignal()    # capture resumed after an offline state
@@ -64,6 +66,8 @@ class MonitorWorker(QThread):
         self._window: Optional[dict] = None  # {hwnd, title, w, h}
         self._ocr_request_key: str | None = None
         self._ocr_enabled = True
+        self._ocr_query_lock = threading.Lock()
+        self._ocr_query_attempts: dict[str, int] = {}
         self._presence_refresh_requested = threading.Event()
         self._capture_failure_count = 0
         self._capture_lost = False
@@ -125,6 +129,44 @@ class MonitorWorker(QThread):
     def request_presence_refresh(self) -> None:
         """Re-publish the current visual count after the monitored system changes."""
         self._presence_refresh_requested.set()
+
+    def request_ocr_query(self, query_id: str) -> bool:
+        """Queue one independent OCR pass without changing normal OCR settings."""
+        normalized = str(query_id or "").strip()
+        if not normalized:
+            return False
+        with self._ocr_query_lock:
+            if normalized in self._ocr_query_attempts:
+                return False
+            self._ocr_query_attempts[normalized] = 0
+        return True
+
+    def _next_ocr_query(self) -> str:
+        with self._ocr_query_lock:
+            return next(iter(self._ocr_query_attempts), "")
+
+    def _complete_ocr_query(self, query_id: str) -> None:
+        with self._ocr_query_lock:
+            self._ocr_query_attempts.pop(query_id, None)
+
+    def _record_ocr_query_failure(self, query_id: str) -> bool:
+        """Return whether one final retry remains for the query."""
+        with self._ocr_query_lock:
+            attempts = self._ocr_query_attempts.get(query_id)
+            if attempts is None:
+                return False
+            attempts += 1
+            if attempts >= 2:
+                self._ocr_query_attempts.pop(query_id, None)
+                return False
+            self._ocr_query_attempts[query_id] = attempts
+            return True
+
+    def _drain_ocr_queries(self) -> list[str]:
+        with self._ocr_query_lock:
+            query_ids = list(self._ocr_query_attempts)
+            self._ocr_query_attempts.clear()
+        return query_ids
 
     def stop(self) -> None:
         """Request the current scan and the monitor loop to stop."""
@@ -190,6 +232,8 @@ class MonitorWorker(QThread):
                 self._wait_for_next_scan()
                 self._active_interval = self._interval
             while not self._stop_requested():
+                ocr_query_id = ""
+                ocr_attempted = False
                 if self._region is None:
                     self.status_update.emit("未设置截图区域")
                     self._wait_for_next_scan()
@@ -235,11 +279,13 @@ class MonitorWorker(QThread):
                         # a transiently incomplete OCR frame.
                         ocr_retry_remaining = 3
 
-                    should_run_ocr = (
+                    ocr_query_id = self._next_ocr_query()
+                    should_run_regular_ocr = (
                         self._ocr_enabled
                         and hostile_count > 0
                         and (count_changed or rows_changed or ocr_retry_remaining > 0)
                     )
+                    should_run_ocr = bool(ocr_query_id) or should_run_regular_ocr
                     if not should_run_ocr:
                         scan_count += 1
                         self.scan_complete.emit(scan_count)
@@ -276,6 +322,7 @@ class MonitorWorker(QThread):
 
                     progress = None if ocr_ready else self.status_update.emit
                     ocr_retry_remaining = max(0, ocr_retry_remaining - 1)
+                    ocr_attempted = True
                     supports_full_frame_ocr = any(
                         callable(getattr(self._ocr, method, None))
                         for method in (
@@ -287,7 +334,7 @@ class MonitorWorker(QThread):
                         full_ocr_results = self._recognize_with_boxes(
                             img,
                             progress=progress,
-                            priority=10,
+                            priority=100 if ocr_query_id else 10,
                         )
                         ocr_results = [
                             (text, confidence)
@@ -304,14 +351,22 @@ class MonitorWorker(QThread):
                         ocr_results = self._recognize(
                             img,
                             progress=progress,
-                            priority=10,
+                            priority=100 if ocr_query_id else 10,
                         )
-                    if ocr_results:
+                    snapshot_names = build_ocr_snapshot_names(ocr_results)
+                    if ocr_results and should_run_regular_ocr:
                         self.ocr_snapshot.emit(
-                            build_ocr_snapshot_names(ocr_results),
+                            snapshot_names,
                             hostile_count,
                         )
                         ocr_retry_remaining = 0
+                    if ocr_query_id:
+                        self._complete_ocr_query(ocr_query_id)
+                        self.ocr_query_snapshot.emit(
+                            snapshot_names,
+                            hostile_count,
+                            ocr_query_id,
+                        )
                     ocr_ready = True
                     if self._stop_requested():
                         break
@@ -334,6 +389,12 @@ class MonitorWorker(QThread):
                 except OCRRequestSuperseded:
                     logger.debug("Discarded superseded OCR frame")
                     ocr_retry_remaining = max(1, ocr_retry_remaining)
+                    if ocr_query_id and ocr_attempted:
+                        if not self._record_ocr_query_failure(ocr_query_id):
+                            self.ocr_query_failed.emit(
+                                ocr_query_id,
+                                "OCR 请求被更新的画面替代",
+                            )
                     self.status_update.emit("OCR 已跳过过期帧")
                 except TargetWindowClosed:
                     self._mark_capture_failure(
@@ -349,11 +410,19 @@ class MonitorWorker(QThread):
                     self.status_update.emit("后台画面暂不可用，已跳过当前帧")
                 except Exception:
                     logger.exception("Scan cycle failed")
+                    if ocr_query_id and ocr_attempted:
+                        if not self._record_ocr_query_failure(ocr_query_id):
+                            self.ocr_query_failed.emit(
+                                ocr_query_id,
+                                "按需 OCR 连续两次执行失败",
+                            )
                     self.status_update.emit("扫描出错，已跳过当前帧")
 
                 # Wait between scans
                 self._wait_for_next_scan()
         finally:
+            for query_id in self._drain_ocr_queries():
+                self.ocr_query_failed.emit(query_id, "监控窗口已停止")
             if owns_capturer:
                 capturer.close()
 
