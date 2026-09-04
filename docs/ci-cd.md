@@ -1,10 +1,10 @@
 # 机器人 CI/CD
 
-GitHub Actions 工作流 `.github/workflows/deploy.yml` 在以下场景运行：
+GitHub Actions 工作流 `.github/workflows/deploy.yml` 以 `main` 为唯一发布入口：
 
-- 向 `main` 提交或合并代码：验证通过后自动部署生产环境；
-- 针对 `main` 的 Pull Request：只运行验证，不接触生产环境；
-- 手动触发 `workflow_dispatch`：重新验证并部署当前分支版本。
+- 向 `main` 推送提交：验证通过后自动部署生产环境；
+- 其他分支或 Pull Request（如平台触发）：只运行验证，不接触生产环境；
+- 手动触发 `workflow_dispatch`：默认只验证；生产部署仍必须使用 `main` 提交。
 
 ## 部署门禁
 
