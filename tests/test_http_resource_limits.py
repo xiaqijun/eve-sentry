@@ -25,10 +25,15 @@ def _request(server, method, path, headers=None, body=None):
     connection.endheaders(body)
     response = connection.getresponse()
     raw = response.read()
+    content_type = response.getheader("Content-Type", "")
     result = (
         response.status,
-        response.getheader("Content-Type", ""),
-        json.loads(raw.decode("utf-8")) if raw else {},
+        content_type,
+        (
+            {}
+            if not raw or content_type.startswith("text/event-stream")
+            else json.loads(raw.decode("utf-8"))
+        ),
     )
     connection.close()
     return result

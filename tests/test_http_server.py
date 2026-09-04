@@ -1,5 +1,5 @@
-import json
 import http.client
+import json
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -10,8 +10,8 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from app.core.models import Evidence, ThreatEvent
 from app.core.heartbeat import monitored_system_names
+from app.core.models import Evidence, ThreatEvent
 from app.esi.cache import EsiCache
 from app.esi.resolver import EsiResolver
 from app.esi.session import ContactStanding
@@ -21,7 +21,9 @@ from app.intel.config import IntelConfigStore
 from app.intel.enrichment import ThreatEnricher
 from app.intel.scoring import ScoringEngine, Watchlist
 from app.intel_client import IntelApiClient
+from app.server.auth import AuthService
 from app.server.auth_http import build_admin_clients_payload
+from app.server.auth_store import AuthRepository
 from app.server.http_server import (
     IntelHTTPServer,
     IntelRequestHandler,
@@ -29,8 +31,6 @@ from app.server.http_server import (
     _monitoring_node_changes,
     _monitoring_target_state,
 )
-from app.server.auth import AuthService
-from app.server.auth_store import AuthRepository
 from app.server.intel_store import IntelStore, StarSystem
 from app.server.map_config import MapConfigStore
 from tests.auth_test_store import AuthTestStore
@@ -4434,7 +4434,7 @@ def test_sse_disconnects_after_service_key_owner_is_disabled(tmp_path):
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()
     request = Request(
-        f"{server.url}/api/v1/events?timeout=10&heartbeat=0&bootstrap=1",
+        f"{server.url}/api/v1/events?timeout=10&heartbeat=0&bootstrap=0",
         headers={"Authorization": f"Bearer {service_key['secret']}"},
     )
     try:
@@ -4478,7 +4478,7 @@ def test_sse_does_not_revalidate_unchanged_service_key_every_second(
     )
     try:
         with urlopen(request, timeout=4) as response:
-            assert response.read() == b""
+            assert response.read() == b": connected\n\n"
         assert active_checks == 1
     finally:
         server.stop()
@@ -4686,6 +4686,41 @@ def test_v1_events_reads_active_intel_once_per_refresh(tmp_path):
 
         assert status == 200
         assert store.active_reads == 1
+    finally:
+        server.stop()
+
+
+def test_v1_events_reuses_active_alert_snapshot_between_connections(tmp_path):
+    class CountingStore(IntelStore):
+        def __init__(self, filepath):
+            super().__init__(filepath)
+            self.report_snapshots = 0
+
+        def _reports_snapshot(self):
+            self.report_snapshots += 1
+            return super()._reports_snapshot()
+
+    store = CountingStore(tmp_path / "intel.json")
+    store.record_ocr_snapshot(
+        {
+            "client_id": "detector-client:test",
+            "source_instance": "EVE - Pilot",
+            "system_name": "S-KSWL",
+            "names": ["Enemy"],
+            "hostile_icon_count": 1,
+        }
+    )
+    store.report_snapshots = 0
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        for _ in range(2):
+            status, _, body = request_text(
+                f"{server.url}/api/v1/events?timeout=0&bootstrap=1"
+            )
+            assert status == 200
+            assert ": connected" in body
+        assert store.report_snapshots == 1
     finally:
         server.stop()
 

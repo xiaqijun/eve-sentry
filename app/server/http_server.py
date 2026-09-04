@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -31,6 +32,8 @@ API_V1_PREFIX = "/api/v1"
 _EVENT_STREAM_CONDITION = threading.Condition()
 _EVENT_STREAM_GENERATION = 0
 _ACTIVE_EVENT_STREAMS = 0
+_ACTIVE_EVENT_SNAPSHOT_INIT_LOCK = threading.Lock()
+_ACTIVE_EVENT_SNAPSHOT_TTL_SECONDS = 1.0
 SSE_AUTH_RECHECK_SECONDS = 30.0
 MAX_JSON_BODY_BYTES = 1024 * 1024
 MAX_QUERY_LIMIT = 1000
@@ -2667,23 +2670,47 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             limit=None,
         )
 
+        return self._filter_active_alerts(
+            store,
+            alerts,
+            since=since,
+            limit=limit,
+            min_score=min_score,
+            min_level=min_level,
+            include_since=include_since,
+        )
+
+    def _filter_active_alerts(
+        self,
+        store: IntelStore,
+        alerts: list[dict[str, Any]],
+        *,
+        since: str | None = None,
+        limit: int | None = None,
+        min_score: int | None = None,
+        min_level: str | None = None,
+        include_since: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Apply stream/query filters without rebuilding active alerts."""
+        filtered = list(alerts)
+
         since_query = since.strip() if since else ""
         if since_query:
             if include_since:
-                alerts = [
-                    alert for alert in alerts
+                filtered = [
+                    alert for alert in filtered
                     if alert["created_at"] >= since_query
                 ]
             else:
-                alerts = [
-                    alert for alert in alerts
+                filtered = [
+                    alert for alert in filtered
                     if alert["created_at"] > since_query
                 ]
 
         min_score_value = store._optional_score(min_score)
         min_level_rank = store._alert_level_rank(min_level)
-        alerts = [
-            alert for alert in alerts
+        filtered = [
+            alert for alert in filtered
             if store._alert_passes_filters(
                 alert,
                 acknowledged=None,
@@ -2692,8 +2719,52 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             )
         ]
         if limit is not None:
-            alerts = alerts[:max(0, limit)]
-        return alerts
+            filtered = filtered[:max(0, limit)]
+        return filtered
+
+    def _cached_active_event_state(
+        self,
+        store: IntelStore,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Build the active SSE state once per change generation and second."""
+        cache = getattr(store, "_sse_active_event_cache", None)
+        if cache is None:
+            with _ACTIVE_EVENT_SNAPSHOT_INIT_LOCK:
+                cache = getattr(store, "_sse_active_event_cache", None)
+                if cache is None:
+                    cache = {
+                        "lock": threading.RLock(),
+                        "generation": -1,
+                        "created_at": 0.0,
+                        "state": None,
+                    }
+                    store._sse_active_event_cache = cache
+
+        now = time.monotonic()
+        generation = _event_stream_generation()
+        with cache["lock"]:
+            if (
+                cache["state"] is not None
+                and cache["generation"] == generation
+                and now - float(cache["created_at"]) < _ACTIVE_EVENT_SNAPSHOT_TTL_SECONDS
+            ):
+                state = cache["state"]
+            else:
+                active_items = self._visible_active_items(
+                    store,
+                    store.list_active_intel(),
+                )
+                alerts = self._active_alert_list(
+                    since="",
+                    limit=None,
+                    active_items=active_items,
+                )
+                presence_alerts = self._active_presence_alerts(active_items)
+                state = (active_items, alerts, presence_alerts)
+                cache["generation"] = generation
+                cache["created_at"] = now
+                cache["state"] = state
+            return copy.deepcopy(state)
 
     def _active_presence_alerts(
         self,
@@ -3293,6 +3364,12 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         self.send_header("X-Accel-Buffering", "no")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
+        # Flush a byte immediately so clients can distinguish a live stream
+        # from a handler blocked while building the first active snapshot.
+        try:
+            self._write_sse_comment("connected")
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
         last_seen = since.strip()
         resume_after_id = resume_after_id.strip()
@@ -3339,19 +3416,22 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 )
                 active_items: list[dict[str, Any]] | None = None
                 alert_cursors: dict[str, tuple[int, str]] = {}
+                active_presence_alerts: list[dict[str, Any]] = []
                 if active_only:
                     store = self._store()
-                    active_items = self._visible_active_items(
+                    (
+                        active_items,
+                        active_alerts,
+                        active_presence_alerts,
+                    ) = self._cached_active_event_state(store)
+                    alerts = self._filter_active_alerts(
                         store,
-                        store.list_active_intel(),
-                    )
-                    alerts = self._active_alert_list(
+                        active_alerts,
                         since="" if stream_cursor is not None else last_seen,
-                        limit=None if limit > 0 else limit,
+                        limit=None,
                         include_since=current_include_since,
                         min_score=min_score,
                         min_level=min_level,
-                        active_items=active_items,
                     )
                     cursor_alerts: list[
                         tuple[tuple[int, str], dict[str, Any]]
@@ -3387,14 +3467,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     alerts = list(ordered_alerts)
                 active_snapshot_alerts: list[dict[str, Any]] = []
                 if active_only:
-                    active_presence_alerts = self._active_presence_alerts(
-                        active_items or []
-                    )
-                    active_snapshot_alerts = self._active_alert_list(
-                        since="",
-                        limit=None,
-                        active_items=active_items,
-                    )
+                    active_snapshot_alerts = list(active_alerts)
                     active_snapshot_alerts.extend(active_presence_alerts)
                     active_snapshot_alerts.sort(
                         key=lambda item: str(item.get("created_at") or ""),
@@ -3477,7 +3550,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         last_bootstrap_fingerprint = fingerprint
                         wrote_event = True
                 if active_only:
-                    presence_alerts = self._active_presence_alerts(active_items or [])
+                    presence_alerts = list(active_presence_alerts)
                     if last_seen:
                         if current_include_since:
                             presence_alerts = [

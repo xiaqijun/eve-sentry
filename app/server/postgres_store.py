@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from datetime import timedelta, timezone
 from pathlib import Path
@@ -12,21 +13,20 @@ from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 from app.core.active_intel import (
+    DEFAULT_OCR_GRACE_SECONDS,
     ActiveIntelItem,
     ActiveIntelSnapshotResult,
-    DEFAULT_OCR_GRACE_SECONDS,
 )
 from app.core.models import Evidence, Observation, ThreatEvent
 from app.server.auth_store import migrate_auth_schema
 from app.server.intel_store import (
+    STALE_HEARTBEAT_STARTUP_GRACE_SECONDS,
     IntelReport,
     IntelStore,
-    STALE_HEARTBEAT_STARTUP_GRACE_SECONDS,
     StarSystem,
     _OcrEsiTask,
     utc_now_iso,
 )
-
 
 POSTGRES_POOL_MIN_SIZE = 2
 POSTGRES_POOL_MAX_SIZE = 8
@@ -61,6 +61,9 @@ class PostgreSQLIntelStore(IntelStore):
         if not self._postgres_dsn:
             raise ValueError("postgres dsn is required")
         self._postgres_safe_dsn = _redact_dsn(self._postgres_dsn)
+        self._db_write_condition = threading.Condition()
+        self._db_write_next_ticket = 0
+        self._db_write_serving_ticket = 0
         self._postgres_pool = _create_connection_pool(self._postgres_dsn)
         self._import_json_path = Path(import_json_path) if import_json_path else None
         self._hot_report_limit = max(1, int(hot_report_limit))
@@ -93,6 +96,36 @@ class PostgreSQLIntelStore(IntelStore):
             super().close(wait=wait)
         finally:
             self._postgres_pool.close()
+
+    def _reserve_db_write(self) -> int:
+        """Reserve FIFO ordering for a database snapshot write."""
+        condition = getattr(self, "_db_write_condition", None)
+        if condition is None:
+            condition = threading.Condition()
+            self._db_write_condition = condition
+            self._db_write_next_ticket = 0
+            self._db_write_serving_ticket = 0
+        with condition:
+            ticket = int(getattr(self, "_db_write_next_ticket", 0))
+            self._db_write_next_ticket = ticket + 1
+            return ticket
+
+    def _wait_for_db_write(self, ticket: int | None) -> None:
+        if ticket is None:
+            return
+        condition = self._db_write_condition
+        with condition:
+            while int(self._db_write_serving_ticket) != int(ticket):
+                condition.wait()
+
+    def _finish_db_write(self, ticket: int | None) -> None:
+        if ticket is None:
+            return
+        condition = self._db_write_condition
+        with condition:
+            if int(self._db_write_serving_ticket) <= int(ticket):
+                self._db_write_serving_ticket = int(ticket) + 1
+            condition.notify_all()
 
     def _load_reports(self) -> list[IntelReport]:
         self._migrate()
@@ -512,6 +545,9 @@ class PostgreSQLIntelStore(IntelStore):
                 if active_id in self._active_intel
             ]
             hostile_waves = self._hostile_wave_changes(hostile_before, seen_at)
+            db_write_ticket = self._reserve_db_write()
+        self._wait_for_db_write(db_write_ticket)
+        try:
             with self._connect() as connection:
                 if new_reports:
                     self._assign_report_stream_positions(connection, new_reports)
@@ -560,6 +596,8 @@ class PostgreSQLIntelStore(IntelStore):
                     self._refresh_report_stream_positions(connection, new_reports)
                 self._upsert_active_intel_rows(connection, active_rows)
                 self._persist_hostile_wave_changes(connection, hostile_waves)
+        finally:
+            self._finish_db_write(db_write_ticket)
         for task in esi_tasks:
             self._esi_worker.submit(task.active_id, task)
         return result.to_dict(include_active=False)
@@ -577,11 +615,18 @@ class PostgreSQLIntelStore(IntelStore):
                 hostile_before,
                 str(result.get("seen_at") or utc_now_iso()),
             )
-            if active_rows or hostile_waves:
+            db_write_ticket = (
+                self._reserve_db_write() if active_rows or hostile_waves else None
+            )
+        if active_rows or hostile_waves:
+            self._wait_for_db_write(db_write_ticket)
+            try:
                 with self._connect() as connection:
                     self._upsert_active_intel_rows(connection, active_rows)
                     self._persist_hostile_wave_changes(connection, hostile_waves)
-            return result
+            finally:
+                self._finish_db_write(db_write_ticket)
+        return result
 
     def _persist_ocr_esi_result(
         self,
@@ -638,17 +683,20 @@ class PostgreSQLIntelStore(IntelStore):
                 for active_id, item in self._active_intel.items()
                 if active_id in active_before and not item.active
             ]
-            if changed_rows:
+            hostile_waves = self._hostile_wave_changes(
+                hostile_before,
+                str(now or utc_now_iso()).strip() or utc_now_iso(),
+            )
+            db_write_ticket = self._reserve_db_write() if changed_rows else None
+        if changed_rows:
+            self._wait_for_db_write(db_write_ticket)
+            try:
                 with self._connect() as connection:
                     self._upsert_active_intel_rows(connection, changed_rows)
-                    self._persist_hostile_wave_changes(
-                        connection,
-                        self._hostile_wave_changes(
-                            hostile_before,
-                            str(now or utc_now_iso()).strip() or utc_now_iso(),
-                        ),
-                    )
-            return expired
+                    self._persist_hostile_wave_changes(connection, hostile_waves)
+            finally:
+                self._finish_db_write(db_write_ticket)
+        return expired
 
     def list_hostile_waves(
         self,
