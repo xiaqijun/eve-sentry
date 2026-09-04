@@ -1,0 +1,30 @@
+[Unit]
+Description=EVE Sentry Public ESI Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=eve-sentry-esi
+Group=eve-sentry-esi
+WorkingDirectory=/opt/eve-sentry-esi-gateway/current
+EnvironmentFile=/etc/eve-sentry-esi/gateway.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/eve-sentry-esi-gateway/.venv/bin/python /opt/eve-sentry-esi-gateway/current/scripts/esi_gateway.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
