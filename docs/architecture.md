@@ -4,10 +4,11 @@
 
 | 组件 | 目录 | 职责 |
 | --- | --- | --- |
-| Windows 监控客户端 | `app/ui/`、`app/engine/` | 窗口选择、截图、红框检测、OCR、身份日志校验、心跳和 SSE 预警浮窗 |
+| Windows 监控客户端 | `client/app/ui/`、`client/app/engine/` | 窗口选择、截图、红框检测、OCR、身份日志校验、心跳和 SSE 预警浮窗 |
 | 情报服务 | `app/server/` | 数据存储、角色解析、敌我分类、实时态、告警、认证和 SSE |
 | Web 管理系统 | `frontend/` | 态势图、来袭报表、账号和管理员功能 |
-| QQ 机器人 | 独立部署 | 使用只读服务密钥读取 Bootstrap 和 SSE，发送主动预警 |
+| QQ 机器人 | `bot/`（独立进程部署） | 使用只读服务密钥读取 Bootstrap 和 SSE，发送主动预警 |
+| ESI Gateway | `esi-gateway/`（独立进程部署） | 公共 ESI 代理、缓存、限流和健康检查 |
 
 生产服务端使用 PostgreSQL，启动时只加载有界热数据；JSON 存储仅保留为兼容模式。
 
@@ -59,7 +60,8 @@ zKill 角色链接直接由 `character_id` 生成。服务端收到数量后立�
 
 ## 当前星系与多账号
 
-客户端会定时刷新 EVE 窗口列表，但开始监控后只启动当前下拉框所选窗口的采集线程。
+客户端代码位于 `client/`，会定时刷新 EVE 窗口列表，但开始监控后只启动当前下拉框所选
+窗口的采集线程。
 窗口标题中的角色名用于匹配对应的本地聊天日志，当前星系从该角色最新的 Local 日志
 读取。新开的 EVE 窗口会进入下拉列表，切换窗口后需重新启动监控才能改变采集目标。
 
@@ -103,14 +105,14 @@ PostgreSQL 连接由 `psycopg_pool` 复用，默认最小 2、最大 8 个连接
 客户端从本地聊天日志确认星系变化时，会立即清除旧星系的本地预警，并强制下一帧把当前红色
 图标数量重新上报到新星系；即使前后数量相同，也不会把旧星系的红色状态遗留在星图上。
 
-公共 ESI 的角色、军团、联盟和星系资料可经独立 Gateway 访问；Gateway 只处理无令牌的
+公共 ESI 的角色、军团、联盟和星系资料可经 `esi-gateway/` 独立进程访问；Gateway 只处理无令牌的
 公共接口，服务端保留本地回退。认证 ESI（SSO、contacts、standings、location）及其
 按授权账号隔离的声望快照仍由服务端直接请求，默认 TTL 为 600 秒。缓存和部署参数以
-[服务端部署](server-deployment.md#公共-esi-gateway) 和 Gateway 仓库文档为准。
+[服务端部署](server-deployment.md#公共-esi-gateway) 和 [Gateway 运维文档](../esi-gateway/docs/operations.md) 为准。
 
 机器人“查询预警”会创建一次性 OCR 任务，服务端通过 detector heartbeat 下发给目标客户端，
-客户端上传带 `query_id` 的快照后再由服务端聚合返回。协议细节见客户端仓库的
-[按需 OCR 对接说明](https://github.com/xiaqijun/eve-sentry-client/blob/main/docs/on-demand-ocr-query.md)。
+客户端上传带 `query_id` 的快照后再由服务端聚合返回。协议细节见
+[按需 OCR 对接说明](../client/docs/on-demand-ocr-query.md)。
 命令在目标客户端回传结果前可随后续心跳重复下发；客户端应按 `query_id` 去重。这样即使
 心跳响应丢失、窗口线程正在重启或客户端短暂重连，也不会把一次性查询永久丢弃。
 

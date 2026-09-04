@@ -2,8 +2,8 @@
 
 这里记录 QQ 机器人当前可用行为和发布约束。接口字段以服务端仓库的
 [API 参考](https://github.com/xiaqijun/eve-sentry/blob/main/docs/api-reference.md) 为准；
-客户端按需 OCR 协议以客户端仓库的
-[对接说明](https://github.com/xiaqijun/eve-sentry-client/blob/main/docs/on-demand-ocr-query.md) 为准。
+客户端按需 OCR 协议以本单体仓库的
+[对接说明](../../client/docs/on-demand-ocr-query.md) 为准。
 
 ## 文档入口
 

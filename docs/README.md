@@ -8,7 +8,7 @@
 
 ## 客户端用户
 
-- [客户端操作指南](https://github.com/xiaqijun/eve-sentry-client/blob/main/docs/client.md)：下载安装、连接服务端、选择 EVE 窗口、开始监控、开启预警和常见问题（客户端仓库维护）。
+- [客户端操作指南](../client/docs/client.md)：下载安装、连接服务端、选择 EVE 窗口、开始监控、开启预警和常见问题。
 - [预警频道日志客户端](channel-client.md)：独立读取 EVE 预警频道 Chatlogs，并把原始消息交给服务端解析。
 
 ## 服务端运维
@@ -24,16 +24,16 @@
 
 - [预警消息 API 接入指南](alert-api.md)：第三方软件通过 SSE 或 JSON 获取实时预警和当前敌对星系。
 - [完整 API 参考](api-reference.md)：服务端全部 HTTP 接口、参数和数据约定。
-- [多仓库开发与联动](multi-repository-development.md)：各仓库职责、联调顺序、分支约定和发布门禁。
+- [单体仓库开发与联动](multi-repository-development.md)：目录职责、联调顺序、`main` 分支约定和发布门禁。
 - [GitCode 镜像状态](gitcode-release-mirror.md)：客户端发布镜像的当前状态和限制。
 
 独立迁移计划不再作为项目文档维护；已完成的设计内容合并到架构、部署和 API 文档，
 避免同一配置在多个文件中出现不同版本。
 
-## 关联仓库文档
+## 组件文档
 
-- [机器人查询与 SSE 约束](https://github.com/xiaqijun/eve-sentry-bot/tree/main/docs)
-- [客户端按需 OCR 对接](https://github.com/xiaqijun/eve-sentry-client/blob/main/docs/on-demand-ocr-query.md)
-- [ESI Gateway 缓存与运维](https://github.com/xiaqijun/eve-sentry-esi-gateway/tree/main/docs)
+- [机器人查询与 SSE 约束](../bot/docs/README.md)
+- [客户端按需 OCR 对接](../client/docs/on-demand-ocr-query.md)
+- [ESI Gateway 缓存与运维](../esi-gateway/docs/README.md)
 
 客户端用户不需要阅读服务端部署文档，也不需要配置 Python、OCR 模型或环境变量。

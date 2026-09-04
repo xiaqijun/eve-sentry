@@ -5,7 +5,7 @@
 v1。
 
 第三方实时接入的最小示例和断线处理见[预警消息 API 接入指南](alert-api.md)。客户端
-按需 OCR 查询的命令下发与 `query_id` 约定见[客户端对接文档](https://github.com/xiaqijun/eve-sentry-client/blob/main/docs/on-demand-ocr-query.md)。
+按需 OCR 查询的命令下发与 `query_id` 约定见[客户端对接文档](../client/docs/on-demand-ocr-query.md)。
 
 ## 认证
 

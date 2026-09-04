@@ -1,7 +1,7 @@
 # 客户端 CI/CD 与发布流程
 
-本文说明 `eve-sentry-client` 仓库的测试、构建和发布流程。本仓库只负责 Windows 桌面
-客户端；服务端 API、独立 ESI Gateway 和机器人由各自仓库维护，跨仓库接口以服务端 API 文档为准。
+本文说明单体仓库 `client/` 目录的测试、构建和发布流程。服务端、ESI Gateway 和机器人
+位于同一仓库的其他目录，跨组件接口以根目录服务端 API 文档为准。
 
 ## 工作流概览
 
@@ -15,7 +15,7 @@
 
 ## Client CI
 
-以下情况会触发 `.github/workflows/ci-client.yml`：
+以下情况会触发根目录 `.github/workflows/ci-client.yml`：
 
 - 客户端相关路径 push 到 `main`；
 - 目标为 `main` 的 pull request（如平台触发）修改了客户端相关路径；
@@ -34,7 +34,7 @@ python -m pytest -q --ignore=tests/test_intel_client.py
 
 ## 自动发布门禁
 
-`.github/workflows/release-client.yml` 监听 `Client CI` 完成事件。自动发布必须同时满足：
+根目录 `.github/workflows/release-client.yml` 监听 `Client CI` 完成事件。自动发布必须同时满足：
 
 1. CI 结论为成功；
 2. CI 由 push 事件触发；
@@ -89,8 +89,8 @@ python -m pytest -q --ignore=tests/test_intel_client.py
 提交工作流修改前至少运行：
 
 ```powershell
-actionlint .github/workflows/ci-client.yml .github/workflows/release-client.yml
-.\.venv\Scripts\python -m pytest -q tests/test_release_workflows.py
+actionlint ../../.github/workflows/ci-client.yml ../../.github/workflows/release-client.yml
+..\.venv\Scripts\python -m pytest -q client/tests/test_release_workflows.py
 ```
 
 提交前还应运行 GitNexus `detect_changes()`，确认修改只影响预期的文档、测试和发布流程。

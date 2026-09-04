@@ -1,7 +1,8 @@
 # EVE Sentry
 
 EVE Sentry 是一套面向 EVE Online 本地频道的敌对监控与预警系统，包含 Windows
-监控客户端、Python 情报服务、React 管理页面和 QQ 机器人事件接入。
+监控客户端、Python 情报服务、React 管理页面、QQ 机器人和 ESI Gateway。本仓库是
+上述组件的唯一开发源，组件代码分别位于 `client/`、`bot/` 和 `esi-gateway/`。
 
 ## 系统架构
 
@@ -119,7 +120,7 @@ python -m app.detector_client
 ## 客户端下载与更新
 
 Windows 用户直接下载并解压完整便携包即可使用。连接服务端、选择 EVE 窗口、框选识别
-区域以及开启监控和预警的步骤见[客户端仓库操作指南](https://github.com/xiaqijun/eve-sentry-client/blob/main/docs/client.md)。
+区域以及开启监控和预警的步骤见[客户端操作指南](client/docs/client.md)。
 
 固定下载入口：[下载最新版 Windows 客户端](https://evesentrydownload.kisectool.com/download/latest)。
 该地址不包含版本号，会自动跳转到最新完整客户端包，并支持 HTTP Range 断点续传。
@@ -162,7 +163,9 @@ npm run build
 
 ## 文档
 
-- [客户端操作指南](https://github.com/xiaqijun/eve-sentry-client/blob/main/docs/client.md)
+- [客户端操作指南](client/docs/client.md)
+- [QQ 机器人说明](bot/docs/README.md)
+- [ESI Gateway 说明](esi-gateway/docs/README.md)
 - [系统架构](docs/architecture.md)
 - [服务端部署](docs/server-deployment.md)
 - [认证与 EVE 身份校验](docs/authentication.md)
@@ -170,7 +173,7 @@ npm run build
 - [完整 API 参考](docs/api-reference.md)
 - [预警消息 API 接入指南](docs/alert-api.md)
 - [SSE 性能与重连约束](docs/sse-performance-guardrails.md)
-- [多仓库开发与联动](docs/multi-repository-development.md)
+- [单体仓库开发与联动](docs/multi-repository-development.md)
 - [GitCode 镜像状态](docs/gitcode-release-mirror.md)
 
 完整文档索引见 [docs/README.md](docs/README.md)。

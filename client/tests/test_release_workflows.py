@@ -1,21 +1,23 @@
 from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[2]
+
+
 def test_client_ci_is_scoped_to_client_paths_and_windows() -> None:
-    workflow = Path(".github/workflows/ci-client.yml").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github/workflows/ci-client.yml").read_text(encoding="utf-8")
 
     assert "runs-on: windows-latest" in workflow
     assert 'branches: [main]' in workflow
-    assert '"app/**"' in workflow
-    assert '"packaging/**"' in workflow
-    assert '"tests/**"' in workflow
+    assert '"client/**"' in workflow
+    assert "working-directory: client" in workflow
     assert "--ignore=tests/test_intel_client.py" in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "cancel-in-progress: true" in workflow
 
 
 def test_release_workflow_uses_own_release_repository() -> None:
-    workflow = Path(".github/workflows/release-client.yml").read_text(
+    workflow = (ROOT / ".github/workflows/release-client.yml").read_text(
         encoding="utf-8"
     )
 
@@ -45,7 +47,9 @@ def test_release_workflow_uses_own_release_repository() -> None:
 
 
 def test_publish_script_refuses_to_overwrite_github_release() -> None:
-    script = Path("scripts/publish_client_release.ps1").read_text(encoding="utf-8")
+    script = (ROOT / "client/scripts/publish_client_release.ps1").read_text(
+        encoding="utf-8"
+    )
 
     assert '[string]$Repository = "xiaqijun/eve-sentry-client"' in script
     assert (
@@ -64,7 +68,9 @@ def test_publish_script_refuses_to_overwrite_github_release() -> None:
 
 
 def test_model_restore_defaults_to_client_release_repository() -> None:
-    script = Path("scripts/restore_release_models.ps1").read_text(encoding="utf-8")
+    script = (ROOT / "client/scripts/restore_release_models.ps1").read_text(
+        encoding="utf-8"
+    )
 
     assert '[string]$Repository = "xiaqijun/eve-sentry-client"' in script
     assert "gh release view --repo $Repository" in script

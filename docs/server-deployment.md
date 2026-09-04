@@ -138,8 +138,8 @@ Gateway 使用 ZeroTier 地址 `10.233.53.17:8787`，只允许 114 的 `10.233.5
 调用，并在自身缓存和限流；114 仍保留本地 ESI 回退。部署模板为：
 
 ```text
-deploy/linux/eve-sentry-esi-gateway.service
-deploy/linux/eve-sentry-esi-gateway.env.example
+esi-gateway/deploy/linux/eve-sentry-esi-gateway.service
+esi-gateway/deploy/linux/eve-sentry-esi-gateway.env.example
 ```
 
 Gateway 不处理 EVE SSO、OAuth token、角色当前位置或联系人 standings。启用前先从 114

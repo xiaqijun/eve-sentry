@@ -4,27 +4,13 @@ on:
   push:
     branches: [main]
     paths:
-      - "app/**"
-      - "main.py"
-      - "packaging/**"
-      - "resources/**"
-      - "scripts/**"
-      - "tests/**"
-      - "requirements*.txt"
-      - "conftest.py"
+      - "client/**"
       - ".github/workflows/ci-client.yml"
       - ".github/workflows/release-client.yml"
   pull_request:
     branches: [main]
     paths:
-      - "app/**"
-      - "main.py"
-      - "packaging/**"
-      - "resources/**"
-      - "scripts/**"
-      - "tests/**"
-      - "requirements*.txt"
-      - "conftest.py"
+      - "client/**"
       - ".github/workflows/ci-client.yml"
       - ".github/workflows/release-client.yml"
   workflow_dispatch:
@@ -40,6 +26,9 @@ jobs:
   test:
     runs-on: windows-latest
     timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: client
     env:
       EVE_SENTRY_OCR_BACKEND: onnx
       PYTHONUTF8: "1"
@@ -52,7 +41,7 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: requirements-onnx.txt
+          cache-dependency-path: client/requirements-onnx.txt
       - name: Install client test dependencies
         run: python -m pip install -r requirements-onnx.txt pytest
       - name: Run client tests

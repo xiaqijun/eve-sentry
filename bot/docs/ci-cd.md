@@ -1,6 +1,6 @@
 # 机器人 CI/CD
 
-GitHub Actions 工作流 `.github/workflows/deploy.yml` 以 `main` 为唯一发布入口：
+根目录 GitHub Actions 工作流 `.github/workflows/deploy-bot.yml` 以 `main` 为唯一发布入口：
 
 - 向 `main` 推送提交：验证通过后自动部署生产环境；
 - 其他分支或 Pull Request（如平台触发）：只运行验证，不接触生产环境；
@@ -14,7 +14,7 @@ GitHub Actions 工作流 `.github/workflows/deploy.yml` 以 `main` 为唯一发�
 
 ## GitHub 配置
 
-在仓库 `xiaqijun/eve-sentry-bot` 的 `production` 环境中配置：
+在当前仓库的 `production` 环境中配置：
 
 Secrets：
 

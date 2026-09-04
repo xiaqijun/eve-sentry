@@ -5,7 +5,7 @@
 
 服务端事件字段和兼容路由的完整定义见[完整 API 参考](api-reference.md)。SSE 首字节、
 快照复用和心跳约束见[SSE 性能与重连约束](sse-performance-guardrails.md)；机器人消费端
-还需遵守[机器人 SSE 重连约束](https://github.com/xiaqijun/eve-sentry-bot/blob/main/docs/sse-reconnect-guardrails.md)。
+还需遵守[机器人 SSE 重连约束](../bot/docs/sse-reconnect-guardrails.md)。
 
 ## 接口选择
 

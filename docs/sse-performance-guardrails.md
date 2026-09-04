@@ -4,7 +4,7 @@
 `/api/v1/events`、活动告警快照和 SSE 客户端兼容行为的约束。
 
 机器人端对应的读取超时、游标和节点快照规则见
-[eve-sentry-bot SSE 重连约束](https://github.com/xiaqijun/eve-sentry-bot/blob/main/docs/sse-reconnect-guardrails.md)。
+[机器人 SSE 重连约束](../bot/docs/sse-reconnect-guardrails.md)。
 
 ## 已确认的根因
 

@@ -1,41 +1,30 @@
-# CI/CD 与仓库边界
+# CI/CD 与单体仓库边界
 
-本文说明各仓库当前的流水线和发布边界。项目约定后续直接在 `main` 开发并推送，
-由对应仓库的 CI/CD 自动验证和部署；不创建额外开发分支或 Pull Request。若平台保留
-Pull Request 触发器，它只作为兼容性的只读验证入口，不改变 `main` 的发布路径。
+本仓库是服务端、客户端、QQ 机器人和 ESI Gateway 的唯一开发源。所有改动直接提交
+到 `main`；推送后由根目录 `.github/workflows/` 按目录触发验证和部署，不创建功能分支
+或 Pull Request。
 
-## 仓库归属
+## 流水线
 
-| 仓库 | 职责 | 生产入口 |
+| 工作流 | 触发目录 | 作用 |
 |---|---|---|
-| `xiaqijun/eve-sentry` | 情报服务、Web Console | `deploy-server.yml` |
-| `xiaqijun/eve-sentry-bot` | QQ 机器人、分析 Worker、Docker Compose | 机器人仓库自己的 `deploy.yml` |
-| `xiaqijun/eve-sentry-client` | Windows OCR/监控客户端和更新器 | 客户端仓库自己的 `release-client.yml` |
-| `xiaqijun/eve-sentry-esi-gateway` | 独立 ESI Gateway | Gateway 仓库自己的 `deploy-esi-gateway.yml` |
-| `xiaqijun/eve-sentry-download-site` | 静态下载站和 Cloudflare 下载 Worker | 下载站仓库自己的 `deploy.yml` |
+| `deploy-server.yml` | `app/`、`frontend/`、`deploy/`、根目录依赖 | 服务端测试、前端构建、PostgreSQL 集成、打包和生产部署 |
+| `ci-bot.yml` | `bot/` | 机器人 Ruff、单元测试和运行时配置校验；`main` 推送后进入生产部署 |
+| `ci-client.yml` | `client/` | Windows 客户端测试、OCR 依赖和打包校验 |
+| `release-client.yml` | `client/`、客户端版本或标签 | 构建、签名并发布客户端安装包 |
+| `deploy-esi-gateway.yml` | `esi-gateway/` | Gateway 多 Python 版本验证、打包和生产部署 |
 
-本仓库已退役客户端 CI、客户端 Release、下载站部署和独立 Gateway 部署入口，避免
-拆仓后同一组件被两个仓库重复发布。服务端只保留 `deploy-server.yml`。
+子目录中随导入保留的 `.github/workflows/` 不会被 GitHub 识别为 workflow，仅用于追溯
+原仓库历史；修改 CI 时只编辑根目录 workflow。
 
 ## 触发条件与门禁
 
-- `deploy-server.yml`：`main` 推送时运行 Python、前端、PostgreSQL、源码编译和部署脚本
-  语法验证；验证通过后自动部署。保留的 Pull Request 触发器只运行同一套门禁，不部署生产。
-  验证通过后先生成带 SHA-256 校验的不可变部署包，再由生产 job 复用该包发布。生产 job
-  仅接受 `main`，并使用 `production` Environment。
-- `eve-sentry-esi-gateway/.github/workflows/deploy-esi-gateway.yml`：独立 Gateway 的
-  Pull Request 和 `main` push 自动测试；`main` push 通过验证后自动进入 production Environment。
-- `eve-sentry-client/.github/workflows/ci-client.yml`：客户端 Pull Request 和 `main` push 自动测试。
-- 客户端 Release 由 `eve-sentry-client/.github/workflows/release-client.yml` 负责；本仓库不再
-  构建或发布客户端。
-- 下载站由 `eve-sentry-download-site` 的 `CI` 和 `Deploy` workflow 负责。生产部署验证首页、
-  Worker、客户端仓库 `latest.json`、302 跳转和 Range 206。
-- `eve-sentry/.github/workflows/deploy-server.yml`：服务端实现与跨仓库联动文档一起验证服务端测试、
-  构建和部署脚本。
-- `eve-sentry-bot/.github/workflows/deploy.yml`：`main` 推送自动验证并进入 production
-  Environment；其他分支或 Pull Request（如触发）仅验证。
-- `workflow_dispatch` 可以用于重跑验证；生产 job 只接受默认分支。下载站按仓库规则保持
-  production 部署手动触发，避免 Cloudflare Worker 被无审批覆盖。
+- 所有 workflow 必须只对 `main` 的 push 自动部署；`workflow_dispatch` 用于人工重跑。
+- 路径过滤避免无关组件重复构建，但服务端 API、事件协议和根目录文档变化时，至少运行
+  服务端、客户端和机器人兼容性测试。
+- 所有部署先运行组件测试、静态检查和打包校验，再进入 `production` Environment。
+- 发布包必须带提交 SHA 和 SHA-256 校验；部署失败由 role `90` 按服务端、机器人或 Gateway
+  的回滚脚本恢复上一版本。
 
 生产发布保持并发锁，避免同一环境同时发布两个版本；同一 Pull Request 的旧验证会自动取消，
 不同 PR 之间互不阻塞。跨仓库接口发生变化时，先更新服务端
@@ -55,27 +44,26 @@ ESI Gateway：
 - Variables：`EVE_SENTRY_ESI_GATEWAY_DEPLOY_HOST`、`EVE_SENTRY_ESI_GATEWAY_DEPLOY_USER`、
   `EVE_SENTRY_ESI_GATEWAY_DEPLOY_PORT`
 
-下载站：
-
-- Secrets：`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_API_TOKEN`
-- Secrets 应配置到 `eve-sentry-download-site`；首次拆仓部署由本仓库一次性 bridge 使用旧
-  Secret 完成，独立仓库 Secret 配置前不得手动触发后续生产部署。
-- Wrangler 的 `GITHUB_OWNER=xiaqijun`、`GITHUB_REPO=eve-sentry-client` 指向客户端
-  Release 仓库。
-
 客户端：
 
 - Secret：`EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64`
 - GitHub 内置 `github.token` 用于 Release 和模型恢复。
 
+机器人：
+
+- Secrets：`EVE_RISK_DEPLOY_SSH_KEY`、`EVE_RISK_DEPLOY_KNOWN_HOSTS`、
+  `EVE_RISK_POSTGRES_PASSWORD`、`EVE_RISK_REDIS_PASSWORD`
+- Variables：`EVE_RISK_DEPLOY_HOST`、`EVE_RISK_DEPLOY_USER`、`EVE_RISK_DEPLOY_PORT`、
+  `EVE_RISK_DEPLOY_ROOT`
+
 生产 job 在建立 SSH 连接前会检查必需的 Secret/Variable、端口范围和公开 URL 格式；值本身
-不会写入日志。
+不会写入日志。下载站仍是独立仓库和独立发布目标，本次单体化不把其代码导入本仓库。
 
 ## 验证与回滚
 
 - 服务端远端部署脚本先检查本机 `/api/readyz`，失败时恢复最近备份；工作流再检查公开
   `${EVE_SENTRY_PUBLIC_URL}/api/readyz`。远端备份默认保留最近 5 次。
-- Gateway `/health` 必须返回 `ok=true` 和 `cache_entries`；拆分后的 Gateway 流水线还应
+- Gateway `/health` 必须返回 `ok=true` 和 `cache_entries`；单体仓库 Gateway 流水线还应
   增加一次受控的上游 ESI smoke。部署失败时恢复 Gateway 备份并重启 systemd。
 - 下载站验证首页、文档、`/health`、`latest.json`、302 跳转和 Range 206。Cloudflare
   部署完成后的公开验证失败不会自动恢复旧版本，需人工重新发布上一版本。

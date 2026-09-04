@@ -1,7 +1,8 @@
 # GitCode 镜像状态
 
-GitCode 客户端发布镜像目前已暂停。Windows 客户端版本由
-`xiaqijun/eve-sentry-client` 仓库的 Release workflow 构建并发布到 GitHub Release，
+GitCode 客户端发布镜像目前已暂停。Windows 客户端版本由本仓库
+`client/` 目录的 Release workflow 构建；为兼容现有下载站，构建产物暂发布到
+`xiaqijun/eve-sentry-client` GitHub Release，
 更新清单由 `xiaqijun/eve-sentry-download-site` 的 Cloudflare Worker 托管。
 
 客户端使用 `latest.json` 中的主下载地址下载程序和 OCR 模型，并在安装前校验 Ed25519

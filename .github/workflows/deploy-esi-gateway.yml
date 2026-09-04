@@ -4,20 +4,12 @@ on:
   push:
     branches: [main]
     paths:
-      - "esi_gateway/**"
-      - "scripts/**"
-      - "tests/**"
-      - "pyproject.toml"
-      - "deploy/**"
+      - "esi-gateway/**"
       - ".github/workflows/deploy-esi-gateway.yml"
   pull_request:
     branches: [main]
     paths:
-      - "esi_gateway/**"
-      - "scripts/**"
-      - "tests/**"
-      - "pyproject.toml"
-      - "deploy/**"
+      - "esi-gateway/**"
       - ".github/workflows/deploy-esi-gateway.yml"
   workflow_dispatch:
 
@@ -33,6 +25,9 @@ jobs:
     name: Validate (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: esi-gateway
     strategy:
       fail-fast: false
       matrix:
@@ -43,6 +38,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: esi-gateway/pyproject.toml
       - name: Install validation dependencies
         run: python -m pip install --upgrade pip && python -m pip install '.[test,storage]'
       - name: Verify installed dependencies
@@ -64,6 +60,9 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: esi-gateway
     steps:
       - uses: actions/checkout@v5
         with:
@@ -79,8 +78,8 @@ jobs:
         with:
           name: eve-sentry-esi-gateway-${{ github.sha }}
           path: |
-            dist/eve-sentry-esi-gateway-${{ github.sha }}.tar.gz
-            dist/eve-sentry-esi-gateway-${{ github.sha }}.tar.gz.sha256
+            esi-gateway/dist/eve-sentry-esi-gateway-${{ github.sha }}.tar.gz
+            esi-gateway/dist/eve-sentry-esi-gateway-${{ github.sha }}.tar.gz.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -90,13 +89,16 @@ jobs:
     needs: package
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: esi-gateway
     environment: production
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v8
         with:
           name: eve-sentry-esi-gateway-${{ github.sha }}
-          path: dist
+          path: esi-gateway/dist
       - name: Validate deployment configuration
         env:
           DEPLOY_HOST: ${{ vars.EVE_SENTRY_ESI_GATEWAY_DEPLOY_HOST }}
