@@ -9,6 +9,7 @@ authenticated sessions, tokens, and application resolvers remain in the
 
 Documentation:
 
+- [Documentation index](docs/README.md)
 - [Cache and storage design](docs/cache-and-storage.md)
 - [Operations runbook](docs/operations.md)
 
@@ -73,7 +74,8 @@ stale-value semantics, and operational limits, see
 
 ## CI/CD
 
-Pull requests and changes to `main` are validated on Python 3.10 through 3.13.
+Changes pushed to `main` are validated on Python 3.10 through 3.13. Pull requests,
+if enabled by the hosting platform, are validation-only and never deploy production.
 The workflow runs dependency checks, Ruff, byte-code compilation, the full test
 suite, Bash syntax checks, and ShellCheck. Only a validated `main` revision can
 enter the protected GitHub `production` environment.
@@ -103,4 +105,5 @@ must run the remote script as root so it can manage the configured systemd unit
 and gateway root. Configure required reviewers on the `production` environment
 so role `90` retains ownership of production deployment, health verification,
 and rollback approval. Manual workflow runs selected from any branch other than
-`main` validate only and cannot deploy.
+`main` validate only and cannot deploy. The normal development path is a direct
+commit and push to `main`.
