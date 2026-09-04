@@ -126,6 +126,50 @@ def test_threat_enricher_marks_unmatched_authenticated_contact_as_neutral():
     assert profile["standing_contact_type"] == "neutral"
 
 
+def test_threat_enricher_keeps_last_contact_snapshot_when_esi_fails():
+    class FlakySession:
+        def __init__(self):
+            self.calls = 0
+
+        def snapshot(self, include_location=True, include_contacts=True):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    contacts=[
+                        ContactStanding(
+                            contact_id=456,
+                            contact_type="corporation",
+                            standing=-10,
+                            label="Hostile Corp",
+                        )
+                    ]
+                )
+            raise RuntimeError("ESI token temporarily unavailable")
+
+    session = FlakySession()
+    clock = iter((1000.0, 1061.0))
+    enricher = ThreatEnricher(
+        resolver=FakeResolver(),
+        esi_session=session,
+        standing_ttl_seconds=60,
+        now=lambda: next(clock),
+    )
+    observation = Observation(
+        source="local_ocr",
+        system_name="Tama",
+        names=["Alice"],
+        character_ids=[123],
+    )
+
+    first = enricher.enrich(observation).character_profiles[0]
+    second = enricher.enrich(observation).character_profiles[0]
+
+    assert first["contact_standing"] == -10.0
+    assert second["contact_standing"] == -10.0
+    assert second["standing_contact_id"] == 456
+    assert session.calls == 2
+
+
 def test_threat_enricher_scores_direct_contact_without_public_profile():
     class EmptyResolver:
         def character_profile(self, character_id):

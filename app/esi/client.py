@@ -41,6 +41,16 @@ class EsiClient:
         """Fetch public character information."""
         return self._request("GET", f"/characters/{int(character_id)}/")
 
+    def get_character_affiliations(self, character_ids: list[int]) -> list[dict[str, Any]]:
+        """Fetch current corporation/alliance/faction for up to 1000 characters."""
+        ids = [int(character_id) for character_id in character_ids]
+        if not ids or len(ids) > 1000 or any(character_id <= 0 for character_id in ids):
+            raise ValueError("character_ids must contain 1-1000 positive IDs")
+        payload = self._request("POST", "/characters/affiliation/", payload=ids)
+        if not isinstance(payload, list):
+            raise EsiApiError("ESI returned invalid affiliation payload")
+        return [item for item in payload if isinstance(item, dict)]
+
     def get_corporation(self, corporation_id: int) -> dict[str, Any]:
         """Fetch public corporation information."""
         return self._request("GET", f"/corporations/{int(corporation_id)}/")

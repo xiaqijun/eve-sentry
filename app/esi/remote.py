@@ -186,6 +186,18 @@ class RemoteEsiClient(EsiClient):
     def get_character(self, character_id: int) -> dict[str, Any]:
         return self._public_call("GET", f"/v1/characters/{int(character_id)}", None, "get_character", dict)
 
+    def get_character_affiliations(self, character_ids: list[int]) -> list[dict[str, Any]]:
+        payload = self._public_call(
+            "POST",
+            "/v1/characters/affiliation",
+            [int(character_id) for character_id in character_ids],
+            "get_character_affiliations",
+            list,
+        )
+        if not isinstance(payload, list):
+            raise EsiApiError("ESI Gateway returned invalid affiliation payload")
+        return payload
+
     def get_corporation(self, corporation_id: int) -> dict[str, Any]:
         return self._public_call("GET", f"/v1/corporations/{int(corporation_id)}", None, "get_corporation", dict)
 

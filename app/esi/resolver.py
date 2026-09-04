@@ -31,12 +31,14 @@ class EsiResolver:
         cache: EsiCache | None = None,
         ttl_seconds: int = 86400,
         profile_ttl_seconds: int = 21600,
+        affiliation_ttl_seconds: int = 3600,
         negative_ttl_seconds: int = 600,
     ) -> None:
         self.client = client or EsiClient()
         self.cache = cache or EsiCache()
         self.ttl_seconds = ttl_seconds
         self.profile_ttl_seconds = max(1, int(profile_ttl_seconds))
+        self.affiliation_ttl_seconds = max(1, int(affiliation_ttl_seconds))
         self.negative_ttl_seconds = max(1, int(negative_ttl_seconds))
         self._resolve_lock = threading.Lock()
         self._metrics_lock = threading.Lock()
@@ -215,7 +217,10 @@ class EsiResolver:
                 "zkill_url",
                 f"https://zkillboard.com/character/{int(character_id)}/",
             )
+            changed = self._refresh_character_affiliation(profile)
             if self._complete_character_affiliations(profile):
+                changed = True
+            if changed:
                 self.cache.set(key, profile, ttl_seconds=self.profile_ttl_seconds)
                 self.cache.save()
                 profile.update(self.cache.metadata(key))
@@ -233,12 +238,64 @@ class EsiResolver:
             "alliance_id": _optional_int(character.get("alliance_id")),
             "security_status": character.get("security_status"),
         }
+        self._refresh_character_affiliation(profile)
         self._complete_character_affiliations(profile)
         self.cache.set(key, profile, ttl_seconds=self.profile_ttl_seconds)
         self.cache.save()
         profile.update(self.cache.metadata(key))
         profile["cache_status"] = "refreshed"
         return profile
+
+    def _refresh_character_affiliation(self, profile: dict[str, Any]) -> bool:
+        """Refresh current corporation/alliance from the bulk affiliation route."""
+        method = getattr(self.client, "get_character_affiliations", None)
+        if not callable(method):
+            return False
+        try:
+            character_id = int(profile["character_id"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        key = f"affiliation:character:{character_id}"
+        cached = self.cache.get(key)
+        row = cached if isinstance(cached, dict) else None
+        if row is None:
+            try:
+                rows = method([character_id])
+            except (EsiApiError, OSError, TimeoutError, ValueError, TypeError):
+                return False
+            if not isinstance(rows, list):
+                return False
+            row = next(
+                (
+                    item
+                    for item in rows
+                    if isinstance(item, dict)
+                    and _optional_int(item.get("character_id")) == character_id
+                ),
+                None,
+            )
+            if row is None:
+                return False
+            row = {
+                "character_id": character_id,
+                "corporation_id": _optional_int(row.get("corporation_id")),
+                "alliance_id": _optional_int(row.get("alliance_id")),
+                "faction_id": _optional_int(row.get("faction_id")),
+            }
+            self.cache.set(key, row, ttl_seconds=self.affiliation_ttl_seconds)
+            self.cache.save()
+
+        changed = False
+        for field in ("corporation_id", "alliance_id", "faction_id"):
+            value = _optional_int(row.get(field))
+            if profile.get(field) != value:
+                profile[field] = value
+                changed = True
+                if field == "corporation_id":
+                    profile.pop("corporation_name", None)
+                elif field == "alliance_id":
+                    profile.pop("alliance_name", None)
+        return changed
 
     def corporation_profile(self, corporation_id: int) -> dict[str, Any]:
         """Return cached public corporation profile data."""

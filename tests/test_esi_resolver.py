@@ -83,6 +83,23 @@ class PartialResolutionClient(FakeEsiClient):
         }
 
 
+class AffiliationClient(FakeEsiClient):
+    def __init__(self):
+        super().__init__()
+        self.affiliation_calls = 0
+
+    def get_character_affiliations(self, character_ids):
+        self.affiliation_calls += 1
+        assert character_ids == [123]
+        return [
+            {
+                "character_id": 123,
+                "corporation_id": 98659921,
+                "alliance_id": 99003581,
+            }
+        ]
+
+
 def test_resolve_names_uses_client_then_cache(tmp_path):
     client = FakeEsiClient()
     resolver = EsiResolver(client=client, cache=EsiCache(tmp_path / "esi.json"))
@@ -277,6 +294,21 @@ def test_profiles_are_cached(tmp_path):
     assert client.corporation_calls == 1
     assert client.alliance_calls == 1
     assert client.system_calls == 1
+
+
+def test_character_profile_refreshes_current_affiliation_from_bulk_endpoint(tmp_path):
+    client = AffiliationClient()
+    resolver = EsiResolver(client=client, cache=EsiCache(tmp_path / "esi.json"))
+
+    profile = resolver.character_profile(123)
+    cached_profile = resolver.character_profile(123)
+
+    assert profile["corporation_id"] == 98659921
+    assert profile["alliance_id"] == 99003581
+    assert profile["corporation_name"] == "Some Corp"
+    assert profile["alliance_name"] == "Some Alliance"
+    assert cached_profile["corporation_id"] == 98659921
+    assert client.affiliation_calls == 1
 
 
 def test_affiliation_lookup_failure_keeps_character_profile(tmp_path):

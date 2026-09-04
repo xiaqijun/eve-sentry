@@ -33,6 +33,10 @@ def test_authenticated_esi_requests_send_bearer_token(monkeypatch):
             return FakeResponse(
                 [{"from_id": 456, "from_type": "corporation", "standing": -5.0}]
             )
+        if request.full_url.endswith("/characters/affiliation/"):
+            return FakeResponse(
+                [{"character_id": 123, "corporation_id": 456, "alliance_id": 789}]
+            )
         return FakeResponse([{"contact_id": 42, "standing": -10.0}])
 
     monkeypatch.setattr("app.esi.client.urlopen", fake_urlopen)
@@ -43,21 +47,25 @@ def test_authenticated_esi_requests_send_bearer_token(monkeypatch):
     corp_contacts = client.get_corporation_contacts(456, "access-token")
     alliance_contacts = client.get_alliance_contacts(789, "access-token")
     standings = client.get_character_standings(123, "access-token")
+    affiliations = client.get_character_affiliations([123])
 
     assert location == {"solar_system_id": 30002813}
     assert contacts == [{"contact_id": 42, "standing": -10.0}]
     assert corp_contacts == [{"contact_id": 789, "standing": 5.0}]
     assert alliance_contacts == [{"contact_id": 900, "standing": 10.0}]
     assert standings == [{"from_id": 456, "from_type": "corporation", "standing": -5.0}]
+    assert affiliations == [{"character_id": 123, "corporation_id": 456, "alliance_id": 789}]
     assert all(
         request.get_header("Authorization") == "Bearer access-token"
-        for request in requests
+        for request in requests[:5]
     )
     assert requests[0].full_url == "https://esi.test/latest/characters/123/location/"
     assert requests[1].full_url == "https://esi.test/latest/characters/123/contacts/"
     assert requests[2].full_url == "https://esi.test/latest/corporations/456/contacts/"
     assert requests[3].full_url == "https://esi.test/latest/alliances/789/contacts/"
     assert requests[4].full_url == "https://esi.test/latest/characters/123/standings/"
+    assert requests[5].full_url == "https://esi.test/latest/characters/affiliation/"
+    assert json.loads(requests[5].data.decode("utf-8")) == [123]
 
 
 def test_authenticated_esi_character_search_returns_valid_ids(monkeypatch):
