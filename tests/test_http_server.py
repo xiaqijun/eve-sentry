@@ -17,9 +17,10 @@ from app.esi.resolver import EsiResolver
 from app.esi.session import ContactStanding
 from app.esi.sso import AuthorizationSession, EsiSsoError, TokenSet
 from app.intel.classification import CLASSIFICATION_VERSION
-from app.intel.enrichment import ThreatEnricher
 from app.intel.config import IntelConfigStore
+from app.intel.enrichment import ThreatEnricher
 from app.intel.scoring import ScoringEngine, Watchlist
+from app.intel_client import IntelApiClient
 from app.server.auth_http import build_admin_clients_payload
 from app.server.http_server import (
     IntelHTTPServer,
@@ -474,6 +475,97 @@ def authenticated_request(url, method="GET", payload=None, headers=None):
     with response:
         body = response.read().decode("utf-8")
         return response.status, response.headers, json.loads(body) if body else {}
+
+
+def test_ocr_query_round_trip_claims_command_and_collects_snapshot(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        api = IntelApiClient(server.url)
+        api.post_heartbeat(
+            client_id="detector-client:query",
+            client_type="detector_client",
+            status="running",
+            details={
+                "monitoring": True,
+                "targets": [{"client_id": "detector-client:query:window-1", "monitoring": True}],
+            },
+        )
+        status, created = request_json(
+            f"{server.url}/api/v1/ocr/query",
+            method="POST",
+            payload={"name": "Alice"},
+        )
+        assert status == 202
+        query_id = created["query_id"]
+
+        heartbeat = api.post_heartbeat(
+            client_id="detector-client:query",
+            client_type="detector_client",
+            status="running",
+            details={"monitoring": True},
+        )
+        assert heartbeat["commands"][0]["query_id"] == query_id
+
+        api.post_ocr_snapshot(
+            client_id="detector-client:query:window-1",
+            source_instance="EVE - Query",
+            system_name="S-KSWL",
+            names=["Alice"],
+            query_id=query_id,
+        )
+        _, result = request_json(f"{server.url}/api/v1/ocr/query/{query_id}")
+        assert result["status"] == "completed"
+        assert result["results"][0]["names"] == ["Alice"]
+    finally:
+        server.stop()
+
+
+def test_ocr_query_targets_each_monitored_window(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        api = IntelApiClient(server.url)
+        parent = "detector-client:multi"
+        targets = [
+            {"client_id": f"{parent}:a", "monitoring": True, "system_name": "S-KSWL"},
+            {"client_id": f"{parent}:b", "monitoring": True, "system_name": "R-YWID"},
+        ]
+        api.post_heartbeat(
+            client_id=parent,
+            client_type="detector_client",
+            status="running",
+            details={"monitoring": True, "targets": targets},
+        )
+        created = api._request("POST", "/api/v1/ocr/query", payload={})
+        query_id = created["query_id"]
+        heartbeat = api.post_heartbeat(
+            client_id=parent,
+            client_type="detector_client",
+            status="running",
+            details={"monitoring": True, "targets": targets},
+        )
+        commands = heartbeat["commands"]
+        assert {item["target_client_id"] for item in commands} == {
+            f"{parent}:a",
+            f"{parent}:b",
+        }
+        for target, system, name in zip(("a", "b"), ("S-KSWL", "R-YWID"), ("Alice", "Bob")):
+            api.post_ocr_snapshot(
+                client_id=f"{parent}:{target}",
+                source_instance=f"EVE - {target}",
+                system_name=system,
+                names=[name],
+                query_id=query_id,
+            )
+        result = api._request("GET", f"/api/v1/ocr/query/{query_id}")
+        assert result["status"] == "completed"
+        assert {item["client_id"] for item in result["results"]} == {
+            f"{parent}:a",
+            f"{parent}:b",
+        }
+    finally:
+        server.stop()
 
 
 def write_sde_fixture(root):

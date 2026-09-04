@@ -83,6 +83,8 @@ Authorization: Bearer eve_xxx
 | --- | --- | --- |
 | `POST` | `/api/v1/hostile-presence` | 立即上传当前红色敌对图标数量，`0` 表示清空 |
 | `POST` | `/api/v1/ocr/snapshot` | 上传完整 OCR 文本名单；服务端逐名 ESI 分类，`hostile_icon_count` 仅为独立视觉计数 |
+| `POST` | `/api/v1/ocr/query` | 请求在线监控客户端执行一次独立 OCR（服务密钥可调用） |
+| `GET` | `/api/v1/ocr/query/{query_id}` | 查询独立 OCR 请求的聚合结果 |
 | `POST` | `/api/v1/clients/heartbeats` | 上传客户端状态、窗口目标和最近异常 |
 | `GET` | `/api/v1/clients` | 在线客户端和聚合状态 |
 | `GET` | `/api/v1/active-intel` | 当前实时情报 |
@@ -120,6 +122,12 @@ Authorization: Bearer eve_xxx
 文本数组，并对其中每个文本独立请求 ESI，按 standing、军团/联盟和白名单生成
 敌对、友军或未解析状态。`hostile_icon_count` 只表示截图中的视觉红色图标总数，不给单个角色
 直接定性。
+
+`POST /api/v1/ocr/query` 用于一次性查询当前在线监控节点的本地名单。服务端返回
+`query_id` 后，会在后续客户端心跳响应中下发 `ocr_query` 命令；客户端执行一次全帧 OCR，
+并在上传中携带相同的 `query_id`。调用方通过 `GET /api/v1/ocr/query/{query_id}` 轮询，
+直到 `status` 为 `completed` 或 `timed_out`。请求体可携带 `name`、`corporation` 或
+`alliance` 过滤条件；过滤仍以服务端识别结果为准。
 
 `GET /api/v1/admin/esi-gateway` 返回 47 Gateway 的运行摘要、114 业务缓存和进程内远端调用指标。
 `resolver_cache.personnel` 按 114 收到的新 OCR 人员逐个统计 `lookups`、`hits`、`misses`、

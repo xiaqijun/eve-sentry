@@ -4,6 +4,7 @@ import hashlib
 import logging
 import threading
 import time
+from collections import deque
 from typing import Optional
 
 from PIL import Image
@@ -40,6 +41,7 @@ class MonitorWorker(QThread):
     scan_complete = pyqtSignal(int)       # total scan count
     ocr_snapshot = pyqtSignal(list, int)  # names, verified hostile-icon count
     ocr_evidence_snapshot = pyqtSignal(list, int, object)
+    query_ocr_snapshot = pyqtSignal(str, list, int)
     hostile_detected = pyqtSignal(int)    # emitted when the visible count changes
     connection_lost = pyqtSignal(str)     # capture/window connection is offline
     connection_restored = pyqtSignal()    # capture resumed after an offline state
@@ -62,6 +64,8 @@ class MonitorWorker(QThread):
         self._region: Optional[dict] = None  # {x, y, w, h}
         self._window: Optional[dict] = None  # {hwnd, title, w, h}
         self._ocr_request_key: str | None = None
+        self._ocr_query_lock = threading.Lock()
+        self._ocr_query_ids: deque[str] = deque()
         self._ocr_enabled = True
         self._presence_refresh_requested = threading.Event()
         self._capture_failure_count = 0
@@ -124,6 +128,29 @@ class MonitorWorker(QThread):
     def request_presence_refresh(self) -> None:
         """Re-publish the current visual count after the monitored system changes."""
         self._presence_refresh_requested.set()
+
+    def request_ocr_once(self, query_id: str) -> None:
+        """Request one full-frame OCR snapshot outside the normal OCR cadence."""
+        normalized = str(query_id or "").strip()
+        if not normalized:
+            return
+        with self._ocr_query_lock:
+            if normalized not in self._ocr_query_ids:
+                self._ocr_query_ids.append(normalized)
+
+    def _pending_ocr_query_ids(self) -> list[str]:
+        """Return pending one-shot OCR requests without losing them on failure."""
+        with self._ocr_query_lock:
+            return list(self._ocr_query_ids)
+
+    def _ack_ocr_query_ids(self, query_ids: list[str]) -> None:
+        if not query_ids:
+            return
+        with self._ocr_query_lock:
+            pending = set(query_ids)
+            self._ocr_query_ids = deque(
+                query_id for query_id in self._ocr_query_ids if query_id not in pending
+            )
 
     def stop(self) -> None:
         """Request the current scan and the monitor loop to stop."""
@@ -209,6 +236,8 @@ class MonitorWorker(QThread):
                     # 2. Publish visual evidence first. OCR is optional enrichment.
                     hostile_icons = find_hostile_icons(img)
                     hostile_count = len(hostile_icons)
+                    query_ids = self._pending_ocr_query_ids()
+                    query_requested = bool(query_ids)
                     force_presence_refresh = self._presence_refresh_requested.is_set()
                     if force_presence_refresh:
                         self._presence_refresh_requested.clear()
@@ -235,9 +264,12 @@ class MonitorWorker(QThread):
                         ocr_retry_remaining = 3
 
                     should_run_ocr = (
-                        self._ocr_enabled
-                        and hostile_count > 0
-                        and (count_changed or rows_changed or ocr_retry_remaining > 0)
+                        query_requested
+                        or (
+                            self._ocr_enabled
+                            and hostile_count > 0
+                            and (count_changed or rows_changed or ocr_retry_remaining > 0)
+                        )
                     )
                     if not should_run_ocr:
                         scan_count += 1
@@ -311,6 +343,15 @@ class MonitorWorker(QThread):
                             hostile_count,
                         )
                         ocr_retry_remaining = 0
+                    if query_requested:
+                        query_names = build_ocr_snapshot_names(ocr_results)
+                        self._ack_ocr_query_ids(query_ids)
+                        for query_id in query_ids:
+                            self.query_ocr_snapshot.emit(
+                                query_id,
+                                query_names,
+                                hostile_count,
+                            )
                     ocr_ready = True
                     if self._stop_requested():
                         break

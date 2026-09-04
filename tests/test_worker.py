@@ -35,6 +35,40 @@ def test_ocr_snapshot_names_keep_complete_raw_ocr_results():
     ]
 
 
+def test_monitor_worker_honors_one_shot_query_even_when_ocr_disabled(monkeypatch):
+    frame = Image.new("RGB", (160, 80), color=(10, 10, 10))
+
+    class Capturer:
+        def __init__(self):
+            self.calls = 0
+
+        def screenshot(self, _x, _y, _w, _h):
+            self.calls += 1
+            if self.calls == 1:
+                return frame
+            raise TargetWindowClosed("done")
+
+    class Ocr:
+        def recognize(self, _image, progress=None):
+            _ = progress
+            return [("Query Pilot", 0.99)]
+
+    monkeypatch.setattr(MonitorWorker, "_wait_for_next_scan", lambda self: None)
+    monkeypatch.setattr("app.engine.worker.find_hostile_icons", lambda _frame: [])
+    worker = MonitorWorker(Capturer(), Ocr())
+    worker.set_region(0, 0, frame.width, frame.height)
+    worker.set_ocr_enabled(False)
+    results = []
+    worker.query_ocr_snapshot.connect(
+        lambda query_id, names, count: results.append((query_id, names, count))
+    )
+    worker.request_ocr_once("ocrq_test")
+
+    worker.run()
+
+    assert results == [("ocrq_test", ["Query Pilot"], 0)]
+
+
 def test_monitor_worker_matches_full_frame_ocr_by_hostile_icon_row(monkeypatch):
     frame = Image.new("RGB", (180, 100), color=(12, 13, 13))
     draw = ImageDraw.Draw(frame)

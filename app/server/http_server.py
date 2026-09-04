@@ -11,6 +11,7 @@ import re
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,6 +39,10 @@ MAX_SSE_TIMEOUT_SECONDS = 300.0
 MAX_SSE_HEARTBEAT_SECONDS = 60.0
 MAX_ACCESS_LOG_PATH_CHARS = 512
 _REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
+_OCR_QUERY_LOCK = threading.Lock()
+_OCR_QUERY_JOBS: dict[str, dict[str, Any]] = {}
+_OCR_QUERY_TTL_SECONDS = 60.0
+_OCR_QUERY_RETENTION_SECONDS = 120.0
 
 
 class RequestBodyError(ValueError):
@@ -54,6 +59,262 @@ class RequestBodyError(ValueError):
 
 def _request_error_status(exc: ValueError) -> HTTPStatus:
     return getattr(exc, "status", HTTPStatus.BAD_REQUEST)
+
+
+def _prune_ocr_query_jobs(now: float | None = None) -> None:
+    current = time.monotonic() if now is None else float(now)
+    expired = [
+        query_id
+        for query_id, job in _OCR_QUERY_JOBS.items()
+        if current >= float(job.get("retained_until", job.get("deadline", 0.0)))
+    ]
+    for query_id in expired:
+        _OCR_QUERY_JOBS.pop(query_id, None)
+
+
+def _online_detector_client_ids(snapshot: dict[str, Any]) -> list[str]:
+    result: list[str] = []
+    for heartbeat in snapshot.get("heartbeats", []):
+        if not isinstance(heartbeat, dict):
+            continue
+        if str(heartbeat.get("client_type") or "").strip() != "detector_client":
+            continue
+        if not bool(heartbeat.get("online")):
+            continue
+        details = heartbeat.get("details")
+        if not isinstance(details, dict) or not bool(details.get("monitoring")):
+            continue
+        heartbeat_client_id = str(heartbeat.get("client_id") or "").strip()
+        targets = details.get("targets")
+        if not isinstance(targets, list) or not targets:
+            targets = [details]
+        for target in targets:
+            if not isinstance(target, dict) or not bool(target.get("monitoring", True)):
+                continue
+            client_id = str(target.get("client_id") or heartbeat_client_id).strip()
+            if client_id and client_id not in result:
+                result.append(client_id)
+    return result
+
+
+def _online_detector_targets(snapshot: dict[str, Any]) -> list[dict[str, str]]:
+    """Return monitored target IDs and their heartbeat parent IDs."""
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for heartbeat in snapshot.get("heartbeats", []):
+        if not isinstance(heartbeat, dict):
+            continue
+        if str(heartbeat.get("client_type") or "").strip() != "detector_client":
+            continue
+        if not bool(heartbeat.get("online")):
+            continue
+        details = heartbeat.get("details")
+        if not isinstance(details, dict) or not bool(details.get("monitoring")):
+            continue
+        heartbeat_client_id = str(heartbeat.get("client_id") or "").strip()
+        targets = details.get("targets")
+        if not isinstance(targets, list) or not targets:
+            targets = [details]
+        for target in targets:
+            if not isinstance(target, dict) or not bool(target.get("monitoring", True)):
+                continue
+            client_id = str(target.get("client_id") or heartbeat_client_id).strip()
+            if not client_id or client_id in seen:
+                continue
+            seen.add(client_id)
+            result.append(
+                {
+                    "client_id": client_id,
+                    "heartbeat_client_id": heartbeat_client_id or client_id,
+                }
+            )
+    return result
+
+
+def _create_ocr_query(
+    snapshot: dict[str, Any],
+    filters: dict[str, str],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    now = time.monotonic()
+    query_id = f"ocrq_{uuid.uuid4().hex}"
+    targets = _online_detector_targets(snapshot)
+    if not targets:
+        raise RequestBodyError("没有在线监控节点", HTTPStatus.CONFLICT)
+    ttl_seconds = max(5.0, min(_OCR_QUERY_TTL_SECONDS, timeout_seconds))
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+    ).isoformat()
+    job = {
+        "query_id": query_id,
+        "created_at": utc_now_iso(),
+        "expires_at": expires_at,
+        "deadline": now + ttl_seconds,
+        "retained_until": now + ttl_seconds + _OCR_QUERY_RETENTION_SECONDS,
+        "filters": dict(filters),
+        "clients": {
+            target["client_id"]: {
+                "claimed": False,
+                "heartbeat_client_id": target["heartbeat_client_id"],
+            }
+            for target in targets
+        },
+        "results": {},
+        "status": "pending",
+    }
+    with _OCR_QUERY_LOCK:
+        _prune_ocr_query_jobs(now)
+        _OCR_QUERY_JOBS[query_id] = job
+    return {
+        "query_id": query_id,
+        "status": "pending",
+        "requested_clients": [target["client_id"] for target in targets],
+        "expires_at": expires_at,
+    }
+
+
+def _claim_ocr_query_commands(client_id: str) -> list[dict[str, Any]]:
+    normalized = str(client_id or "").strip()
+    if not normalized:
+        return []
+    now = time.monotonic()
+    commands: list[dict[str, Any]] = []
+    with _OCR_QUERY_LOCK:
+        _prune_ocr_query_jobs(now)
+        for job in _OCR_QUERY_JOBS.values():
+            if job.get("status") != "pending" or now >= float(job.get("deadline", 0.0)):
+                continue
+            for target_client_id, client in job.get("clients", {}).items():
+                if not isinstance(client, dict):
+                    continue
+                if client.get("heartbeat_client_id") != normalized:
+                    continue
+                if client.get("claimed"):
+                    continue
+                client["claimed"] = True
+                commands.append(
+                    {
+                        "command": "ocr_query",
+                        "query_id": str(job["query_id"]),
+                        "target_client_id": target_client_id,
+                        "filters": dict(job.get("filters") or {}),
+                        "expires_at": job["expires_at"],
+                    }
+                )
+    return commands
+
+
+def _query_client_matches(expected: str, actual: str) -> bool:
+    return actual == expected or actual.startswith(f"{expected}:")
+
+
+def _complete_ocr_query(
+    query_id: str,
+    client_id: str,
+    payload: dict[str, Any],
+    server_result: dict[str, Any],
+    store: Any | None = None,
+) -> None:
+    normalized_query = str(query_id or "").strip()
+    normalized_client = str(client_id or "").strip()
+    if not normalized_query or not normalized_client:
+        return
+    now = time.monotonic()
+    with _OCR_QUERY_LOCK:
+        _prune_ocr_query_jobs(now)
+        job = _OCR_QUERY_JOBS.get(normalized_query)
+        if not isinstance(job, dict) or job.get("status") != "pending":
+            return
+        expected = next(
+            (
+                expected_id
+                for expected_id in job.get("clients", {})
+                if _query_client_matches(expected_id, normalized_client)
+            ),
+            None,
+        )
+        if expected is None:
+            return
+        active_rows: list[dict[str, Any]] = []
+        if store is not None:
+            try:
+                rows = store.list_active_intel()
+            except Exception:
+                rows = []
+            system_name = str(payload.get("system_name") or "").strip().casefold()
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict) or row.get("active") is False:
+                    continue
+                metadata = row.get("metadata")
+                metadata = metadata if isinstance(metadata, dict) else {}
+                row_client = str(metadata.get("client_id") or "").strip()
+                if not _query_client_matches(normalized_client, row_client):
+                    continue
+                if system_name and str(row.get("system_name") or "").strip().casefold() != system_name:
+                    continue
+                active_rows.append(dict(row))
+        job["results"][normalized_client] = {
+            "client_id": normalized_client,
+            "system_name": str(payload.get("system_name") or "Unknown"),
+            "names": [str(name) for name in payload.get("names", []) if str(name).strip()],
+            "received_at": utc_now_iso(),
+            "server_result": dict(server_result),
+            "recognized": active_rows,
+        }
+        if len(job["results"]) >= len(job.get("clients", {})):
+            job["status"] = "completed"
+
+
+def _refresh_ocr_query_results(job: dict[str, Any], store: Any | None) -> None:
+    if store is None:
+        return
+    try:
+        rows = store.list_active_intel()
+    except Exception:
+        return
+    if not isinstance(rows, list):
+        return
+    for result in job.get("results", {}).values():
+        client_id = str(result.get("client_id") or "").strip()
+        system_name = str(result.get("system_name") or "").strip().casefold()
+        recognized: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict) or row.get("active") is False:
+                continue
+            metadata = row.get("metadata")
+            metadata = metadata if isinstance(metadata, dict) else {}
+            row_client = str(metadata.get("client_id") or "").strip()
+            if not _query_client_matches(client_id, row_client):
+                continue
+            if system_name and str(row.get("system_name") or "").strip().casefold() != system_name:
+                continue
+            recognized.append(dict(row))
+        result["recognized"] = recognized
+
+
+def _ocr_query_status(query_id: str, store: Any | None = None) -> dict[str, Any] | None:
+    normalized = str(query_id or "").strip()
+    now = time.monotonic()
+    with _OCR_QUERY_LOCK:
+        _prune_ocr_query_jobs(now)
+        job = _OCR_QUERY_JOBS.get(normalized)
+        if not isinstance(job, dict):
+            return None
+        _refresh_ocr_query_results(job, store)
+        if job.get("status") == "pending" and now >= float(job.get("deadline", 0.0)):
+            job["status"] = "completed" if job.get("results") else "timed_out"
+        expected = len(job.get("clients", {}))
+        received = len(job.get("results", {}))
+        return {
+            "query_id": normalized,
+            "status": job.get("status", "pending"),
+            "created_at": job.get("created_at", ""),
+            "expires_at": job.get("expires_at"),
+            "requested_clients": sorted(job.get("clients", {}).keys()),
+            "received_clients": received,
+            "expected_clients": expected,
+            "results": list(job.get("results", {}).values()),
+        }
 
 
 def _notify_event_streams() -> None:
@@ -1078,6 +1339,14 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
 
     def _handle_v1_get(self, parsed) -> None:
         path = parsed.path
+        if path.startswith(f"{API_V1_PREFIX}/ocr/query/"):
+            query_id = unquote(path[len(f"{API_V1_PREFIX}/ocr/query/"):]).strip()
+            status = _ocr_query_status(query_id, self._store())
+            if status is None:
+                self._send_json({"error": "OCR query not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_json(status)
+            return
         if path == f"{API_V1_PREFIX}/bootstrap":
             self._send_json({"bootstrap": self._bootstrap_payload()})
             return
@@ -1385,12 +1654,42 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 HTTPStatus.OK if result.get("ignored") else HTTPStatus.CREATED,
             )
             return
+        if path == f"{API_V1_PREFIX}/ocr/query":
+            try:
+                payload = self._read_optional_json() or {}
+                if not isinstance(payload, dict):
+                    raise RequestBodyError("OCR query payload must be an object")
+                filters = {
+                    key: str(payload.get(key) or "").strip()
+                    for key in ("name", "corporation", "alliance")
+                    if str(payload.get(key) or "").strip()
+                }
+                timeout_seconds = float(payload.get("timeout_seconds") or 30.0)
+                if timeout_seconds <= 0:
+                    raise RequestBodyError("timeout_seconds must be positive")
+                result = _create_ocr_query(
+                    self._store().heartbeat_snapshot(),
+                    filters,
+                    timeout_seconds,
+                )
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"error": str(exc)}, _request_error_status(exc))
+                return
+            self._send_json(result, HTTPStatus.ACCEPTED)
+            return
         if path == f"{API_V1_PREFIX}/ocr/snapshot":
             try:
                 store = self._store()
                 payload = self._read_json()
                 result = store.record_ocr_snapshot(payload)
                 store.refresh_detector_heartbeat(payload.get("client_id"))
+                _complete_ocr_query(
+                    str(payload.get("query_id") or ""),
+                    str(payload.get("client_id") or ""),
+                    payload,
+                    result,
+                    store,
+                )
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
@@ -1414,14 +1713,17 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         if path == f"{API_V1_PREFIX}/clients/heartbeats":
             try:
-                heartbeat = self._store().record_heartbeat(
-                    self._attributed_heartbeat_payload(self._read_json())
-                )
+                payload = self._attributed_heartbeat_payload(self._read_json())
+                heartbeat = self._store().record_heartbeat(payload)
+                commands = _claim_ocr_query_commands(payload.get("client_id"))
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
             _notify_event_streams()
-            self._send_json({"ok": True, "heartbeat": heartbeat}, HTTPStatus.CREATED)
+            self._send_json(
+                {"ok": True, "heartbeat": heartbeat, "commands": commands},
+                HTTPStatus.CREATED,
+            )
             return
         if path in {f"{API_V1_PREFIX}/reports", f"{API_V1_PREFIX}/observations"}:
             self._handle_v1_ingest(path)

@@ -140,6 +140,7 @@ class IntelApiClient:
         snapshot_id: str = "",
         sequence: int | None = None,
         captured_at: str = "",
+        query_id: str = "",
     ) -> dict[str, Any]:
         """Publish the current OCR-detected pilot-name snapshot."""
         payload: dict[str, Any] = {
@@ -165,6 +166,8 @@ class IntelApiClient:
             payload["sequence"] = int(sequence)
         if captured_at:
             payload["captured_at"] = str(captured_at)
+        if query_id:
+            payload["query_id"] = str(query_id)
         path = self._v1_path("/ocr/snapshot")
         try:
             return self._request("POST", path, payload=payload)
@@ -242,6 +245,11 @@ class IntelApiClient:
         heartbeat = response.get("heartbeat")
         if not isinstance(heartbeat, dict):
             raise IntelApiError("server returned an invalid heartbeat payload")
+        commands = response.get("commands")
+        if isinstance(commands, list):
+            heartbeat["commands"] = [
+                item for item in commands if isinstance(item, dict)
+            ]
         return heartbeat
 
     def verify_eve_characters(self, names: list[str]) -> dict[str, Any]:

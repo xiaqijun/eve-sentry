@@ -2783,6 +2783,16 @@ class MainWindow(QMainWindow):
                 hostile_icon_count=hostile_icon_count,
             )
         )
+        query_snapshot = getattr(worker, "query_ocr_snapshot", None)
+        if query_snapshot is not None:
+            query_snapshot.connect(
+                lambda query_id, names, hostile_icon_count, context=target: self._publish_ocr_snapshot(
+                    names,
+                    context=context,
+                    hostile_icon_count=hostile_icon_count,
+                    query_id=query_id,
+                )
+            )
         evidence_snapshot = getattr(worker, "ocr_evidence_snapshot", None)
         if evidence_snapshot is not None:
             evidence_snapshot.connect(
@@ -3097,6 +3107,12 @@ class MainWindow(QMainWindow):
             worker.ocr_snapshot.disconnect()
         except TypeError:
             pass
+        query_snapshot = getattr(worker, "query_ocr_snapshot", None)
+        if query_snapshot is not None:
+            try:
+                query_snapshot.disconnect()
+            except TypeError:
+                pass
         evidence_snapshot = getattr(worker, "ocr_evidence_snapshot", None)
         if evidence_snapshot is not None:
             try:
@@ -3290,6 +3306,7 @@ class MainWindow(QMainWindow):
         context: dict | None = None,
         hostile_icon_count: int = 0,
         ocr_evidence: dict | None = None,
+        query_id: str = "",
     ) -> None:
         # Coordinates are local detection evidence and are intentionally not
         # sent. The server classifies the complete OCR roster through ESI.
@@ -3329,28 +3346,38 @@ class MainWindow(QMainWindow):
         }
         if hostile_icon_count > 0:
             payload["hostile_icon_count"] = int(hostile_icon_count)
+        if query_id:
+            payload["query_id"] = str(query_id)
+        upload_key = (
+            f"query:{query_id}:{client_id}"
+            if query_id
+            else client_id
+        )
         upload_manager = _instance_attr(self, "_upload_manager")
         if upload_manager is not None:
             upload_manager.submit_snapshot(
-                client_id,
+                upload_key,
                 payload,
                 {
                     "kind": "ocr",
                     "context": context,
                     "names": list(names),
+                    "query_id": str(query_id or ""),
                 },
+                ttl=30.0 if query_id else 15.0,
             )
             return
         runner = _instance_attr(self, "_network_tasks")
         if runner is not None:
             client = self._intel_client
             runner.submit_latest(
-                f"ocr:{client_id}",
+                f"ocr:{query_id or client_id}",
                 lambda: client.post_ocr_snapshot(**payload),
                 {
                     "kind": "ocr",
                     "context": context,
                     "names": list(names),
+                    "query_id": str(query_id or ""),
                 },
             )
             return
@@ -3590,10 +3617,40 @@ class MainWindow(QMainWindow):
         self._set_heartbeat_enabled(True)
         QTimer.singleShot(0, self._publish_heartbeat)
 
-    def _on_reliable_heartbeat_uploaded(self, _metadata: object) -> None:
+    def _on_reliable_heartbeat_uploaded(self, metadata: object) -> None:
         self._last_heartbeat_error = ""
         self._heartbeat_last_success_at = heartbeat_now_iso()
+        response = metadata.get("response") if isinstance(metadata, dict) else None
+        commands = response.get("commands") if isinstance(response, dict) else None
+        if isinstance(commands, list):
+            for command in commands:
+                self._dispatch_ocr_query(command)
         self._refresh_status_cards()
+
+    def _dispatch_ocr_query(self, command: object) -> None:
+        if not isinstance(command, dict):
+            return
+        query_id = str(command.get("query_id") or "").strip()
+        if not query_id:
+            return
+        target_client_id = str(command.get("target_client_id") or "").strip()
+        workers = _instance_attr(self, "_workers", {})
+        contexts = _instance_attr(self, "_worker_contexts", {})
+        if not isinstance(workers, dict):
+            return
+        for key, worker in workers.items():
+            if target_client_id:
+                context = contexts.get(key) if isinstance(contexts, dict) else None
+                worker_client_id = (
+                    str(context.get("client_id") or "").strip()
+                    if isinstance(context, dict)
+                    else ""
+                )
+                if worker_client_id != target_client_id:
+                    continue
+            request = getattr(worker, "request_ocr_once", None)
+            if callable(request):
+                request(query_id)
 
     def _refresh_intel_location(
         self,

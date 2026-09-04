@@ -213,7 +213,15 @@ class AuthHttpMixin:
                     raise AuthError("authentication is required", 401, "authentication_required")
                 principal = service.authenticate_session(session_token)
 
-            if principal.is_read_only and method not in {"GET", "HEAD"}:
+            # The OCR query endpoint is a command request for connected
+            # detector clients, but it does not mutate persisted intel data.
+            # Allow the QQ service key to enqueue this bounded command while
+            # keeping all other write routes read-only.
+            if (
+                principal.is_read_only
+                and method not in {"GET", "HEAD"}
+                and path != "/api/v1/ocr/query"
+            ):
                 raise AuthError("service key is read-only", 403, "read_only_key")
             if principal.is_read_only and path not in {
                 "/api/v1/bootstrap",
@@ -221,7 +229,8 @@ class AuthHttpMixin:
                 "/api/v1/alert-history",
                 "/api/v1/hostile-waves",
                 "/api/v1/integrations/hostile-systems",
-            }:
+                "/api/v1/ocr/query",
+            } and not path.startswith("/api/v1/ocr/query/"):
                 raise AuthError(
                     "service key can only read approved integration endpoints",
                     403,

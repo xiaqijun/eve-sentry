@@ -219,13 +219,14 @@ class ReliableUploadManager(QObject):
                 close()
 
     def _send(self, upload: _PendingUpload) -> None:
+        response: dict[str, Any] | None = None
         try:
             if upload.key == "heartbeat":
-                self._client.post_heartbeat(**upload.payload)
+                response = self._client.post_heartbeat(**upload.payload)
             elif upload.key.startswith("presence:"):
-                self._client.post_hostile_presence(**upload.payload)
+                response = self._client.post_hostile_presence(**upload.payload)
             else:
-                self._client.post_ocr_snapshot(**upload.payload)
+                response = self._client.post_ocr_snapshot(**upload.payload)
         except IntelApiError as exc:
             if getattr(exc, "status_code", None) in {401, 403}:
                 self._set_state("authentication_failed", "认证失效")
@@ -253,6 +254,8 @@ class ReliableUploadManager(QObject):
         self._set_state("online", "在线")
         metadata = dict(upload.metadata)
         metadata["generation"] = upload.generation
+        if response is not None:
+            metadata["response"] = response
         if upload.key == "heartbeat":
             self.heartbeat_uploaded.emit(metadata)
         elif upload.key.startswith("presence:"):
