@@ -9,7 +9,6 @@ authenticated sessions, tokens, and application resolvers remain in the
 
 Documentation:
 
-- [Phase 1 migration design](docs/migration-phase1.md)
 - [Cache and storage design](docs/cache-and-storage.md)
 - [Operations runbook](docs/operations.md)
 
