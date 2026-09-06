@@ -491,6 +491,12 @@ def test_ocr_query_round_trip_claims_command_and_collects_snapshot(tmp_path):
                 "targets": [{"client_id": "detector-client:query:window-1", "monitoring": True}],
             },
         )
+        api.post_ocr_snapshot(
+            client_id="detector-client:query:window-1",
+            source_instance="EVE - Query",
+            system_name="S-KSWL",
+            names=["Old Pilot"],
+        )
         status, created = request_json(
             f"{server.url}/api/v1/ocr/query",
             method="POST",
@@ -527,6 +533,9 @@ def test_ocr_query_round_trip_claims_command_and_collects_snapshot(tmp_path):
         _, result = request_json(f"{server.url}/api/v1/ocr/query/{query_id}")
         assert result["status"] == "completed"
         assert result["results"][0]["names"] == ["Alice"]
+        assert [
+            item["name"] for item in result["results"][0]["recognized"]
+        ] == ["Alice"]
     finally:
         server.stop()
 

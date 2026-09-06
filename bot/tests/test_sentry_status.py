@@ -5,6 +5,7 @@ import respx
 from eve_risk.sentry_status import (
     EveSentryStatusClient,
     SentryStatusError,
+    format_ocr_query,
     format_sentry_status,
     is_sentry_status_command,
     parse_sentry_query,
@@ -129,6 +130,33 @@ def test_parse_sentry_query_supports_person_and_affiliation_filters() -> None:
     assert parse_sentry_query("/查询预警 军团 Blue Corp") == {"corporation": "Blue Corp"}
     assert parse_sentry_query("查询预警 Alliance Name") == {"name": "Alliance Name"}
     assert parse_sentry_query("预警状态") is None
+
+
+def test_format_ocr_query_uses_only_names_from_this_snapshot() -> None:
+    message = format_ocr_query(
+        {
+            "expected_clients": 1,
+            "results": [
+                {
+                    "system_name": "S-KSWL",
+                    "names": ["Alice", "Bob"],
+                    "recognized": [
+                        {
+                            "name": "Alice",
+                            "metadata": {"corporation_name": "Blue Corp"},
+                        },
+                        # A stale row must not affect this one-shot result.
+                        {"name": "Old Pilot", "metadata": {}},
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert "S-KSWL｜识别 2 人" in message
+    assert "Alice" in message
+    assert "  - Bob" in message
+    assert "Old Pilot" not in message
 
 
 @pytest.mark.asyncio

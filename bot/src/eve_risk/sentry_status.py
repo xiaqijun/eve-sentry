@@ -190,13 +190,30 @@ def format_ocr_query(payload: dict[str, Any], filters: dict[str, str] | None = N
         raw_names = [str(name).strip() for name in result.get("names", []) if str(name).strip()]
         if not selected and filters and raw_names:
             continue
-        lines.append(f"\n{system}｜识别 {len(selected) if filters else len(recognized)} 人")
-        if selected:
-            for item in selected[:MAX_HOSTILES]:
+        if filters:
+            displayed_items = selected[:MAX_HOSTILES]
+            lines.append(f"\n{system}｜识别 {len(selected)} 人")
+            for item in displayed_items:
                 lines.extend(_hostile_lines(item))
                 displayed += 1
-        elif raw_names:
-            lines.append(f"  OCR 原始名单｜{'、'.join(raw_names[:MAX_HOSTILES])}")
+            continue
+
+        # The query response is authoritative for this one OCR pass. Use its
+        # raw names as the count/list and only enrich names that were resolved
+        # by the server; do not fall back to an older active-intel snapshot.
+        recognized_by_name = {
+            str(item.get("name") or "").strip().casefold(): item
+            for item in recognized
+            if str(item.get("name") or "").strip().casefold()
+        }
+        lines.append(f"\n{system}｜识别 {len(raw_names)} 人")
+        for name in raw_names[:MAX_HOSTILES]:
+            item = recognized_by_name.get(name.casefold())
+            if item is not None:
+                lines.extend(_hostile_lines(item))
+            else:
+                lines.append(f"  - {name}")
+            displayed += 1
     if len(lines) == 1:
         return "OCR 查询｜没有收到符合条件的人员名单。"
     return "\n".join(lines)

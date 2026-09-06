@@ -269,6 +269,11 @@ def _complete_ocr_query(
             except Exception:
                 rows = []
             system_name = str(payload.get("system_name") or "").strip().casefold()
+            query_name_keys = {
+                str(name).strip().casefold()
+                for name in payload.get("names", [])
+                if str(name).strip()
+            }
             for row in rows if isinstance(rows, list) else []:
                 if not isinstance(row, dict) or row.get("active") is False:
                     continue
@@ -278,6 +283,11 @@ def _complete_ocr_query(
                 if not _query_client_matches(normalized_client, row_client):
                     continue
                 if system_name and str(row.get("system_name") or "").strip().casefold() != system_name:
+                    continue
+                # A query is a one-shot snapshot. Never leak a previously
+                # active person from the same client/system into this result.
+                row_name = str(row.get("name") or "").strip().casefold()
+                if row_name not in query_name_keys:
                     continue
                 active_rows.append(dict(row))
         job["results"][normalized_client] = {
@@ -304,6 +314,14 @@ def _refresh_ocr_query_results(job: dict[str, Any], store: Any | None) -> None:
     for result in job.get("results", {}).values():
         client_id = str(result.get("client_id") or "").strip()
         system_name = str(result.get("system_name") or "").strip().casefold()
+        # The OCR response is a one-shot snapshot.  Keep the original names
+        # as the authority when refreshing the result; active intel can still
+        # contain people from an earlier capture on the same client/window.
+        query_name_keys = {
+            str(name).strip().casefold()
+            for name in result.get("names", [])
+            if str(name).strip()
+        }
         recognized: list[dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict) or row.get("active") is False:
@@ -314,6 +332,9 @@ def _refresh_ocr_query_results(job: dict[str, Any], store: Any | None) -> None:
             if not _query_client_matches(client_id, row_client):
                 continue
             if system_name and str(row.get("system_name") or "").strip().casefold() != system_name:
+                continue
+            row_name = str(row.get("name") or "").strip().casefold()
+            if row_name not in query_name_keys:
                 continue
             recognized.append(dict(row))
         result["recognized"] = recognized
