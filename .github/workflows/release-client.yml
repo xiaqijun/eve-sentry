@@ -150,18 +150,24 @@ jobs:
           "release=$release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Cache OCR models
         id: cache-models
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: client/.runtime/onnx-models
           key: eve-sentry-client-onnx-models-${{ runner.os }}-${{ steps.model-release.outputs.release }}-${{ hashFiles('client/scripts/restore_release_models.ps1') }}
-          save-always: true
       - name: Restore bundled OCR models from the release repository
+        id: restore-models
         if: steps.cache-models.outputs.cache-hit != 'true'
         run: >-
           .\scripts\restore_release_models.ps1
           -Repository "xiaqijun/eve-sentry-client"
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: Save OCR model cache
+        if: always() && steps.cache-models.outputs.cache-hit != 'true' && steps.restore-models.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: client/.runtime/onnx-models
+          key: eve-sentry-client-onnx-models-${{ runner.os }}-${{ steps.model-release.outputs.release }}-${{ hashFiles('client/scripts/restore_release_models.ps1') }}
       - name: Build, sign, and publish client assets
         run: >-
           .\scripts\publish_client_release.ps1
