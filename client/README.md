@@ -124,10 +124,8 @@ Windows 用户直接下载并解压完整便携包即可使用。连接服务端
 固定下载入口：[下载最新版 Windows 客户端](https://evesentrydownload.kisectool.com/download/latest)。
 该地址不包含版本号，会自动跳转到最新完整客户端包，并支持 HTTP Range 断点续传。
 
-客户端相关变更进入 `main` 后会先运行 Windows CI。只有本仓库 `main` 的 push 对应 CI
-成功完成，发布工作流才会检查 `app/version.py` 中的版本；版本尚未发布时才进入受保护的
-`client-release` 环境，构建、签名并发布 Windows 客户端。已有同版本 Release 时工作流会
-成功跳过，不会覆盖现有资产。标签和手动发布仍会独立执行客户端测试。
+客户端相关变更进入 `main` 后会先运行 Windows CI。根仓库已废弃自动客户端发布工作流，
+安装包由独立客户端发布流程调用 `client/scripts/publish_client_release.ps1` 构建、签名并发布。
 
 本仓库不部署服务端、ESI Gateway、机器人或 Web 管理系统。完整触发条件、权限边界、版本
 发布步骤和失败处理见 [客户端 CI/CD 与发布流程](docs/release-process.md)。生产发布审批、
