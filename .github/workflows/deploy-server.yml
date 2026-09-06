@@ -47,7 +47,7 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install -r requirements-onnx.txt -r requirements-server.txt pytest pytest-rerunfailures
       - name: Run Python tests
-        run: python -m pytest -q --reruns 1 --reruns-delay 1 --junitxml=python-test-results.xml
+        run: python -m pytest -q tests --reruns 1 --reruns-delay 1 --junitxml=python-test-results.xml
         env:
           QT_QPA_PLATFORM: offscreen
       - name: Install frontend dependencies
