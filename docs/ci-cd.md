@@ -11,6 +11,7 @@
 | `deploy-server.yml` | `app/`、`frontend/`、`deploy/`、根目录依赖 | 服务端测试、前端构建、PostgreSQL 集成、打包和生产部署 |
 | `ci-bot.yml` | `bot/` | 机器人 Ruff、单元测试和运行时配置校验；`main` 推送后进入生产部署 |
 | `ci-client.yml` | `client/` | Windows 客户端测试、OCR 依赖和打包校验 |
+| `release-client.yml` | `client/`、客户端版本或标签 | 构建、签名并发布客户端安装包 |
 | `deploy-esi-gateway.yml` | `esi-gateway/` | Gateway 多 Python 版本验证、打包和生产部署 |
 
 子目录中随导入保留的 `.github/workflows/` 不会被 GitHub 识别为 workflow，仅用于追溯
@@ -45,8 +46,8 @@ ESI Gateway：
 
 客户端：
 
-- `Client CI` 仅负责客户端测试和构建校验；根仓库已废弃自动 `Release Client` 工作流。
-- 客户端安装包仍由独立客户端发布流程使用 `client/scripts/publish_client_release.ps1` 生成和签名。
+- Secret：`EVE_SENTRY_UPDATE_SIGNING_PRIVATE_KEY_B64`
+- GitHub 内置 `github.token` 用于 Release 和模型恢复。
 
 机器人：
 

@@ -6,11 +6,13 @@ on:
     paths:
       - "client/**"
       - ".github/workflows/ci-client.yml"
+      - ".github/workflows/release-client.yml"
   pull_request:
     branches: [main]
     paths:
       - "client/**"
       - ".github/workflows/ci-client.yml"
+      - ".github/workflows/release-client.yml"
   workflow_dispatch:
 
 concurrency:

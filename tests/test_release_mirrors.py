@@ -63,7 +63,3 @@ def test_gitcode_release_script_keeps_token_out_of_public_urls():
     assert '[switch]$IncludeFullPackage' in script
     assert 'if ($IncludeFullPackage)' in script
     assert 'GitCode upload failed for $($asset.Name) (HTTP $status)' in script
-
-
-def test_main_repository_has_retired_client_release_workflow():
-    assert not Path(".github/workflows/release-client.yml").exists()
