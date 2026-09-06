@@ -1103,9 +1103,14 @@ class EveSentryAlertRelay:
                 processed = True
                 if event_name == "bootstrap" and isinstance(payload, dict):
                     processed = await self.process_bootstrap(payload)
-                elif event_name == "alert" and isinstance(payload, dict):
+                elif event_name in {"alert", "alert.entered", "alert.updated"} and isinstance(payload, dict):
                     processed = await self.process_alert_event(payload)
+                elif event_name == "alert.cleared" and isinstance(payload, dict):
+                    payload.setdefault("active", False)
+                    processed = await self.process_safe_event(payload)
                 elif event_name == "monitoring_node" and isinstance(payload, dict):
+                    processed = await self.process_monitoring_node(payload)
+                elif event_name == "node.updated" and isinstance(payload, dict):
                     processed = await self.process_monitoring_node(payload)
                 if not processed:
                     raise RuntimeError(
@@ -1161,6 +1166,37 @@ class EveSentryAlertRelay:
 
         system_key = system_name.casefold()
         if system_key in current:
+            if str(payload.get("event_type") or "").strip() == "alert.updated":
+                personnel = payload.get("hostile_personnel")
+                if isinstance(personnel, list) and personnel:
+                    previous = current[system_key]
+                    state = {
+                        **previous,
+                        "hostile_count": max(
+                            int(previous.get("hostile_count") or 0),
+                            int(payload.get("hostile_count") or 0),
+                        ),
+                        "personnel": [
+                            item for item in personnel if isinstance(item, dict)
+                        ],
+                    }
+                    state["personnel_fingerprint"] = hashlib.sha256(
+                        json.dumps(
+                            state["personnel"],
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()[:16]
+                    if state["personnel_fingerprint"] != previous.get(
+                        "personnel_fingerprint"
+                    ):
+                        if not await self.queue_system_personnel_update(
+                            state, occurred_at
+                        ):
+                            return False
+                        current[system_key] = state
+                        await self._save_system_alert_state(current)
             self._active_alert_ids.update(event_ids)
             return True
 
@@ -1188,6 +1224,34 @@ class EveSentryAlertRelay:
             system_name,
             hostile_count,
         )
+        return True
+
+    async def process_safe_event(self, payload: dict[str, Any]) -> bool:
+        """Deliver an authoritative clear transition from the server event log."""
+        system_name = _system_label(payload)
+        event_key = str(payload.get("event_key") or payload.get("id") or "").strip()
+        occurred_at = str(
+            payload.get("created_at") or payload.get("occurred_at") or datetime.now(UTC).isoformat()
+        ).strip()
+        if not system_name or not event_key:
+            logger.warning("Ignored malformed EVE Sentry clear event")
+            return True
+        current, initialized = await self._load_system_alert_state()
+        if not initialized:
+            return True
+        if not await self.deliver_system_transition(
+            {
+                "system_name": system_name,
+                "episode_id": event_key,
+                "hostile_count": 0,
+            },
+            "safe",
+        ):
+            return False
+        current.pop(system_name.casefold(), None)
+        await self._save_system_alert_state(current)
+        self._active_alert_ids.add(event_key)
+        await self.redis.set(ALERT_CURSOR_KEY, occurred_at)
         return True
 
 

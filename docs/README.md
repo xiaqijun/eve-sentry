@@ -14,6 +14,7 @@
 ## 服务端运维
 
 - [系统架构](architecture.md)：客户端、情报服务、Web 管理系统和数据来源之间的边界与数据流。
+- [可靠推送实施计划](reliable-push-plan.md)：Presence、OCR、SSE、星图、QQ 投递和按需 OCR 的统一流程、时延目标与实施阶段。
 - [服务端部署](server-deployment.md)：安装服务端、配置 PostgreSQL、部署前端和反向代理、启动服务及上线验证。
 - [CI/CD 与仓库边界](ci-cd.md)：各仓库职责、`main` 推送触发、发布门禁、Secrets/Variables、验证和回滚。
 - [认证与 EVE 身份校验](authentication.md)：认证模式、管理员初始化、设备密钥和 Listener 风控。
@@ -27,8 +28,9 @@
 - [单体仓库开发与联动](multi-repository-development.md)：目录职责、联调顺序、`main` 分支约定和发布门禁。
 - [GitCode 镜像状态](gitcode-release-mirror.md)：客户端发布镜像的当前状态和限制。
 
-独立迁移计划不再作为项目文档维护；已完成的设计内容合并到架构、部署和 API 文档，
-避免同一配置在多个文件中出现不同版本。
+可靠推送计划单独维护在 `reliable-push-plan.md`，作为服务端、客户端和机器人联动改造的
+执行基线；接口字段和兼容行为仍以 `api-reference.md` 为准，客户端和机器人对接细节以
+各自组件文档为准。
 
 ## 组件文档
 

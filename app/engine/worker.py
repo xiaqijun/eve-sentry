@@ -56,7 +56,9 @@ class MonitorWorker(QThread):
         super().__init__(parent)
         self._capturer = capturer
         self._ocr = ocr
-        self._interval = 2.0           # seconds between scans
+        # Keep the visual presence lane within the one-second detection target;
+        # OCR remains coalesced by the scheduler and does not block this loop.
+        self._interval = 1.0           # seconds between scans
         self._active_interval = self._interval
         self._scan_offset = max(0.0, float(scan_offset))
         self._burst_scans_remaining = 0

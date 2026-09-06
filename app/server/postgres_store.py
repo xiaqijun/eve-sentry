@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import threading
 import time
@@ -37,6 +38,7 @@ POSTGRES_ALERT_SCAN_BATCH_SIZE = 500
 PERSISTED_ALERT_METADATA_KEY = "generated_alert"
 REPORT_STREAM_POSITION_KEY = "_stream_position"
 REPORT_STREAM_ADVISORY_LOCK_ID = 1163285842
+INTEL_EVENT_RETENTION_DAYS = 14
 
 
 logger = logging.getLogger(__name__)
@@ -84,6 +86,7 @@ class PostgreSQLIntelStore(IntelStore):
         self._active_intel = self._startup_active_intel
         del self._startup_active_intel
         self._heartbeats = self._read_heartbeats()
+        self.prune_intel_events_older_than(INTEL_EVENT_RETENTION_DAYS)
         if self._heartbeats:
             self._stale_heartbeat_cleanup_after = (
                 time.monotonic() + STALE_HEARTBEAT_STARTUP_GRACE_SECONDS
@@ -545,6 +548,7 @@ class PostgreSQLIntelStore(IntelStore):
                 if active_id in self._active_intel
             ]
             hostile_waves = self._hostile_wave_changes(hostile_before, seen_at)
+            state_events = self._hostile_state_events(hostile_before, self._hostile_system_state(), seen_at)
             db_write_ticket = self._reserve_db_write()
         self._wait_for_db_write(db_write_ticket)
         try:
@@ -596,6 +600,7 @@ class PostgreSQLIntelStore(IntelStore):
                     self._refresh_report_stream_positions(connection, new_reports)
                 self._upsert_active_intel_rows(connection, active_rows)
                 self._persist_hostile_wave_changes(connection, hostile_waves)
+                self._persist_intel_events(connection, state_events)
         finally:
             self._finish_db_write(db_write_ticket)
         for task in esi_tasks:
@@ -615,15 +620,21 @@ class PostgreSQLIntelStore(IntelStore):
                 hostile_before,
                 str(result.get("seen_at") or utc_now_iso()),
             )
-            db_write_ticket = (
-                self._reserve_db_write() if active_rows or hostile_waves else None
+            state_events = self._hostile_state_events(
+                hostile_before,
+                self._hostile_system_state(),
+                str(result.get("seen_at") or utc_now_iso()),
             )
-        if active_rows or hostile_waves:
+            db_write_ticket = (
+                self._reserve_db_write() if active_rows or hostile_waves or state_events else None
+            )
+        if active_rows or hostile_waves or state_events:
             self._wait_for_db_write(db_write_ticket)
             try:
                 with self._connect() as connection:
                     self._upsert_active_intel_rows(connection, active_rows)
                     self._persist_hostile_wave_changes(connection, hostile_waves)
+                    self._persist_intel_events(connection, state_events)
             finally:
                 self._finish_db_write(db_write_ticket)
         return result
@@ -667,6 +678,14 @@ class PostgreSQLIntelStore(IntelStore):
                     after=hostile_after,
                 ),
             )
+            self._persist_intel_events(
+                connection,
+                self._hostile_state_events(
+                    hostile_before,
+                    hostile_after,
+                    str((item.last_seen_at if item is not None else report.seen_at) or utc_now_iso()),
+                ),
+            )
 
     def expire_active_intel(self, now: str | None = None) -> int:
         """Expire TTL-based active intel and persist changed rows."""
@@ -687,13 +706,19 @@ class PostgreSQLIntelStore(IntelStore):
                 hostile_before,
                 str(now or utc_now_iso()).strip() or utc_now_iso(),
             )
+            state_events = self._hostile_state_events(
+                hostile_before,
+                self._hostile_system_state(),
+                str(now or utc_now_iso()).strip() or utc_now_iso(),
+            )
             db_write_ticket = self._reserve_db_write() if changed_rows else None
-        if changed_rows:
+        if changed_rows or hostile_waves or state_events:
             self._wait_for_db_write(db_write_ticket)
             try:
                 with self._connect() as connection:
                     self._upsert_active_intel_rows(connection, changed_rows)
                     self._persist_hostile_wave_changes(connection, hostile_waves)
+                    self._persist_intel_events(connection, state_events)
             finally:
                 self._finish_db_write(db_write_ticket)
         return expired
@@ -1028,6 +1053,7 @@ class PostgreSQLIntelStore(IntelStore):
                     change["system_key"],
                 ),
             )
+
             if max(0, int(result.rowcount)) > 0:
                 continue
             connection.execute(
@@ -1051,6 +1077,175 @@ class PostgreSQLIntelStore(IntelStore):
                     self._hostile_personnel_json(change.get("personnel")),
                 ),
             )
+
+    def _hostile_state_events(
+        self,
+        before: dict[str, dict[str, Any]],
+        after: dict[str, dict[str, Any]],
+        occurred_at: str,
+    ) -> list[dict[str, Any]]:
+        """Return durable state transitions for realtime consumers.
+
+        Presence and OCR updates share this reducer so a clear event is emitted
+        exactly when the authoritative hostile state changes from non-empty to
+        empty. Heartbeats that only refresh timestamps do not create events.
+        """
+        observed_at = str(occurred_at or utc_now_iso()).strip() or utc_now_iso()
+        events: list[dict[str, Any]] = []
+        for system_key in sorted(set(before) | set(after)):
+            previous = before.get(system_key)
+            current = after.get(system_key)
+            if previous is None and current is not None:
+                event_type = "alert.entered"
+                state = current
+            elif previous is not None and current is None:
+                event_type = "alert.cleared"
+                state = {
+                    **previous,
+                    "hostile_count": 0,
+                    "personnel": [],
+                }
+            elif previous is not None and current is not None:
+                previous_fingerprint = (
+                    int(previous.get("hostile_count") or 0),
+                    json.dumps(previous.get("personnel") or [], sort_keys=True, ensure_ascii=False),
+                )
+                current_fingerprint = (
+                    int(current.get("hostile_count") or 0),
+                    json.dumps(current.get("personnel") or [], sort_keys=True, ensure_ascii=False),
+                )
+                if previous_fingerprint == current_fingerprint:
+                    continue
+                event_type = "alert.updated"
+                state = current
+            else:
+                continue
+
+            fingerprint = hashlib.sha1(
+                json.dumps(state, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()[:12]
+            event_key = f"{event_type}:{system_key}:{observed_at}:{fingerprint}"
+            events.append(
+                {
+                    "event_key": event_key,
+                    "event_type": event_type,
+                    "entity_key": system_key,
+                    "occurred_at": observed_at,
+                    "payload": {
+                        "system_name": state.get("system_name") or system_key,
+                        "system_id": state.get("system_id"),
+                        "hostile_count": max(0, int(state.get("hostile_count") or 0)),
+                        "active": event_type != "alert.cleared",
+                        "hostile_personnel": list(state.get("personnel") or []),
+                    },
+                }
+            )
+        return events
+
+    def _persist_intel_events(
+        self,
+        connection: Any,
+        events: list[dict[str, Any]],
+    ) -> None:
+        """Append state events idempotently inside the caller's transaction."""
+        if not events:
+            return
+        executemany = getattr(connection, "executemany", None)
+        if not callable(executemany):
+            return
+        executemany(
+            """
+            INSERT INTO intel_events (
+                event_key, event_type, entity_key, occurred_at, payload_json
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (event_key) DO NOTHING
+            """,
+            [
+                (
+                    event["event_key"],
+                    event["event_type"],
+                    event["entity_key"],
+                    event["occurred_at"],
+                    json.dumps(event["payload"], ensure_ascii=False, separators=(",", ":")),
+                )
+                for event in events
+            ],
+        )
+
+    def list_intel_event_page(
+        self,
+        *,
+        after_seq: int = 0,
+        since: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Read a bounded, ordered page of durable realtime state events."""
+        page_limit = max(0, min(500, int(limit)))
+        if page_limit == 0:
+            return []
+        clean_since = str(since or "").strip()
+        where = "seq > ?"
+        params: list[Any] = [max(0, int(after_seq))]
+        if clean_since and after_seq <= 0:
+            where += " AND occurred_at::timestamptz > ?::timestamptz"
+            params.append(clean_since)
+        params.append(page_limit)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT seq, event_key, event_type, entity_key, occurred_at,
+                       payload_json, created_at
+                FROM intel_events
+                WHERE {where}
+                ORDER BY seq ASC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            raw_payload = row.get("payload_json") if hasattr(row, "get") else None
+            try:
+                payload = json.loads(raw_payload or "{}")
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            result.append(
+                {
+                    "seq": int(row["seq"] or 0),
+                    "event_key": str(row["event_key"] or ""),
+                    "event_type": str(row["event_type"] or ""),
+                    "entity_key": str(row["entity_key"] or ""),
+                    "occurred_at": str(row["occurred_at"] or ""),
+                    "created_at": str(row["created_at"] or ""),
+                    "payload": payload if isinstance(payload, dict) else {},
+                }
+            )
+        return result
+
+    def prune_intel_events_older_than(
+        self,
+        retention_days: int = INTEL_EVENT_RETENTION_DAYS,
+        *,
+        now: str | None = None,
+    ) -> int:
+        """Bound the durable realtime log so it cannot grow without limit."""
+        if isinstance(retention_days, bool) or not isinstance(retention_days, int):
+            raise ValueError("retention_days must be an integer")
+        if retention_days < 0:
+            raise ValueError("retention_days must not be negative")
+        if retention_days == 0:
+            return 0
+        now_at = self._parse_timestamp(now or utc_now_iso())
+        if now_at is None:
+            raise ValueError("now must be an ISO timestamp")
+        cutoff = (now_at - timedelta(days=retention_days)).isoformat()
+        with self._connect() as connection:
+            result = connection.execute(
+                "DELETE FROM intel_events WHERE occurred_at::timestamptz < ?::timestamptz",
+                (cutoff,),
+            )
+            return max(0, int(result.rowcount))
 
     def _reconcile_hostile_waves(self, items: Any) -> None:
         now = utc_now_iso()
@@ -1816,6 +2011,31 @@ class PostgreSQLIntelStore(IntelStore):
                 """
                 CREATE INDEX IF NOT EXISTS idx_hostile_waves_started_at
                 ON hostile_waves(started_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS intel_events (
+                    seq BIGSERIAL PRIMARY KEY,
+                    event_key TEXT NOT NULL UNIQUE,
+                    event_type TEXT NOT NULL,
+                    entity_key TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_intel_events_seq
+                ON intel_events(seq)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_intel_events_occurred_at
+                ON intel_events(occurred_at)
                 """
             )
             connection.execute(

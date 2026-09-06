@@ -3376,6 +3376,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         since = str(since or "").strip()
         last_event_id = str(self.headers.get("Last-Event-ID") or "").strip()
         if last_event_id:
+            if last_event_id.startswith("state:"):
+                return since, last_event_id, False, None
             # Presence-only events are synthesized from the active OCR state
             # and have no persisted report cursor. Resolving one through the
             # PostgreSQL store falls back to scanning the hot report set
@@ -3435,6 +3437,12 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         last_seen = since.strip()
         resume_after_id = resume_after_id.strip()
         stream_event_id = resume_after_id or last_seen
+        state_event_seq = 0
+        if stream_event_id.startswith("state:"):
+            try:
+                state_event_seq = max(0, int(stream_event_id.split(":", 1)[1]))
+            except (TypeError, ValueError):
+                state_event_seq = 0
         sent_ids: set[str] = set()
         last_bootstrap_fingerprint = ""
         last_monitoring_target_state: list[dict[str, Any]] | None = None
@@ -3472,14 +3480,16 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             try:
                 event_generation = _event_stream_generation()
                 wrote_event = False
+                store = self._store()
                 current_include_since = bool(last_seen) and (
                     include_since or bool(sent_ids)
                 )
                 active_items: list[dict[str, Any]] | None = None
                 alert_cursors: dict[str, tuple[int, str]] = {}
                 active_presence_alerts: list[dict[str, Any]] = []
+                durable_state_events: list[dict[str, Any]] = []
+                durable_systems: set[str] = set()
                 if active_only:
-                    store = self._store()
                     (
                         active_items,
                         active_alerts,
@@ -3526,6 +3536,60 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         for cursor, alert in stream_page
                     }
                     alerts = list(ordered_alerts)
+                    list_events = getattr(store, "list_intel_event_page", None)
+                    if callable(list_events):
+                        durable_state_events = list_events(
+                            after_seq=state_event_seq,
+                            since=last_seen if state_event_seq <= 0 else "",
+                            limit=max(1, limit),
+                        )
+                        for event in durable_state_events:
+                            payload = dict(event.get("payload") or {})
+                            system_name = str(
+                                payload.get("system_name")
+                                or event.get("entity_key")
+                                or ""
+                            ).strip()
+                            if not system_name:
+                                continue
+                            event_type = str(event.get("event_type") or "").strip()
+                            event_name = {
+                                "alert.entered": "alert",
+                                "alert.cleared": "safe",
+                                "alert.updated": "alert",
+                            }.get(event_type)
+                            if not event_name:
+                                continue
+                            event_id = f"state:{int(event.get('seq') or 0)}"
+                            payload.update(
+                                {
+                                    "id": event_id,
+                                    "event_key": event.get("event_key"),
+                                    "event_type": event_type,
+                                    "system_name": system_name,
+                                    "system": system_name,
+                                    "created_at": event.get("occurred_at") or utc_now_iso(),
+                                    "active": event_type != "alert.cleared",
+                                    "message": (
+                                        f"✅ {system_name} 清空"
+                                        if event_type == "alert.cleared"
+                                        else f"❗ {system_name} 来敌"
+                                    ),
+                                }
+                            )
+                            payload["hostile_count"] = max(
+                                0,
+                                int(payload.get("hostile_count") or 0),
+                            )
+                            payload["presence_only"] = not bool(
+                                payload.get("hostile_personnel")
+                            )
+                            durable_systems.add(system_name.casefold())
+                            self._write_sse(event_name, event_id, payload)
+                            wrote_event = True
+                            state_event_seq = max(state_event_seq, int(event.get("seq") or 0))
+                            stream_event_id = event_id
+                            last_seen = max(last_seen, str(event.get("occurred_at") or ""))
                 active_snapshot_alerts: list[dict[str, Any]] = []
                 if active_only:
                     active_snapshot_alerts = list(active_alerts)
@@ -3538,24 +3602,25 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         active_snapshot_alerts,
                         active_items,
                     )
-                    if active_hostile_counts is not None:
-                        for system_name in sorted(
-                            set(active_hostile_counts) - set(current_hostile_counts)
-                        ):
-                            safe_at = utc_now_iso()
-                            self._write_sse(
-                                "safe",
-                                safe_at,
-                                {
-                                    "system_name": system_name,
-                                    "system": system_name,
-                                    "hostile_count": 0,
-                                    "active": False,
-                                    "created_at": safe_at,
-                                    "message": f"✅ {system_name} 清空",
-                                },
-                            )
-                            wrote_event = True
+                    if not callable(getattr(store, "list_intel_event_page", None)):
+                        if active_hostile_counts is not None:
+                            for system_name in sorted(
+                                set(active_hostile_counts) - set(current_hostile_counts)
+                            ):
+                                safe_at = utc_now_iso()
+                                self._write_sse(
+                                    "safe",
+                                    safe_at,
+                                    {
+                                        "system_name": system_name,
+                                        "system": system_name,
+                                        "hostile_count": 0,
+                                        "active": False,
+                                        "created_at": safe_at,
+                                        "message": f"✅ {system_name} 清空",
+                                    },
+                                )
+                                wrote_event = True
                     active_hostile_counts = current_hostile_counts
                 if active_only and include_bootstrap:
                     bootstrap = self._event_bootstrap_payload(
@@ -3628,7 +3693,28 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     presence_alerts.sort(
                         key=lambda item: str(item.get("created_at") or "")
                     )
-                    alerts.extend(presence_alerts)
+                    alerts.extend(
+                        item
+                        for item in presence_alerts
+                        if str(item.get("system_name") or item.get("system") or "")
+                        .strip()
+                        .casefold()
+                        not in durable_systems
+                    )
+                    alerts = [
+                        item
+                        for item in alerts
+                        if str(item.get("system_name") or item.get("system") or "")
+                        .strip()
+                        .casefold()
+                        not in durable_systems
+                    ] + [
+                        item for item in alerts
+                        if str(item.get("system_name") or item.get("system") or "")
+                        .strip()
+                        .casefold() in durable_systems
+                        and str(item.get("id") or "").startswith("state:")
+                    ]
                 ordered_alerts = alerts
                 emitted_alert_count = 0
                 for alert in ordered_alerts:

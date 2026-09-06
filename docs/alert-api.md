@@ -223,7 +223,23 @@ QQ 机器人在人员表的 zKill 列直接输出完整的 `https://zkillboard.c
 地址。不要依赖仅包含图标的 Markdown 链接：部分 QQ 群 Markdown 渲染器会隐藏其链接目标，
 导致消息中只剩 `🔗` 且无法点击。
 
-### `safe` 事件
+### `alert.entered`、`alert.updated` 与 `alert.cleared` 事件
+
+PostgreSQL 事件日志启用后，服务端会优先发送带稳定序号游标的事件。兼容消费者仍可按
+`alert`/`safe` 处理：
+
+```text
+id: state:123
+event: alert.cleared
+data: {"id":"state:123","event_key":"alert.cleared:s-kswl:...","event_type":"alert.cleared","system_name":"S-KSWL","hostile_count":0,"active":false,"created_at":"2026-09-07T12:05:00+00:00","message":"✅ S-KSWL 清空"}
+```
+
+`alert.entered` 表示从无敌对到有敌对，`alert.updated` 表示权威人数或已确认名单变化，
+`alert.cleared` 表示服务端状态从非空转为空。`state:<seq>` 是 PostgreSQL 事件序号，
+客户端应保存它并在 `Last-Event-ID` 中续传；事件已经在状态事务中落库，不由每个 SSE 连接
+临时推导。
+
+### 兼容 `safe` 事件
 
 一个星系的最后一条活动敌对证据清空时发送：
 

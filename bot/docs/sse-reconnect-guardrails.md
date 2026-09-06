@@ -10,6 +10,10 @@
 - SSE 注释帧（例如 `: connected`、`: keepalive`）表示连接有数据活动，不能当作事件，
   但必须刷新底层读取超时。
 - 事件游标只能在事件成功处理后写入 Redis；重连不得跳过未确认事件。
+- 服务端事件日志启用后会发送 `alert.entered`、`alert.updated`、`alert.cleared` 和
+  `node.updated`；机器人必须兼容这些事件名，并把 `state:<seq>` 作为可恢复游标保存。
+- `alert.cleared` 是服务端持久化的权威清空，不得再用每次 bootstrap 的星系差集临时生成
+  清空消息。
 
 ## 节点快照
 
