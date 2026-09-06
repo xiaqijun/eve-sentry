@@ -136,7 +136,26 @@ jobs:
         if: needs.check-release.outputs.run_tests == 'true'
         # This legacy integration module imports app.server, which is not owned here.
         run: python -m pytest -q --ignore=tests/test_intel_client.py
+      - name: Resolve OCR model source release
+        id: model-release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: xiaqijun/eve-sentry-client
+        run: |
+          $release = (gh release view --repo $env:RELEASE_REPOSITORY --json tagName --jq .tagName).Trim()
+          if (-not $release) {
+              throw "No client release is available for OCR model bootstrapping."
+          }
+          "release=$release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - name: Cache OCR models
+        id: cache-models
+        uses: actions/cache@v4
+        with:
+          path: client/.runtime/onnx-models
+          key: eve-sentry-client-onnx-models-${{ runner.os }}-${{ steps.model-release.outputs.release }}-${{ hashFiles('client/scripts/restore_release_models.ps1') }}
       - name: Restore bundled OCR models from the release repository
+        if: steps.cache-models.outputs.cache-hit != 'true'
         run: >-
           .\scripts\restore_release_models.ps1
           -Repository "xiaqijun/eve-sentry-client"
