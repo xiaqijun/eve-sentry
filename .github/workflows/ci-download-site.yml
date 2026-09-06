@@ -1,0 +1,61 @@
+name: Download Site CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "download-site/**"
+      - "deploy/cloudflare-download/**"
+      - ".github/workflows/ci-download-site.yml"
+      - ".github/workflows/deploy-download-site.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "download-site/**"
+      - "deploy/cloudflare-download/**"
+      - ".github/workflows/ci-download-site.yml"
+      - ".github/workflows/deploy-download-site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: download-site-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      WRANGLER_VERSION: 4.116.0
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: download-site/package-lock.json
+      - name: Install dependencies
+        working-directory: download-site
+        run: npm ci
+      - name: Build static site
+        working-directory: download-site
+        run: npm run build
+      - name: Validate static export
+        run: |
+          test -s download-site/out/index.html
+          test -s download-site/out/docs/client.html
+          test -s download-site/out/docs/server.html
+      - name: Test download Worker
+        run: node --test deploy/cloudflare-download/src/index.test.js
+      - name: Validate client Release source
+        run: >-
+          grep -Eq '"GITHUB_REPO"[[:space:]]*:[[:space:]]*"eve-sentry"'
+          deploy/cloudflare-download/wrangler.jsonc
+      - name: Validate Worker bundle
+        run: >-
+          npx --yes wrangler@${WRANGLER_VERSION} deploy
+          --dry-run
+          --config deploy/cloudflare-download/wrangler.jsonc

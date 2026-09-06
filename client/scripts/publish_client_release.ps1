@@ -1,8 +1,8 @@
 param(
     [string]$Version = "",
     [string]$Python = ".\.venv\Scripts\python.exe",
-    [string]$DownloadBaseUrl = "https://github.com/xiaqijun/eve-sentry-client/releases/latest/download",
-    [string]$Repository = "xiaqijun/eve-sentry-client",
+    [string]$DownloadBaseUrl = "https://github.com/xiaqijun/eve-sentry/releases/latest/download",
+    [string]$Repository = "xiaqijun/eve-sentry",
     [string]$ReleaseTarget = "",
     [string]$GitCodeRepository = "",
     [switch]$SkipBuild,

@@ -32,8 +32,8 @@ def test_release_workflow_uses_own_release_repository() -> None:
     assert "startsWith(github.ref, 'refs/tags/v')" in workflow
     assert "runs-on: ubuntu-latest" in workflow
     assert "environment: client-release" in workflow
-    assert "RELEASE_REPOSITORY: xiaqijun/eve-sentry-client" in workflow
-    assert '-Repository "xiaqijun/eve-sentry-client"' in workflow
+    assert "RELEASE_REPOSITORY: xiaqijun/eve-sentry" in workflow
+    assert '-Repository "xiaqijun/eve-sentry"' in workflow
     assert 'ref: ${{ github.event.workflow_run.head_sha || github.sha }}' in workflow
     assert '-ReleaseTarget "${{ needs.check-release.outputs.release_sha }}"' in workflow
     assert '-Version "${{ needs.check-release.outputs.version }}"' in workflow
@@ -51,9 +51,9 @@ def test_publish_script_refuses_to_overwrite_github_release() -> None:
         encoding="utf-8"
     )
 
-    assert '[string]$Repository = "xiaqijun/eve-sentry-client"' in script
+    assert '[string]$Repository = "xiaqijun/eve-sentry"' in script
     assert (
-        "https://github.com/xiaqijun/eve-sentry-client/releases/latest/download"
+        "https://github.com/xiaqijun/eve-sentry/releases/latest/download"
         in script
     )
     assert "gh release view $tag --repo $Repository" in script
@@ -72,7 +72,7 @@ def test_model_restore_defaults_to_client_release_repository() -> None:
         encoding="utf-8"
     )
 
-    assert '[string]$Repository = "xiaqijun/eve-sentry-client"' in script
+    assert '[string]$Repository = "xiaqijun/eve-sentry"' in script
     assert "gh release view --repo $Repository" in script
     assert "gh release view $Release --repo $Repository" in script
     assert "gh release download $Release --repo $Repository" in script

@@ -100,9 +100,9 @@ jobs:
       EVE_SENTRY_OCR_BACKEND: onnx
       PYTHONUTF8: "1"
       QT_QPA_PLATFORM: offscreen
-      # Keep the existing public artifact repository until the download site
-      # is migrated; source code is now built from this monorepo.
-      RELEASE_REPOSITORY: xiaqijun/eve-sentry-client
+      # Client releases are published from the monorepo so the download site
+      # and source history have one canonical origin.
+      RELEASE_REPOSITORY: xiaqijun/eve-sentry
     steps:
       - uses: actions/checkout@v5
         with:
@@ -141,25 +141,33 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_REPOSITORY: xiaqijun/eve-sentry-client
         run: |
-          $release = (gh release view --repo $env:RELEASE_REPOSITORY --json tagName --jq .tagName).Trim()
+          # The first monorepo release has no previous model asset yet. Use the
+          # last standalone release only as a one-time bootstrap fallback.
+          $repositories = @("xiaqijun/eve-sentry", "xiaqijun/eve-sentry-client")
+          foreach ($repository in $repositories) {
+              $release = (gh release view --repo $repository --json tagName --jq .tagName 2>$null).Trim()
+              if ($release) {
+                  "repository=$repository" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+                  "release=$release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+                  break
+              }
+          }
           if (-not $release) {
               throw "No client release is available for OCR model bootstrapping."
           }
-          "release=$release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Cache OCR models
         id: cache-models
         uses: actions/cache/restore@v4
         with:
           path: client/.runtime/onnx-models
-          key: eve-sentry-client-onnx-models-${{ runner.os }}-${{ steps.model-release.outputs.release }}-${{ hashFiles('client/scripts/restore_release_models.ps1') }}
+          key: eve-sentry-onnx-models-${{ runner.os }}-${{ steps.model-release.outputs.repository }}-${{ steps.model-release.outputs.release }}-${{ hashFiles('client/scripts/restore_release_models.ps1') }}
       - name: Restore bundled OCR models from the release repository
         id: restore-models
         if: steps.cache-models.outputs.cache-hit != 'true'
         run: >-
           .\scripts\restore_release_models.ps1
-          -Repository "xiaqijun/eve-sentry-client"
+          -Repository "${{ steps.model-release.outputs.repository }}"
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Save OCR model cache
@@ -167,13 +175,13 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: client/.runtime/onnx-models
-          key: eve-sentry-client-onnx-models-${{ runner.os }}-${{ steps.model-release.outputs.release }}-${{ hashFiles('client/scripts/restore_release_models.ps1') }}
+          key: eve-sentry-onnx-models-${{ runner.os }}-${{ steps.model-release.outputs.repository }}-${{ steps.model-release.outputs.release }}-${{ hashFiles('client/scripts/restore_release_models.ps1') }}
       - name: Build, sign, and publish client assets
         run: >-
           .\scripts\publish_client_release.ps1
           -Version "${{ needs.check-release.outputs.version }}"
           -Python "python"
-          -Repository "xiaqijun/eve-sentry-client"
+          -Repository "xiaqijun/eve-sentry"
           -ReleaseTarget "${{ needs.check-release.outputs.release_sha }}"
           -DownloadBaseUrl "https://evesentrydownload.kisectool.com/download"
         env:

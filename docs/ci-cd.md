@@ -1,6 +1,6 @@
 # CI/CD 与单体仓库边界
 
-本仓库是服务端、客户端、QQ 机器人和 ESI Gateway 的唯一开发源。所有改动直接提交
+本仓库是服务端、客户端、QQ 机器人、ESI Gateway 和下载站的唯一开发源。所有改动直接提交
 到 `main`；推送后由根目录 `.github/workflows/` 按目录触发验证和部署，不创建功能分支
 或 Pull Request。
 
@@ -13,6 +13,8 @@
 | `ci-client.yml` | `client/` | Windows 客户端测试、OCR 依赖和打包校验 |
 | `release-client.yml` | `client/`、客户端版本或标签 | 构建、签名并发布客户端安装包 |
 | `deploy-esi-gateway.yml` | `esi-gateway/` | Gateway 多 Python 版本验证、打包和生产部署 |
+| `ci-download-site.yml` | `download-site/`、`deploy/cloudflare-download/` | 下载站构建、Worker 测试和 Wrangler dry-run |
+| `deploy-download-site.yml` | `download-site/`、`deploy/cloudflare-download/` | 构建静态站点并部署 Cloudflare Worker |
 
 子目录中随导入保留的 `.github/workflows/` 不会被 GitHub 识别为 workflow，仅用于追溯
 原仓库历史；修改 CI 时只编辑根目录 workflow。
@@ -27,8 +29,8 @@
   的回滚脚本恢复上一版本。
 
 生产发布保持并发锁，避免同一环境同时发布两个版本；同一 Pull Request 的旧验证会自动取消，
-不同 PR 之间互不阻塞。跨仓库接口发生变化时，先更新服务端
-`docs/multi-repository-development.md` 和 API 文档，再分别在消费者仓库完成联调。
+不同 PR 之间互不阻塞。跨组件接口发生变化时，先更新服务端
+`docs/multi-repository-development.md` 和 API 文档，再在本仓库对应目录完成联调。
 
 ## GitHub Secrets / Variables
 
@@ -57,7 +59,12 @@ ESI Gateway：
   `EVE_RISK_DEPLOY_ROOT`
 
 生产 job 在建立 SSH 连接前会检查必需的 Secret/Variable、端口范围和公开 URL 格式；值本身
-不会写入日志。下载站仍是独立仓库和独立发布目标，本次单体化不把其代码导入本仓库。
+不会写入日志。下载站源码已纳入本仓库，客户端 Release、清单和 Worker 统一使用
+`xiaqijun/eve-sentry` 作为发布源；下载域名保持 `evesentrydownload.kisectool.com` 不变。
+
+下载站生产部署需要 `production` Environment 中的 `CLOUDFLARE_ACCOUNT_ID` 和
+`CLOUDFLARE_API_TOKEN`。推送 `main` 且命中下载站路径后会自动验证并部署，也可手动
+执行 `Download Site Deploy` 重跑。
 
 ## 验证与回滚
 

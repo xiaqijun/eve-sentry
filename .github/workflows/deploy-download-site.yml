@@ -1,0 +1,100 @@
+name: Download Site Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "download-site/**"
+      - "deploy/cloudflare-download/**"
+      - ".github/workflows/ci-download-site.yml"
+      - ".github/workflows/deploy-download-site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eve-sentry-download-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      WRANGLER_VERSION: 4.116.0
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: download-site/package-lock.json
+      - name: Install dependencies
+        working-directory: download-site
+        run: npm ci
+      - name: Build static site
+        working-directory: download-site
+        run: npm run build
+      - name: Validate static export
+        run: |
+          test -s download-site/out/index.html
+          test -s download-site/out/docs/client.html
+          test -s download-site/out/docs/server.html
+      - name: Test download Worker
+        run: node --test deploy/cloudflare-download/src/index.test.js
+      - name: Validate client Release source
+        run: >-
+          grep -Eq '"GITHUB_REPO"[[:space:]]*:[[:space:]]*"eve-sentry"'
+          deploy/cloudflare-download/wrangler.jsonc
+      - name: Validate Worker bundle
+        run: >-
+          npx --yes wrangler@${WRANGLER_VERSION} deploy
+          --dry-run
+          --config deploy/cloudflare-download/wrangler.jsonc
+      - uses: actions/upload-artifact@v6
+        with:
+          name: download-site-out
+          path: download-site/out
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      DOWNLOAD_SITE_URL: https://evesentrydownload.kisectool.com
+      WRANGLER_VERSION: 4.116.0
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@v7
+        with:
+          name: download-site-out
+          path: download-site/out
+      - name: Validate Cloudflare configuration
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing Cloudflare deployment secret: $name" >&2
+              exit 1
+            fi
+          done
+      - name: Deploy to Cloudflare
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: >-
+          npx --yes wrangler@${WRANGLER_VERSION} deploy
+          --config deploy/cloudflare-download/wrangler.jsonc
+      - name: Verify production
+        run: bash .github/scripts/verify-production.sh

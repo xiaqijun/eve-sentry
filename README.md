@@ -1,8 +1,9 @@
 # EVE Sentry
 
 EVE Sentry 是一套面向 EVE Online 本地频道的敌对监控与预警系统，包含 Windows
-监控客户端、Python 情报服务、React 管理页面、QQ 机器人和 ESI Gateway。本仓库是
-上述组件的唯一开发源，组件代码分别位于 `client/`、`bot/` 和 `esi-gateway/`。
+监控客户端、Python 情报服务、React 管理页面、QQ 机器人、ESI Gateway 和公开下载站。
+本仓库是上述组件的唯一开发源，组件代码分别位于 `client/`、`bot/`、`esi-gateway/`、
+`download-site/` 和 `deploy/cloudflare-download/`。
 
 ## 系统架构
 
@@ -174,6 +175,7 @@ npm run build
 - [预警消息 API 接入指南](docs/alert-api.md)
 - [SSE 性能与重连约束](docs/sse-performance-guardrails.md)
 - [单体仓库开发与联动](docs/multi-repository-development.md)
+- [下载站开发与部署](docs/download-site.md)
 - [GitCode 镜像状态](docs/gitcode-release-mirror.md)
 
 完整文档索引见 [docs/README.md](docs/README.md)。

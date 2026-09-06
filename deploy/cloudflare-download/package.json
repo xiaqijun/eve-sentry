@@ -1,0 +1,5 @@
+{
+  "name": "eve-sentry-download-worker",
+  "private": true,
+  "type": "module"
+}

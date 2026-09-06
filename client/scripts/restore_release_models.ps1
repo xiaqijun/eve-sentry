@@ -1,5 +1,5 @@
 param(
-    [string]$Repository = "xiaqijun/eve-sentry-client",
+    [string]$Repository = "xiaqijun/eve-sentry",
     [string]$Release = "",
     [string]$Output = ".\.runtime\onnx-models",
     [string]$DownloadBaseUrl = ""

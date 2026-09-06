@@ -12,6 +12,7 @@ ESI Gateway 已按目录导入并保留历史；后续功能修改、提交和 C
 | `client/` | Windows OCR/监控客户端、星图态势和客户端更新器 |
 | `bot/` | QQ 机器人、事件消费、投递队列和 QQ 适配 |
 | `esi-gateway/` | 公共 ESI 代理、鉴权、缓存、限流和健康检查 |
+| `download-site/`、`deploy/cloudflare-download/` | 下载站静态页面、Cloudflare 下载 Worker 和发布校验 |
 | `docs/` | 跨组件协议、架构、部署、故障和联调文档 |
 
 `eve-sentry-contracts` 已废弃，不再作为代码或子目录导入。契约说明统一维护在
@@ -36,4 +37,4 @@ ESI Gateway 已按目录导入并保留历史；后续功能修改、提交和 C
 - ESI Gateway：在 `esi-gateway/` 安装 `.[test,storage]` 后运行 `pytest` 和 `ruff`。
 
 根目录 `.github/workflows/` 根据目录变更触发对应验证和部署；子目录中的旧 workflow
-仅作为历史参考，不是有效发布入口。
+仅作为历史参考，不是有效发布入口。下载站源码和 Worker 也只从本仓库发布。
