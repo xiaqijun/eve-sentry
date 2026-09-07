@@ -93,7 +93,7 @@ Authorization: Bearer eve_xxx
 | `GET` | `/api/v1/active-intel` | 当前实时情报 |
 | `GET` | `/api/v1/alert-history` | 按时间分页读取报表告警历史；生产 PostgreSQL 使用独立历史路径 |
 | `GET` | `/api/v1/hostile-waves` | 按“出现至清空”记录的敌对星系波次 |
-| `GET` | `/api/v1/bootstrap` | Web 和机器人使用的完整初始快照 |
+| `GET` | `/api/v1/bootstrap` | Web 和机器人使用的完整初始快照；包含 `clients`、规范化的 `monitoring_nodes` 及其版本 |
 | `GET` | `/api/v1/events` | SSE 实时事件流 |
 | `GET` | `/api/v1/integrations/hostile-systems` | 第三方软件读取当前存在敌对的星系 |
 | `GET` | `/api/v1/alerts` | 当前敌对告警 |

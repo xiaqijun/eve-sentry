@@ -1994,6 +1994,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
 
     def _bootstrap_payload(self) -> dict[str, Any]:
         snapshot = self._runtime_snapshot()
+        clients = self._store().heartbeat_snapshot()
+        monitoring_nodes = _monitoring_target_state(clients)
         return {
             "schema_version": "intel_bootstrap.v1",
             "generated_at": snapshot.get("generated_at", ""),
@@ -2003,7 +2005,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             "alerts": snapshot.get("alerts", []),
             "active_intel": snapshot.get("active_intel", []),
             "hostile_personnel": snapshot.get("hostile_personnel", []),
-            "clients": self._store().heartbeat_snapshot(),
+            "clients": clients,
+            "monitoring_nodes": monitoring_nodes,
+            "monitoring_nodes_version": _monitoring_nodes_version(monitoring_nodes),
             "config": self._config_store().to_dict() if self._config_store() else None,
             "esi": self._esi_status_payload(),
         }

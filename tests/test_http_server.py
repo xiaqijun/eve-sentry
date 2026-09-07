@@ -1001,6 +1001,26 @@ def test_v1_bootstrap_and_map_routes_expose_workbench_payload(tmp_path):
                 "details": {"transport": "poll"},
             },
         )
+        request_json(
+            f"{server.url}/api/v1/clients/heartbeats",
+            method="POST",
+            payload={
+                "client_id": "detector-client:test",
+                "client_type": "detector_client",
+                "status": "running",
+                "details": {
+                    "monitoring": True,
+                    "targets": [
+                        {
+                            "client_id": "detector-client:test:window-1",
+                            "system_name": "Tama",
+                            "monitoring": True,
+                            "hostile_icon_count": 2,
+                        }
+                    ],
+                },
+            },
+        )
 
         status, payload = request_json(f"{server.url}/api/v1/bootstrap")
         assert status == 200
@@ -1012,7 +1032,23 @@ def test_v1_bootstrap_and_map_routes_expose_workbench_payload(tmp_path):
         assert bootstrap["observations"][0]["system_name"] == "Tama"
         assert bootstrap["alerts"][0]["system_name"] == "Tama"
         assert bootstrap["alerts"][0]["classification"] == "red"
-        assert bootstrap["clients"]["summary"]["count"] == 1
+        assert bootstrap["clients"]["summary"]["count"] == 2
+        assert bootstrap["monitoring_nodes"] == [
+            {
+                "heartbeat_client_id": "detector-client:test",
+                "client_id": "detector-client:test:window-1",
+                "character_name": "",
+                "source_instance": "",
+                "system_name": "Tama",
+                "system_id": None,
+                "health_status": "online",
+                "hostile_count": 2,
+                "presence_version": 0,
+                "presence_state_id": "",
+                "captured_at": "",
+            }
+        ]
+        assert bootstrap["monitoring_nodes_version"]
         assert bootstrap["config"]["schema_version"] == "scoring_config.v1"
         assert bootstrap["esi"]["enabled"] is False
         assert bootstrap["esi"]["authenticated"] is False
