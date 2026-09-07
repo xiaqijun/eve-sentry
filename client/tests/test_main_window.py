@@ -4016,7 +4016,13 @@ def test_heartbeat_ocr_query_routes_to_exact_window_and_deduplicates():
         "commands": [
             {
                 "command": "ocr_query",
-                "query_id": "ocrq_target_b",
+                "query_id": "ocrq_multi_window",
+                "target_client_id": "detector-client:test:pilot-a",
+                "expires_at": "2099-09-04T03:00:00+00:00",
+            },
+            {
+                "command": "ocr_query",
+                "query_id": "ocrq_multi_window",
                 "target_client_id": "detector-client:test:pilot-b",
                 "expires_at": "2099-09-04T03:00:00+00:00",
             },
@@ -4037,12 +4043,20 @@ def test_heartbeat_ocr_query_routes_to_exact_window_and_deduplicates():
     MainWindow._handle_heartbeat_response(window, response)
     MainWindow._handle_heartbeat_response(window, response)
 
-    assert first.queries == []
-    assert second.queries == ["ocrq_target_b"]
-    assert window._ocr_query_inflight["ocrq_target_b"]["client_id"] == (
+    assert first.queries == ["ocrq_multi_window"]
+    assert second.queries == ["ocrq_multi_window"]
+    assert window._ocr_query_inflight[
+        ("ocrq_multi_window", "detector-client:test:pilot-a")
+    ]["client_id"] == "detector-client:test:pilot-a"
+    assert window._ocr_query_inflight[
+        ("ocrq_multi_window", "detector-client:test:pilot-b")
+    ]["client_id"] == (
         "detector-client:test:pilot-b"
     )
-    assert window._messages == ["EVE - Pilot B: 已接收按需 OCR 查询"]
+    assert window._messages == [
+        "EVE - Pilot A: 已接收按需 OCR 查询",
+        "EVE - Pilot B: 已接收按需 OCR 查询",
+    ]
 
 
 def test_disconnect_worker_signals_includes_ocr_query_callbacks():
@@ -4095,7 +4109,7 @@ def test_query_ocr_upload_uses_independent_key_and_allows_empty_names():
     window._window_combo = FakeCombo()
     window._refresh_intel_location = lambda force=False, context=None: True
     window._ocr_query_inflight = {
-        "ocrq_empty": {
+        ("ocrq_empty", "detector-client:test:pilot-a"): {
             "client_id": "detector-client:test:pilot-a",
             "expires_at": 4_000_000_000.0,
         }
@@ -4133,8 +4147,9 @@ def test_query_ocr_upload_uses_independent_key_and_allows_empty_names():
 
 def test_query_ocr_marks_completed_only_after_upload_success():
     window = MainWindow.__new__(MainWindow)
+    request_key = ("ocrq_done", "detector-client:test:pilot-a")
     window._ocr_query_inflight = {
-        "ocrq_done": {
+        request_key: {
             "client_id": "detector-client:test:pilot-a",
             "expires_at": 4_000_000_000.0,
         }
@@ -4151,12 +4166,15 @@ def test_query_ocr_marks_completed_only_after_upload_success():
             "query_id": "ocrq_done",
             "expires_at": 4_000_000_000.0,
             "names": [],
-            "context": {"window_title": "EVE - Pilot A"},
+            "context": {
+                "client_id": "detector-client:test:pilot-a",
+                "window_title": "EVE - Pilot A",
+            },
         },
     )
 
-    assert "ocrq_done" not in window._ocr_query_inflight
-    assert window._ocr_query_completed["ocrq_done"] == 4_000_000_000.0
+    assert request_key not in window._ocr_query_inflight
+    assert window._ocr_query_completed[request_key] == 4_000_000_000.0
     assert window._messages == ["EVE - Pilot A: 按需 OCR 查询已完成（0 人）"]
 
 

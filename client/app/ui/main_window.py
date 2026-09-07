@@ -75,6 +75,17 @@ LISTENER_RETRY_INITIAL_SECONDS = 30.0
 LISTENER_RETRY_MAX_SECONDS = 600.0
 
 
+def _ocr_query_request_key(
+    query_id: object,
+    target_client_id: object,
+) -> tuple[str, str]:
+    """Identify one query delivery to one monitored window."""
+    return (
+        str(query_id or "").strip(),
+        str(target_client_id or "").strip(),
+    )
+
+
 def _ocr_query_commands(
     response: object,
     *,
@@ -88,23 +99,23 @@ def _ocr_query_commands(
         return []
     current_time = time.time() if now is None else float(now)
     commands: list[dict] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for item in raw_commands:
         if not isinstance(item, dict) or item.get("command") != "ocr_query":
             continue
         query_id = str(item.get("query_id") or "").strip()
-        if not query_id or query_id in seen:
+        target_client_id = str(item.get("target_client_id") or "").strip()
+        request_key = _ocr_query_request_key(query_id, target_client_id)
+        if not query_id or request_key in seen:
             continue
         expires_at = _ocr_query_expiry(item.get("expires_at"))
         if expires_at is None or expires_at <= current_time:
             continue
-        seen.add(query_id)
+        seen.add(request_key)
         commands.append(
             {
                 "query_id": query_id,
-                "target_client_id": str(
-                    item.get("target_client_id") or ""
-                ).strip(),
+                "target_client_id": target_client_id,
                 "expires_at": expires_at,
             }
         )
@@ -2449,14 +2460,20 @@ class MainWindow(QMainWindow):
         self._heartbeat_last_success_at = heartbeat_now_iso()
         if query_id:
             inflight = _instance_attr(self, "_ocr_query_inflight", {})
-            request = inflight.pop(query_id, None)
+            target_client_id = (
+                str(context.get("client_id") or "").strip()
+                if isinstance(context, dict)
+                else ""
+            )
+            request_key = _ocr_query_request_key(query_id, target_client_id)
+            request = inflight.pop(request_key, None)
             completed = _instance_attr(self, "_ocr_query_completed", {})
             expires_at = float(
                 metadata.get("expires_at")
                 or (request or {}).get("expires_at")
                 or time.time() + 60.0
             )
-            completed[query_id] = expires_at
+            completed[request_key] = expires_at
             self._ocr_query_inflight = inflight
             self._ocr_query_completed = completed
             self._log_message(
@@ -3457,7 +3474,8 @@ class MainWindow(QMainWindow):
         if normalized_query_id:
             metadata["query_id"] = normalized_query_id
             inflight = _instance_attr(self, "_ocr_query_inflight", {})
-            request = inflight.get(normalized_query_id, {})
+            request_key = _ocr_query_request_key(normalized_query_id, client_id)
+            request = inflight.get(request_key, {})
             metadata["expires_at"] = float(
                 request.get("expires_at") or time.time() + 60.0
             )
@@ -3723,8 +3741,11 @@ class MainWindow(QMainWindow):
         self._ocr_query_inflight = inflight
         self._ocr_query_completed = completed
         for command in _ocr_query_commands(response, now=now):
-            query_id = command["query_id"]
-            if query_id in inflight or query_id in completed:
+            request_key = _ocr_query_request_key(
+                command["query_id"],
+                command["target_client_id"],
+            )
+            if request_key in inflight or request_key in completed:
                 continue
             if self._dispatch_ocr_query(command):
                 inflight = self._ocr_query_inflight
@@ -3754,7 +3775,8 @@ class MainWindow(QMainWindow):
         if not request(query_id):
             return False
         client_id = target_client_id or str(context.get("client_id") or "").strip()
-        self._ocr_query_inflight[query_id] = {
+        request_key = _ocr_query_request_key(query_id, client_id)
+        self._ocr_query_inflight[request_key] = {
             "client_id": client_id,
             "expires_at": float(command["expires_at"]),
         }
@@ -3775,14 +3797,19 @@ class MainWindow(QMainWindow):
         context: dict,
     ) -> None:
         normalized_query_id = str(query_id or "").strip()
+        target_client_id = str(context.get("client_id") or "").strip()
+        request_key = _ocr_query_request_key(
+            normalized_query_id,
+            target_client_id,
+        )
         request = _instance_attr(self, "_ocr_query_inflight", {}).get(
-            normalized_query_id
+            request_key
         )
         if not request:
             return
         remaining = float(request.get("expires_at") or 0.0) - time.time()
         if remaining <= 0:
-            self._ocr_query_inflight.pop(normalized_query_id, None)
+            self._ocr_query_inflight.pop(request_key, None)
             return
         query_context = dict(context)
         query_context["client_id"] = str(
@@ -3807,8 +3834,12 @@ class MainWindow(QMainWindow):
         normalized_query_id = str(query_id or "").strip()
         if not normalized_query_id:
             return
-        request = _instance_attr(self, "_ocr_query_inflight", {}).pop(
+        request_key = _ocr_query_request_key(
             normalized_query_id,
+            context.get("client_id"),
+        )
+        request = _instance_attr(self, "_ocr_query_inflight", {}).pop(
+            request_key,
             None,
         )
         if request is None:
