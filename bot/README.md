@@ -52,34 +52,52 @@ uv run --frozen python -m eve_risk.qq_panel
 ```
 
 该命令使用生产 `.env` 中的 `QQ_APP_ID` 和 `QQ_APP_SECRET`，将全局群聊面板设置为
-`分析`、`查询预警`、`帮助`、`开启预警`、`关闭预警`、`预警状态`。QQ 面板按钮只会把命令
+`分析`、`查询`、`帮助`、`开启预警`、`关闭预警`、`预警状态`。QQ 面板按钮只会把命令
 填入输入框，用户仍需发送；分析仍按当前 ESI 已确认人员逐人生成报告。
 
-查询当前在线监控节点及敌对详情：
+`@机器人 查询` 打开 Markdown 查询菜单。支持：
 
 ```text
-@机器人 查询预警
+@机器人 查询星系 S-KSWL
+@机器人 查询节点敌情
+@机器人 查询人员 Alice
+@机器人 查询军团 Blue Corp
+@机器人 查询联盟 Example Alliance
+@机器人 查询所有节点
+@机器人 查询预警节点
 ```
 
-查询命令会请求在线客户端执行一次独立 OCR，再由服务端识别后返回结果；可携带筛选条件：
-`@机器人 查询预警 人员 Alice`、`@机器人 查询预警 军团 Blue Corp` 或
-`@机器人 查询预警 联盟 Example Alliance`。
+`查询节点敌情` 复用当前活动预警，`查询预警节点` 复用 heartbeat 状态，两者不会下发
+OCR。指定星系只查询对应在线窗口并返回本次名单；人员、军团、联盟和所有节点查询会向
+目标客户端下发一次独立 OCR，先回复目标节点数，再异步发送 Markdown 表格结果。同一群
+同时只运行一个主动 OCR 查询。
 
-也可使用 `预警详情`、`敌对详情`，或快捷指令 `查询`、`查`、`查预警`。结果只统计当前 active 且已被服务端判定为
-敌对的 OCR 人员，安全节点会显示为 `敌 0`。
+上线监测支持人员、军团和联盟，最低间隔 30 秒：
 
-定向查询可直接使用 `查询人员 Alice`、`查询军团 Blue Corp`、`查询联盟 Example Alliance`，
-分别只返回指定人员、指定军团人员或指定联盟人员。命令后未填写查询目标时，机器人会提示补充名称。
+```text
+@机器人 上线监测 人员 Alice 30s
+@机器人 上线监测 军团 Rat Nation 1m
+@机器人 上线监测 联盟 Example Alliance 5m
+@机器人 上线监测列表
+@机器人 取消上线监测 M001
+@机器人 取消上线监测 人员 Alice
+@机器人 取消全部上线监测
+```
+
+这里的“上线”是目标出现在监控客户端名单中，不是 EVE 登录状态。任务持久化到
+PostgreSQL；多个到期规则合并使用一次全节点 OCR，只在目标从未出现变为出现时通知。
 
 安全节点示例：
 
 ```text
-预警节点｜在线 1｜敌对 0 人
-🟢 S-KSWL｜敌 0｜监控节点 1
+### 🛰️ 预警节点｜1
+| 节点 | 状态 | 星系 | 当前敌对 |
+| --- | --- | --- | ---: |
+| 监控节点 1 | 🟢 正常 | S-KSWL | 0 |
 ```
 
 在线节点使用匿名编号，不公开本地角色名。存在敌对时，每个红色节点会继续列出来敌角色名、威胁等级、首次发现时间、军团和联盟。
-查询使用单次 EVE Sentry bootstrap 快照，节点人数和人员详情来自同一时刻。红色图标人数
+节点敌情查询使用单次 EVE Sentry bootstrap 快照，敌对人数和人员详情来自同一时刻。红色图标人数
 立即进入星系告警；detector OCR 姓名只有在 ESI 返回 `resolved` 身份和 `character_id` 后
 才会进入人员表。`pending`、`unresolved` 和空人员快照不会发送人员消息，避免错误 OCR
 名称污染群消息；异步解析完成后会补发一次已确认名单。
@@ -90,7 +108,7 @@ uv run --frozen python -m eve_risk.qq_panel
 威胁信息变化时发送一次 `⚠️ 敌对事件` 明细；重复的 bootstrap 和仅时间变化不会重复推送。
 最后一名敌对离开后发送 `✅ 星系 清空`，清空后再次出现会作为新波次重新发送来敌提示。
 敌对事件明细使用表格展示人员、星系和 zKill 链接，人员移动时
-星系列显示 `原星系 → 新星系`，zKill 只显示可点击图标。人员、军团和联盟详情也可通过“查询预警”获取。订阅群、
+星系列显示 `原星系 → 新星系`，zKill 只显示可点击图标。人员、军团和联盟可通过对应定向查询获取。订阅群、
 星系状态和告警去重游标保存在 Redis 中，不写入 PostgreSQL 或应用日志；QQ 发送
 临时失败时不会提前推进星系状态，后续状态同步会继续重试。zKillboard 成功结果默认
 缓存 30 分钟，同一 key 的并发请求会合并；QQ access token 会在有效期前 60 秒刷新并
@@ -129,6 +147,13 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
    EVE_SENTRY_PUBLIC_URL=http://YOUR_EVE_SENTRY_HOST
    EVE_SENTRY_ALERT_MIN_LEVEL=
    EVE_SENTRY_PERSONNEL_PUSH_INTERVAL_SECONDS=10
+   QQ_QUERY_KEYBOARD_ID=
+   EVE_SENTRY_QUERY_SOFT_TIMEOUT_SECONDS=15
+   EVE_SENTRY_QUERY_LOCK_SECONDS=45
+   EVE_SENTRY_WATCH_DEFAULT_INTERVAL_SECONDS=60
+   EVE_SENTRY_WATCH_MIN_INTERVAL_SECONDS=30
+   EVE_SENTRY_WATCH_POLL_SECONDS=5
+   EVE_SENTRY_WATCH_SNAPSHOT_REUSE_SECONDS=30
    ```
 
    `EVE_SENTRY_API_KEY` 必须使用 EVE Sentry 管理员页面签发的只读服务密钥，
@@ -136,6 +161,9 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
    也可设置为 `low`、`medium`、`high` 或 `critical`。
    `EVE_SENTRY_PERSONNEL_PUSH_INTERVAL_SECONDS` 控制同一星系名单更新的最小推送间隔；
    间隔内的变化会合并并在到期后推送最新完整名单，设为 `0` 可关闭合并。
+   `QQ_QUERY_KEYBOARD_ID` 是 QQ 开放平台审批后的静态按钮模板 ID，留空时查询菜单退化为
+   普通 Markdown。查询软超时默认 15 秒；上线监测默认每 60 秒检查，最低允许 30 秒，
+   完整扫描结果默认复用 30 秒。
 4. 在已有 PostgreSQL/Redis 容器，并安装了 Python 3.12、`python3-venv` 和 pip 的 Linux 主机上部署：
 
    ```bash

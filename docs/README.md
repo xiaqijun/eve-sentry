@@ -15,6 +15,7 @@
 
 - [系统架构](architecture.md)：客户端、情报服务、Web 管理系统和数据来源之间的边界与数据流。
 - [可靠推送实施计划](reliable-push-plan.md)：Presence、OCR、SSE、星图、QQ 投递和按需 OCR 的统一流程、时延目标与实施阶段。
+- [QQ 查询与上线监测方案](qq-query-and-online-monitoring-plan.md)：查询按钮、主动 OCR 范围、节点快速查询、周期监测和删除规则。
 - [服务端部署](server-deployment.md)：安装服务端、配置 PostgreSQL、部署前端和反向代理、启动服务及上线验证。
 - [CI/CD 与仓库边界](ci-cd.md)：各组件职责、`main` 推送触发、发布门禁、Secrets/Variables、验证和回滚。
 - [认证与 EVE 身份校验](authentication.md)：认证模式、管理员初始化、设备密钥和 Listener 风控。

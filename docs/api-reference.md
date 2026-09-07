@@ -126,13 +126,26 @@ Authorization: Bearer eve_xxx
 敌对、友军或未解析状态。`hostile_icon_count` 只表示截图中的视觉红色图标总数，不给单个角色
 直接定性。
 
-`POST /api/v1/ocr/query` 用于一次性查询当前在线监控节点的本地名单。服务端返回
+`POST /api/v1/ocr/query` 用于一次性查询当前在线监控节点的本地名单。请求体支持可选的
+`system_name`；传入时按星系名称大小写不敏感精确匹配，只向该星系当前在线的监控窗口
+下发命令，未找到对应窗口时返回 `409`。未传 `system_name` 时查询全部在线窗口。服务端返回
 `query_id` 后，会在后续客户端心跳响应中下发 `ocr_query` 命令；客户端执行一次全帧 OCR，
 并在上传中携带相同的 `query_id`。调用方通过 `GET /api/v1/ocr/query/{query_id}` 轮询，
 直到 `status` 为 `completed` 或 `timed_out`。请求体可携带 `name`、`corporation` 或
 `alliance` 过滤条件；过滤仍以服务端识别结果为准。服务端会在目标上传结果前的后续心跳中
 重试下发同一命令，客户端必须按 `query_id` 幂等去重；目标客户端 ID 与父 detector
 heartbeat ID 均可用于领取命令。
+
+```json
+{
+  "system_name": "S-KSWL",
+  "name": "Alice",
+  "timeout_seconds": 30
+}
+```
+
+`name`、`corporation` 和 `alliance` 只是服务端结果筛选条件；客户端始终上传本次完整原始
+名单。`system_name` 是命令目标选择条件，并会出现在创建响应、心跳命令和聚合状态中。
 
 `GET /api/v1/admin/esi-gateway` 返回 47 Gateway 的运行摘要、114 业务缓存和进程内远端调用指标。
 `resolver_cache.personnel` 按 114 收到的新 OCR 人员逐个统计 `lookups`、`hits`、`misses`、

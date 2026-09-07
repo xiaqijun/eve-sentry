@@ -661,6 +661,45 @@ def test_ocr_query_targets_each_monitored_window(tmp_path):
         server.stop()
 
 
+def test_ocr_query_can_target_one_monitored_system(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        api = IntelApiClient(server.url)
+        parent = "detector-client:system-query"
+        targets = [
+            {"client_id": f"{parent}:a", "monitoring": True, "system_name": "S-KSWL"},
+            {"client_id": f"{parent}:b", "monitoring": True, "system_name": "R-YWID"},
+        ]
+        api.post_heartbeat(
+            client_id=parent,
+            client_type="detector_client",
+            status="running",
+            details={"monitoring": True, "targets": targets},
+        )
+
+        created = api._request(
+            "POST",
+            "/api/v1/ocr/query",
+            payload={"system_name": "s-kswl"},
+        )
+
+        assert created["requested_clients"] == [f"{parent}:a"]
+        assert created["system_name"] == "s-kswl"
+        heartbeat = api.post_heartbeat(
+            client_id=parent,
+            client_type="detector_client",
+            status="running",
+            details={"monitoring": True, "targets": targets},
+        )
+        assert [item["target_client_id"] for item in heartbeat["commands"]] == [
+            f"{parent}:a"
+        ]
+        assert heartbeat["commands"][0]["system_name"] == "s-kswl"
+    finally:
+        server.stop()
+
+
 def write_sde_fixture(root):
     bsd_dir = root / "bsd"
     bsd_dir.mkdir(parents=True)

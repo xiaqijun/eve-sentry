@@ -1,3 +1,5 @@
+import asyncio
+import hashlib
 from unittest.mock import AsyncMock
 
 import botpy
@@ -303,3 +305,106 @@ async def test_sentry_status_query_falls_back_when_markdown_delivery_fails() -> 
         await client.http_client.aclose()
         await redis.aclose()
         await original_redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_query_command_opens_markdown_keyboard_menu() -> None:
+    client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
+    original_redis = client.redis
+    redis = fakeredis.aioredis.FakeRedis()
+    client.redis = redis
+    client.settings.qq_query_keyboard_id = "query-keyboard"
+    client.qq.send_markdown = AsyncMock(return_value={"id": "menu"})
+
+    class Author:
+        member_openid = "member-1"
+
+    class Message:
+        id = "query-menu-1"
+        group_openid = "group-1"
+        content = "查询"
+        author = Author()
+
+    try:
+        await client.on_group_at_message_create(Message())
+        client.qq.send_markdown.assert_awaited_once()
+        assert client.qq.send_markdown.await_args.kwargs["keyboard_id"] == "query-keyboard"
+        assert "哨兵查询" in client.qq.send_markdown.await_args.args[2]
+    finally:
+        await client.http_client.aclose()
+        await redis.aclose()
+        await original_redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_active_ocr_query_acknowledges_then_sends_result() -> None:
+    client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
+    original_redis = client.redis
+    redis = fakeredis.aioredis.FakeRedis()
+    client.redis = redis
+    client.qq.send_text = AsyncMock(return_value={"id": "ack"})
+    client.qq.send_proactive_markdown = AsyncMock(return_value={"id": "result"})
+    client.sentry_status.create_ocr_query = AsyncMock(
+        return_value={"query_id": "ocrq_1", "requested_clients": ["node-1"]}
+    )
+    client.sentry_status.wait_ocr_query_payload = AsyncMock(
+        return_value={
+            "expected_clients": 1,
+            "received_clients": 1,
+            "results": [{"system_name": "S-KSWL", "names": ["Alice"]}],
+        }
+    )
+
+    try:
+        await client._start_sentry_ocr_query(
+            {"mode": "system_roster", "system_name": "S-KSWL"},
+            group_openid="group-1",
+            msg_id="message-1",
+        )
+        tasks = list(client.query_tasks)
+        await asyncio.gather(*tasks)
+    finally:
+        await client.http_client.aclose()
+        await redis.aclose()
+        await original_redis.aclose()
+
+    client.qq.send_text.assert_awaited_once_with(
+        "group-1",
+        "message-1",
+        "OCR 查询任务已下发｜目标节点 1",
+        msg_seq=1,
+    )
+    client.qq.send_proactive_markdown.assert_awaited_once()
+    assert "S-KSWL 当前名单" in client.qq.send_proactive_markdown.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_active_ocr_query_rejects_a_second_query_in_the_same_group() -> None:
+    client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
+    original_redis = client.redis
+    redis = fakeredis.aioredis.FakeRedis()
+    client.redis = redis
+    client.qq.send_text = AsyncMock(return_value={"id": "busy"})
+    client.sentry_status.create_ocr_query = AsyncMock()
+    group_openid = "group-1"
+    group_hash = hashlib.sha256(group_openid.encode("utf-8")).hexdigest()[:16]
+    await redis.set(f"qq:ocr-query:group:{group_hash}", "existing", ex=45)
+
+    try:
+        await client._start_sentry_ocr_query(
+            {"mode": "all_nodes"},
+            group_openid=group_openid,
+            msg_id="message-2",
+        )
+    finally:
+        await client.http_client.aclose()
+        await redis.aclose()
+        await original_redis.aclose()
+
+    client.sentry_status.create_ocr_query.assert_not_awaited()
+    client.qq.send_text.assert_awaited_once_with(
+        group_openid,
+        "message-2",
+        "本群已有 OCR 查询正在进行，请等待当前结果。",
+        msg_seq=1,
+    )

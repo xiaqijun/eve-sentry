@@ -100,10 +100,14 @@ def _online_detector_client_ids(snapshot: dict[str, Any]) -> list[str]:
     return result
 
 
-def _online_detector_targets(snapshot: dict[str, Any]) -> list[dict[str, str]]:
+def _online_detector_targets(
+    snapshot: dict[str, Any],
+    system_name: str = "",
+) -> list[dict[str, str]]:
     """Return monitored target IDs and their heartbeat parent IDs."""
     result: list[dict[str, str]] = []
     seen: set[str] = set()
+    requested_system = str(system_name or "").strip().casefold()
     for heartbeat in snapshot.get("heartbeats", []):
         if not isinstance(heartbeat, dict):
             continue
@@ -121,6 +125,15 @@ def _online_detector_targets(snapshot: dict[str, Any]) -> list[dict[str, str]]:
         for target in targets:
             if not isinstance(target, dict) or not bool(target.get("monitoring", True)):
                 continue
+            target_system = str(
+                target.get("system_name")
+                or target.get("system")
+                or details.get("system_name")
+                or details.get("system")
+                or ""
+            ).strip()
+            if requested_system and target_system.casefold() != requested_system:
+                continue
             client_id = str(target.get("client_id") or heartbeat_client_id).strip()
             if not client_id or client_id in seen:
                 continue
@@ -129,6 +142,7 @@ def _online_detector_targets(snapshot: dict[str, Any]) -> list[dict[str, str]]:
                 {
                     "client_id": client_id,
                     "heartbeat_client_id": heartbeat_client_id or client_id,
+                    "system_name": target_system,
                 }
             )
     return result
@@ -138,12 +152,19 @@ def _create_ocr_query(
     snapshot: dict[str, Any],
     filters: dict[str, str],
     timeout_seconds: float,
+    system_name: str = "",
 ) -> dict[str, Any]:
     now = time.monotonic()
     query_id = f"ocrq_{uuid.uuid4().hex}"
-    targets = _online_detector_targets(snapshot)
+    requested_system = str(system_name or "").strip()
+    targets = _online_detector_targets(snapshot, requested_system)
     if not targets:
-        raise RequestBodyError("没有在线监控节点", HTTPStatus.CONFLICT)
+        message = (
+            f"星系 {requested_system} 当前没有在线监控节点"
+            if requested_system
+            else "没有在线监控节点"
+        )
+        raise RequestBodyError(message, HTTPStatus.CONFLICT)
     ttl_seconds = max(5.0, min(_OCR_QUERY_TTL_SECONDS, timeout_seconds))
     expires_at = (
         datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
@@ -155,6 +176,7 @@ def _create_ocr_query(
         "deadline": now + ttl_seconds,
         "retained_until": now + ttl_seconds + _OCR_QUERY_RETENTION_SECONDS,
         "filters": dict(filters),
+        "system_name": requested_system,
         "clients": {
             target["client_id"]: {
                 "claimed": False,
@@ -172,6 +194,7 @@ def _create_ocr_query(
         "query_id": query_id,
         "status": "pending",
         "requested_clients": [target["client_id"] for target in targets],
+        "system_name": requested_system,
         "expires_at": expires_at,
     }
 
@@ -225,6 +248,7 @@ def _claim_ocr_query_commands(client_id: str) -> list[dict[str, Any]]:
                         "query_id": str(job["query_id"]),
                         "target_client_id": target_client_id,
                         "filters": dict(job.get("filters") or {}),
+                        "system_name": str(job.get("system_name") or ""),
                         "expires_at": job["expires_at"],
                     }
                 )
@@ -359,6 +383,7 @@ def _ocr_query_status(query_id: str, store: Any | None = None) -> dict[str, Any]
             "created_at": job.get("created_at", ""),
             "expires_at": job.get("expires_at"),
             "requested_clients": sorted(job.get("clients", {}).keys()),
+            "system_name": str(job.get("system_name") or ""),
             "received_clients": received,
             "expected_clients": expected,
             "results": list(job.get("results", {}).values()),
@@ -1814,6 +1839,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     for key in ("name", "corporation", "alliance")
                     if str(payload.get(key) or "").strip()
                 }
+                system_name = str(payload.get("system_name") or "").strip()
                 timeout_seconds = float(payload.get("timeout_seconds") or 30.0)
                 if timeout_seconds <= 0:
                     raise RequestBodyError("timeout_seconds must be positive")
@@ -1821,6 +1847,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     self._store().heartbeat_snapshot(),
                     filters,
                     timeout_seconds,
+                    system_name,
                 )
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))

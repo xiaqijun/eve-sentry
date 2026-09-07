@@ -43,6 +43,7 @@ async def test_qq_client_reuses_token_and_sends_media() -> None:
                     httpx.Response(200, json={"id": "m3"}),
                     httpx.Response(200, json={"id": "m4"}),
                     httpx.Response(200, json={"id": "m5"}),
+                    httpx.Response(200, json={"id": "m6"}),
                 ]
             )
             upload = router.post("https://api.sgroup.qq.com/v2/groups/group/files").mock(
@@ -52,11 +53,18 @@ async def test_qq_client_reuses_token_and_sends_media() -> None:
             await client.send_text("group", "source", "hello", 1)
             await client.send_proactive_text("group", "alert")
             await client.send_proactive_markdown("group", "**alert**")
+            await client.send_markdown(
+                "group",
+                "source",
+                "**menu**",
+                2,
+                keyboard_id="keyboard-query",
+            )
             await client.send_image("group", "source", b"png", 2)
             await client.send_proactive_image("group", b"png")
 
             assert token.call_count == 1
-            assert text.call_count == 5
+            assert text.call_count == 6
             assert upload.call_count == 2
             proactive_body = json.loads(text.calls[1].request.content)
             assert proactive_body == {"content": "alert", "msg_type": 0}
@@ -66,9 +74,18 @@ async def test_qq_client_reuses_token_and_sends_media() -> None:
                 "msg_type": 2,
                 "markdown": {"content": "**alert**"},
             }
+            menu_body = json.loads(text.calls[3].request.content)
+            assert menu_body == {
+                "content": "",
+                "msg_type": 2,
+                "markdown": {"content": "**menu**"},
+                "msg_id": "source",
+                "msg_seq": 2,
+                "keyboard": {"id": "keyboard-query"},
+            }
             upload_body = json.loads(upload.calls[0].request.content)
             assert upload_body["file_data"] == "cG5n"
-            proactive_image_body = json.loads(text.calls[4].request.content)
+            proactive_image_body = json.loads(text.calls[5].request.content)
             assert proactive_image_body == {
                 "content": "",
                 "msg_type": 7,

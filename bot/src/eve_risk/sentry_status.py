@@ -27,8 +27,11 @@ QUERY_COMMANDS = {
     "查询人员",
     "查询军团",
     "查询联盟",
+    "查询星系",
+    "查询节点敌情",
+    "查询所有节点",
+    "查询预警节点",
 }
-QUERY_COMMAND_PATTERN = r"(?:查询预警|查预警|预警详情|敌对详情|节点敌对|查询|查)"
 TARGETED_QUERY_COMMANDS = {
     "查询人员": ("name", "人员名称"),
     "查询军团": ("corporation", "军团名称"),
@@ -72,22 +75,25 @@ class EveSentryStatusClient:
 
     async def query(
         self,
-        filters: dict[str, str] | None = None,
+        request: dict[str, str] | None = None,
         *,
         refresh: bool = False,
     ) -> str:
         if not self.enabled:
             raise SentryStatusError("预警服务尚未配置，请联系机器人管理员。")
-        if refresh:
-            query_filters = filters or {}
-            for key, label in (
-                ("name", "人员名称"),
-                ("corporation", "军团名称"),
-                ("alliance", "联盟名称"),
-            ):
-                if key in query_filters and not str(query_filters[key]).strip():
-                    raise SentryStatusError(f"请指定要查询的{label}。")
-            return await self._query_ocr(query_filters)
+        query = dict(request or {})
+        mode = str(query.get("mode") or ("filtered" if refresh else "node_hostiles"))
+        if mode == "menu":
+            return format_query_menu()
+        if mode in {"system_roster", "filtered", "all_nodes"}:
+            self._validate_ocr_query(query)
+            return await self._query_ocr(query)
+        bootstrap = await self.bootstrap()
+        if mode == "monitoring_nodes":
+            return format_monitoring_nodes(bootstrap)
+        return format_sentry_status(bootstrap)
+
+    async def bootstrap(self) -> dict[str, Any]:
         try:
             response = await self.http.get(
                 self.bootstrap_url,
@@ -103,15 +109,33 @@ class EveSentryStatusClient:
         bootstrap = payload.get("bootstrap") if isinstance(payload, dict) else None
         if not isinstance(bootstrap, dict):
             raise SentryStatusError("预警服务返回数据异常，请稍后重试。")
-        return format_sentry_status(bootstrap)
+        return bootstrap
 
-    async def _query_ocr(self, filters: dict[str, str]) -> str:
+    def _validate_ocr_query(self, query: dict[str, str]) -> None:
+        mode = str(query.get("mode") or "filtered")
+        if mode == "system_roster" and not str(query.get("system_name") or "").strip():
+            raise SentryStatusError("请指定要查询的星系名称。")
+        for key, label in (
+            ("name", "人员名称"),
+            ("corporation", "军团名称"),
+            ("alliance", "联盟名称"),
+        ):
+            if key in query and not str(query[key]).strip():
+                raise SentryStatusError(f"请指定要查询的{label}。")
+
+    async def create_ocr_query(self, query: dict[str, str]) -> dict[str, Any]:
+        self._validate_ocr_query(query)
         query_url = _ocr_query_url(self.bootstrap_url)
+        payload = {
+            key: str(query.get(key) or "").strip()
+            for key in ("name", "corporation", "alliance", "system_name")
+            if str(query.get(key) or "").strip()
+        }
         try:
             response = await self.http.post(
                 query_url,
                 headers=_sentry_headers(self.api_key),
-                json={key: value for key, value in filters.items() if value},
+                json=payload,
                 timeout=10.0,
             )
             response.raise_for_status()
@@ -119,77 +143,161 @@ class EveSentryStatusClient:
             query_id = str(created.get("query_id") or "").strip()
             if not query_id:
                 raise SentryStatusError("预警服务未返回 OCR 查询编号。")
-            status_url = f"{query_url}/{query_id}"
-            deadline = asyncio.get_running_loop().time() + 35.0
+            return created
+        except SentryStatusError:
+            raise
+        except Exception:
+            logger.exception("EVE Sentry OCR query creation failed")
+            raise SentryStatusError("OCR 查询创建失败，请稍后重试。") from None
+
+    async def wait_ocr_query_payload(
+        self,
+        created: dict[str, Any],
+        *,
+        timeout_seconds: float = 15.0,
+    ) -> dict[str, Any]:
+        query_id = str(created.get("query_id") or "").strip()
+        if not query_id:
+            raise SentryStatusError("预警服务未返回 OCR 查询编号。")
+        status_url = f"{_ocr_query_url(self.bootstrap_url)}/{query_id}"
+        deadline = asyncio.get_running_loop().time() + max(1.0, timeout_seconds)
+        latest: dict[str, Any] = {}
+        try:
             while asyncio.get_running_loop().time() < deadline:
-                status_response = await self.http.get(
+                response = await self.http.get(
                     status_url,
                     headers=_sentry_headers(self.api_key),
                     timeout=10.0,
                 )
-                status_response.raise_for_status()
-                status = status_response.json()
-                if str(status.get("status") or "") in {"completed", "timed_out"}:
-                    return format_ocr_query(status, filters)
+                response.raise_for_status()
+                payload = response.json()
+                latest = payload if isinstance(payload, dict) else {}
+                if str(latest.get("status") or "") in {"completed", "timed_out"}:
+                    return latest
                 await asyncio.sleep(0.5)
-        except SentryStatusError:
-            raise
         except Exception:
-            logger.exception("EVE Sentry OCR query failed")
+            logger.exception("EVE Sentry OCR query polling failed")
             raise SentryStatusError("OCR 查询失败或客户端未响应，请稍后重试。") from None
+        if latest.get("results"):
+            latest["soft_timed_out"] = True
+            return latest
         raise SentryStatusError("OCR 查询超时，当前没有收到客户端回传。")
+
+    async def _query_ocr(self, query: dict[str, str]) -> str:
+        created = await self.create_ocr_query(query)
+        status = await self.wait_ocr_query_payload(created)
+        return format_ocr_query(status, query)
 
 
 def is_sentry_status_command(content: str) -> bool:
-    return normalize_command_content(content) in QUERY_COMMANDS
+    return parse_sentry_query(content) is not None
 
 
 def parse_sentry_query(content: str) -> dict[str, str] | None:
     normalized = normalize_command_content(content)
+    if normalized in {"查询", "查"}:
+        return {"mode": "menu"}
+    if normalized in {"查询节点敌情", "查询预警", "查预警", "预警详情", "敌对详情", "节点敌对"}:
+        return {"mode": "node_hostiles"}
+    if normalized == "查询所有节点":
+        return {"mode": "all_nodes"}
+    if normalized == "查询预警节点":
+        return {"mode": "monitoring_nodes"}
+    if normalized == "查询星系":
+        return {"mode": "system_roster", "system_name": ""}
+    system_match = re.match(
+        r"^查询星系(?:\s+|[：:]\s*)(.+)$",
+        normalized,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if system_match:
+        return {
+            "mode": "system_roster",
+            "system_name": str(system_match.group(1) or "").strip(),
+        }
+    generic_target = re.match(
+        r"^(?:查询|查)\s+(人员|角色|军团|联盟)\s*(.+)$",
+        normalized,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if generic_target:
+        key = {
+            "人员": "name",
+            "角色": "name",
+            "军团": "corporation",
+            "联盟": "alliance",
+        }[str(generic_target.group(1))]
+        return {
+            "mode": "filtered",
+            key: str(generic_target.group(2) or "").strip(),
+        }
     for command, (key, _label) in TARGETED_QUERY_COMMANDS.items():
         if normalized == command:
-            return {key: ""}
+            return {"mode": "filtered", key: ""}
         match = re.match(
             rf"^{re.escape(command)}(?:\s+|[：:]\s*)(.+)$",
             normalized,
             flags=re.IGNORECASE | re.DOTALL,
         )
         if match:
-            return {key: str(match.group(1) or "").strip()}
+            return {
+                "mode": "filtered",
+                key: str(match.group(1) or "").strip(),
+            }
     match = re.match(
-        rf"^{QUERY_COMMAND_PATTERN}(?:\s+(.+))?$",
+        r"^(?:查询预警|查预警)\s+(?:(人员|角色|军团|联盟)\s*)?(.+)$",
         normalized,
         flags=re.IGNORECASE | re.DOTALL,
     )
     if not match:
         return None
-    argument = str(match.group(1) or "").strip()
-    if not argument:
-        return {}
-    key = "name"
-    for prefix, candidate_key in (("人员", "name"), ("角色", "name"), ("军团", "corporation"), ("联盟", "alliance")):
-        if argument.startswith(prefix):
-            argument = argument[len(prefix):].strip()
-            key = candidate_key
-            break
-    return {key: argument} if argument else {}
+    key = {
+        "人员": "name",
+        "角色": "name",
+        "军团": "corporation",
+        "联盟": "alliance",
+    }.get(str(match.group(1) or ""), "name")
+    return {"mode": "filtered", key: str(match.group(2) or "").strip()}
 
 
-def format_ocr_query(payload: dict[str, Any], filters: dict[str, str] | None = None) -> str:
+def format_query_menu() -> str:
+    return "\n".join(
+        (
+            "### 🔎 哨兵查询",
+            "请选择查询方式：",
+            "`查询星系 名称`｜`查询节点敌情`｜`查询人员 名称`",
+            "`查询军团 名称`｜`查询所有节点`｜`查询联盟 名称`",
+            "`查询预警节点`｜`上线监测 人员/军团/联盟 名称 间隔`",
+        )
+    )
+
+
+def format_ocr_query(payload: dict[str, Any], query: dict[str, str] | None = None) -> str:
     results = payload.get("results")
     results = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
+    request = dict(query or {})
+    mode = str(request.get("mode") or "filtered")
+    if mode == "system_roster":
+        return _format_system_roster(payload, results, request)
+    filters = {
+        key: str(request.get(key) or "").strip()
+        for key in ("name", "corporation", "alliance")
+        if str(request.get(key) or "").strip()
+    }
     lines = [
-        "### OCR 查询",
+        "### 所有节点当前名单" if mode == "all_nodes" else "### OCR 查询",
         f"**节点**｜{len(results)}/{int(payload.get('expected_clients') or len(results))}",
     ]
+    if payload.get("soft_timed_out"):
+        lines.append("**状态**｜部分节点未在 15 秒内返回")
     rendered_systems = 0
-    for result in results:
+    for result_index, result in enumerate(results, start=1):
         system = str(result.get("system_name") or "未知星系").strip()
         recognized = result.get("recognized")
         recognized = [item for item in recognized if isinstance(item, dict)] if isinstance(recognized, list) else []
-        selected = [item for item in recognized if _query_item_matches(item, filters or {})]
+        selected = [item for item in recognized if _query_item_matches(item, filters)]
         raw_names = [str(name).strip() for name in result.get("names", []) if str(name).strip()]
-        if not selected and filters and raw_names:
+        if not selected and filters:
             continue
         if filters:
             displayed_items = selected[:MAX_HOSTILES]
@@ -213,9 +321,14 @@ def format_ocr_query(payload: dict[str, Any], filters: dict[str, str] | None = N
             for item in recognized
             if str(item.get("name") or "").strip().casefold()
         }
+        section_title = (
+            f"\n#### 监控节点 {result_index}｜{system}｜识别 {len(raw_names)} 人"
+            if mode == "all_nodes"
+            else f"\n#### {system}｜识别 {len(raw_names)} 人"
+        )
         lines.extend(
             (
-                f"\n#### {system}｜识别 {len(raw_names)} 人",
+                section_title,
                 "| 人员 | 军团 | 联盟 | zKill |",
                 "| --- | --- | --- | --- |",
             )
@@ -228,6 +341,34 @@ def format_ocr_query(payload: dict[str, Any], filters: dict[str, str] | None = N
         rendered_systems += 1
     if not rendered_systems:
         return "OCR 查询｜没有收到符合条件的人员名单。"
+    return "\n".join(lines)
+
+
+def _format_system_roster(
+    payload: dict[str, Any],
+    results: list[dict[str, Any]],
+    query: dict[str, str],
+) -> str:
+    system_name = str(
+        query.get("system_name") or payload.get("system_name") or "未知星系"
+    ).strip() or "未知星系"
+    names: dict[str, str] = {}
+    for result in results:
+        for raw_name in result.get("names", []):
+            name = str(raw_name or "").strip()
+            if name:
+                names.setdefault(name.casefold(), name)
+    expected = int(payload.get("expected_clients") or len(results))
+    lines = [
+        f"### {system_name} 当前名单｜{len(names)} 人",
+        f"**响应节点**｜{len(results)}/{expected}",
+        "| 人员 |",
+        "| --- |",
+    ]
+    if names:
+        lines.extend(f"| {_escape_markdown_table_cell(name)} |" for name in sorted(names.values(), key=str.casefold))
+    else:
+        lines.append("| 暂无人员 |")
     return "\n".join(lines)
 
 
@@ -275,50 +416,139 @@ def _query_item_matches(item: dict[str, Any], filters: dict[str, str]) -> bool:
 
 
 def format_sentry_status(bootstrap: dict[str, Any]) -> str:
-    nodes = _online_nodes(bootstrap)
     hostiles = _current_hostiles(bootstrap)
-    assignments = _assign_hostiles(nodes, hostiles)
+    hostile_counts, system_names = _hostile_counts_by_system(bootstrap)
+    hostiles_by_system: dict[str, list[dict[str, Any]]] = {}
+    for item in hostiles:
+        system_name = _system_name(item)
+        system_key = system_name.casefold()
+        system_names.setdefault(system_key, system_name)
+        hostiles_by_system.setdefault(system_key, []).append(item)
+    for system_key, items in hostiles_by_system.items():
+        hostile_counts.setdefault(system_key, len(items))
+    total_hostiles = sum(hostile_counts.values())
+    lines = [
+        f"### ⚠️ 当前节点敌情｜{total_hostiles} 人",
+        "| 星系 | 当前敌对 | 已识别 |",
+        "| --- | ---: | ---: |",
+    ]
+    active_systems = sorted(
+        {
+            system_key
+            for system_key, count in hostile_counts.items()
+            if count > 0
+        }
+        | set(hostiles_by_system),
+        key=lambda key: system_names.get(key, key).casefold(),
+    )
+    if not active_systems:
+        lines.append("| 当前无活动敌情 | 0 | 0 |")
+        return "\n".join(lines)
+    for system_key in active_systems:
+        items = hostiles_by_system.get(system_key, [])
+        system_name = system_names.get(system_key, system_key)
+        lines.append(
+            f"| {_escape_markdown_table_cell(system_name)} | "
+            f"{hostile_counts.get(system_key, len(items))} | {len(items)} |"
+        )
+    lines.extend(
+        (
+            "",
+            "| 人员 | 星系 | 军团 | 联盟 | zKill |",
+            "| --- | --- | --- | --- | --- |",
+        )
+    )
+    displayed = 0
+    for system_key in active_systems:
+        system_name = system_names.get(system_key, system_key)
+        items = hostiles_by_system.get(system_key, [])
+        for item in items:
+            if displayed >= MAX_HOSTILES:
+                break
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            character_id = str(item.get("character_id") or metadata.get("character_id") or "").strip()
+            zkill = f"[查看](https://zkillboard.com/character/{character_id}/)" if character_id.isdigit() else "—"
+            lines.append(
+                "| " + " | ".join(
+                    (
+                        _escape_markdown_table_cell(_hostile_name(item)),
+                        _escape_markdown_table_cell(system_name),
+                        _escape_markdown_table_cell(_affiliation(metadata, "corporation")),
+                        _escape_markdown_table_cell(_affiliation(metadata, "alliance")),
+                        zkill,
+                    )
+                ) + " |"
+            )
+            displayed += 1
+    return "\n".join(lines)
 
-    if not nodes and not hostiles:
-        return "预警节点｜当前无在线监控节点"
 
-    total_hostiles = sum(len(items) for items in assignments.values())
-    lines = [f"预警节点｜在线 {len(nodes)}｜敌对 {total_hostiles} 人"]
-    displayed_hostiles = 0
-    displayed_nodes = 0
+def _hostile_counts_by_system(
+    bootstrap: dict[str, Any],
+) -> tuple[dict[str, int], dict[str, str]]:
+    counts: dict[str, int] = {}
+    display_names: dict[str, str] = {}
 
-    ordered_nodes = sorted(
-        assignments,
-        key=lambda node: (
-            not bool(assignments[node]),
-            node.system_name.casefold(),
-            node.label.casefold(),
+    def record(item: object) -> None:
+        if not isinstance(item, dict):
+            return
+        system_name = str(
+            item.get("system_name") or item.get("system") or ""
+        ).strip()
+        if not system_name:
+            return
+        try:
+            count = max(0, int(item.get("hostile_count") or 0))
+        except (TypeError, ValueError):
+            count = 0
+        system_key = system_name.casefold()
+        display_names.setdefault(system_key, system_name)
+        counts[system_key] = max(counts.get(system_key, 0), count)
+
+    map_payload = bootstrap.get("map")
+    map_systems = map_payload.get("systems") if isinstance(map_payload, dict) else []
+    for item in map_systems if isinstance(map_systems, list) else []:
+        record(item)
+    raw_nodes = bootstrap.get("monitoring_nodes")
+    for item in raw_nodes if isinstance(raw_nodes, list) else []:
+        record(item)
+    raw_alerts = bootstrap.get("alerts")
+    for item in raw_alerts if isinstance(raw_alerts, list) else []:
+        record(item)
+
+    return counts, display_names
+
+
+def format_monitoring_nodes(bootstrap: dict[str, Any]) -> str:
+    raw_nodes = bootstrap.get("monitoring_nodes")
+    nodes = [item for item in raw_nodes if isinstance(item, dict)] if isinstance(raw_nodes, list) else []
+    ordered = sorted(
+        nodes,
+        key=lambda item: (
+            str(item.get("system_name") or "").casefold(),
+            str(item.get("client_id") or "").casefold(),
         ),
     )
-    for node_index, node in enumerate(ordered_nodes, start=1):
-        if displayed_nodes >= MAX_NODES:
-            break
-        items = assignments[node]
-        icon = "🔴" if items else "🟢"
+    lines = [
+        f"### 🛰️ 预警节点｜{len(ordered)}",
+        "| 节点 | 状态 | 星系 | 当前敌对 |",
+        "| --- | --- | --- | ---: |",
+    ]
+    if not ordered:
+        lines.append("| 暂无节点 | — | — | 0 |")
+        return "\n".join(lines)
+    for index, node in enumerate(ordered, start=1):
+        health = str(node.get("health_status") or "online").strip().casefold()
+        status = {
+            "online": "🟢 正常",
+            "degraded": "🟡 连接异常",
+            "offline": "⚪ 节点离线",
+        }.get(health, "⚪ 节点离线")
+        hostile = "—" if health == "offline" else str(max(0, int(node.get("hostile_count") or 0)))
         lines.append(
-            f"{icon} {node.system_name}｜敌 {len(items)}｜监控节点 {node_index}"
+            f"| 监控节点 {index} | {status} | "
+            f"{_escape_markdown_table_cell(node.get('system_name') or '未知星系')} | {hostile} |"
         )
-        displayed_nodes += 1
-        for item in items:
-            if displayed_hostiles >= MAX_HOSTILES:
-                break
-            lines.extend(_hostile_lines(item))
-            displayed_hostiles += 1
-
-    omitted_nodes = max(0, len(ordered_nodes) - displayed_nodes)
-    omitted_hostiles = max(0, total_hostiles - displayed_hostiles)
-    if omitted_nodes or omitted_hostiles:
-        parts = []
-        if omitted_nodes:
-            parts.append(f"{omitted_nodes} 个节点")
-        if omitted_hostiles:
-            parts.append(f"{omitted_hostiles} 名敌对")
-        lines.append(f"其余｜{'、'.join(parts)}未展开")
     return "\n".join(lines)
 
 

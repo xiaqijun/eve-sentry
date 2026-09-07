@@ -110,8 +110,9 @@ PostgreSQL 连接由 `psycopg_pool` 复用，默认最小 2、最大 8 个连接
 按授权账号隔离的声望快照仍由服务端直接请求，默认 TTL 为 600 秒。缓存和部署参数以
 [服务端部署](server-deployment.md#公共-esi-gateway) 和 [Gateway 运维文档](../esi-gateway/docs/operations.md) 为准。
 
-机器人“查询预警”会创建一次性 OCR 任务，服务端通过 detector heartbeat 下发给目标客户端，
-客户端上传带 `query_id` 的快照后再由服务端聚合返回。协议细节见
+机器人执行指定星系、人员、军团、联盟或所有节点名单查询时，会创建一次性 OCR 任务，
+服务端通过 detector heartbeat 下发给目标客户端，客户端上传带 `query_id` 的快照后再由
+服务端聚合返回；“查询节点敌情”和“查询预警节点”只读取现有状态，不创建 OCR 任务。协议细节见
 [按需 OCR 对接说明](../client/docs/on-demand-ocr-query.md)。
 命令在目标客户端回传结果前可随后续心跳重复下发；客户端应按 `query_id` 去重。这样即使
 心跳响应丢失、窗口线程正在重启或客户端短暂重连，也不会把一次性查询永久丢弃。

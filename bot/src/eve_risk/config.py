@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     qq_app_id: str = ""
     qq_app_secret: str = ""
+    qq_query_keyboard_id: str = ""
     zkill_user_agent: str = ""
 
     database_url: str = "postgresql+asyncpg://eve_risk:eve_risk@127.0.0.1:5432/eve_risk"
@@ -35,6 +36,12 @@ class Settings(BaseSettings):
     eve_sentry_public_url: str = ""
     eve_sentry_alert_min_level: str = ""
     eve_sentry_personnel_push_interval_seconds: float = 10.0
+    eve_sentry_query_soft_timeout_seconds: float = 15.0
+    eve_sentry_query_lock_seconds: int = 45
+    eve_sentry_watch_default_interval_seconds: int = 60
+    eve_sentry_watch_min_interval_seconds: int = 30
+    eve_sentry_watch_poll_seconds: float = 5.0
+    eve_sentry_watch_snapshot_reuse_seconds: int = 30
     friendly_character_ids: str = ""
     friendly_corporation_ids: str = ""
     friendly_alliance_ids: str = ""

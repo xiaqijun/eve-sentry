@@ -57,15 +57,45 @@ class QQOpenAPIClient:
         )
 
     async def send_proactive_markdown(
-        self, group_openid: str, content: str
+        self,
+        group_openid: str,
+        content: str,
+        *,
+        keyboard_id: str = "",
     ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "content": "",
+            "msg_type": 2,
+            "markdown": {"content": content},
+        }
+        if keyboard_id.strip():
+            payload["keyboard"] = {"id": keyboard_id.strip()}
         return await self._post_message(
             group_openid,
-            {
-                "content": "",
-                "msg_type": 2,
-                "markdown": {"content": content},
-            },
+            payload,
+        )
+
+    async def send_markdown(
+        self,
+        group_openid: str,
+        msg_id: str,
+        content: str,
+        msg_seq: int,
+        *,
+        keyboard_id: str = "",
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "content": "",
+            "msg_type": 2,
+            "markdown": {"content": content},
+            "msg_id": msg_id,
+            "msg_seq": msg_seq,
+        }
+        if keyboard_id.strip():
+            payload["keyboard"] = {"id": keyboard_id.strip()}
+        return await self._post_message(
+            group_openid,
+            payload,
         )
 
     async def send_image(

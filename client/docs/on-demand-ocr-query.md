@@ -35,6 +35,7 @@ POST /api/v1/clients/heartbeats
       "command": "ocr_query",
       "query_id": "ocrq_abc123",
       "target_client_id": "detector-client:device:window-1",
+      "system_name": "S-KSWL",
       "filters": {
         "name": "Alice"
       },
@@ -49,6 +50,8 @@ POST /api/v1/clients/heartbeats
 - 兼容没有 `commands` 字段的旧服务端；
 - 只处理 `command == "ocr_query"` 的命令；
 - 按 `target_client_id` 找到对应的本地监控窗口；
+- `system_name` 是服务端选择目标窗口后附带的上下文，客户端仍以
+  `target_client_id` 作为唯一执行路由，不需要再次按星系扫描或广播；
 - `target_client_id` 为空时，按现有兼容策略处理默认监控窗口；
 - `expires_at` 已过期的命令直接丢弃；
 - 同一个 `query_id` 去重，避免重复执行。

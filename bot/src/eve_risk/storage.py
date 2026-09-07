@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, delete
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    delete,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -83,6 +93,38 @@ class JobRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class SentryWatchRecord(Base):
+    __tablename__ = "sentry_watches"
+    __table_args__ = (
+        UniqueConstraint(
+            "group_openid",
+            "target_type",
+            "target_key",
+            name="uq_sentry_watch_group_target",
+        ),
+    )
+
+    watch_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    group_openid: Mapped[str] = mapped_column(String(128), index=True)
+    creator_openid: Mapped[str] = mapped_column(String(128))
+    target_type: Mapped[str] = mapped_column(String(16))
+    target_value: Mapped[str] = mapped_column(String(255))
+    target_key: Mapped[str] = mapped_column(String(255))
+    interval_seconds: Mapped[int] = mapped_column(Integer)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    present: Mapped[bool] = mapped_column(Boolean, default=False)
+    missing_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_check_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 def create_session_factory(database_url: str) -> tuple[object, async_sessionmaker[AsyncSession]]:
