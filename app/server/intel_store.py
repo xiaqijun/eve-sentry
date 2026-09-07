@@ -2884,9 +2884,14 @@ class IntelStore:
         if age_seconds is not None:
             item["age_seconds"] = age_seconds
         interval = max(1.0, item["heartbeat_interval_seconds"] or 10.0)
-        degraded_after = interval
-        offline_after = interval * 2.0
-        remove_after = interval * 3.0
+        # Heartbeats and expiry checks run on independent schedulers. Without
+        # a small grace window, a healthy 10-second heartbeat arriving a few
+        # milliseconds late is briefly classified as degraded and then online
+        # again, producing a notification pair on every cycle.
+        scheduling_grace = min(2.0, interval * 0.2)
+        degraded_after = interval + scheduling_grace
+        offline_after = interval * 2.0 + scheduling_grace
+        remove_after = interval * 3.0 + scheduling_grace
         if age_seconds is None or age_seconds > remove_after:
             health_status = "removed"
         elif age_seconds > offline_after:

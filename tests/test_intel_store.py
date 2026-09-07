@@ -1323,7 +1323,6 @@ def test_zero_presence_immediately_clears_recent_hostile_state(tmp_path):
         "source_instance": "EVE - Pilot",
         "system_name": "S-KSWL",
     }
-
     store.record_hostile_presence(
         {
             **base,
@@ -1343,6 +1342,32 @@ def test_zero_presence_immediately_clears_recent_hostile_state(tmp_path):
     assert deferred["accepted"] is True
     assert "clear_deferred" not in deferred
     assert active == []
+
+
+def test_heartbeat_health_allows_scheduler_jitter_before_missing_cycle(tmp_path):
+    store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
+    heartbeat = {
+        "client_id": "detector:test",
+        "client_type": "detector_client",
+        "heartbeat_interval_seconds": 10,
+        "seen_at": "2026-09-07T00:00:00+00:00",
+        "details": {"monitoring": True},
+    }
+
+    store._heartbeat_age_seconds = lambda _seen_at: 10.5
+    online = store._heartbeat_view(heartbeat)
+    store._heartbeat_age_seconds = lambda _seen_at: 12.01
+    degraded = store._heartbeat_view(heartbeat)
+    store._heartbeat_age_seconds = lambda _seen_at: 22.01
+    offline = store._heartbeat_view(heartbeat)
+    store._heartbeat_age_seconds = lambda _seen_at: 32.01
+    removed = store._heartbeat_view(heartbeat)
+
+    assert online["health_status"] == "online"
+    assert online["degraded_after_seconds"] == 12.0
+    assert degraded["health_status"] == "degraded"
+    assert offline["health_status"] == "offline"
+    assert removed["health_status"] == "removed"
 
 
 def test_ocr_missing_confirmations_do_not_clear_presence_state(tmp_path):
@@ -3729,7 +3754,7 @@ def test_stale_detector_heartbeat_expires_snapshot_seen_before_stale_deadline(tm
 
     assert store.list_active_intel(source="eve-sentry-detector") == []
     inactive = store.list_active_intel(source="eve-sentry-detector", active=False)
-    assert inactive[0]["left_at"] == "2026-01-01T00:00:11+00:00"
+    assert inactive[0]["left_at"] == "2026-01-01T00:00:12+00:00"
 
 
 def test_stale_detector_heartbeat_does_not_expire_snapshot_after_stale_deadline(tmp_path):
