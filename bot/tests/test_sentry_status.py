@@ -225,6 +225,52 @@ async def test_status_client_sends_system_name_when_creating_ocr_query() -> None
 
 
 @pytest.mark.asyncio
+async def test_status_client_preserves_ocr_query_rejection_reason() -> None:
+    async with httpx.AsyncClient() as http:
+        client = EveSentryStatusClient(
+            http,
+            "http://sentry.test/api/v1/events",
+            "eve_service_secret",
+        )
+        with respx.mock(assert_all_called=True) as router:
+            router.post("http://sentry.test/api/v1/ocr/query").mock(
+                return_value=httpx.Response(
+                    409,
+                    json={"error": "星系 NCG-PW 当前没有在线监控节点"},
+                )
+            )
+            with pytest.raises(
+                SentryStatusError,
+                match="星系 NCG-PW 当前没有在线监控节点",
+            ):
+                await client.create_ocr_query(
+                    {"mode": "system_roster", "system_name": "NCG-PW"}
+                )
+
+
+@pytest.mark.asyncio
+async def test_status_client_hides_ocr_query_server_error_details() -> None:
+    async with httpx.AsyncClient() as http:
+        client = EveSentryStatusClient(
+            http,
+            "http://sentry.test/api/v1/events",
+            "eve_service_secret",
+        )
+        with respx.mock(assert_all_called=True) as router:
+            router.post("http://sentry.test/api/v1/ocr/query").mock(
+                return_value=httpx.Response(
+                    500,
+                    json={"error": "internal database detail"},
+                )
+            )
+            with pytest.raises(
+                SentryStatusError,
+                match="OCR 查询创建失败，请稍后重试",
+            ):
+                await client.create_ocr_query({"mode": "all_nodes"})
+
+
+@pytest.mark.asyncio
 async def test_fast_status_queries_do_not_create_ocr_jobs() -> None:
     async with httpx.AsyncClient() as http:
         client = EveSentryStatusClient(http, "http://sentry.test/api/v1/events")

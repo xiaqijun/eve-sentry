@@ -146,6 +146,24 @@ class EveSentryStatusClient:
             return created
         except SentryStatusError:
             raise
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            detail = ""
+            if 400 <= status_code < 500:
+                try:
+                    error_payload = exc.response.json()
+                except ValueError:
+                    error_payload = None
+                if isinstance(error_payload, dict):
+                    detail = str(error_payload.get("error") or "").strip()
+            logger.warning(
+                "EVE Sentry OCR query rejected status=%s detail=%s",
+                status_code,
+                detail or "unavailable",
+            )
+            if detail:
+                raise SentryStatusError(detail) from None
+            raise SentryStatusError("OCR 查询创建失败，请稍后重试。") from None
         except Exception:
             logger.exception("EVE Sentry OCR query creation failed")
             raise SentryStatusError("OCR 查询创建失败，请稍后重试。") from None
