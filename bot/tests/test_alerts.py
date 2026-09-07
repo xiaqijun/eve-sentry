@@ -970,6 +970,7 @@ async def test_relay_delivers_monitoring_node_changes_once_per_group() -> None:
 async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "snapshot"}),
         send_proactive_text=AsyncMock(return_value={"id": "snapshot"}),
     )
     payload = {
@@ -1012,8 +1013,10 @@ async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event()
                 "alerts": [],
             }
         )
-        assert qq.send_proactive_text.await_count == 1
-        message = qq.send_proactive_text.await_args.args[1]
+        assert qq.send_proactive_markdown.await_count == 1
+        qq.send_proactive_text.assert_not_awaited()
+        message = qq.send_proactive_markdown.await_args.args[1]
+        assert message.startswith("### 🛰️ 在线监控节点｜2")
         assert "在线监控节点｜2" in message
         assert "| 监控节点 1 | 🟢 正常 | Jita | 0 |" in message
         assert "| 监控节点 2 | 🟢 正常 | Tama | 0 |" in message
@@ -1032,8 +1035,8 @@ async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event()
                 "alerts": [],
             }
         )
-        assert qq.send_proactive_text.await_count == 2
-        assert "在线监控节点｜1" in qq.send_proactive_text.await_args.args[1]
+        assert qq.send_proactive_markdown.await_count == 2
+        assert "在线监控节点｜1" in qq.send_proactive_markdown.await_args.args[1]
 
     await redis.aclose()
 
@@ -1061,7 +1064,10 @@ async def test_monitoring_snapshot_without_subscribers_does_not_fail_stream() ->
 @pytest.mark.asyncio
 async def test_subscribe_pushes_latest_cached_monitoring_snapshot() -> None:
     redis = fakeredis.aioredis.FakeRedis()
-    qq = SimpleNamespace(send_proactive_text=AsyncMock(return_value={"id": "snapshot"}))
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(side_effect=RuntimeError("markdown failed")),
+        send_proactive_text=AsyncMock(return_value={"id": "snapshot"}),
+    )
     async with httpx.AsyncClient() as http:
         relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
         await relay.deliver_monitoring_node_snapshot(
@@ -1075,13 +1081,15 @@ async def test_subscribe_pushes_latest_cached_monitoring_snapshot() -> None:
 
         qq.send_proactive_text.assert_awaited_once_with(
             "group-1",
-            "在线监控节点｜1\n\n"
+            "🛰️ 在线监控节点｜1\n"
             "| 节点 | 状态 | 星系 | 敌对人数 |\n"
-            "| :-- | :--: | :-- | --: |\n"
+            "| --- | --- | --- | --- |\n"
             "| 监控节点 1 | 🟢 正常 | Jita | 0 |",
         )
+        qq.send_proactive_markdown.assert_awaited_once()
         await relay.subscribe("group-1")
         qq.send_proactive_text.assert_awaited_once()
+        qq.send_proactive_markdown.assert_awaited_once()
 
     await redis.aclose()
 
@@ -1118,9 +1126,9 @@ async def test_first_bootstrap_refreshes_groups_after_relay_restart() -> None:
 
     qq.send_proactive_text.assert_awaited_once_with(
         "group-1",
-        "在线监控节点｜1\n\n"
+        "🛰️ 在线监控节点｜1\n"
         "| 节点 | 状态 | 星系 | 敌对人数 |\n"
-        "| :-- | :--: | :-- | --: |\n"
+        "| --- | --- | --- | --- |\n"
         "| 监控节点 1 | 🟢 正常 | Jita | 0 |",
     )
     await redis.aclose()

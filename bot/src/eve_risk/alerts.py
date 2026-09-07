@@ -201,15 +201,14 @@ def format_monitoring_nodes_message(
         for node in ordered
         if str(node.get("health_status") or "online").strip().casefold() == "online"
     )
-    lines = [f"在线监控节点｜{online_count}"]
+    lines = [f"### 🛰️ 在线监控节点｜{online_count}"]
     if not ordered:
         lines.append("暂无在线监控节点")
         return "\n".join(lines)
     lines.extend(
         [
-            "",
             "| 节点 | 状态 | 星系 | 敌对人数 |",
-            "| :-- | :--: | :-- | --: |",
+            "| --- | --- | --- | --- |",
         ]
     )
     for index, node in enumerate(ordered, start=1):
@@ -366,7 +365,22 @@ class EveSentryAlertRelay:
             [item for item in nodes if isinstance(item, dict)]
         )
         try:
-            await self.qq.send_proactive_text(group_openid, message)
+            send_markdown = getattr(self.qq, "send_proactive_markdown", None)
+            if send_markdown is None:
+                await self.qq.send_proactive_text(
+                    group_openid, _markdown_to_plain_text(message)
+                )
+            else:
+                try:
+                    await send_markdown(group_openid, message)
+                except Exception:
+                    logger.warning(
+                        "QQ cached monitoring-node markdown delivery failed; "
+                        "falling back to text"
+                    )
+                    await self.qq.send_proactive_text(
+                        group_openid, _markdown_to_plain_text(message)
+                    )
         except Exception:
             logger.exception("QQ cached monitoring node snapshot delivery failed")
             return False
@@ -738,7 +752,22 @@ class EveSentryAlertRelay:
             if await self.redis.exists(delivered_key):
                 continue
             try:
-                await self.qq.send_proactive_text(group_openid, message)
+                send_markdown = getattr(self.qq, "send_proactive_markdown", None)
+                if send_markdown is None:
+                    await self.qq.send_proactive_text(
+                        group_openid, _markdown_to_plain_text(message)
+                    )
+                else:
+                    try:
+                        await send_markdown(group_openid, message)
+                    except Exception:
+                        logger.warning(
+                            "QQ monitoring-node markdown delivery failed; "
+                            "falling back to text"
+                        )
+                        await self.qq.send_proactive_text(
+                            group_openid, _markdown_to_plain_text(message)
+                        )
             except Exception:
                 failed = True
                 logger.exception("EVE Sentry monitoring node snapshot delivery failed")
