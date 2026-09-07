@@ -143,7 +143,11 @@ def test_format_ocr_query_uses_only_names_from_this_snapshot() -> None:
                     "recognized": [
                         {
                             "name": "Alice",
-                            "metadata": {"corporation_name": "Blue Corp"},
+                            "character_id": 123456,
+                            "metadata": {
+                                "corporation_name": "Blue Corp",
+                                "alliance_name": "Example Alliance",
+                            },
                         },
                         # A stale row must not affect this one-shot result.
                         {"name": "Old Pilot", "metadata": {}},
@@ -153,9 +157,14 @@ def test_format_ocr_query_uses_only_names_from_this_snapshot() -> None:
         }
     )
 
+    assert message.startswith("### OCR 查询\n**节点**｜1/1")
     assert "S-KSWL｜识别 2 人" in message
-    assert "Alice" in message
-    assert "  - Bob" in message
+    assert "| 人员 | 军团 | 联盟 | zKill |" in message
+    assert (
+        "| Alice | Blue Corp | Example Alliance | "
+        "[查看](https://zkillboard.com/character/123456/) |"
+    ) in message
+    assert "| Bob | — | — | — |" in message
     assert "Old Pilot" not in message
 
 

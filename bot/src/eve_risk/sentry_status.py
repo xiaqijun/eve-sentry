@@ -179,9 +179,10 @@ def format_ocr_query(payload: dict[str, Any], filters: dict[str, str] | None = N
     results = payload.get("results")
     results = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
     lines = [
-        f"OCR 查询｜节点 {len(results)}/{int(payload.get('expected_clients') or len(results))}"
+        "### OCR 查询",
+        f"**节点**｜{len(results)}/{int(payload.get('expected_clients') or len(results))}",
     ]
-    displayed = 0
+    rendered_systems = 0
     for result in results:
         system = str(result.get("system_name") or "未知星系").strip()
         recognized = result.get("recognized")
@@ -192,10 +193,16 @@ def format_ocr_query(payload: dict[str, Any], filters: dict[str, str] | None = N
             continue
         if filters:
             displayed_items = selected[:MAX_HOSTILES]
-            lines.append(f"\n{system}｜识别 {len(selected)} 人")
+            lines.extend(
+                (
+                    f"\n#### {system}｜识别 {len(selected)} 人",
+                    "| 人员 | 军团 | 联盟 | zKill |",
+                    "| --- | --- | --- | --- |",
+                )
+            )
             for item in displayed_items:
-                lines.extend(_hostile_lines(item))
-                displayed += 1
+                lines.append(_ocr_query_table_row(_hostile_name(item), item))
+            rendered_systems += 1
             continue
 
         # The query response is authoritative for this one OCR pass. Use its
@@ -206,17 +213,50 @@ def format_ocr_query(payload: dict[str, Any], filters: dict[str, str] | None = N
             for item in recognized
             if str(item.get("name") or "").strip().casefold()
         }
-        lines.append(f"\n{system}｜识别 {len(raw_names)} 人")
+        lines.extend(
+            (
+                f"\n#### {system}｜识别 {len(raw_names)} 人",
+                "| 人员 | 军团 | 联盟 | zKill |",
+                "| --- | --- | --- | --- |",
+            )
+        )
         for name in raw_names[:MAX_HOSTILES]:
             item = recognized_by_name.get(name.casefold())
-            if item is not None:
-                lines.extend(_hostile_lines(item))
-            else:
-                lines.append(f"  - {name}")
-            displayed += 1
-    if len(lines) == 1:
+            lines.append(_ocr_query_table_row(name, item))
+        if not raw_names:
+            lines.append("| 暂无人员 | — | — | — |")
+        rendered_systems += 1
+    if not rendered_systems:
         return "OCR 查询｜没有收到符合条件的人员名单。"
     return "\n".join(lines)
+
+
+def _ocr_query_table_row(name: str, item: dict[str, Any] | None) -> str:
+    resolved = item if isinstance(item, dict) else {}
+    metadata = resolved.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    corporation = _affiliation(metadata, "corporation")
+    alliance = _affiliation(metadata, "alliance")
+    character_id = str(
+        resolved.get("character_id") or metadata.get("character_id") or ""
+    ).strip()
+    zkill = (
+        f"[查看](https://zkillboard.com/character/{character_id}/)"
+        if character_id.isdigit()
+        else "—"
+    )
+    return "| " + " | ".join(
+        (
+            _escape_markdown_table_cell(name or "未知人员"),
+            _escape_markdown_table_cell(corporation),
+            _escape_markdown_table_cell(alliance),
+            zkill,
+        )
+    ) + " |"
+
+
+def _escape_markdown_table_cell(value: object) -> str:
+    return str(value or "—").replace("|", "\\|").replace("\n", " ").strip() or "—"
 
 
 def _query_item_matches(item: dict[str, Any], filters: dict[str, str]) -> bool:
