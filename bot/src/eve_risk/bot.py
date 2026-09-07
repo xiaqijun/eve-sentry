@@ -168,8 +168,17 @@ class RiskBotClient(botpy.Client):
             try:
                 reply = await self.sentry_status.query(sentry_query, refresh=True)
             except SentryStatusError as exc:
-                reply = str(exc)
-            await self.qq.send_text(group_openid, msg_id, reply, msg_seq=1)
+                await self.qq.send_text(
+                    group_openid, msg_id, str(exc), msg_seq=1
+                )
+                return
+            try:
+                await self.qq.send_proactive_markdown(group_openid, reply)
+            except Exception:
+                logger.warning(
+                    "QQ sentry query markdown delivery failed; falling back to text"
+                )
+                await self.qq.send_text(group_openid, msg_id, reply, msg_seq=1)
             return
         if is_analysis_command(content):
             names = await self.alert_relay.current_analysis_names(

@@ -240,6 +240,7 @@ async def test_sentry_status_query_replies_without_analysis_queue() -> None:
     client.redis = redis
     client.queue.enqueue = AsyncMock()
     client.qq.send_text = AsyncMock(return_value={"id": "reply"})
+    client.qq.send_proactive_markdown = AsyncMock(return_value={"id": "markdown"})
     client.sentry_status.query = AsyncMock(
         return_value="预警节点｜在线 1｜敌对 0 人\n🟢 S-KSWL｜敌 0｜监控节点 1"
     )
@@ -257,10 +258,45 @@ async def test_sentry_status_query_replies_without_analysis_queue() -> None:
         await client.on_group_at_message_create(Message())
 
         client.queue.enqueue.assert_not_awaited()
+        client.qq.send_proactive_markdown.assert_awaited_once_with(
+            "group-1",
+            "预警节点｜在线 1｜敌对 0 人\n🟢 S-KSWL｜敌 0｜监控节点 1",
+        )
+        client.qq.send_text.assert_not_awaited()
+    finally:
+        await client.http_client.aclose()
+        await redis.aclose()
+        await original_redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sentry_status_query_falls_back_when_markdown_delivery_fails() -> None:
+    client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
+    original_redis = client.redis
+    redis = fakeredis.aioredis.FakeRedis()
+    client.redis = redis
+    client.queue.enqueue = AsyncMock()
+    client.qq.send_text = AsyncMock(return_value={"id": "reply"})
+    client.qq.send_proactive_markdown = AsyncMock(side_effect=RuntimeError("unsupported"))
+    client.sentry_status.query = AsyncMock(return_value="| 人员 | 军团 |\n| --- | --- |")
+
+    class Author:
+        member_openid = "member-1"
+
+    class Message:
+        id = "status-message-fallback"
+        group_openid = "group-1"
+        content = "查询预警"
+        author = Author()
+
+    try:
+        await client.on_group_at_message_create(Message())
+
+        client.qq.send_proactive_markdown.assert_awaited_once()
         client.qq.send_text.assert_awaited_once_with(
             "group-1",
-            "status-message-1",
-            "预警节点｜在线 1｜敌对 0 人\n🟢 S-KSWL｜敌 0｜监控节点 1",
+            "status-message-fallback",
+            "| 人员 | 军团 |\n| --- | --- |",
             msg_seq=1,
         )
     finally:
