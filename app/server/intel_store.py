@@ -1443,30 +1443,39 @@ class IntelStore:
         )
         system_id = self._optional_int(payload.get("system_id"))
         seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
-        hostile_icon_count = max(
-            0,
-            self._optional_int(payload.get("hostile_icon_count")) or 0,
-        )
+        query_only = bool(str(payload.get("query_id") or "").strip())
         defer_esi = self._resolver is not None or self._enricher is not None
         names = self._normalize_ocr_names(
             payload.get("names"),
             resolve=not defer_esi,
         )
-        snapshot_metadata = (
-            {
-                "hostile_icon_detected": hostile_icon_count > 0,
-                "hostile_icon_count": hostile_icon_count,
-                "hostile_icon_seen_at": seen_at,
-            }
-            if "hostile_icon_count" in payload or not names
-            else {}
-        )
+        snapshot_metadata = {"query_only": True} if query_only else {}
         raw_text = ", ".join(names)
         result = ActiveIntelSnapshotResult()
         seen_name_keys = {name.casefold() for name in names}
         changed_reports = False
         esi_tasks: list[_OcrEsiTask] = []
         with self._lock:
+            presence_active = any(
+                candidate.active
+                and candidate.source == source
+                and candidate.target_type == "system"
+                and candidate.metadata.get("presence_only")
+                and candidate.metadata.get("client_id") == client_id
+                and candidate.system_name.casefold() == system_name.casefold()
+                and max(
+                    0,
+                    self._optional_int(
+                        candidate.metadata.get("hostile_icon_count")
+                    )
+                    or 0,
+                )
+                > 0
+                for candidate in self._active_intel.values()
+            )
+            if not query_only and not presence_active:
+                result.filtered += len(names)
+                return result.to_dict(include_active=False)
             accepted, moved_items = self._transition_ocr_client_system(
                 client_id,
                 system_name,
@@ -1570,6 +1579,7 @@ class IntelStore:
                         item_metadata["identity_status"] = str(
                             observation.metadata.get("identity_status") or "unresolved"
                         )
+                    item_metadata.update(snapshot_metadata)
                     self._active_intel[active_id] = ActiveIntelItem(
                         active_id=active_id,
                         source=source,
@@ -1681,6 +1691,16 @@ class IntelStore:
         )
         system_id = self._optional_int(payload.get("system_id"))
         seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
+        presence_version = max(
+            0,
+            self._optional_int(
+                payload.get("presence_version", payload.get("sequence"))
+            )
+            or 0,
+        )
+        presence_state_id = str(
+            payload.get("presence_state_id") or payload.get("snapshot_id") or ""
+        ).strip()
         active_id = self._active_hostile_presence_id(client_id, system_name)
         result = ActiveIntelSnapshotResult()
 
@@ -1703,6 +1723,54 @@ class IntelStore:
             result.expired += len(moved_items)
 
             item = self._active_intel.get(active_id)
+            if item is not None:
+                existing_version = max(
+                    0,
+                    self._optional_int(item.metadata.get("presence_version")) or 0,
+                )
+                existing_state_id = str(
+                    item.metadata.get("presence_state_id") or ""
+                ).strip()
+                if presence_version and existing_version > presence_version:
+                    response = result.to_dict(include_active=False)
+                    response.update(
+                        {
+                            "accepted": False,
+                            "stale": True,
+                            "hostile_icon_count": hostile_count,
+                            "presence_version": presence_version,
+                            "presence_state_id": presence_state_id,
+                            "seen_at": seen_at,
+                        }
+                    )
+                    return response
+                if (
+                    presence_version
+                    and existing_version == presence_version
+                    and (
+                        not presence_state_id
+                        or not existing_state_id
+                        or existing_state_id == presence_state_id
+                    )
+                ):
+                    response = result.to_dict(include_active=False)
+                    response.update(
+                        {
+                            "accepted": True,
+                            "duplicate": True,
+                            "hostile_icon_count": max(
+                                0,
+                                self._optional_int(
+                                    item.metadata.get("hostile_icon_count")
+                                )
+                                or 0,
+                            ),
+                            "presence_version": presence_version,
+                            "presence_state_id": presence_state_id,
+                            "seen_at": str(item.last_seen_at or seen_at),
+                        }
+                    )
+                    return response
             if item is not None and self._channel_seen_after(item.last_seen_at, seen_at):
                 response = result.to_dict(include_active=False)
                 response.update(
@@ -1720,42 +1788,11 @@ class IntelStore:
                 "hostile_icon_detected": hostile_count > 0,
                 "hostile_icon_count": hostile_count,
                 "hostile_icon_seen_at": seen_at,
+                "presence_version": presence_version,
+                "presence_state_id": presence_state_id,
+                "captured_at": str(payload.get("captured_at") or seen_at),
             }
             if hostile_count == 0:
-                # A single OCR frame can miss the red-icon row while the
-                # monitored window is still healthy.  Do not turn that
-                # transient zero into a server-wide clear when the latest
-                # detector evidence is still inside the normal OCR grace
-                # window.  The next positive snapshot keeps the state alive;
-                # a later zero (or heartbeat expiry) performs the real clear.
-                incoming_seen_at = self._parse_timestamp(seen_at)
-                latest_seen_at = None
-                for candidate in self._active_intel.values():
-                    if not candidate.active or candidate.source != source:
-                        continue
-                    if candidate.metadata.get("client_id") != client_id:
-                        continue
-                    if candidate.system_name.casefold() != system_name.casefold():
-                        continue
-                    candidate_seen_at = self._parse_timestamp(candidate.last_seen_at)
-                    if candidate_seen_at is None:
-                        continue
-                    if latest_seen_at is None or candidate_seen_at > latest_seen_at:
-                        latest_seen_at = candidate_seen_at
-                if incoming_seen_at is not None and latest_seen_at is not None:
-                    elapsed = (incoming_seen_at - latest_seen_at).total_seconds()
-                    if 0 <= elapsed <= DEFAULT_OCR_GRACE_SECONDS:
-                        response = result.to_dict(include_active=False)
-                        response.update(
-                            {
-                                "accepted": True,
-                                "hostile_icon_count": 0,
-                                "seen_at": seen_at,
-                                "clear_deferred": True,
-                            }
-                        )
-                        return response
-
                 for candidate in self._active_intel.values():
                     if not candidate.active or candidate.source != source:
                         continue
@@ -1797,6 +1834,8 @@ class IntelStore:
                     {
                         "accepted": True,
                         "hostile_icon_count": 0,
+                        "presence_version": presence_version,
+                        "presence_state_id": presence_state_id,
                         "seen_at": seen_at,
                     }
                 )
@@ -1836,6 +1875,8 @@ class IntelStore:
                 {
                     "accepted": True,
                     "hostile_icon_count": hostile_count,
+                    "presence_version": presence_version,
+                    "presence_state_id": presence_state_id,
                     "seen_at": seen_at,
                 }
             )
@@ -2674,6 +2715,10 @@ class IntelStore:
             if not expiry_state:
                 continue
             expiry_seen_at, left_reason = expiry_state
+            if left_reason == "heartbeat_stale":
+                expiry_at = self._parse_timestamp(expiry_seen_at)
+                if expiry_at is None or now_at <= expiry_at:
+                    continue
             if left_reason in {"monitor_stopped", "target_removed"}:
                 stopped_at = self._parse_timestamp(expiry_seen_at)
                 last_seen_at = self._parse_timestamp(item.last_seen_at)
@@ -2718,7 +2763,11 @@ class IntelStore:
         seen_at: str,
     ) -> str:
         try:
-            stale_after_seconds = float(heartbeat.get("stale_after_seconds") or 0)
+            stale_after_seconds = float(
+                heartbeat.get("offline_after_seconds")
+                or heartbeat.get("stale_after_seconds")
+                or 0
+            )
         except (TypeError, ValueError):
             stale_after_seconds = 0.0
         if stale_after_seconds <= 0:
@@ -2834,9 +2883,24 @@ class IntelStore:
         age_seconds = self._heartbeat_age_seconds(item["seen_at"])
         if age_seconds is not None:
             item["age_seconds"] = age_seconds
-        stale_after = max(15.0, item["heartbeat_interval_seconds"] * 3.0 or 15.0)
-        item["stale_after_seconds"] = stale_after
-        item["online"] = age_seconds is not None and age_seconds <= stale_after
+        interval = max(1.0, item["heartbeat_interval_seconds"] or 10.0)
+        degraded_after = interval
+        offline_after = interval * 2.0
+        remove_after = interval * 3.0
+        if age_seconds is None or age_seconds > remove_after:
+            health_status = "removed"
+        elif age_seconds > offline_after:
+            health_status = "offline"
+        elif age_seconds > degraded_after:
+            health_status = "degraded"
+        else:
+            health_status = "online"
+        item["degraded_after_seconds"] = degraded_after
+        item["offline_after_seconds"] = offline_after
+        item["remove_after_seconds"] = remove_after
+        item["stale_after_seconds"] = offline_after
+        item["health_status"] = health_status
+        item["online"] = health_status == "online"
         return item
 
     def _authoritative_detector_target_ids(
@@ -4526,6 +4590,18 @@ class IntelStore:
                 previous = node_counts.get(client_id)
                 if previous is None or snapshot_seen_at >= previous[0]:
                     node_counts[client_id] = (snapshot_seen_at, icon_count)
+                continue
+            if (
+                source == "eve-sentry-detector"
+                and str(item.get("target_type") or "").strip().casefold()
+                == "character"
+            ):
+                if label and is_hostile:
+                    entry["hostiles"].add(label)
+                    entry["report_count"] += max(
+                        1,
+                        int(item.get("seen_count") or 1),
+                    )
                 continue
             if label and is_hostile:
                 entry["hostiles"].add(label)

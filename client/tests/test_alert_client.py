@@ -60,11 +60,13 @@ def test_monitored_accounts_from_bootstrap_keeps_online_monitoring_targets():
             "system_name": "Tama",
             "system_id": 30002813,
             "monitoring": True,
+            "health_status": "online",
+            "hostile_count": 0,
         }
     ]
 
 
-def test_monitored_accounts_from_bootstrap_omits_capture_offline_targets():
+def test_monitored_accounts_from_bootstrap_keeps_capture_offline_targets():
     accounts = monitored_accounts_from_bootstrap(
         {
             "clients": {
@@ -90,7 +92,19 @@ def test_monitored_accounts_from_bootstrap_omits_capture_offline_targets():
         }
     )
 
-    assert accounts == []
+    assert accounts == [
+        {
+            "key": "window:offline|alice|",
+            "label": "Alice",
+            "character_name": "Alice",
+            "client_id": "window:offline",
+            "system_name": "Tama",
+            "system_id": None,
+            "monitoring": True,
+            "health_status": "offline",
+            "hostile_count": 0,
+        }
+    ]
 
 
 def test_local_accounts_from_windows_uses_stable_character_identity():
@@ -234,6 +248,25 @@ def test_controller_persists_explicit_map_account_selection(tmp_path):
     reloaded.load_seen_ids()
     assert reloaded.map_selected_account_keys() == ["local-account:alice"]
     assert refreshes == [{"selected_keys": ["local-account:alice"], "hops": 3}]
+
+
+def test_alert_client_state_persists_overlay_geometry(tmp_path):
+    state_path = tmp_path / "alert_state.json"
+    state = AlertClientState(state_path)
+    state.load_seen_ids()
+
+    state.save_overlay_geometry({"x": 120, "y": 80, "width": 640, "height": 480})
+
+    reloaded = AlertClientState(state_path)
+    reloaded.load_seen_ids()
+    assert reloaded.overlay_geometry() == {
+        "x": 120,
+        "y": 80,
+        "width": 640,
+        "height": 480,
+    }
+    reloaded.save_overlay_geometry({"x": 0, "y": 0, "width": 0, "height": 480})
+    assert reloaded.overlay_geometry()["width"] == 640
 
 
 def test_alert_worker_connects_sse_before_posting_heartbeat(tmp_path):

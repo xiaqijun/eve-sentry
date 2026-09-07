@@ -196,15 +196,47 @@ def format_monitoring_nodes_message(
             .casefold(),
         ),
     )
-    lines = [f"在线监控节点｜{len(ordered)}"]
+    online_count = sum(
+        1
+        for node in ordered
+        if str(node.get("health_status") or "online").strip().casefold() == "online"
+    )
+    lines = [f"在线监控节点｜{online_count}"]
     if not ordered:
         lines.append("暂无在线监控节点")
         return "\n".join(lines)
+    lines.extend(
+        [
+            "",
+            "| 节点 | 状态 | 星系 | 敌对人数 |",
+            "| :-- | :--: | :-- | --: |",
+        ]
+    )
     for index, node in enumerate(ordered, start=1):
         system_name = str(
             node.get("system_name") or node.get("system") or "Unknown"
         ).strip() or "Unknown"
-        lines.append(f"🟢 监控节点 {index}｜{system_name}")
+        health_status = str(node.get("health_status") or "online").strip().casefold()
+        status_label = {
+            "online": "🟢 正常",
+            "degraded": "🟡 连接异常",
+            "offline": "⚪ 节点离线",
+        }.get(health_status, "⚪ 节点离线")
+        if health_status == "offline":
+            hostile_label = "—"
+        else:
+            try:
+                hostile_count = max(0, int(node.get("hostile_count") or 0))
+            except (TypeError, ValueError):
+                hostile_count = 0
+            hostile_label = (
+                f"{hostile_count}（上次）"
+                if health_status == "degraded"
+                else str(hostile_count)
+            )
+        lines.append(
+            f"| 监控节点 {index} | {status_label} | {system_name} | {hostile_label} |"
+        )
     return "\n".join(lines)
 
 
@@ -756,6 +788,17 @@ class EveSentryAlertRelay:
         node_changes = payload.get("monitoring_node_changes")
         monitoring_nodes = payload.get("monitoring_nodes")
         nodes_version = str(payload.get("monitoring_nodes_version") or "").strip()
+        node_offline_systems = {
+            str(change.get("system_name") or change.get("from_system") or "")
+            .strip()
+            .casefold()
+            for change in node_changes
+            if isinstance(node_changes, list)
+            and isinstance(change, dict)
+            and str(change.get("change") or "").strip().casefold()
+            in {"offline", "removed"}
+            and str(change.get("system_name") or change.get("from_system") or "").strip()
+        } if isinstance(node_changes, list) else set()
         force_initial_snapshot = (
             isinstance(monitoring_nodes, list)
             and bool(nodes_version)
@@ -876,6 +919,8 @@ class EveSentryAlertRelay:
         transitions_succeeded = True
         if initialized:
             for system_key in sorted(previous.keys() - current.keys()):
+                if system_key in node_offline_systems:
+                    continue
                 transitions_succeeded = (
                     await self.deliver_system_transition(previous[system_key], "safe")
                     and transitions_succeeded
@@ -1105,7 +1150,7 @@ class EveSentryAlertRelay:
                     processed = await self.process_bootstrap(payload)
                 elif event_name in {"alert", "alert.entered", "alert.updated"} and isinstance(payload, dict):
                     processed = await self.process_alert_event(payload)
-                elif event_name == "alert.cleared" and isinstance(payload, dict):
+                elif event_name in {"safe", "alert.cleared"} and isinstance(payload, dict):
                     payload.setdefault("active", False)
                     processed = await self.process_safe_event(payload)
                 elif event_name == "monitoring_node" and isinstance(payload, dict):
@@ -1238,6 +1283,12 @@ class EveSentryAlertRelay:
             return True
         current, initialized = await self._load_system_alert_state()
         if not initialized:
+            return True
+        if str(payload.get("clear_reason") or "").strip().casefold() == "node_offline":
+            current.pop(system_name.casefold(), None)
+            await self._save_system_alert_state(current)
+            self._active_alert_ids.add(event_key)
+            await self.redis.set(ALERT_CURSOR_KEY, occurred_at)
             return True
         if not await self.deliver_system_transition(
             {

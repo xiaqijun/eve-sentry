@@ -434,6 +434,13 @@ def test_intel_api_client_posts_ocr_snapshot(tmp_path):
     server.start()
     try:
         api = IntelApiClient(server.url, timeout=1)
+        api.post_hostile_presence(
+            client_id="detector-client:test",
+            source_instance="EVE - Hajimi6",
+            system_name="S-KSWL",
+            hostile_icon_count=1,
+            seen_at="2026-07-03T10:00:00+00:00",
+        )
 
         result = api.post_ocr_snapshot(
             client_id="detector-client:test",
@@ -444,7 +451,7 @@ def test_intel_api_client_posts_ocr_snapshot(tmp_path):
         )
 
         assert result["created"] == 1
-        assert api.get_active_intel()["count"] == 1
+        assert api.get_active_intel()["count"] == 2
     finally:
         server.stop()
 
@@ -499,7 +506,7 @@ def test_intel_api_client_posts_hostile_icon_count():
         hostile_icon_count=1,
     )
 
-    assert api.payload["hostile_icon_count"] == 1
+    assert "hostile_icon_count" not in api.payload
 
 
 def test_intel_api_client_posts_full_frame_ocr_evidence():
@@ -1660,7 +1667,7 @@ def test_local_star_map_only_labels_key_nodes_and_prefers_local_account():
     assert label == "Alice"
     assert "星系：Tama" in tooltip
     assert "本地账号：Alice" in tooltip
-    assert "监控节点：在线" in tooltip
+    assert "监控节点：正常" in tooltip
     assert "节点数量：2" in tooltip
     assert "Remote Scout" not in tooltip
     assert "Other Pilot" not in tooltip
@@ -1674,7 +1681,7 @@ def test_local_star_map_only_labels_key_nodes_and_prefers_local_account():
         0,
     )
     assert monitor_label == "Kedama"
-    assert "监控节点：在线" in monitor_tooltip
+    assert "监控节点：正常" in monitor_tooltip
     assert "节点数量：1" in monitor_tooltip
     assert "Remote Scout" not in monitor_tooltip
 
@@ -1779,7 +1786,7 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
         assert both_body.red() > both_body.green()
         assert any(
             "本地账号：Bob" in tooltip
-            and "监控节点：在线" in tooltip
+            and "监控节点：正常" in tooltip
             and "节点数量：1" in tooltip
             and "Remote Scout" not in tooltip
             and "来敌：1 人" in tooltip

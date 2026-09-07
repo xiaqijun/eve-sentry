@@ -108,6 +108,7 @@ class AlertClientState:
         self._seen_ids: list[str] = []
         self._seen_set: set[str] = set()
         self._map_selected_account_keys: list[str] | None = None
+        self._overlay_geometry: dict[str, int] | None = None
 
     def load_seen_ids(self) -> list[str]:
         """Load remembered alert ids from disk."""
@@ -115,6 +116,7 @@ class AlertClientState:
         if not self.loaded:
             self._set_ids([])
             self._set_map_selected_account_keys(None)
+            self._overlay_geometry = None
             return []
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
@@ -122,13 +124,18 @@ class AlertClientState:
             logger.warning("Failed to read alert client state from %s", self.path)
             self._set_ids([])
             self._set_map_selected_account_keys(None)
+            self._overlay_geometry = None
             return []
         if not isinstance(payload, dict):
             self._set_ids([])
             self._set_map_selected_account_keys(None)
+            self._overlay_geometry = None
             return []
         self._set_ids(self._clean_ids(payload.get("seen_alert_ids")))
         self._set_map_selected_account_keys(payload.get("map_selected_account_keys"))
+        self._overlay_geometry = self._clean_overlay_geometry(
+            payload.get("overlay_geometry")
+        )
         return list(self._seen_ids)
 
     def has_seen(self, alert_id: str) -> bool:
@@ -161,10 +168,24 @@ class AlertClientState:
         self._set_map_selected_account_keys(account_keys)
         self._write_state()
 
+    def overlay_geometry(self) -> dict[str, int] | None:
+        """Return the saved overlay rectangle."""
+        return dict(self._overlay_geometry) if self._overlay_geometry else None
+
+    def save_overlay_geometry(self, geometry: dict[str, Any]) -> None:
+        """Persist the latest user-positioned overlay rectangle."""
+        cleaned = self._clean_overlay_geometry(geometry)
+        if cleaned is None or cleaned == self._overlay_geometry:
+            return
+        self._overlay_geometry = cleaned
+        self._write_state()
+
     def _write_state(self) -> None:
-        payload: dict[str, Any] = {"version": 2, "seen_alert_ids": self._seen_ids}
+        payload: dict[str, Any] = {"version": 3, "seen_alert_ids": self._seen_ids}
         if self._map_selected_account_keys is not None:
             payload["map_selected_account_keys"] = self._map_selected_account_keys
+        if self._overlay_geometry is not None:
+            payload["overlay_geometry"] = self._overlay_geometry
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(
@@ -209,6 +230,20 @@ class AlertClientState:
             seen.add(account_key)
             cleaned.append(account_key)
         return cleaned
+
+    @staticmethod
+    def _clean_overlay_geometry(value: Any) -> dict[str, int] | None:
+        if not isinstance(value, dict):
+            return None
+        try:
+            geometry = {
+                key: int(value[key]) for key in ("x", "y", "width", "height")
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+        if geometry["width"] <= 0 or geometry["height"] <= 0:
+            return None
+        return geometry
 
 
 class AlertEventConsumer:
@@ -544,7 +579,11 @@ def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[st
             continue
         if str(heartbeat.get("client_type") or "") != "detector_client":
             continue
-        if not bool(heartbeat.get("online")):
+        heartbeat_health = str(
+            heartbeat.get("health_status")
+            or ("online" if heartbeat.get("online") else "removed")
+        ).strip().casefold()
+        if heartbeat_health == "removed":
             continue
         details = heartbeat.get("details")
         if not isinstance(details, dict) or not bool(details.get("monitoring")):
@@ -555,8 +594,11 @@ def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[st
         for target in targets:
             if not isinstance(target, dict) or not bool(target.get("monitoring", True)):
                 continue
-            if target.get("capture_online") is False:
-                continue
+            health_status = heartbeat_health
+            if target.get("capture_online") is False or target.get(
+                "game_connection_online"
+            ) is False:
+                health_status = "offline"
             client_id = str(target.get("client_id") or heartbeat.get("client_id") or "").strip()
             character_name = str(target.get("character_name") or "").strip()
             source_instance = str(
@@ -576,6 +618,13 @@ def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[st
                 continue
             seen.add(key)
             label = character_name or source_instance or client_id or system_name
+            try:
+                hostile_count = max(
+                    0,
+                    int(target.get("hostile_icon_count") or 0),
+                )
+            except (TypeError, ValueError):
+                hostile_count = 0
             accounts.append(
                 {
                     "key": key,
@@ -585,6 +634,8 @@ def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[st
                     "system_name": system_name,
                     "system_id": target.get("system_id"),
                     "monitoring": True,
+                    "health_status": health_status,
+                    "hostile_count": hostile_count,
                 }
             )
     return accounts
@@ -641,6 +692,14 @@ def _account_is_monitoring(account: dict[str, Any]) -> bool:
     return bool(account.get("monitoring", True))
 
 
+def _account_health_status(account: dict[str, Any]) -> str:
+    """Return the normalized monitoring health state for a map account."""
+    if not _account_is_monitoring(account):
+        return "inactive"
+    status = str(account.get("health_status") or "online").strip().casefold()
+    return status if status in {"online", "degraded", "offline"} else "offline"
+
+
 def merge_map_accounts(
     local_accounts: list[dict[str, Any]],
     remote_accounts: list[dict[str, Any]],
@@ -672,6 +731,8 @@ def merge_map_accounts(
                 item["system_id"] = remote.get("system_id")
             item["client_id"] = remote.get("client_id")
             item["monitoring"] = _account_is_monitoring(remote)
+            item["health_status"] = _account_health_status(remote)
+            item["hostile_count"] = remote.get("hostile_count", 0)
         merged.append(item)
 
     merged.extend(
@@ -784,14 +845,28 @@ class LocalStarMapWidget(QWidget):
             account_kind = "本地账号" if bool(primary.get("local")) else "监控账号"
             details.append(f"{account_kind}：{label}")
             if _account_is_monitoring(primary):
-                details.append("监控：在线")
+                details.append(
+                    "监控："
+                    + {
+                        "online": "正常",
+                        "degraded": "连接异常",
+                        "offline": "节点离线",
+                    }.get(_account_health_status(primary), "节点离线")
+                )
         remote_accounts = [
             item
             for item in accounts
             if not bool(item.get("local")) and _account_is_monitoring(item)
         ]
         if remote_accounts:
-            details.append("监控节点：在线")
+            statuses = {_account_health_status(item) for item in remote_accounts}
+            if "online" in statuses:
+                node_status = "正常"
+            elif "degraded" in statuses:
+                node_status = "连接异常"
+            else:
+                node_status = "离线"
+            details.append(f"监控节点：{node_status}")
             details.append(f"节点数量：{len(remote_accounts)}")
         remaining = [
             str(item.get("label") or item.get("character_name") or "").strip()
@@ -905,7 +980,15 @@ class LocalStarMapWidget(QWidget):
             key = name.casefold()
             hostile = hostile_counts.get(key, 0) > 0
             monitoring = any(
-                _account_is_monitoring(item)
+                _account_health_status(item) == "online"
+                for item in accounts_by_system.get(key, [])
+            )
+            degraded = any(
+                _account_health_status(item) == "degraded"
+                for item in accounts_by_system.get(key, [])
+            )
+            offline = any(
+                _account_health_status(item) == "offline"
                 for item in accounts_by_system.get(key, [])
             )
             focused = key in centers
@@ -914,7 +997,7 @@ class LocalStarMapWidget(QWidget):
                 and bool(item.get("selected", True))
                 for item in accounts_by_system.get(key, [])
             )
-            radius = 12 if hostile else 10 if focused else 9 if monitoring else 4
+            radius = 12 if hostile else 10 if focused else 9 if (monitoring or degraded or offline) else 4
             if hostile:
                 outer_radius = 11
                 painter.setPen(QPen(QColor(255, 107, 115, 225), 2))
@@ -935,6 +1018,14 @@ class LocalStarMapWidget(QWidget):
                     inner_radius * 2,
                     inner_radius * 2,
                 )
+            elif degraded and not hostile:
+                painter.setPen(QPen(QColor("#f6c760"), 2))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(int(x - 8), int(y - 8), 16, 16)
+            elif offline and not hostile:
+                painter.setPen(QPen(QColor("#8b95a5"), 2))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(int(x - 8), int(y - 8), 16, 16)
 
             if local_focused:
                 star_color = QColor("#ff5965") if hostile else QColor("#ffd166")
@@ -953,12 +1044,20 @@ class LocalStarMapWidget(QWidget):
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(QColor("#45d4bd")))
                 painter.drawEllipse(int(x - 4), int(y - 4), 8, 8)
+            elif degraded:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(QColor("#f6c760")))
+                painter.drawEllipse(int(x - 4), int(y - 4), 8, 8)
+            elif offline:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(QColor("#8b95a5")))
+                painter.drawEllipse(int(x - 4), int(y - 4), 8, 8)
             else:
                 color = QColor("#6d8394")
                 painter.setPen(QPen(color, 1))
                 painter.setBrush(QBrush(color))
                 painter.drawEllipse(int(x - 4), int(y - 4), 8, 8)
-            if not monitoring and not hostile:
+            if not monitoring and not degraded and not offline and not hostile:
                 continue
 
             _label, tooltip = self._node_annotation(
@@ -1084,6 +1183,7 @@ class AlertOverlay(QWidget):
     ACTIVE_SOUNDS: list[QSoundEffect] = []
     map_options_changed = pyqtSignal(list, int)
     sound_stop_requested = pyqtSignal()
+    geometry_changed = pyqtSignal(dict)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1735,10 +1835,12 @@ class AlertOverlay(QWidget):
                         self._resize_edges_at(global_position)
                     )
                 )
+                self.geometry_changed.emit(self.geometry_state())
                 event.accept()
                 return True
             if self._drag_position is not None:
                 self._user_positioned = True
+                self.geometry_changed.emit(self.geometry_state())
             self._drag_position = None
             event.accept()
             return True
@@ -1813,6 +1915,49 @@ class AlertOverlay(QWidget):
         super().resizeEvent(event)
         if self._user_resized:
             self._layout_rows_for_size()
+
+    def geometry_state(self) -> dict[str, int]:
+        """Return a JSON-safe overlay rectangle."""
+        geometry = self.geometry()
+        return {
+            "x": geometry.x(),
+            "y": geometry.y(),
+            "width": geometry.width(),
+            "height": geometry.height(),
+        }
+
+    def restore_geometry_state(self, value: dict[str, Any] | None) -> bool:
+        """Restore a saved rectangle when it still belongs to a visible screen."""
+        if not isinstance(value, dict):
+            return False
+        try:
+            saved = QRect(
+                int(value["x"]),
+                int(value["y"]),
+                max(self.minimumWidth(), int(value["width"])),
+                max(self.minimumHeight(), int(value["height"])),
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        candidates = []
+        for screen in QApplication.screens():
+            intersection = saved.intersected(screen.availableGeometry())
+            candidates.append((intersection.width() * intersection.height(), screen))
+        if not candidates:
+            return False
+        area, screen = max(candidates, key=lambda item: item[0])
+        if area <= 0:
+            return False
+        available = screen.availableGeometry()
+        width = min(saved.width(), available.width())
+        height = min(saved.height(), available.height())
+        x = max(available.left(), min(saved.x(), available.right() - width + 1))
+        y = max(available.top(), min(saved.y(), available.bottom() - height + 1))
+        self.setGeometry(x, y, width, height)
+        self._user_positioned = True
+        self._user_resized = True
+        self._layout_rows_for_size()
+        return True
 
     def show_summaries(self, summaries: list[dict[str, Any]]) -> None:
         screen = self._screen_for_anchor()
@@ -2262,9 +2407,11 @@ class AlertTrayController:
         self.overlay.set_map_selection_memory(self.state.map_selected_account_keys())
         self.overlay.map_options_changed.connect(self._on_map_options_changed)
         self.overlay.sound_stop_requested.connect(self._stop_current_alert_sound)
+        self.overlay.geometry_changed.connect(self.state.save_overlay_geometry)
         self.overlay.set_status("连接中", "warn")
         self.overlay.show()
-        self.overlay.move_to_default_position()
+        if not self.overlay.restore_geometry_state(self.state.overlay_geometry()):
+            self.overlay.move_to_default_position()
         self._recent_summaries: list[dict[str, Any]] = []
         self._local_hostile_counts: dict[str, tuple[str, int]] = {}
         self._map_accounts: list[dict[str, Any]] = []
@@ -2399,6 +2546,10 @@ class AlertTrayController:
             sound_timer.stop()
         self._remaining_sound_plays = 0
         self._stop_continuous_alert_sound()
+        state = getattr(self, "state", None)
+        geometry_state = getattr(self.overlay, "geometry_state", None)
+        if state is not None and callable(geometry_state):
+            state.save_overlay_geometry(geometry_state())
         self._worker.stop()
         map_worker = getattr(self, "_map_worker", None)
         if map_worker is not None and map_worker.isRunning() and wait_for_worker:
@@ -2765,7 +2916,6 @@ class AlertTrayController:
             return
         self.overlay.show()
         self.overlay.raise_()
-        self.overlay.move_to_default_position()
 
     def _restart_worker(self) -> None:
         if bool(getattr(self, "_worker_restart_pending", False)):

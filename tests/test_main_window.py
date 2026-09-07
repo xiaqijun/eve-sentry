@@ -891,7 +891,7 @@ def test_publish_ocr_snapshot_posts_names_without_coordinate_evidence():
         hostile_icon_count=1,
     )
 
-    assert window._intel_client.payload["hostile_icon_count"] == 1
+    assert "hostile_icon_count" not in window._intel_client.payload
 
     evidence = {
         "ocr_candidates": [
@@ -1092,6 +1092,10 @@ def test_system_change_clears_old_presence_and_refreshes_current_frame():
     assert len(manager.calls) == 1
     key, payload, metadata = manager.calls[0]
     assert key == "detector:device:pilot-a"
+    presence_version = payload.pop("presence_version")
+    presence_state_id = payload.pop("presence_state_id")
+    captured_at = payload.pop("captured_at")
+    seen_at = payload.pop("seen_at")
     assert payload == {
         "client_id": "detector:device:pilot-a",
         "source_instance": "EVE - Pilot A",
@@ -1099,6 +1103,9 @@ def test_system_change_clears_old_presence_and_refreshes_current_frame():
         "system_id": 30002813,
         "hostile_icon_count": 0,
     }
+    assert presence_version > 0
+    assert presence_state_id
+    assert captured_at == seen_at
     assert metadata["hostile_icon_count"] == 0
 
 
@@ -3648,6 +3655,10 @@ def test_hostile_count_upload_does_not_depend_on_local_alert_controller():
     assert len(manager.calls) == 1
     key, payload, metadata = manager.calls[0]
     assert key == "detector:device:pilot-a"
+    presence_version = payload.pop("presence_version")
+    presence_state_id = payload.pop("presence_state_id")
+    captured_at = payload.pop("captured_at")
+    seen_at = payload.pop("seen_at")
     assert payload == {
         "client_id": "detector:device:pilot-a",
         "source_instance": "EVE - Pilot A",
@@ -3655,6 +3666,9 @@ def test_hostile_count_upload_does_not_depend_on_local_alert_controller():
         "system_id": 30002813,
         "hostile_icon_count": 2,
     }
+    assert presence_version > 0
+    assert presence_state_id
+    assert captured_at == seen_at
     assert metadata["kind"] == "hostile_presence"
     assert metadata["context"] is context
 
@@ -3736,6 +3750,10 @@ def test_publish_heartbeat_includes_multi_window_targets():
             "system_source": "chatlog",
             "region": {"x": 600, "y": 0, "w": 200, "h": 600},
             "monitoring": True,
+            "hostile_icon_count": 0,
+            "presence_version": 0,
+            "presence_state_id": "",
+            "captured_at": "",
         },
         {
             "client_id": "detector-client:test:eve-pilot-b",
@@ -3747,6 +3765,10 @@ def test_publish_heartbeat_includes_multi_window_targets():
             "system_source": "chatlog",
             "region": {"x": 760, "y": 190, "w": 220, "h": 420},
             "monitoring": True,
+            "hostile_icon_count": 0,
+            "presence_version": 0,
+            "presence_state_id": "",
+            "captured_at": "",
         },
     ]
 

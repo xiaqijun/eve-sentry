@@ -327,24 +327,13 @@ class PostgreSQLIntelStore(IntelStore):
         )
         system_id = self._optional_int(payload.get("system_id"))
         seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
-        hostile_icon_count = max(
-            0,
-            self._optional_int(payload.get("hostile_icon_count")) or 0,
-        )
+        query_only = bool(str(payload.get("query_id") or "").strip())
         defer_esi = self._resolver is not None or self._enricher is not None
         names = self._normalize_ocr_names(
             payload.get("names"),
             resolve=not defer_esi,
         )
-        snapshot_metadata = (
-            {
-                "hostile_icon_detected": hostile_icon_count > 0,
-                "hostile_icon_count": hostile_icon_count,
-                "hostile_icon_seen_at": seen_at,
-            }
-            if "hostile_icon_count" in payload or not names
-            else {}
-        )
+        snapshot_metadata = {"query_only": True} if query_only else {}
         raw_text = ", ".join(names)
         result = ActiveIntelSnapshotResult()
         seen_name_keys = {name.casefold() for name in names}
@@ -354,6 +343,26 @@ class PostgreSQLIntelStore(IntelStore):
             new_reports: list[IntelReport] = []
             changed_active_ids: set[str] = set()
             hostile_before = self._hostile_system_state()
+            presence_active = any(
+                candidate.active
+                and candidate.source == source
+                and candidate.target_type == "system"
+                and candidate.metadata.get("presence_only")
+                and candidate.metadata.get("client_id") == client_id
+                and candidate.system_name.casefold() == system_name.casefold()
+                and max(
+                    0,
+                    self._optional_int(
+                        candidate.metadata.get("hostile_icon_count")
+                    )
+                    or 0,
+                )
+                > 0
+                for candidate in self._active_intel.values()
+            )
+            if not query_only and not presence_active:
+                result.filtered += len(names)
+                return result.to_dict(include_active=False)
             accepted, moved_items = self._transition_ocr_client_system(
                 client_id,
                 system_name,
@@ -455,6 +464,7 @@ class PostgreSQLIntelStore(IntelStore):
                         item_metadata["identity_status"] = str(
                             observation.metadata.get("identity_status") or "unresolved"
                         )
+                    item_metadata.update(snapshot_metadata)
                     self._active_intel[active_id] = ActiveIntelItem(
                         active_id=active_id,
                         source=source,
@@ -697,6 +707,14 @@ class PostgreSQLIntelStore(IntelStore):
                 if item.active
             }
             expired = super().expire_active_intel(now)
+            clear_reasons = {
+                item.system_name.casefold(): "node_offline"
+                for active_id, item in self._active_intel.items()
+                if active_id in active_before
+                and not item.active
+                and str(item.metadata.get("left_reason") or "").strip()
+                in {"heartbeat_stale", "target_removed"}
+            }
             changed_rows = [
                 self._active_row(item)
                 for active_id, item in self._active_intel.items()
@@ -710,6 +728,7 @@ class PostgreSQLIntelStore(IntelStore):
                 hostile_before,
                 self._hostile_system_state(),
                 str(now or utc_now_iso()).strip() or utc_now_iso(),
+                clear_reasons=clear_reasons,
             )
             db_write_ticket = self._reserve_db_write() if changed_rows else None
         if changed_rows or hostile_waves or state_events:
@@ -864,6 +883,12 @@ class PostgreSQLIntelStore(IntelStore):
                 previous = client_counts.get(client_id)
                 if previous is None or snapshot_seen_at >= previous[0]:
                     client_counts[client_id] = (snapshot_seen_at, detector_count)
+                continue
+
+            if source == "eve-sentry-detector":
+                # Detector OCR enriches personnel only. Visual Presence is the
+                # sole authority for whether a system is hostile and how many
+                # hostile icons are currently visible.
                 continue
 
             if has_identity_metadata and not is_hostile:
@@ -1083,6 +1108,8 @@ class PostgreSQLIntelStore(IntelStore):
         before: dict[str, dict[str, Any]],
         after: dict[str, dict[str, Any]],
         occurred_at: str,
+        *,
+        clear_reasons: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         """Return durable state transitions for realtime consumers.
 
@@ -1125,19 +1152,24 @@ class PostgreSQLIntelStore(IntelStore):
                 json.dumps(state, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
             ).hexdigest()[:12]
             event_key = f"{event_type}:{system_key}:{observed_at}:{fingerprint}"
+            payload = {
+                "system_name": state.get("system_name") or system_key,
+                "system_id": state.get("system_id"),
+                "hostile_count": max(0, int(state.get("hostile_count") or 0)),
+                "active": event_type != "alert.cleared",
+                "hostile_personnel": list(state.get("personnel") or []),
+            }
+            if event_type == "alert.cleared":
+                clear_reason = str((clear_reasons or {}).get(system_key) or "").strip()
+                if clear_reason:
+                    payload["clear_reason"] = clear_reason
             events.append(
                 {
                     "event_key": event_key,
                     "event_type": event_type,
                     "entity_key": system_key,
                     "occurred_at": observed_at,
-                    "payload": {
-                        "system_name": state.get("system_name") or system_key,
-                        "system_id": state.get("system_id"),
-                        "hostile_count": max(0, int(state.get("hostile_count") or 0)),
-                        "active": event_type != "alert.cleared",
-                        "hostile_personnel": list(state.get("personnel") or []),
-                    },
+                    "payload": payload,
                 }
             )
         return events

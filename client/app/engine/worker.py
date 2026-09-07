@@ -208,6 +208,8 @@ class MonitorWorker(QThread):
         scan_count = 0
         ocr_ready = False  # track whether OCR has been lazy-initialised
         previous_hostile_count: int | None = None
+        published_hostile_count: int | None = None
+        zero_frame_count = 0
         last_health_status_at = time.monotonic()
         previous_hostile_rows_fingerprint: bytes | None = None
         ocr_retry_remaining = 0
@@ -261,8 +263,28 @@ class MonitorWorker(QThread):
                         force_presence_refresh
                         or hostile_count != previous_hostile_count
                     )
-                    if count_changed:
+                    if hostile_count > 0:
+                        zero_frame_count = 0
+                        publish_presence = (
+                            force_presence_refresh
+                            or hostile_count != published_hostile_count
+                        )
+                    else:
+                        zero_frame_count = (
+                            zero_frame_count + 1
+                            if previous_hostile_count == 0
+                            else 1
+                        )
+                        publish_presence = (
+                            force_presence_refresh
+                            or (
+                                zero_frame_count >= 2
+                                and published_hostile_count != 0
+                            )
+                        )
+                    if publish_presence:
                         self.hostile_detected.emit(hostile_count)
+                        published_hostile_count = hostile_count
                         self._burst_scans_remaining = 2 if hostile_count > 0 else 0
                     previous_hostile_count = hostile_count
 

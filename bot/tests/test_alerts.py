@@ -1015,8 +1015,8 @@ async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event()
         assert qq.send_proactive_text.await_count == 1
         message = qq.send_proactive_text.await_args.args[1]
         assert "在线监控节点｜2" in message
-        assert "监控节点 1｜Jita" in message
-        assert "监控节点 2｜Tama" in message
+        assert "| 监控节点 1 | 🟢 正常 | Jita | 0 |" in message
+        assert "| 监控节点 2 | 🟢 正常 | Tama | 0 |" in message
         assert "监控节点状态更新" not in message
         assert "变化｜" not in message
         assert "Pilot Alpha" not in message
@@ -1075,7 +1075,10 @@ async def test_subscribe_pushes_latest_cached_monitoring_snapshot() -> None:
 
         qq.send_proactive_text.assert_awaited_once_with(
             "group-1",
-            "在线监控节点｜1\n🟢 监控节点 1｜Jita",
+            "在线监控节点｜1\n\n"
+            "| 节点 | 状态 | 星系 | 敌对人数 |\n"
+            "| :-- | :--: | :-- | --: |\n"
+            "| 监控节点 1 | 🟢 正常 | Jita | 0 |",
         )
         await relay.subscribe("group-1")
         qq.send_proactive_text.assert_awaited_once()
@@ -1114,7 +1117,11 @@ async def test_first_bootstrap_refreshes_groups_after_relay_restart() -> None:
         )
 
     qq.send_proactive_text.assert_awaited_once_with(
-        "group-1", "在线监控节点｜1\n🟢 监控节点 1｜Jita"
+        "group-1",
+        "在线监控节点｜1\n\n"
+        "| 节点 | 状态 | 星系 | 敌对人数 |\n"
+        "| :-- | :--: | :-- | --: |\n"
+        "| 监控节点 1 | 🟢 正常 | Jita | 0 |",
     )
     await redis.aclose()
 

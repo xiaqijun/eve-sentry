@@ -155,8 +155,7 @@ class IntelApiClient:
             payload["system_id"] = system_id
         if confidence is not None:
             payload["confidence"] = confidence
-        if hostile_icon_count > 0:
-            payload["hostile_icon_count"] = int(hostile_icon_count)
+        del hostile_icon_count
         # Deprecated geometry arguments remain accepted for old callers, but
         # coordinates are no longer part of the OCR snapshot contract.
         del ocr_candidates, hostile_icons
@@ -187,6 +186,8 @@ class IntelApiClient:
         snapshot_id: str = "",
         sequence: int | None = None,
         captured_at: str = "",
+        presence_version: int | None = None,
+        presence_state_id: str = "",
     ) -> dict[str, Any]:
         """Publish visual hostile-count state without waiting for name OCR."""
         payload: dict[str, Any] = {
@@ -205,6 +206,10 @@ class IntelApiClient:
             payload["sequence"] = int(sequence)
         if captured_at:
             payload["captured_at"] = str(captured_at)
+        if presence_version is not None:
+            payload["presence_version"] = max(0, int(presence_version))
+        if presence_state_id:
+            payload["presence_state_id"] = str(presence_state_id)
         path = self._v1_path("/hostile-presence")
         try:
             return self._request("POST", path, payload=payload)

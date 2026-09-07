@@ -36,6 +36,49 @@ from app.server.map_config import MapConfigStore
 from tests.auth_test_store import AuthTestStore
 
 
+def _record_ocr_snapshot(store: IntelStore, payload: dict):
+    """Record Presence before OCR for HTTP integration setup."""
+    try:
+        hostile_count = max(0, int(payload.get("hostile_icon_count") or 0))
+    except (TypeError, ValueError):
+        hostile_count = 0
+    if "hostile_icon_count" not in payload:
+        hostile_count = max(1, len(payload.get("names") or []))
+    store.record_hostile_presence(
+        {
+            "client_id": payload.get("client_id"),
+            "source_instance": payload.get("source_instance"),
+            "system_name": payload.get("system_name") or payload.get("system"),
+            "system_id": payload.get("system_id"),
+            "hostile_icon_count": hostile_count,
+            "seen_at": payload.get("seen_at"),
+        }
+    )
+    return store.record_ocr_snapshot(payload)
+
+
+def _post_hostile_presence(
+    server_url: str,
+    *,
+    client_id: str,
+    source_instance: str,
+    system_name: str,
+    hostile_count: int,
+    seen_at: str,
+):
+    return request_json(
+        f"{server_url}/api/v1/hostile-presence",
+        method="POST",
+        payload={
+            "client_id": client_id,
+            "source_instance": source_instance,
+            "system_name": system_name,
+            "hostile_icon_count": hostile_count,
+            "seen_at": seen_at,
+        },
+    )
+
+
 class AuthTestResolver:
     def resolve_names(self, names):
         return [
@@ -136,7 +179,7 @@ def test_monitoring_node_changes_describe_online_offline_and_move():
     by_change = {item["change"]: item for item in changes}
 
     assert by_change["online"]["character_name"] == "Pilot New"
-    assert by_change["offline"]["character_name"] == "Pilot Gone"
+    assert by_change["removed"]["character_name"] == "Pilot Gone"
     assert by_change["moved"]["from_system"] == "Jita"
     assert by_change["moved"]["to_system"] == "Tama"
     assert _monitoring_node_changes(current, current) == []
@@ -170,7 +213,7 @@ def test_monitoring_target_state_falls_back_to_heartbeat_system():
     assert state[0]["system_name"] == "S-KSWL"
 
 
-def test_monitoring_target_state_omits_capture_offline_window():
+def test_monitoring_target_state_keeps_capture_offline_window():
     state = _monitoring_target_state(
         {
             "heartbeats": [
@@ -194,7 +237,9 @@ def test_monitoring_target_state_omits_capture_offline_window():
         }
     )
 
-    assert state == []
+    assert len(state) == 1
+    assert state[0]["system_name"] == "S-KSWL"
+    assert state[0]["health_status"] == "offline"
 
 
 def test_monitoring_target_state_omits_unknown_location():
@@ -365,7 +410,7 @@ def test_integration_hostile_systems_returns_only_active_hostile_systems(tmp_pat
         links=[],
         scorer=ScoringEngine(cooldown_seconds=0),
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:one",
             "source_instance": "EVE - Pilot One",
@@ -374,7 +419,7 @@ def test_integration_hostile_systems_returns_only_active_hostile_systems(tmp_pat
             "hostile_icon_count": 1,
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:two",
             "source_instance": "EVE - Pilot Two",
@@ -383,7 +428,7 @@ def test_integration_hostile_systems_returns_only_active_hostile_systems(tmp_pat
             "hostile_icon_count": 3,
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:three",
             "source_instance": "EVE - Pilot Three",
@@ -963,6 +1008,14 @@ def test_v1_ocr_snapshot_endpoint_updates_active_intel(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
     try:
+        _post_hostile_presence(
+            server.url,
+            client_id="detector-client:test",
+            source_instance="EVE - Hajimi6",
+            system_name="S-KSWL",
+            hostile_count=1,
+            seen_at="2026-07-03T10:00:00+00:00",
+        )
         status, result = request_json(
             f"{server.url}/api/v1/ocr/snapshot",
             method="POST",
@@ -978,11 +1031,11 @@ def test_v1_ocr_snapshot_endpoint_updates_active_intel(tmp_path):
 
         assert status == 201
         assert result["created"] == 1
-        assert result["active_count"] == 1
+        assert result["active_count"] == 2
         assert "active" not in result
         assert status2 == 200
-        assert active["count"] == 1
-        assert active["active_intel"][0]["name"] == "Alice"
+        assert active["count"] == 2
+        assert any(item["name"] == "Alice" for item in active["active_intel"])
     finally:
         server.stop()
 
@@ -1340,6 +1393,14 @@ def test_remote_alert_count_uses_latest_detector_snapshot_total(tmp_path):
     server.start()
 
     def post_snapshot(names, seen_at, hostile_icon_count):
+        _post_hostile_presence(
+            server.url,
+            client_id="detector-client:test",
+            source_instance="EVE - Hajimi6",
+            system_name="S-KSWL",
+            hostile_count=hostile_icon_count,
+            seen_at=seen_at,
+        )
         return request_json(
             f"{server.url}/api/v1/ocr/snapshot",
             method="POST",
@@ -1380,7 +1441,7 @@ def test_remote_alert_count_uses_latest_detector_snapshot_total(tmp_path):
             if item["name"] == "S-KSWL"
         )
         assert system["hostile_count"] == 2
-        assert {item["name"] for item in bootstrap["active_intel"]} == {
+        assert {item["name"] for item in bootstrap["active_intel"] if item["name"]} == {
             "Shisen Hanomaa",
             "AddisonW",
         }
@@ -1449,6 +1510,14 @@ def test_detector_alert_exposes_complete_active_roster_without_three_name_cap(tm
     server.start()
 
     try:
+        _post_hostile_presence(
+            server.url,
+            client_id="detector-client:four",
+            source_instance="EVE - Four",
+            system_name="S-KSWL",
+            hostile_count=4,
+            seen_at="2026-07-24T09:09:16+00:00",
+        )
         status, _ = request_json(
             f"{server.url}/api/v1/ocr/snapshot",
             method="POST",
@@ -1487,6 +1556,14 @@ def test_v1_alerts_do_not_fabricate_alerts_from_ocr_active_intel(tmp_path):
     )
     server.start()
     try:
+        _post_hostile_presence(
+            server.url,
+            client_id="detector-client:test",
+            source_instance="EVE - Hajimi6",
+            system_name="S-KSWL",
+            hostile_count=1,
+            seen_at="2026-07-08T08:00:00+00:00",
+        )
         status, result = request_json(
             f"{server.url}/api/v1/ocr/snapshot",
             method="POST",
@@ -1510,7 +1587,7 @@ def test_v1_alerts_do_not_fabricate_alerts_from_ocr_active_intel(tmp_path):
 
 def test_v1_bootstrap_includes_active_intel(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
@@ -1525,7 +1602,10 @@ def test_v1_bootstrap_includes_active_intel(tmp_path):
         status, payload = request_json(f"{server.url}/api/v1/bootstrap")
 
         assert status == 200
-        assert payload["bootstrap"]["active_intel"][0]["name"] == "Alice"
+        assert any(
+            item["name"] == "Alice"
+            for item in payload["bootstrap"]["active_intel"]
+        )
     finally:
         server.stop()
 
@@ -3253,8 +3333,14 @@ def test_v1_events_wake_immediately_and_emit_safe_only_after_last_hostile(tmp_pa
             "seen_at": seen_at,
             "names": names,
         }
-        if hostile_icon_count:
-            payload["hostile_icon_count"] = hostile_icon_count
+        _post_hostile_presence(
+            server.url,
+            client_id="detector-client:test",
+            source_instance="EVE - Hajimi6",
+            system_name="S-KSWL",
+            hostile_count=hostile_icon_count,
+            seen_at=seen_at,
+        )
         return request_json(
             f"{server.url}/api/v1/ocr/snapshot",
             method="POST",
@@ -3409,10 +3495,10 @@ def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
         assert node_removed.wait(timeout=0.75)
         assert time.monotonic() - started_at < 0.75
         assert snapshots == [[], ["S-KSWL"], []]
-        assert [item["change"] for item in node_changes] == ["online", "offline"]
+        assert [item["change"] for item in node_changes] == ["online", "removed"]
         assert [item["change"] for event in node_events for item in event["changes"]] == [
             "online",
-            "offline",
+            "removed",
         ]
         assert node_events[-1]["nodes"] == []
         stream_thread.join(timeout=1)
@@ -3540,12 +3626,24 @@ def test_v1_events_push_monitoring_node_offline_at_stale_deadline(tmp_path):
             if self.first_snapshot_at is None:
                 self.first_snapshot_at = now
             age_seconds = now - self.first_snapshot_at
+            if age_seconds <= 0.25:
+                health_status = "online"
+            elif age_seconds <= 0.5:
+                health_status = "degraded"
+            elif age_seconds <= 0.75:
+                health_status = "offline"
+            else:
+                health_status = "removed"
             heartbeat = {
                 "client_id": "detector-client:expiring",
                 "client_type": "detector_client",
-                "online": age_seconds <= 0.25,
+                "online": health_status == "online",
+                "health_status": health_status,
                 "age_seconds": age_seconds,
-                "stale_after_seconds": 0.25,
+                "degraded_after_seconds": 0.25,
+                "offline_after_seconds": 0.5,
+                "remove_after_seconds": 0.75,
+                "stale_after_seconds": 0.5,
                 "details": {"monitoring": True, "system_name": "S-KSWL"},
             }
             return {"heartbeats": [heartbeat], "summary": {"count": 1}}
@@ -3580,7 +3678,10 @@ def test_v1_events_push_monitoring_node_offline_at_stale_deadline(tmp_path):
                     event_name = line[len("event:"):].strip()
                 elif line.startswith("data:") and event_name == "bootstrap":
                     payload = json.loads(line[len("data:"):].strip())
-                    systems = monitored_system_names(payload.get("clients"))
+                    systems = [
+                        str(node.get("system_name") or "")
+                        for node in payload.get("monitoring_nodes") or []
+                    ]
                     snapshots.append(systems)
                     if len(snapshots) == 1:
                         stream_ready.set()
@@ -3595,9 +3696,10 @@ def test_v1_events_push_monitoring_node_offline_at_stale_deadline(tmp_path):
         assert stream_ready.wait(timeout=1)
         assert snapshots == [["S-KSWL"]]
 
-        assert node_removed.wait(timeout=0.75)
-        assert time.monotonic() - started_at < 0.75
-        assert snapshots == [["S-KSWL"], []]
+        assert node_removed.wait(timeout=1.1)
+        assert time.monotonic() - started_at < 1.1
+        assert snapshots[0] == ["S-KSWL"]
+        assert snapshots[-1] == []
         stream_thread.join(timeout=1)
     finally:
         server.stop()
@@ -4749,7 +4851,7 @@ def test_v1_events_reuses_active_alert_snapshot_between_connections(tmp_path):
             return super()._reports_snapshot()
 
     store = CountingStore(tmp_path / "intel.json")
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Pilot",
@@ -5022,6 +5124,14 @@ def test_v1_events_resume_keeps_bootstrap_before_multi_page_backlog(tmp_path):
     server.start()
     try:
         snapshot_url = f"{server.url}/api/v1/ocr/snapshot"
+        _post_hostile_presence(
+            server.url,
+            client_id="detector-client:test",
+            source_instance="EVE - Test",
+            system_name="S-KSWL",
+            hostile_count=1,
+            seen_at="2026-06-29T12:00:00+00:00",
+        )
         request_json(
             snapshot_url,
             method="POST",
@@ -5036,6 +5146,14 @@ def test_v1_events_resume_keeps_bootstrap_before_multi_page_backlog(tmp_path):
         )
         assert store.wait_for_esi_idle(timeout=2)
         baseline_id = store.list_alerts(limit=1)[0]["id"]
+        _post_hostile_presence(
+            server.url,
+            client_id="detector-client:test",
+            source_instance="EVE - Test",
+            system_name="S-KSWL",
+            hostile_count=52,
+            seen_at="2026-06-29T12:01:00+00:00",
+        )
         request_json(
             snapshot_url,
             method="POST",
@@ -5093,6 +5211,14 @@ def test_v1_events_timestamp_cursor_keeps_bootstrap_before_backlog(tmp_path):
     server = IntelHTTPServer(store, port=0)
     server.start()
     try:
+        _post_hostile_presence(
+            server.url,
+            client_id="detector-client:timestamp",
+            source_instance="EVE - Timestamp",
+            system_name="S-KSWL",
+            hostile_count=len(names),
+            seen_at="2026-06-29T12:01:00+00:00",
+        )
         request_json(
             f"{server.url}/api/v1/ocr/snapshot",
             method="POST",
@@ -5141,7 +5267,8 @@ def test_v1_events_timestamp_cursor_keeps_bootstrap_before_backlog(tmp_path):
 
         assert header_bootstrap["id"] == timestamp_cursor
         assert since_bootstrap["id"] == timestamp_cursor
-        assert len(header_alerts) == 50
+        assert len(header_alerts) == 51
+        assert header_alerts[0]["id"].startswith("presence_")
         assert len(remainder_alerts) == 1
     finally:
         server.stop()
@@ -5159,6 +5286,14 @@ def test_v1_events_report_page_does_not_hide_presence_alert(tmp_path):
     server = IntelHTTPServer(store, port=0)
     server.start()
     try:
+        _post_hostile_presence(
+            server.url,
+            client_id="detector-client:reports",
+            source_instance="EVE - Reports",
+            system_name="S-KSWL",
+            hostile_count=len(names),
+            seen_at="2026-08-07T10:01:00+00:00",
+        )
         request_json(
             f"{server.url}/api/v1/ocr/snapshot",
             method="POST",
@@ -5172,15 +5307,6 @@ def test_v1_events_report_page_does_not_hide_presence_alert(tmp_path):
             },
         )
         assert store.wait_for_esi_idle(timeout=2)
-        store.record_hostile_presence(
-            {
-                "client_id": "detector-client:presence",
-                "source_instance": "EVE - Presence",
-                "system_name": "Tama",
-                "hostile_icon_count": 2,
-                "seen_at": "2026-08-07T10:00:00+00:00",
-            }
-        )
 
         query = urlencode({"timeout": "0", "limit": "50", "bootstrap": "0"})
         _, _, body = request_text(f"{server.url}/api/v1/events?{query}")

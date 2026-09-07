@@ -222,7 +222,7 @@ def test_monitor_worker_uses_bound_window_capture_session(monkeypatch):
     ]
     assert owned.closed is True
     assert snapshots == []
-    assert alerts == [0]
+    assert alerts == []
 
 
 def test_monitor_worker_ocr_uploads_the_complete_captured_roster():
@@ -302,7 +302,7 @@ def test_monitor_worker_discards_ocr_names_when_no_red_icon_exists():
     worker.run()
 
     assert snapshots == []
-    assert alerts == [0]
+    assert alerts == []
 
 
 def test_monitor_worker_does_not_publish_full_list_after_red_row_mismatches():
@@ -486,7 +486,7 @@ def test_monitor_worker_resets_fallback_after_a_matching_red_row_frame():
 def test_monitor_worker_publishes_each_hostile_count_change_including_clear(
     monkeypatch,
 ):
-    counts = iter([0, 2, 2, 1, 3, 3, 0])
+    counts = iter([0, 0, 2, 2, 1, 3, 3, 0, 0])
 
     class FrameCapturer:
         def screenshot(self, _x, _y, _w, _h):
@@ -564,7 +564,7 @@ def test_monitor_worker_republishes_unchanged_count_after_presence_refresh(
 
 
 def test_monitor_worker_reports_counts_without_ocr_when_disabled(monkeypatch):
-    counts = iter([0, 2, 2, 3, 0])
+    counts = iter([0, 0, 2, 2, 3, 0, 0])
 
     class FrameCapturer:
         def screenshot(self, _x, _y, _w, _h):

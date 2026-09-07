@@ -20,6 +20,64 @@ from app.server.intel_store import (
 )
 
 
+_RECORD_OCR_SNAPSHOT = IntelStore.record_ocr_snapshot
+
+
+def _record_ocr_snapshot(store: IntelStore, payload: dict):
+    """Exercise OCR behavior with the Presence prerequisite satisfied."""
+    client_id = str(payload.get("client_id") or "").strip()
+    system_name = str(
+        payload.get("system_name") or payload.get("system") or ""
+    ).strip()
+    active_id = store._active_hostile_presence_id(client_id, system_name)
+    with store._lock:
+        existing = store._active_intel.get(active_id)
+        had_presence = bool(existing is not None and existing.active)
+
+    if not had_presence and not str(payload.get("query_id") or "").strip():
+        raw_count = payload.get("hostile_icon_count")
+        try:
+            hostile_count = max(0, int(raw_count))
+        except (TypeError, ValueError):
+            hostile_count = 0
+        if hostile_count <= 0:
+            hostile_count = max(1, len(payload.get("names") or []))
+        store.record_hostile_presence(
+            {
+                "client_id": client_id,
+                "source_instance": payload.get("source_instance"),
+                "system_name": system_name,
+                "system_id": payload.get("system_id"),
+                "hostile_icon_count": hostile_count,
+                "seen_at": payload.get("seen_at"),
+            }
+        )
+
+    result = _RECORD_OCR_SNAPSHOT(store, payload)
+
+    if not had_presence:
+        with store._lock:
+            store._active_intel.pop(active_id, None)
+    return result
+
+
+def test_record_ocr_snapshot_requires_active_presence(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+
+    result = _RECORD_OCR_SNAPSHOT(
+        store,
+        {
+            "client_id": "detector-client:test",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+        },
+    )
+
+    assert result["created"] == 0
+    assert result["filtered"] == 1
+    assert store.list_active_intel(source="eve-sentry-detector") == []
+
+
 def test_record_ocr_snapshot_resolves_every_full_roster_name_through_esi(tmp_path):
     resolved_names = []
 
@@ -47,7 +105,7 @@ def test_record_ocr_snapshot_resolves_every_full_roster_name_through_esi(tmp_pat
         resolver=Resolver(),
     )
     try:
-        result = store.record_ocr_snapshot(
+        result = _record_ocr_snapshot(store,
             {
                 "client_id": "detector-client:test",
                 "source_instance": "EVE - Pilot",
@@ -83,7 +141,7 @@ def test_async_ocr_identity_resolution_notifies_state_consumers(tmp_path):
     )
     store.set_change_notifier(lambda: notifications.append(True))
     try:
-        store.record_ocr_snapshot(
+        _record_ocr_snapshot(store,
             {
                 "client_id": "detector-client:test",
                 "system_name": "S-KSWL",
@@ -714,7 +772,7 @@ def test_add_observation_persists_and_lists_alerts(tmp_path):
 def test_record_ocr_snapshot_creates_and_refreshes_active_intel(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
 
-    first = store.record_ocr_snapshot(
+    first = _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
@@ -723,7 +781,7 @@ def test_record_ocr_snapshot_creates_and_refreshes_active_intel(tmp_path):
             "names": ["Alice", "Bob"],
         }
     )
-    second = store.record_ocr_snapshot(
+    second = _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
@@ -752,18 +810,18 @@ def test_record_ocr_snapshot_keeps_ended_wave_when_name_reenters(tmp_path):
         "names": ["Alice"],
     }
 
-    store.record_ocr_snapshot({**payload, "seen_at": "2026-07-03T10:00:00+00:00"})
-    store.record_ocr_snapshot({**payload, "seen_at": "2026-07-03T10:00:01+00:00"})
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store, {**payload, "seen_at": "2026-07-03T10:00:00+00:00"})
+    _record_ocr_snapshot(store, {**payload, "seen_at": "2026-07-03T10:00:01+00:00"})
+    _record_ocr_snapshot(store,
         {**payload, "names": [], "seen_at": "2026-07-03T10:00:20+00:00"}
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {**payload, "names": [], "seen_at": "2026-07-03T10:00:40+00:00"}
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {**payload, "names": [], "seen_at": "2026-07-03T10:01:00+00:00"}
     )
-    store.record_ocr_snapshot({**payload, "seen_at": "2026-07-03T10:01:20+00:00"})
+    _record_ocr_snapshot(store, {**payload, "seen_at": "2026-07-03T10:01:20+00:00"})
 
     rows = store.list_active_intel(source="eve-sentry-detector", active=True)
     assert len(rows) == 1
@@ -774,7 +832,7 @@ def test_record_ocr_snapshot_keeps_ended_wave_when_name_reenters(tmp_path):
 def test_record_ocr_snapshot_uses_complete_roster_not_coordinate_evidence(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
@@ -799,7 +857,7 @@ def test_record_ocr_snapshot_uses_complete_roster_not_coordinate_evidence(tmp_pa
 def test_record_ocr_snapshot_does_not_add_coordinate_only_names(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
@@ -1136,7 +1194,7 @@ def test_active_character_summary_keeps_generated_zkill_link(tmp_path):
     assert summary["zkill_url"] == "https://zkillboard.com/character/123/"
 
 
-def test_record_ocr_snapshot_red_icon_is_persisted_as_direct_alert_evidence(tmp_path):
+def test_record_ocr_snapshot_does_not_treat_presence_fields_as_ocr_evidence(tmp_path):
     store = IntelStore(
         tmp_path / "intel.json",
         systems={},
@@ -1144,7 +1202,7 @@ def test_record_ocr_snapshot_red_icon_is_persisted_as_direct_alert_evidence(tmp_
         scorer=ScoringEngine(cooldown_seconds=0),
     )
 
-    result = store.record_ocr_snapshot(
+    result = _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
@@ -1160,14 +1218,10 @@ def test_record_ocr_snapshot_red_icon_is_persisted_as_direct_alert_evidence(tmp_
     alerts = store.list_alerts()
 
     assert result["created"] == 1
-    assert active["metadata"]["hostile_icon_detected"] is True
-    assert active["metadata"]["hostile_icon_count"] == 1
-    assert observation["metadata"]["hostile_icon_count"] == 1
-    assert alerts[0]["score"] == 100
-    assert [item["type"] for item in alerts[0]["evidence"]] == [
-        "local_ocr_seen",
-        "hostile_icon",
-    ]
+    assert "hostile_icon_detected" not in active["metadata"]
+    assert "hostile_icon_count" not in active["metadata"]
+    assert "hostile_icon_count" not in observation["metadata"]
+    assert alerts == []
 
 
 def test_hostile_presence_creates_system_state_without_report_or_alert(tmp_path):
@@ -1233,7 +1287,7 @@ def test_hostile_presence_rejects_stale_updates_and_zero_clears_client_state(
             "seen_at": "2026-08-07T10:00:05+00:00",
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **base,
             "names": ["Alice"],
@@ -1262,7 +1316,7 @@ def test_hostile_presence_rejects_stale_updates_and_zero_clears_client_state(
     assert all(item["left_at"] == "2026-08-07T10:00:20+00:00" for item in inactive)
 
 
-def test_transient_zero_presence_does_not_clear_recent_hostile_state(tmp_path):
+def test_zero_presence_immediately_clears_recent_hostile_state(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
     base = {
         "client_id": "detector-client:test",
@@ -1287,10 +1341,8 @@ def test_transient_zero_presence_does_not_clear_recent_hostile_state(tmp_path):
 
     active = store.list_active_intel(source="eve-sentry-detector")
     assert deferred["accepted"] is True
-    assert deferred["clear_deferred"] is True
-    assert len(active) == 1
-    assert active[0]["active"] is True
-    assert active[0]["metadata"]["hostile_icon_count"] == 2
+    assert "clear_deferred" not in deferred
+    assert active == []
 
 
 def test_ocr_missing_confirmations_do_not_clear_presence_state(tmp_path):
@@ -1307,7 +1359,7 @@ def test_ocr_missing_confirmations_do_not_clear_presence_state(tmp_path):
             "seen_at": "2026-08-07T10:00:00+00:00",
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **base,
             "names": ["Alice"],
@@ -1315,7 +1367,7 @@ def test_ocr_missing_confirmations_do_not_clear_presence_state(tmp_path):
         }
     )
     for seconds in (9, 17, 25):
-        store.record_ocr_snapshot(
+        _record_ocr_snapshot(store,
             {
                 **base,
                 "names": [],
@@ -1364,7 +1416,7 @@ def test_map_does_not_double_count_presence_and_ocr_for_same_client(tmp_path):
             "seen_at": "2026-08-07T10:00:00+00:00",
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **base,
             "names": ["Alice"],
@@ -1381,7 +1433,7 @@ def test_map_does_not_double_count_presence_and_ocr_for_same_client(tmp_path):
     assert system["hostiles"] == ["Alice"]
 
 
-def test_later_red_icon_promotes_an_existing_ocr_sighting_to_alert(tmp_path):
+def test_ocr_payload_presence_field_does_not_promote_sighting_to_alert(tmp_path):
     store = IntelStore(
         tmp_path / "intel.json",
         systems={},
@@ -1395,7 +1447,7 @@ def test_later_red_icon_promotes_an_existing_ocr_sighting_to_alert(tmp_path):
         "names": ["Alice"],
     }
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **base_payload,
             "seen_at": "2026-07-03T10:00:00+00:00",
@@ -1403,7 +1455,7 @@ def test_later_red_icon_promotes_an_existing_ocr_sighting_to_alert(tmp_path):
     )
     assert store.list_alerts() == []
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **base_payload,
             "seen_at": "2026-07-03T10:00:02+00:00",
@@ -1411,8 +1463,7 @@ def test_later_red_icon_promotes_an_existing_ocr_sighting_to_alert(tmp_path):
         }
     )
 
-    assert len(store.list_alerts()) == 1
-    assert store.list_alerts()[0]["score"] == 100
+    assert store.list_alerts() == []
 
 
 def test_record_ocr_snapshot_stores_esi_identity_metadata(tmp_path):
@@ -1449,7 +1500,7 @@ def test_record_ocr_snapshot_stores_esi_identity_metadata(tmp_path):
         resolver=IdentityResolver(),
     )
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
@@ -1473,8 +1524,8 @@ def test_record_ocr_snapshot_stores_esi_identity_metadata(tmp_path):
     assert metadata["alliance_name"] == "Alice Alliance"
     assert metadata["contact_standing"] == 0.0
     assert metadata["standing_source"] == "character"
-    assert metadata["hostile_icon_detected"] is True
-    assert metadata["hostile_icon_count"] == 1
+    assert "hostile_icon_detected" not in metadata
+    assert "hostile_icon_count" not in metadata
     assert metadata["esi_resolution"]["resolved_character_names"] == ["Alice"]
     assert metadata["character_profiles"][0]["name"] == "Alice"
 
@@ -1587,7 +1638,7 @@ def test_record_ocr_snapshot_does_not_wait_for_esi_resolution(tmp_path):
     )
 
     started_at = time.perf_counter()
-    result = store.record_ocr_snapshot(
+    result = _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "system_name": "S-KSWL",
@@ -1651,7 +1702,7 @@ def test_record_ocr_snapshot_uses_fresh_cached_identity_without_queueing(tmp_pat
         lambda key, task: submitted.append((key, task)) or True
     )
 
-    result = store.record_ocr_snapshot(
+    result = _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "system_name": "S-KSWL",
@@ -1691,7 +1742,7 @@ def test_record_ocr_snapshot_uses_stale_identity_then_queues_refresh(tmp_path):
         lambda key, task: submitted.append((key, task)) or True
     )
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "system_name": "S-KSWL",
@@ -1721,7 +1772,7 @@ def test_record_ocr_snapshot_uses_fresh_negative_cache_without_queueing(tmp_path
         lambda key, task: submitted.append((key, task)) or True
     )
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "system_name": "S-KSWL",
@@ -1756,7 +1807,7 @@ def test_delayed_esi_result_does_not_restore_stale_hostile_count(tmp_path):
         links=[],
         resolver=resolver,
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "system_name": "S-KSWL",
@@ -1767,7 +1818,7 @@ def test_delayed_esi_result_does_not_restore_stale_hostile_count(tmp_path):
     )
     assert resolver.started.wait(timeout=1)
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "system_name": "S-KSWL",
@@ -1779,11 +1830,9 @@ def test_delayed_esi_result_does_not_restore_stale_hostile_count(tmp_path):
     assert store.wait_for_esi_idle(timeout=2)
 
     active = store.list_active_intel(source="eve-sentry-detector")[0]
-    assert active["metadata"]["hostile_icon_detected"] is False
-    assert active["metadata"]["hostile_icon_count"] == 0
-    assert active["metadata"]["hostile_icon_seen_at"] == (
-        "2026-07-24T09:09:18+00:00"
-    )
+    assert "hostile_icon_detected" not in active["metadata"]
+    assert "hostile_icon_count" not in active["metadata"]
+    assert "hostile_icon_seen_at" not in active["metadata"]
     system = next(
         item for item in store.snapshot()["systems"]
         if item["name"] == "S-KSWL"
@@ -1837,7 +1886,7 @@ def test_record_ocr_snapshot_skips_identity_refresh_for_active_duplicates(tmp_pa
         "names": ["Alice"],
     }
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {**payload, "seen_at": "2026-07-03T10:00:00+00:00"}
     )
     assert store.wait_for_esi_idle(timeout=1)
@@ -1846,7 +1895,7 @@ def test_record_ocr_snapshot_skips_identity_refresh_for_active_duplicates(tmp_pa
     resolver_calls_after_create = resolver.enrich_calls
     enricher_calls_after_create = enricher.calls
 
-    second = store.record_ocr_snapshot(
+    second = _record_ocr_snapshot(store,
         {**payload, "seen_at": "2026-07-03T10:01:01+00:00"}
     )
     refreshed = store.list_active_intel(source="eve-sentry-detector")[0]
@@ -1883,7 +1932,7 @@ def test_record_ocr_snapshot_filters_friendly_corporation_from_active_intel(tmp_
         ),
     )
 
-    result = store.record_ocr_snapshot(
+    result = _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
@@ -1912,7 +1961,7 @@ def test_record_ocr_snapshot_hides_whitelisted_names_from_default_lists(tmp_path
         ),
     )
 
-    result = store.record_ocr_snapshot(
+    result = _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
@@ -1979,8 +2028,8 @@ def test_record_ocr_snapshot_canonicalizes_leading_i_l_ocr_name(tmp_path):
         "seen_at": "2026-07-03T10:00:00+00:00",
     }
 
-    store.record_ocr_snapshot(payload)
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store, payload)
+    _record_ocr_snapshot(store,
         {**payload, "seen_at": "2026-07-03T10:00:02+00:00"}
     )
     assert store.wait_for_esi_idle(timeout=1)
@@ -2031,7 +2080,7 @@ def test_record_ocr_snapshot_keeps_exact_i_l_name_when_esi_resolves_it(tmp_path)
         resolver=FakeResolver(),
     )
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector:test",
             "system_name": "S-KSWL",
@@ -2084,7 +2133,7 @@ def test_record_ocr_snapshot_canonicalizes_zero_letter_ocr_name(tmp_path):
         resolver=resolver,
     )
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector:test",
             "system_name": "S-KSWL",
@@ -2149,8 +2198,8 @@ def test_record_ocr_snapshot_resolves_new_names_without_i_l_once(tmp_path):
         "seen_at": "2026-07-03T10:00:00+00:00",
     }
 
-    store.record_ocr_snapshot(payload)
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store, payload)
+    _record_ocr_snapshot(store,
         {**payload, "seen_at": "2026-07-03T10:00:02+00:00"}
     )
     assert store.wait_for_esi_idle(timeout=1)
@@ -2183,7 +2232,7 @@ def test_record_ocr_snapshot_only_confuses_upper_i_with_lower_l(tmp_path):
         resolver=resolver,
     )
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector:test",
             "system_name": "S-KSWL",
@@ -2221,7 +2270,7 @@ def test_record_ocr_snapshot_uses_esi_completion_after_exact_lookup_misses(tmp_p
         enricher=CompletingEnricher(),
     )
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector:test",
             "system_name": "S-KSWL",
@@ -2268,7 +2317,7 @@ def test_record_ocr_snapshot_skips_completion_after_exact_esi_match(tmp_path):
         enricher=FailingEnricher(),
     )
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector:test",
             "system_name": "S-KSWL",
@@ -2320,7 +2369,7 @@ def test_record_ocr_snapshot_filters_positive_esi_corporation_standing(tmp_path)
         ),
     )
 
-    result = store.record_ocr_snapshot(
+    result = _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
@@ -2595,14 +2644,14 @@ def test_record_ocr_snapshot_refreshes_when_source_instance_changes(tmp_path):
         "names": ["Alice"],
     }
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **payload,
             "source_instance": "EVE - Old",
             "seen_at": "2026-07-03T10:00:00+00:00",
         }
     )
-    second = store.record_ocr_snapshot(
+    second = _record_ocr_snapshot(store,
         {
             **payload,
             "source_instance": "EVE - New",
@@ -2627,11 +2676,11 @@ def test_record_ocr_snapshot_does_not_rewind_last_seen_at(tmp_path):
         "names": ["Alice"],
     }
 
-    store.record_ocr_snapshot({**payload, "seen_at": "2026-07-03T10:00:10+00:00"})
-    second = store.record_ocr_snapshot(
+    _record_ocr_snapshot(store, {**payload, "seen_at": "2026-07-03T10:00:10+00:00"})
+    second = _record_ocr_snapshot(store,
         {**payload, "seen_at": "2026-07-03T10:00:02+00:00"}
     )
-    still_active = store.record_ocr_snapshot(
+    still_active = _record_ocr_snapshot(store,
         {**payload, "seen_at": "2026-07-03T10:00:14+00:00", "names": []}
     )
 
@@ -2647,7 +2696,7 @@ def test_record_ocr_snapshot_rejects_invalid_seen_at(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
 
     with pytest.raises(ValueError):
-        store.record_ocr_snapshot(
+        _record_ocr_snapshot(store,
             {
                 "client_id": "detector-client:test",
                 "system_name": "S-KSWL",
@@ -2660,7 +2709,7 @@ def test_record_ocr_snapshot_rejects_invalid_seen_at(tmp_path):
 def test_record_ocr_snapshot_deduplicates_names_case_insensitively(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
 
-    result = store.record_ocr_snapshot(
+    result = _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
@@ -2680,7 +2729,7 @@ def test_record_ocr_snapshot_deduplicates_names_case_insensitively(tmp_path):
 def test_record_ocr_snapshot_filters_numeric_member_count_noise(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
 
-    result = store.record_ocr_snapshot(
+    result = _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
@@ -2697,7 +2746,7 @@ def test_record_ocr_snapshot_filters_numeric_member_count_noise(tmp_path):
 def test_record_ocr_snapshot_filters_distance_and_location_marker_noise(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
 
-    result = store.record_ocr_snapshot(
+    result = _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Hajimi6",
@@ -2719,14 +2768,14 @@ def test_record_ocr_snapshot_case_change_does_not_mark_name_missing(tmp_path):
         "system_name": "S-KSWL",
     }
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **payload,
             "seen_at": "2026-07-03T10:00:00+00:00",
             "names": ["Alice"],
         }
     )
-    second = store.record_ocr_snapshot(
+    second = _record_ocr_snapshot(store,
         {
             **payload,
             "seen_at": "2026-07-03T10:00:02+00:00",
@@ -2750,14 +2799,14 @@ def test_record_ocr_snapshot_expires_missing_names_after_grace_period(tmp_path):
         "names": ["Alice"],
     }
 
-    store.record_ocr_snapshot({**payload, "seen_at": "2026-07-03T10:00:00+00:00"})
-    still_active = store.record_ocr_snapshot(
+    _record_ocr_snapshot(store, {**payload, "seen_at": "2026-07-03T10:00:00+00:00"})
+    still_active = _record_ocr_snapshot(store,
         {**payload, "seen_at": "2026-07-03T10:00:04+00:00", "names": []}
     )
-    still_confirming = store.record_ocr_snapshot(
+    still_confirming = _record_ocr_snapshot(store,
         {**payload, "seen_at": "2026-07-03T10:00:08+00:00", "names": []}
     )
-    expired = store.record_ocr_snapshot(
+    expired = _record_ocr_snapshot(store,
         {**payload, "seen_at": "2026-07-03T10:00:12+00:00", "names": []}
     )
 
@@ -2779,23 +2828,23 @@ def test_record_ocr_snapshot_resets_missing_confirmation_when_name_returns(tmp_p
         "source_instance": "EVE - Hajimi6",
         "system_name": "S-KSWL",
     }
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **payload,
             "seen_at": "2026-07-03T10:00:00+00:00",
             "names": ["Alice", "Bob"],
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {**payload, "seen_at": "2026-07-03T10:00:08+00:00", "names": ["Alice"]}
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {**payload, "seen_at": "2026-07-03T10:00:16+00:00", "names": ["Alice", "Bob"]}
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {**payload, "seen_at": "2026-07-03T10:00:24+00:00", "names": ["Alice"]}
     )
-    second_missing = store.record_ocr_snapshot(
+    second_missing = _record_ocr_snapshot(store,
         {**payload, "seen_at": "2026-07-03T10:00:32+00:00", "names": ["Alice"]}
     )
 
@@ -2822,7 +2871,7 @@ def test_confirmed_ocr_departure_resets_alert_cooldown_for_reentry(tmp_path):
         "system_name": "S-KSWL",
     }
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **payload,
             "seen_at": "2026-07-03T10:00:00+00:00",
@@ -2830,28 +2879,28 @@ def test_confirmed_ocr_departure_resets_alert_cooldown_for_reentry(tmp_path):
         }
     )
     first_alerts = store.list_alerts()
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **payload,
             "seen_at": "2026-07-03T10:00:08+00:00",
             "names": [],
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **payload,
             "seen_at": "2026-07-03T10:00:16+00:00",
             "names": [],
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **payload,
             "seen_at": "2026-07-03T10:00:24+00:00",
             "names": [],
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **payload,
             "seen_at": "2026-07-03T10:00:25+00:00",
@@ -2874,7 +2923,7 @@ def test_record_ocr_snapshot_isolates_missing_names_by_client_id(tmp_path):
         "names": ["Alice"],
     }
 
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **base,
             "client_id": "detector-client:test:eve-pilot-a",
@@ -2882,7 +2931,7 @@ def test_record_ocr_snapshot_isolates_missing_names_by_client_id(tmp_path):
             "seen_at": "2026-07-03T10:00:00+00:00",
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             **base,
             "client_id": "detector-client:test:eve-pilot-b",
@@ -2890,7 +2939,7 @@ def test_record_ocr_snapshot_isolates_missing_names_by_client_id(tmp_path):
             "seen_at": "2026-07-03T10:00:00+00:00",
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test:eve-pilot-a",
             "source_instance": "EVE - Pilot A",
@@ -2899,7 +2948,7 @@ def test_record_ocr_snapshot_isolates_missing_names_by_client_id(tmp_path):
             "names": [],
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test:eve-pilot-a",
             "source_instance": "EVE - Pilot A",
@@ -2908,7 +2957,7 @@ def test_record_ocr_snapshot_isolates_missing_names_by_client_id(tmp_path):
             "names": [],
         }
     )
-    expired = store.record_ocr_snapshot(
+    expired = _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test:eve-pilot-a",
             "source_instance": "EVE - Pilot A",
@@ -2933,7 +2982,7 @@ def test_record_ocr_snapshot_isolates_missing_names_by_client_id(tmp_path):
 
 def test_detector_stopped_heartbeat_expires_ocr_active_intel_after_grace(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Pilot",
@@ -3083,7 +3132,7 @@ def test_stopped_state_survives_later_diagnostic_heartbeat(tmp_path):
 
 def test_idle_without_explicit_stop_does_not_expire_detector_state(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test:pilot-a",
             "source_instance": "EVE - Pilot A",
@@ -3158,7 +3207,7 @@ def test_stopped_parent_expires_ocr_and_presence_without_touching_other_parent(
             "seen_at": "2099-07-03T10:00:00+00:00",
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test:pilot-a",
             "source_instance": "EVE - Pilot A",
@@ -3216,7 +3265,7 @@ def test_detector_heartbeat_target_flags_do_not_change_ocr_state(tmp_path):
         ("detector-client:test:pilot-a", "EVE - Pilot A"),
         ("detector-client:test:pilot-b", "EVE - Pilot B"),
     ]:
-        store.record_ocr_snapshot(
+        _record_ocr_snapshot(store,
             {
                 "client_id": client_id,
                 "source_instance": title,
@@ -3270,7 +3319,7 @@ def test_authoritative_targets_expire_only_removed_child_state(tmp_path):
             "seen_at": "2099-07-03T10:00:00+00:00",
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": old_client_id,
             "source_instance": "EVE - Old Pilot",
@@ -3453,7 +3502,7 @@ def test_removed_target_late_upload_extends_grace_then_expires(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
     old_client_id = "detector-client:test:user-100"
     current_client_id = "detector-client:test:user-200"
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": old_client_id,
             "source_instance": "EVE - Old Pilot",
@@ -3474,7 +3523,7 @@ def test_removed_target_late_upload_extends_grace_then_expires(tmp_path):
             },
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": old_client_id,
             "source_instance": "EVE - Old Pilot",
@@ -3541,7 +3590,7 @@ def test_removed_target_reappearing_cancels_pending_cleanup(tmp_path):
 
 def test_record_ocr_snapshot_moves_only_its_client_to_the_new_system(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test:pilot-a",
             "source_instance": "EVE - Pilot A",
@@ -3550,7 +3599,7 @@ def test_record_ocr_snapshot_moves_only_its_client_to_the_new_system(tmp_path):
             "seen_at": "2026-07-03T10:00:00+00:00",
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test:pilot-b",
             "source_instance": "EVE - Pilot B",
@@ -3560,7 +3609,7 @@ def test_record_ocr_snapshot_moves_only_its_client_to_the_new_system(tmp_path):
         }
     )
 
-    moved = store.record_ocr_snapshot(
+    moved = _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test:pilot-a",
             "source_instance": "EVE - Pilot A",
@@ -3570,7 +3619,7 @@ def test_record_ocr_snapshot_moves_only_its_client_to_the_new_system(tmp_path):
         }
     )
 
-    assert moved["expired"] == 1
+    assert moved["expired"] == 0
     assert {
         (item["source_instance"], item["system_name"], item["name"])
         for item in store.list_active_intel(source="eve-sentry-detector")
@@ -3592,7 +3641,7 @@ def test_record_ocr_snapshot_moves_only_its_client_to_the_new_system(tmp_path):
 def test_record_ocr_snapshot_ignores_delayed_previous_system_snapshot(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
     client_id = "detector-client:test:pilot-a"
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": client_id,
             "source_instance": "EVE - Pilot A",
@@ -3601,7 +3650,7 @@ def test_record_ocr_snapshot_ignores_delayed_previous_system_snapshot(tmp_path):
             "seen_at": "2026-07-03T10:00:00+00:00",
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": client_id,
             "source_instance": "EVE - Pilot A",
@@ -3611,7 +3660,7 @@ def test_record_ocr_snapshot_ignores_delayed_previous_system_snapshot(tmp_path):
         }
     )
 
-    delayed = store.record_ocr_snapshot(
+    delayed = _record_ocr_snapshot(store,
         {
             "client_id": client_id,
             "source_instance": "EVE - Pilot A",
@@ -3630,7 +3679,7 @@ def test_record_ocr_snapshot_ignores_delayed_previous_system_snapshot(tmp_path):
 
 def test_stale_detector_heartbeat_expires_ocr_active_intel_on_read(tmp_path):
     store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Pilot",
@@ -3668,7 +3717,7 @@ def test_stale_detector_heartbeat_expires_snapshot_seen_before_stale_deadline(tm
             "details": {"monitoring": True},
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Pilot",
@@ -3680,7 +3729,7 @@ def test_stale_detector_heartbeat_expires_snapshot_seen_before_stale_deadline(tm
 
     assert store.list_active_intel(source="eve-sentry-detector") == []
     inactive = store.list_active_intel(source="eve-sentry-detector", active=False)
-    assert inactive[0]["left_at"] == "2026-01-01T00:00:16+00:00"
+    assert inactive[0]["left_at"] == "2026-01-01T00:00:11+00:00"
 
 
 def test_stale_detector_heartbeat_does_not_expire_snapshot_after_stale_deadline(tmp_path):
@@ -3695,7 +3744,7 @@ def test_stale_detector_heartbeat_does_not_expire_snapshot_after_stale_deadline(
             "details": {"monitoring": True},
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Pilot",
@@ -3723,7 +3772,7 @@ def test_stale_detector_heartbeat_expires_snapshot_after_stale_deadline_grace(tm
             "details": {"monitoring": True},
         }
     )
-    store.record_ocr_snapshot(
+    _record_ocr_snapshot(store,
         {
             "client_id": "detector-client:test",
             "source_instance": "EVE - Pilot",

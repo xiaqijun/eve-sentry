@@ -5,9 +5,10 @@ import logging
 import os
 import threading
 import time
+from uuid import uuid4
 from argparse import Namespace
 from concurrent.futures import Future
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PyQt6.QtCore import QSettings, QThread, QTimer, pyqtSignal
@@ -234,7 +235,7 @@ class MainWindow(QMainWindow):
         self._local_system_pending: set[str] = set()
         self._heartbeat_interval = _env_float(
             "EVE_SENTRY_HEARTBEAT_INTERVAL",
-            default=15.0,
+            default=10.0,
             minimum=5.0,
         )
         self._heartbeat_client_id = persistent_client_id("detector")
@@ -3080,6 +3081,21 @@ class MainWindow(QMainWindow):
             "system_id": context.get("system_id"),
             "hostile_icon_count": max(0, int(count)),
         }
+        captured_at = datetime.now(timezone.utc).isoformat()
+        previous_version = max(0, int(context.get("_presence_version") or 0))
+        presence_version = max(previous_version + 1, time.time_ns() // 1_000_000)
+        presence_state_id = uuid4().hex
+        payload.update(
+            {
+                "presence_version": presence_version,
+                "presence_state_id": presence_state_id,
+                "captured_at": captured_at,
+                "seen_at": captured_at,
+            }
+        )
+        context["_presence_version"] = presence_version
+        context["_presence_state_id"] = presence_state_id
+        context["_presence_captured_at"] = captured_at
         metadata = {
             "kind": "hostile_presence",
             "context": context,
@@ -3344,8 +3360,7 @@ class MainWindow(QMainWindow):
             # Upload the complete raw OCR roster for server-side ESI lookup.
             "names": list(names),
         }
-        if hostile_icon_count > 0:
-            payload["hostile_icon_count"] = int(hostile_icon_count)
+        del hostile_icon_count
         if query_id:
             payload["query_id"] = str(query_id)
         upload_key = (
@@ -3467,6 +3482,20 @@ class MainWindow(QMainWindow):
                     "region": context["region"],
                     "monitoring": monitoring
                     and context["key"] in getattr(self, "_workers", {}),
+                    "hostile_icon_count": max(
+                        0,
+                        int(context.get("_hostile_icon_count") or 0),
+                    ),
+                    "presence_version": max(
+                        0,
+                        int(context.get("_presence_version") or 0),
+                    ),
+                    "presence_state_id": str(
+                        context.get("_presence_state_id") or ""
+                    ),
+                    "captured_at": str(
+                        context.get("_presence_captured_at") or ""
+                    ),
                     **(
                         {"runtime_status": str(context.get("runtime_status") or "")}
                         if str(context.get("runtime_status") or "").strip()

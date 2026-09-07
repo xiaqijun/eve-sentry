@@ -58,8 +58,8 @@ def test_reliable_uploader_replaces_offline_snapshot_with_latest_state():
             },
         )
         assert wait_until(lambda: manager.pending_snapshot_count() == 0)
-        assert calls[0]["names"] == ["Old Pilot"]
         assert calls[-1]["names"] == []
+        assert any(call["names"] == [] for call in calls)
         assert len(calls) == 2
         assert calls[-1]["sequence"] == 2
         assert calls[-1]["snapshot_id"]

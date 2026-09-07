@@ -411,7 +411,7 @@ def _track_event_stream(method):
 
 
 def _next_monitoring_heartbeat_stale_in(client_snapshot: Any) -> float | None:
-    """Return seconds until the next online monitoring node becomes stale."""
+    """Return seconds until the next detector health-state boundary."""
     if not isinstance(client_snapshot, dict):
         return None
     heartbeats = client_snapshot.get("heartbeats")
@@ -420,13 +420,26 @@ def _next_monitoring_heartbeat_stale_in(client_snapshot: Any) -> float | None:
 
     remaining: list[float] = []
     for heartbeat in heartbeats:
-        if not isinstance(heartbeat, dict) or not heartbeat.get("online"):
+        if not isinstance(heartbeat, dict):
             continue
-        if not monitored_system_names({"heartbeats": [heartbeat]}):
+        if str(heartbeat.get("client_type") or "") != "detector_client":
+            continue
+        details = heartbeat.get("details")
+        if not isinstance(details, dict) or not bool(details.get("monitoring")):
+            continue
+        if str(heartbeat.get("health_status") or "online").strip().casefold() == "removed":
             continue
         try:
             age_seconds = float(heartbeat.get("age_seconds", 0.0))
-            stale_after_seconds = float(heartbeat["stale_after_seconds"])
+            health_status = str(heartbeat.get("health_status") or "online").strip()
+            boundary_key = {
+                "online": "degraded_after_seconds",
+                "degraded": "offline_after_seconds",
+                "offline": "remove_after_seconds",
+            }.get(health_status)
+            if not boundary_key:
+                continue
+            stale_after_seconds = float(heartbeat[boundary_key])
         except (KeyError, TypeError, ValueError):
             continue
         remaining.append(max(0.0, stale_after_seconds - age_seconds))
@@ -435,6 +448,59 @@ def _next_monitoring_heartbeat_stale_in(client_snapshot: Any) -> float | None:
         return None
     # The online check includes the exact deadline, so cross it before refreshing.
     return min(remaining) + 0.01
+
+
+def _presence_payloads_from_heartbeat(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract versioned Presence reconciliation snapshots from a heartbeat."""
+    if str(payload.get("client_type") or "") != "detector_client":
+        return []
+    details = payload.get("details")
+    if not isinstance(details, dict):
+        return []
+    targets = details.get("targets")
+    if not isinstance(targets, list):
+        return []
+    reconciliations: list[dict[str, Any]] = []
+    for target in targets:
+        if not isinstance(target, dict) or not target.get("monitoring", True):
+            continue
+        try:
+            presence_version = max(0, int(target.get("presence_version") or 0))
+            hostile_count = max(0, int(target.get("hostile_icon_count") or 0))
+        except (TypeError, ValueError):
+            continue
+        presence_state_id = str(target.get("presence_state_id") or "").strip()
+        captured_at = str(target.get("captured_at") or "").strip()
+        client_id = str(target.get("client_id") or "").strip()
+        system_name = str(
+            target.get("system_name") or target.get("system") or ""
+        ).strip()
+        if (
+            not client_id
+            or not system_name
+            or presence_version <= 0
+            or not presence_state_id
+            or not captured_at
+        ):
+            continue
+        reconciliations.append(
+            {
+                "client_id": client_id,
+                "source_instance": str(
+                    target.get("source_instance")
+                    or target.get("window_title")
+                    or client_id
+                ).strip(),
+                "system_name": system_name,
+                "system_id": target.get("system_id"),
+                "hostile_icon_count": hostile_count,
+                "presence_version": presence_version,
+                "presence_state_id": presence_state_id,
+                "captured_at": captured_at,
+                "seen_at": captured_at,
+            }
+        )
+    return reconciliations
 
 
 def _active_hostile_counts(
@@ -563,7 +629,7 @@ def _is_hostile_history_alert(alert: object) -> bool:
 
 
 def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
-    """Return stable online account/location fields for SSE change detection."""
+    """Return visible detector nodes, including degraded and offline states."""
     if not isinstance(client_snapshot, dict):
         return []
     heartbeats = client_snapshot.get("heartbeats")
@@ -575,7 +641,10 @@ def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
             continue
         if str(heartbeat.get("client_type") or "") != "detector_client":
             continue
-        if not bool(heartbeat.get("online")):
+        heartbeat_health = str(
+            heartbeat.get("health_status") or ("online" if heartbeat.get("online") else "removed")
+        ).strip().casefold()
+        if heartbeat_health == "removed":
             continue
         details = heartbeat.get("details")
         if not isinstance(details, dict) or not bool(details.get("monitoring")):
@@ -591,15 +660,11 @@ def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
                 target.get("monitoring", True)
             ):
                 continue
-            if target.get("capture_online") is False:
-                # Keep the target in heartbeat management details, but do not
-                # expose a window whose local capture connection is offline.
-                continue
-            if target.get("game_connection_online") is False:
-                # The EVE process can still exist while its game-server
-                # connection is down; do not publish that window as a live
-                # monitoring node until the Gamelog reports recovery.
-                continue
+            health_status = heartbeat_health
+            if target.get("capture_online") is False or target.get(
+                "game_connection_online"
+            ) is False:
+                health_status = "offline"
             target_system_name = str(
                 target.get("system_name") or target.get("system") or ""
             ).strip()
@@ -614,6 +679,14 @@ def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
                 # those clients online, but do not expose an unusable node in
                 # the map or robot snapshot until its location is known.
                 continue
+            try:
+                hostile_count = max(0, int(target.get("hostile_icon_count") or 0))
+            except (TypeError, ValueError):
+                hostile_count = 0
+            try:
+                presence_version = max(0, int(target.get("presence_version") or 0))
+            except (TypeError, ValueError):
+                presence_version = 0
             state.append(
                 {
                     "heartbeat_client_id": str(
@@ -630,6 +703,13 @@ def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
                     ).strip(),
                     "system_name": target_system_name,
                     "system_id": target.get("system_id"),
+                    "health_status": health_status,
+                    "hostile_count": hostile_count,
+                    "presence_version": presence_version,
+                    "presence_state_id": str(
+                        target.get("presence_state_id") or ""
+                    ).strip(),
+                    "captured_at": str(target.get("captured_at") or "").strip(),
                 }
             )
     return sorted(
@@ -640,8 +720,19 @@ def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
 
 def _monitoring_nodes_version(nodes: list[dict[str, Any]]) -> str:
     """Return a stable version for an online monitoring-node snapshot."""
+    version_nodes = [
+        {
+            "node_id": _monitoring_node_key(node),
+            "system_name": str(
+                node.get("system_name") or node.get("system") or ""
+            ).strip(),
+            "health_status": str(node.get("health_status") or "online").strip(),
+        }
+        for node in nodes
+        if isinstance(node, dict)
+    ]
     encoded = json.dumps(
-        nodes,
+        version_nodes,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -666,7 +757,7 @@ def _monitoring_node_changes(
     previous: list[dict[str, Any]],
     current: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Describe online, offline, and system-move changes between snapshots."""
+    """Describe node lifecycle, health, and system changes between snapshots."""
     previous_by_key = {
         _monitoring_node_key(node): node
         for node in previous
@@ -686,7 +777,7 @@ def _monitoring_node_changes(
 
     for key in sorted(previous_by_key.keys() - current_by_key.keys()):
         change = dict(previous_by_key[key])
-        change.update({"node_id": key, "change": "offline"})
+        change.update({"node_id": key, "change": "removed"})
         changes.append(change)
 
     for key in sorted(current_by_key.keys() & previous_by_key.keys()):
@@ -698,18 +789,29 @@ def _monitoring_node_changes(
         after_system = str(
             after.get("system_name") or after.get("system") or ""
         ).strip()
-        if before_system.casefold() == after_system.casefold():
-            continue
-        change = dict(after)
-        change.update(
-            {
-                "node_id": key,
-                "change": "moved",
-                "from_system": before_system or "Unknown",
-                "to_system": after_system or "Unknown",
-            }
-        )
-        changes.append(change)
+        before_health = str(before.get("health_status") or "online").strip().casefold()
+        after_health = str(after.get("health_status") or "online").strip().casefold()
+        if before_system.casefold() != after_system.casefold():
+            change = dict(after)
+            change.update(
+                {
+                    "node_id": key,
+                    "change": "moved",
+                    "from_system": before_system or "Unknown",
+                    "to_system": after_system or "Unknown",
+                }
+            )
+            changes.append(change)
+        if before_health != after_health:
+            change = dict(after)
+            change.update(
+                {
+                    "node_id": key,
+                    "change": after_health,
+                    "previous_health_status": before_health,
+                }
+            )
+            changes.append(change)
 
     return changes
 
@@ -1762,7 +1864,10 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         if path == f"{API_V1_PREFIX}/clients/heartbeats":
             try:
                 payload = self._attributed_heartbeat_payload(self._read_json())
-                heartbeat = self._store().record_heartbeat(payload)
+                store = self._store()
+                for presence_payload in _presence_payloads_from_heartbeat(payload):
+                    store.record_hostile_presence(presence_payload)
+                heartbeat = store.record_heartbeat(payload)
                 commands = _claim_ocr_query_commands(payload.get("client_id"))
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
@@ -2278,6 +2383,32 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         # report-level ``names`` field unchanged, but also expose the complete
         # current detector snapshot so integrations do not mistake one report
         # (or a locally truncated message) for the full hostile roster.
+        detector_presence: dict[tuple[str, str], tuple[int, str]] = {}
+        for item in active_items:
+            if not isinstance(item, dict) or not bool(item.get("active", True)):
+                continue
+            if str(item.get("source") or "").strip().casefold() != "eve-sentry-detector":
+                continue
+            metadata = item.get("metadata")
+            if not isinstance(metadata, dict) or not metadata.get("presence_only"):
+                continue
+            try:
+                presence_count = max(0, int(metadata.get("hostile_icon_count") or 0))
+            except (TypeError, ValueError):
+                presence_count = 0
+            if presence_count <= 0:
+                continue
+            client_id = str(
+                metadata.get("client_id") or item.get("source_instance") or "unknown"
+            ).strip() or "unknown"
+            system_key = str(
+                item.get("system_name") or item.get("system") or "Unknown"
+            ).strip().casefold()
+            detector_presence[(client_id, system_key)] = (
+                presence_count,
+                str(metadata.get("hostile_icon_seen_at") or item.get("last_seen_at") or ""),
+            )
+
         detector_rosters: dict[tuple[str, str], dict[str, Any]] = {}
         for item in active_items:
             if not bool(item.get("active", True)):
@@ -2287,7 +2418,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             ):
                 continue
             metadata = item.get("metadata")
-            if not isinstance(metadata, dict) or "hostile_icon_count" not in metadata:
+            if not isinstance(metadata, dict) or metadata.get("presence_only"):
                 continue
             if not store._active_item_is_hostile(item):
                 continue
@@ -2307,6 +2438,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             system_name = str(
                 item.get("system_name") or item.get("system") or "Unknown"
             ).strip() or "Unknown"
+            if (client_id, system_name.casefold()) not in detector_presence:
+                continue
             roster = detector_rosters.setdefault(
                 (client_id, system_name.casefold()),
                 {"system_name": system_name, "names": {}, "character_ids": set()},
@@ -2349,38 +2482,32 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             )
             if str(active_item.get("source") or "").strip().casefold() == (
                 "eve-sentry-detector"
-            ) and "hostile_icon_count" in metadata:
+            ):
                 detector_client_id = str(
                     metadata.get("client_id")
                     or active_item.get("source_instance")
                     or "unknown"
                 )
                 data["detector_client_id"] = detector_client_id
-                roster = detector_rosters.get(
-                    (
-                        detector_client_id,
-                        str(
-                            active_item.get("system_name")
-                            or active_item.get("system")
-                            or "Unknown"
-                        ).strip().casefold(),
-                    )
+                detector_key = (
+                    detector_client_id,
+                    str(
+                        active_item.get("system_name")
+                        or active_item.get("system")
+                        or "Unknown"
+                    ).strip().casefold(),
                 )
+                presence = detector_presence.get(detector_key)
+                if presence is None:
+                    continue
+                roster = detector_rosters.get(detector_key)
                 if roster is not None:
                     data["active_names"] = list(roster["active_names"])
                     data["active_character_ids"] = list(
                         roster["active_character_ids"]
                     )
-                try:
-                    data["hostile_count"] = max(
-                        0,
-                        int(metadata.get("hostile_icon_count") or 0),
-                    )
-                except (TypeError, ValueError):
-                    data["hostile_count"] = 0
-                data["hostile_icon_seen_at"] = str(
-                    metadata.get("hostile_icon_seen_at") or ""
-                )
+                data["hostile_count"] = presence[0]
+                data["hostile_icon_seen_at"] = presence[1]
             alerts.append(data)
 
         alerts.sort(key=lambda alert: alert["created_at"], reverse=True)
@@ -3611,6 +3738,68 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                             state_event_seq = max(state_event_seq, int(event.get("seq") or 0))
                             stream_event_id = event_id
                             last_seen = max(last_seen, str(event.get("occurred_at") or ""))
+                if active_only:
+                    list_events = getattr(store, "list_intel_event_page", None)
+                    if callable(list_events):
+                        durable_state_events = list_events(
+                            after_seq=state_event_seq,
+                            since=last_seen if state_event_seq <= 0 else "",
+                            limit=max(1, limit),
+                        )
+                        for event in durable_state_events:
+                            payload = dict(event.get("payload") or {})
+                            system_name = str(
+                                payload.get("system_name")
+                                or event.get("entity_key")
+                                or ""
+                            ).strip()
+                            if not system_name:
+                                continue
+                            event_type = str(event.get("event_type") or "").strip()
+                            event_name = {
+                                "alert.entered": "alert",
+                                "alert.cleared": "safe",
+                                "alert.updated": "alert",
+                            }.get(event_type)
+                            if not event_name:
+                                continue
+                            event_id = f"state:{int(event.get('seq') or 0)}"
+                            payload.update(
+                                {
+                                    "id": event_id,
+                                    "event_key": event.get("event_key"),
+                                    "event_type": event_type,
+                                    "system_name": system_name,
+                                    "system": system_name,
+                                    "created_at": event.get("occurred_at")
+                                    or utc_now_iso(),
+                                    "active": event_type != "alert.cleared",
+                                    "message": (
+                                        f"✅ {system_name} 清空"
+                                        if event_type == "alert.cleared"
+                                        else f"❗ {system_name} 来敌"
+                                    ),
+                                }
+                            )
+                            payload["hostile_count"] = max(
+                                0,
+                                int(payload.get("hostile_count") or 0),
+                            )
+                            payload["presence_only"] = not bool(
+                                payload.get("hostile_personnel")
+                            )
+                            durable_systems.add(system_name.casefold())
+                            self._write_sse(event_name, event_id, payload)
+                            wrote_event = True
+                            state_event_seq = max(
+                                state_event_seq,
+                                int(event.get("seq") or 0),
+                            )
+                            stream_event_id = event_id
+                            last_seen = max(
+                                last_seen,
+                                str(event.get("occurred_at") or ""),
+                            )
                 active_snapshot_alerts: list[dict[str, Any]] = []
                 if active_only:
                     active_snapshot_alerts = list(active_alerts)
@@ -3714,14 +3903,17 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     presence_alerts.sort(
                         key=lambda item: str(item.get("created_at") or "")
                     )
-                    alerts.extend(
+                    # Emit synthesized Presence before persisted report alerts.
+                    # The final event ID then remains a durable report cursor,
+                    # so reconnecting consumers can resume a paged backlog.
+                    alerts = [
                         item
                         for item in presence_alerts
                         if str(item.get("system_name") or item.get("system") or "")
                         .strip()
                         .casefold()
                         not in durable_systems
-                    )
+                    ] + alerts
                     alerts = [
                         item
                         for item in alerts

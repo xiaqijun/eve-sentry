@@ -1251,7 +1251,14 @@ def test_postgres_hostile_wave_state_uses_appearance_to_clear_lifecycle():
             source="eve-sentry-detector",
             source_instance=active_id,
             system_name="S-KSWL",
+            target_type="system",
             name=name,
+            metadata={
+                "client_id": active_id,
+                "presence_only": True,
+                "hostile_icon_count": 1,
+                "hostile_icon_seen_at": last_seen,
+            },
             first_seen_at=first_seen,
             last_seen_at=last_seen,
             active=active,
@@ -1406,7 +1413,23 @@ def test_postgres_hostile_wave_state_tracks_resolved_hostile_personnel():
         last_seen_at="2026-09-03T17:26:37+00:00",
     )
 
-    state = store._hostile_system_state([item])
+    presence = ActiveIntelItem(
+        active_id="presence:client-a",
+        source="eve-sentry-detector",
+        source_instance="client-a",
+        system_name="S-KSWL",
+        target_type="system",
+        metadata={
+            "client_id": "client-a",
+            "presence_only": True,
+            "hostile_icon_count": 1,
+            "hostile_icon_seen_at": "2026-09-03T17:26:37+00:00",
+        },
+        first_seen_at="2026-09-03T17:26:37+00:00",
+        last_seen_at="2026-09-03T17:26:37+00:00",
+    )
+
+    state = store._hostile_system_state([presence, item])
 
     assert state["s-kswl"]["personnel"] == [{
         "name": "CEKC HA MOPE",
@@ -1571,7 +1594,24 @@ def test_postgres_ocr_snapshot_persists_old_system_as_inactive():
         last_seen_at="2026-07-03T10:00:00+00:00",
     )
     store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
-    store._active_intel = {old_item.active_id: old_item}
+    presence = ActiveIntelItem(
+        active_id="new-presence",
+        source="eve-sentry-detector",
+        source_instance="EVE - Pilot A",
+        system_name="HB-FSO",
+        target_type="system",
+        metadata={
+            "client_id": "detector-client:test:pilot-a",
+            "presence_only": True,
+            "hostile_icon_count": 1,
+        },
+        first_seen_at="2026-07-03T10:00:10+00:00",
+        last_seen_at="2026-07-03T10:00:10+00:00",
+    )
+    store._active_intel = {
+        old_item.active_id: old_item,
+        presence.active_id: presence,
+    }
     store._reports = []
     store._resolver = None
     store._enricher = None
@@ -1629,6 +1669,23 @@ def test_postgres_ocr_snapshot_uses_complete_roster_not_coordinate_evidence(tmp_
     store._refresh_report_stream_positions = lambda _connection, _reports: None
     store._upsert_active_intel_rows = lambda _connection, _rows: None
     store._persist_hostile_wave_changes = lambda _connection, _changes: None
+    store._persist_intel_events = lambda _connection, _changes: None
+    store._reserve_db_write = lambda: None
+    store._wait_for_db_write = lambda _ticket: None
+    store._finish_db_write = lambda _ticket: None
+
+    store._active_intel["presence:test"] = ActiveIntelItem(
+        active_id="presence:test",
+        source="eve-sentry-detector",
+        source_instance="EVE - Pilot",
+        system_name="S-KSWL",
+        target_type="system",
+        metadata={
+            "client_id": "detector-client:test",
+            "presence_only": True,
+            "hostile_icon_count": 1,
+        },
+    )
 
     try:
         result = store.record_ocr_snapshot(
@@ -1671,7 +1728,10 @@ def test_postgres_ocr_snapshot_uses_complete_roster_not_coordinate_evidence(tmp_
 
     assert result["created"] == 2
     active = store.list_active_intel(source="eve-sentry-detector")
-    assert {item["name"] for item in active} == {"Friendly Pilot", "Enemy Pilot"}
+    assert {item["name"] for item in active if item["name"]} == {
+        "Friendly Pilot",
+        "Enemy Pilot",
+    }
 
 
 def test_postgres_ocr_snapshot_persists_fresh_cached_identity_without_queueing(
@@ -1730,6 +1790,22 @@ def test_postgres_ocr_snapshot_persists_fresh_cached_identity_without_queueing(
     store._refresh_report_stream_positions = lambda _connection, _reports: None
     store._upsert_active_intel_rows = lambda _connection, _rows: None
     store._persist_hostile_wave_changes = lambda _connection, _changes: None
+    store._persist_intel_events = lambda _connection, _changes: None
+    store._reserve_db_write = lambda: None
+    store._wait_for_db_write = lambda _ticket: None
+    store._finish_db_write = lambda _ticket: None
+    store._active_intel["presence:test"] = ActiveIntelItem(
+        active_id="presence:test",
+        source="eve-sentry-detector",
+        source_instance="EVE - Pilot",
+        system_name="S-KSWL",
+        target_type="system",
+        metadata={
+            "client_id": "detector-client:test",
+            "presence_only": True,
+            "hostile_icon_count": 1,
+        },
+    )
     submitted = []
     store._esi_worker.submit = (
         lambda key, task: submitted.append((key, task)) or True
@@ -1746,7 +1822,11 @@ def test_postgres_ocr_snapshot_persists_fresh_cached_identity_without_queueing(
 
     assert result["created"] == 1
     assert submitted == []
-    active = store.list_active_intel(source="eve-sentry-detector")[0]
+    active = next(
+        item
+        for item in store.list_active_intel(source="eve-sentry-detector")
+        if item["name"] == "Alice"
+    )
     assert active["character_id"] == 123
     assert active["metadata"]["identity_status"] == "resolved"
     assert active["metadata"]["corporation_name"] == "Some Corp"

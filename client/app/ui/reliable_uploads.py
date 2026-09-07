@@ -128,7 +128,7 @@ class ReliableUploadManager(QObject):
         key: str,
         payload: dict[str, Any],
         metadata: dict[str, Any] | None = None,
-        ttl: float = 60.0,
+        ttl: float | None = None,
     ) -> int:
         """Replace the latest visual hostile count for one monitored window."""
         normalized_key = str(key or payload.get("client_id") or "window")
@@ -136,24 +136,24 @@ class ReliableUploadManager(QObject):
         with self._condition:
             generation = self._generation.get(generation_key, 0) + 1
             self._generation[generation_key] = generation
-            captured_at = datetime.now(timezone.utc).isoformat()
-            ttl_seconds = max(1.0, float(ttl))
+            captured_at = str(enriched_captured_at).strip() if (
+                enriched_captured_at := payload.get("captured_at")
+            ) else datetime.now(timezone.utc).isoformat()
+            ttl_seconds = max(1.0, float(ttl)) if ttl is not None else 0.0
             enriched = dict(payload)
-            enriched.update(
-                {
-                    "snapshot_id": str(uuid.uuid4()),
-                    "sequence": generation,
-                    "captured_at": captured_at,
-                    "seen_at": captured_at,
-                }
-            )
+            enriched.setdefault("snapshot_id", str(uuid.uuid4()))
+            enriched.setdefault("sequence", generation)
+            enriched.setdefault("presence_state_id", enriched["snapshot_id"])
+            enriched.setdefault("presence_version", enriched["sequence"])
+            enriched["captured_at"] = captured_at
+            enriched.setdefault("seen_at", captured_at)
             self._presence[normalized_key] = _PendingUpload(
                 key=generation_key,
                 payload=enriched,
                 metadata=dict(metadata or {}),
-                expires_at=self._clock() + ttl_seconds,
+                expires_at=self._clock() + ttl_seconds if ttl_seconds else 0.0,
                 generation=generation,
-                expires_wall_at=time.time() + ttl_seconds,
+                expires_wall_at=time.time() + ttl_seconds if ttl_seconds else 0.0,
             )
             self._persist_snapshots_locked()
             self._condition.notify_all()
@@ -308,7 +308,7 @@ class ReliableUploadManager(QObject):
         self._presence = {
             key: upload
             for key, upload in self._presence.items()
-            if upload.expires_at > now
+            if upload.expires_at <= 0 or upload.expires_at > now
         }
         previous_count = len(self._snapshots)
         self._snapshots = {
@@ -338,6 +338,7 @@ class ReliableUploadManager(QObject):
         if not has_record_maps:
             return
         now_wall = time.time()
+        state_version = _as_positive_int(raw.get("version")) if isinstance(raw, dict) else 0
         now_mono = self._clock()
         for key, record in records.items():
             if not isinstance(record, dict):
@@ -363,9 +364,13 @@ class ReliableUploadManager(QObject):
                 continue
             payload = record.get("payload")
             expires_wall_at = _as_positive_float(record.get("expires_at"))
-            if not isinstance(payload, dict) or expires_wall_at <= now_wall:
+            if (
+                not isinstance(payload, dict)
+                or (expires_wall_at > 0 and expires_wall_at <= now_wall)
+                or (expires_wall_at <= 0 and state_version < 3)
+            ):
                 continue
-            remaining = expires_wall_at - now_wall
+            remaining = expires_wall_at - now_wall if expires_wall_at > 0 else 0.0
             generation = _as_positive_int(record.get("generation")) or 1
             normalized_key = str(key or payload.get("client_id") or "window")
             generation_key = f"presence:{normalized_key}"
@@ -373,7 +378,7 @@ class ReliableUploadManager(QObject):
                 key=generation_key,
                 payload=_redact_sensitive(payload),
                 metadata={},
-                expires_at=now_mono + remaining,
+                expires_at=now_mono + remaining if remaining else 0.0,
                 generation=generation,
                 expires_wall_at=expires_wall_at,
             )
@@ -393,7 +398,7 @@ class ReliableUploadManager(QObject):
                 "generation": upload.generation,
             }
             for key, upload in self._presence.items()
-            if upload.expires_wall_at > time.time()
+            if upload.expires_wall_at <= 0 or upload.expires_wall_at > time.time()
         }
         valid = {
             key: {
@@ -416,7 +421,7 @@ class ReliableUploadManager(QObject):
             temporary.write_text(
                 json.dumps(
                     {
-                        "version": 2,
+                        "version": 3,
                         "presence": valid_presence,
                         "snapshots": valid,
                     },
