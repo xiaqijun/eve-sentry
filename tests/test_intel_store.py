@@ -551,6 +551,21 @@ def test_legacy_json_reports_gain_stable_stream_positions_on_next_save(tmp_path)
     assert "_stream_position" not in reloaded.list_reports()[0]["metadata"]
 
 
+def test_resolve_standard_event_cursor_does_not_rebuild_alert(tmp_path):
+    store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
+    report = store.add_report("Tama", ["Pilot"])
+
+    def fail(_report):
+        raise AssertionError("standard event cursor lookup must not score")
+
+    store._alert_from_report = fail
+
+    assert store.resolve_alert_stream_cursor(f"evt_{report.report_id}") == (
+        report.stream_position,
+        report.report_id,
+    )
+
+
 def test_json_stream_positions_follow_persistence_order(tmp_path):
     store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
     constructed_first = IntelReport(system="Tama", names=["First"])

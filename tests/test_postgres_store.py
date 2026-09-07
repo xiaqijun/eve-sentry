@@ -1439,6 +1439,26 @@ def test_postgres_hostile_wave_state_tracks_resolved_hostile_personnel():
     }]
 
 
+def test_postgres_resolve_standard_event_cursor_avoids_alert_rebuild():
+    report = IntelReport(
+        report_id="historical-1",
+        system="Tama",
+        names=["Pilot"],
+        stream_position=17,
+    )
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._reports_snapshot = lambda: []
+    store._report_for_alert_id = lambda _alert_id: report
+    store._alert_from_report = lambda _report: pytest.fail(
+        "standard event cursor lookup must not score"
+    )
+
+    assert store.resolve_alert_stream_cursor("evt_historical-1") == (
+        17,
+        "historical-1",
+    )
+
+
 def test_postgres_hostile_wave_row_decodes_personnel_with_legacy_rows():
     store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
 

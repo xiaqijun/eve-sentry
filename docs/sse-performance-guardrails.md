@@ -14,6 +14,18 @@
 - `limit` 只限制输出数量，不能替代有界的快照生成。
 - 全局 `IntelStore._lock` 内不得执行 PostgreSQL 网络 I/O、批量写入或提交。
 
+### 2026-09-08：无游标重连首帧阻塞
+
+星图无 `since` 或有效 `Last-Event-ID` 重连时，活动告警需要补齐持久化游标。旧实现的
+`resolve_alert_stream_cursor()` 会为每条报告重新生成告警，间接进入评分和 zKillboard
+网络请求。服务端虽然已返回 HTTP 200 和 `: connected`，但 bootstrap 会被外部请求阻塞；
+客户端读取超时后再次重连，旧连接随之堆积为 `CLOSE-WAIT`。
+
+标准告警 ID `evt_<report_id>` 与持久化报告是一一对应关系。游标解析必须直接读取报告的
+`stream_position` 和 `report_id`，不得重新评分、查询 ESI/zKillboard 或生成告警。只有无法
+直接映射的兼容事件 ID 才允许进入旧的完整匹配路径。此约束必须同时覆盖内存存储和
+PostgreSQL 历史报告。
+
 ## 当前实现保证
 
 - 服务端在响应头后立即发送 `: connected`，让客户端能判断连接已建立。
@@ -28,6 +40,8 @@
 - `presence_` 开头的事件 ID 是由当前 presence 状态合成的，不对应持久化报告游标。
   客户端用它作为 `Last-Event-ID` 重连时必须直接通过 bootstrap 对账，禁止在发送响应头前
   扫描热报告或查询 PostgreSQL 历史记录。
+- 标准 `evt_<report_id>` 游标解析只读取已持久化字段，不触发 `_alert_from_report()`、评分、
+  ESI 或 zKillboard；回归测试必须用会立即失败的评分替身验证该保证。
 
 ## 禁止回归的修改
 
@@ -35,6 +49,8 @@
 `_active_alert_list(..., limit=None)`，也不要把缓存快照改成每连接私有缓存。
 不要把所有 `Last-Event-ID` 都无条件交给持久化报告游标解析；新增合成事件类型时，必须
 明确其重连语义并添加“不触发报告扫描”的回归测试。
+不要为了确认标准 `evt_<report_id>` 是否仍是告警而重新评分；事件 ID 到报告游标的映射是
+持久化层职责，不依赖当前外部丰富结果。
 如需修改告警字段或游标语义，必须同时更新 API 文档、机器人测试和客户端联调说明。
 
 ## 客户端兼容要求

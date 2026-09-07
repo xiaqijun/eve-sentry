@@ -1969,7 +1969,14 @@ class IntelStore:
         alert_id = str(alert_id or "").strip()
         if not alert_id:
             return None
+        # The normal event id is derived directly from the persisted report id.
+        # Resolve this cheap, deterministic form before rebuilding an alert;
+        # rebuilding can invoke scoring and live enrichment (including zKill).
+        is_standard_event = alert_id.startswith("evt_")
+        report_id = alert_id[4:] if is_standard_event else ""
         for report in self._reports_snapshot():
+            if is_standard_event and report.report_id == report_id:
+                return self._report_stream_cursor(report)
             alert = self._alert_from_report(report)
             if alert is None:
                 continue

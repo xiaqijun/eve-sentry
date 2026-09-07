@@ -1467,6 +1467,12 @@ class PostgreSQLIntelStore(IntelStore):
         report = self._report_for_alert_id(str(alert_id or "").strip())
         if report is None:
             return None
+        # Standard event ids map one-to-one to report ids.  Returning the
+        # persisted cursor directly avoids rebuilding/scoring the alert and
+        # therefore avoids live enrichment while an SSE client reconnects.
+        normalized_id = str(alert_id or "").strip()
+        if normalized_id.startswith("evt_") and report.report_id == normalized_id[4:]:
+            return self._report_stream_cursor(report)
         alert = self._alert_from_report(report)
         if alert is None:
             return None
