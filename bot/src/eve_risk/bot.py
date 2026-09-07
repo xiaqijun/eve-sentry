@@ -65,6 +65,64 @@ ADMISSION_MESSAGES = {
 }
 
 
+def query_keyboard_content() -> dict[str, object]:
+    def button(
+        button_id: str,
+        label: str,
+        data: str,
+        *,
+        action_type: int,
+    ) -> dict[str, object]:
+        action: dict[str, object] = {
+            "type": action_type,
+            "permission": {
+                "type": 2,
+                "specify_role_ids": [],
+                "specify_user_ids": [],
+            },
+            "click_limit": 0,
+            "data": data,
+        }
+        if action_type == 2:
+            action.update(
+                {
+                    "at_bot_show_channel_list": False,
+                    "reply": True,
+                    "enter": False,
+                }
+            )
+        return {
+            "id": button_id,
+            "render_data": {
+                "label": label,
+                "visited_label": label,
+                "style": 1,
+            },
+            "action": action,
+        }
+
+    definitions = (
+        ("query_system", "查询星系", "查询星系 ", 2),
+        ("query_hostiles", "节点敌情", "查询节点敌情", 1),
+        ("query_character", "查询人员", "查询人员 ", 2),
+        ("query_corporation", "查询军团", "查询军团 ", 2),
+        ("query_alliance", "查询联盟", "查询联盟 ", 2),
+        ("query_all_nodes", "所有节点", "查询所有节点", 1),
+        ("query_monitoring_nodes", "预警节点", "查询预警节点", 1),
+        ("watch_online", "上线监测", "上线监测 人员 ", 2),
+    )
+    buttons = [
+        button(button_id, label, data, action_type=action_type)
+        for button_id, label, data, action_type in definitions
+    ]
+    return {
+        "rows": [
+            {"buttons": buttons[index:index + 2]}
+            for index in range(0, len(buttons), 2)
+        ]
+    }
+
+
 class RiskBotClient(botpy.Client):
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
@@ -224,6 +282,7 @@ class RiskBotClient(botpy.Client):
                     group_openid,
                     format_query_menu(),
                     msg_id=msg_id,
+                    include_keyboard=True,
                 )
                 return
             if sentry_query.get("mode") in {"system_roster", "filtered", "all_nodes"}:
@@ -364,8 +423,14 @@ class RiskBotClient(botpy.Client):
         content: str,
         *,
         msg_id: str = "",
+        include_keyboard: bool = False,
     ) -> None:
-        keyboard_id = self.settings.qq_query_keyboard_id
+        keyboard_id = self.settings.qq_query_keyboard_id if include_keyboard else ""
+        keyboard_content = (
+            query_keyboard_content()
+            if include_keyboard and not keyboard_id
+            else None
+        )
         try:
             if msg_id:
                 await self.qq.send_markdown(
@@ -374,12 +439,14 @@ class RiskBotClient(botpy.Client):
                     content,
                     1,
                     keyboard_id=keyboard_id,
+                    keyboard_content=keyboard_content,
                 )
             else:
                 await self.qq.send_proactive_markdown(
                     group_openid,
                     content,
                     keyboard_id=keyboard_id,
+                    keyboard_content=keyboard_content,
                 )
         except Exception:
             logger.warning("QQ query markdown delivery failed; falling back to text")
@@ -388,6 +455,57 @@ class RiskBotClient(botpy.Client):
             else:
                 await self.qq.send_proactive_text(group_openid, content)
 
+    async def on_interaction_create(self, interaction: object) -> None:
+        interaction_id = str(getattr(interaction, "id", "") or "").strip()
+        if not interaction_id:
+            logger.warning("Ignored QQ interaction without an ID")
+            return
+        try:
+            await self.api.on_interaction_result(interaction_id, 0)
+        except Exception:
+            logger.exception("QQ interaction acknowledgement failed")
+            return
+
+        first_delivery = await self.redis.set(
+            f"qq:interaction:{interaction_id}",
+            "1",
+            ex=self.settings.qq_context_ttl_seconds,
+            nx=True,
+        )
+        if not first_delivery:
+            return
+        data = getattr(interaction, "data", None)
+        resolved = getattr(data, "resolved", None)
+        command_text = str(
+            getattr(resolved, "button_data", "") or ""
+        ).strip()
+        query = parse_sentry_query(command_text)
+        if query is None or query.get("mode") not in {
+            "node_hostiles",
+            "monitoring_nodes",
+            "all_nodes",
+        }:
+            return
+        group_openid = str(
+            getattr(interaction, "group_openid", "") or ""
+        ).strip()
+        if not group_openid:
+            logger.warning("Ignored QQ query interaction without a group")
+            return
+        if query.get("mode") == "all_nodes":
+            await self._start_sentry_ocr_query(
+                query,
+                group_openid=group_openid,
+                msg_id="",
+            )
+            return
+        try:
+            reply = await self.sentry_status.query(query)
+        except SentryStatusError as exc:
+            await self.qq.send_proactive_text(group_openid, str(exc))
+            return
+        await self._send_query_markdown(group_openid, reply)
+
     async def _start_sentry_ocr_query(
         self,
         query: dict[str, str],
@@ -395,6 +513,17 @@ class RiskBotClient(botpy.Client):
         group_openid: str,
         msg_id: str,
     ) -> None:
+        async def send_ack(content: str) -> None:
+            if msg_id:
+                await self.qq.send_text(
+                    group_openid,
+                    msg_id,
+                    content,
+                    msg_seq=1,
+                )
+            else:
+                await self.qq.send_proactive_text(group_openid, content)
+
         group_hash = hashlib.sha256(group_openid.encode("utf-8")).hexdigest()[:16]
         lock_key = f"qq:ocr-query:group:{group_hash}"
         token = uuid.uuid4().hex
@@ -405,27 +534,17 @@ class RiskBotClient(botpy.Client):
             nx=True,
         )
         if not locked:
-            await self.qq.send_text(
-                group_openid,
-                msg_id,
-                "本群已有 OCR 查询正在进行，请等待当前结果。",
-                msg_seq=1,
-            )
+            await send_ack("本群已有 OCR 查询正在进行，请等待当前结果。")
             return
         try:
             created = await self.sentry_status.create_ocr_query(query)
         except SentryStatusError as exc:
             await self.redis.delete(lock_key)
-            await self.qq.send_text(group_openid, msg_id, str(exc), msg_seq=1)
+            await send_ack(str(exc))
             return
         requested = created.get("requested_clients")
         requested_count = len(requested) if isinstance(requested, list) else 0
-        await self.qq.send_text(
-            group_openid,
-            msg_id,
-            f"OCR 查询任务已下发｜目标节点 {requested_count}",
-            msg_seq=1,
-        )
+        await send_ack(f"OCR 查询任务已下发｜目标节点 {requested_count}")
         task = asyncio.create_task(
             self._finish_sentry_ocr_query(
                 query,
@@ -576,7 +695,7 @@ def main() -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("botpy").setLevel(logging.WARNING)
     threading.Thread(target=_start_health_server, daemon=True).start()
-    intents = botpy.Intents(public_messages=True)
+    intents = botpy.Intents(public_messages=True, interaction=True)
     client = RiskBotClient(intents=intents, bot_log=False)
     client.run(appid=settings.qq_app_id, secret=settings.qq_app_secret)
 

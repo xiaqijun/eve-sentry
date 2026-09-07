@@ -125,6 +125,53 @@ async def test_qq_client_rejects_http_200_business_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_qq_client_sends_inline_keyboard_content() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    keyboard = {
+        "rows": [
+            {
+                "buttons": [
+                    {
+                        "id": "query_hostiles",
+                        "action": {"type": 1, "data": "查询节点敌情"},
+                    }
+                ]
+            }
+        ]
+    }
+    async with httpx.AsyncClient() as http:
+        client = QQOpenAPIClient(
+            http,
+            redis,
+            "appid",
+            "secret",
+            "https://bots.qq.com/app/getAppAccessToken",
+            "https://api.sgroup.qq.com",
+        )
+        with respx.mock(assert_all_called=True) as router:
+            router.post("https://bots.qq.com/app/getAppAccessToken").mock(
+                return_value=httpx.Response(
+                    200, json={"access_token": "token", "expires_in": "7200"}
+                )
+            )
+            message = router.post(
+                "https://api.sgroup.qq.com/v2/groups/group/messages"
+            ).mock(return_value=httpx.Response(200, json={"id": "m1"}))
+
+            await client.send_markdown(
+                "group",
+                "source",
+                "**menu**",
+                1,
+                keyboard_content=keyboard,
+            )
+
+    body = json.loads(message.calls[0].request.content)
+    assert body["keyboard"] == {"content": keyboard}
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
 async def test_zkill_client_parses_and_caches_payload() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     payload = [

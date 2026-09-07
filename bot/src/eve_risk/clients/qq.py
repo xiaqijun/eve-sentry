@@ -62,6 +62,7 @@ class QQOpenAPIClient:
         content: str,
         *,
         keyboard_id: str = "",
+        keyboard_content: dict[str, object] | None = None,
     ) -> dict[str, object]:
         payload: dict[str, object] = {
             "content": "",
@@ -70,6 +71,8 @@ class QQOpenAPIClient:
         }
         if keyboard_id.strip():
             payload["keyboard"] = {"id": keyboard_id.strip()}
+        elif keyboard_content:
+            payload["keyboard"] = {"content": keyboard_content}
         return await self._post_message(
             group_openid,
             payload,
@@ -83,6 +86,7 @@ class QQOpenAPIClient:
         msg_seq: int,
         *,
         keyboard_id: str = "",
+        keyboard_content: dict[str, object] | None = None,
     ) -> dict[str, object]:
         payload: dict[str, object] = {
             "content": "",
@@ -93,6 +97,8 @@ class QQOpenAPIClient:
         }
         if keyboard_id.strip():
             payload["keyboard"] = {"id": keyboard_id.strip()}
+        elif keyboard_content:
+            payload["keyboard"] = {"content": keyboard_content}
         return await self._post_message(
             group_openid,
             payload,

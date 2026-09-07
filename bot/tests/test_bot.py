@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import botpy
@@ -8,7 +9,7 @@ import httpx
 import pytest
 
 from eve_risk.admission import AdmissionResult
-from eve_risk.bot import RiskBotClient
+from eve_risk.bot import RiskBotClient, query_keyboard_content
 
 
 @pytest.mark.asyncio
@@ -334,6 +335,96 @@ async def test_query_command_opens_markdown_keyboard_menu() -> None:
         await client.http_client.aclose()
         await redis.aclose()
         await original_redis.aclose()
+
+
+def test_query_keyboard_uses_callbacks_for_fixed_group_actions() -> None:
+    keyboard = query_keyboard_content()
+    buttons = [
+        button
+        for row in keyboard["rows"]
+        for button in row["buttons"]
+    ]
+    actions = {
+        button["action"]["data"]: button["action"]
+        for button in buttons
+    }
+
+    assert actions["查询节点敌情"]["type"] == 1
+    assert actions["查询所有节点"]["type"] == 1
+    assert actions["查询预警节点"]["type"] == 1
+    assert actions["查询星系 "]["type"] == 2
+    assert actions["查询星系 "]["enter"] is False
+
+
+@pytest.mark.asyncio
+async def test_query_menu_uses_inline_keyboard_without_a_template_id() -> None:
+    client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
+    original_redis = client.redis
+    redis = fakeredis.aioredis.FakeRedis()
+    client.redis = redis
+    client.settings.qq_query_keyboard_id = ""
+    client.qq.send_markdown = AsyncMock(return_value={"id": "menu"})
+
+    class Author:
+        member_openid = "member-1"
+
+    class Message:
+        id = "query-menu-inline"
+        group_openid = "group-1"
+        content = "查询"
+        author = Author()
+
+    try:
+        await client.on_group_at_message_create(Message())
+    finally:
+        await client.http_client.aclose()
+        await redis.aclose()
+        await original_redis.aclose()
+
+    client.qq.send_markdown.assert_awaited_once()
+    kwargs = client.qq.send_markdown.await_args.kwargs
+    assert kwargs["keyboard_id"] == ""
+    assert kwargs["keyboard_content"]["rows"]
+
+
+@pytest.mark.asyncio
+async def test_query_interaction_is_acknowledged_and_executed_once() -> None:
+    client = RiskBotClient(
+        intents=botpy.Intents(public_messages=True, interaction=True),
+        bot_log=False,
+    )
+    original_redis = client.redis
+    redis = fakeredis.aioredis.FakeRedis()
+    client.redis = redis
+    client.api.on_interaction_result = AsyncMock()
+    client.sentry_status.query = AsyncMock(return_value="### 当前节点敌情")
+    client.qq.send_proactive_markdown = AsyncMock(return_value={"id": "result"})
+    interaction = SimpleNamespace(
+        id="interaction-1",
+        group_openid="group-1",
+        data=SimpleNamespace(
+            resolved=SimpleNamespace(button_data="查询节点敌情")
+        ),
+    )
+
+    try:
+        await client.on_interaction_create(interaction)
+        await client.on_interaction_create(interaction)
+    finally:
+        await client.http_client.aclose()
+        await redis.aclose()
+        await original_redis.aclose()
+
+    assert client.api.on_interaction_result.await_count == 2
+    client.sentry_status.query.assert_awaited_once_with(
+        {"mode": "node_hostiles"}
+    )
+    client.qq.send_proactive_markdown.assert_awaited_once_with(
+        "group-1",
+        "### 当前节点敌情",
+        keyboard_id="",
+        keyboard_content=None,
+    )
 
 
 @pytest.mark.asyncio

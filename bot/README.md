@@ -55,7 +55,9 @@ uv run --frozen python -m eve_risk.qq_panel
 `分析`、`查询`、`帮助`、`开启预警`、`关闭预警`、`预警状态`。QQ 面板按钮只会把命令
 填入输入框，用户仍需发送；分析仍按当前 ESI 已确认人员逐人生成报告。
 
-`@机器人 查询` 打开 Markdown 查询菜单。支持：
+`@机器人 查询` 打开带内联键盘的 Markdown 查询菜单。配置 `QQ_QUERY_KEYBOARD_ID` 时优先
+使用平台静态模板；未配置时直接发送自定义键盘。固定查询可一键执行，需要名称的按钮会
+把命令填入输入框，补充参数后再发送。支持：
 
 ```text
 @机器人 查询星系 S-KSWL
@@ -161,8 +163,8 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
    也可设置为 `low`、`medium`、`high` 或 `critical`。
    `EVE_SENTRY_PERSONNEL_PUSH_INTERVAL_SECONDS` 控制同一星系名单更新的最小推送间隔；
    间隔内的变化会合并并在到期后推送最新完整名单，设为 `0` 可关闭合并。
-   `QQ_QUERY_KEYBOARD_ID` 是 QQ 开放平台审批后的静态按钮模板 ID，留空时查询菜单退化为
-   普通 Markdown。查询软超时默认 15 秒；上线监测默认每 60 秒检查，最低允许 30 秒，
+   `QQ_QUERY_KEYBOARD_ID` 是 QQ 开放平台审批后的静态按钮模板 ID，留空时使用内联键盘；
+   如果机器人没有自定义键盘权限，最终退化为普通 Markdown。查询软超时默认 15 秒；上线监测默认每 60 秒检查，最低允许 30 秒，
    完整扫描结果默认复用 30 秒。
 4. 在已有 PostgreSQL/Redis 容器，并安装了 Python 3.12、`python3-venv` 和 pip 的 Linux 主机上部署：
 
