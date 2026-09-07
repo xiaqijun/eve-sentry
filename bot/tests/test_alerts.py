@@ -1533,6 +1533,55 @@ async def test_personnel_updates_are_once_per_episode_and_fingerprint() -> None:
 
 
 @pytest.mark.asyncio
+async def test_personnel_roster_can_return_to_prior_state_in_same_episode() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {"active_intel": [], "alerts": [], "generated_at": "t0"}
+        )
+
+        def bootstrap(*names: str, generated_at: str) -> dict[str, Any]:
+            active_intel = [
+                {
+                    "id": f"ocr:{name.casefold()}",
+                    "active": True,
+                    "system_name": "EOY-BG",
+                    "name": name,
+                }
+                for name in names
+            ]
+            return {
+                "active_intel": active_intel,
+                "alerts": [
+                    {"active_intel_id": item["id"], "level": "high"}
+                    for item in active_intel
+                ],
+                "generated_at": generated_at,
+            }
+
+        await relay.process_bootstrap(bootstrap("Wyntel", generated_at="t1"))
+        await relay.process_bootstrap(
+            bootstrap("Wyntel", "Xackattack", generated_at="t2")
+        )
+        await relay.process_bootstrap(bootstrap("Wyntel", generated_at="t3"))
+
+        assert qq.send_proactive_markdown.await_count == 3
+        assert "Xackattack" in qq.send_proactive_markdown.await_args_list[1].args[1]
+        assert "Xackattack" not in qq.send_proactive_markdown.await_args_list[2].args[1]
+        stored = await redis.hget(SYSTEM_ALERT_STATE_KEY, "eoy-bg")
+        assert stored is not None
+        assert json.loads(stored)["personnel_revision"] == 3
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
 async def test_personnel_push_interval_coalesces_to_latest_roster() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     qq = SimpleNamespace(

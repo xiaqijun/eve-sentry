@@ -543,11 +543,15 @@ class EveSentryAlertRelay:
         if not episode_id or not fingerprint:
             logger.warning("Ignored malformed EVE Sentry personnel update")
             return True
+        revision = _personnel_revision(state)
 
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
         groups = sorted(_decode(value) for value in raw_groups if _decode(value))
         message = format_personnel_alert_message(state, occurred_at)
-        event_id = f"personnel:{system_name.casefold()}:{episode_id}:{fingerprint}"
+        event_id = (
+            f"personnel:{system_name.casefold()}:{episode_id}:"
+            f"revision:{revision}:{fingerprint}"
+        )
         delivered = 0
         failed = 0
         for group_openid in groups:
@@ -942,8 +946,23 @@ class EveSentryAlertRelay:
         for system_key in set(self._personnel_pending) - active_personnel_systems:
             self._discard_pending_personnel_update(system_key)
 
-        for system_key in current.keys() & previous.keys():
-            current[system_key]["episode_id"] = previous[system_key]["episode_id"]
+        for system_key, current_state in current.items():
+            previous_state = previous.get(system_key)
+            if previous_state is None:
+                current_state["personnel_revision"] = 1 if current_state.get(
+                    "personnel_fingerprint"
+                ) else 0
+                continue
+            current_state["episode_id"] = previous_state["episode_id"]
+            previous_fingerprint = _personnel_fingerprint(
+                previous_state.get("personnel")
+            )
+            current_fingerprint = str(
+                current_state.get("personnel_fingerprint") or ""
+            )
+            current_state["personnel_revision"] = _personnel_revision(
+                previous_state
+            ) + int(current_fingerprint != previous_fingerprint)
 
         transitions_succeeded = True
         if initialized:
@@ -1244,27 +1263,28 @@ class EveSentryAlertRelay:
                 personnel = payload.get("hostile_personnel")
                 if isinstance(personnel, list) and personnel:
                     previous = current[system_key]
+                    updated_personnel = [
+                        dict(item) for item in personnel if isinstance(item, dict)
+                    ]
+                    for item in updated_personnel:
+                        item.setdefault("system_name", system_name)
                     state = {
                         **previous,
                         "hostile_count": max(
                             int(previous.get("hostile_count") or 0),
                             int(payload.get("hostile_count") or 0),
                         ),
-                        "personnel": [
-                            item for item in personnel if isinstance(item, dict)
-                        ],
+                        "personnel": updated_personnel,
                     }
-                    state["personnel_fingerprint"] = hashlib.sha256(
-                        json.dumps(
-                            state["personnel"],
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ).encode("utf-8")
-                    ).hexdigest()[:16]
-                    if state["personnel_fingerprint"] != previous.get(
-                        "personnel_fingerprint"
+                    state["personnel_fingerprint"] = _personnel_fingerprint(
+                        state["personnel"]
+                    )
+                    if state["personnel_fingerprint"] != _personnel_fingerprint(
+                        previous.get("personnel")
                     ):
+                        state["personnel_revision"] = (
+                            _personnel_revision(previous) + 1
+                        )
                         if not await self.queue_system_personnel_update(
                             state, occurred_at
                         ):
@@ -1284,6 +1304,7 @@ class EveSentryAlertRelay:
             "episode_id": f"event:{alert_id}",
             "personnel": [],
             "personnel_fingerprint": "",
+            "personnel_revision": 0,
         }
         if not await self.deliver_system_transition(state, "alert"):
             logger.warning("EVE Sentry alert event delivery deferred")
@@ -1610,6 +1631,16 @@ def _personnel_fingerprint(value: object) -> str:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()[:20]
+
+
+def _personnel_revision(state: object) -> int:
+    """Return the persisted per-episode roster transition sequence."""
+    if not isinstance(state, dict):
+        return 0
+    try:
+        return max(0, int(state.get("personnel_revision") or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _personnel_snapshot(item: dict[str, Any]) -> dict[str, Any]:
