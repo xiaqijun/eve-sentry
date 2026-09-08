@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +29,27 @@ from app.alert_client import (
     update_alert_summaries_active,
 )
 from app.intel_client import AlertPoller, IntelApiClient, IntelApiError, ReportPoller
+
+# The monorepo keeps the client and server in separate ``app`` roots. Client
+# modules are imported first above; extend their package paths only for this
+# integration module so the real server package can participate in the tests.
+import app as app_package
+import app.channels as app_channels
+import app.core as app_core
+import app.engine as app_engine
+
+
+_SERVER_APP_ROOT = Path(__file__).resolve().parents[2] / "app"
+for package, path in (
+    (app_package, _SERVER_APP_ROOT),
+    (app_channels, _SERVER_APP_ROOT / "channels"),
+    (app_core, _SERVER_APP_ROOT / "core"),
+    (app_engine, _SERVER_APP_ROOT / "engine"),
+):
+    resolved = str(path)
+    if resolved not in package.__path__:
+        package.__path__.insert(0, resolved)
+
 from app.server.http_server import IntelHTTPServer
 from app.server.intel_store import IntelStore
 

@@ -7,7 +7,8 @@ on:
       - "app/**"
       - "frontend/**"
       - "scripts/**"
-      - "deploy/**"
+      - "deploy/ci/**"
+      - "deploy/linux/**"
       - "requirements*.txt"
       - "intel_map.json"
       - ".github/workflows/deploy-server.yml"
@@ -136,8 +137,9 @@ jobs:
       - name: Build immutable deployment archive
         run: |
           set -euo pipefail
-          mkdir -p deployment/backend deployment/frontend
-          cp -a app scripts deploy deployment/backend/
+          mkdir -p deployment/backend/deploy deployment/frontend
+          cp -a app scripts deployment/backend/
+          cp -a deploy/ci deploy/linux deployment/backend/deploy/
           cp -a requirements-server.txt intel_map.json deployment/backend/
           cp -a frontend-dist/. deployment/frontend/
           archive="eve-sentry-${GITHUB_SHA}.tar.gz"

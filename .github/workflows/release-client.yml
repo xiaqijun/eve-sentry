@@ -4,8 +4,6 @@ on:
   workflow_run:
     workflows: ["Client CI"]
     types: [completed]
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
@@ -28,8 +26,8 @@ jobs:
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_branch == 'main' &&
        github.event.workflow_run.head_repository.full_name == github.repository) ||
-      (github.event_name != 'workflow_run' &&
-       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -66,9 +64,6 @@ jobs:
           }
           if ($env:REQUESTED_VERSION -and $env:REQUESTED_VERSION -ne $version) {
               throw "Requested version $env:REQUESTED_VERSION does not match app version $version"
-          }
-          if ($env:GITHUB_REF -like 'refs/tags/*' -and $env:GITHUB_REF_NAME -ne "v$version") {
-              throw "Tag $env:GITHUB_REF_NAME does not match app version $version"
           }
           $ErrorActionPreference = "SilentlyContinue"
           gh release view "v$version" --repo $env:GITHUB_REPOSITORY --json tagName | Out-Null
@@ -134,29 +129,22 @@ jobs:
         run: python -m pip install pytest
       - name: Run client tests
         if: needs.check-release.outputs.run_tests == 'true'
-        # This integration module imports the monorepo server package, which is
-        # unavailable when client/ is the workflow working directory.
-        run: python -m pytest -q --ignore=tests/test_intel_client.py
+        run: |
+          python -m pytest -q --ignore=tests/test_intel_client.py
+          python -m pytest -q tests/test_intel_client.py
       - name: Resolve OCR model source release
         id: model-release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The first monorepo release has no previous model asset yet. Use the
-          # last standalone release only as a one-time bootstrap fallback.
-          $repositories = @("xiaqijun/eve-sentry", "xiaqijun/eve-sentry-client")
-          foreach ($repository in $repositories) {
-              $release = (gh release view --repo $repository --json tagName --jq .tagName 2>$null).Trim()
-              if ($release) {
-                  "repository=$repository" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-                  "release=$release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-                  break
-              }
-          }
+          $repository = $env:RELEASE_REPOSITORY
+          $release = (gh release view --repo $repository --json tagName --jq .tagName 2>$null).Trim()
           if (-not $release) {
-              throw "No client release is available for OCR model bootstrapping."
+              throw "No monorepo client release is available for OCR model restoration."
           }
+          "repository=$repository" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "release=$release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Cache OCR models
         id: cache-models
         uses: actions/cache/restore@v4

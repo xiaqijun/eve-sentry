@@ -31,7 +31,11 @@ def _fake_commands(tmp_path: Path) -> Path:
         fake_bin / "curl",
         "#!/usr/bin/env bash\n"
         "if [[ \"${FAKE_HEALTHY:-true}\" == true ]]; then\n"
-        "  printf '{\"ok\": true}'\n"
+        "  if [[ -n \"${FAKE_HEALTH_PAYLOAD:-}\" ]]; then\n"
+        "    printf '%s\\n' \"$FAKE_HEALTH_PAYLOAD\"\n"
+        "  else\n"
+        "    printf '{\"ok\": true, \"cache_entries\": 0}\\n'\n"
+        "  fi\n"
         "  exit 0\n"
         "fi\n"
         "exit 22\n",
@@ -167,3 +171,25 @@ def test_deployer_rolls_back_release_and_unit_when_health_fails(tmp_path: Path) 
     assert (gateway_root / "current").resolve() == gateway_root / "releases" / first_revision
     assert (gateway_root / "deployed-revision").read_text(encoding="utf-8").strip() == first_revision
     assert "release-one" in (unit_dir / "eve-sentry-esi-gateway.service").read_text(encoding="utf-8")
+
+
+def test_deployer_rejects_health_without_cache_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_commands(tmp_path)
+    monkeypatch.setenv("FAKE_HEALTH_PAYLOAD", '{"ok": true}')
+    gateway_root = tmp_path / "gateway"
+    unit_dir = tmp_path / "systemd"
+
+    result = _deploy(
+        tmp_path,
+        gateway_root,
+        unit_dir,
+        "3" * 40,
+        healthy=True,
+        unit_marker="invalid-health-contract",
+    )
+
+    assert result.returncode == 1
+    assert "health check failed" in result.stderr.lower()

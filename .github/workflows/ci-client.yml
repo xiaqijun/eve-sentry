@@ -58,7 +58,7 @@ jobs:
               exit 1
             }
           }
-      - name: Run client tests
-        # This integration module imports the monorepo server package, which is
-        # unavailable when client/ is the workflow working directory.
+      - name: Run client unit tests
         run: python -m pytest -q --ignore=tests/test_intel_client.py
+      - name: Run client-server integration tests
+        run: python -m pytest -q tests/test_intel_client.py

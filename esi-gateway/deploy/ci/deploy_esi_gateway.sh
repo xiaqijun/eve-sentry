@@ -160,7 +160,7 @@ fi
 
 healthy=false
 for ((attempt = 1; attempt <= health_attempts; attempt++)); do
-    if curl -fsS --max-time 5 "$health_url" | python3 -c 'import json,sys; payload=json.load(sys.stdin); raise SystemExit(0 if payload.get("ok") is True else 1)'; then
+    if curl -fsS --max-time 5 "$health_url" | python3 -c 'import json,sys; payload=json.load(sys.stdin); entries=payload.get("cache_entries"); raise SystemExit(0 if payload.get("ok") is True and type(entries) is int and entries >= 0 else 1)'; then
         healthy=true
         break
     fi

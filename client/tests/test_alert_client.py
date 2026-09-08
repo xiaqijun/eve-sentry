@@ -239,6 +239,39 @@ def test_sync_map_accounts_refreshes_when_monitoring_stops():
     assert controller.overlay.calls == [controller._map_accounts]
 
 
+def test_sync_map_accounts_refreshes_when_health_status_changes():
+    class FakeOverlay:
+        def __init__(self):
+            self.calls = []
+
+        def set_map_accounts(self, accounts):
+            self.calls.append(accounts)
+
+    online = {
+        "key": "remote-account:alice",
+        "character_name": "Alice",
+        "system_name": "Tama",
+        "system_id": 30002813,
+        "monitoring": True,
+        "health_status": "online",
+    }
+    degraded = {**online, "health_status": "degraded"}
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller.overlay = FakeOverlay()
+    controller._map_accounts = [online]
+    controller._local_map_accounts = []
+    controller._remote_map_accounts = [degraded]
+    controller._map_request_signature = (("Tama",), (), 3)
+    refreshes = []
+    controller._refresh_local_map = lambda: refreshes.append(True)
+
+    controller._sync_map_accounts()
+
+    assert controller._map_accounts[0]["health_status"] == "degraded"
+    assert controller.overlay.calls == [controller._map_accounts]
+    assert refreshes == [True]
+
+
 def test_sync_map_accounts_ignores_account_order_only_changes():
     class FakeOverlay:
         def set_map_accounts(self, _accounts):

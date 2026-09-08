@@ -2648,6 +2648,7 @@ class AlertTrayController:
                 str(item.get("system_name") or ""),
                 str(item.get("system_id") or ""),
                 _account_is_monitoring(item),
+                _account_health_status(item),
             )
             for item in getattr(self, "_map_accounts", [])
         ))
@@ -2657,6 +2658,7 @@ class AlertTrayController:
                 str(item.get("system_name") or ""),
                 str(item.get("system_id") or ""),
                 _account_is_monitoring(item),
+                _account_health_status(item),
             )
             for item in accounts
         ))

@@ -58,7 +58,7 @@ jobs:
             uv run python -c "from eve_risk.config import Settings; Settings(_env_file='.env')"
 
   deploy:
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 30

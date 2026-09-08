@@ -47,6 +47,27 @@ jobs:
         run: python -m ruff check . && python -m compileall -q esi_gateway scripts
       - name: Run test suite
         run: python -m pytest
+      - name: Verify controlled upstream ESI access
+        if: matrix.python-version == '3.13' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          python - <<'PY'
+          import time
+
+          from esi_gateway.client import EsiClient
+
+          last_error = None
+          for attempt in range(1, 4):
+              try:
+                  payload = EsiClient(timeout=10).get_system(30000142)
+                  if payload.get("name") != "Jita":
+                      raise RuntimeError(f"unexpected Jita payload: {payload!r}")
+                  break
+              except Exception as exc:
+                  last_error = exc
+                  if attempt == 3:
+                      raise SystemExit(f"ESI upstream smoke failed: {last_error}")
+                  time.sleep(2)
+          PY
       - name: Validate deployment scripts
         if: matrix.python-version == '3.13'
         run: |

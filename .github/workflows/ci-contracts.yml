@@ -1,0 +1,119 @@
+name: Contract Compatibility
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/server/**"
+      - "app/core/**"
+      - "app/intel/**"
+      - "app/esi/**"
+      - "client/app/intel_client.py"
+      - "client/app/persistent_intel_client.py"
+      - "client/app/alert_client.py"
+      - "client/tests/test_intel_client.py"
+      - "bot/src/eve_risk/alerts.py"
+      - "bot/src/eve_risk/sentry_status.py"
+      - "bot/tests/test_alerts.py"
+      - "bot/tests/test_sentry_status.py"
+      - "bot/tests/test_sentry_watch.py"
+      - "docs/api-reference.md"
+      - "docs/alert-api.md"
+      - "docs/architecture.md"
+      - "docs/reliable-push-plan.md"
+      - "docs/monorepo-development.md"
+      - "requirements-server.txt"
+      - "client/requirements-onnx.txt"
+      - "bot/pyproject.toml"
+      - "bot/uv.lock"
+      - ".github/workflows/ci-contracts.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "app/server/**"
+      - "app/core/**"
+      - "app/intel/**"
+      - "app/esi/**"
+      - "client/app/intel_client.py"
+      - "client/app/persistent_intel_client.py"
+      - "client/app/alert_client.py"
+      - "client/tests/test_intel_client.py"
+      - "bot/src/eve_risk/alerts.py"
+      - "bot/src/eve_risk/sentry_status.py"
+      - "bot/tests/test_alerts.py"
+      - "bot/tests/test_sentry_status.py"
+      - "bot/tests/test_sentry_watch.py"
+      - "docs/api-reference.md"
+      - "docs/alert-api.md"
+      - "docs/architecture.md"
+      - "docs/reliable-push-plan.md"
+      - "docs/monorepo-development.md"
+      - "requirements-server.txt"
+      - "client/requirements-onnx.txt"
+      - "bot/pyproject.toml"
+      - "bot/uv.lock"
+      - ".github/workflows/ci-contracts.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contract-compatibility-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-server.txt
+      - name: Install server dependencies
+        run: python -m pip install -r requirements-server.txt pytest
+      - name: Run server protocol tests
+        run: python -m pytest -q tests/test_http_server.py tests/test_http_resource_limits.py
+
+  client-server-contract:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements-server.txt
+            client/requirements-onnx.txt
+      - name: Install client and server dependencies
+        run: python -m pip install -r requirements-server.txt -r client/requirements-onnx.txt pytest
+      - name: Run client-server integration tests
+        working-directory: client
+        run: python -m pytest -q tests/test_intel_client.py
+
+  bot-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: bot
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            bot/pyproject.toml
+            bot/uv.lock
+      - name: Install uv
+        run: python -m pip install uv==0.11.6
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra dev
+      - name: Run bot protocol tests
+        run: uv run pytest -q tests/test_alerts.py tests/test_sentry_status.py tests/test_sentry_watch.py
