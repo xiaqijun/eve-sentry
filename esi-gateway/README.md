@@ -1,11 +1,13 @@
 # EVE Sentry ESI Gateway
 
-Standalone private proxy for allow-listed, public EVE Online ESI endpoints.
+Separately deployed private proxy for allow-listed, public EVE Online ESI
+endpoints. Its source, CI/CD, and operating documentation live in the
+`esi-gateway/` directory of the [EVE Sentry monorepo](../README.md).
 
 The gateway contains only the public ESI client and network-level concerns:
 authentication, caching, rate limiting, and health metrics. EVE SSO,
 authenticated sessions, tokens, and application resolvers remain in the
-`eve-sentry` service.
+root `app/` service.
 
 Documentation:
 
@@ -23,6 +25,7 @@ them in bounded batches.
 ## Run locally
 
 ```powershell
+cd esi-gateway
 $env:EVE_SENTRY_ESI_GATEWAY_TOKEN = 'use-a-random-secret-at-least-32-bytes'
 python scripts/esi_gateway.py --host 127.0.0.1 --port 8787
 ```

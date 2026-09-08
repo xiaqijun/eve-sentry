@@ -13,6 +13,6 @@ standings 和其他认证请求仍由 `eve-sentry` 服务端负责。
 “运维手册”维护，避免同一参数出现两份互相矛盾的副本。
 
 公共路由变更时，先同步服务端的
-[ESI 与缓存现状](https://github.com/xiaqijun/eve-sentry/blob/main/docs/server-deployment.md#公共-esi-gateway)，
-再更新本仓库的接口和运维说明。后续默认直接在 `main` 开发并推送，由 Gateway 工作流自动
+[ESI 与缓存现状](../../docs/server-deployment.md#公共-esi-gateway)，
+再更新 `esi-gateway/` 下的接口和运维说明。后续默认直接在 `main` 开发并推送，由 Gateway 工作流自动
 验证和部署。

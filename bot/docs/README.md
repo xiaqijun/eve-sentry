@@ -1,7 +1,7 @@
 # 机器人文档
 
-这里记录 QQ 机器人当前可用行为和发布约束。接口字段以服务端仓库的
-[API 参考](https://github.com/xiaqijun/eve-sentry/blob/main/docs/api-reference.md) 为准；
+这里记录单体仓库 `bot/` 组件当前可用行为和发布约束。接口字段以根目录服务端的
+[API 参考](../../docs/api-reference.md) 为准；
 客户端按需 OCR 协议以本单体仓库的
 [对接说明](../../client/docs/on-demand-ocr-query.md) 为准。
 
@@ -51,6 +51,6 @@ OCR 任务，机器人先确认任务已下发，再异步发送本次结果。
 
 ## 维护规则
 
-- 事件字段、游标或认证变化时，先更新服务端 API 文档，再同步本仓库说明。
+- 事件字段、游标或认证变化时，先更新根目录服务端 API 文档，再同步 `bot/` 组件说明。
 - 预警去重、SSE 重连和节点快照行为必须同时满足 `sse-reconnect-guardrails.md`。
 - 默认直接在 `main` 开发并推送，由工作流自动验证和部署；不创建额外分支或 PR。

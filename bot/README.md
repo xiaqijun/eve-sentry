@@ -2,6 +2,9 @@
 
 面向 EVE Online 国际服 Tranquility 的军团战前情报工具。机器人接收最多 30 个角色名，按角色分别结合 CCP ESI 与 zKillboard 的公开数据，生成可解释的单人战斗画像。
 
+本组件位于 EVE Sentry 单体仓库的 `bot/` 目录，服务端、客户端、Gateway 和接口文档均在
+[同一仓库](../README.md)维护。
+
 ## 功能
 
 - QQ 官方机器人群聊 `@` 指令接入，不依赖 OneBot 或非官方客户端。
@@ -193,6 +196,7 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
 需要 Python 3.12 和 [uv](https://docs.astral.sh/uv/)：
 
 ```bash
+cd bot
 uv sync --extra dev
 uv run pytest
 uv run ruff check .

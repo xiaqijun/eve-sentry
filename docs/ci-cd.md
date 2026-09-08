@@ -76,7 +76,7 @@ ESI Gateway：
   部署完成后的公开验证失败不会自动恢复旧版本，需人工重新发布上一版本。
 - 客户端发布清单必须签名并验证 SHA-256/Range；客户端更新器在启动健康检查失败时恢复
   旧安装目录。
-- 机器人仓库使用 immutable `releases/<commit-sha>` 和 `current` 链接回滚；数据库迁移
+- 机器人组件使用 immutable `releases/<commit-sha>` 和 `current` 链接回滚；数据库迁移
   不会反向回滚，schema 必须保持向后兼容。
 
 生产验证失败时应保留工作流日志、发布 SHA、API 文档版本和上一版本标识，便于人工回滚和审计。

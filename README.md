@@ -2,8 +2,26 @@
 
 EVE Sentry 是一套面向 EVE Online 本地频道的敌对监控与预警系统，包含 Windows
 监控客户端、Python 情报服务、React 管理页面、QQ 机器人、ESI Gateway 和公开下载站。
-本仓库是上述组件的唯一开发源，组件代码分别位于 `client/`、`bot/`、`esi-gateway/`、
-`download-site/` 和 `deploy/cloudflare-download/`。
+本仓库是所有组件、接口文档和发布工作流的唯一开发源；已废弃的独立组件仓库不再维护。
+
+Windows 用户可直接[下载最新版客户端](https://evesentrydownload.kisectool.com/download/latest)，
+使用步骤见[客户端操作指南](client/docs/client.md)。开发、部署和接口接入可从
+[完整文档索引](docs/README.md)进入。
+
+## 仓库结构
+
+| 目录 | 内容 | 主要入口 |
+| --- | --- | --- |
+| `app/`、`tests/` | 情报服务、认证、HTTP/SSE、PostgreSQL 和服务端测试 | `python -m app.server` |
+| `frontend/` | React Web 管理系统 | `npm run dev` |
+| `client/` | Windows 监控客户端、OCR、星图、打包资源和客户端测试 | `python main.py` |
+| `bot/` | QQ 机器人、SSE 消费和战报分析 | [机器人说明](bot/README.md) |
+| `esi-gateway/` | 公共 ESI 代理、缓存、限流和健康检查 | [Gateway 说明](esi-gateway/README.md) |
+| `download-site/`、`deploy/cloudflare-download/` | 下载页面、Cloudflare Worker 和发布校验 | [下载站说明](download-site/README.md) |
+| `docs/` | 架构、API、部署、运维和跨组件约定 | [文档索引](docs/README.md) |
+
+根目录 `app/` 只包含服务端代码；Windows 客户端代码位于 `client/app/`，仓库中不再保留
+第二份客户端实现。
 
 ## 系统架构
 
@@ -108,7 +126,27 @@ flowchart LR
 
 ## 本地启动
 
-Python 3.11+：
+以下示例均从仓库根目录开始，并使用 Python 3.11+。
+
+### 服务端
+
+服务端需要可用的 PostgreSQL 数据库：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements-server.txt
+.\.venv\Scripts\python -m app.server --host 127.0.0.1 --port 8765 --postgres-dsn postgresql://eve_sentry:password@127.0.0.1:5432/eve_sentry
+```
+
+### Web 管理系统
+
+```powershell
+cd frontend
+npm ci
+npm run dev
+```
+
+### Windows 客户端
 
 ```powershell
 cd client
@@ -116,8 +154,11 @@ python -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements-onnx.txt
 $env:EVE_SENTRY_OCR_BACKEND = "onnx"
 $env:EVE_SENTRY_OCR_DEVICE = "dml"
-python -m app.detector_client
+.\.venv\Scripts\python main.py
 ```
+
+机器人和 ESI Gateway 的本地运行方式分别见 [bot/README.md](bot/README.md) 和
+[esi-gateway/README.md](esi-gateway/README.md)。
 
 ## 客户端下载与更新
 
@@ -135,31 +176,16 @@ GitCode 镜像当前已暂停，详情见 [GitCode 镜像状态](docs/gitcode-re
 ONNX 模型应位于：
 
 ```text
-.runtime/onnx-models/PP-OCRv6_medium_det/model.onnx
-.runtime/onnx-models/PP-OCRv6_medium_rec/model.onnx
-```
-
-本地服务端使用 PostgreSQL；启动时仅加载有界近期报告与活跃情报引用：
-
-```powershell
-python -m pip install -r requirements-server.txt
-python -m app.server --host 127.0.0.1 --port 8765 --postgres-dsn postgresql://eve_sentry:password@127.0.0.1:5432/eve_sentry
-```
-
-前端开发：
-
-```powershell
-cd frontend
-npm ci
-npm run dev
+client/.runtime/onnx-models/PP-OCRv6_medium_det/model.onnx
+client/.runtime/onnx-models/PP-OCRv6_medium_rec/model.onnx
 ```
 
 ## 测试
 
 ```powershell
-python -m pytest tests
+.\.venv\Scripts\python -m pytest tests
 cd client
-python -m pytest tests
+.\.venv\Scripts\python -m pytest tests --ignore=tests/test_intel_client.py
 cd ..\frontend
 npm ci
 npm test

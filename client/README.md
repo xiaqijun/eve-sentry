@@ -1,7 +1,8 @@
-# EVE Sentry
+# EVE Sentry Windows 监控客户端
 
-EVE Sentry 是一套面向 EVE Online 本地频道的敌对监控与预警系统，包含 Windows
-监控客户端、Python 情报服务、React 管理页面和 QQ 机器人事件接入。
+`client/` 是 EVE Sentry 单体仓库中的 Windows 客户端组件，负责选择 EVE 窗口、截图、
+红色敌对图标检测、ONNX OCR、本地浮窗和星图展示。服务端代码位于仓库根目录 `app/`，
+客户端代码只在 `client/app/` 维护。项目总览和其他组件入口见[根 README](../README.md)。
 
 ## 系统架构
 
@@ -156,6 +157,7 @@ GitHub Actions 工作流可使用 `actionlint` 做静态校验；CI 在 Windows 
 
 ## 文档
 
+- [项目总览与仓库结构](../README.md)
 - [文档索引](docs/README.md)
 - [客户端操作指南](docs/client.md)
 - [按需 OCR 查询对接](docs/on-demand-ocr-query.md)
