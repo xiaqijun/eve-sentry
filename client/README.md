@@ -53,8 +53,9 @@ sequenceDiagram
 
     EVE->>Client: 当前成员列表画面
     Client->>Client: 检测红色敌对图标并立即本地预警
-    Client->>Server: 上报星系、敌对姓名和人数快照
-    Server->>Server: 解析角色并确认敌我关系
+    Client->>Server: Presence 上报星系和红色敌对图标数量
+    Client->>Server: OCR 只上传完整文本名单（可带 query_id）
+    Server->>Server: 以 Presence 更新实时人数，以 OCR 解析角色和敌我关系
     Server-->>Notice: 来敌事件 + 当前敌对人数
     loop 持续监控
         Client->>Server: 刷新当前名单快照
@@ -80,8 +81,7 @@ flowchart LR
     configured -->|"是"| keycheck["验证设备密钥"]
     key --> configured
     keycheck --> access["开启经过认证的客户端访问"]
-    keycheck -.-> listenerEnabled{"已开启 Listener 身份扫描？"}
-    listenerEnabled -->|"是"| listener["客户端读取最近修改的 Chatlogs Listener"]
+    keycheck --> listener["自动扫描最近修改的 Chatlogs Listener"]
     listener -->|"发现角色"| check["服务端身份风控"]
     check --> rule{"允许军团或角色白名单？"}
     rule -->|"是"| access
@@ -94,8 +94,10 @@ flowchart LR
 - 监控客户端只采集用户选中的 EVE 窗口，识别成员列表中的红色敌对图标与角色名。
 - 客户端使用 ONNX Runtime + DirectML 运行 PP-OCRv6 检测和识别模型。
 - 当前星系从所选角色的 EVE 本地聊天日志读取，不需要周期查询 ESI 位置接口。
-- OCR 快照和客户端心跳写入服务端，服务端负责角色解析、敌我分类、实时态和历史告警。
-- 客户端可同时开启预警浮窗，通过 SSE 接收所有在线节点和敌对人数变化。
+- Presence 独立上传红色敌对图标数量，是实时人数的权威来源；OCR 快照只上传完整文本名单，
+  用于角色解析和敌我分类，不携带或改变 Presence。
+- 客户端可同时开启预警浮窗，通过 SSE 接收当前可见监控节点（online、degraded、offline）
+  和敌对人数变化。
 - Web 管理系统提供星图态势、实时处置工作台、历史来袭分析、设备密钥、用户、身份规则和审计日志。
 - 已验证敌对角色可补充 zKillboard 危险度和战斗统计；外部统计只用于研判，不参与敌我分类和告警生成。
 - Web 管理系统直接使用 `@arco-design/web-react` 统一标准业务控件，并支持全局明暗主题
@@ -103,7 +105,7 @@ flowchart LR
   在浏览器中。项目未使用 Arco Design Pro 脚手架，星图和图表保留专用实现。
 - 管理员使用密码登录，普通用户使用 EVE SSO；桌面客户端可选使用设备密钥。密钥留空时
   不进行认证预检、Listener 身份扫描，也不发送 `Authorization`；服务端 `enforce` 模式
-  仍会拒绝未认证的受保护请求。Listener 身份扫描由客户端独立开关控制，默认关闭。
+  仍会拒绝未认证的受保护请求。填写有效密钥后，Listener 身份扫描自动运行，无需额外开关。
 
 ## 本地启动
 
@@ -128,12 +130,14 @@ Windows 用户直接下载并解压完整便携包即可使用。连接服务端
 客户端相关变更进入单体仓库 `main` 后会先运行 Windows CI。只有该次 push 对应 CI
 成功完成，发布工作流才会检查 `app/version.py` 中的版本；版本尚未发布时才进入受保护的
 `client-release` 环境，构建、签名并发布 Windows 客户端。已有同版本 Release 时工作流会
-成功跳过，不会覆盖现有资产。标签和手动发布仍会独立执行客户端测试。
+成功跳过，不会覆盖现有资产。手动发布只允许从 `main` 运行，并会独立执行客户端测试；
+版本标签由发布脚本创建，不再作为触发入口。
 
 客户端代码只在单体仓库的 `client/` 下维护；根 `app/` 是服务端代码，不再保留客户端副本。
 完整触发条件、权限边界、版本发布步骤和失败处理见
 [客户端 CI/CD 与发布流程](docs/release-process.md)。生产发布通过受保护的
-`client-release` 环境审批，发布后按该流程完成健康检查和必要的回滚。
+`client-release` 环境，workflow 和 Environment 分支策略都只允许 `main`；当前没有人工
+审批规则。发布后按该流程完成健康检查和必要的回滚。
 
 客户端从签名清单中的下载站主地址下载程序和模型，支持断点续传与 SHA-256 校验。
 
@@ -147,13 +151,14 @@ ONNX 模型应位于：
 ## 测试
 
 ```powershell
-.\.venv\Scripts\python -m pytest
+.\.venv\Scripts\python -m pytest -q --ignore=tests/test_intel_client.py
+.\.venv\Scripts\python -m pytest -q tests/test_intel_client.py
 .\.venv\Scripts\python -m pytest -q tests/test_release_workflows.py
 ```
 
 GitHub Actions 工作流可使用 `actionlint` 做静态校验；CI 在 Windows runner 上使用 Python
-3.13 和 ONNX 依赖运行测试，并暂时忽略仍引用单体仓库服务端模块的集成测试
-`tests/test_intel_client.py`。
+3.13 和 ONNX 依赖运行测试。普通客户端测试和真实 client-server 集成测试使用两个独立的
+pytest 进程，避免根服务端与客户端两个 `app` 包在同一解释器中污染命名空间。
 
 ## 文档
 

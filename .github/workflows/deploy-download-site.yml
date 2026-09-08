@@ -6,6 +6,8 @@ on:
     paths:
       - "download-site/**"
       - "deploy/cloudflare-download/**"
+      - "client/docs/client.md"
+      - "docs/server-deployment.md"
       - ".github/workflows/ci-download-site.yml"
       - ".github/workflows/deploy-download-site.yml"
   workflow_dispatch:

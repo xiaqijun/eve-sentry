@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 export default function ClientDocsPage() {
   return (
     <DocsShell current="client">
-      <MarkdownDocument source={readRepositoryDocument("docs/client.md")} />
+      <MarkdownDocument source={readRepositoryDocument("client/docs/client.md")} />
     </DocsShell>
   );
 }

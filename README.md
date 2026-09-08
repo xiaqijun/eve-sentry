@@ -72,8 +72,9 @@ sequenceDiagram
 
     EVE->>Client: 当前成员列表画面
     Client->>Client: 检测红色敌对图标并立即本地预警
-    Client->>Server: 上报星系、敌对姓名和人数快照
-    Server->>Server: 解析角色并确认敌我关系
+    Client->>Server: Presence 上报星系和红色敌对图标数量
+    Client->>Server: OCR 只上传完整文本名单（可带 query_id）
+    Server->>Server: 以 Presence 更新实时人数，以 OCR 解析角色和敌我关系
     Server-->>Notice: 来敌事件 + 当前敌对人数
     loop 持续监控
         Client->>Server: 刷新当前名单快照
@@ -99,8 +100,7 @@ flowchart LR
     configured -->|"是"| keycheck["验证设备密钥"]
     key --> configured
     keycheck --> access["开启经过认证的客户端访问"]
-    keycheck -.-> listenerEnabled{"已开启 Listener 身份扫描？"}
-    listenerEnabled -->|"是"| listener["客户端读取最近修改的 Chatlogs Listener"]
+    keycheck --> listener["自动扫描最近修改的 Chatlogs Listener"]
     listener -->|"发现角色"| check["服务端身份风控"]
     check --> rule{"允许军团或角色白名单？"}
     rule -->|"是"| access
@@ -113,8 +113,10 @@ flowchart LR
 - 监控客户端只采集用户选中的 EVE 窗口，识别成员列表中的红色敌对图标与角色名。
 - 客户端使用 ONNX Runtime + DirectML 运行 PP-OCRv6 检测和识别模型。
 - 当前星系从所选角色的 EVE 本地聊天日志读取，不需要周期查询 ESI 位置接口。
-- OCR 快照和客户端心跳写入服务端，服务端负责角色解析、敌我分类、实时态和历史告警。
-- 客户端可同时开启预警浮窗，通过 SSE 接收所有在线节点和敌对人数变化。
+- Presence 独立上传红色敌对图标数量，是实时人数的权威来源；OCR 快照只上传完整文本名单，
+  用于角色解析和敌我分类，不携带或改变 Presence。
+- 客户端可同时开启预警浮窗，通过 SSE 接收当前可见监控节点（online、degraded、offline）
+  和敌对人数变化。
 - Web 管理系统提供星图态势、实时处置工作台、历史来袭分析、设备密钥、用户、身份规则和审计日志。
 - 已验证敌对角色可补充 zKillboard 危险度和战斗统计；外部统计只用于研判，不参与敌我分类和告警生成。
 - Web 管理系统直接使用 `@arco-design/web-react` 统一标准业务控件，并支持全局明暗主题
@@ -122,7 +124,7 @@ flowchart LR
   在浏览器中。项目未使用 Arco Design Pro 脚手架，星图和图表保留专用实现。
 - 管理员使用密码登录，普通用户使用 EVE SSO；桌面客户端可选使用设备密钥。密钥留空时
   不进行认证预检、Listener 身份扫描，也不发送 `Authorization`；服务端 `enforce` 模式
-  仍会拒绝未认证的受保护请求。Listener 身份扫描由客户端独立开关控制，默认关闭。
+  仍会拒绝未认证的受保护请求。填写有效密钥后，Listener 身份扫描自动运行，无需额外开关。
 
 ## 本地启动
 
@@ -186,6 +188,7 @@ client/.runtime/onnx-models/PP-OCRv6_medium_rec/model.onnx
 .\.venv\Scripts\python -m pytest tests
 cd client
 .\.venv\Scripts\python -m pytest tests --ignore=tests/test_intel_client.py
+.\.venv\Scripts\python -m pytest -q tests/test_intel_client.py
 cd ..\frontend
 npm ci
 npm test

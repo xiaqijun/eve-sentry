@@ -31,10 +31,16 @@ Authorization: Bearer eve_xxx
 
 - `/api/v1/events`
 - `/api/v1/bootstrap`
+- `/api/v1/alert-history`
+- `/api/v1/hostile-waves`
 - `/api/v1/integrations/hostile-systems`
+- `/api/v1/ocr/query` 和 `/api/v1/ocr/query/{query_id}`
 
 不要把密钥放入 URL、日志或前端源码。公网调用必须使用 HTTPS。密钥被吊销、所属账号被
 禁用或删除后，已有 SSE 连接也会被服务端主动断开。
+
+其中 `POST /api/v1/ocr/query` 是只读服务密钥唯一允许的命令写入例外；它只创建有界的
+一次性客户端查询，不直接修改持久化情报。
 
 ## 实时预警事件流
 
@@ -56,29 +62,32 @@ curl -N --fail-with-body \
   "https://YOUR_SERVER/api/v1/events?bootstrap=1&heartbeat=15"
 ```
 
-响应类型为 `text/event-stream; charset=utf-8`。默认保持长期连接；只有显式设置非零
-`timeout` 时，服务端才会在到期后正常关闭。正常 EOF 应立即重连，连接异常才使用退避。
+响应类型为 `text/event-stream; charset=utf-8`。服务端默认在 30 秒后正常结束一次 SSE
+响应，并默认每 15 秒发送注释心跳。正常 EOF 表示连接轮换，应立即重连；只有网络或协议
+错误才使用有上限的指数退避。
 
 ### 查询参数
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `bootstrap` | `false` | 为 `true` 时发送当前活动状态快照，推荐始终启用 |
-| `timeout` | 空 | 本次连接最长保持秒数，范围 `0` 至 `300`；省略表示长期连接，`0` 表示读取当前一轮后结束 |
+| `timeout` | `30` | 本次响应最长保持秒数，范围 `0` 至 `300`；`0` 表示读取当前一轮后结束 |
 | `heartbeat` | `15` | 空闲时发送 SSE 注释心跳的间隔秒数，范围 `0` 至 `60`；`0` 表示关闭 |
 | `limit` | `50` | 每轮最多读取的活动告警数，最大 `1000` |
-| `since` | 空 | ISO 8601 时间或上次事件游标 |
+| `since` | 空 | ISO 8601 时间回退游标 |
 | `min_score` | 空 | 只接收不低于该分数的告警，必须为非负整数 |
 | `min_level` | 空 | 最低等级：`low`、`medium`、`high` 或 `critical` |
 
-重连时优先把最后处理成功的 SSE `id` 放入 `Last-Event-ID` 请求头。服务端会从该事件之后
-继续发送；未保存事件 ID 时，可以用 `since` 传递最后处理时间。`Last-Event-ID` 的优先级
-高于 `since`。
+重连时应把最后处理成功的 SSE `id` 持久化并放入 `Last-Event-ID` 请求头。
+`state:<sequence>` 直接恢复状态事件序列；已存储的 alert/report ID 会解析到报告流游标；
+ISO 8601 事件 ID 可按时间恢复。`presence_*` 属于合成事件 ID，不能直接恢复报告流，此时
+使用 `bootstrap` 完成权威对账，并可通过 `since` 提供时间回退。
 
 ### `bootstrap` 事件
 
-`bootstrap=1` 时，连接建立后会收到当前活动状态。活动情报、告警或在线监控位置变化时，
-同一连接还可能再次收到新的快照。
+`bootstrap=1` 时，本次连接会收到当前活动状态。若有待重放的持久事件，服务端可能先发送
+游标后的 `alert`/`safe` 再发送 Bootstrap，消费者不得依赖固定先后顺序。活动情报、告警或
+监控节点位置、健康、生命周期变化时，同一连接还可能再次收到新的快照。
 
 ```text
 id: evt_0123456789abcdef
@@ -102,9 +111,9 @@ OCR 人员名单只是额外信息；因此即使尚未生成 OCR 告警记录�
 | `alerts` | array | 当前活动告警详情 |
 | `active_intel` | array | 当前活动情报 |
 | `clients` | object | 在线客户端和监控位置快照 |
-| `monitoring_node_changes` | array | 本次快照相对上次快照的上线、下线或换星系变化 |
-| `monitoring_nodes` | array | 当前全部在线监控节点快照；节点变化时用于校正漏报 |
-| `monitoring_nodes_version` | string | 当前在线节点快照版本；节点列表未变化时保持不变 |
+| `monitoring_node_changes` | array | 本次快照相对上次快照的生命周期、位置和健康状态变化 |
+| `monitoring_nodes` | array | 当前仍可见的非 `removed` 节点；可处于 `online`、`degraded` 或 `offline` |
+| `monitoring_nodes_version` | string | 由节点 ID、星系和健康状态生成；敌对人数不参与版本计算 |
 
 `hostile_count` 已由服务端按监控客户端去重和聚合。调用方不应自行累加 `alerts` 或
 `active_intel` 来替代该值；`alerts` 可能要等 OCR 增效信息到达后才出现。
@@ -113,7 +122,7 @@ OCR 人员名单只是额外信息；因此即使尚未生成 OCR 告警记录�
 
 当连接使用 `bootstrap=1` 时，服务端会在监控节点状态发生变化后更新快照中的
 `monitoring_node_changes`。首次连接返回空数组；后续只包含本次变化。与此同时，
-`monitoring_nodes` 始终提供完整在线节点列表，机器人应在节点变化时优先推送该列表，
+`monitoring_nodes` 始终提供完整可见节点列表，机器人应在节点变化时优先推送该列表，
 并可使用 `monitoring_nodes_version` 去重和在断线重连后校正漏报。
 
 ```json
@@ -125,7 +134,8 @@ OCR 人员名单只是额外信息；因此即使尚未生成 OCR 告警记录�
       "character_name": "Pilot Alpha",
       "source_instance": "EVE - Pilot Alpha",
       "system_name": "Jita",
-      "system_id": 30000142
+      "system_id": 30000142,
+      "health_status": "online"
     },
     {
       "change": "moved",
@@ -134,33 +144,47 @@ OCR 人员名单只是额外信息；因此即使尚未生成 OCR 告警记录�
       "from_system": "Jita",
       "to_system": "Tama",
       "system_name": "Tama",
-      "system_id": 30002813
+      "system_id": 30002813,
+      "health_status": "online"
     },
     {
       "change": "offline",
       "node_id": "client:detector-client:test:pilot-gamma",
       "character_name": "Pilot Gamma",
-      "system_name": "Amarr"
+      "system_name": "Amarr",
+      "health_status": "offline",
+      "previous_health_status": "degraded"
     }
   ],
   "monitoring_nodes_version": "8d6a0d2a6c6bb1a0",
   "monitoring_nodes": [
     {
       "client_id": "detector-client:test:pilot-alpha",
-      "system_name": "Jita"
+      "system_name": "Jita",
+      "health_status": "online"
     },
     {
       "client_id": "detector-client:test:pilot-beta",
-      "system_name": "Tama"
+      "system_name": "Tama",
+      "health_status": "online"
+    },
+    {
+      "client_id": "detector-client:test:pilot-gamma",
+      "system_name": "Amarr",
+      "health_status": "offline"
     }
   ]
 }
 ```
 
-`change` 取值为 `online`、`offline` 或 `moved`。机器人应把变化信息作为提示，并以
-`monitoring_nodes` 的完整列表作为最终状态，使用 `monitoring_nodes_version` 去重。
-下线既包括客户端主动停止监控，也包括心跳超时；星系变化只在同一节点的
-`system_name` 实际改变时产生。
+`change` 可取 `online`、`degraded`、`offline`、`removed` 或 `moved`。健康状态变化会带
+`previous_health_status`；同一次更新若同时发生位置和健康变化，可以产生两条 change。
+`monitoring_nodes` 不是“所有在线节点”，而是所有尚未 `removed` 且具有有效星系的可见
+节点。机器人应把变化信息作为提示，并以该完整列表作为最终状态，使用
+`monitoring_nodes_version` 去重。按当前 10 秒心跳配置计算，节点大约在 12 秒进入
+`degraded`、22 秒进入 `offline`、32 秒进入 `removed`；星系变化只在同一节点的
+`system_name` 实际改变时产生。`capture_online=false` 会在父 heartbeat 仍在线时直接把目标
+标为 `offline`，不要求先经过 `degraded`。
 
 ### `monitoring_node` 事件
 
@@ -170,15 +194,31 @@ OCR 人员名单只是额外信息；因此即使尚未生成 OCR 告警记录�
 ```text
 id: 2026-08-10T01:00:00+00:00
 event: monitoring_node
-data: {"schema_version":"monitoring_node_event.v1","generated_at":"2026-08-10T01:00:00+00:00","changes":[{"change":"moved","node_id":"client:detector-client:test:pilot-alpha","character_name":"Pilot Alpha","from_system":"Jita","to_system":"Tama","system_name":"Tama"}],"nodes_version":"8d6a0d2a6c6bb1a0","nodes":[{"client_id":"detector-client:test:pilot-alpha","system_name":"Tama"}]}
+data: {"schema_version":"monitoring_node_event.v1","generated_at":"2026-08-10T01:00:00+00:00","changes":[{"change":"moved","node_id":"client:detector-client:test:pilot-alpha","character_name":"Pilot Alpha","from_system":"Jita","to_system":"Tama","system_name":"Tama","health_status":"online"}],"nodes_version":"8d6a0d2a6c6bb1a0","nodes":[{"client_id":"detector-client:test:pilot-alpha","system_name":"Tama","health_status":"online"}]}
 ```
 
-机器人可以直接监听 `monitoring_node`，在收到事件时推送 `nodes` 中的完整在线节点列表；
+机器人可以直接监听 `monitoring_node`，在收到事件时推送 `nodes` 中的完整可见节点列表；
 `bootstrap.monitoring_node_changes` 仍会保留，用于不支持新事件名的兼容消费者。
 
 ### `alert` 事件
 
-发现新的活动敌对证据时发送：
+wire `alert` 当前有两种载荷，消费者必须按字段能力处理，不能假设所有字段都存在：
+
+- 持久状态事件：`id` 为 `state:<sequence>`，`data.event_type` 为 `alert.entered` 或
+  `alert.updated`，重点字段是 `event_key`、`system_name`、`hostile_count`、
+  `hostile_personnel` 和 `active`；
+- 告警报告事件：`id` 通常为 `evt_*`，可以包含 `names`、`character_ids`、`level`、`score`、
+  `verified_characters` 和 `evidence` 等报告字段。
+
+持久状态事件示例：
+
+```text
+id: state:124
+event: alert
+data: {"id":"state:124","event_key":"alert.updated:s-kswl:...","event_type":"alert.updated","system_name":"S-KSWL","hostile_count":2,"hostile_personnel":[],"active":true,"created_at":"2026-09-08T12:00:00+00:00","presence_only":true}
+```
+
+告警报告示例：
 
 ```text
 id: evt_0123456789abcdef
@@ -187,59 +227,69 @@ data: {"id":"evt_0123456789abcdef","level":"critical","score":100,"system_name":
 
 ```
 
-红色图标的 detector presence-only 证据也会作为一次 `alert` 事件发送。该事件不写入
-历史人员报告，`presence_only` 为 `true`，`names`、`character_ids` 和
-`verified_characters` 为空，但 `hostile_count` 表示客户端确认的敌对数量。事件 ID 对同一
-客户端和星系的本次进入保持稳定；数量刷新不会重复触发，清空后再次进入会生成新的事件。
+红色图标的 detector Presence 状态也会作为 `alert` 发送。它不要求先生成历史人员报告；
+没有已确认人员时 `presence_only=true`，`hostile_personnel` 为空，但 `hostile_count` 仍是
+有效的权威人数。数量变化可以生成新的 `alert.updated`，清空后再次进入会生成新的
+`alert.entered`；消费者必须按事件 ID 或 `event_key` 去重，不能忽略数量更新。
 
-调用方通常只需要以下字段：
+调用方常用字段如下。“必需”按对应载荷类型计算：
 
-| 字段 | 类型 | 必需 | 说明 |
+| 字段 | 类型 | 必需范围 | 说明 |
 | --- | --- | --- | --- |
-| `id` | string | 是 | 告警唯一 ID，也用于断线续传和去重 |
-| `system_name` | string | 是 | 敌对所在星系；`system` 是兼容别名 |
-| `system_id` | integer/null | 是 | EVE 星系 ID，无法解析时为 `null` |
-| `names` | string[] | 是 | 本次识别或上报的角色名称 |
-| `character_ids` | integer[] | 是 | 已解析的角色 ID，可能为空 |
-| `hostile_count` | integer | 否 | 监控客户端确认的当前敌对人数 |
-| `active_names` | string[] | 否 | detector 客户端在该星系当前活动快照中的完整角色名单；不要用单条 `names` 的长度计算人数 |
-| `active_character_ids` | integer[] | 否 | 当前活动快照中已解析的完整角色 ID 列表 |
-| `classification` | string | 否 | 当前敌我分类，敌对通常为 `red` |
-| `level` | string | 是 | 兼容告警等级 |
-| `score` | integer | 是 | 兼容告警分数，不等同于 zKill 威胁度 |
-| `created_at` | string | 是 | 服务端生成时间，ISO 8601 |
-| `source_observation_id` | string | 是 | 来源观察记录 ID |
-| `verified_characters` | object[] | 是 | 经 ESI 确认的角色；可能为空 |
-| `evidence` | object[] | 是 | 告警判定依据 |
+| `id` | string | 两者 | 事件/告警 ID，也用于断线续传和去重 |
+| `system_name` | string | 两者 | 敌对所在星系；`system` 是兼容别名 |
+| `created_at` | string | 两者 | 服务端生成时间，ISO 8601 |
+| `event_type` | string | 状态事件 | `alert.entered` 或 `alert.updated` |
+| `event_key` | string | 状态事件 | 状态事件幂等键 |
+| `active` | boolean | 状态事件 | `alert` 状态事件为 `true` |
+| `hostile_count` | integer | 状态事件 | 当前权威敌对人数；报告载荷中可选 |
+| `hostile_personnel` | object[] | 状态事件 | 当前已确认敌对人员，可能为空 |
+| `system_id` | integer/null | 可选 | EVE 星系 ID，无法解析时为 `null` |
+| `names` | string[] | 报告事件 | 本条报告识别或上报的角色名称 |
+| `character_ids` | integer[] | 报告事件 | 本条报告已解析的角色 ID，可能为空 |
+| `active_names` | string[] | 报告事件可选 | 当前活动快照中的完整已确认名单 |
+| `active_character_ids` | integer[] | 报告事件可选 | 当前活动快照中已解析的完整角色 ID |
+| `classification` | string | 报告事件可选 | 当前敌我分类，敌对通常为 `red` |
+| `level` / `score` | string / integer | 报告事件 | 兼容告警等级和分数 |
+| `source_observation_id` | string | 报告事件可选 | 来源观察记录 ID |
+| `verified_characters` / `evidence` | object[] | 报告事件可选 | ESI 角色详情和判定依据 |
 
 `verified_characters[].zkill` 是可选的外部统计。消费者必须允许它缺失，并忽略未来新增的
 未知字段。服务端在敌对历史和活动告警中排除 `classification=white` 以及带有
 `friendly_*` 证据的记录；detector 人员只有在 ESI 身份解析完成且当前分类为 `red` 时才会
-进入人员明细。机器人或其他集成应使用 `hostile_count` 作为人数，使用 `active_names` 作为
-detector 当前的已确认敌对名单；`names` 只表示这一条告警记录，不能作为完整名单。
-presence-only 告警没有角色名单时，`active_names` 可能为空，但 `hostile_count` 仍然有效。
+进入人员明细。机器人或其他集成应使用 `hostile_count` 作为人数；状态事件使用
+`hostile_personnel`，报告事件可使用 `active_names` 读取当前已确认名单。`names` 只表示一条
+报告，不能作为完整名单；Presence-only 状态没有人员时名单可以为空，但人数仍然有效。
 
 QQ 机器人在人员表的 zKill 列直接输出完整的 `https://zkillboard.com/character/{id}/`
 地址。不要依赖仅包含图标的 Markdown 链接：部分 QQ 群 Markdown 渲染器会隐藏其链接目标，
 导致消息中只剩 `🔗` 且无法点击。
 
-### `alert.entered`、`alert.updated` 与 `alert.cleared` 事件
+### 内部状态事件与 SSE wire 事件映射
 
-PostgreSQL 事件日志启用后，服务端会优先发送带稳定序号游标的事件。兼容消费者仍可按
-`alert`/`safe` 处理：
+PostgreSQL 事件日志启用后，服务端发送带稳定序号游标的状态事件，但 wire `event` 仍保持
+固定兼容名称：
+
+| 内部 `data.event_type` | SSE wire `event` | 含义 |
+| --- | --- | --- |
+| `alert.entered` | `alert` | 威胁进入活动状态 |
+| `alert.updated` | `alert` | 活动威胁更新 |
+| `alert.cleared` | `safe` | 威胁解除 |
 
 ```text
 id: state:123
-event: alert.cleared
+event: safe
 data: {"id":"state:123","event_key":"alert.cleared:s-kswl:...","event_type":"alert.cleared","system_name":"S-KSWL","hostile_count":0,"active":false,"created_at":"2026-09-07T12:05:00+00:00","message":"✅ S-KSWL 清空"}
 ```
 
 `alert.entered` 表示从无敌对到有敌对，`alert.updated` 表示权威人数或已确认名单变化，
 `alert.cleared` 表示服务端状态从非空转为空。`state:<seq>` 是 PostgreSQL 事件序号，
-客户端应保存它并在 `Last-Event-ID` 中续传；事件已经在状态事务中落库，不由每个 SSE 连接
-临时推导。
+客户端应保存它并在 `Last-Event-ID` 中续传。消费者按 wire `event` 分派消息，并可用
+`data.event_type` 区分内部转换；事件已经在状态事务中落库，不由每个 SSE 连接临时推导。
+`bootstrap` 和 `monitoring_node` 是另外两类 wire 事件，节点变化后应以伴随的
+`bootstrap` 为最终状态。
 
-### 兼容 `safe` 事件
+### `safe` 事件
 
 一个星系的最后一条活动敌对证据清空时发送：
 

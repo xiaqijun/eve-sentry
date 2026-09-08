@@ -91,7 +91,6 @@ POST /api/v1/ocr/snapshot
   "system_name": "S-KSWL",
   "system_id": 30000123,
   "names": ["Alice", "Bob"],
-  "hostile_icon_count": 1,
   "query_id": "ocrq_abc123"
 }
 ```
@@ -102,11 +101,15 @@ POST /api/v1/ocr/snapshot
 - `query_id` 原样回传，不能为空或改写；
 - `names` 可以为空数组，表示本次 OCR 没有识别到文本；
 - 保留现有 `system_name`、`system_id`、`source_instance` 和时间字段；
+- 不发送 `hostile_icon_count`、`ocr_candidates` 或 `hostile_icons`；
 - 查询上传不能覆盖或取消正常 OCR 快照队列；
 - 建议查询上传使用独立队列键，例如 `query:{query_id}:{client_id}`。
 
 服务端收到快照后会完成 ESI 识别和当前 active 名单聚合，客户端不需要实现额外的
 角色、军团或联盟查询逻辑。
+按需 OCR 不能创建、续期、清除或覆盖 Presence；实时敌对人数来自直接
+`POST /api/v1/hostile-presence`，或 heartbeat 携带的同版本 Presence 对账状态。未识别到
+名字时，空 `names` 仍是有效查询结果，必须使用同一个 `query_id` 完成查询。
 
 ## 本地状态机
 
@@ -135,19 +138,20 @@ POST /api/v1/ocr/snapshot
 4. 当前没有敌对图标时，按需查询仍能上传一次 OCR；
 5. 同一 `query_id` 的重复 heartbeat 不会导致重复上传；
 6. 正常 OCR、敌对数量上报和查询 OCR 三类队列互不覆盖；
-7. 上传失败时沿用现有可靠上传和退避机制，并在查询有效期内重试。
+7. 上传失败时沿用现有可靠上传和退避机制，并在查询有效期内重试；
+8. 查询执行前后，不会因为该 OCR 请求本身创建、刷新、清除或改变任何 Presence 状态。
 
 ## 实现映射与测试
 
-- `app/intel_client.py` 保留 heartbeat 顶层 `commands`，并在 OCR 快照中透传
+- `client/app/intel_client.py` 保留 heartbeat 顶层 `commands`，并在 OCR 快照中透传
   `query_id`；
-- `app/ui/reliable_uploads.py` 将 heartbeat 响应送回 UI，同时为查询 OCR 保留独立的
+- `client/app/ui/reliable_uploads.py` 将 heartbeat 响应送回 UI，同时为查询 OCR 保留独立的
   可靠上传键和有效期；
-- `app/ui/main_window.py` 负责命令校验、过期过滤、内存去重、target 路由和查询上传；
-- `app/engine/worker.py` 负责不受常规 OCR 开关和敌对图标影响的一次性 OCR，并在
+- `client/app/ui/main_window.py` 负责命令校验、过期过滤、内存去重、target 路由和查询上传；
+- `client/app/engine/worker.py` 负责不受常规 OCR 开关和敌对图标影响的一次性 OCR，并在
   OCR 执行失败时重试一次；
-- `tests/test_on_demand_ocr_query.py` 覆盖 heartbeat 命令保留、`query_id` 透传和空名单；
-- `tests/test_main_window.py` 覆盖 target 精确路由、过期过滤、重复命令去重、独立队列
+- `client/tests/test_on_demand_ocr_query.py` 覆盖 heartbeat 命令保留、`query_id` 透传和空名单；
+- `client/tests/test_main_window.py` 覆盖 target 精确路由、过期过滤、重复命令去重、独立队列
   和上传成功后完成；
-- `tests/test_worker.py` 覆盖 OCR 关闭、无敌对图标和失败重试；
-- `tests/test_reliable_uploads.py` 覆盖 heartbeat 命令从上传线程返回 UI。
+- `client/tests/test_worker.py` 覆盖 OCR 关闭、无敌对图标和失败重试；
+- `client/tests/test_reliable_uploads.py` 覆盖 heartbeat 命令从上传线程返回 UI。

@@ -18,6 +18,11 @@ Authorization: Bearer eve_xxx
 网页登录使用会话 Cookie；所有 POST、PUT、DELETE 请求还需携带登录响应或
 `GET /api/v1/auth/me` 返回的 `X-CSRF-Token`。
 
+只读服务密钥可访问 `/api/v1/bootstrap`、`/api/v1/events`、
+`/api/v1/alert-history`、`/api/v1/hostile-waves`、
+`/api/v1/integrations/hostile-systems`，以及按需 OCR 查询的创建和结果接口。
+`POST /api/v1/ocr/query` 是唯一允许的有界命令写入例外；它不直接修改持久化情报。
+
 ## 公共接口
 
 | 方法 | 路径 | 说明 |
@@ -49,6 +54,7 @@ Authorization: Bearer eve_xxx
 | `POST` | `/api/v1/client/identity-checks` | 幂等提交本地日志文件名中的角色 ID 并立即返回任务状态；身份校验在服务端异步执行 |
 | `POST` | `/api/v1/client/identity-check` | 旧版同步身份校验，仅用于滚动升级兼容 |
 | `GET/POST` | `/api/v1/admin/users` | 用户列表和创建用户 |
+| `GET` | `/api/v1/admin/clients` | 管理员读取包含归属信息的完整客户端心跳和状态 |
 | `GET` | `/api/v1/admin/esi-gateway` | ESI Gateway 健康和客户端指标（管理员） |
 | `GET/POST` | `/api/v1/admin/security-settings` | 查看或切换服务端密钥风控 |
 | `POST` | `/api/v1/admin/users/{id}/status` | 启用或禁用用户 |
@@ -87,8 +93,8 @@ Authorization: Bearer eve_xxx
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/api/v1/hostile-presence` | 立即上传当前红色敌对图标数量，`0` 表示清空 |
-| `POST` | `/api/v1/ocr/snapshot` | 上传完整 OCR 文本名单；服务端逐名 ESI 分类，`hostile_icon_count` 仅为独立视觉计数 |
-| `POST` | `/api/v1/ocr/query` | 请求在线监控客户端执行一次独立 OCR（服务密钥可调用） |
+| `POST` | `/api/v1/ocr/snapshot` | 上传完整 OCR 文本名单；可携带按需查询 `query_id`，不携带或改变 Presence 敌对人数 |
+| `POST` | `/api/v1/ocr/query` | 请求父 detector 心跳在线且已标记监控的目标执行一次独立 OCR（服务密钥可调用） |
 | `GET` | `/api/v1/ocr/query/{query_id}` | 查询独立 OCR 请求的聚合结果 |
 | `POST` | `/api/v1/clients/heartbeats` | 上传客户端状态、窗口目标和最近异常 |
 | `GET` | `/api/v1/clients` | 在线客户端和聚合状态 |
@@ -104,29 +110,40 @@ Authorization: Bearer eve_xxx
 | `GET/POST` | `/api/v1/observations` | 规范化观察记录读取和写入 |
 | `POST` | `/api/v1/channel-lines` | 独立频道客户端上传日志行 |
 
+### 客户端心跳与采集状态
+
 检测客户端心跳的 `details.targets` 会在窗口采集状态已确定时包含
 `capture_online` 和 `capture_failure_count`；`capture_online=false` 表示该 EVE 窗口已
-关闭或后台画面连续不可用。此类目标仍保留在客户端管理心跳中，但不会被在线监控节点和
-预警账号列表选中；采集恢复后客户端会立即发送新的心跳。
+关闭或后台画面连续不可用，并会把归一化监控节点状态强制设为 `offline`。该目标仍属于父
+客户端心跳和 `monitoring_nodes`，直到父心跳年龄进入 `removed`；采集恢复后客户端会立即
+发送新的心跳。无法归一化星系名称的目标不会出现在监控节点集合中。
+
+### Presence
 
 `POST /api/v1/hostile-presence` 的请求体包含 `client_id`、`source_instance`、
 `system_name`、`hostile_icon_count`，并可带 `system_id`、`seen_at`、`snapshot_id`、
-`sequence` 和 `captured_at`。该接口只维护当前星系数量状态，不创建虚假人员报告；同一
-客户端的旧时间戳不会覆盖新状态。
+`sequence`、`captured_at`、`presence_version` 和 `presence_state_id`。该接口只维护当前
+星系数量状态，不创建虚假人员报告。`presence_version` 与 `presence_state_id` 用于幂等
+对账：旧版本不会覆盖新状态，重复版本可成功确认但不重写状态。实时敌对人数只能由直接
+Presence 上报或 heartbeat 中携带的同版本 Presence 对账状态改变；OCR 不能改变人数。
+
+### OCR 快照
 
 `POST /api/v1/ocr/snapshot` 的请求体包含 `client_id`、`source_instance`、`system_name` 和
-完整 OCR 文本数组 `names`，可带 `system_id`、`seen_at`、`confidence`、`hostile_icon_count`、
-`snapshot_id`、`sequence` 和 `captured_at`。客户端不发送 `ocr_candidates` 或 `hostile_icons`
-坐标。OCR 后端即使在客户端内部产生文字框，也会在序列化前丢弃；服务端只接收 `names`
-文本数组，并对其中每个文本独立请求 ESI，按 standing、军团/联盟和白名单生成
-敌对、友军或未解析状态。`hostile_icon_count` 只表示截图中的视觉红色图标总数，不给单个角色
-直接定性。
+完整 OCR 文本数组 `names`，可带 `system_id`、`seen_at`、`confidence`、`snapshot_id`、
+`sequence`、`captured_at` 和 `query_id`。OCR 请求不得发送 `hostile_icon_count`，也不得用于
+创建、续期、清除或覆盖 Presence。客户端方法仍接受的 `hostile_icon_count`、
+`ocr_candidates` 和 `hostile_icons` 是废弃的兼容参数，序列化前会被移除。服务端对每个
+文本独立请求 ESI，按 standing、军团/联盟和白名单生成敌对、友军或未解析状态。
+`query_id` 标记一次性按需 OCR 查询；空 `names` 仍是有效查询结果。
 
-`POST /api/v1/ocr/query` 用于一次性查询当前在线监控节点的本地名单。请求体支持可选的
-`system_name`；传入时按星系名称大小写不敏感精确匹配，只向该星系当前在线的监控窗口
-下发命令，未找到对应窗口时返回 `409`。未传 `system_name` 时查询全部在线窗口。服务端返回
-`query_id` 后，会在后续客户端心跳响应中下发 `ocr_query` 命令；客户端执行一次全帧 OCR，
-并在上传中携带相同的 `query_id`。调用方通过 `GET /api/v1/ocr/query/{query_id}` 轮询，
+`POST /api/v1/ocr/query` 用于一次性查询当前监控目标的本地名单。服务端选择父 detector
+heartbeat 仍在线、且 `monitoring=true` 的目标；当前不会再按单目标 `capture_online` 过滤，
+所以 `capture_online=false` 的目标仍可能计入 `expected_clients`，但无法返回结果。请求体支持
+可选 `system_name`；传入时按星系名称大小写不敏感精确匹配目标，未找到时返回 `409`；未传时
+查询全部符合条件的目标。服务端返回 `query_id` 后，会在后续客户端心跳响应中下发
+`ocr_query` 命令；客户端执行一次全帧 OCR，并在上传中携带相同的 `query_id`。调用方通过
+`GET /api/v1/ocr/query/{query_id}` 轮询，
 直到 `status` 为 `completed` 或 `timed_out`。请求体可携带 `name`、`corporation` 或
 `alliance` 过滤条件；过滤仍以服务端识别结果为准。服务端会在目标上传结果前的后续心跳中
 重试下发同一命令，客户端必须按 `query_id` 幂等去重；目标客户端 ID 与父 detector
@@ -143,8 +160,8 @@ heartbeat ID 均可用于领取命令。
 `name`、`corporation` 和 `alliance` 只是服务端结果筛选条件；客户端始终上传本次完整原始
 名单。`system_name` 是命令目标选择条件，并会出现在创建响应、心跳命令和聚合状态中。
 
-`GET /api/v1/admin/esi-gateway` 返回 47 Gateway 的运行摘要、114 业务缓存和进程内远端调用指标。
-`resolver_cache.personnel` 按 114 收到的新 OCR 人员逐个统计 `lookups`、`hits`、`misses`、
+`GET /api/v1/admin/esi-gateway` 返回 Gateway 的运行摘要、业务缓存和进程内远端调用指标。
+`resolver_cache.personnel` 按收到的新 OCR 人员逐个统计 `lookups`、`hits`、`misses`、
 `hit_rate`，是人员名单缓存命中率的主口径，并区分新鲜、过期和负缓存命中；`namespaces`
 提供底层名称、角色、军团、联盟和星系资料缓存以及有效/过期条目。一次包含多个未缓存名称的
 Gateway 批量请求仍只算一次远端请求。
@@ -248,13 +265,32 @@ SSE 常用查询参数：
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `since` | 空 | ISO 时间或事件游标 |
-| `limit` | `50` | 单次读取上限 |
-| `timeout` | 空 | 连接最长保持秒数；省略表示长期连接，`0` 表示一次性读取 |
-| `heartbeat` | `15` | SSE 心跳秒数 |
-| `bootstrap` | `false` | 首次连接是否发送精简活跃状态快照 |
+| `since` | 空 | ISO 8601 时间回退游标；主要用于没有可解析持久化事件 ID 时恢复 |
+| `limit` | `50` | 单次读取上限，最大 `1000` |
+| `timeout` | `30` | 本次 SSE 响应最长秒数，范围 `0–300`；`0` 读取当前一轮后结束 |
+| `heartbeat` | `15` | SSE 注释心跳秒数，范围 `0–60`；`0` 表示关闭 |
+| `bootstrap` | `false` | 是否请求初始权威快照 |
 
-客户端必须保存并推进事件游标，不能在每次重连时反复拉取历史事件。
+客户端必须保存并推进事件游标，不能在每次重连时反复拉取历史事件。服务端优先读取
+`Last-Event-ID`：
+
+- `state:<sequence>` 直接恢复持久化状态事件序列；
+- 已持久化的 alert/report ID 会解析到对应流游标；
+- ISO 8601 事件 ID 可作为时间游标；
+- `presence_*` 是合成的非持久化 ID，不能解析成报告游标，此时由权威 `bootstrap` 对账，
+  并可使用 `since` 回退。
+
+SSE wire 事件与内部状态事件的映射如下：
+
+| `data.event_type` | wire `event` |
+| --- | --- |
+| `alert.entered` | `alert` |
+| `alert.updated` | `alert` |
+| `alert.cleared` | `safe` |
+
+`monitoring_node` 是节点变化通知，不是名为 `node.updated` 的 wire 事件；消费者应使用随后
+到达的 `bootstrap` 作为节点状态权威快照。
+
 预警客户端不调用完整 `/api/v1/bootstrap`；它在 SSE 上请求精简快照，只包含活跃情报、
 活跃告警和监控节点。生成该快照时只处理活跃情报引用的报告。
 
@@ -306,7 +342,9 @@ Authorization: Bearer eve_xxx
 `verified_characters[].zkill` 返回，不新增同步查询接口。
 `/api/v1/map/neighborhood` 接受逗号分隔的 `systems`、`system_ids` 和 `hops` 参数，
 `hops` 默认 `3` 且最大为 `5`。响应只包含任一中心星系指定跳数内的节点和节点间连线；
-预警浮窗使用该接口，避免传输完整地图。
+预警浮窗使用该接口，避免传输完整地图。Windows 预警客户端在后台 `AlertMapWorker` 中
+使用 5 秒请求超时；同一时刻只运行一个拓扑请求，请求期间的多次变化只保留最后一个待处理
+请求，界面线程不会被网络请求阻塞。
 
 地图源支持 `builtin`、`manual` 和 `sde`。生产推荐使用官方 SDE，并通过
 `scripts/sync_sde.py` 同步到服务端运行目录。

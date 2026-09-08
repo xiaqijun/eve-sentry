@@ -2,6 +2,8 @@
 
 本文是服务端、监控客户端、预警客户端和 QQ 机器人共用的推送方案。后续涉及
 Presence、OCR、Heartbeat、SSE、告警、清空、节点或按需 OCR 的修改，都必须先对照本文。
+文中标为“现行”或列为已勾选的内容表示截至 v1.0.65 已实现；标为“目标”或未勾选的内容
+仍是后续设计，不能当作生产现状。
 
 ## 1. 结论
 
@@ -13,17 +15,20 @@ Presence、OCR、Heartbeat、SSE、告警、清空、节点或按需 OCR 的修�
 - 普通 OCR 是客户端自动补充名单；
 - 按需 OCR 是 QQ 查询触发的一次性 OCR，不依赖红色图标，也不受常规 OCR 开关影响；
 - 客户端连续两帧检测为零后，只发送一条权威的 Presence 清空；
-- 心跳固定为 10 秒，并携带全部监控节点的最新 Presence 状态用于丢包对账；
-- Bootstrap 只负责初始化、重连恢复和周期性对账，不承担实时事件生成；
+- HTTP Heartbeat 默认为 10 秒、允许配置但最短为 5 秒，并携带全部监控节点的最新
+  Presence 状态用于丢包对账；
+- Bootstrap 只负责初始化、重连恢复和状态指纹变化对账，不承担实时事件生成；
 - 清空事件必须由服务端状态变化生成，不能由每个 SSE 连接临时推导；
 - 星图客户端和 QQ 机器人都消费服务端权威事件，但 QQ 的投递失败不能影响星图；
 - 节点状态采用第一次缺失黄色、第二次缺失灰色、第三次缺失移除；
 - 节点离线导致的情报移除不播报为敌对清空，也不发送人员清空消息；
 - WebSocket 不是当前必需，继续使用 HTTP 上传 + SSE 下行。
 
-当前版本已落地第一批可靠性改造：PostgreSQL `intel_events` 事件表、进入/更新/清空事件
-的事务内追加、SSE 首字节立即返回及事件游标重放、机器人对新事件名的兼容处理，以及客户端
-默认 1 秒视觉扫描间隔。Redis Stream 投递队列和客户端上传通道的完全拆分仍属于后续阶段。
+截至 v1.0.65，现行实现已经包含 PostgreSQL `intel_events` 事件表、进入/更新/清空事件的
+事务内追加、SSE 首字节立即返回及事件游标重放、星图客户端持久化 `Last-Event-ID`、事件型
+Heartbeat 限流、有界后台地图加载和节点健康状态刷新；默认视觉扫描间隔为 2 秒。
+`cursor_reset`、Redis Stream Dispatcher 和底层上传连接的完全拆分仍属于后续目标，不能按
+现行能力描述。
 
 ## 2. 完整流程
 
@@ -41,10 +46,14 @@ Presence Control Lane
   → POST /api/v1/hostile-presence
   → 服务端更新 active_intel / hostile_waves
   → 服务端写入事件日志
-  → SSE 立即发送 alert.entered / alert.cleared / alert.updated
+  → SSE 发送 wire alert / safe（data.event_type 保留 alert.entered / updated / cleared）
   → 星图客户端立即更新
-  → QQ 机器人写入 Redis high/normal stream
-  → QQ Dispatcher 投递消息
+  → 现行 QQ 机器人在 SSE 消费循环中处理并投递消息
+  → Redis 保存时间游标、事件 ID、状态和去重数据
+
+目标 QQ 投递链路（尚未落地）
+  → Redis high/normal stream
+  → QQ Dispatcher 独立投递消息
 
 OCR Normal Lane
   → POST /api/v1/ocr/snapshot
@@ -52,7 +61,7 @@ OCR Normal Lane
   → 生成 alert.updated
   → 星图和 QQ 更新人员名单
 
-Heartbeat Reconciliation Lane（每 10 秒）
+Heartbeat Reconciliation Lane（默认每 10 秒）
   → POST /api/v1/clients/heartbeats
   → 携带全部 monitoring_targets 的 Presence 状态和版本
   → 服务端只应用比当前更新的状态
@@ -128,12 +137,17 @@ QQ 查询的完整菜单、指定星系目标选择、所有节点名单、预�
 
 ### 4.1 事件类型
 
-| 事件 | 触发条件 | 优先级 | 说明 |
+| 内部状态事件 | 触发条件 | 优先级 | 说明 |
 | --- | --- | --- | --- |
 | `alert.entered` | 系统从 0 变为大于 0 | P0 | 立即发送，不等待 OCR |
 | `alert.cleared` | 系统从大于 0 变为 0 | P0 | 必须持久化，不能由 SSE 推导 |
 | `alert.updated` | 数量、身份或确认名单变化 | P1 | 允许短窗口合并 |
-| `node.updated` | 节点上线、下线、换星系 | P1 | 发送完整节点快照 |
+| `node.updated` | 节点上线、下线、换星系 | P1 | 目标持久事件，现行服务端尚未生成 |
+
+现行 SSE wire 事件名为 `alert`、`safe` 和 `monitoring_node`。前三种持久状态事件仍在
+`data.event_type` 中保留内部名称；`alert.entered`、`alert.updated` 映射到 wire `alert`，
+`alert.cleared` 映射到 wire `safe`。节点变化当前由连接内生成的 `monitoring_node` 通知，
+随后以权威 `bootstrap` 快照对账。
 
 `alert.cleared` 必须包含 `clear_reason`。只有 `clear_reason=visual_confirmed`，即客户端连续
 两帧确认零值时，机器人才能发送正常的“星系清空”消息。节点离线引起的状态移除使用
@@ -188,14 +202,14 @@ COMMIT
 
 | 阶段 | 目标 |
 | --- | ---: |
-| 画面出现 → 客户端检测 | p95 ≤ 1 秒 |
+| 画面出现 → 客户端检测 | p95 ≤ 2 秒 |
 | 检测 → Presence 上传 | p95 ≤ 300ms |
 | 服务端收到 → 事件提交 | p95 ≤ 300ms |
 | 事件提交 → SSE 发出 | p95 ≤ 300ms |
 | SSE 到达 → 星图显示 | p95 ≤ 100ms |
-| 画面出现 → 星图服务端预警 | p95 ≤ 2 秒 |
+| 画面出现 → 星图服务端预警 | p95 ≤ 3 秒 |
 | 服务端收到 → QQ 首条来敌 | p95 ≤ 2 秒 |
-| 敌对消失 → 客户端两帧确认 | p95 ≤ 2 秒 |
+| 敌对消失 → 客户端两帧确认 | p95 ≤ 4 秒 |
 | 两帧确认 → 星图清空 | p95 ≤ 1 秒 |
 
 实时性规则：
@@ -203,9 +217,10 @@ COMMIT
 - P0 进入、清空和数量变化不经过合并窗口；
 - P1 人员和身份更新最多延迟 200～300ms；
 - 节点更新最多延迟 300～500ms；
-- Bootstrap 每 30 秒对账，不作为正常实时推送路径。
+- Bootstrap 在连接、重连以及服务端状态指纹变化时对账，不作为正常实时事件生成路径。
 
-节点心跳固定为 10 秒。服务端在每个缺失边界增加 2 秒调度宽限：第一次约 12 秒进入连接
+节点心跳默认 10 秒、允许配置但最短 5 秒。按默认值计算，服务端在每个缺失边界增加 2 秒
+调度宽限：第一次约 12 秒进入连接
 异常，第二次约 22 秒进入离线并移除该节点贡献的情报，第三次约 32 秒从节点列表删除。
 这 2 秒只吸收网络和定时器抖动，不计作额外心跳周期，避免健康节点每 10 秒反复推送
 “连接异常 → 正常”。
@@ -242,44 +257,60 @@ Presence 不能等待 OCR、Heartbeat 或已经开始的普通上传请求。清
 每个 Presence 状态必须包含 `presence_version`、`presence_state_id` 和 `captured_at`。
 实时 `/hostile-presence` 与后续心跳携带同一组状态标识：服务端只接受更高版本，相同版本
 作为幂等重复忽略，更低版本不得覆盖新状态。实时请求必须持久化重试直到收到服务端 ACK；
-如果实时请求丢失，下一次 10 秒心跳使用相同状态完成对账，因此不再单独增加周期 Presence
-请求。
+如果实时请求丢失，下一次默认 10 秒心跳使用相同状态完成对账，因此不再单独增加周期
+Presence 请求。
 
-建议扫描策略：默认 1 秒检测红色图标；OCR 继续异步执行；同一节点只保留最新 OCR 快照。
+现行默认扫描策略为每 2 秒检测红色图标；可配置范围为 1～10 秒。OCR 继续异步执行；同一
+节点只保留最新 OCR 快照。
 
 ## 7. SSE 与游标
 
-SSE 建立后必须立即发送 `: connected`，然后按 `seq` 读取事件：
+SSE 建立后立即发送 `: connected`，并按可恢复游标读取事件：
 
 ```text
 建立连接
   → connected
-  → 读取 Last-Event-ID
-  → bootstrap（初始化/对账）
-  → 读取 seq > cursor 的事件
-  → 5 秒 keepalive
+  → 解析 Last-Event-ID
+  → 发送游标之后的状态事件及权威 bootstrap（消费者不得依赖固定先后）
+  → 空闲 comment keepalive
 ```
 
-要求：
+现行空闲 keepalive 和应用 Heartbeat 是两套机制：星图客户端请求 1 秒 SSE comment，机器人
+请求 15 秒，服务端缺省也是 15 秒；客户端向 `/api/v1/clients/heartbeats` 发送的 HTTP
+Heartbeat 默认为 10 秒。
 
-- SSE 事件按 `seq` 顺序发送；
-- `id` 使用 `seq`，`event_key` 用于幂等；
-- 断线重连从最后确认的游标继续；
-- 游标过期时发送 `cursor_reset` 和最新 bootstrap；
+现行游标规则：
+
+- 持久化状态事件使用 `state:<sequence>`，并按 sequence 顺序发送；
+- 已持久化的 alert/report ID 可以解析到对应报告游标；
+- ISO 8601 事件 ID 可以作为时间游标；
+- `presence_*` 是合成 ID，不能直接解析成持久报告游标，此时由权威 Bootstrap 对账，并可用
+  `since` 作为时间回退；
+- 星图客户端在每条事件完整处理后把非空 ID 写入 `alert_client_state.json`，重连时通过
+  `Last-Event-ID` 恢复；机器人当前主要使用 Redis 时间游标 `since`，事件 ID 只用于确认和诊断。
+
+其余要求：
+
+- 断线重连从最后完整处理的游标继续；
+- 目标能力（尚未实现）：游标过期时发送 `cursor_reset` 和最新 Bootstrap；
 - PostgreSQL 模式下无论 `active_only` 是否启用，都必须读取持久化 `intel_events`；
-- `active_only` 只能限制历史报告，不能过滤 `alert.cleared`、`node.updated` 等状态事件；
+- `active_only` 只能限制历史报告，不能过滤 `alert.cleared` 等状态事件；目标持久
+  `node.updated` 落地后也必须遵守此规则；
 - `clear_reason=node_offline` 的清理事件仍需发送给星图用于移除陈旧状态，但机器人不得将其
   格式化为敌对清空消息；
 - 不得在每个 SSE 连接中调用无界的活动告警扫描；
 - 不得根据前后快照临时生成清空事件。
 
-兼容期间保留映射：
+现行内部状态事件到 SSE wire 事件的映射为：
 
 ```text
 alert.entered → alert
+alert.updated → alert
 alert.cleared → safe
-node.updated  → monitoring_node
 ```
+
+现行 `monitoring_node` 由连接内节点快照差异生成；`node.updated → monitoring_node` 是目标
+持久节点事件的兼容映射，不表示当前服务端已经生成 `node.updated`。
 
 ## 8. 星图预警客户端
 
@@ -289,8 +320,12 @@ node.updated  → monitoring_node
 读取 → 解析 → 提交 UI 信号 → 更新星图/浮窗/声音
 ```
 
-P0 事件不能等待 Bootstrap、OCR、ESI 或 zKill。客户端每 30 秒执行 Bootstrap 对账，重连后
-也必须用 Bootstrap 校正状态，但不能因为 Bootstrap 慢而阻塞实时事件处理。
+P0 事件不能等待 Bootstrap、OCR、ESI 或 zKill。星图在 SSE 连接和重连时请求 Bootstrap；
+服务端状态指纹变化时会在同一连接中再次发送权威快照。客户端没有固定 30 秒 Bootstrap
+轮询。每条事件完整处理后持久化事件 ID，重连时发送 `Last-Event-ID`。
+
+局部星图由后台 `AlertMapWorker` 请求 `/api/v1/map/neighborhood`，超时 5 秒、跳数最大 5，
+不会阻塞 SSE 或 UI；请求运行期间的多次变化只保留最后一个待处理请求。
 
 监控节点采用以下星图状态：
 
@@ -304,16 +339,25 @@ P0 事件不能等待 Bootstrap、OCR、ESI 或 zKill。客户端每 30 秒执�
 星图不能使用红色表示节点离线，因为红色已经表示敌对。第一次缺失必须立刻从“正常在线”
 状态降级为黄色，避免用户把它当成仍在正常工作。第二次缺失后地图删除该节点贡献的陈旧
 敌对状态；如果相同星系仍有其他正常节点报告敌对，星系继续保持红色。
+监控目标主动报告 `capture_online=false` 时会直接进入 `offline`，不要求先经过 `degraded`。
+
+规范化后的 `health_status` 已纳入账号刷新签名；即使账号、星系、敌对人数和监控开关都没
+变化，`online`、`degraded`、`offline` 之间切换也必须更新覆盖层并重新加载局部星图。
 
 ## 9. QQ 机器人
 
-机器人拆为三个组件：
+现行机器人在 SSE 消费循环中直接处理事件并调用 QQ API。Redis 保存时间游标、最后事件
+ID、活动状态和投递去重数据；当前没有 high/normal/dead Stream，也没有独立 Dispatcher。
+机器人在连接和重连时请求 Bootstrap，并消费服务端状态指纹变化产生的后续 Bootstrap，
+没有独立 30 秒轮询。
+
+目标持久投递架构（尚未落地）拆为三个组件：
 
 ```text
 SSE Reader → Redis Stream Writer → QQ Dispatcher
 ```
 
-SSE Reader 不调用 QQ API。事件写入 Redis 成功后才推进游标。
+目标要求 SSE Reader 不调用 QQ API，事件写入 Redis Stream 成功后才推进游标。
 
 Redis 队列：
 
@@ -327,9 +371,8 @@ eve:sentry:events:dead
 - Normal：`alert.updated`、`node.updated`，允许 200～300ms 合并；
 - 幂等键：`event_key + group_openid`；
 - QQ 失败独立重试，超过次数进入死信；
-- QQ 失败不能阻塞 SSE Reader，也不能影响星图。
-
-机器人每 30 秒执行 Bootstrap 对账，发现漏报时生成幂等补偿任务。
+- QQ 失败不能阻塞 SSE Reader，也不能影响星图；
+- Bootstrap 对账发现漏报时生成幂等补偿任务。
 
 ### 9.1 监控节点表格
 
@@ -381,9 +424,9 @@ eve:sentry:events:dead
 | OCR 慢或失败 | Presence、Heartbeat、SSE、首条预警 |
 | Presence 临时失败 | OCR、SSE；保留最新 Presence 重试 |
 | ESI/standings 失败 | 首条进入预警；人员名单可稍后补全 |
-| QQ API 慢或失败 | 星图和 SSE；消息进入重试队列 |
-| Redis 重启 | 通过 Consumer Group 恢复 Pending |
-| SSE 断线 | 客户端按游标重连并补齐事件 |
+| QQ API 慢或失败 | 独立星图消费者不受影响；现行机器人消费可能被拖慢，目标队列落地后独立重试 |
+| Redis 重启 | 现行游标与去重依赖 Redis 持久化；目标队列落地后通过 Consumer Group 恢复 Pending |
+| SSE 断线 | 星图按持久 `Last-Event-ID` 重连；机器人按 Redis 时间游标 `since` 恢复 |
 | PostgreSQL 暂不可用 | 快速失败，不持有全局锁；客户端保留最新状态 |
 | 客户端截图失败 | 上报 capture 状态并清除对应 Presence |
 | 单次心跳缺失 | 星图节点变黄、机器人表格显示连接异常；暂不清除情报 |
@@ -407,9 +450,11 @@ state_committed_at
 sse_written_at
 client_received_at
 ui_applied_at
-qq_queued_at
 qq_delivered_at
 ```
+
+`qq_queued_at`、`qq_queue_delay_ms`、`redis_high_pending` 和 `redis_normal_pending` 是 Redis
+Stream Dispatcher 落地后的目标时间戳/指标，当前不能作为已经采集的监控项。
 
 核心指标：
 
@@ -419,20 +464,17 @@ presence_http_duration_ms
 server_state_commit_ms
 event_commit_to_sse_ms
 sse_receive_to_ui_ms
-qq_queue_delay_ms
 qq_delivery_duration_ms
 sse_first_byte_ms
 sse_reconnect_count
 sse_cursor_lag
-redis_high_pending
-redis_normal_pending
 ```
 
 ### 12.1 星图窗口大小与位置记忆
 
 预警星图窗口需要记住用户最后一次手动调整后的大小和位置。状态保存在当前用户的
-`alert_client_state.json`，与告警去重游标和星图账号选择共用同一份本地状态文件，不写入
-安装目录，也不上传服务端。
+`alert_client_state.json`，与告警去重 ID、最后完整处理的 SSE `Last-Event-ID` 游标和星图
+账号选择共用同一份本地状态文件，不写入安装目录，也不上传服务端。
 
 保存与恢复规则：
 
@@ -446,7 +488,7 @@ redis_normal_pending
 
 ## 13. 实施阶段
 
-### 阶段 0：方案冻结（当前）
+### 阶段 0：方案冻结
 
 - 固定事件类型、优先级、游标和载荷；
 - 固定普通 OCR 与按需 OCR 边界；
@@ -466,6 +508,7 @@ redis_normal_pending
 - [x] 保留旧事件名兼容映射；
 - [x] PostgreSQL 模式删除连接内临时清空推导（内存存储保留兼容回退）；
 - [x] 首字节、断线补齐和并发订阅回归测试；
+- [x] 星图客户端持久化最后完整处理的 SSE 事件 ID，并在重连时发送 `Last-Event-ID`；
 - [ ] 增加游标过期后的 `cursor_reset` bootstrap。
 
 ### 阶段 3：机器人可靠投递
@@ -473,14 +516,16 @@ redis_normal_pending
 - [x] 机器人识别 `alert.entered`、`alert.updated`、`alert.cleared` 和 `node.updated`；
 - [x] 清空事件使用服务端权威事件，不再依赖客户端快照推导；
 - [ ] SSE Reader 与 QQ Dispatcher 完全解耦；
-- [ ] Redis high/normal/dead stream、重试、死信和 Bootstrap 对账。
+- [ ] Redis high/normal/dead stream、重试、死信和 Bootstrap 对账；
+- [ ] 队列落地后禁止 QQ API 调用继续运行在 SSE Reader 中。
 
 ### 阶段 4：客户端通道拆分
 
 - [x] Presence、OCR、Heartbeat 已由可靠上传管理器分别排队；
 - [x] 清空和进入沿用独立 Presence 优先队列；
-- [x] 默认视觉扫描间隔调整为 1 秒；
-- [x] 将心跳间隔固定为 10 秒并携带全部节点 Presence 对账状态；
+- [x] 默认视觉扫描间隔为 2 秒，可配置范围 1～10 秒；
+- [x] 心跳默认 10 秒、最短 5 秒，并携带全部节点 Presence 对账状态；
+- [x] 预警客户端普通事件 Heartbeat 受最短间隔限制，只有错误路径允许强制上报；
 - [x] 实现连续两帧零值确认以及 Presence ACK 持久化重试；
 - [x] 从普通 OCR 和按需 OCR 载荷中移除 `hostile_icon_count`；
 - [ ] 进一步拆分底层网络连接和按需 OCR 的独立重试策略。
@@ -501,13 +546,14 @@ redis_normal_pending
 - [x] 拖动、缩放结束及客户端退出时持久化；
 - [x] 多屏幕、分辨率和 DPI 变化时校正到可见区域；
 - [x] 托盘隐藏后重新显示不得覆盖用户位置；
-- [x] 增加状态文件往返和屏幕越界回退测试。
+- [x] 增加状态文件往返和屏幕越界回退测试；
+- [x] 节点 `health_status` 变化触发账号覆盖层和局部星图刷新。
 
 ### 阶段 7：QQ 查询与上线监测
 
 - [x] 支持静态查询按钮模板和无模板降级；生产模板 ID 由环境变量配置；
 - [x] 查询菜单、节点敌情和预警节点使用快速数据路径；
-- [x] 指定星系 OCR 只下发到对应在线窗口；
+- [x] 指定星系 OCR 只下发到父 detector 在线且标记监控的对应星系目标；
 - [x] 所有节点查询返回本次完整 OCR 名单；
 - [x] 主动 OCR 查询立即确认、后台返回结果并进行 Redis 去重；
 - [x] PostgreSQL 持久化人员、军团和联盟上线监测；
@@ -519,7 +565,6 @@ redis_normal_pending
 
 - 让 OCR 成为首条敌对预警的前置条件；
 - 让 Presence 等待普通 OCR；
-- 让 QQ API 调用运行在 SSE Reader 中；
 - 让客户端用 OCR 名单长度代替服务端 `hostile_count`；
 - 让 OCR 请求携带或修改 `hostile_icon_count`；
 - 让节点离线或心跳超时伪装成“敌对确认清空”；
@@ -529,31 +574,33 @@ redis_normal_pending
 - 让一次连接重建强制重复播报完整节点列表；
 - 让敌对人数变化触发重复的完整节点表格；
 - 把上传失败显示成 SSE 连接异常；
-- 恢复独立的冗余敌对移动消息。
-- 每次显示星图时强制覆盖用户保存的大小或位置。
+- 恢复独立的冗余敌对移动消息；
+- 每次显示星图时强制覆盖用户保存的大小或位置；
 - 仅用“波次 + 名单指纹”去重人员事件；同一波次内名单可能经过其他状态后再次回到相同组合。
 
 ## 15. 验收标准
 
 - 红色图标与 OCR 复用同一截图，且互不阻塞；
-- Presence 在默认 1 秒检测周期内立即进入独立上传通道；
+- Presence 在默认 2 秒检测周期内立即进入独立上传通道；
 - 零值只有连续两帧确认后才上传，服务端收到后立即清空；
-- Presence 请求持续重试到 ACK，丢失时由下一次 10 秒心跳对账；
+- Presence 请求持续重试到 ACK，丢失时由下一次默认 10 秒心跳对账；
 - 服务端收到 Presence 后可生成进入或清空事件；
 - SSE 断线后能按游标补齐进入和清空；
-- 星图首条服务端预警 p95 ≤ 2 秒；
+- 星图首条服务端预警 p95 ≤ 3 秒；
 - QQ 首条来敌 p95 ≤ 2 秒（不含 QQ 平台自身不可控延迟）；
 - OCR/ESI 失败不影响首条预警；
 - QQ 失败不影响星图；
 - 查询 OCR 可以在无敌对图标和常规 OCR 关闭时执行；
 - OCR 不携带敌对人数，也不能重新激活已清空或离线的节点；
 - 第一次缺失心跳时节点变黄，第二次变灰并移除其情报，第三次从列表删除；
+- 只有 `health_status` 变化、账号和星系其余字段不变时，星图也立即刷新；
 - 节点消息使用包含状态、星系和敌对人数的 Markdown 表格；
 - 节点离线、人员名单清空和恢复后零人都不产生额外清空消息；
 - 同一事件不会向同一群重复发送；
 - 同一波次内人员名单按状态变更序号投递：`A → B → A` 必须播报三次，连续重复的 `A → A` 只播报一次；
-- 客户端、服务端、机器人重启后可通过 Bootstrap 对账；
-- 所有关键时延均可通过 `request_id` 和 `event_key` 追踪。
+- 星图重启后按持久事件 ID 恢复，机器人重启后按 Redis 时间游标恢复，二者都通过 Bootstrap
+  对账；统一 `cursor_reset` 恢复仍属于后续目标；
+- 所有关键时延均可通过 `request_id` 和 `event_key` 追踪；
 - 星图重启和托盘重新显示后保持上次大小与位置；显示器布局变化后窗口仍完整可见。
 
 ## 16. 人员名单回退状态漏报复盘（2026-09-08）
@@ -577,18 +624,22 @@ EOY-BG 在同一波次内先后出现 `2 → 3 → 2 → 1` 人变化，最后�
 - `已整改`：代码、测试、部署和生产验收全部完成；
 - `持续观察`：当前符合要求，但需要保留监控数据防止回归。
 
-每条问题更新为 `已整改` 时必须填写修复提交、部署时间、生产版本和验收证据。只有单元测试通过、但尚未部署或没有真实生产日志验证时，只能标记为 `待验收`。
+每条问题更新为 `已整改` 时必须填写修复提交、部署时间、生产版本和验收证据。修复提交、
+自动测试或 Release 发布均不等于生产安装：客户端修复尚未安装到实际运行环境时保持
+`整改中`；完成安装但生产观察尚未结束时标记为 `待验收`；代码、测试、安装和生产证据
+全部齐全后才能标记为 `已整改`。
 
 | 编号 | 优先级 | 范围 | 问题与生产证据 | 影响 | 当前状态 | 整改与验收要求 |
 |---|---|---|---|---|---|---|
-| PUSH-20260908-01 | P0 | 检测客户端心跳 | 心跳设计间隔为 10 秒，但本机单个 `EVE-Sentry-Monitor.exe` 在约 4 小时内发送 50,510 次心跳；典型突发为约 10 秒连续发送 106 次，相邻请求约 70–110ms。服务端均返回 201，排除失败重试和多客户端进程。根因已确认：生产使用的根目录 `app/` 仍启用了已经要求删除的 `Gamelogs` 掉线扫描，每次连接日志状态会额外触发心跳。 | 抢占 Presence/OCR 上传通道，放大服务端请求量，可能造成连接异常、首条预警延迟和重连连锁反应。 | 待验收 | 已移除两套客户端源码中的 `Gamelogs` 扫描和 `game_connection_*` 字段；上传器增加按 `heartbeat_interval_seconds` 的最短线速率，Presence/OCR 仍优先。客户端测试 10 项、服务端相关回归 277 项通过；v1.0.64 已发布。待安装新客户端后验证 30 分钟内常规心跳不超过 190 次。 |
-| PUSH-20260908-02 | P0 | 客户端实现归属 | 根因已确认：提交 `abc9028 chore: remove unreliable game disconnect detection` 已从客户端实现移除该功能；合并仓库时 `client/app/` 保留了删除结果，但根目录 `app/` 保留旧实现，当前生产安装包继续从根目录代码构建，导致已删除功能重新进入生产。 | 修复可能只落在未参与构建的副本，造成“仓库已修复、发布包仍异常”，也是本次心跳风暴回归的直接原因。 | 待验收 | 已清理根目录和 `client/` 的旧模块、测试、服务端兼容判断与文档；正式发布脚本仍以 `client/` 为唯一工作目录，v1.0.64 已发布。CI 源码守卫和发布产物源码元数据均通过；待客户端实际升级后确认运行包无旧符号。 |
+| PUSH-20260908-01 | P0 | 检测/预警客户端心跳 | 心跳设计间隔为 10 秒，但审计时运行的单个 `EVE-Sentry-Monitor.exe` 在约 4 小时内发送 50,510 次心跳；典型突发为约 10 秒连续发送 106 次，相邻请求约 70–110ms。服务端均返回 201，排除失败重试和多客户端进程。审计时将其中一部分异常归因于旧生产安装包中的游戏日志状态联动。 | 抢占 Presence/OCR 上传通道，放大服务端请求量，可能造成连接异常、首条预警延迟和重连连锁反应。 | 整改中 | `abc9028` 已移除游戏掉线检测，`af76ec9` 已为检测客户端上传器增加 Heartbeat 合并及最短线速率；两项都已包含在 `v1.0.64@c8c4e7f`。`8967be7` 进一步取消预警客户端在每条 `alert/safe` 事件后的强制 Heartbeat，并持久化最后完整处理的 SSE `Last-Event-ID`，避免重连重放放大心跳；该提交不属于 v1.0.64，首次包含在 `v1.0.65@3172bb7`。v1.0.65 已发布但尚未安装到验收客户端，因此保持整改中；安装后验证 30 分钟内常规心跳不超过 190 次，并确认重连及事件突发不会形成额外心跳风暴。 |
+| PUSH-20260908-02 | P0 | 客户端实现归属 | 历史上仓库同时存在根目录客户端实现和 `client/` 客户端实现，导致修复落点、测试对象与生产构建来源容易混淆。原记录所称“v1.0.64 继续从根目录客户端构建”不准确：v1.0.64 的 Release workflow 和 `eve-sentry-client-source.json` 均证明其从单体仓库 `client/` 构建，目标为 `c8c4e7f`。 | 修复可能落在不参与构建的副本，造成“仓库已修复、发布包仍异常”；重复源码也会使生产包来源难以审计。 | 整改中 | `8967be7` 删除根目录旧客户端树并确立 `client/` 为唯一客户端源码；`3b60a0b` 又移除发布流程对废弃独立客户端仓库的模型回退。上述修复均包含在 `v1.0.65@3172bb7`，发布源码元数据中的 `source_repository`、`release_repository` 均为 `xiaqijun/eve-sentry`，`source_commit` 和 `release_workflow_commit` 均为完整目标 SHA。由于 v1.0.65 尚未安装到验收客户端，保持整改中；安装后检查运行包版本、源码元数据及旧根目录符号均不存在。 |
 | PUSH-20260908-03 | P1 | QQ 机器人可靠投递 | Redis 的事件游标持续推进，存在 1,517 个投递去重键，说明机器人并未完全停止消费；但审计时间窗口内缺少 `alert event delivered`、`system transition processed`、`personnel update processed` 等成功日志，无法逐条证明服务端事件已成功投递 QQ。 | 出现漏报或延迟时无法区分 SSE 未消费、Redis 去重、QQ API 失败或日志丢失，可靠性不可审计。 | 待验收 | 已为 SSE 接收/确认日志和各类 QQ 事件处理日志补充 `event_key`、处理结果、失败数；机器人已部署且服务 active，服务端 Bootstrap 检查 HTTP 200。持久队列、ACK/死信仍是后续阶段，待真实敌对事件核验。 |
 | PUSH-20260908-04 | P1 | QQ 投递架构 | 当前可确认 Redis 游标和状态已更新，但尚未实现计划中的 SSE Reader 与 QQ Dispatcher 完全解耦，也没有完整的 Redis high/normal/dead stream、失败重试和死信闭环。 | QQ API 短暂失败或投递处理耗时时，仍有阻塞事件消费、延迟后续来敌/清空或丢失失败任务的风险。 | 待整改 | 按阶段 3 实施持久队列、优先级、ACK、指数退避和死信；只有 QQ 成功后才能写投递去重完成标记。断网、限流、机器人重启测试必须证明事件不丢失且同群不重复。 |
 | PUSH-20260908-05 | P1 | 人员名单更新 | 最近 6 小时 `alert.updated` 共 57 条，落库延迟 p50 58.5ms、p95 12.76 秒、最大 15.34 秒；首条 Presence 来敌不受影响，但 OCR/ESI 人员补全和名单增减消息可能延迟。 | 首条来敌及时，但人员名单、人员减少和身份修正无法满足接近实时的体验，可能让用户短时间看到过期名单。 | 待验收 | 机器人人员合并窗口已由 10 秒降为 1 秒，保留同一星系短时突发的最新状态合并；机器人测试和配置测试通过，生产服务已重启。待真实事件验证 `alert.updated` 和 QQ 到达 p95。 |
 | PUSH-20260908-06 | P1 | 端到端可观测性 | 当前只能分别统计客户端 HTTP、PostgreSQL 事件、SSE 状态和 Redis 游标，不能使用一个稳定标识还原“画面出现 → Presence → 事件提交 → SSE → 星图/机器人 → QQ”的完整时间线。 | 无法可靠计算真实端到端 p50/p95，也无法在漏报时快速确定责任环节。 | 待整改 | Presence 保留 `presence_state_id`，服务端事件保留 `event_key/seq`，机器人和 QQ 日志继续携带同一关联标识；增加按日统计和超标告警。日志不得包含认证信息。 |
 | PUSH-20260908-07 | P2 | 机器人 SSE 重连 | 服务端部署重启期间机器人出现 `ConnectError`，并按 0.2/1/3/5 秒退避；之后 Redis 游标恢复推进。当前未发现永久断线或游标停滞。 | 正常部署窗口会产生短暂延迟；若缺少部署后自动对账，仍可能隐藏边界事件遗漏。 | 持续观察 | 保留有界空闲超时、退避重连和 Bootstrap 对账；每次部署后验证机器人游标追平服务端最新事件序号，连续 5 分钟无滞后。 |
 | PUSH-20260908-08 | 基线 | 服务端进入/清空 | 最近 6 小时 `alert.entered` 17 条，p95 37.2ms；`alert.cleared` 17 条，p95 52.2ms。当前 SSE 活跃连接约 2 个，无 `CLOSE-WAIT` 堆积。 | 当前服务端状态事务和 SSE 主路径符合实时性要求。 | 持续观察 | 保持事件提交 p95 不超过 300ms；部署后持续检查 SSE 首字节、活动连接数、游标滞后和 PostgreSQL 延迟，禁止恢复每连接历史全量扫描。 |
+| PUSH-20260908-09 | P1 | 星图节点健康状态刷新 | 代码审计和回归复现发现，星图账号同步签名原先只比较账号键、星系、星系 ID 和监控开关，没有比较 `health_status`。仅发生 `online → degraded → offline` 时不会更新覆盖层或局部星图。 | 黄色连接异常和灰色离线可能不能及时显示，使用户误判监控节点仍正常。 | 整改中 | `3b60a0b` 已将规范化的 `health_status` 纳入新旧账号签名，并增加 `test_sync_map_accounts_refreshes_when_health_status_changes`。Client CI run `34224776451` 和 Release Client run `34224955352` 均成功，修复已包含在 `v1.0.65@3172bb7`。客户端尚未安装；安装后实测绿、黄、灰、删除及恢复状态在无其他账号变化时也能刷新，并确认不会引起无关节点表重复播报。 |
 
 ### 17.1 整改更新格式
 
@@ -622,3 +673,26 @@ EOY-BG 在同一波次内先后出现 `2 → 3 → 2 → 1` 人变化，最后�
 该样本确认：节点表并非由 `alert.entered` 直接调用，而是与心跳后的节点状态快照/Bootstrap 同步发生；但它在来敌消息之后 7 秒发送，用户会感知为来敌触发了冗余节点播报。服务端节点版本计算目前不包含敌对人数，但节点表内容包含敌对人数，因此必须继续核实是否存在节点位置/健康状态变化、Bootstrap 重连重放或版本判定不一致。
 
 该样本并入 `PUSH-20260908-01`、`PUSH-20260908-03` 和 `PUSH-20260908-06` 的验收证据。整改后的验收必须证明：敌对人数变化只更新敌对事件/节点表中的人数字段，不单独触发完整节点表；只有节点上线、离线、移动或健康状态真正变化时才发送节点表。
+
+### 17.3 v1.0.65 发布证据
+
+本节只证明 Release 构建、签名和发布完成，不代表客户端已经安装或完成生产验收。
+
+- Release：[v1.0.65](https://github.com/xiaqijun/eve-sentry/releases/tag/v1.0.65)
+- 目标提交：`3172bb7fffe359c4414fc4566238e5b4ba6d9cc0`
+- 发布时间：`2026-09-08T12:19:15Z`（北京时间 `2026-09-08 20:19:15`）
+- Client CI：[run 34224776451](https://github.com/xiaqijun/eve-sentry/actions/runs/34224776451)，成功
+- Release Client：[run 34224955352](https://github.com/xiaqijun/eve-sentry/actions/runs/34224955352)，成功
+- Release target、远端 tag、`source_commit` 和 `release_workflow_commit` 均指向上述完整 SHA。
+
+| 资产 | 大小（bytes） | SHA-256 |
+|---|---:|---|
+| `EVE-Sentry-Monitor-ONNX-program-1.0.65.zip` | 132,400,793 | `4d4c957b634979e44257de6a450ebc976bb7fc62ff077e455d58c218ed632f79` |
+| `EVE-Sentry-Monitor-ONNX-models-eb1a177a0f6e7133c001d4284890844f18b6f1f732b29ccc4307fa5f7364ea2d.zip` | 105,099,126 | `46e115f8b941a93d430eee27d6a68e994e79d9a05ec3f8b03f1d318f9071e132` |
+| `latest.json` | 1,276 | `36fb59d4431dd9bb1248a191c7ccf9ce8597bfdadb285079bcd96f8b5d3db4c8` |
+| `EVE-Sentry-Monitor-ONNX-1.0.65.zip` | 237,500,101 | `cfc523404a90e1d43a3c901a5a49324392047c3382e019118a3fe52a7509008c` |
+| `EVE-Sentry-Channel-1.0.65.zip` | 60,244,877 | `1038e6a86459257fda075ccd1191697e91ba2311c4b0f848aae17738639d8ea0` |
+| `eve-sentry-client-source.json` | 260 | `c986ec66f66e9582508d0db3638d313a938952db9f759e951ad26e53b45778cd` |
+
+`latest.json` 内记录的程序包和模型包 SHA-256、大小与上表一致，并已使用客户端内置公钥
+完成 Ed25519 签名验证；下载站公开的 `latest.json` 与 Release 附件逐字节一致。
