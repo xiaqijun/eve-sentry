@@ -44,6 +44,18 @@ jobs:
           cache-dependency-path: client/requirements-onnx.txt
       - name: Install client test dependencies
         run: python -m pip install -r requirements-onnx.txt pytest
+      - name: Verify removed game-log disconnect detector stays absent
+        shell: pwsh
+        run: |
+          $patterns = @('GameConnectionLogWatcher', '_poll_game_connection_logs', 'game_connection_')
+          $files = @('app', '..\app') | Where-Object { Test-Path -LiteralPath $_ }
+          foreach ($pattern in $patterns) {
+            $matches = rg --no-heading --line-number --fixed-strings $pattern $files 2>$null
+            if ($LASTEXITCODE -eq 0 -and $matches) {
+              Write-Error "Forbidden removed game-log symbol found: $pattern`n$matches"
+              exit 1
+            }
+          }
       - name: Run client tests
         # This legacy integration module imports app.server, which is not owned here.
         run: python -m pytest -q --ignore=tests/test_intel_client.py

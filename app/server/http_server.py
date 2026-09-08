@@ -686,9 +686,7 @@ def _monitoring_target_state(client_snapshot: Any) -> list[dict[str, Any]]:
             ):
                 continue
             health_status = heartbeat_health
-            if target.get("capture_online") is False or target.get(
-                "game_connection_online"
-            ) is False:
+            if target.get("capture_online") is False:
                 health_status = "offline"
             target_system_name = str(
                 target.get("system_name") or target.get("system") or ""

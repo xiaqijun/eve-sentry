@@ -70,6 +70,10 @@ class ReliableUploadManager(QObject):
         self._generation: dict[str, int] = {}
         self._retry_index = 0
         self._retry_at = 0.0
+        # Heartbeats are latest-state updates.  Several UI state transitions
+        # can call submit_heartbeat in the same event loop turn; keep the
+        # latest payload but never turn those calls into a request burst.
+        self._last_heartbeat_attempt_at = 0.0
         self._running = True
         self._load_snapshots()
         self._state = (
@@ -218,6 +222,20 @@ class ReliableUploadManager(QObject):
                     if upload is None:
                         self._condition.wait(0.5)
                         continue
+                    if upload.key == "heartbeat":
+                        interval = self._heartbeat_interval(upload)
+                        next_allowed = self._last_heartbeat_attempt_at + interval
+                        if now < next_allowed:
+                            if self._snapshots:
+                                upload = min(
+                                    self._snapshots.values(),
+                                    key=lambda item: item.expires_at,
+                                )
+                            else:
+                                self._condition.wait(min(0.5, next_allowed - now))
+                                continue
+                    if upload.key == "heartbeat":
+                        self._last_heartbeat_attempt_at = now
                 self._send(upload)
         finally:
             close = getattr(self._client, "close", None)
@@ -302,6 +320,14 @@ class ReliableUploadManager(QObject):
         if self._snapshots:
             return min(self._snapshots.values(), key=lambda item: item.expires_at)
         return None
+
+    def _heartbeat_interval(self, upload: _PendingUpload) -> float:
+        """Return the minimum wire interval for a detector heartbeat."""
+        try:
+            configured = float(upload.payload.get("heartbeat_interval_seconds", 10.0))
+        except (TypeError, ValueError):
+            configured = 10.0
+        return max(5.0, configured)
 
     def _drop_expired(self, now: float) -> None:
         previous_presence_count = len(self._presence)

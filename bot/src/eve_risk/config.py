@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     eve_sentry_api_key: str = ""
     eve_sentry_public_url: str = ""
     eve_sentry_alert_min_level: str = ""
-    eve_sentry_personnel_push_interval_seconds: float = 10.0
+    eve_sentry_personnel_push_interval_seconds: float = 1.0
     eve_sentry_query_soft_timeout_seconds: float = 15.0
     eve_sentry_query_lock_seconds: int = 45
     eve_sentry_watch_default_interval_seconds: int = 60

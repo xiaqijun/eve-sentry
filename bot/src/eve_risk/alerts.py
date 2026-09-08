@@ -317,11 +317,6 @@ class EveSentryAlertRelay:
         self._personnel_last_sent_at: dict[str, float] = {}
         self._personnel_pending: dict[str, tuple[dict[str, Any], str]] = {}
         self._personnel_flush_tasks: dict[str, asyncio.Task[None]] = {}
-        # A reconnect starts a fresh SSE session.  The server emits a
-        # bootstrap even when the node list has not changed, so use that first
-        # authoritative snapshot to refresh groups that were already
-        # subscribed before this process (or connection) restarted.
-        self._monitoring_snapshot_initialized = False
 
     @property
     def enabled(self) -> bool:
@@ -481,9 +476,11 @@ class EveSentryAlertRelay:
             delivered += 1
 
         logger.info(
-            "EVE Sentry active intel transition processed transition=%s deliveries=%d",
+            "EVE Sentry active intel transition processed event_key=%s transition=%s deliveries=%d failures=%d",
+            event_id,
             transition,
             delivered,
+            failed,
         )
         return failed == 0
 
@@ -524,7 +521,8 @@ class EveSentryAlertRelay:
             delivered += 1
 
         logger.info(
-            "EVE Sentry system transition processed transition=%s deliveries=%d failures=%d",
+            "EVE Sentry system transition processed event_key=%s transition=%s deliveries=%d failures=%d",
+            event_id,
             transition,
             delivered,
             failed,
@@ -582,7 +580,8 @@ class EveSentryAlertRelay:
             delivered += 1
 
         logger.info(
-            "EVE Sentry personnel update processed system=%s deliveries=%d failures=%d",
+            "EVE Sentry personnel update processed event_key=%s system=%s deliveries=%d failures=%d",
+            event_id,
             system_name,
             delivered,
             failed,
@@ -704,9 +703,11 @@ class EveSentryAlertRelay:
             delivered += 1
 
         logger.info(
-            "EVE Sentry monitoring node change processed change=%s deliveries=%d",
+            "EVE Sentry monitoring node change processed event_key=%s change=%s deliveries=%d failures=%d",
+            event_id,
             change_type,
             delivered,
+            failed,
         )
         return failed == 0
 
@@ -785,9 +786,11 @@ class EveSentryAlertRelay:
                 ex=ALERT_DEDUPE_SECONDS,
             )
         logger.info(
-            "EVE Sentry monitoring node snapshot processed nodes=%d deliveries=%d",
+            "EVE Sentry monitoring node snapshot processed event_key=%s nodes=%d deliveries=%d failed=%s",
+            event_id,
             len(normalized_nodes),
             delivered,
+            failed,
         )
         return not failed
 
@@ -832,11 +835,6 @@ class EveSentryAlertRelay:
             in {"offline", "removed"}
             and str(change.get("system_name") or change.get("from_system") or "").strip()
         } if isinstance(node_changes, list) else set()
-        force_initial_snapshot = (
-            isinstance(monitoring_nodes, list)
-            and bool(nodes_version)
-            and not self._monitoring_snapshot_initialized
-        )
         if isinstance(node_changes, list) and node_changes and isinstance(
             monitoring_nodes, list
         ):
@@ -859,16 +857,12 @@ class EveSentryAlertRelay:
             last_version = _decode(
                 await self.redis.get(MONITORING_NODE_SNAPSHOT_STATE_KEY)
             )
-            if force_initial_snapshot or last_version != nodes_version:
+            if last_version != nodes_version:
                 node_delivery_succeeded = await self.deliver_monitoring_node_snapshot(
                     monitoring_nodes,
                     str(payload.get("generated_at") or datetime.now(UTC).isoformat()),
                     nodes_version=nodes_version,
                 )
-        if isinstance(monitoring_nodes, list) and nodes_version:
-            if node_delivery_succeeded:
-                self._monitoring_snapshot_initialized = True
-
         if not node_delivery_succeeded:
             logger.warning("EVE Sentry monitoring node update deferred after delivery failure")
             return False
@@ -1193,6 +1187,11 @@ class EveSentryAlertRelay:
                 )
             ):
                 payload = json.loads(data)
+                logger.info(
+                    "EVE Sentry SSE event received event_name=%s event_key=%s",
+                    event_name,
+                    event_id or str(payload.get("event_key") or payload.get("id") or ""),
+                )
                 processed = True
                 if event_name == "bootstrap" and isinstance(payload, dict):
                     processed = await self.process_bootstrap(payload)
@@ -1212,6 +1211,11 @@ class EveSentryAlertRelay:
                 if event_id:
                     await self.redis.set(
                         ALERT_EVENT_ID_KEY, event_id, ex=ALERT_DEDUPE_SECONDS
+                    )
+                    logger.info(
+                        "EVE Sentry SSE event acknowledged event_name=%s event_key=%s",
+                        event_name,
+                        event_id,
                     )
 
     async def process_alert_event(self, payload: dict[str, Any]) -> bool:

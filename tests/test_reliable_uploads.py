@@ -338,6 +338,30 @@ def test_reliable_uploader_prioritizes_presence_then_heartbeat_then_ocr(tmp_path
         manager.shutdown()
 
 
+def test_reliable_uploader_rate_limits_bursty_heartbeat_submissions(tmp_path):
+    calls = []
+    first_sent = threading.Event()
+
+    class Client:
+        def post_heartbeat(self, **payload):
+            calls.append(payload)
+            first_sent.set()
+            return {"ok": True}
+
+    manager = ReliableUploadManager(Client(), state_path=tmp_path / "uploads.json")
+    try:
+        payload = {"client_id": "detector-1", "heartbeat_interval_seconds": 10}
+        manager.submit_heartbeat(payload)
+        assert first_sent.wait(1)
+        for index in range(20):
+            manager.submit_heartbeat({**payload, "sequence": index})
+        time.sleep(0.2)
+        assert len(calls) == 1
+        assert manager._heartbeat is not None
+    finally:
+        manager.shutdown()
+
+
 def test_reliable_uploader_coalesces_presence_to_one_item_per_eight_windows(tmp_path):
     first_failed = threading.Event()
 

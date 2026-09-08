@@ -1095,7 +1095,7 @@ async def test_subscribe_pushes_latest_cached_monitoring_snapshot() -> None:
 
 
 @pytest.mark.asyncio
-async def test_first_bootstrap_refreshes_groups_after_relay_restart() -> None:
+async def test_first_bootstrap_does_not_replay_unchanged_monitoring_snapshot() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     await redis.sadd(ALERT_GROUPS_KEY, "group-1")
     await redis.set(
@@ -1124,13 +1124,7 @@ async def test_first_bootstrap_refreshes_groups_after_relay_restart() -> None:
             }
         )
 
-    qq.send_proactive_text.assert_awaited_once_with(
-        "group-1",
-        "🛰️ 在线监控节点｜1\n"
-        "| 节点 | 状态 | 星系 | 敌对人数 |\n"
-        "| --- | --- | --- | --- |\n"
-        "| 监控节点 1 | 🟢 正常 | Jita | 0 |",
-    )
+    qq.send_proactive_text.assert_not_awaited()
     await redis.aclose()
 
 
