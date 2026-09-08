@@ -124,14 +124,15 @@ Windows 用户直接下载并解压完整便携包即可使用。连接服务端
 固定下载入口：[下载最新版 Windows 客户端](https://evesentrydownload.kisectool.com/download/latest)。
 该地址不包含版本号，会自动跳转到最新完整客户端包，并支持 HTTP Range 断点续传。
 
-客户端相关变更进入 `main` 后会先运行 Windows CI。只有本仓库 `main` 的 push 对应 CI
+客户端相关变更进入单体仓库 `main` 后会先运行 Windows CI。只有该次 push 对应 CI
 成功完成，发布工作流才会检查 `app/version.py` 中的版本；版本尚未发布时才进入受保护的
 `client-release` 环境，构建、签名并发布 Windows 客户端。已有同版本 Release 时工作流会
 成功跳过，不会覆盖现有资产。标签和手动发布仍会独立执行客户端测试。
 
-本仓库不部署服务端、ESI Gateway、机器人或 Web 管理系统。完整触发条件、权限边界、版本
-发布步骤和失败处理见 [客户端 CI/CD 与发布流程](docs/release-process.md)。生产发布审批、
-健康检查和回滚由 role `90` 负责。
+客户端代码只在单体仓库的 `client/` 下维护；根 `app/` 是服务端代码，不再保留客户端副本。
+完整触发条件、权限边界、版本发布步骤和失败处理见
+[客户端 CI/CD 与发布流程](docs/release-process.md)。生产发布审批、健康检查和回滚由
+role `90` 负责。
 
 客户端从签名清单中的下载站主地址下载程序和模型，支持断点续传与 SHA-256 校验。
 
@@ -150,7 +151,7 @@ ONNX 模型应位于：
 ```
 
 GitHub Actions 工作流可使用 `actionlint` 做静态校验；CI 在 Windows runner 上使用 Python
-3.13 和 ONNX 依赖运行测试，并暂时忽略仍引用已迁移服务端模块的
+3.13 和 ONNX 依赖运行测试，并暂时忽略仍引用单体仓库服务端模块的集成测试
 `tests/test_intel_client.py`。
 
 ## 文档
@@ -160,6 +161,7 @@ GitHub Actions 工作流可使用 `actionlint` 做静态校验；CI 在 Windows 
 - [按需 OCR 查询对接](docs/on-demand-ocr-query.md)
 - [客户端 CI/CD 与发布流程](docs/release-process.md)
 
-服务端 API、ESI Gateway 和机器人的文档由各自仓库维护；跨仓库接口以服务端 API 文档为准。
+服务端 API、ESI Gateway 和机器人的文档都在本单体仓库维护；跨组件接口以根目录
+`docs/` 下的服务端 API 文档为准。
 
 运行时数据库、配置、EVE SSO token、本地密钥状态和模型缓存均不应提交到仓库。

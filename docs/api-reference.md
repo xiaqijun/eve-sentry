@@ -32,6 +32,8 @@ Authorization: Bearer eve_xxx
 所有 HTTP 响应都包含 `X-Request-ID`，可用于关联服务端访问日志。可信的本机反向代理
 可以传入最长 64 个字符、仅含字母、数字、点、下划线和连字符的请求 ID；其他来源由
 服务端重新生成。`/api/health` 的 `events.sse.active_connections` 给出当前 SSE 连接数。
+公开健康响应中的 `clients` 只包含数量、类型、状态和最近上报时间等聚合值；客户端 ID、
+主机名、角色名、星系和心跳详情只在受保护的客户端管理接口中返回。
 
 ## 账号与管理
 

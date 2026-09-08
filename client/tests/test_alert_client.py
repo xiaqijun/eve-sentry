@@ -107,6 +107,33 @@ def test_monitored_accounts_from_bootstrap_keeps_capture_offline_targets():
     ]
 
 
+def test_monitored_accounts_from_bootstrap_has_stable_account_order():
+    def bootstrap(names):
+        return {
+            "clients": {
+                "heartbeats": [
+                    {
+                        "client_id": f"detector:{name}",
+                        "client_type": "detector_client",
+                        "online": True,
+                        "details": {
+                            "monitoring": True,
+                            "character_name": name,
+                            "system_name": "Tama",
+                        },
+                    }
+                    for name in names
+                ]
+            }
+        }
+
+    first = monitored_accounts_from_bootstrap(bootstrap(["Bob", "Alice"]))
+    second = monitored_accounts_from_bootstrap(bootstrap(["Alice", "Bob"]))
+
+    assert [item["character_name"] for item in first] == ["Alice", "Bob"]
+    assert first == second
+
+
 def test_local_accounts_from_windows_uses_stable_character_identity():
     accounts = local_accounts_from_windows(
         [
@@ -212,6 +239,37 @@ def test_sync_map_accounts_refreshes_when_monitoring_stops():
     assert controller.overlay.calls == [controller._map_accounts]
 
 
+def test_sync_map_accounts_ignores_account_order_only_changes():
+    class FakeOverlay:
+        def set_map_accounts(self, _accounts):
+            raise AssertionError("order-only changes must not rebuild the overlay")
+
+    alice = {
+        "key": "alice",
+        "character_name": "Alice",
+        "system_name": "Tama",
+        "monitoring": True,
+    }
+    bob = {
+        "key": "bob",
+        "character_name": "Bob",
+        "system_name": "Kedama",
+        "monitoring": True,
+    }
+    controller = AlertTrayController.__new__(AlertTrayController)
+    controller.overlay = FakeOverlay()
+    controller._map_accounts = [alice, bob]
+    controller._local_map_accounts = []
+    controller._remote_map_accounts = [bob, alice]
+    controller._map_request_signature = (("Tama", "Kedama"), (), 3)
+    refreshes = []
+    controller._refresh_local_map = lambda: refreshes.append(True)
+
+    controller._sync_map_accounts()
+
+    assert refreshes == []
+
+
 def test_local_monitored_account_matches_shared_installation_identity():
     alert_client_id = "alert-client:abc123"
 
@@ -269,6 +327,18 @@ def test_alert_client_state_persists_overlay_geometry(tmp_path):
     assert reloaded.overlay_geometry()["width"] == 640
 
 
+def test_alert_client_state_persists_last_event_id(tmp_path):
+    state_path = tmp_path / "alert_state.json"
+    state = AlertClientState(state_path)
+    state.load_seen_ids()
+
+    state.save_last_event_id("event-42")
+
+    reloaded = AlertClientState(state_path)
+    reloaded.load_seen_ids()
+    assert reloaded.last_event_id() == "event-42"
+
+
 def test_alert_worker_connects_sse_before_posting_heartbeat(tmp_path):
     calls = []
     worker = None
@@ -302,9 +372,53 @@ def test_alert_worker_connects_sse_before_posting_heartbeat(tmp_path):
 
     assert calls[1][0] == "events"
     assert calls[1][1]["include_bootstrap"] is True
+    assert calls[1][1]["last_event_id"] == ""
     assert calls[2][0] == "heartbeat"
     assert statuses == [("connected", "")]
     assert bootstraps == [{"active_intel": []}]
+
+
+def test_alert_worker_resumes_cursor_and_throttles_event_heartbeats(tmp_path):
+    calls = []
+    worker = None
+    state_path = tmp_path / "alerts.json"
+    state = AlertClientState(state_path)
+    state.load_seen_ids()
+    state.save_last_event_id("event-40")
+
+    class FakeApi:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def iter_events(self, **kwargs):
+            calls.append(("events", kwargs))
+            yield {"id": "event-41", "event": "safe", "data": {"system": "Tama"}}
+            yield {
+                "id": "event-42",
+                "event": "alert",
+                "data": {"id": "alert-42", "system": "Tama"},
+            }
+            worker._stop_requested = True
+
+        def post_heartbeat(self, **kwargs):
+            calls.append(("heartbeat", kwargs))
+            return {"client_id": kwargs["client_id"]}
+
+    worker = AlertEventWorker(
+        "http://intel.example",
+        state,
+        timeout=5.0,
+        heartbeat_interval=60.0,
+        api_factory=FakeApi,
+    )
+
+    worker.run()
+
+    assert calls[0][1]["last_event_id"] == "event-40"
+    assert [kind for kind, _payload in calls].count("heartbeat") == 1
+    reloaded = AlertClientState(state_path)
+    reloaded.load_seen_ids()
+    assert reloaded.last_event_id() == "event-42"
 
 
 def test_alert_worker_uses_bounded_request_timeout_for_heartbeats(tmp_path):

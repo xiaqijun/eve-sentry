@@ -29,8 +29,8 @@ staging="$(mktemp -d /tmp/eve-sentry-deploy.XXXXXX)"
 backup_root="$backend_root/.deploy-backups"
 backup="$backup_root/$timestamp-$revision"
 service_file="/etc/systemd/system/$service_name.service"
-managed_directories=(app scripts deploy resources)
-managed_files=(main.py requirements-server.txt intel_map.json)
+managed_directories=(app scripts deploy)
+managed_files=(requirements-server.txt intel_map.json)
 deployment_started=0
 deployment_complete=0
 
@@ -53,8 +53,7 @@ restore_backup() {
         install -m 0644 "$backup/service/eve-sentry.service" "$service_file"
     fi
     chown -R eve-sentry:eve-sentry "$backend_root/app" "$backend_root/scripts" \
-        "$backend_root/deploy" "$backend_root/resources" \
-        "$backend_root/main.py" "$backend_root/requirements-server.txt" \
+        "$backend_root/deploy" "$backend_root/requirements-server.txt" \
         "$backend_root/intel_map.json" 2>/dev/null || true
     systemctl daemon-reload
     systemctl restart "$service_name"
@@ -106,8 +105,7 @@ rsync -a --delete "$staging/frontend/" "$frontend_root/"
 install -m 0644 "$staging/backend/deploy/linux/eve-sentry.service" "$service_file"
 
 chown -R eve-sentry:eve-sentry "$backend_root/app" "$backend_root/scripts" \
-    "$backend_root/deploy" "$backend_root/resources" \
-    "$backend_root/main.py" "$backend_root/requirements-server.txt" \
+    "$backend_root/deploy" "$backend_root/requirements-server.txt" \
     "$backend_root/intel_map.json"
 runuser -u eve-sentry -- "$backend_root/.venv-server/bin/python" -m pip install \
     --disable-pip-version-check -r "$backend_root/requirements-server.txt"

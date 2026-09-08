@@ -4,9 +4,10 @@
 
 ## 使用方式
 
-开发环境可以在仓库根目录执行：
+开发环境从单体仓库的客户端目录执行：
 
 ```powershell
+cd client
 .\scripts\start_channel_client.ps1
 ```
 
@@ -29,7 +30,8 @@
 
 ## 打包
 
-轻量客户端使用 `packaging/eve-sentry-channel.spec` 构建，不包含 OCR 模型：
+轻量客户端使用 `client/packaging/eve-sentry-channel.spec` 构建，不包含 OCR 模型。在
+`client/` 目录执行：
 
 ```powershell
 python -m PyInstaller --clean --noconfirm packaging\eve-sentry-channel.spec

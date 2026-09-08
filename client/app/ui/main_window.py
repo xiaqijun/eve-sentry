@@ -1446,7 +1446,7 @@ class MainWindow(QMainWindow):
             for key, worker in _instance_attr(self, "_workers", {}).items()
             if worker is not None and worker.isRunning()
         }
-        if not expected_keys or running_keys == expected_keys:
+        if not expected_keys or expected_keys.issubset(running_keys):
             return
         if _instance_attr(self, "_monitor_reconnect_scheduled", False):
             return
@@ -2211,20 +2211,7 @@ class MainWindow(QMainWindow):
         )
         state_store = self._settings.auth_state_store()
         state = state_store.load()
-        resolved_names = {
-            str(item.get("character_name") or "").strip().casefold()
-            for item in state.get("character_identities", [])
-            if isinstance(item, dict)
-        }
         names_to_resolve = list(pending_names)
-        names_to_resolve_keys = {item.casefold() for item in names_to_resolve}
-        names_to_resolve.extend(
-            name
-            for name in state.get("characters", [])
-            if str(name).strip().casefold() not in resolved_names
-            and str(name).strip().casefold()
-            not in names_to_resolve_keys
-        )
         if pending_character_ids:
             ensure = getattr(client, "ensure_eve_character_check", None)
             identity = (

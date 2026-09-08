@@ -29,7 +29,7 @@
   的回滚脚本恢复上一版本。
 
 生产发布保持并发锁，避免同一环境同时发布两个版本；同一 Pull Request 的旧验证会自动取消，
-不同 PR 之间互不阻塞。跨组件接口发生变化时，先更新服务端
+不同 PR 之间互不阻塞。跨组件接口发生变化时，先更新
 `docs/multi-repository-development.md` 和 API 文档，再在本仓库对应目录完成联调。
 
 ## GitHub Secrets / Variables

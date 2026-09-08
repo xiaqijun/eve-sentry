@@ -21,9 +21,9 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from app.channels.parser import parse_chat_line
-from app.core.heartbeat import monitored_system_names
 from app.esi.sso import EsiSsoError
 from app.server.auth_http import AuthHttpMixin
+from app.server.client_status import monitored_system_names
 from app.server.intel_store import IntelStore, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -2177,7 +2177,11 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
 
     def _map_snapshot_payload(self) -> dict[str, Any]:
         return self._map_snapshot_from_snapshot(
-            self._runtime_snapshot(include_reports=False, include_alerts=False)
+            self._runtime_snapshot(
+                include_reports=False,
+                include_alerts=False,
+                include_hostile_personnel=False,
+            )
         )
 
     def _map_neighborhood_payload(
@@ -2270,6 +2274,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         self,
         include_reports: bool = True,
         include_alerts: bool = True,
+        include_hostile_personnel: bool = True,
         limit: int = 200,
     ) -> dict[str, Any]:
         store = self._store()
@@ -2308,7 +2313,11 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             if include_alerts
             else []
         )
-        hostile_personnel = self._hostile_personnel_snapshot(active_items)
+        hostile_personnel = (
+            self._hostile_personnel_snapshot(active_items)
+            if include_hostile_personnel
+            else []
+        )
         return {
             "generated_at": utc_now_iso(),
             "systems": systems,
@@ -3164,6 +3173,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
 
     def _health_payload(self) -> dict[str, Any]:
         store = self._store()
+        client_summary = store.heartbeat_summary()
         return {
             "ok": True,
             "schema_version": "health.v1",
@@ -3173,7 +3183,17 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             "map": self._map_health(store),
             "esi": self._public_esi_health(),
             "killboard": self._killboard_health(store),
-            "clients": store.heartbeat_summary(),
+            "clients": {
+                key: client_summary[key]
+                for key in (
+                    "count",
+                    "online_count",
+                    "stale_count",
+                    "by_type",
+                    "by_status",
+                    "latest_seen_at",
+                )
+            },
             "events": self._event_health(store),
         }
 

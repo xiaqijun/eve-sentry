@@ -554,8 +554,7 @@ def test_identity_check_submits_listener_found_after_key_validation():
     assert window._identity_scanner.verified == ["Alice"]
 
 
-def test_identity_check_backfills_and_remembers_missing_character_id():
-    remembered = []
+def test_identity_check_does_not_resubmit_historical_unresolved_name():
 
     class FakeScanner:
         def scan(self, _api_key):
@@ -568,18 +567,11 @@ def test_identity_check_backfills_and_remembers_missing_character_id():
             )
 
         def mark_verified(self, names):
-            assert names == ["Alice"]
+            raise AssertionError(f"historical name was unexpectedly verified: {names}")
 
     class FakeClient:
         def verify_eve_characters(self, names):
-            assert names == ["Alice"]
-            return {
-                "verified": True,
-                "permanent": True,
-                "characters": [
-                    {"character_id": 101, "character_name": "Alice"},
-                ],
-            }
+            raise AssertionError(f"historical name was unexpectedly submitted: {names}")
 
     class FakeStore:
         def load(self):
@@ -587,9 +579,6 @@ def test_identity_check_backfills_and_remembers_missing_character_id():
                 "characters": ["Alice"],
                 "character_identities": [],
             }
-
-        def remember_character_identities(self, characters):
-            remembered.extend(characters)
 
     store = FakeStore()
     window = MainWindow.__new__(MainWindow)
@@ -600,15 +589,13 @@ def test_identity_check_backfills_and_remembers_missing_character_id():
         {"auth_state_store": lambda self: store},
     )()
 
-    MainWindow._scan_and_validate_identities(
+    result = MainWindow._scan_and_validate_identities(
         window,
         FakeClient(),
         "eve_valid",
     )
 
-    assert remembered == [
-        {"character_id": 101, "character_name": "Alice"},
-    ]
+    assert result["identity"] == {"verified": True, "permanent": True}
 
 
 def test_async_identity_report_keeps_pending_names_until_server_verifies():
@@ -3049,6 +3036,38 @@ def test_refresh_restarts_monitor_after_worker_exits_with_unchanged_window_signa
     assert len(callbacks) == 1
     callbacks[0]()
     assert reconciled == [[{"key": monitor_key}]]
+
+
+def test_monitor_reconnect_keeps_running_worker_for_temporarily_hidden_window(
+    monkeypatch,
+):
+    callbacks = []
+
+    class FakeWorker:
+        def isRunning(self):
+            return True
+
+    window = MainWindow.__new__(MainWindow)
+    window._monitor_btn = type(
+        "Button",
+        (),
+        {"isChecked": lambda self: True},
+    )()
+    window._stopping_monitor_workers = set()
+    window._workers = {
+        "visible": FakeWorker(),
+        "temporarily-hidden": FakeWorker(),
+    }
+    window._monitor_reconnect_scheduled = False
+    monkeypatch.setattr(
+        "app.ui.main_window.QTimer.singleShot",
+        lambda _delay, callback: callbacks.append(callback),
+    )
+
+    MainWindow._schedule_monitor_reconnect(window, expected_keys={"visible"})
+
+    assert callbacks == []
+    assert set(window._workers) == {"visible", "temporarily-hidden"}
 
 
 def test_refresh_recovers_only_worker_that_exits(

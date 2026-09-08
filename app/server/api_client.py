@@ -1,4 +1,4 @@
-"""HTTP client helpers for publishing and consuming intel reports."""
+"""HTTP API helpers used by server diagnostics and integration tests."""
 
 from __future__ import annotations
 

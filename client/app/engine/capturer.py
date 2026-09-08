@@ -86,7 +86,7 @@ class Capturer:
         height = client_rect[3]
         title = win32gui.GetWindowText(hwnd)
         if width <= 0 or height <= 0:
-            logger.info(
+            logger.debug(
                 "Skipping zero-sized EVE window hwnd=%d title=%r",
                 hwnd,
                 title,

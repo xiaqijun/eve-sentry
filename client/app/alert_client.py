@@ -107,6 +107,7 @@ class AlertClientState:
         self.loaded = False
         self._seen_ids: list[str] = []
         self._seen_set: set[str] = set()
+        self._last_event_id = ""
         self._map_selected_account_keys: list[str] | None = None
         self._overlay_geometry: dict[str, int] | None = None
 
@@ -115,6 +116,7 @@ class AlertClientState:
         self.loaded = self.path.exists()
         if not self.loaded:
             self._set_ids([])
+            self._last_event_id = ""
             self._set_map_selected_account_keys(None)
             self._overlay_geometry = None
             return []
@@ -123,15 +125,18 @@ class AlertClientState:
         except (OSError, json.JSONDecodeError):
             logger.warning("Failed to read alert client state from %s", self.path)
             self._set_ids([])
+            self._last_event_id = ""
             self._set_map_selected_account_keys(None)
             self._overlay_geometry = None
             return []
         if not isinstance(payload, dict):
             self._set_ids([])
+            self._last_event_id = ""
             self._set_map_selected_account_keys(None)
             self._overlay_geometry = None
             return []
         self._set_ids(self._clean_ids(payload.get("seen_alert_ids")))
+        self._last_event_id = str(payload.get("last_event_id") or "").strip()
         self._set_map_selected_account_keys(payload.get("map_selected_account_keys"))
         self._overlay_geometry = self._clean_overlay_geometry(
             payload.get("overlay_geometry")
@@ -168,6 +173,18 @@ class AlertClientState:
         self._set_map_selected_account_keys(account_keys)
         self._write_state()
 
+    def last_event_id(self) -> str:
+        """Return the last fully handled SSE event cursor."""
+        return self._last_event_id
+
+    def save_last_event_id(self, event_id: str) -> None:
+        """Persist the last fully handled SSE event cursor."""
+        cleaned = str(event_id or "").strip()
+        if not cleaned or cleaned == self._last_event_id:
+            return
+        self._last_event_id = cleaned
+        self._write_state()
+
     def overlay_geometry(self) -> dict[str, int] | None:
         """Return the saved overlay rectangle."""
         return dict(self._overlay_geometry) if self._overlay_geometry else None
@@ -181,7 +198,9 @@ class AlertClientState:
         self._write_state()
 
     def _write_state(self) -> None:
-        payload: dict[str, Any] = {"version": 3, "seen_alert_ids": self._seen_ids}
+        payload: dict[str, Any] = {"version": 4, "seen_alert_ids": self._seen_ids}
+        if self._last_event_id:
+            payload["last_event_id"] = self._last_event_id
         if self._map_selected_account_keys is not None:
             payload["map_selected_account_keys"] = self._map_selected_account_keys
         if self._overlay_geometry is not None:
@@ -636,6 +655,13 @@ def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[st
                     "hostile_count": hostile_count,
                 }
             )
+    accounts.sort(
+        key=lambda item: (
+            str(item.get("character_name") or item.get("label") or "").casefold(),
+            str(item.get("client_id") or "").casefold(),
+            str(item.get("key") or "").casefold(),
+        )
+    )
     return accounts
 
 
@@ -2251,6 +2277,7 @@ class AlertEventWorker(QThread):
                 connection_announced = False
                 for event in api.iter_events(
                     timeout=self.timeout,
+                    last_event_id=self.state.last_event_id(),
                     heartbeat=1.0,
                     should_stop=lambda: self._stop_requested,
                     include_bootstrap=True,
@@ -2268,20 +2295,24 @@ class AlertEventWorker(QThread):
                     if event_name == "bootstrap" and isinstance(data, dict):
                         self.bootstrap_received.emit(data)
                         self._post_heartbeat(api, "connected")
+                        self.state.save_last_event_id(event.get("id", ""))
                         continue
                     if event_name == "safe" and isinstance(data, dict):
                         self.safe_received.emit(data)
-                        self._post_heartbeat(api, "safe:1", force=True)
+                        self._post_heartbeat(api, "safe:1")
+                        self.state.save_last_event_id(event.get("id", ""))
                         continue
                     if event_name != "alert" or not isinstance(data, dict):
                         self._post_heartbeat(api, "connected")
+                        self.state.save_last_event_id(event.get("id", ""))
                         continue
                     alert = data
                     if self.consumer.accept(alert):
                         self.alert_received.emit(alert)
-                        self._post_heartbeat(api, "alert:1", force=True)
+                        self._post_heartbeat(api, "alert:1")
                     else:
                         self._post_heartbeat(api, "connected")
+                    self.state.save_last_event_id(event.get("id", ""))
                 backoff = 1.0
             except IntelApiError as exc:
                 retrying_after_error = True
@@ -2611,24 +2642,24 @@ class AlertTrayController:
             getattr(self, "_local_map_accounts", []),
             getattr(self, "_remote_map_accounts", []),
         )
-        previous_signature = tuple(
+        previous_signature = tuple(sorted(
             (
                 str(item.get("key") or ""),
                 str(item.get("system_name") or ""),
-                item.get("system_id"),
+                str(item.get("system_id") or ""),
                 _account_is_monitoring(item),
             )
             for item in getattr(self, "_map_accounts", [])
-        )
-        current_signature = tuple(
+        ))
+        current_signature = tuple(sorted(
             (
                 str(item.get("key") or ""),
                 str(item.get("system_name") or ""),
-                item.get("system_id"),
+                str(item.get("system_id") or ""),
                 _account_is_monitoring(item),
             )
             for item in accounts
-        )
+        ))
         changed = current_signature != previous_signature
         self._map_accounts = accounts
         if changed:

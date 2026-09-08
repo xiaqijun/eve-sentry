@@ -32,6 +32,8 @@ def configure_client_logging(level: int = logging.INFO) -> Path:
     )
     root = logging.getLogger()
     root.setLevel(level)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     if not any(getattr(handler, "_eve_sentry_file", False) for handler in root.handlers):
         handler = RotatingFileHandler(
             log_path,

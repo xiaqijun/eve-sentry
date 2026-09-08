@@ -10,7 +10,6 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from app.core.heartbeat import monitored_system_names
 from app.core.models import Evidence, ThreatEvent
 from app.esi.cache import EsiCache
 from app.esi.resolver import EsiResolver
@@ -20,10 +19,11 @@ from app.intel.classification import CLASSIFICATION_VERSION
 from app.intel.config import IntelConfigStore
 from app.intel.enrichment import ThreatEnricher
 from app.intel.scoring import ScoringEngine, Watchlist
-from app.intel_client import IntelApiClient
 from app.server.auth import AuthService
+from app.server.api_client import IntelApiClient
 from app.server.auth_http import build_admin_clients_payload
 from app.server.auth_store import AuthRepository
+from app.server.client_status import monitored_system_names
 from app.server.http_server import (
     IntelHTTPServer,
     IntelRequestHandler,
@@ -1079,6 +1079,31 @@ def test_v1_bootstrap_and_map_routes_expose_workbench_payload(tmp_path):
         server.stop()
 
 
+def test_map_snapshot_skips_unused_hostile_personnel_work():
+    handler = IntelRequestHandler.__new__(IntelRequestHandler)
+    captured = {}
+    snapshot = {
+        "generated_at": "2026-09-08T00:00:00+00:00",
+        "systems": [],
+        "links": [],
+        "summary": {},
+    }
+
+    def runtime_snapshot(**kwargs):
+        captured.update(kwargs)
+        return snapshot
+
+    handler._runtime_snapshot = runtime_snapshot
+    handler._map_snapshot_from_snapshot = lambda payload: payload
+
+    assert handler._map_snapshot_payload() == snapshot
+    assert captured == {
+        "include_reports": False,
+        "include_alerts": False,
+        "include_hostile_personnel": False,
+    }
+
+
 def test_v1_ocr_snapshot_endpoint_updates_active_intel(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
@@ -1838,6 +1863,8 @@ def test_heartbeat_routes_and_health_summary(tmp_path):
         assert status == 200
         assert payload["health"]["clients"]["count"] == 1
         assert payload["health"]["clients"]["online_count"] == 1
+        assert "items" not in payload["health"]["clients"]
+        assert "alert-client:test" not in json.dumps(payload["health"])
     finally:
         server.stop()
 

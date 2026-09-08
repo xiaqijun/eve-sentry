@@ -111,6 +111,7 @@ flowchart LR
 Python 3.11+：
 
 ```powershell
+cd client
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements-onnx.txt
 $env:EVE_SENTRY_OCR_BACKEND = "onnx"
@@ -126,7 +127,7 @@ Windows 用户直接下载并解压完整便携包即可使用。连接服务端
 固定下载入口：[下载最新版 Windows 客户端](https://evesentrydownload.kisectool.com/download/latest)。
 该地址不包含版本号，会自动跳转到最新完整客户端包，并支持 HTTP Range 断点续传。
 
-`main` 分支由 GitHub Actions 自动测试并部署服务端；修改 `app/version.py` 的版本号会
+`main` 分支由 GitHub Actions 自动测试并部署服务端；修改 `client/app/version.py` 的版本号会
 额外触发 Windows 客户端构建，并发布到 GitHub Release 与 Cloudflare 下载站。
 客户端从签名清单中的下载站主地址下载程序和模型，支持断点续传与 SHA-256 校验。
 GitCode 镜像当前已暂停，详情见 [GitCode 镜像状态](docs/gitcode-release-mirror.md)。
@@ -156,8 +157,11 @@ npm run dev
 ## 测试
 
 ```powershell
-pytest
-cd frontend
+python -m pytest tests
+cd client
+python -m pytest tests
+cd ..\frontend
+npm ci
 npm test
 npm run build
 ```

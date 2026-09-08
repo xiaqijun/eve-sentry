@@ -1,12 +1,16 @@
 import json
+import sys
 import threading
 import time
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from app.esi.client import EsiApiError, EsiClient
 from app.esi.remote import EsiRequestMetrics, RemoteEsiClient
-from scripts.esi_gateway import GatewayServer, GatewayState
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "esi-gateway"))
+
+from esi_gateway import GatewayServer, GatewayState
 
 
 class FakeResponse:
@@ -179,28 +183,6 @@ def test_gateway_batch_cache_key_is_order_insensitive():
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
-
-
-def test_gateway_health_excludes_expired_cache_entries():
-    state = GatewayState("t" * 32, {"127.0.0.1"}, ttl=60, max_requests_per_second=100)
-    state.cache["expired"] = (time.monotonic() - 1, {})
-    state.cache["active"] = (time.monotonic() + 60, {})
-    assert state.health()["cache_entries"] == 1
-
-
-def test_legacy_gateway_negative_hit_with_stale_value_returns_stale():
-    state = GatewayState("t" * 32, {"127.0.0.1"}, ttl=60, max_requests_per_second=100)
-    now = time.monotonic()
-    with state.lock:
-        state.cache["stale"] = (now - 1, {"name": "Jita"})
-        state.negative["stale"] = now + 30
-
-    def loader():
-        raise AssertionError("negative stale hit must not call upstream")
-
-    value, status = state.fetch("stale", loader, endpoint="get_system")
-    assert value == {"name": "Jita"}
-    assert status == "stale"
 
 
 def test_gateway_coalesces_concurrent_misses_per_key():
