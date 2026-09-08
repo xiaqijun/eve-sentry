@@ -69,7 +69,7 @@ the deployment verifier can use it; keep it bound to the private network.
 
 ## CI/CD and rollback
 
-The workflow in [`.github/workflows/deploy-esi-gateway.yml`](../.github/workflows/deploy-esi-gateway.yml)
+The workflow in [`.github/workflows/deploy-esi-gateway.yml`](../../.github/workflows/deploy-esi-gateway.yml)
 validates Python 3.10–3.13, dependency consistency, Ruff, byte-code
 compilation, tests, Bash syntax, and ShellCheck. Only a push to `main` creates
 an artifact and can deploy to the protected `production` environment.
@@ -78,7 +78,8 @@ Deployment creates a deterministic archive, verifies its SHA-256 checksum,
 uploads it over SSH, installs an immutable release, switches the `current`
 symlink atomically, restarts systemd, and checks `/health`. A failed restart or
 health check restores the previous release. Production deployment,
-verification, and operator-triggered rollback remain owned by role `90`.
+verification, and operator-triggered rollback must use the protected workflow
+and the documented operating procedures.
 
 Never commit the service environment file, PostgreSQL password, Redis password,
 SSH keys, bearer tokens, or generated archives. Use GitHub environment secrets

@@ -4,17 +4,17 @@
 
 This repository is the only source repository for the warning server, Windows
 client, standalone ESI Gateway, bot, download site, web console, and published
-wire contracts. Role `20` owns server paths (`app/`, `frontend/`, and server
-deployment assets); component-specific code stays under `client/`, `bot/`,
+wire contracts. Server code stays under `app/`, `frontend/`, and the root
+deployment assets; component-specific code stays under `client/`, `bot/`,
 `esi-gateway/`, and `download-site/`. Do not recreate or update the retired
 standalone component repositories.
 
-Route new work through role `00`. Any HTTP, SSE, event, cursor, authentication,
-or ESI wire change must be reviewed against the
-[monorepo development workflow](docs/multi-repository-development.md)
+Any HTTP, SSE, event, cursor, authentication, or ESI wire change must be reviewed
+against the
+[monorepo development workflow](docs/monorepo-development.md)
 and the API documentation in `docs/`.
-Only one task may write to this repository at a time. Role `90` exclusively owns
-production deployment, health verification, and rollback.
+Production changes must use the protected GitHub environments and the documented
+deployment, health-check, and rollback workflows.
 
 ## Project Structure & Module Organization
 `app/` contains the server and shared server-side domain code; the HTTP service lives in `app/server/`. The Windows client, including UI, capture/OCR, assets, packaging, and tests, lives in `client/`. The bot, ESI Gateway, download site, and web console live in `bot/`, `esi-gateway/`, `download-site/`, and `frontend/`. Root `tests/` cover the server; component tests stay under their component directory. Supporting server scripts belong in `scripts/`, and design notes or plans are kept in `docs/`.

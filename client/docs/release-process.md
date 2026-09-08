@@ -10,8 +10,8 @@
 - `Client CI`：验证客户端代码、打包配置、资源、脚本和测试。
 - `Release Client`：在 CI 门禁通过后构建、签名并发布 Windows 客户端。
 
-生产部署审批、发布后的健康验证和回滚由 role `90` 负责。普通开发任务不应手动绕过
-`client-release` 环境保护。
+生产发布必须通过受保护的 `client-release` 环境审批；发布后按本文完成健康验证，失败时
+执行对应回滚流程。任何任务都不应手动绕过环境保护。
 
 ## Client CI
 
@@ -30,7 +30,8 @@
 python -m pytest -q --ignore=tests/test_intel_client.py
 ```
 
-`tests/test_intel_client.py` 仍引用已迁移出本仓库的 `app.server`，因此暂不属于客户端 CI。
+`tests/test_intel_client.py` 是依赖根目录 `app.server` 的跨组件集成测试，因此暂不属于独立的
+客户端 CI。
 
 ## 自动发布门禁
 
@@ -77,12 +78,12 @@ python -m pytest -q --ignore=tests/test_intel_client.py
 1. 从最新 `main` 开始开发，完成本地检查后直接提交到 `main`。
 2. 修改 `app/version.py` 中的 `APP_VERSION`，同时提交版本相关变更。
 3. 等待 `main` 的 `Client CI` 通过。
-4. 由 role `90` 审批 `client-release` 环境中的生产发布。
+4. 通过受保护的 `client-release` 环境审批生产发布。
 5. 验证 GitHub Release、固定下载入口、签名清单和客户端更新检查。
 
 不要为同一个版本反复创建或覆盖 Release。若同版本已经存在，重复运行会作为成功的 no-op
 结束；若发布失败且 Release 尚未创建，可以在修复后重新运行。删除发布、回滚或重新签名属于
-生产操作，应由 role `90` 执行。
+生产操作，必须按受保护环境和本文的发布流程执行。
 
 ## 本地校验
 

@@ -25,12 +25,12 @@
 - 路径过滤避免无关组件重复构建，但服务端 API、事件协议和根目录文档变化时，至少运行
   服务端、客户端和机器人兼容性测试。
 - 所有部署先运行组件测试、静态检查和打包校验，再进入 `production` Environment。
-- 发布包必须带提交 SHA 和 SHA-256 校验；部署失败由 role `90` 按服务端、机器人或 Gateway
-  的回滚脚本恢复上一版本。
+- 发布包必须带提交 SHA 和 SHA-256 校验；部署失败时按服务端、机器人或 Gateway 的回滚
+  脚本恢复上一版本。
 
 生产发布保持并发锁，避免同一环境同时发布两个版本；同一 Pull Request 的旧验证会自动取消，
 不同 PR 之间互不阻塞。跨组件接口发生变化时，先更新
-`docs/multi-repository-development.md` 和 API 文档，再在本仓库对应目录完成联调。
+`docs/monorepo-development.md` 和 API 文档，再在本仓库对应目录完成联调。
 
 ## GitHub Secrets / Variables
 

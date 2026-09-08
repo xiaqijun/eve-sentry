@@ -2,9 +2,9 @@
 
 本目录按“当前规范优先、操作手册分离、历史设计不重复维护”的原则维护。
 接口、事件字段和兼容行为以 `api-reference.md` 为准；第三方接入步骤以
-`alert-api.md` 为准；跨仓库变更先更新本目录和对应消费者文档。
+`alert-api.md` 为准；跨组件变更先更新本目录和对应消费者文档。
 
-按角色选择入口：
+按使用场景选择入口：
 
 ## 客户端用户
 
@@ -26,7 +26,7 @@
 
 - [预警消息 API 接入指南](alert-api.md)：第三方软件通过 SSE 或 JSON 获取实时预警和当前敌对星系。
 - [完整 API 参考](api-reference.md)：服务端全部 HTTP 接口、参数和数据约定。
-- [单体仓库开发与联动](multi-repository-development.md)：目录职责、联调顺序、`main` 分支约定和发布门禁。
+- [单体仓库开发与联动](monorepo-development.md)：目录职责、联调顺序、`main` 分支约定和发布门禁。
 - [下载站开发与部署](download-site.md)：静态站点、Cloudflare Worker、客户端 Release 源和生产验证。
 - [GitCode 镜像状态](gitcode-release-mirror.md)：客户端发布镜像的当前状态和限制。
 

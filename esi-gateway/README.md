@@ -103,7 +103,7 @@ The target host must already contain the service user, the environment file at
 at `/opt/eve-sentry-esi-gateway/.venv/bin/python`. The SSH deployment account
 must run the remote script as root so it can manage the configured systemd unit
 and gateway root. Configure required reviewers on the `production` environment
-so role `90` retains ownership of production deployment, health verification,
-and rollback approval. Manual workflow runs selected from any branch other than
-`main` validate only and cannot deploy. The normal development path is a direct
-commit and push to `main`.
+to protect production deployment, health verification, and rollback approval.
+Manual workflow runs selected from any branch other than `main` validate only
+and cannot deploy. The normal development path is a direct commit and push to
+`main`.

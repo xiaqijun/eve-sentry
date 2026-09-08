@@ -178,7 +178,7 @@ npm run build
 - [完整 API 参考](docs/api-reference.md)
 - [预警消息 API 接入指南](docs/alert-api.md)
 - [SSE 性能与重连约束](docs/sse-performance-guardrails.md)
-- [单体仓库开发与联动](docs/multi-repository-development.md)
+- [单体仓库开发与联动](docs/monorepo-development.md)
 - [下载站开发与部署](docs/download-site.md)
 - [GitCode 镜像状态](docs/gitcode-release-mirror.md)
 
