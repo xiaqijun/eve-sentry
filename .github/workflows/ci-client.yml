@@ -48,10 +48,12 @@ jobs:
         shell: pwsh
         run: |
           $patterns = @('GameConnectionLogWatcher', '_poll_game_connection_logs', 'game_connection_')
-          $files = @('app', '..\app') | Where-Object { Test-Path -LiteralPath $_ }
+          $files = @('app', '..\app') |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            ForEach-Object { Get-ChildItem -LiteralPath $_ -Recurse -File -Include *.py }
           foreach ($pattern in $patterns) {
-            $matches = rg --no-heading --line-number --fixed-strings $pattern $files 2>$null
-            if ($LASTEXITCODE -eq 0 -and $matches) {
+            $matches = $files | Select-String -SimpleMatch -Pattern $pattern
+            if ($matches) {
               Write-Error "Forbidden removed game-log symbol found: $pattern`n$matches"
               exit 1
             }
