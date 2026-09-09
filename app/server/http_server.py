@@ -755,6 +755,13 @@ def _monitoring_nodes_version(nodes: list[dict[str, Any]]) -> str:
         for node in nodes
         if isinstance(node, dict)
     ]
+    version_nodes.sort(
+        key=lambda item: (
+            item["node_id"],
+            item["system_name"],
+            item["health_status"],
+        )
+    )
     encoded = json.dumps(
         version_nodes,
         ensure_ascii=False,

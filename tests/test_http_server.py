@@ -31,6 +31,7 @@ from app.server.http_server import (
     _active_hostile_counts,
     _event_stream_generation,
     _monitoring_node_changes,
+    _monitoring_nodes_version,
     _monitoring_target_state,
 )
 from app.server.intel_store import IntelStore, StarSystem
@@ -185,6 +186,63 @@ def test_monitoring_node_changes_describe_online_offline_and_move():
     assert by_change["moved"]["from_system"] == "Jita"
     assert by_change["moved"]["to_system"] == "Tama"
     assert _monitoring_node_changes(current, current) == []
+
+
+def test_monitoring_nodes_version_ignores_order():
+    previous = [
+        {
+            "client_id": "window:alpha",
+            "system_name": "HB-FSO",
+            "health_status": "online",
+        },
+        {
+            "client_id": "window:beta",
+            "system_name": "S-KSWL",
+            "health_status": "online",
+        },
+    ]
+    current = [
+        {
+            "client_id": "window:beta",
+            "system_name": "S-KSWL",
+            "health_status": "online",
+        },
+        {
+            "client_id": "window:alpha",
+            "system_name": "HB-FSO",
+            "health_status": "online",
+        },
+    ]
+
+    assert _monitoring_nodes_version(current) == _monitoring_nodes_version(previous)
+
+
+def test_monitoring_node_state_ignores_hostile_presence_updates():
+    previous = [
+        {
+            "client_id": "window:alpha",
+            "system_name": "HB-FSO",
+            "health_status": "online",
+            "hostile_count": 0,
+            "presence_version": 1,
+            "presence_state_id": "HB-FSO:0",
+            "captured_at": "2026-09-09T03:00:00+00:00",
+        }
+    ]
+    current = [
+        {
+            "client_id": "window:alpha",
+            "system_name": "HB-FSO",
+            "health_status": "online",
+            "hostile_count": 3,
+            "presence_version": 2,
+            "presence_state_id": "HB-FSO:3",
+            "captured_at": "2026-09-09T03:00:01+00:00",
+        }
+    ]
+
+    assert _monitoring_node_changes(previous, current) == []
+    assert _monitoring_nodes_version(previous) == _monitoring_nodes_version(current)
 
 
 def test_monitoring_target_state_falls_back_to_heartbeat_system():
