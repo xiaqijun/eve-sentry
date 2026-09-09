@@ -5088,7 +5088,7 @@ def test_v1_events_durable_cursor_skips_active_report_cursor_resolution(tmp_path
         assert status == 200
         assert ": keepalive" in body
         events = sse_events(body)
-        assert [event["event"] for event in events] == ["bootstrap"]
+        assert [event["event"] for event in events] == ["bootstrap", "alert"]
         assert [alert["id"] for alert in events[0]["data"]["alerts"]] == [
             "evt_existing"
         ]
