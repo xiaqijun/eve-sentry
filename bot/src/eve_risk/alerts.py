@@ -201,16 +201,14 @@ def format_monitoring_nodes_message(
         for node in ordered
         if str(node.get("health_status") or "online").strip().casefold() == "online"
     )
-    lines = [f"### 🛰️ 在线监控节点｜{online_count}"]
+    lines = [
+        f"### 🛰️ 在线监控节点｜{online_count}",
+        "| 节点 | 状态 | 星系 | 敌对人数 |",
+        "| --- | --- | --- | --- |",
+    ]
     if not ordered:
-        lines.append("暂无在线监控节点")
+        lines.append("| 暂无在线监控节点 | — | — | — |")
         return "\n".join(lines)
-    lines.extend(
-        [
-            "| 节点 | 状态 | 星系 | 敌对人数 |",
-            "| --- | --- | --- | --- |",
-        ]
-    )
     for index, node in enumerate(ordered, start=1):
         system_name = str(
             node.get("system_name") or node.get("system") or "Unknown"

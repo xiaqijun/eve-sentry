@@ -2212,7 +2212,12 @@ def test_start_monitor_creates_worker_for_each_eve_window(monkeypatch):
         context["source_instance"] for context in window._worker_contexts.values()
     } == {"EVE - Pilot A", "EVE - Pilot B"}
     assert resolved_characters == ["Pilot B", "Pilot A"]
-    assert heartbeat_calls == [{"task_key": "heartbeat:online"}]
+    assert heartbeat_calls == [
+        {
+            "monitoring_override": True,
+            "task_key": "heartbeat:online",
+        }
+    ]
 
 
 def test_build_monitor_targets_uses_only_selected_window():

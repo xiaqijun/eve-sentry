@@ -26,10 +26,22 @@ from eve_risk.alerts import (
     format_active_intel_message,
     format_alert_message,
     format_monitoring_node_message,
+    format_monitoring_nodes_message,
     format_personnel_alert_message,
     format_system_alert_message,
     iter_sse_events,
 )
+
+
+def test_formats_empty_monitoring_node_snapshot_as_table() -> None:
+    message = format_monitoring_nodes_message([])
+
+    assert message == (
+        "### 🛰️ 在线监控节点｜0\n"
+        "| 节点 | 状态 | 星系 | 敌对人数 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 暂无在线监控节点 | — | — | — |"
+    )
 
 
 async def _sse_lines():
