@@ -5039,6 +5039,63 @@ def test_events_stream_sends_keepalive_comments_when_idle(tmp_path):
         server.stop()
 
 
+def test_v1_events_durable_cursor_skips_active_report_cursor_resolution(tmp_path):
+    class DurableCursorStore(IntelStore):
+        def read_active_event_snapshot(self):
+            return [], [], 1
+
+        def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
+            del after_seq, since, limit
+            return []
+
+        def resolve_alert_stream_cursor(self, alert_id):
+            raise AssertionError(
+                f"active report cursor must not be resolved after state cursor: {alert_id}"
+            )
+
+    store = DurableCursorStore(tmp_path / "intel.json", systems={}, links=[])
+    store._sse_active_event_cache = {
+        "lock": threading.RLock(),
+        "generation": _event_stream_generation(),
+        "created_at": time.monotonic(),
+        "state_event_seq": 1,
+        "state": (
+            [],
+            [
+                {
+                    "id": "evt_existing",
+                    "system_name": "HB-FSO",
+                    "created_at": "2026-09-09T09:55:00+00:00",
+                    "score": 100,
+                    "level": "critical",
+                    "acknowledged": False,
+                }
+            ],
+            [],
+        ),
+    }
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        query = urlencode(
+            {"timeout": "0.05", "heartbeat": "0.01", "bootstrap": "1"}
+        )
+        status, _, body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": "state:1"},
+        )
+
+        assert status == 200
+        assert ": keepalive" in body
+        events = sse_events(body)
+        assert [event["event"] for event in events] == ["bootstrap"]
+        assert [alert["id"] for alert in events[0]["data"]["alerts"]] == [
+            "evt_existing"
+        ]
+    finally:
+        server.stop()
+
+
 def test_v1_events_reads_active_intel_once_per_refresh(tmp_path):
     class CountingStore(IntelStore):
         def __init__(self, filepath):

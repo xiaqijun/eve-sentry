@@ -3818,6 +3818,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 state_event_seq = max(0, int(stream_event_id.split(":", 1)[1]))
             except (TypeError, ValueError):
                 state_event_seq = 0
+        resumed_from_durable_state = has_durable_state_cursor
         skip_initial_state_replay = bool(
             active_only
             and include_bootstrap
@@ -4096,7 +4097,18 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                             state_event_seq,
                         )
                         return
-                    if active_snapshot_ready:
+                    if active_snapshot_ready and resumed_from_durable_state:
+                        # A durable state cursor already represents the
+                        # client's complete acknowledged alert state.  New
+                        # transitions above are replayed from intel_events and
+                        # Bootstrap carries the current detailed snapshot, so
+                        # resolving every active report cursor here would only
+                        # duplicate old alerts.  More importantly, that legacy
+                        # lookup takes the shared store lock and can stall all
+                        # resumed SSE handlers behind ingestion or enrichment.
+                        alerts = []
+                        ordered_alerts = []
+                    elif active_snapshot_ready:
                         alerts = self._filter_active_alerts(
                             store,
                             active_alerts,
@@ -4221,7 +4233,11 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                             stream_event_id = bootstrap_event_id
                         last_bootstrap_fingerprint = fingerprint
                         wrote_event = True
-                if active_only and active_snapshot_ready:
+                if (
+                    active_only
+                    and active_snapshot_ready
+                    and not resumed_from_durable_state
+                ):
                     presence_alerts = list(active_presence_alerts)
                     if last_seen:
                         if current_include_since:
