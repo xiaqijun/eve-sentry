@@ -2176,7 +2176,8 @@ def test_start_monitor_creates_worker_for_each_eve_window(monkeypatch):
         return True
 
     window._refresh_intel_location = refresh_location
-    window._publish_heartbeat = lambda: None
+    heartbeat_calls = []
+    window._publish_heartbeat = lambda **kwargs: heartbeat_calls.append(kwargs)
     window._refresh_status_cards = lambda: None
     window._log_messages = []
     window._log_message = lambda message: window._log_messages.append(message)
@@ -2211,6 +2212,7 @@ def test_start_monitor_creates_worker_for_each_eve_window(monkeypatch):
         context["source_instance"] for context in window._worker_contexts.values()
     } == {"EVE - Pilot A", "EVE - Pilot B"}
     assert resolved_characters == ["Pilot B", "Pilot A"]
+    assert heartbeat_calls == [{"task_key": "heartbeat:online"}]
 
 
 def test_build_monitor_targets_uses_only_selected_window():

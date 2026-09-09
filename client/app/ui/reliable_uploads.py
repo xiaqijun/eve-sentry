@@ -323,6 +323,9 @@ class ReliableUploadManager(QObject):
 
     def _heartbeat_interval(self, upload: _PendingUpload) -> float:
         """Return the minimum wire interval for a detector heartbeat."""
+        task_key = str(upload.metadata.get("task_key") or "heartbeat").strip()
+        if task_key != "heartbeat":
+            return 0.0
         try:
             configured = float(upload.payload.get("heartbeat_interval_seconds", 10.0))
         except (TypeError, ValueError):

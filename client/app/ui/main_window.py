@@ -2752,7 +2752,7 @@ class MainWindow(QMainWindow):
         self._heartbeat_last_action = f"monitor_started:{len(self._workers)}"
         self._heartbeat_last_error = ""
         self._heartbeat_last_success_at = heartbeat_now_iso()
-        self._publish_heartbeat()
+        self._publish_heartbeat(task_key="heartbeat:online")
         self._refresh_status_cards()
         self._refresh_window_status_table()
         self._monitor_start_state = "idle"
