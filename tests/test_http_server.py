@@ -2058,6 +2058,7 @@ def test_esi_session_routes_expose_status_and_snapshot(tmp_path):
         character_owner_hash = "owner-hash"
         scopes = ["esi-location.read_location.v1"]
         expires_at = 2000
+        refresh_token = "refresh-token"
 
         def is_expired(self):
             return False
@@ -2115,6 +2116,7 @@ def test_esi_session_routes_expose_status_and_snapshot(tmp_path):
         assert status == 200
         assert status_payload["enabled"] is True
         assert status_payload["authenticated"] is True
+        assert status_payload["refreshable"] is True
         assert status_payload["character_id"] == 123
         assert status_payload["config"]["client_id_configured"] is True
         assert status_payload["config"]["token_file_present"] is True
@@ -2122,6 +2124,13 @@ def test_esi_session_routes_expose_status_and_snapshot(tmp_path):
         assert "access_token" not in status_payload
         assert "refresh_token" not in status_payload
         assert session.load_calls == [False]
+
+        status, health_payload = request_json(f"{server.url}/api/health")
+        assert status == 200
+        assert health_payload["health"]["esi"]["expired"] is False
+        assert health_payload["health"]["esi"]["refreshable"] is True
+        assert "refresh_token" not in health_payload["health"]["esi"]
+        assert session.load_calls == [False, False]
 
         status, snapshot = request_json(
             f"{server.url}/api/esi/session?location=false&contacts=true"

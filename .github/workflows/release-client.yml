@@ -147,7 +147,7 @@ jobs:
           "release=$release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Cache OCR models
         id: cache-models
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: client/.runtime/onnx-models
           key: eve-sentry-onnx-models-${{ runner.os }}-${{ steps.model-release.outputs.repository }}-${{ steps.model-release.outputs.release }}-${{ hashFiles('client/scripts/restore_release_models.ps1') }}
@@ -161,7 +161,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - name: Save OCR model cache
         if: always() && steps.cache-models.outputs.cache-hit != 'true' && steps.restore-models.outcome == 'success'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: client/.runtime/onnx-models
           key: eve-sentry-onnx-models-${{ runner.os }}-${{ steps.model-release.outputs.repository }}-${{ steps.model-release.outputs.release }}-${{ hashFiles('client/scripts/restore_release_models.ps1') }}

@@ -345,6 +345,11 @@ Authorization: Bearer eve_xxx
 | `GET` | `/api/v1/esi/session` | 位置、contacts 和授权账号声望快照 |
 | `GET/POST` | `/api/v1/esi/login` | 态势页 ESI 授权状态和启动 |
 
+`/api/v1/esi/status` 和 `/api/health` 的 ESI 摘要会同时返回 `expired` 与
+`refreshable`。`expired=true, refreshable=true` 只表示短时 access token 已过期，后续
+认证 ESI 请求会使用保存的 refresh token 自动刷新，不代表账号授权失效；只有
+`refreshable=false` 或返回 `error` 时才需要重新授权或检查令牌存储。
+
 `/api/v1/esi/session` 的 `standings` 来自授权角色的 ESI standings 接口，服务端按
 `character_id` 保存一份完整快照，默认缓存 600 秒，可通过
 `EVE_SENTRY_SERVER_ESI_STANDINGS_TTL` 配置为 300–900 秒。缓存命中时不重复请求；过期刷新

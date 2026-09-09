@@ -2021,6 +2021,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 "authenticated",
                 "session",
                 "expired",
+                "refreshable",
             )
             if key in status
         }
@@ -3297,6 +3298,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     "public": True,
                     "authenticated": False,
                     "session": False,
+                    "refreshable": False,
                     "config": config,
                 }
             return {"enabled": False, "authenticated": False, "config": config}
@@ -3306,6 +3308,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 "public": public_enabled,
                 "authenticated": False,
                 "session": True,
+                "refreshable": False,
                 "config": config,
                 "error": "ESI session cannot load tokens",
             }
@@ -3317,6 +3320,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 "public": public_enabled,
                 "authenticated": False,
                 "session": True,
+                "refreshable": False,
                 "config": config,
                 "error": str(exc),
             }
@@ -3325,6 +3329,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             "public": public_enabled,
             "authenticated": True,
             "session": True,
+            "refreshable": bool(getattr(tokens, "refresh_token", "")),
             "config": config,
             "character_id": tokens.character_id,
             "character_owner_hash": tokens.character_owner_hash,
