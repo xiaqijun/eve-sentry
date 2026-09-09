@@ -2,7 +2,7 @@
 
 本文是服务端、监控客户端、预警客户端和 QQ 机器人共用的推送方案。后续涉及
 Presence、OCR、Heartbeat、SSE、告警、清空、节点或按需 OCR 的修改，都必须先对照本文。
-文中标为“现行”或列为已勾选的内容表示截至 v1.0.68 已实现；标为“目标”或未勾选的内容
+文中标为“现行”或列为已勾选的内容表示截至 v1.0.69 已实现；标为“目标”或未勾选的内容
 仍是后续设计，不能当作生产现状。
 
 ## 1. 结论
@@ -657,6 +657,8 @@ EOY-BG 在同一波次内先后出现 `2 → 3 → 2 → 1` 人变化，最后�
 | PUSH-20260909-14 | P0 | OCR/ESI 全局锁与 SSE 延迟 | 11:11:20～11:11:28 的 `state:550`～`state:553` 已按顺序落库，但 QQ 到 11:11:50～11:11:52 才成批投递；机器人在 11:11:03、11:11:48 两次发生 SSE 空闲超时。补查时服务端报告 23 条 SSE，操作系统只有 3 条真实连接，另有 20 条 `CLOSE_WAIT`；18 个请求线程等待同一个无超时锁，OCR/ESI 后台线程正在网络 `poll`。代码确认异步 OCR 已在锁外取得身份资料后，又在持有 store 全局锁时执行一次可能访问远端 Gateway 的 metadata enrichment。 | 一次 20～40 秒 ESI 等待会同时阻塞 Presence、OCR、心跳和 SSE 快照，造成来敌/清空红标延迟、QQ群消息堆积后集中出现以及客户端显示重连。 | 待验收 | `b1013da` 将可能访问远端 ESI 的 metadata enrichment 完整移到全局锁外，锁内只保留当前状态合并和持久化快照准备，并增加“enrichment 执行时不得持有 store 锁”的回归测试。Deploy Server run `34309736878` 于北京时间 2026-09-09 12:13 成功；重启后由 29 个线程/23 条 SSE/20 条 `CLOSE_WAIT` 回落到 8 个线程/2 条 SSE/0 条 `CLOSE_WAIT`，两个以上完整 SSE 周期均约 30.0 秒结束，部署后未再出现非部署重连。仍需用下一次真实来敌/清空核验端到端到达时间后转为已整改。 |
 | PUSH-20260909-15 | P1 | 来敌后误发节点表 | 09:17 和 11:09 的生产样本均出现来敌消息后又发送完整“在线监控节点”表。代码确认 `monitoring_nodes_version` 虽然只保留节点身份、星系和健康状态，却直接按上游列表顺序计算哈希；上游列表使用包含 `hostile_count`、`presence_version` 和 `captured_at` 的完整节点行排序，因此一次 Presence 更新可能改变相同节点集合的排列顺序并产生错误的新版本。机器人将版本变化当作节点状态快照变化，随后发送整张节点表。 | 节点实际没有上线、下线、移动或健康变化，却在来敌/清空过程中插入冗余节点消息，造成消息顺序混乱并让用户误以为节点发生变化。 | 待验收 | `17861e7` 在计算节点版本前按 `node_id + system_name + health_status` 稳定排序，并增加“同一节点集合换序版本不变”以及“敌对人数、Presence 版本和采集时间变化不产生节点变化”的回归。服务端测试 599 项通过、1 项跳过；Contract Compatibility run `34312307206` 和 Deploy Server run `34312307192` 均成功，生产于北京时间 2026-09-09 12:53 切换到该提交，readiness 正常且无 `CLOSE_WAIT`。下一次真实来敌/清空必须只发送预警、人员和清空消息；只有节点上线、下线、移动或健康状态变化才允许发送完整节点表。 |
 | PUSH-20260909-16 | P1 | 频繁开关监控时节点推送排队 | 每次真实上线或下线都会生成完整节点快照；机器人原先在 SSE 读取循环中同步等待 QQ Markdown、降级文本和网络重试。频繁开关时，已经进入投递的旧快照不能由客户端心跳合并取消，后续快照及同一 SSE 上的预警事件只能排队等待；QQ 单请求最多 10 秒且默认重试 3 次，会显著放大延迟。 | QQ 群可能先后看到已经过期的在线/离线状态，最新节点状态和后续来敌/清空消息被旧节点投递拖延。 | 整改中 | 机器人现将最新节点快照先持久化到 Redis，再由独立任务投递；默认合并 250ms 突发，发送进行中只保留一份最新待发快照，跳过中间状态；单次节点投递限制为 3 秒，超时后优先发送更新快照，无更新时重试当前最新状态。新增慢 QQ、连续三次切换只发送首尾状态，以及旧投递超时后立即发送最新状态的回归。完整 Redis high/normal/dead stream 仍按 `PUSH-20260908-04` 后续实施。部署后需实测快速开关至少 10 轮，确认节点消息不形成 FIFO 积压、最终状态正确且预警事件不被节点消息阻塞。 |
+| PUSH-20260909-17 | P1 | 快速重开监控的上线延迟 | 生产样本中客户端于 15:02:08 点击开启，服务端直到 15:02:18 才看到节点上线，恰好相隔一个 10 秒周期心跳。代码确认 `_start_monitor` 启动工作线程后立即构造上线心跳，但此时 `QThread.isRunning()` 可能仍为 false，导致首包被误标为 `monitoring=false`；下一次周期心跳才纠正为在线。 | 关闭后立即开启时，客户端界面已显示监控中，但星图和 QQ 节点状态仍可能延迟约 10 秒。 | 整改中 | `5125409` 让启动路径使用 `monitoring_override=true` 构造首个 `heartbeat:online`，不再依赖线程调度时序，并增加启动首包回归。修复已发布为 v1.0.69；安装后连续快速关闭/开启至少 10 轮，记录客户端点击、服务端心跳和 QQ 到达时间，确认不再出现整周期等待。 |
+| PUSH-20260909-18 | P2 | 空监控节点列表排版 | 节点快照为空时，机器人原先只输出标题和一行普通文本；非空时则输出四列表格，QQ Markdown 在两种结构间切换会造成空状态排版错乱。 | 全部节点下线时，群内节点状态消息难以阅读，且与正常节点表的列结构不一致。 | 待验收 | `5125409` 让空快照保留节点、状态、星系和敌对人数四列表头，并使用“暂无在线监控节点”占位行；增加精确 Markdown 回归。Validate and Deploy Bot run `34325517223` 已成功，等待下一次真实全下线消息确认 QQ 客户端显示正常。 |
 
 ### 17.1 整改更新格式
 
@@ -834,3 +836,30 @@ Release Client 的 `actions/cache/restore@v6` 与 `actions/cache/save@v6` 已在
 线程；部署后稳定为 2 条 SSE、无 `CLOSE_WAIT`、8 个线程。部署后的 SSE 请求均在预期的
 30 秒窗口结束，常规心跳约 5～7ms，观察窗口内未再出现 bot `TimeoutError`。本条仍为
 `待验收`，因为最终结论需要下一次真实敌对进入和清空同时证明预警端红标与 QQ 到达时延。
+
+### 17.9 v1.0.69 快速重开与空节点排版修复
+
+- 问题编号：`PUSH-20260909-17`、`PUSH-20260909-18`
+- 修复提交：`51254096ce09e4c70093a811adfca79289ef946f`
+- Client CI：[run 34325517224](https://github.com/xiaqijun/eve-sentry/actions/runs/34325517224)，成功
+- Contract Compatibility：[run 34325517222](https://github.com/xiaqijun/eve-sentry/actions/runs/34325517222)，成功
+- Validate and Deploy Bot：[run 34325517223](https://github.com/xiaqijun/eve-sentry/actions/runs/34325517223)，成功
+- Release Client：[run 34325665371](https://github.com/xiaqijun/eve-sentry/actions/runs/34325665371)，成功
+- Release：[v1.0.69](https://github.com/xiaqijun/eve-sentry/releases/tag/v1.0.69)
+- 发布时间：`2026-09-09T07:51:37Z`（北京时间 `2026-09-09 15:51:37`）
+- 目标提交：`51254096ce09e4c70093a811adfca79289ef946f`
+
+| 资产 | 大小（bytes） | SHA-256 |
+|---|---:|---|
+| `EVE-Sentry-Monitor-ONNX-program-1.0.69.zip` | 132,401,667 | `9ce7528773c3edd11acb2576040fdcaab009d6df73379a18c604059b7e460cf9` |
+| `EVE-Sentry-Monitor-ONNX-models-eb1a177a0f6e7133c001d4284890844f18b6f1f732b29ccc4307fa5f7364ea2d.zip` | 105,099,126 | `c125fa393aa62f6d880c128459d3416c38db90dc42124bd7dd3f0417e6d82a19` |
+| `latest.json` | 1,276 | `92b66a0fd5afe6c34bebcd9f601e0d0af2ec2c68e53a75f435339806356aacf6` |
+| `EVE-Sentry-Monitor-ONNX-1.0.69.zip` | 237,500,975 | `125bbbe8dce22c82fba6e03688f32d38ee6c1a20f26bb518fe76ec78f63fa0b1` |
+| `EVE-Sentry-Channel-1.0.69.zip` | 60,245,339 | `2add28827268a618e78084ee46708fceba7839a6b922f870afbf53633c8b9b1b` |
+| `eve-sentry-client-source.json` | 260 | `2c5ac983755df8fd8626ea6caa515044987e7ed89827ffc589b1a500ed6562c7` |
+
+本地客户端普通测试 355 项、client-server 集成测试 70 项、工作流安全测试 8 项通过；
+机器人全量测试通过。生产 `latest.json` 与 Release 附件逐字节一致，Ed25519 签名验证
+成功，`/download/latest` 返回 302 并指向 v1.0.69 组合包，固定下载支持 Range 206。
+`eve-sentry-client-source.json` 的 `source_commit` 和 `release_workflow_commit` 均指向上述
+完整目标提交。客户端快速重开仍需安装 v1.0.69 后完成真实端到端验收。
