@@ -1369,19 +1369,33 @@ def test_heartbeat_health_allows_scheduler_jitter_before_missing_cycle(tmp_path)
         "details": {"monitoring": True},
     }
 
-    store._heartbeat_age_seconds = lambda _seen_at: 10.5
-    online = store._heartbeat_view(heartbeat)
     store._heartbeat_age_seconds = lambda _seen_at: 12.01
+    previous_flap_boundary = store._heartbeat_view(heartbeat)
+    store._heartbeat_age_seconds = lambda _seen_at: 14.99
+    online = store._heartbeat_view(heartbeat)
+    store._heartbeat_age_seconds = lambda _seen_at: 15.0
+    exact_degraded_boundary = store._heartbeat_view(heartbeat)
+    store._heartbeat_age_seconds = lambda _seen_at: 15.01
     degraded = store._heartbeat_view(heartbeat)
-    store._heartbeat_age_seconds = lambda _seen_at: 22.01
+    store._heartbeat_age_seconds = lambda _seen_at: 25.0
+    exact_offline_boundary = store._heartbeat_view(heartbeat)
+    store._heartbeat_age_seconds = lambda _seen_at: 25.01
     offline = store._heartbeat_view(heartbeat)
-    store._heartbeat_age_seconds = lambda _seen_at: 32.01
+    store._heartbeat_age_seconds = lambda _seen_at: 35.0
+    exact_removed_boundary = store._heartbeat_view(heartbeat)
+    store._heartbeat_age_seconds = lambda _seen_at: 35.01
     removed = store._heartbeat_view(heartbeat)
 
+    assert previous_flap_boundary["health_status"] == "online"
     assert online["health_status"] == "online"
-    assert online["degraded_after_seconds"] == 12.0
+    assert online["degraded_after_seconds"] == 15.0
+    assert online["offline_after_seconds"] == 25.0
+    assert online["remove_after_seconds"] == 35.0
+    assert exact_degraded_boundary["health_status"] == "online"
     assert degraded["health_status"] == "degraded"
+    assert exact_offline_boundary["health_status"] == "degraded"
     assert offline["health_status"] == "offline"
+    assert exact_removed_boundary["health_status"] == "offline"
     assert removed["health_status"] == "removed"
 
 
@@ -1699,6 +1713,83 @@ def test_record_ocr_snapshot_does_not_wait_for_esi_resolution(tmp_path):
     assert store.wait_for_esi_idle(timeout=2)
     active = store.list_active_intel(source="eve-sentry-detector")[0]
     assert active["metadata"]["identity_status"] == "unresolved"
+
+
+def test_ocr_esi_persistence_reserves_in_lock_and_writes_snapshot_outside(
+    tmp_path,
+):
+    class ImmediateResolver:
+        def resolve_names(self, _names):
+            return []
+
+        def enrich_observation(self, observation):
+            return observation
+
+    class ObservedStore(IntelStore):
+        def __init__(self, *args, **kwargs):
+            self.persistence_observations = {}
+            super().__init__(*args, **kwargs)
+
+        def _ocr_esi_persistence_context(self):
+            self.persistence_observations["context_in_lock"] = (
+                self._lock._is_owned()
+            )
+            return {"snapshot": "locked"}
+
+        def _reserve_ocr_esi_persistence(self):
+            self.persistence_observations["reserve_in_lock"] = (
+                self._lock._is_owned()
+            )
+            return 7
+
+        def _persist_ocr_esi_result(
+            self,
+            report,
+            item,
+            *,
+            previous_active_id,
+            persistence_ticket=None,
+            persistence_context=None,
+        ):
+            self.persistence_observations.update(
+                {
+                    "persist_in_lock": self._lock._is_owned(),
+                    "report": report,
+                    "item": item,
+                    "previous_active_id": previous_active_id,
+                    "ticket": persistence_ticket,
+                    "context": persistence_context,
+                }
+            )
+
+    store = ObservedStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=ImmediateResolver(),
+    )
+    try:
+        result = _record_ocr_snapshot(
+            store,
+            {
+                "client_id": "detector-client:test",
+                "system_name": "S-KSWL",
+                "names": ["Alice"],
+            },
+        )
+        assert result["created"] == 1
+        assert store.wait_for_esi_idle(timeout=2)
+    finally:
+        store.close()
+
+    observed = store.persistence_observations
+    assert observed["context_in_lock"] is True
+    assert observed["reserve_in_lock"] is True
+    assert observed["persist_in_lock"] is False
+    assert observed["ticket"] == 7
+    assert observed["context"] == {"snapshot": "locked"}
+    assert observed["report"] is not store._reports[0]
+    assert observed["item"] is not next(iter(store._active_intel.values()))
 
 
 def test_record_ocr_snapshot_uses_fresh_cached_identity_without_queueing(tmp_path):
@@ -3769,7 +3860,7 @@ def test_stale_detector_heartbeat_expires_snapshot_seen_before_stale_deadline(tm
 
     assert store.list_active_intel(source="eve-sentry-detector") == []
     inactive = store.list_active_intel(source="eve-sentry-detector", active=False)
-    assert inactive[0]["left_at"] == "2026-01-01T00:00:12+00:00"
+    assert inactive[0]["left_at"] == "2026-01-01T00:00:13.500000+00:00"
 
 
 def test_stale_detector_heartbeat_does_not_expire_snapshot_after_stale_deadline(tmp_path):

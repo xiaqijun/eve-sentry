@@ -320,6 +320,8 @@ def test_intel_api_client_iterates_bootstrap_and_alert_events(monkeypatch):
                     b"event: bootstrap\n",
                     b'data: {"alerts": []}\n',
                     b"\n",
+                    b"id: state:5\n",
+                    b"\n",
                     b"id: evt-1\n",
                     b"event: alert\n",
                     b'data: {"id": "evt-1"}\n',

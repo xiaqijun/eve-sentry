@@ -1032,7 +1032,7 @@ class EveSentryAlertRelay:
                     if alert_id:
                         active_ids.add(alert_id)
         self._active_alert_ids = active_ids
-        await self.redis.set(ALERT_CURSOR_KEY, generated_at)
+        await self._advance_alert_cursor(generated_at)
         logger.info(
             "EVE Sentry system alerts synchronized systems=%d hostiles=%d initialized=%s",
             len(current),
@@ -1058,6 +1058,29 @@ class EveSentryAlertRelay:
             if system_key and isinstance(item, dict):
                 result[system_key] = item
         return result, bool(ready)
+
+    async def _advance_alert_cursor(self, occurred_at: str) -> str:
+        """Persist a timestamp cursor without allowing delayed events to rewind it."""
+        candidate = str(occurred_at or "").strip()
+        current = _decode(await self.redis.get(ALERT_CURSOR_KEY))
+        if not candidate:
+            return current
+        current_time = _parse_datetime(current)
+        candidate_time = _parse_datetime(candidate)
+        if current and (
+            (
+                current_time is not None
+                and candidate_time is not None
+                and candidate_time <= current_time
+            )
+            or (
+                (current_time is None or candidate_time is None)
+                and candidate <= current
+            )
+        ):
+            return current
+        await self.redis.set(ALERT_CURSOR_KEY, candidate)
+        return candidate
 
     async def current_analysis_names(self, max_characters: int = 30) -> list[str]:
         """Return confirmed hostile names from the latest synchronized state."""
@@ -1164,10 +1187,12 @@ class EveSentryAlertRelay:
         headers = {"Accept": "text/event-stream"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        # The current EVE Sentry endpoint stops emitting bootstrap and heartbeat
-        # frames whenever Last-Event-ID is present. Resume with the timestamp
-        # cursor instead so reconnects remain live while event IDs are retained
-        # as delivery acknowledgements for diagnostics and future compatibility.
+        # Persisted state events are ordered by sequence even when their source
+        # timestamps arrive out of order. Keep the timestamp cursor as a
+        # bootstrap/liveness fallback, but prefer the durable sequence for
+        # replay so reconnects cannot skip a late OCR state transition.
+        if last_event_id.startswith("state:"):
+            headers["Last-Event-ID"] = last_event_id
         async with self.http.stream(
             "GET",
             self.events_url,
@@ -1209,9 +1234,35 @@ class EveSentryAlertRelay:
                         "EVE Sentry event processing failed; reconnecting from last acknowledged event"
                     )
                 if event_id:
-                    await self.redis.set(
-                        ALERT_EVENT_ID_KEY, event_id, ex=ALERT_DEDUPE_SECONDS
+                    acknowledged_event_id = _decode(
+                        await self.redis.get(ALERT_EVENT_ID_KEY)
                     )
+                    acknowledged_state_seq = _state_event_sequence(
+                        acknowledged_event_id
+                    )
+                    event_state_seq = _state_event_sequence(event_id)
+                    if event_state_seq is not None:
+                        if (
+                            acknowledged_state_seq is None
+                            or event_state_seq >= acknowledged_state_seq
+                        ):
+                            acknowledged_event_id = event_id
+                    elif acknowledged_state_seq is None:
+                        acknowledged_event_id = event_id
+                    if _state_event_sequence(acknowledged_event_id) is not None:
+                        # Durable server events are retained for 14 days. Keep
+                        # their sequence cursor until it is explicitly replaced;
+                        # an idle seven-day period must not erase replay safety.
+                        await self.redis.set(
+                            ALERT_EVENT_ID_KEY,
+                            acknowledged_event_id,
+                        )
+                    else:
+                        await self.redis.set(
+                            ALERT_EVENT_ID_KEY,
+                            acknowledged_event_id,
+                            ex=ALERT_DEDUPE_SECONDS,
+                        )
                     logger.info(
                         "EVE Sentry SSE event acknowledged event_name=%s event_key=%s",
                         event_name,
@@ -1317,7 +1368,7 @@ class EveSentryAlertRelay:
         current[system_key] = state
         await self._save_system_alert_state(current)
         self._active_alert_ids.update(event_ids)
-        await self.redis.set(ALERT_CURSOR_KEY, occurred_at)
+        await self._advance_alert_cursor(occurred_at)
         logger.info(
             "EVE Sentry alert event delivered system=%s hostiles=%d",
             system_name,
@@ -1338,11 +1389,19 @@ class EveSentryAlertRelay:
         current, initialized = await self._load_system_alert_state()
         if not initialized:
             return True
+        system_key = system_name.casefold()
+        if system_key not in current:
+            # A fresh Bootstrap may already have applied this clear before the
+            # durable event reaches the consumer. Acknowledge the event without
+            # emitting a second clear notification.
+            self._active_alert_ids.add(event_key)
+            await self._advance_alert_cursor(occurred_at)
+            return True
         if str(payload.get("clear_reason") or "").strip().casefold() == "node_offline":
-            current.pop(system_name.casefold(), None)
+            current.pop(system_key, None)
             await self._save_system_alert_state(current)
             self._active_alert_ids.add(event_key)
-            await self.redis.set(ALERT_CURSOR_KEY, occurred_at)
+            await self._advance_alert_cursor(occurred_at)
             return True
         if not await self.deliver_system_transition(
             {
@@ -1353,10 +1412,10 @@ class EveSentryAlertRelay:
             "safe",
         ):
             return False
-        current.pop(system_name.casefold(), None)
+        current.pop(system_key, None)
         await self._save_system_alert_state(current)
         self._active_alert_ids.add(event_key)
-        await self.redis.set(ALERT_CURSOR_KEY, occurred_at)
+        await self._advance_alert_cursor(occurred_at)
         return True
 
 
@@ -1940,6 +1999,16 @@ def _parse_datetime(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed
+
+
+def _state_event_sequence(value: str) -> int | None:
+    text = str(value or "").strip()
+    if not text.startswith("state:"):
+        return None
+    try:
+        return max(0, int(text.split(":", 1)[1]))
+    except (TypeError, ValueError):
+        return None
 
 
 def _positive_int(value: object) -> int | None:

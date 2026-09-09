@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+from app.core.active_intel import ActiveIntelItem
 from app.core.models import Evidence, ThreatEvent
 from app.esi.cache import EsiCache
 from app.esi.resolver import EsiResolver
@@ -19,8 +20,8 @@ from app.intel.classification import CLASSIFICATION_VERSION
 from app.intel.config import IntelConfigStore
 from app.intel.enrichment import ThreatEnricher
 from app.intel.scoring import ScoringEngine, Watchlist
-from app.server.auth import AuthService
 from app.server.api_client import IntelApiClient
+from app.server.auth import AuthService
 from app.server.auth_http import build_admin_clients_payload
 from app.server.auth_store import AuthRepository
 from app.server.client_status import monitored_system_names
@@ -28,6 +29,7 @@ from app.server.http_server import (
     IntelHTTPServer,
     IntelRequestHandler,
     _active_hostile_counts,
+    _event_stream_generation,
     _monitoring_node_changes,
     _monitoring_target_state,
 )
@@ -240,6 +242,56 @@ def test_monitoring_target_state_keeps_capture_offline_window():
     assert len(state) == 1
     assert state[0]["system_name"] == "S-KSWL"
     assert state[0]["health_status"] == "offline"
+
+
+def test_monitoring_targets_ignore_parent_heartbeat_delivery_jitter(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    heartbeat = {
+        "client_id": "detector-client:test",
+        "client_type": "detector_client",
+        "heartbeat_interval_seconds": 10,
+        "seen_at": "2026-09-08T13:00:00+00:00",
+        "details": {
+            "monitoring": True,
+            "targets": [
+                {
+                    "client_id": "window:one",
+                    "monitoring": True,
+                    "capture_online": True,
+                    "system_name": "HB-FSO",
+                },
+                {
+                    "client_id": "window:two",
+                    "monitoring": True,
+                    "capture_online": True,
+                    "system_name": "S-KSWL",
+                },
+            ],
+        },
+    }
+
+    store._heartbeat_age_seconds = lambda _seen_at: 14.99
+    jitter_state = _monitoring_target_state(
+        {"heartbeats": [store._heartbeat_view(heartbeat)]}
+    )
+    store._heartbeat_age_seconds = lambda _seen_at: 15.01
+    stale_state = _monitoring_target_state(
+        {"heartbeats": [store._heartbeat_view(heartbeat)]}
+    )
+    store._heartbeat_age_seconds = lambda _seen_at: 0.0
+    recovered_state = _monitoring_target_state(
+        {"heartbeats": [store._heartbeat_view(heartbeat)]}
+    )
+
+    assert [node["health_status"] for node in jitter_state] == ["online", "online"]
+    assert [node["health_status"] for node in stale_state] == [
+        "degraded",
+        "degraded",
+    ]
+    assert [node["health_status"] for node in recovered_state] == [
+        "online",
+        "online",
+    ]
 
 
 def test_monitoring_target_state_omits_unknown_location():
@@ -501,7 +553,9 @@ def sse_events(body):
                 event["id"] = line[len("id:"):].strip()
             elif line.startswith("data:"):
                 event["data"] = json.loads(line[len("data:"):].strip())
-        if event:
+        # Per the EventSource algorithm, an id-only block updates the native
+        # reconnect cursor but dispatches no application event.
+        if "data" in event:
             events.append(event)
     return events
 
@@ -5109,6 +5163,587 @@ def test_events_stream_prefers_last_event_id_over_stale_since(tmp_path):
         server.stop()
 
 
+def test_v1_events_prefers_state_event_id_over_stale_since(tmp_path):
+    class DurableSequenceStore(IntelStore):
+        def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
+            del since
+            events = [
+                {
+                    "seq": seq,
+                    "event_key": f"alert.entered:system-{seq}",
+                    "event_type": "alert.entered",
+                    "entity_key": f"System {seq}",
+                    "occurred_at": f"2026-09-08T13:4{seq}:00+00:00",
+                    "payload": {
+                        "system_name": f"System {seq}",
+                        "hostile_count": seq,
+                    },
+                }
+                for seq in (1, 2)
+                if seq > after_seq
+            ]
+            return events[:limit]
+
+    server = IntelHTTPServer(
+        DurableSequenceStore(tmp_path / "intel.json", systems={}, links=[]),
+        port=0,
+    )
+    server.start()
+    try:
+        query = urlencode(
+            {
+                "timeout": "0",
+                "heartbeat": "0",
+                "bootstrap": "0",
+                "limit": "5",
+                "since": "2020-01-01T00:00:00+00:00",
+            }
+        )
+        status, _, body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": "state:1"},
+        )
+        events = sse_events(body)
+
+        assert status == 200
+        assert [event["id"] for event in events] == ["state:2"]
+    finally:
+        server.stop()
+
+
+def test_v1_events_state_zero_disables_timestamp_filter(tmp_path):
+    class ExplicitZeroStore(IntelStore):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.since_values = []
+
+        def read_active_event_snapshot(self):
+            return [], [], 2
+
+        def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
+            self.since_values.append(since)
+            if since:
+                return []
+            event_types = {1: "alert.entered", 2: "alert.cleared"}
+            return [
+                {
+                    "seq": seq,
+                    "event_key": f"{event_types[seq]}:old-system:{seq}",
+                    "event_type": event_types[seq],
+                    "entity_key": "Old System",
+                    "occurred_at": f"2026-08-01T00:00:0{seq}+00:00",
+                    "payload": {
+                        "system_name": "Old System",
+                        "hostile_count": 1 if seq == 1 else 0,
+                    },
+                }
+                for seq in (1, 2)
+                if seq > after_seq
+            ][:limit]
+
+    store = ExplicitZeroStore(tmp_path / "intel.json", systems={}, links=[])
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        query = urlencode(
+            {
+                "timeout": "0",
+                "heartbeat": "0",
+                "bootstrap": "1",
+                "limit": "5",
+                "since": "2026-09-09T00:00:00+00:00",
+            }
+        )
+        status, _, body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": "state:0"},
+        )
+        events = sse_events(body)
+
+        assert status == 200
+        assert store.since_values[0] == ""
+        assert [event["event"] for event in events] == [
+            "alert",
+            "safe",
+            "bootstrap",
+        ]
+        assert [event["id"] for event in events] == [
+            "state:1",
+            "state:2",
+            "state:2",
+        ]
+    finally:
+        server.stop()
+
+
+def test_v1_events_drains_state_pages_through_snapshot_before_bootstrap(tmp_path):
+    class PagedStateStore(IntelStore):
+        def read_active_event_snapshot(self):
+            return (
+                [
+                    ActiveIntelItem(
+                        active_id="presence:detector:hb-fso",
+                        source="eve-sentry-detector",
+                        source_instance="EVE - Pilot",
+                        system_name="HB-FSO",
+                        target_type="system",
+                        first_seen_at="2026-09-08T13:45:03+00:00",
+                        last_seen_at="2026-09-08T13:45:03+00:00",
+                        metadata={
+                            "client_id": "detector-client:test",
+                            "presence_only": True,
+                            "hostile_icon_count": 2,
+                        },
+                    ).to_dict()
+                ],
+                [],
+                3,
+            )
+
+        def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
+            del since
+            event_types = {
+                1: "alert.entered",
+                2: "alert.cleared",
+                3: "alert.entered",
+            }
+            events = [
+                {
+                    "seq": seq,
+                    "event_key": f"{event_types[seq]}:hb-fso:{seq}",
+                    "event_type": event_types[seq],
+                    "entity_key": "HB-FSO",
+                    "occurred_at": f"2026-09-08T13:45:0{seq}+00:00",
+                    "payload": {
+                        "system_name": "HB-FSO",
+                        "hostile_count": 0 if seq == 2 else seq,
+                    },
+                }
+                for seq in (1, 2, 3)
+                if seq > after_seq
+            ]
+            return events[:limit]
+
+    server = IntelHTTPServer(
+        PagedStateStore(tmp_path / "intel.json", systems={}, links=[]),
+        port=0,
+    )
+    server.start()
+    try:
+        query = urlencode(
+            {
+                "timeout": "0",
+                "heartbeat": "0",
+                "bootstrap": "1",
+                "limit": "1",
+            }
+        )
+        status, _, body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": "state:0"},
+        )
+        events = sse_events(body)
+
+        assert status == 200
+        assert [event["event"] for event in events] == [
+            "alert",
+            "safe",
+            "alert",
+            "bootstrap",
+        ]
+        assert [event["id"] for event in events] == [
+            "state:1",
+            "state:2",
+            "state:3",
+            "state:3",
+        ]
+        assert events[-1]["data"]["active_intel"][0]["system_name"] == "HB-FSO"
+    finally:
+        server.stop()
+
+
+def test_v1_events_fresh_bootstrap_skips_retained_state_history(tmp_path):
+    class FreshBootstrapStore(IntelStore):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.event_page_calls = 0
+
+        def read_active_event_snapshot(self):
+            return [], [], 37
+
+        def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
+            del after_seq, since, limit
+            self.event_page_calls += 1
+            return [
+                {
+                    "seq": 1,
+                    "event_key": "alert.entered:old:1",
+                    "event_type": "alert.entered",
+                    "entity_key": "Old System",
+                    "occurred_at": "2026-08-26T00:00:00+00:00",
+                    "payload": {
+                        "system_name": "Old System",
+                        "hostile_count": 1,
+                    },
+                }
+            ]
+
+    store = FreshBootstrapStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        query = urlencode(
+            {"timeout": "0", "heartbeat": "0", "bootstrap": "1", "limit": "1"}
+        )
+        status, _, body = request_text(f"{server.url}/api/v1/events?{query}")
+        events = sse_events(body)
+
+        assert status == 200
+        assert store.event_page_calls == 0
+        assert [event["event"] for event in events] == ["bootstrap"]
+        assert events[0]["id"] == "state:37"
+    finally:
+        server.stop()
+
+
+def test_v1_events_fresh_bootstrap_continues_after_snapshot_watermark(tmp_path):
+    class AdvancingSnapshotStore(IntelStore):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.snapshot_calls = 0
+
+        def read_active_event_snapshot(self):
+            self.snapshot_calls += 1
+            if self.snapshot_calls == 1:
+                return [], [], 37
+            return (
+                [
+                    ActiveIntelItem(
+                        active_id="presence:detector:hb-fso",
+                        source="eve-sentry-detector",
+                        source_instance="EVE - Pilot",
+                        system_name="HB-FSO",
+                        target_type="system",
+                        first_seen_at="2026-09-08T13:45:03+00:00",
+                        last_seen_at="2026-09-08T13:45:03+00:00",
+                        metadata={
+                            "client_id": "detector-client:test",
+                            "presence_only": True,
+                            "hostile_icon_count": 1,
+                        },
+                    ).to_dict()
+                ],
+                [],
+                38,
+            )
+
+        def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
+            del since, limit
+            if after_seq >= 38:
+                return []
+            return [
+                {
+                    "seq": 38,
+                    "event_key": "alert.entered:hb-fso:38",
+                    "event_type": "alert.entered",
+                    "entity_key": "HB-FSO",
+                    "occurred_at": "2026-09-08T13:45:03+00:00",
+                    "payload": {
+                        "system_name": "HB-FSO",
+                        "hostile_count": 1,
+                    },
+                }
+            ]
+
+    store = AdvancingSnapshotStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        query = urlencode(
+            {
+                "timeout": "1.3",
+                "heartbeat": "0",
+                "bootstrap": "1",
+                "limit": "1",
+            }
+        )
+        status, _, body = request_text(f"{server.url}/api/v1/events?{query}")
+        events = sse_events(body)
+
+        assert status == 200
+        assert [event["event"] for event in events] == [
+            "bootstrap",
+            "alert",
+            "bootstrap",
+        ]
+        assert [event["id"] for event in events] == [
+            "state:37",
+            "state:38",
+            "state:38",
+        ]
+    finally:
+        server.stop()
+
+
+def test_v1_events_zero_watermark_keeps_sequence_cursor_in_same_connection(
+    tmp_path,
+):
+    class ZeroWatermarkStore(IntelStore):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.snapshot_calls = 0
+            self.since_values = []
+
+        def read_active_event_snapshot(self):
+            self.snapshot_calls += 1
+            if self.snapshot_calls == 1:
+                return (
+                    [
+                        ActiveIntelItem(
+                            active_id="presence:detector:hb-fso",
+                            source="eve-sentry-detector",
+                            source_instance="EVE - Pilot",
+                            system_name="HB-FSO",
+                            target_type="system",
+                            first_seen_at="2026-09-09T00:00:00+00:00",
+                            last_seen_at="2026-09-09T00:00:00+00:00",
+                            metadata={
+                                "client_id": "detector-client:test",
+                                "presence_only": True,
+                                "hostile_icon_count": 1,
+                            },
+                        ).to_dict()
+                    ],
+                    [],
+                    0,
+                )
+            return [], [], 2
+
+        def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
+            self.since_values.append(since)
+            if since or self.snapshot_calls < 2:
+                return []
+            event_types = {1: "alert.entered", 2: "alert.cleared"}
+            return [
+                {
+                    "seq": seq,
+                    "event_key": f"{event_types[seq]}:hb-fso:{seq}",
+                    "event_type": event_types[seq],
+                    "entity_key": "HB-FSO",
+                    "occurred_at": f"2026-08-01T00:00:0{seq}+00:00",
+                    "payload": {
+                        "system_name": "HB-FSO",
+                        "hostile_count": 1 if seq == 1 else 0,
+                    },
+                }
+                for seq in (1, 2)
+                if seq > after_seq
+            ][:limit]
+
+    store = ZeroWatermarkStore(tmp_path / "intel.json", systems={}, links=[])
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        query = urlencode(
+            {
+                "timeout": "1.3",
+                "heartbeat": "0",
+                "bootstrap": "0",
+                "limit": "5",
+            }
+        )
+        status, _, body = request_text(f"{server.url}/api/v1/events?{query}")
+        events = sse_events(body)
+
+        assert status == 200
+        assert store.snapshot_calls >= 2
+        assert len(store.since_values) >= 2
+        assert store.since_values[:2] == ["", ""]
+        assert [event["event"] for event in events] == [
+            "alert",
+            "alert",
+            "safe",
+        ]
+        assert events[0]["id"].startswith("presence_")
+        assert [event["id"] for event in events[1:]] == ["state:1", "state:2"]
+    finally:
+        server.stop()
+
+
+def test_v1_events_restores_native_eventsource_state_cursor_after_presence(
+    tmp_path,
+):
+    class SnapshotStore(IntelStore):
+        def read_active_event_snapshot(self):
+            return (
+                [
+                    ActiveIntelItem(
+                        active_id="presence:detector:hb-fso",
+                        source="eve-sentry-detector",
+                        source_instance="EVE - Pilot",
+                        system_name="HB-FSO",
+                        target_type="system",
+                        first_seen_at="2026-09-08T13:45:03+00:00",
+                        last_seen_at="2026-09-08T13:45:03+00:00",
+                        metadata={
+                            "client_id": "detector-client:test",
+                            "presence_only": True,
+                            "hostile_icon_count": 1,
+                        },
+                    ).to_dict()
+                ],
+                [],
+                5,
+            )
+
+        def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
+            del after_seq, since, limit
+            return []
+
+    server = IntelHTTPServer(
+        SnapshotStore(tmp_path / "intel.json", systems={}, links=[]),
+        port=0,
+    )
+    server.start()
+    try:
+        query = urlencode(
+            {"timeout": "0", "heartbeat": "0", "bootstrap": "1", "limit": "5"}
+        )
+        status, _, body = request_text(f"{server.url}/api/v1/events?{query}")
+        events = sse_events(body)
+
+        assert status == 200
+        assert [event["event"] for event in events] == ["bootstrap", "alert"]
+        assert events[0]["id"] == "state:5"
+        assert events[1]["id"].startswith("presence_")
+        assert body.endswith("id: state:5\n\n")
+    finally:
+        server.stop()
+
+
+def test_v1_events_without_bootstrap_restores_existing_state_cursor(tmp_path):
+    class SnapshotStore(IntelStore):
+        def read_active_event_snapshot(self):
+            return (
+                [
+                    ActiveIntelItem(
+                        active_id="presence:detector:hb-fso",
+                        source="eve-sentry-detector",
+                        source_instance="EVE - Pilot",
+                        system_name="HB-FSO",
+                        target_type="system",
+                        first_seen_at="2026-09-08T13:45:03+00:00",
+                        last_seen_at="2026-09-08T13:45:03+00:00",
+                        metadata={
+                            "client_id": "detector-client:test",
+                            "presence_only": True,
+                            "hostile_icon_count": 1,
+                        },
+                    ).to_dict()
+                ],
+                [],
+                5,
+            )
+
+        def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
+            del after_seq, since, limit
+            return []
+
+    server = IntelHTTPServer(
+        SnapshotStore(tmp_path / "intel.json", systems={}, links=[]),
+        port=0,
+    )
+    server.start()
+    try:
+        query = urlencode(
+            {"timeout": "0", "heartbeat": "0", "bootstrap": "0", "limit": "5"}
+        )
+        status, _, body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": "state:5"},
+        )
+
+        assert status == 200
+        assert [event["event"] for event in sse_events(body)] == ["alert"]
+        assert body.endswith("id: state:5\n\n")
+    finally:
+        server.stop()
+
+
+def test_v1_events_database_bootstraps_keep_state_watermark_after_presence(tmp_path):
+    class RefreshingSnapshotStore(IntelStore):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.snapshot_calls = 0
+
+        def read_active_event_snapshot(self):
+            self.snapshot_calls += 1
+            active_items = []
+            if self.snapshot_calls == 1:
+                active_items = [
+                    ActiveIntelItem(
+                        active_id="presence:detector:hb-fso",
+                        source="eve-sentry-detector",
+                        source_instance="EVE - Pilot",
+                        system_name="HB-FSO",
+                        target_type="system",
+                        first_seen_at="2026-09-08T13:45:03+00:00",
+                        last_seen_at="2026-09-08T13:45:03+00:00",
+                        metadata={
+                            "client_id": "detector-client:test",
+                            "presence_only": True,
+                            "hostile_icon_count": 2,
+                        },
+                    ).to_dict()
+                ]
+            return active_items, [], 5
+
+        def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
+            del after_seq, since, limit
+            return []
+
+    store = RefreshingSnapshotStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        query = urlencode(
+            {
+                "timeout": "1.3",
+                "heartbeat": "0",
+                "bootstrap": "1",
+                "limit": "5",
+            }
+        )
+        status, _, body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": "state:0"},
+        )
+        events = sse_events(body)
+        bootstraps = [event for event in events if event["event"] == "bootstrap"]
+
+        assert status == 200
+        assert store.snapshot_calls >= 2
+        assert [event["id"] for event in bootstraps] == ["state:5", "state:5"]
+        assert any(
+            event["event"] == "alert" and event["id"].startswith("presence_")
+            for event in events
+        )
+    finally:
+        server.stop()
+
+
 def test_events_stream_resume_drains_more_than_one_page(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
@@ -5501,6 +6136,289 @@ def test_cached_active_event_state_does_not_wait_on_slow_builder(tmp_path):
 
     assert time.monotonic() - started < 0.5
     assert result == cached_state
+
+
+def test_cached_active_event_snapshot_marks_lock_free_state_not_ready(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    cached_state = ([{"id": "active-old"}], [], [])
+    lock = threading.Lock()
+    store._sse_active_event_cache = {
+        "lock": lock,
+        "generation": _event_stream_generation(),
+        "created_at": time.monotonic(),
+        "state_event_seq": 41,
+        "state": cached_state,
+    }
+    lock.acquire()
+    handler = object.__new__(IntelRequestHandler)
+    try:
+        result = handler._cached_active_event_snapshot(store)
+    finally:
+        lock.release()
+
+    assert result[:3] == cached_state
+    assert result[3:] == (41, False)
+
+
+def test_database_active_snapshot_ignores_live_same_id_alert_cache(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    observation = store.add_observation(
+        {
+            "source": "intel_channel",
+            "source_instance": "wc.Venal",
+            "system_name": "S-KSWL",
+            "names": ["Alice"],
+            "raw_text": "Scout: S-KSWL Alice",
+            "metadata": {"hostile_count": 1, "sender": "Scout"},
+            "seen_at": "2099-09-08T13:45:03+00:00",
+        }
+    )
+    report = next(
+        item
+        for item in store._reports_snapshot()
+        if item.report_id == observation.observation_id
+    )
+    active_items = store.list_active_intel()
+    store._alert_cache[report.report_id] = ThreatEvent(
+        event_id="evt_poisoned",
+        system_name="Poisoned System",
+        names=["Mallory"],
+        score=100,
+        level="critical",
+        evidence=[],
+        source_observation_id=report.report_id,
+        created_at=report.received_at,
+        classification="red",
+    )
+    persisted_calls = []
+
+    def persisted_alert(snapshot_report, *, snapshot_only=False):
+        persisted_calls.append(snapshot_report.report_id)
+        assert snapshot_only is True
+        return ThreatEvent.from_observation(snapshot_report.to_observation())
+
+    store._alert_from_persisted_report = persisted_alert
+    handler = object.__new__(IntelRequestHandler)
+
+    _, alerts, _ = handler._build_active_event_state(
+        store,
+        active_items=active_items,
+        reports=[report],
+    )
+
+    assert persisted_calls == [report.report_id]
+    assert len(alerts) == 1
+    assert alerts[0]["system_name"] == "S-KSWL"
+    assert alerts[0]["names"] == ["Alice"]
+
+
+def test_required_active_snapshot_waiter_reuses_slow_completed_build(tmp_path):
+    build_started = threading.Event()
+    release_build = threading.Event()
+    build_calls = 0
+
+    class SlowSnapshotStore(IntelStore):
+        def read_active_event_snapshot(self):
+            nonlocal build_calls
+            build_calls += 1
+            build_started.set()
+            assert release_build.wait(timeout=3.0)
+            return [], [], 7
+
+    store = SlowSnapshotStore(tmp_path / "intel.json", systems={}, links=[])
+    handler = object.__new__(IntelRequestHandler)
+    results = []
+    errors = []
+
+    def read_snapshot():
+        try:
+            results.append(
+                handler._cached_active_event_snapshot(
+                    store,
+                    minimum_state_event_seq=7,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    first = threading.Thread(target=read_snapshot)
+    second = threading.Thread(target=read_snapshot)
+    first.start()
+    assert build_started.wait(timeout=1.0)
+    # Cross the one-second cache TTL while the first builder owns the lock.
+    # A waiter must evaluate freshness after acquiring the lock, not against
+    # the timestamp it captured before waiting.
+    time.sleep(1.05)
+    second.start()
+    time.sleep(0.05)
+    release_build.set()
+    first.join(timeout=2.0)
+    second.join(timeout=2.0)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert build_calls == 1
+    assert len(results) == 2
+    assert all(result[3:] == (7, True) for result in results)
+
+
+def test_v1_events_skips_bootstrap_while_cold_snapshot_is_busy(tmp_path):
+    store = IntelStore(tmp_path / "intel.json", systems={}, links=[])
+    cache_lock = threading.Lock()
+    store._sse_active_event_cache = {
+        "lock": cache_lock,
+        "generation": _event_stream_generation(),
+        "created_at": 0.0,
+        "state_event_seq": 0,
+        "state": None,
+    }
+    cache_lock.acquire()
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        query = urlencode(
+            {"timeout": "0", "heartbeat": "0", "bootstrap": "1", "limit": "5"}
+        )
+        status, _, body = request_text(f"{server.url}/api/v1/events?{query}")
+
+        assert status == 200
+        assert sse_events(body) == []
+    finally:
+        cache_lock.release()
+        server.stop()
+
+
+def test_v1_events_rejects_bootstrap_older_than_client_state_cursor(tmp_path):
+    class OlderSnapshotStore(IntelStore):
+        def read_active_event_snapshot(self):
+            return [], [], 1
+
+        def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
+            del after_seq, since, limit
+            return []
+
+    server = IntelHTTPServer(
+        OlderSnapshotStore(tmp_path / "intel.json", systems={}, links=[]),
+        port=0,
+    )
+    server.start()
+    try:
+        query = urlencode(
+            {"timeout": "0", "heartbeat": "0", "bootstrap": "1", "limit": "5"}
+        )
+        status, _, body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": "state:2"},
+        )
+
+        assert status == 200
+        assert sse_events(body) == []
+    finally:
+        server.stop()
+
+
+def test_v1_events_bootstrap_uses_database_snapshot_not_future_memory(tmp_path):
+    class DatabaseSnapshotStore(IntelStore):
+        def read_active_event_snapshot(self):
+            return [], [], 1
+
+        def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
+            del after_seq, since, limit
+            return []
+
+    store = DatabaseSnapshotStore(tmp_path / "intel.json", systems={}, links=[])
+    store._active_intel["future-memory-state"] = ActiveIntelItem(
+        active_id="presence:detector:hb-fso",
+        source="eve-sentry-detector",
+        source_instance="EVE - Pilot",
+        system_name="HB-FSO",
+        target_type="system",
+        first_seen_at="2026-09-08T13:45:03+00:00",
+        last_seen_at="2026-09-08T13:45:03+00:00",
+        metadata={
+            "client_id": "detector-client:test",
+            "presence_only": True,
+            "hostile_icon_count": 2,
+        },
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        query = urlencode(
+            {"timeout": "0", "heartbeat": "0", "bootstrap": "1", "limit": "5"}
+        )
+        status, _, body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": "state:1"},
+        )
+        events = sse_events(body)
+
+        assert status == 200
+        assert [event["event"] for event in events] == ["bootstrap"]
+        assert events[0]["id"] == "state:1"
+        assert events[0]["data"]["active_intel"] == []
+    finally:
+        server.stop()
+
+
+def test_v1_events_refreshes_bootstrap_after_durable_clear(tmp_path):
+    class DurableClearStore(IntelStore):
+        def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
+            del since, limit
+            if after_seq >= 1:
+                return []
+            return [
+                {
+                    "seq": 1,
+                    "event_key": "alert.cleared:hb-fso:test",
+                    "event_type": "alert.cleared",
+                    "entity_key": "HB-FSO",
+                    "occurred_at": "2026-09-08T13:45:37+00:00",
+                    "payload": {
+                        "system_name": "HB-FSO",
+                        "hostile_count": 0,
+                    },
+                }
+            ]
+
+    store = DurableClearStore(tmp_path / "intel.json", systems={}, links=[])
+    stale_item = {
+        "active_id": "presence:detector:hb-fso",
+        "source": "eve-sentry-detector",
+        "source_instance": "EVE - Pilot",
+        "system_name": "HB-FSO",
+        "active": True,
+        "metadata": {
+            "client_id": "detector-client:test",
+            "presence_only": True,
+            "hostile_icon_count": 1,
+        },
+    }
+    store._sse_active_event_cache = {
+        "lock": threading.RLock(),
+        "generation": _event_stream_generation(),
+        "created_at": time.monotonic(),
+        "state_event_seq": 0,
+        "state": ([stale_item], [], []),
+    }
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        query = urlencode(
+            {"timeout": "0", "heartbeat": "0", "bootstrap": "1", "limit": "5"}
+        )
+        status, _, body = request_text(
+            f"{server.url}/api/v1/events?{query}",
+            headers={"Last-Event-ID": "state:0"},
+        )
+        events = sse_events(body)
+
+        assert status == 200
+        assert [event["event"] for event in events] == ["safe", "bootstrap"]
+        assert events[-1]["data"]["active_intel"] == []
+    finally:
+        server.stop()
 
 
 def test_v1_events_bootstrap_id_is_resumable_alert_cursor(tmp_path):

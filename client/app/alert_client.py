@@ -94,6 +94,16 @@ def default_state_path() -> str:
     return str(Path.home() / ".eve-sentry" / "alert_client_state.json")
 
 
+def _state_event_sequence(value: object) -> int | None:
+    text = str(value or "").strip()
+    if not text.startswith("state:"):
+        return None
+    try:
+        return max(0, int(text.split(":", 1)[1]))
+    except (TypeError, ValueError):
+        return None
+
+
 class AlertClientState:
     """Persist alert de-duplication and local-map selection preferences."""
 
@@ -181,6 +191,15 @@ class AlertClientState:
         """Persist the last fully handled SSE event cursor."""
         cleaned = str(event_id or "").strip()
         if not cleaned or cleaned == self._last_event_id:
+            return
+        current_state_seq = _state_event_sequence(self._last_event_id)
+        candidate_state_seq = _state_event_sequence(cleaned)
+        if current_state_seq is not None and (
+            candidate_state_seq is None or candidate_state_seq < current_state_seq
+        ):
+            # Presence/report/node IDs are useful for de-duplication but cannot
+            # resume the ordered state log. Never replace a durable cursor with
+            # a weaker ID, and never let an older sequence move it backwards.
             return
         self._last_event_id = cleaned
         self._write_state()

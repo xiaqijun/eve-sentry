@@ -105,19 +105,33 @@ EVE SSO、管理员密码登录，或管理员代签
 SSE wire 事件名是 `bootstrap`、`alert`、`safe` 和 `monitoring_node`。持久化状态事件在
 `data.event_type` 中使用 `alert.entered`、`alert.updated` 和 `alert.cleared`；其中前两者
 映射到 wire `alert`，后者映射到 wire `safe`。持久化状态事件使用 `state:<sequence>` 作为
-事件 ID。客户端把每个非空事件 ID 保存到用户目录的 `alert_client_state.json`，并在重连时
-通过 `Last-Event-ID` 恢复。
+事件 ID。客户端把已确认的最高状态序号保存到用户目录的 `alert_client_state.json`，并在
+重连时通过 `Last-Event-ID` 恢复；后续 `presence_*`、报告或节点 ID 不得覆盖该可靠游标。
+PostgreSQL 流在派生告警后用无 `data` 的 `id: state:W` 控制块恢复原生 EventSource 游标；
+该块只改变浏览器重连位置，不进入应用事件处理。
+
+PostgreSQL 用一条一致性查询读取 active 条目、其引用报告和状态事件水位 `W`。SSE 先按页
+追平 `seq <= W` 的持久事件，再发送 `state:W` Bootstrap；所有状态写事务在分配事件序号前
+取得同一事务级 advisory lock，保证已提交序号形成前缀。这样内存先更新、数据库后提交或
+跨进程并发写入都不会产生 `safe` 后跟旧 Bootstrap、或高序号游标跳过晚提交低序号的问题。
+快照告警只使用该查询返回的报告及其中的身份元数据，不读取进程/磁盘实时缓存；OCR/ESI
+丰富产生的报告、active 条目、波次和状态事件也按锁内冻结的状态快照与 FIFO 票据，在释放
+内存锁后用同一事务提交，避免旧水位看到未来身份或较早写入反向覆盖较新状态。
 
 `bootstrap` 在首次连接以及服务端状态指纹变化时发送；监控节点发生变化时，服务端先发送
 `monitoring_node`，随后发送权威的 `bootstrap` 快照。客户端没有固定的 30 秒 Bootstrap
 轮询。`monitoring_node` 主要用于提示变化，实际节点集合和状态以伴随的 `bootstrap` 为准。
+全新客户端没有游标时直接以当前快照水位初始化，不回放 14 天保留历史；显式 `state:0`
+才表示从保留日志起点重放。
 
 Windows 客户端只为选中账户请求局部拓扑，不下载整张星图。拓扑请求在后台
 `AlertMapWorker` 线程中执行，请求超时为 5 秒；已有请求运行时只保留最后一个待处理请求，
 因此不会阻塞覆盖层界面。可见节点健康状态为 `online`、`degraded` 或 `offline`：青绿色
 表示在线，黄色表示降级，灰色表示离线；`removed` 是移除变化，节点不会继续出现在可见
 集合中。节点健康状态本身也是账户渲染签名的一部分，所以即使星系和敌对人数不变，健康
-状态变化也会立即刷新星图。
+状态变化也会立即刷新星图。默认 10 秒 detector 心跳带半个周期、最多 5 秒调度宽限，节点
+约在 15/25/35 秒依次进入 `degraded`、`offline`、`removed`，避免 1～3 秒上传抖动造成
+全部子窗口反复黄绿切换。
 
 ## Web 与部署边界
 

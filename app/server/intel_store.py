@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import hashlib
 import json
 import logging
@@ -860,11 +861,22 @@ class IntelStore:
                     item.active = False
                     item.left_at = item.last_seen_at or checked_at
 
-            self._persist_ocr_esi_result(
-                enriched_report,
-                item,
-                previous_active_id=previous_active_id,
+            persistence_context = copy.deepcopy(
+                self._ocr_esi_persistence_context()
             )
+            persisted_report = copy.deepcopy(enriched_report)
+            persisted_item = copy.deepcopy(item)
+            # Reserve only after all fallible snapshot preparation succeeds;
+            # otherwise an abandoned ticket would stall the FIFO forever.
+            persistence_ticket = self._reserve_ocr_esi_persistence()
+
+        self._persist_ocr_esi_result(
+            persisted_report,
+            persisted_item,
+            previous_active_id=previous_active_id,
+            persistence_ticket=persistence_ticket,
+            persistence_context=persistence_context,
+        )
 
         notifier = self._change_notifier
         if callable(notifier):
@@ -941,14 +953,32 @@ class IntelStore:
             changed.append(report)
         return changed
 
+    def _reserve_ocr_esi_persistence(self) -> Any:
+        """Reserve ordered persistence while the mutation lock is held."""
+        return None
+
+    def _ocr_esi_persistence_context(self) -> Any:
+        """Capture backend-specific causal state while mutation is locked."""
+        return None
+
     def _persist_ocr_esi_result(
         self,
         report: IntelReport,
         item: ActiveIntelItem | None,
         *,
         previous_active_id: str,
+        persistence_ticket: Any = None,
+        persistence_context: Any = None,
     ) -> None:
-        self._save_reports()
+        del (
+            report,
+            item,
+            previous_active_id,
+            persistence_ticket,
+            persistence_context,
+        )
+        with self._lock:
+            self._save_reports()
 
     def _enrich_observation(self, observation: Observation) -> Observation:
         """Optionally enrich an observation without blocking ingestion on failure."""
@@ -2891,11 +2921,11 @@ class IntelStore:
         if age_seconds is not None:
             item["age_seconds"] = age_seconds
         interval = max(1.0, item["heartbeat_interval_seconds"] or 10.0)
-        # Heartbeats and expiry checks run on independent schedulers. Without
-        # a small grace window, a healthy 10-second heartbeat arriving a few
-        # milliseconds late is briefly classified as degraded and then online
-        # again, producing a notification pair on every cycle.
-        scheduling_grace = min(2.0, interval * 0.2)
+        # Heartbeats, uploads, and expiry checks run on independent schedulers.
+        # Reserve half an interval, capped at five seconds, so normal client and
+        # network jitter cannot briefly flip every target to degraded. This is
+        # still shorter than an additional heartbeat cycle.
+        scheduling_grace = min(5.0, interval * 0.5)
         degraded_after = interval + scheduling_grace
         offline_after = interval * 2.0 + scheduling_grace
         remove_after = interval * 3.0 + scheduling_grace

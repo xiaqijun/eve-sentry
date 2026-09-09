@@ -36,6 +36,8 @@ async def _sse_lines():
     for line in (
         ": keepalive",
         "",
+        "id: state:5",
+        "",
         "id: evt-1",
         "event: alert",
         'data: {"id":"evt-1"}',
@@ -79,9 +81,12 @@ async def test_relay_persists_event_id_but_reconnects_with_timestamp_cursor() ->
     async def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         body = (
-            b"id: evt-1\n"
+            b"id: state:544\n"
             b"event: bootstrap\n"
             b'data: {"generated_at":"2026-08-30T08:00:00+00:00","active_intel":[],"alerts":[]}\n\n'
+            b"id: evt-later\n"
+            b"event: monitoring_node\n"
+            b'data: {"generated_at":"2026-08-30T08:00:01+00:00","changes":[]}\n\n'
         )
         return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=body)
 
@@ -89,11 +94,12 @@ async def test_relay_persists_event_id_but_reconnects_with_timestamp_cursor() ->
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         relay = EveSentryAlertRelay(http, redis, SimpleNamespace(), "http://sentry.test/api/v1/events")
         await relay._stream_once()
-        assert await redis.get(ALERT_EVENT_ID_KEY) == b"evt-1"
+        assert await redis.get(ALERT_EVENT_ID_KEY) == b"state:544"
+        assert await redis.ttl(ALERT_EVENT_ID_KEY) == -1
         await relay._stream_once()
 
     assert requests[0].headers.get("Last-Event-ID") is None
-    assert requests[1].headers.get("Last-Event-ID") is None
+    assert requests[1].headers.get("Last-Event-ID") == "state:544"
     assert requests[1].url.params["since"] == "2026-08-30T08:00:00+00:00"
     await redis.aclose()
 
@@ -1852,6 +1858,74 @@ async def test_presence_alert_event_is_not_repeated_by_later_bootstrap() -> None
         "❗ S-KSWL 来敌"
     ]
     qq.send_proactive_markdown.assert_not_awaited()
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_durable_clear_is_not_repeated_after_bootstrap_already_cleared() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(
+            http,
+            redis,
+            qq,
+            "http://sentry.test/events",
+        )
+        await relay.subscribe("group-1")
+        await relay.process_bootstrap(
+            {
+                "generated_at": "2026-09-08T13:45:00+00:00",
+                "active_intel": [],
+                "alerts": [],
+            }
+        )
+        await relay.process_bootstrap(
+            {
+                "generated_at": "2026-09-08T13:45:05+00:00",
+                "active_intel": [
+                    {
+                        "id": "presence:client-1:HB-FSO",
+                        "active": True,
+                        "source": "eve-sentry-detector",
+                        "system_name": "HB-FSO",
+                        "metadata": {
+                            "presence_only": True,
+                            "hostile_icon_count": 1,
+                            "client_id": "client-1",
+                        },
+                    }
+                ],
+                "alerts": [],
+            }
+        )
+        await relay.process_bootstrap(
+            {
+                "generated_at": "2026-09-08T13:45:54+00:00",
+                "active_intel": [],
+                "alerts": [],
+            }
+        )
+        await relay.process_safe_event(
+            {
+                "id": "state:533",
+                "event_key": "alert.cleared:hb-fso:test",
+                "event_type": "alert.cleared",
+                "system_name": "HB-FSO",
+                "hostile_count": 0,
+                "active": False,
+                "created_at": "2026-09-08T13:45:37+00:00",
+            }
+        )
+
+    assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
+        "❗ HB-FSO 来敌",
+        "✅ HB-FSO 清空",
+    ]
+    assert await redis.get(ALERT_CURSOR_KEY) == b"2026-09-08T13:45:54+00:00"
     await redis.aclose()
 
 

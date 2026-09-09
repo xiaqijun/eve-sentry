@@ -372,6 +372,21 @@ def test_alert_client_state_persists_last_event_id(tmp_path):
     assert reloaded.last_event_id() == "event-42"
 
 
+def test_alert_client_state_keeps_highest_durable_state_cursor(tmp_path):
+    path = tmp_path / "state.json"
+    state = AlertClientState(path)
+    state.load_seen_ids()
+
+    state.save_last_event_id("state:42")
+    state.save_last_event_id("presence_detector_hb-fso")
+    state.save_last_event_id("state:41")
+    state.save_last_event_id("state:43")
+
+    reloaded = AlertClientState(path)
+    reloaded.load_seen_ids()
+    assert reloaded.last_event_id() == "state:43"
+
+
 def test_alert_worker_connects_sse_before_posting_heartbeat(tmp_path):
     calls = []
     worker = None

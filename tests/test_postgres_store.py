@@ -12,15 +12,16 @@ from app.intel.classification import ClassificationEngine
 from app.intel.scoring import Watchlist
 from app.server.intel_store import IntelReport, IntelStore
 from app.server.postgres_store import (
+    INTEL_EVENT_ADVISORY_LOCK_ID,
+    PERSISTED_ALERT_METADATA_KEY,
     POSTGRES_POOL_MAX_SIZE,
     POSTGRES_POOL_MIN_SIZE,
     POSTGRES_POOL_TIMEOUT_SECONDS,
-    PERSISTED_ALERT_METADATA_KEY,
     REPORT_STREAM_ADVISORY_LOCK_ID,
     REPORT_STREAM_POSITION_KEY,
     PostgreSQLIntelStore,
-    _PostgresConnection,
     _create_connection_pool,
+    _PostgresConnection,
     _redact_dsn,
 )
 
@@ -805,6 +806,86 @@ def test_postgres_report_upsert_preserves_existing_alert_snapshot():
     assert report.stream_position == 42
 
 
+def test_postgres_ocr_esi_result_persists_causal_state_in_one_transaction():
+    connection = object()
+    connect_count = 0
+    calls = []
+
+    class FakePoolContext:
+        def __enter__(self):
+            nonlocal connect_count
+            connect_count += 1
+            return connection
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._connect = lambda: FakePoolContext()
+    store._reserve_db_write = lambda: pytest.fail(
+        "the in-lock persistence ticket must be reused"
+    )
+    store._wait_for_db_write = lambda ticket: calls.append(("wait", ticket))
+    store._finish_db_write = lambda ticket: calls.append(("finish", ticket))
+    store._upsert_report_with_connection = lambda current, report: calls.append(
+        ("report", current, report.report_id)
+    )
+    store._database_hostile_system_state = lambda current, system: {}
+    store._upsert_active_intel_rows = lambda current, rows: calls.append(
+        ("active", current, [row[0] for row in rows])
+    )
+    store._hostile_system_state = lambda: pytest.fail(
+        "persistence must not read later live memory state"
+    )
+    store._hostile_wave_changes = lambda *args, **kwargs: []
+    store._persist_hostile_wave_changes = lambda current, changes: calls.append(
+        ("waves", current, changes)
+    )
+    store._hostile_state_events = lambda *args, **kwargs: [
+        {"event_key": "alert.entered:s-kswl:1"}
+    ]
+    store._persist_intel_events = lambda current, events: calls.append(
+        ("events", current, events)
+    )
+    report = IntelReport(
+        report_id="report-esi",
+        system="S-KSWL",
+        names=["Alice"],
+    )
+    item = ActiveIntelItem(
+        active_id="ocr:alice",
+        source="eve-sentry-detector",
+        source_instance="EVE - Pilot",
+        system_name="S-KSWL",
+        target_type="character",
+        name="Alice",
+        first_seen_at="2026-09-08T13:45:03+00:00",
+        last_seen_at="2026-09-08T13:45:03+00:00",
+        source_observation_ids=[report.report_id],
+    )
+
+    store._persist_ocr_esi_result(
+        report,
+        item,
+        previous_active_id=item.active_id,
+        persistence_ticket=7,
+        persistence_context={"s-kswl": {"hostile_count": 1}},
+    )
+
+    assert connect_count == 1
+    assert [call[0] for call in calls] == [
+        "wait",
+        "report",
+        "active",
+        "waves",
+        "events",
+        "finish",
+    ]
+    assert calls[0] == ("wait", 7)
+    assert all(call[1] is connection for call in calls[1:5])
+    assert calls[-1] == ("finish", 7)
+
+
 def test_postgres_persisted_alert_scoring_uses_cache_only_profile_fallback():
     class Cache:
         def get(self, key):
@@ -888,6 +969,42 @@ def test_postgres_persisted_profiles_merge_cache_layers_with_snapshot_priority()
             "contact_standing": -10.0,
         }
     ]
+
+
+def test_postgres_snapshot_profiles_ignore_future_cache_layers():
+    class Cache:
+        def get(self, _key):
+            pytest.fail("database snapshots must not read the resolver cache")
+
+        def get_stale(self, _key):
+            pytest.fail("database snapshots must not read stale resolver cache")
+
+    report = IntelReport(
+        report_id="report-snapshot-profile",
+        system="Tama",
+        names=["Pilot"],
+        character_ids=[9001],
+        metadata={
+            "character_profiles": [
+                {"character_id": 9001, "corporation_id": 42}
+            ]
+        },
+    )
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._lock = threading.RLock()
+    store._character_profile_cache = {
+        9001: {
+            "character_id": 9001,
+            "corporation_id": 7,
+            "contact_standing": 10.0,
+            "name": "Future Name",
+        }
+    }
+    store._resolver = SimpleNamespace(cache=Cache())
+
+    profiles = store._persisted_character_profiles(report, snapshot_only=True)
+
+    assert profiles == [{"character_id": 9001, "corporation_id": 42}]
 
 
 def test_postgres_alert_page_query_filters_and_pages_by_received_at():
@@ -1239,6 +1356,87 @@ def test_postgres_startup_reads_only_active_intel_rows():
 
     assert loaded == {"active-1": item}
     assert "WHERE active = 1" in calls[0][0]
+
+
+def test_postgres_active_event_snapshot_uses_one_ordered_database_view():
+    calls = []
+    active_item = SimpleNamespace(to_dict=lambda: {"id": "active-1"})
+    report = SimpleNamespace(report_id="report-1")
+
+    class Result:
+        def fetchone(self):
+            return {
+                "state_event_seq": 7,
+                "active_rows_json": json.dumps([{"active_id": "active-1"}]),
+                "report_rows_json": json.dumps([{"report_id": "report-1"}]),
+            }
+
+    class FakeConnection:
+        def execute(self, query, params=None):
+            calls.append((" ".join(query.split()), params))
+            return Result()
+
+    class FakePoolContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._connect = lambda: _PostgresConnection(FakePoolContext())
+    store._active_item_from_row = lambda row: (
+        active_item if row.get("active_id") == "active-1" else None
+    )
+    store._report_from_row = lambda row: (
+        report if row.get("report_id") == "report-1" else None
+    )
+
+    active_items, reports, state_event_seq = store.read_active_event_snapshot()
+
+    assert active_items == [{"id": "active-1"}]
+    assert reports == [report]
+    assert state_event_seq == 7
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert params is None
+    assert "COALESCE(MAX(seq), 0) AS state_event_seq" in query
+    assert "FROM active_intel" in query
+    assert "FROM intel_reports AS report" in query
+    assert "ORDER BY active_row.active_id" in query
+    assert "ORDER BY report_row.stream_position, report_row.report_id" in query
+
+
+def test_postgres_state_events_lock_before_allocating_sequence():
+    calls = []
+
+    class FakeConnection:
+        def execute(self, query, params=None):
+            calls.append(("execute", " ".join(query.split()), params))
+
+        def executemany(self, query, rows):
+            calls.append(("executemany", " ".join(query.split()), rows))
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    events = [
+        {
+            "event_key": "alert.entered:hb-fso:1",
+            "event_type": "alert.entered",
+            "entity_key": "hb-fso",
+            "occurred_at": "2026-09-08T13:45:00+00:00",
+            "payload": {"system_name": "HB-FSO", "hostile_count": 1},
+        }
+    ]
+
+    store._persist_intel_events(FakeConnection(), events)
+
+    assert calls[0] == (
+        "execute",
+        "SELECT pg_advisory_xact_lock(?)",
+        (INTEL_EVENT_ADVISORY_LOCK_ID,),
+    )
+    assert calls[1][0] == "executemany"
+    assert "INSERT INTO intel_events" in calls[1][1]
 
 
 def test_postgres_hostile_wave_state_uses_appearance_to_clear_lifecycle():
@@ -1947,6 +2145,39 @@ def test_postgres_retention_deletes_in_database_without_loading_history():
     assert "jsonb_array_elements_text" in calls[0][0]
     assert "active = 1" in calls[0][0]
     assert calls[0][1] == ("2026-06-30T00:00:00+00:00",)
+
+
+def test_postgres_event_retention_keeps_latest_sequence_anchor():
+    calls = []
+
+    class Result:
+        rowcount = 0
+
+    class FakeConnection:
+        def execute(self, query, params):
+            calls.append((" ".join(query.split()), params))
+            return Result()
+
+    class FakePoolContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._connect = lambda: _PostgresConnection(FakePoolContext())
+
+    removed = store.prune_intel_events_older_than(
+        14,
+        now="2026-09-09T00:00:00+00:00",
+    )
+
+    assert removed == 0
+    query, params = calls[0]
+    assert query.startswith("DELETE FROM intel_events")
+    assert "seq < (SELECT MAX(seq) FROM intel_events)" in query
+    assert params == ("2026-08-26T00:00:00+00:00",)
 
 
 def test_postgres_prunes_only_inactive_intel_older_than_cutoff():

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import logging
 import threading
 import time
@@ -38,6 +38,7 @@ POSTGRES_ALERT_SCAN_BATCH_SIZE = 500
 PERSISTED_ALERT_METADATA_KEY = "generated_alert"
 REPORT_STREAM_POSITION_KEY = "_stream_position"
 REPORT_STREAM_ADVISORY_LOCK_ID = 1163285842
+INTEL_EVENT_ADVISORY_LOCK_ID = 1163285843
 INTEL_EVENT_RETENTION_DAYS = 14
 
 
@@ -649,53 +650,85 @@ class PostgreSQLIntelStore(IntelStore):
                 self._finish_db_write(db_write_ticket)
         return result
 
+    def _reserve_ocr_esi_persistence(self) -> int:
+        """Reserve the database FIFO at the in-memory mutation point."""
+        return self._reserve_db_write()
+
+    def _ocr_esi_persistence_context(self) -> dict[str, dict[str, Any]]:
+        """Freeze hostile state before releasing the in-memory lock."""
+        return self._hostile_system_state()
+
     def _persist_ocr_esi_result(
         self,
         report: IntelReport,
         item: ActiveIntelItem | None,
         *,
         previous_active_id: str,
+        persistence_ticket: Any = None,
+        persistence_context: Any = None,
     ) -> None:
-        self._upsert_report(report)
-        with self._connect() as connection:
-            system_key = str(
-                item.system_name if item is not None else report.system
-            ).strip().casefold()
-            hostile_before = self._database_hostile_system_state(
-                connection,
-                system_key,
-            )
-            if item is not None and previous_active_id != item.active_id:
-                connection.execute(
-                    "DELETE FROM active_intel WHERE active_id = ?",
-                    (previous_active_id,),
+        db_write_ticket = (
+            int(persistence_ticket)
+            if persistence_ticket is not None
+            else self._reserve_db_write()
+        )
+        self._wait_for_db_write(db_write_ticket)
+        try:
+            with self._connect() as connection:
+                # The enriched report, active row, hostile wave, and state
+                # event form one causal update. Publishing the report in a
+                # separate transaction would let an SSE snapshot observe
+                # future enrichment under an older event watermark.
+                self._upsert_report_with_connection(connection, report)
+                system_key = str(
+                    item.system_name if item is not None else report.system
+                ).strip().casefold()
+                hostile_before = self._database_hostile_system_state(
+                    connection,
+                    system_key,
                 )
-            if item is not None:
-                self._upsert_active_intel_rows(connection, [self._active_row(item)])
-            hostile_after = {
-                key: value
-                for key, value in self._hostile_system_state().items()
-                if key == system_key
-            }
-            self._persist_hostile_wave_changes(
-                connection,
-                self._hostile_wave_changes(
-                    hostile_before,
-                    str(
-                        (item.last_seen_at if item is not None else report.seen_at)
-                        or utc_now_iso()
+                if item is not None and previous_active_id != item.active_id:
+                    connection.execute(
+                        "DELETE FROM active_intel WHERE active_id = ?",
+                        (previous_active_id,),
+                    )
+                if item is not None:
+                    self._upsert_active_intel_rows(
+                        connection,
+                        [self._active_row(item)],
+                    )
+                hostile_after_snapshot = (
+                    persistence_context
+                    if isinstance(persistence_context, dict)
+                    else {}
+                )
+                hostile_after = {
+                    key: value
+                    for key, value in hostile_after_snapshot.items()
+                    if key == system_key
+                }
+                occurred_at = str(
+                    (item.last_seen_at if item is not None else report.seen_at)
+                    or utc_now_iso()
+                )
+                self._persist_hostile_wave_changes(
+                    connection,
+                    self._hostile_wave_changes(
+                        hostile_before,
+                        occurred_at,
+                        after=hostile_after,
                     ),
-                    after=hostile_after,
-                ),
-            )
-            self._persist_intel_events(
-                connection,
-                self._hostile_state_events(
-                    hostile_before,
-                    hostile_after,
-                    str((item.last_seen_at if item is not None else report.seen_at) or utc_now_iso()),
-                ),
-            )
+                )
+                self._persist_intel_events(
+                    connection,
+                    self._hostile_state_events(
+                        hostile_before,
+                        hostile_after,
+                        occurred_at,
+                    ),
+                )
+        finally:
+            self._finish_db_write(db_write_ticket)
 
     def expire_active_intel(self, now: str | None = None) -> int:
         """Expire TTL-based active intel and persist changed rows."""
@@ -1182,9 +1215,17 @@ class PostgreSQLIntelStore(IntelStore):
         """Append state events idempotently inside the caller's transaction."""
         if not events:
             return
+        execute = getattr(connection, "execute", None)
         executemany = getattr(connection, "executemany", None)
-        if not callable(executemany):
+        if not callable(execute) or not callable(executemany):
             return
+        # BIGSERIAL values are allocated before commit. Serialize every state
+        # event transaction at the database level so MAX(seq) is a committed
+        # prefix and a reconnect cursor cannot jump over a late lower sequence.
+        execute(
+            "SELECT pg_advisory_xact_lock(?)",
+            (INTEL_EVENT_ADVISORY_LOCK_ID,),
+        )
         executemany(
             """
             INSERT INTO intel_events (
@@ -1255,6 +1296,97 @@ class PostgreSQLIntelStore(IntelStore):
             )
         return result
 
+    def read_active_event_snapshot(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[IntelReport], int]:
+        """Read active intel, referenced reports, and one event watermark."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                WITH event_watermark AS (
+                    SELECT COALESCE(MAX(seq), 0) AS state_event_seq
+                    FROM intel_events
+                ), active_rows AS (
+                    SELECT active_id, source, source_instance, system, system_id,
+                           target_type, name, character_id, raw_text,
+                           metadata_json, first_seen_at, last_seen_at, expires_at,
+                           left_at, cleared_at, active, seen_count, confidence,
+                           source_observation_ids_json
+                    FROM active_intel
+                    WHERE active = 1
+                ), referenced_report_ids AS (
+                    SELECT DISTINCT jsonb_array_elements_text(
+                        COALESCE(
+                            NULLIF(source_observation_ids_json, ''),
+                            '[]'
+                        )::jsonb
+                    ) AS report_id
+                    FROM active_rows
+                ), report_rows AS (
+                    SELECT report.report_id, report.stream_position,
+                           report.system, report.names_json, report.source,
+                           report.source_instance, report.system_id,
+                           report.character_ids_json, report.confidence,
+                           report.note, report.raw_text, report.metadata_json,
+                           report.seen_at, report.received_at,
+                           report.acknowledged_at, report.acknowledged_by,
+                           report.acknowledgement_note
+                    FROM intel_reports AS report
+                    JOIN referenced_report_ids AS referenced
+                      ON referenced.report_id = report.report_id
+                )
+                SELECT event_watermark.state_event_seq,
+                       COALESCE(
+                           (
+                               SELECT jsonb_agg(
+                                   to_jsonb(active_row)
+                                   ORDER BY active_row.active_id
+                               )
+                               FROM active_rows AS active_row
+                           ),
+                           '[]'::jsonb
+                       )::text AS active_rows_json,
+                       COALESCE(
+                           (
+                               SELECT jsonb_agg(
+                                   to_jsonb(report_row)
+                                   ORDER BY report_row.stream_position,
+                                            report_row.report_id
+                               )
+                               FROM report_rows AS report_row
+                           ),
+                           '[]'::jsonb
+                       )::text AS report_rows_json
+                FROM event_watermark
+                """
+            ).fetchone()
+
+        if row is None:
+            return [], [], 0
+        state_event_seq = max(0, int(row["state_event_seq"] or 0))
+        try:
+            active_rows = json.loads(str(row["active_rows_json"] or "[]"))
+        except (TypeError, json.JSONDecodeError):
+            active_rows = []
+        try:
+            report_rows = json.loads(str(row["report_rows_json"] or "[]"))
+        except (TypeError, json.JSONDecodeError):
+            report_rows = []
+        active_items: list[dict[str, Any]] = []
+        for active_row in active_rows:
+            if not isinstance(active_row, dict):
+                continue
+            item = self._active_item_from_row(active_row)
+            if item is not None:
+                active_items.append(item.to_dict())
+        reports = [
+            report
+            for report_row in report_rows
+            if isinstance(report_row, dict)
+            and (report := self._report_from_row(report_row)) is not None
+        ]
+        return active_items, reports, state_event_seq
+
     def prune_intel_events_older_than(
         self,
         retention_days: int = INTEL_EVENT_RETENTION_DAYS,
@@ -1274,7 +1406,11 @@ class PostgreSQLIntelStore(IntelStore):
         cutoff = (now_at - timedelta(days=retention_days)).isoformat()
         with self._connect() as connection:
             result = connection.execute(
-                "DELETE FROM intel_events WHERE occurred_at::timestamptz < ?::timestamptz",
+                """
+                DELETE FROM intel_events
+                WHERE occurred_at::timestamptz < ?::timestamptz
+                  AND seq < (SELECT MAX(seq) FROM intel_events)
+                """,
                 (cutoff,),
             )
             return max(0, int(result.rowcount))
@@ -2512,8 +2648,13 @@ class PostgreSQLIntelStore(IntelStore):
     def _alert_from_persisted_report(
         self,
         report: IntelReport,
+        *,
+        snapshot_only: bool = False,
     ) -> ThreatEvent | None:
-        persisted_alert = self._threat_event_from_snapshot(report)
+        persisted_alert = self._threat_event_from_snapshot(
+            report,
+            snapshot_only=snapshot_only,
+        )
         if persisted_alert is not None:
             return persisted_alert
 
@@ -2525,7 +2666,10 @@ class PostgreSQLIntelStore(IntelStore):
                 else None
             )
 
-        character_profiles = self._persisted_character_profiles(report)
+        character_profiles = self._persisted_character_profiles(
+            report,
+            snapshot_only=snapshot_only,
+        )
         observation = report.to_observation()
         names = self._normalize_names(observation.names)
         if not names and observation.character_ids:
@@ -2568,6 +2712,8 @@ class PostgreSQLIntelStore(IntelStore):
     def _threat_event_from_snapshot(
         self,
         report: IntelReport,
+        *,
+        snapshot_only: bool = False,
     ) -> ThreatEvent | None:
         snapshot = report.metadata.get(PERSISTED_ALERT_METADATA_KEY)
         if not isinstance(snapshot, dict):
@@ -2614,7 +2760,10 @@ class PostgreSQLIntelStore(IntelStore):
         ):
             classify = getattr(self._scorer, "classify", None)
             if callable(classify):
-                profiles = self._persisted_character_profiles(report)
+                profiles = self._persisted_character_profiles(
+                    report,
+                    snapshot_only=snapshot_only,
+                )
                 current = classify(observation, names, profiles)
                 if current is not None and current.classification == "white":
                     return None
@@ -2650,35 +2799,46 @@ class PostgreSQLIntelStore(IntelStore):
     def _persisted_character_profiles(
         self,
         report: IntelReport,
+        *,
+        snapshot_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Read historical profile inputs without triggering ESI enrichment."""
         profiles_by_id: dict[int, dict[str, Any]] = {}
         unkeyed_profiles: list[dict[str, Any]] = []
-        resolver_cache = getattr(getattr(self, "_resolver", None), "cache", None)
-        for character_id in self._normalize_ints(report.character_ids):
-            disk_profile = None
-            if resolver_cache is not None:
-                read_cached = getattr(resolver_cache, "get", None)
-                if callable(read_cached):
-                    try:
-                        disk_profile = read_cached(f"character:{character_id}")
-                    except Exception:
-                        disk_profile = None
-                if not isinstance(disk_profile, dict):
-                    read_stale = getattr(resolver_cache, "get_stale", None)
-                    if callable(read_stale):
+        if not snapshot_only:
+            resolver_cache = getattr(
+                getattr(self, "_resolver", None),
+                "cache",
+                None,
+            )
+            for character_id in self._normalize_ints(report.character_ids):
+                disk_profile = None
+                if resolver_cache is not None:
+                    read_cached = getattr(resolver_cache, "get", None)
+                    if callable(read_cached):
                         try:
-                            disk_profile = read_stale(f"character:{character_id}")
+                            disk_profile = read_cached(f"character:{character_id}")
                         except Exception:
                             disk_profile = None
-            profile = dict(disk_profile) if isinstance(disk_profile, dict) else {}
-            with self._lock:
-                memory_profile = self._character_profile_cache.get(character_id)
-            if isinstance(memory_profile, dict):
-                profile.update(memory_profile)
-            if profile:
-                profile.setdefault("character_id", character_id)
-                profiles_by_id[character_id] = profile
+                    if not isinstance(disk_profile, dict):
+                        read_stale = getattr(resolver_cache, "get_stale", None)
+                        if callable(read_stale):
+                            try:
+                                disk_profile = read_stale(
+                                    f"character:{character_id}"
+                                )
+                            except Exception:
+                                disk_profile = None
+                profile = (
+                    dict(disk_profile) if isinstance(disk_profile, dict) else {}
+                )
+                with self._lock:
+                    memory_profile = self._character_profile_cache.get(character_id)
+                if isinstance(memory_profile, dict):
+                    profile.update(memory_profile)
+                if profile:
+                    profile.setdefault("character_id", character_id)
+                    profiles_by_id[character_id] = profile
 
         metadata_profiles = report.metadata.get("character_profiles")
         if isinstance(metadata_profiles, list):
@@ -2979,51 +3139,59 @@ class PostgreSQLIntelStore(IntelStore):
 
     def _upsert_report(self, report: IntelReport) -> None:
         with self._connect() as connection:
-            self._assign_report_stream_positions(connection, [report])
-            row = connection.execute(
-                """
-                INSERT INTO intel_reports (
-                    report_id, stream_position, system, names_json, source,
-                    source_instance, system_id, character_ids_json, confidence,
-                    note, raw_text, metadata_json, seen_at, received_at,
-                    acknowledged_at, acknowledged_by, acknowledgement_note
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(report_id) DO UPDATE SET
-                    system = excluded.system,
-                    names_json = excluded.names_json,
-                    source = excluded.source,
-                    source_instance = excluded.source_instance,
-                    system_id = excluded.system_id,
-                    character_ids_json = excluded.character_ids_json,
-                    confidence = excluded.confidence,
-                    note = excluded.note,
-                    raw_text = excluded.raw_text,
-                    metadata_json = (
-                        COALESCE(NULLIF(excluded.metadata_json, ''), '{}')::jsonb
-                        || jsonb_build_object(
-                            '_stream_position',
-                            intel_reports.stream_position
-                        )
-                        || jsonb_strip_nulls(jsonb_build_object(
-                            'generated_alert',
-                            COALESCE(
-                                NULLIF(intel_reports.metadata_json, ''),
-                                '{}'
-                            )::jsonb -> 'generated_alert'
-                        ))
-                    )::text,
-                    seen_at = excluded.seen_at,
-                    received_at = excluded.received_at,
-                    acknowledged_at = excluded.acknowledged_at,
-                    acknowledged_by = excluded.acknowledged_by,
-                    acknowledgement_note = excluded.acknowledgement_note
-                RETURNING stream_position
-                """,
-                self._row_from_report(report),
-            ).fetchone()
-            if row is not None:
-                report.stream_position = int(row["stream_position"])
+            self._upsert_report_with_connection(connection, report)
+
+    def _upsert_report_with_connection(
+        self,
+        connection: Any,
+        report: IntelReport,
+    ) -> None:
+        """Upsert one report inside an existing causal transaction."""
+        self._assign_report_stream_positions(connection, [report])
+        row = connection.execute(
+            """
+            INSERT INTO intel_reports (
+                report_id, stream_position, system, names_json, source,
+                source_instance, system_id, character_ids_json, confidence,
+                note, raw_text, metadata_json, seen_at, received_at,
+                acknowledged_at, acknowledged_by, acknowledgement_note
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(report_id) DO UPDATE SET
+                system = excluded.system,
+                names_json = excluded.names_json,
+                source = excluded.source,
+                source_instance = excluded.source_instance,
+                system_id = excluded.system_id,
+                character_ids_json = excluded.character_ids_json,
+                confidence = excluded.confidence,
+                note = excluded.note,
+                raw_text = excluded.raw_text,
+                metadata_json = (
+                    COALESCE(NULLIF(excluded.metadata_json, ''), '{}')::jsonb
+                    || jsonb_build_object(
+                        '_stream_position',
+                        intel_reports.stream_position
+                    )
+                    || jsonb_strip_nulls(jsonb_build_object(
+                        'generated_alert',
+                        COALESCE(
+                            NULLIF(intel_reports.metadata_json, ''),
+                            '{}'
+                        )::jsonb -> 'generated_alert'
+                    ))
+                )::text,
+                seen_at = excluded.seen_at,
+                received_at = excluded.received_at,
+                acknowledged_at = excluded.acknowledged_at,
+                acknowledged_by = excluded.acknowledged_by,
+                acknowledgement_note = excluded.acknowledgement_note
+            RETURNING stream_position
+            """,
+            self._row_from_report(report),
+        ).fetchone()
+        if row is not None:
+            report.stream_position = int(row["stream_position"])
 
     def _assign_report_stream_positions(
         self,

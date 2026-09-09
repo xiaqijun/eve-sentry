@@ -204,8 +204,11 @@ OCR。客户端上传完整 OCR 名单，只过滤行首的 UI 图标噪声，�
 ### 预警显示“异常连接”或反复重连
 
 `/api/v1/events` 默认每 30 秒正常结束一次响应，客户端随后立即重连；这属于正常连接轮换，
-不表示预警连接异常。客户端把每个非空 SSE 事件 ID 保存到
-`%LOCALAPPDATA%\EVE Sentry\alert_client_state.json`，重连时通过 `Last-Event-ID` 恢复。
+不表示预警连接异常。客户端把已确认的最高 `state:<sequence>` 保存到
+`%LOCALAPPDATA%\EVE Sentry\alert_client_state.json`，重连时通过 `Last-Event-ID` 恢复；
+后续合成 Presence、报告或节点事件 ID 不会覆盖该持久序号。首次没有游标时直接加载当前
+Bootstrap，不回放保留期内的全部历史事件。服务端可能发送仅含 `id: state:W` 的无数据
+控制块来恢复浏览器重连游标；客户端解析器会忽略它，不把它显示成告警。
 
 Windows 客户端为 SSE 请求 1 秒的注释心跳；客户端向服务端发送的应用心跳默认为 10 秒，
 两者不是同一种心跳。局部星图拓扑请求固定使用 5 秒超时。

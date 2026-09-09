@@ -34,6 +34,7 @@ _EVENT_STREAM_GENERATION = 0
 _ACTIVE_EVENT_STREAMS = 0
 _ACTIVE_EVENT_SNAPSHOT_INIT_LOCK = threading.Lock()
 _ACTIVE_EVENT_SNAPSHOT_TTL_SECONDS = 1.0
+_ACTIVE_EVENT_SNAPSHOT_LOCK_WAIT_SECONDS = 1.0
 SSE_AUTH_RECHECK_SECONDS = 30.0
 MAX_JSON_BODY_BYTES = 1024 * 1024
 MAX_QUERY_LIMIT = 1000
@@ -2404,6 +2405,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         reports: list[Any],
         active_items: list[dict[str, Any]],
         limit: int | None,
+        *,
+        prefer_persisted_alerts: bool = False,
     ) -> list[dict[str, Any]]:
         active_by_source_id: dict[str, dict[str, Any]] = {}
         for item in active_items:
@@ -2498,6 +2501,22 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             ]
             roster["active_character_ids"] = sorted(roster["character_ids"])
 
+        alert_from_report = store._alert_from_report
+        if prefer_persisted_alerts:
+            persisted_resolver = getattr(
+                store,
+                "_alert_from_persisted_report",
+                None,
+            )
+            if callable(persisted_resolver):
+                # PostgreSQL SSE snapshots must be derived only from the
+                # reports read in that database view. The normal live resolver
+                # can hit a process-local cache or persist a generated alert,
+                # mixing another state version into this snapshot.
+                def persisted_alert_from_report(report: Any) -> Any:
+                    return persisted_resolver(report, snapshot_only=True)
+
+                alert_from_report = persisted_alert_from_report
         alerts = []
         report_items = reports if reports else store._reports_snapshot()
         for report in report_items:
@@ -2505,7 +2524,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             active_item = active_by_source_id.get(source_id)
             if active_item is None:
                 continue
-            alert = store._alert_from_report(report)
+            alert = alert_from_report(report)
             if alert is None:
                 continue
             alert = store._alert_to_dict(report, alert)
@@ -2939,10 +2958,113 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             filtered = filtered[:max(0, limit)]
         return filtered
 
+    def _build_active_event_state(
+        self,
+        store: IntelStore,
+        *,
+        active_items: list[dict[str, Any]] | None = None,
+        reports: list[Any] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Build one internally consistent active SSE snapshot."""
+        if active_items is None and store.__class__.__module__ == "app.server.postgres_store":
+            # Do not run the PostgreSQL-backed expiry path while building an
+            # SSE snapshot. Regular heartbeat/ingestion paths perform expiry.
+            with store._lock:
+                active_items = [
+                    item.to_dict()
+                    for item in store._active_intel.values()
+                    if item.active
+                ]
+        elif active_items is None:
+            active_items = store.list_active_intel()
+        if reports is None:
+            active_items = self._visible_active_items(store, active_items)
+            alerts = self._active_alert_list(
+                since="",
+                limit=None,
+                active_items=active_items,
+            )
+        else:
+            active_items = self._visible_active_items_from_reports(
+                store,
+                active_items,
+                reports,
+            )
+            alerts = (
+                self._active_alerts_from_reports(
+                    store,
+                    reports,
+                    active_items,
+                    limit=None,
+                    prefer_persisted_alerts=True,
+                )
+                if reports
+                else []
+            )
+            alerts = self._filter_active_alerts(
+                store,
+                alerts,
+                since="",
+                limit=None,
+            )
+        presence_alerts = self._active_presence_alerts(active_items)
+        return active_items, alerts, presence_alerts
+
+    def _visible_active_items_from_reports(
+        self,
+        store: IntelStore,
+        items: list[dict[str, Any]],
+        reports: list[Any],
+    ) -> list[dict[str, Any]]:
+        """Apply visibility using reports from the same database snapshot."""
+        scorer = getattr(store, "_scorer", None)
+        if not bool(getattr(scorer, "suppress_whitelisted_reports", True)):
+            return list(items)
+        watchlist = getattr(scorer, "watchlist", None)
+        whitelist = getattr(watchlist, "whitelist", None)
+        whitelist_names = {str(name).casefold() for name in whitelist or []}
+        all_source_ids = {str(report.report_id) for report in reports}
+        visible_source_ids = {
+            str(report.report_id) for report in store._visible_reports(reports)
+        }
+        hidden_source_ids = all_source_ids - visible_source_ids
+        return [
+            item
+            for item in items
+            if str(item.get("name") or "").casefold() not in whitelist_names
+            and not self._active_item_only_has_hidden_sources(
+                item,
+                hidden_source_ids,
+            )
+        ]
+
     def _cached_active_event_state(
         self,
         store: IntelStore,
+        *,
+        minimum_state_event_seq: int = 0,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Return the shared active state without exposing its event watermark."""
+        active_items, alerts, presence_alerts, _, _ = (
+            self._cached_active_event_snapshot(
+                store,
+                minimum_state_event_seq=minimum_state_event_seq,
+            )
+        )
+        return active_items, alerts, presence_alerts
+
+    def _cached_active_event_snapshot(
+        self,
+        store: IntelStore,
+        *,
+        minimum_state_event_seq: int = 0,
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        int,
+        bool,
+    ]:
         """Build the active SSE state once per change generation and second."""
         cache = getattr(store, "_sse_active_event_cache", None)
         if cache is None:
@@ -2953,54 +3075,94 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         "lock": threading.RLock(),
                         "generation": -1,
                         "created_at": 0.0,
+                        "state_event_seq": 0,
                         "state": None,
                     }
                     store._sse_active_event_cache = cache
 
-        now = time.monotonic()
-        generation = _event_stream_generation()
+        required_state_event_seq = max(0, int(minimum_state_event_seq or 0))
         # A single slow snapshot build must not serialize every SSE client.
-        # Reuse the previous snapshot when available; on cold start return an
-        # empty state and let the builder publish the real snapshot once ready.
-        # This keeps the stream responsive while preserving eventual updates.
-        if not cache["lock"].acquire(timeout=0.1):
+        # Return the previous value to compatibility callers when available,
+        # but mark it not-ready: the builder publishes watermark and state in
+        # separate assignments, so a lock-free reader must never pair fields
+        # from different cache generations into a Bootstrap.
+        # A durable event is the exception: every connection must wait for one
+        # shared refresh so an older cached Bootstrap cannot contradict it.
+        acquired = (
+            cache["lock"].acquire(
+                timeout=_ACTIVE_EVENT_SNAPSHOT_LOCK_WAIT_SECONDS,
+            )
+            if required_state_event_seq
+            else cache["lock"].acquire(timeout=0.1)
+        )
+        if not acquired:
             state = cache.get("state")
             if state is None:
-                return [], [], []
-            return copy.deepcopy(state)
+                return [], [], [], 0, False
+            active_items, alerts, presence_alerts = copy.deepcopy(state)
+            cached_state_event_seq = max(
+                0,
+                int(cache.get("state_event_seq") or 0),
+            )
+            return (
+                active_items,
+                alerts,
+                presence_alerts,
+                cached_state_event_seq,
+                False,
+            )
         try:
+            # Callers may have waited behind a slow builder. Re-read both
+            # values under the cache lock so an old waiter cannot publish an
+            # already-expired entry or move the cache generation backwards.
+            now = time.monotonic()
+            generation = _event_stream_generation()
+            cached_state_event_seq = max(
+                0,
+                int(cache.get("state_event_seq") or 0),
+            )
             if (
                 cache["state"] is not None
                 and cache["generation"] == generation
                 and now - float(cache["created_at"]) < _ACTIVE_EVENT_SNAPSHOT_TTL_SECONDS
+                and cached_state_event_seq >= required_state_event_seq
             ):
                 state = cache["state"]
             else:
-                if store.__class__.__module__ == "app.server.postgres_store":
-                    # Do not run the PostgreSQL-backed expiry path while
-                    # building an SSE snapshot. Expiry may wait for a queued
-                    # database write and would stall every connected stream;
-                    # regular heartbeat/ingestion paths perform expiry.
-                    with store._lock:
-                        active_items = [
-                            item.to_dict()
-                            for item in store._active_intel.values()
-                            if item.active
-                        ]
+                snapshot_reader = getattr(store, "read_active_event_snapshot", None)
+                snapshot_state_event_seq = required_state_event_seq
+                if callable(snapshot_reader):
+                    (
+                        snapshot_items,
+                        snapshot_reports,
+                        snapshot_state_event_seq,
+                    ) = snapshot_reader()
+                    state = self._build_active_event_state(
+                        store,
+                        active_items=snapshot_items,
+                        reports=snapshot_reports,
+                    )
                 else:
-                    active_items = store.list_active_intel()
-                active_items = self._visible_active_items(store, active_items)
-                alerts = self._active_alert_list(
-                    since="",
-                    limit=None,
-                    active_items=active_items,
-                )
-                presence_alerts = self._active_presence_alerts(active_items)
-                state = (active_items, alerts, presence_alerts)
+                    state = self._build_active_event_state(store)
                 cache["generation"] = generation
-                cache["created_at"] = now
+                cache["created_at"] = time.monotonic()
+                cache["state_event_seq"] = max(
+                    0,
+                    int(snapshot_state_event_seq or 0),
+                )
                 cache["state"] = state
-            return copy.deepcopy(state)
+            active_items, alerts, presence_alerts = copy.deepcopy(state)
+            cached_state_event_seq = max(
+                0,
+                int(cache.get("state_event_seq") or 0),
+            )
+            return (
+                active_items,
+                alerts,
+                presence_alerts,
+                cached_state_event_seq,
+                cached_state_event_seq >= required_state_event_seq,
+            )
         finally:
             cache["lock"].release()
 
@@ -3574,7 +3736,10 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         last_event_id = str(self.headers.get("Last-Event-ID") or "").strip()
         if last_event_id:
             if last_event_id.startswith("state:"):
-                return since, last_event_id, False, None
+                # A durable sequence is authoritative even when it is zero.
+                # Combining state:0 with a timestamp would skip retained
+                # events whose occurred_at predates their eventual commit.
+                return "", last_event_id, False, None
             # Presence-only events are synthesized from the active OCR state
             # and have no persisted report cursor. Resolving one through the
             # PostgreSQL store falls back to scanning the hot report set
@@ -3634,12 +3799,19 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         last_seen = since.strip()
         resume_after_id = resume_after_id.strip()
         stream_event_id = resume_after_id or last_seen
+        has_durable_state_cursor = stream_event_id.startswith("state:")
         state_event_seq = 0
-        if stream_event_id.startswith("state:"):
+        if has_durable_state_cursor:
             try:
                 state_event_seq = max(0, int(stream_event_id.split(":", 1)[1]))
             except (TypeError, ValueError):
                 state_event_seq = 0
+        skip_initial_state_replay = bool(
+            active_only
+            and include_bootstrap
+            and not resume_after_id
+            and not last_seen
+        )
         sent_ids: set[str] = set()
         last_bootstrap_fingerprint = ""
         last_monitoring_target_state: list[dict[str, Any]] | None = None
@@ -3686,38 +3858,16 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 active_presence_alerts: list[dict[str, Any]] = []
                 durable_state_events: list[dict[str, Any]] = []
                 durable_systems: set[str] = set()
+                active_snapshot_state_event_seq = 0
+                active_snapshot_ready = True
                 if active_only:
                     (
                         active_items,
                         active_alerts,
                         active_presence_alerts,
-                    ) = self._cached_active_event_state(store)
-                    alerts = self._filter_active_alerts(
-                        store,
-                        active_alerts,
-                        since="" if stream_cursor is not None else last_seen,
-                        limit=None,
-                        include_since=current_include_since,
-                        min_score=min_score,
-                        min_level=min_level,
-                    )
-                    cursor_alerts: list[
-                        tuple[tuple[int, str], dict[str, Any]]
-                    ] = []
-                    for alert in alerts:
-                        alert_id = str(alert.get("id") or "")
-                        cursor = store.resolve_alert_stream_cursor(alert_id)
-                        if cursor is None:
-                            continue
-                        if stream_cursor is not None and cursor <= stream_cursor:
-                            continue
-                        alert_cursors[alert_id] = cursor
-                        cursor_alerts.append((cursor, alert))
-                    cursor_alerts.sort(key=lambda item: item[0])
-                    if stream_cursor is None and not last_seen and limit > 0:
-                        cursor_alerts = cursor_alerts[-limit:]
-                    ordered_alerts = [alert for _, alert in cursor_alerts]
-                    alerts = list(ordered_alerts)
+                        active_snapshot_state_event_seq,
+                        active_snapshot_ready,
+                    ) = self._cached_active_event_snapshot(store)
                 else:
                     stream_page = self._store().list_alert_stream_page(
                         after=stream_cursor,
@@ -3737,7 +3887,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     if callable(list_events):
                         durable_state_events = list_events(
                             after_seq=state_event_seq,
-                            since=last_seen if state_event_seq <= 0 else "",
+                            since="" if has_durable_state_cursor else last_seen,
                             limit=max(1, limit),
                         )
                         for event in durable_state_events:
@@ -3785,72 +3935,187 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                             self._write_sse(event_name, event_id, payload)
                             wrote_event = True
                             state_event_seq = max(state_event_seq, int(event.get("seq") or 0))
+                            has_durable_state_cursor = True
                             stream_event_id = event_id
                             last_seen = max(last_seen, str(event.get("occurred_at") or ""))
                 if active_only:
                     list_events = getattr(store, "list_intel_event_page", None)
                     if callable(list_events):
-                        durable_state_events = list_events(
-                            after_seq=state_event_seq,
-                            since=last_seen if state_event_seq <= 0 else "",
-                            limit=max(1, limit),
-                        )
-                        for event in durable_state_events:
-                            payload = dict(event.get("payload") or {})
-                            system_name = str(
-                                payload.get("system_name")
-                                or event.get("entity_key")
-                                or ""
-                            ).strip()
-                            if not system_name:
-                                continue
-                            event_type = str(event.get("event_type") or "").strip()
-                            event_name = {
-                                "alert.entered": "alert",
-                                "alert.cleared": "safe",
-                                "alert.updated": "alert",
-                            }.get(event_type)
-                            if not event_name:
-                                continue
-                            event_id = f"state:{int(event.get('seq') or 0)}"
-                            payload.update(
-                                {
-                                    "id": event_id,
-                                    "event_key": event.get("event_key"),
-                                    "event_type": event_type,
-                                    "system_name": system_name,
-                                    "system": system_name,
-                                    "created_at": event.get("occurred_at")
-                                    or utc_now_iso(),
-                                    "active": event_type != "alert.cleared",
-                                    "message": (
-                                        f"✅ {system_name} 清空"
-                                        if event_type == "alert.cleared"
-                                        else f"❗ {system_name} 来敌"
-                                    ),
-                                }
+                        page_limit = max(1, limit)
+                        if skip_initial_state_replay:
+                            durable_state_events = []
+                            if active_snapshot_ready:
+                                # A client with no cursor asked for current
+                                # state, not a replay of the entire retained
+                                # log. Anchor it at the atomic snapshot water-
+                                # mark; an explicit state:0 still replays all.
+                                state_event_seq = active_snapshot_state_event_seq
+                                if callable(
+                                    getattr(
+                                        store,
+                                        "read_active_event_snapshot",
+                                        None,
+                                    )
+                                ):
+                                    stream_event_id = f"state:{state_event_seq}"
+                                    has_durable_state_cursor = True
+                                skip_initial_state_replay = False
+                        else:
+                            durable_state_events = list_events(
+                                after_seq=state_event_seq,
+                                since="" if has_durable_state_cursor else last_seen,
+                                limit=page_limit,
                             )
-                            payload["hostile_count"] = max(
-                                0,
-                                int(payload.get("hostile_count") or 0),
+                        if durable_state_events:
+                            required_state_event_seq = max(
+                                int(event.get("seq") or 0)
+                                for event in durable_state_events
                             )
-                            payload["presence_only"] = not bool(
-                                payload.get("hostile_personnel")
+                            (
+                                active_items,
+                                active_alerts,
+                                active_presence_alerts,
+                                active_snapshot_state_event_seq,
+                                active_snapshot_ready,
+                            ) = self._cached_active_event_snapshot(
+                                store,
+                                minimum_state_event_seq=required_state_event_seq,
                             )
-                            durable_systems.add(system_name.casefold())
-                            self._write_sse(event_name, event_id, payload)
-                            wrote_event = True
+                            if not active_snapshot_ready:
+                                logger.warning(
+                                    "SSE active snapshot watermark %s is behind "
+                                    "required state event %s",
+                                    active_snapshot_state_event_seq,
+                                    required_state_event_seq,
+                                )
+                                return
+                            snapshot_watermark = active_snapshot_state_event_seq
+                            while durable_state_events:
+                                for event in durable_state_events:
+                                    event_seq = max(0, int(event.get("seq") or 0))
+                                    if event_seq <= state_event_seq:
+                                        continue
+                                    if event_seq > snapshot_watermark:
+                                        state_event_seq = snapshot_watermark
+                                        break
+                                    state_event_seq = event_seq
+                                    has_durable_state_cursor = True
+                                    payload = dict(event.get("payload") or {})
+                                    system_name = str(
+                                        payload.get("system_name")
+                                        or event.get("entity_key")
+                                        or ""
+                                    ).strip()
+                                    event_type = str(
+                                        event.get("event_type") or ""
+                                    ).strip()
+                                    event_name = {
+                                        "alert.entered": "alert",
+                                        "alert.cleared": "safe",
+                                        "alert.updated": "alert",
+                                    }.get(event_type)
+                                    if not system_name or not event_name:
+                                        continue
+                                    event_id = f"state:{event_seq}"
+                                    payload.update(
+                                        {
+                                            "id": event_id,
+                                            "event_key": event.get("event_key"),
+                                            "event_type": event_type,
+                                            "system_name": system_name,
+                                            "system": system_name,
+                                            "created_at": event.get("occurred_at")
+                                            or utc_now_iso(),
+                                            "active": event_type != "alert.cleared",
+                                            "message": (
+                                                f"✅ {system_name} 清空"
+                                                if event_type == "alert.cleared"
+                                                else f"❗ {system_name} 来敌"
+                                            ),
+                                        }
+                                    )
+                                    payload["hostile_count"] = max(
+                                        0,
+                                        int(payload.get("hostile_count") or 0),
+                                    )
+                                    payload["presence_only"] = not bool(
+                                        payload.get("hostile_personnel")
+                                    )
+                                    durable_systems.add(system_name.casefold())
+                                    self._write_sse(event_name, event_id, payload)
+                                    wrote_event = True
+                                    stream_event_id = event_id
+                                    last_seen = max(
+                                        last_seen,
+                                        str(event.get("occurred_at") or ""),
+                                    )
+                                if state_event_seq >= snapshot_watermark:
+                                    break
+                                durable_state_events = list_events(
+                                    after_seq=state_event_seq,
+                                    since="",
+                                    limit=page_limit,
+                                )
+                                if not durable_state_events:
+                                    break
                             state_event_seq = max(
                                 state_event_seq,
-                                int(event.get("seq") or 0),
+                                snapshot_watermark,
                             )
-                            stream_event_id = event_id
-                            last_seen = max(
-                                last_seen,
-                                str(event.get("occurred_at") or ""),
-                            )
+                            has_durable_state_cursor = True
+                            stream_event_id = f"state:{state_event_seq}"
+                        elif (
+                            active_snapshot_ready
+                            and active_snapshot_state_event_seq > state_event_seq
+                        ):
+                            # The Bootstrap is authoritative for older events
+                            # excluded by a timestamp cursor. Carry the durable
+                            # watermark forward for all subsequent iterations.
+                            state_event_seq = active_snapshot_state_event_seq
+                            has_durable_state_cursor = True
+                            stream_event_id = f"state:{state_event_seq}"
+                    if (
+                        active_snapshot_ready
+                        and active_snapshot_state_event_seq < state_event_seq
+                    ):
+                        logger.warning(
+                            "SSE active snapshot watermark %s is behind client cursor %s",
+                            active_snapshot_state_event_seq,
+                            state_event_seq,
+                        )
+                        return
+                    if active_snapshot_ready:
+                        alerts = self._filter_active_alerts(
+                            store,
+                            active_alerts,
+                            since="" if stream_cursor is not None else last_seen,
+                            limit=None,
+                            include_since=current_include_since,
+                            min_score=min_score,
+                            min_level=min_level,
+                        )
+                        cursor_alerts: list[
+                            tuple[tuple[int, str], dict[str, Any]]
+                        ] = []
+                        for alert in alerts:
+                            alert_id = str(alert.get("id") or "")
+                            cursor = store.resolve_alert_stream_cursor(alert_id)
+                            if cursor is None:
+                                continue
+                            if stream_cursor is not None and cursor <= stream_cursor:
+                                continue
+                            alert_cursors[alert_id] = cursor
+                            cursor_alerts.append((cursor, alert))
+                        cursor_alerts.sort(key=lambda item: item[0])
+                        if stream_cursor is None and not last_seen and limit > 0:
+                            cursor_alerts = cursor_alerts[-limit:]
+                        ordered_alerts = [alert for _, alert in cursor_alerts]
+                        alerts = list(ordered_alerts)
+                    else:
+                        alerts = []
+                        ordered_alerts = []
                 active_snapshot_alerts: list[dict[str, Any]] = []
-                if active_only:
+                if active_only and active_snapshot_ready:
                     active_snapshot_alerts = list(active_alerts)
                     active_snapshot_alerts.extend(active_presence_alerts)
                     active_snapshot_alerts.sort(
@@ -3881,7 +4146,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                                 )
                                 wrote_event = True
                     active_hostile_counts = current_hostile_counts
-                if active_only and include_bootstrap:
+                if active_only and include_bootstrap and active_snapshot_ready:
                     bootstrap = self._event_bootstrap_payload(
                         active_items or [],
                         active_snapshot_alerts,
@@ -3903,17 +4168,24 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     )
                     fingerprint = self._bootstrap_event_fingerprint(bootstrap)
                     if fingerprint != last_bootstrap_fingerprint:
-                        # Keep the browser's Last-Event-ID on a resumable alert
-                        # cursor even when bootstrap is the last event emitted.
-                        bootstrap_event_id = stream_event_id
-                        if not bootstrap_event_id and ordered_alerts:
-                            bootstrap_event_id = str(
-                                ordered_alerts[-1].get("id") or ""
-                            ).strip()
-                        if not bootstrap_event_id:
-                            bootstrap_event_id = str(
-                                bootstrap.get("generated_at") or last_seen or ""
-                            ).strip()
+                        # Give Bootstrap a resumable cursor for both native
+                        # EventSource and explicit HTTP consumers.
+                        if callable(
+                            getattr(store, "read_active_event_snapshot", None)
+                        ):
+                            bootstrap_event_id = (
+                                f"state:{active_snapshot_state_event_seq}"
+                            )
+                        else:
+                            bootstrap_event_id = stream_event_id
+                            if not bootstrap_event_id and ordered_alerts:
+                                bootstrap_event_id = str(
+                                    ordered_alerts[-1].get("id") or ""
+                                ).strip()
+                            if not bootstrap_event_id:
+                                bootstrap_event_id = str(
+                                    bootstrap.get("generated_at") or last_seen or ""
+                                ).strip()
                         bootstrap["monitoring_node_changes"] = monitoring_node_changes
                         if monitoring_node_changes:
                             self._write_sse(
@@ -3932,9 +4204,12 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                                 },
                             )
                         self._write_sse("bootstrap", bootstrap_event_id, bootstrap)
+                        if bootstrap_event_id.startswith("state:"):
+                            has_durable_state_cursor = True
+                            stream_event_id = bootstrap_event_id
                         last_bootstrap_fingerprint = fingerprint
                         wrote_event = True
-                if active_only:
+                if active_only and active_snapshot_ready:
                     presence_alerts = list(active_presence_alerts)
                     if last_seen:
                         if current_include_since:
@@ -3999,6 +4274,33 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     created_at = str(alert.get("created_at") or "")
                     if created_at > last_seen:
                         last_seen = created_at
+                durable_snapshot_cursor = ""
+                if (
+                    active_only
+                    and active_snapshot_ready
+                    and callable(
+                        getattr(store, "read_active_event_snapshot", None)
+                    )
+                ):
+                    durable_snapshot_cursor = (
+                        f"state:{active_snapshot_state_event_seq}"
+                    )
+                if (
+                    durable_snapshot_cursor
+                    and stream_event_id != durable_snapshot_cursor
+                ):
+                    # Native EventSource remembers the last parsed ``id:``
+                    # even when a block has no data and dispatches no event.
+                    # Restore the durable snapshot cursor after derived report
+                    # or Presence alerts without changing their wire IDs.
+                    self._write_sse_cursor(durable_snapshot_cursor)
+                    stream_event_id = durable_snapshot_cursor
+                    state_event_seq = max(
+                        state_event_seq,
+                        active_snapshot_state_event_seq,
+                    )
+                    has_durable_state_cursor = True
+                    wrote_event = True
                 now = time.monotonic()
                 if heartbeat_interval and wrote_event:
                     next_heartbeat_at = now + heartbeat_interval
@@ -4067,6 +4369,11 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         data = json.dumps(payload, ensure_ascii=False)
         body = f"id: {event_id}\nevent: {event_name}\ndata: {data}\n\n"
         self.wfile.write(body.encode("utf-8"))
+        self.wfile.flush()
+
+    def _write_sse_cursor(self, event_id: str) -> None:
+        """Advance native EventSource resume state without dispatching data."""
+        self.wfile.write(f"id: {event_id}\n\n".encode("utf-8"))
         self.wfile.flush()
 
     def _write_sse_comment(self, comment: str) -> None:

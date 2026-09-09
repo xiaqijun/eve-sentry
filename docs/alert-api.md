@@ -73,24 +73,34 @@ curl -N --fail-with-body \
 | `bootstrap` | `false` | 为 `true` 时发送当前活动状态快照，推荐始终启用 |
 | `timeout` | `30` | 本次响应最长保持秒数，范围 `0` 至 `300`；`0` 表示读取当前一轮后结束 |
 | `heartbeat` | `15` | 空闲时发送 SSE 注释心跳的间隔秒数，范围 `0` 至 `60`；`0` 表示关闭 |
-| `limit` | `50` | 每轮最多读取的活动告警数，最大 `1000` |
+| `limit` | `50` | 普通告警与持久状态事件的单页读取上限，最大 `1000`；为追平一致快照水位，一次响应可能连续读取多页状态事件 |
 | `since` | 空 | ISO 8601 时间回退游标 |
 | `min_score` | 空 | 只接收不低于该分数的告警，必须为非负整数 |
 | `min_level` | 空 | 最低等级：`low`、`medium`、`high` 或 `critical` |
 
-重连时应把最后处理成功的 SSE `id` 持久化并放入 `Last-Event-ID` 请求头。
-`state:<sequence>` 直接恢复状态事件序列；已存储的 alert/report ID 会解析到报告流游标；
-ISO 8601 事件 ID 可按时间恢复。`presence_*` 属于合成事件 ID，不能直接恢复报告流，此时
-使用 `bootstrap` 完成权威对账，并可通过 `since` 提供时间回退。
+重连时应把最后处理成功的可靠 SSE 游标持久化并放入 `Last-Event-ID` 请求头。
+`state:<sequence>` 直接恢复状态事件序列；一旦取得该游标，只能由更高状态序号替换，后续
+alert/report、`presence_*` 或 `monitoring_node` ID 不得把它降级覆盖。已存储的 alert/report ID
+可解析到报告流游标，ISO 8601 ID 可按时间恢复；没有状态序号时，合成 ID 由 `bootstrap`
+权威对账，并可通过 `since` 提供时间回退。任何显式 `state:*`（包括 `state:0`）都优先于并
+禁用 `since` 过滤。机器人保存的状态 ACK 不使用短期去重 TTL。
 
 ### `bootstrap` 事件
 
-`bootstrap=1` 时，本次连接会收到当前活动状态。若有待重放的持久事件，服务端可能先发送
-游标后的 `alert`/`safe` 再发送 Bootstrap，消费者不得依赖固定先后顺序。活动情报、告警或
-监控节点位置、健康、生命周期变化时，同一连接还可能再次收到新的快照。
+`bootstrap=1` 时，本次连接会收到当前活动状态。PostgreSQL 实现用同一条查询取得活动条目、
+其引用报告和已提交状态事件水位 `W`；若游标落后，服务端先按序重放所有 `seq <= W` 的
+`alert`/`safe`，再发送 ID 为 `state:W` 的 Bootstrap。并发产生的 `seq > W` 只在下一轮发送，
+因此 Bootstrap 不会回到刚发送的进入/清空事件之前。活动情报、告警或监控节点位置、健康、
+生命周期变化时，同一连接还可能再次收到新快照；消费者仍应把重复清空按幂等操作处理。
+告警重建只读取同一数据库视图中的报告和持久化身份元数据，不混用进程内或磁盘实时缓存；
+OCR/ESI 丰富、active 更新和相应状态事件以同一事务发布。
+
+PostgreSQL 流在派生的报告或 Presence 告警之后可能发送只有 `id: state:W`、没有 `event`/
+`data` 的 SSE 控制块。它只更新原生 EventSource 的自动重连 ID，不派发业务事件；手写 SSE
+解析器必须接受并忽略无 `data` 块。
 
 ```text
-id: evt_0123456789abcdef
+id: state:124
 event: bootstrap
 data: {"schema_version":"intel_bootstrap.v1","generated_at":"2026-08-04T12:00:00+00:00","map":{"systems":[{"name":"S-KSWL","system_name":"S-KSWL","hostile_count":2}],"summary":{"system_count":1,"alert_count":1}},"alerts":[{"id":"evt_0123456789abcdef","system_name":"S-KSWL","hostile_count":2}],"active_intel":[{"system_name":"S-KSWL"}],"clients":{"heartbeats":[]}}
 
@@ -181,8 +191,9 @@ OCR 人员名单只是额外信息；因此即使尚未生成 OCR 告警记录�
 `previous_health_status`；同一次更新若同时发生位置和健康变化，可以产生两条 change。
 `monitoring_nodes` 不是“所有在线节点”，而是所有尚未 `removed` 且具有有效星系的可见
 节点。机器人应把变化信息作为提示，并以该完整列表作为最终状态，使用
-`monitoring_nodes_version` 去重。按当前 10 秒心跳配置计算，节点大约在 12 秒进入
-`degraded`、22 秒进入 `offline`、32 秒进入 `removed`；星系变化只在同一节点的
+`monitoring_nodes_version` 去重。按当前 10 秒心跳配置计算，服务端为调度和网络抖动预留
+5 秒宽限，节点大约在 15 秒进入 `degraded`、25 秒进入 `offline`、35 秒进入 `removed`；
+星系变化只在同一节点的
 `system_name` 实际改变时产生。`capture_online=false` 会在父 heartbeat 仍在线时直接把目标
 标为 `offline`，不要求先经过 `degraded`。
 
@@ -294,14 +305,15 @@ data: {"id":"state:123","event_key":"alert.cleared:s-kswl:...","event_type":"ale
 一个星系的最后一条活动敌对证据清空时发送：
 
 ```text
-id: 2026-08-04T12:05:00+00:00
+id: state:125
 event: safe
-data: {"system_name":"S-KSWL","system":"S-KSWL","hostile_count":0,"active":false,"created_at":"2026-08-04T12:05:00+00:00","message":"✅ S-KSWL 清空"}
+data: {"id":"state:125","event_key":"alert.cleared:s-kswl:...","event_type":"alert.cleared","system_name":"S-KSWL","system":"S-KSWL","hostile_count":0,"active":false,"created_at":"2026-08-04T12:05:00+00:00","message":"✅ S-KSWL 清空"}
 
 ```
 
-收到后应清除该星系的本地预警状态。若连接期间漏掉 `safe`，下一次 `bootstrap` 快照仍可
-用来校准完整活动状态。
+收到后应清除该星系的本地预警状态；本地已经不存在该星系时只确认游标，不重复产生清空
+通知。若连接期间漏掉 `safe`，下一次 `bootstrap` 快照仍可用来校准完整活动状态。时间游标
+必须单调前进，迟到事件不得覆盖更晚的 Bootstrap 游标。
 
 ### 心跳
 
@@ -328,6 +340,15 @@ SERVER = "https://YOUR_SERVER"
 API_KEY = "eve_xxx"
 last_event_id = ""
 
+
+def state_sequence(value):
+    if not value.startswith("state:"):
+        return None
+    try:
+        return max(0, int(value.split(":", 1)[1]))
+    except ValueError:
+        return None
+
 while True:
     headers = {
         "Accept": "text/event-stream",
@@ -352,7 +373,12 @@ while True:
                         payload = json.loads("\n".join(data_lines))
                         if event_name in {"bootstrap", "monitoring_node", "alert", "safe"}:
                             print(event_name, payload)
-                        if event_id:
+                        current_seq = state_sequence(last_event_id)
+                        event_seq = state_sequence(event_id)
+                        if event_id and (
+                            current_seq is None
+                            or (event_seq is not None and event_seq >= current_seq)
+                        ):
                             last_event_id = event_id
                     event_name, event_id, data_lines = "message", "", []
                 elif line.startswith("event:"):
@@ -369,7 +395,9 @@ while True:
         time.sleep(3)
 ```
 
-生产程序应把 `last_event_id` 持久化到本地，并对短时网络错误使用有上限的指数退避。
+生产程序应把 `last_event_id` 持久化到本地，并对短时网络错误使用有上限的指数退避。没有
+任何游标且请求 `bootstrap=1` 表示只取当前状态；只有显式发送 `Last-Event-ID: state:0`
+才要求从保留日志起点完整重放。
 
 ## 当前敌对星系轮询
 
