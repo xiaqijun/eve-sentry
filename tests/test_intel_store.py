@@ -1792,6 +1792,61 @@ def test_ocr_esi_persistence_reserves_in_lock_and_writes_snapshot_outside(
     assert observed["item"] is not next(iter(store._active_intel.values()))
 
 
+def test_ocr_esi_enrichment_runs_outside_store_lock(tmp_path):
+    class IdentityResolver:
+        def enrich_observation(self, observation):
+            observation.character_ids = [123]
+            return observation
+
+        def character_profile(self, character_id):
+            return {"character_id": int(character_id), "name": "Alice"}
+
+    class LockAwareEnricher:
+        def __init__(self):
+            self.store = None
+            self.lock_states = []
+
+        def enrich(self, _observation):
+            self.lock_states.append(self.store._lock._is_owned())
+            return SimpleNamespace(
+                character_profiles=[
+                    {
+                        "character_id": 123,
+                        "name": "Alice",
+                        "corporation_id": 42,
+                        "corporation_name": "Alice Corp",
+                    }
+                ]
+            )
+
+    enricher = LockAwareEnricher()
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={},
+        links=[],
+        resolver=IdentityResolver(),
+        enricher=enricher,
+    )
+    enricher.store = store
+    try:
+        result = _record_ocr_snapshot(
+            store,
+            {
+                "client_id": "detector-client:test",
+                "system_name": "S-KSWL",
+                "names": ["Alice"],
+            },
+        )
+        assert result["created"] == 1
+        assert store.wait_for_esi_idle(timeout=2)
+    finally:
+        store.close()
+
+    assert enricher.lock_states == [False]
+    active = store.list_active_intel(source="eve-sentry-detector")[0]
+    assert active["metadata"]["corporation_name"] == "Alice Corp"
+
+
 def test_record_ocr_snapshot_uses_fresh_cached_identity_without_queueing(tmp_path):
     class NetworkMustNotRun:
         def resolve_ids(self, names):

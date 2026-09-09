@@ -754,6 +754,15 @@ class IntelStore:
         )
         observation.metadata["identity_checked_at"] = checked_at
         enriched_report = self._report_from_observation(observation)
+        # Enrichment may call the remote ESI Gateway. Finish that work before
+        # taking the store-wide mutation lock so a slow gateway cannot block
+        # heartbeats, hostile-presence uploads, or SSE snapshots.
+        enriched_metadata = self._active_ocr_metadata(
+            task.client_id,
+            observation,
+            checked_at=checked_at,
+            character_profiles=character_profiles,
+        )
 
         with self._lock:
             report_index = next(
@@ -833,12 +842,6 @@ class IntelStore:
                     )
                     if key in item.metadata
                 }
-                enriched_metadata = self._active_ocr_metadata(
-                    task.client_id,
-                    observation,
-                    checked_at=checked_at,
-                    character_profiles=character_profiles,
-                )
                 current_icon_seen_at = str(
                     current_icon_metadata.get("hostile_icon_seen_at") or ""
                 )
