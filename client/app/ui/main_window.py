@@ -274,6 +274,7 @@ class MainWindow(QMainWindow):
         self._identity_wants_monitor = False
         self._identity_wants_alert = False
         self._monitor_start_state = "idle"
+        self._monitor_restart_pending = False
         self._intel_url = self._settings.get_server_url()
         configured_system = os.environ.get("EVE_SENTRY_SYSTEM", "").strip()
         self._intel_system = configured_system or "Unknown"
@@ -2645,6 +2646,16 @@ class MainWindow(QMainWindow):
             self._heartbeat_last_success_at = heartbeat_now_iso()
 
     def _start_monitor(self, *, identity_checked: bool = False) -> None:
+        if _instance_attr(self, "_stopping_monitor_workers", set()):
+            # A rapid stop/start can arrive while the previous QThreads are
+            # still unwinding.  Defer worker creation so old and new capture
+            # threads never share overlapping native OCR/Qt lifetimes.
+            self._monitor_restart_pending = True
+            self._monitor_start_state = "idle"
+            monitor_btn = _instance_attr(self, "_monitor_btn")
+            if monitor_btn is not None:
+                monitor_btn.setEnabled(False)
+            return
         start_state = _instance_attr(self, "_monitor_start_state", "idle")
         if not identity_checked:
             if start_state != "idle":
@@ -2716,7 +2727,13 @@ class MainWindow(QMainWindow):
         interval = self._settings.get_interval()
         get_ocr_enabled = getattr(self._settings, "get_ocr_enabled", None)
         ocr_enabled = get_ocr_enabled() if callable(get_ocr_enabled) else True
-        ocr_engine = _instance_attr(self, "_ocr")
+        # Keep the initialized scheduler across ordinary monitor toggles.  In
+        # addition to making restart immediate, this prevents rapid toggles
+        # from spawning several concurrent ONNX model warm-up jobs.
+        ocr_engine = _instance_attr(self, "_ocr_scheduler") or _instance_attr(
+            self,
+            "_ocr",
+        )
         if ocr_engine is None:
             self._ocr_scheduler = SharedOCRScheduler()
             if ocr_enabled:
@@ -3303,6 +3320,14 @@ class MainWindow(QMainWindow):
         for worker in _instance_attr(self, "_stopping_monitor_workers", set()):
             if worker not in workers:
                 workers.append(worker)
+        scheduler = _instance_attr(self, "_ocr_scheduler")
+        if scheduler is not None and _instance_attr(
+            self,
+            "_shutdown_in_progress",
+            False,
+        ):
+            scheduler.close(wait=False)
+            self._ocr_scheduler = None
         if not workers:
             return True
 
@@ -3312,11 +3337,6 @@ class MainWindow(QMainWindow):
             self._log_message(f"正在停止 {len(running_workers)} 个监控线程...")
         for worker in workers:
             worker.stop()
-
-        scheduler = _instance_attr(self, "_ocr_scheduler")
-        if scheduler is not None:
-            scheduler.close(wait=False)
-            self._ocr_scheduler = None
 
         if timeout_ms == 0:
             for worker in workers:

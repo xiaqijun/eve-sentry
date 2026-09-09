@@ -2220,6 +2220,90 @@ def test_start_monitor_creates_worker_for_each_eve_window(monkeypatch):
     ]
 
 
+def test_start_monitor_defers_while_previous_workers_are_stopping():
+    class FakeButton:
+        def __init__(self):
+            self.enabled = []
+
+        def setEnabled(self, enabled):
+            self.enabled.append(enabled)
+
+    window = MainWindow.__new__(MainWindow)
+    window._stopping_monitor_workers = {object()}
+    window._monitor_restart_pending = False
+    window._monitor_start_state = "starting"
+    window._monitor_btn = FakeButton()
+
+    MainWindow._start_monitor(window, identity_checked=True)
+
+    assert window._monitor_restart_pending is True
+    assert window._monitor_start_state == "idle"
+    assert window._monitor_btn.enabled == [False]
+
+
+def test_start_monitor_reuses_initialized_ocr_scheduler():
+    class FakeWorker:
+        def __init__(self):
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+    class FakeSettings:
+        def get_interval(self):
+            return 1.0
+
+        def get_ocr_enabled(self):
+            return True
+
+    class FakeWidget:
+        def setText(self, _text):
+            pass
+
+        def setStyleSheet(self, _style):
+            pass
+
+    scheduler = object()
+    worker = FakeWorker()
+    captured_engines = []
+    target = {
+        "key": "window-a",
+        "system_name": "S-KSWL",
+        "system_id": None,
+        "system_source": "chatlog",
+        "region": {"x": 0, "y": 0, "w": 100, "h": 200},
+    }
+    window = MainWindow.__new__(MainWindow)
+    window._stopping_monitor_workers = set()
+    window._monitor_start_state = "idle"
+    window._monitor_reconnect_scheduled = False
+    window._workers = {}
+    window._worker_contexts = {}
+    window._build_monitor_targets = lambda: [target]
+    window._refresh_intel_location = lambda **_kwargs: True
+    window._settings = FakeSettings()
+    window._ocr = None
+    window._ocr_scheduler = scheduler
+    window._create_monitor_worker = (
+        lambda _target, engine, *_args: captured_engines.append(engine) or worker
+    )
+    window._update_window_status = lambda *_args: None
+    window._set_heartbeat_enabled = lambda _enabled: None
+    window._alert_controller = None
+    window._monitor_btn = FakeWidget()
+    window._status_label = FakeWidget()
+    window._log_message = lambda _message: None
+    window._publish_heartbeat = lambda **_kwargs: None
+    window._refresh_status_cards = lambda: None
+    window._refresh_window_status_table = lambda: None
+
+    MainWindow._start_monitor(window, identity_checked=True)
+
+    assert captured_engines == [scheduler]
+    assert worker.started is True
+    assert window._ocr_scheduler is scheduler
+
+
 def test_build_monitor_targets_uses_only_selected_window():
     class FakeCapturer:
         def list_eve_windows(self, keyword):
@@ -4555,6 +4639,85 @@ def test_stop_monitor_workers_returns_without_waiting_for_async_cleanup(monkeypa
 
     assert window._stopping_monitor_workers == set()
     assert window._monitor_btn.enabled == [False, True]
+
+
+def test_stop_monitor_workers_keeps_ocr_scheduler_for_fast_restart(monkeypatch):
+    callbacks = []
+
+    class FakeSignal:
+        def disconnect(self):
+            pass
+
+    class FakeWorker:
+        ocr_snapshot = FakeSignal()
+        hostile_detected = FakeSignal()
+        status_update = FakeSignal()
+        scan_complete = FakeSignal()
+
+        def isRunning(self):
+            return False
+
+        def stop(self):
+            pass
+
+    class FakeScheduler:
+        def __init__(self):
+            self.close_calls = []
+
+        def close(self, wait=False):
+            self.close_calls.append(wait)
+
+    class FakeButton:
+        def setEnabled(self, _enabled):
+            pass
+
+    scheduler = FakeScheduler()
+    window = MainWindow.__new__(MainWindow)
+    window._workers = {"first": FakeWorker()}
+    window._worker = None
+    window._worker_contexts = {}
+    window._stopping_monitor_workers = set()
+    window._ocr_scheduler = scheduler
+    window._shutdown_in_progress = False
+    window._monitor_btn = FakeButton()
+    window._log_message = lambda _message: None
+    window._refresh_window_status_table = lambda: None
+    window._refresh_monitor_window_action_labels = lambda: None
+    monkeypatch.setattr(
+        "app.ui.main_window.QTimer.singleShot",
+        lambda delay, callback: callbacks.append((delay, callback)),
+    )
+
+    assert MainWindow._stop_monitor_workers(window, timeout_ms=0) is True
+
+    assert window._ocr_scheduler is scheduler
+    assert scheduler.close_calls == []
+
+
+def test_stop_monitor_workers_closes_ocr_scheduler_during_app_shutdown():
+    class FakeScheduler:
+        def __init__(self):
+            self.close_calls = []
+
+        def close(self, wait=False):
+            self.close_calls.append(wait)
+
+    scheduler = FakeScheduler()
+    window = MainWindow.__new__(MainWindow)
+    window._workers = {}
+    window._worker = None
+    window._worker_contexts = {}
+    window._stopping_monitor_workers = set()
+    window._ocr_scheduler = scheduler
+    window._shutdown_in_progress = True
+    window._log_message = lambda _message: None
+    window._refresh_window_status_table = lambda: None
+    window._refresh_monitor_window_action_labels = lambda: None
+
+    assert MainWindow._stop_monitor_workers(window, timeout_ms=1) is True
+
+    assert window._ocr_scheduler is None
+    assert scheduler.close_calls == [False]
 
 
 def test_switching_selected_window_clears_stale_manual_region():

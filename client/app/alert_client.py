@@ -1288,12 +1288,17 @@ class AlertOverlay(QWidget):
 
         header = QHBoxLayout()
         self._title.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        self._title.setFixedHeight(26)
+        self._title.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._status.setFixedHeight(26)
         self._status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._title.setMouseTracking(True)
         self._status.setMouseTracking(True)
         self._title.installEventFilter(self)
         self._status.installEventFilter(self)
-        header.addWidget(self._title)
+        header.addWidget(self._title, 0, Qt.AlignmentFlag.AlignTop)
         header.addStretch(1)
         view_selector = QFrame()
         view_selector.setObjectName("overlayViewSelector")
@@ -1318,7 +1323,7 @@ class AlertOverlay(QWidget):
             view_buttons.append(button)
         view_buttons[0].setChecked(True)
         header.addWidget(view_selector, 0, Qt.AlignmentFlag.AlignTop)
-        header.addWidget(self._status)
+        header.addWidget(self._status, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(header)
 
         sound_control = QHBoxLayout()

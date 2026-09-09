@@ -275,6 +275,30 @@ def test_intel_api_client_targets_v1_event_stream(monkeypatch):
     assert captured["headers"]["Last-event-id"] == "evt-0"
 
 
+def test_intel_api_client_uses_keepalive_as_sse_liveness_watchdog(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def readline(self):
+            return b""
+
+    def fake_urlopen(_request, timeout=0):
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("app.intel_client.urlopen", fake_urlopen)
+    api = IntelApiClient("http://example.invalid", timeout=15.0)
+
+    assert list(api.iter_events(timeout=30.0, heartbeat=1.0)) == []
+    assert captured["timeout"] == 5.0
+
+
 def test_intel_api_client_iterates_sse_alerts_incrementally(monkeypatch):
     class FakeResponse:
         def __init__(self):
@@ -1959,7 +1983,12 @@ def test_alert_overlay_empty_list_does_not_stretch_view_selector(monkeypatch):
         assert selector is not None
         assert selector.size().width() == 86
         assert selector.size().height() == 26
-        assert selector.mapTo(overlay, selector.rect().topLeft()).y() < 20
+        selector_top = selector.mapTo(overlay, selector.rect().topLeft()).y()
+        assert selector_top < 20
+        assert overlay._title.mapTo(overlay, overlay._title.rect().topLeft()).y() == selector_top
+        assert overlay._status.mapTo(overlay, overlay._status.rect().topLeft()).y() == selector_top
+        assert overlay._title.height() == selector.height()
+        assert overlay._status.height() == selector.height()
     finally:
         overlay.close()
 

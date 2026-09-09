@@ -650,8 +650,20 @@ class IntelApiClient:
         )
         if should_stop is not None and should_stop():
             return
+        socket_timeout = self.timeout + max(0.0, timeout)
+        if heartbeat is not None and heartbeat > 0:
+            # SSE keepalives make the socket timeout a liveness watchdog, not
+            # the total long-poll duration.  Recover quickly from a half-open
+            # stream instead of waiting the previous 45-second combined limit.
+            socket_timeout = max(
+                1.0,
+                min(
+                    float(self.timeout),
+                    max(5.0, float(heartbeat) * 3.0),
+                ),
+            )
         try:
-            with urlopen(request, timeout=self.timeout + max(0.0, timeout)) as response:
+            with urlopen(request, timeout=socket_timeout) as response:
                 yield from self._iter_events(response, should_stop=should_stop)
         except HTTPError as exc:
             message = self._read_error_message(exc)

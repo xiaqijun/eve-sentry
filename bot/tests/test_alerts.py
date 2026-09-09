@@ -82,7 +82,7 @@ async def test_relay_stream_uses_long_lived_sse_request() -> None:
 
     assert len(requests) == 1
     assert "timeout" not in requests[0].url.params
-    assert requests[0].url.params["heartbeat"] == "15"
+    assert requests[0].url.params["heartbeat"] == "1"
     await redis.aclose()
 
 

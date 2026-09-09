@@ -27,7 +27,8 @@ MONITORING_NODE_SNAPSHOT_STATE_KEY = "qq:eve-sentry:monitoring-node-snapshot-sta
 MONITORING_NODE_SNAPSHOT_DATA_KEY = "qq:eve-sentry:monitoring-node-snapshot-data"
 MONITORING_NODE_SUBSCRIPTION_PREFIX = "monitoring-node-subscription"
 ALERT_DEDUPE_SECONDS = 7 * 24 * 60 * 60
-SSE_IDLE_TIMEOUT_SECONDS = 45.0
+SSE_HEARTBEAT_SECONDS = 1.0
+SSE_IDLE_TIMEOUT_SECONDS = 5.0
 RECONNECT_BACKOFF_SECONDS = (0.2, 1.0, 3.0, 5.0)
 
 
@@ -1278,7 +1279,7 @@ class EveSentryAlertRelay:
             resume_at = last_event_id
         params = {
             "limit": "50",
-            "heartbeat": "15",
+            "heartbeat": f"{SSE_HEARTBEAT_SECONDS:g}",
             "bootstrap": "1",
             "since": resume_at or datetime.now(UTC).isoformat(),
         }
