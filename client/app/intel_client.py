@@ -655,13 +655,10 @@ class IntelApiClient:
             # SSE keepalives make the socket timeout a liveness watchdog, not
             # the total long-poll duration.  Recover quickly from a half-open
             # stream instead of waiting the previous 45-second combined limit.
-            socket_timeout = max(
-                1.0,
-                min(
-                    float(self.timeout),
-                    max(5.0, float(heartbeat) * 3.0),
-                ),
-            )
+            # Keep enough headroom for short event-loop, proxy, or scheduler
+            # stalls so a single delayed comment does not cause a reconnect
+            # storm across every consumer.
+            socket_timeout = max(15.0, float(heartbeat) * 3.0)
         try:
             with urlopen(request, timeout=socket_timeout) as response:
                 yield from self._iter_events(response, should_stop=should_stop)

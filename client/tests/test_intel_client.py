@@ -296,7 +296,7 @@ def test_intel_api_client_uses_keepalive_as_sse_liveness_watchdog(monkeypatch):
     api = IntelApiClient("http://example.invalid", timeout=15.0)
 
     assert list(api.iter_events(timeout=30.0, heartbeat=1.0)) == []
-    assert captured["timeout"] == 5.0
+    assert captured["timeout"] == 15.0
 
 
 def test_intel_api_client_iterates_sse_alerts_incrementally(monkeypatch):
