@@ -99,8 +99,9 @@ EVE SSO、管理员密码登录，或管理员代签
 ## 预警客户端、SSE 与局部星图
 
 `GET /api/v1/events` 是有界长连接：服务端默认在 30 秒后正常结束本次响应，并默认每
-15 秒写入 SSE 注释心跳。Windows 客户端请求 1 秒注释心跳；正常流结束后立即重新连接，
-只有请求错误才进入有上限的指数退避。
+15 秒写入 SSE 注释心跳。Windows 客户端和 QQ 机器人都请求 1 秒注释心跳，并把连续 5 秒
+无字节作为失活连接的重连边界；正常流结束后立即重新连接，只有请求错误才进入有上限的
+指数退避。
 
 SSE wire 事件名是 `bootstrap`、`alert`、`safe` 和 `monitoring_node`。持久化状态事件在
 `data.event_type` 中使用 `alert.entered`、`alert.updated` 和 `alert.cleared`；其中前两者

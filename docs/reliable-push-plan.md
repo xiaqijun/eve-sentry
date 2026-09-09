@@ -2,7 +2,7 @@
 
 本文是服务端、监控客户端、预警客户端和 QQ 机器人共用的推送方案。后续涉及
 Presence、OCR、Heartbeat、SSE、告警、清空、节点或按需 OCR 的修改，都必须先对照本文。
-文中标为“现行”或列为已勾选的内容表示截至 v1.0.69 已实现；标为“目标”或未勾选的内容
+文中标为“现行”或列为已勾选的内容表示截至 v1.0.70 已实现；标为“目标”或未勾选的内容
 仍是后续设计，不能当作生产现状。
 
 ## 1. 结论
@@ -275,9 +275,9 @@ SSE 建立后立即发送 `: connected`，并按可恢复游标读取事件：
   → 空闲 comment keepalive
 ```
 
-现行空闲 keepalive 和应用 Heartbeat 是两套机制：星图客户端请求 1 秒 SSE comment，机器人
-请求 15 秒，服务端缺省也是 15 秒；客户端向 `/api/v1/clients/heartbeats` 发送的 HTTP
-Heartbeat 默认为 10 秒。
+现行空闲 keepalive 和应用 Heartbeat 是两套机制：星图客户端和 QQ 机器人都请求 1 秒 SSE
+comment，并把连续 5 秒无字节作为失活连接的重连边界；服务端缺省 comment 间隔仍为
+15 秒。客户端向 `/api/v1/clients/heartbeats` 发送的 HTTP Heartbeat 默认为 10 秒。
 
 现行游标规则：
 
@@ -659,6 +659,9 @@ EOY-BG 在同一波次内先后出现 `2 → 3 → 2 → 1` 人变化，最后�
 | PUSH-20260909-16 | P1 | 频繁开关监控时节点推送排队 | 每次真实上线或下线都会生成完整节点快照；机器人原先在 SSE 读取循环中同步等待 QQ Markdown、降级文本和网络重试。频繁开关时，已经进入投递的旧快照不能由客户端心跳合并取消，后续快照及同一 SSE 上的预警事件只能排队等待；QQ 单请求最多 10 秒且默认重试 3 次，会显著放大延迟。 | QQ 群可能先后看到已经过期的在线/离线状态，最新节点状态和后续来敌/清空消息被旧节点投递拖延。 | 整改中 | 机器人现将最新节点快照先持久化到 Redis，再由独立任务投递；默认合并 250ms 突发，发送进行中只保留一份最新待发快照，跳过中间状态；单次节点投递限制为 3 秒，超时后优先发送更新快照，无更新时重试当前最新状态。新增慢 QQ、连续三次切换只发送首尾状态，以及旧投递超时后立即发送最新状态的回归。完整 Redis high/normal/dead stream 仍按 `PUSH-20260908-04` 后续实施。部署后需实测快速开关至少 10 轮，确认节点消息不形成 FIFO 积压、最终状态正确且预警事件不被节点消息阻塞。 |
 | PUSH-20260909-17 | P1 | 快速重开监控的上线延迟 | 生产样本中客户端于 15:02:08 点击开启，服务端直到 15:02:18 才看到节点上线，恰好相隔一个 10 秒周期心跳。代码确认 `_start_monitor` 启动工作线程后立即构造上线心跳，但此时 `QThread.isRunning()` 可能仍为 false，导致首包被误标为 `monitoring=false`；下一次周期心跳才纠正为在线。 | 关闭后立即开启时，客户端界面已显示监控中，但星图和 QQ 节点状态仍可能延迟约 10 秒。 | 整改中 | `5125409` 让启动路径使用 `monitoring_override=true` 构造首个 `heartbeat:online`，不再依赖线程调度时序，并增加启动首包回归。修复已发布为 v1.0.69；安装后连续快速关闭/开启至少 10 轮，记录客户端点击、服务端心跳和 QQ 到达时间，确认不再出现整周期等待。 |
 | PUSH-20260909-18 | P2 | 空监控节点列表排版 | 节点快照为空时，机器人原先只输出标题和一行普通文本；非空时则输出四列表格，QQ Markdown 在两种结构间切换会造成空状态排版错乱。 | 全部节点下线时，群内节点状态消息难以阅读，且与正常节点表的列结构不一致。 | 待验收 | `5125409` 让空快照保留节点、状态、星系和敌对人数四列表头，并使用“暂无在线监控节点”占位行；增加精确 Markdown 回归。Validate and Deploy Bot run `34325517223` 已成功，等待下一次真实全下线消息确认 QQ 客户端显示正常。 |
+| PUSH-20260909-19 | P0 | 快速开关导致客户端闪退 | Windows Application Error 在 16:16:05 记录 `EVE-Sentry-Monitor.exe` 于 `Qt6Core.dll 6.11.2` 触发 `0xc0000409`；崩溃前 5 分钟日志出现 20 余次完整 OCR 调度器和模型初始化，且没有 Python traceback。代码确认普通停止使用 `wait=False` 关闭 OCR 调度器，快速重开又立即创建新调度器，旧 ONNX 预热任务与新 Qt/线程生命周期发生重叠。 | 高频点击开始/停止可触发原生进程崩溃，并重复加载模型、放大启动延迟和内存压力。 | 整改中 | `a0b823d` 让普通开关复用同一 OCR 调度器，只在应用退出时关闭；旧监控工作线程尚未回收时把重开请求标记为 pending，回收完成后只启动一次。新增调度器复用、延迟重启和 shutdown 清理回归，已发布为 v1.0.70；安装后连续快速开关至少 20 轮，确认无闪退且日志不再重复初始化模型。 |
+| PUSH-20260909-20 | P2 | 空节点星图标题栏排版 | 无监控节点且窗口较窄时，预警浮窗的标题和 SSE 状态标签被布局拉伸到约 331px 高，而“列表/星图”切换器固定为 26px，三者不在同一行。 | 空状态界面错位，SSE 在线状态和视图入口难以辨认。 | 整改中 | `a0b823d` 将标题、切换器和 SSE 状态统一为 26px 高并顶端对齐；离屏 UI 回归确认三者均为 `y=13, height=26`。修复已发布为 v1.0.70，等待实际 Windows 客户端安装后验收不同窗口尺寸。 |
+| PUSH-20260909-21 | P1 | 星图与 QQ 清空延迟 | 16:20:03 的 `alert.cleared` 已由服务端即时持久化，但 QQ 到 16:20:46 才发送清空，约延迟 43 秒；机器人 16:20:45 记录 SSE 读取 `TimeoutError` 后重连。桌面客户端原先把 API 超时 15 秒和服务端长轮询 30 秒相加为约 45 秒 socket timeout，机器人空闲失活边界也是 45 秒，因此半开或无字节 SSE 会让远端红标与 QQ 一起滞后。 | 来敌出现和清空虽已进入服务端权威状态，远端客户端仍可能长时间显示旧红标，机器人消息也在重连后才补发。 | 整改中 | `a0b823d` 让桌面客户端在启用 SSE comment 时使用 5 秒失活看门狗；机器人改为请求 1 秒 comment、连续 5 秒无字节即重连，持久游标继续保证补发且不会倒退。机器人已于 17:31 部署到生产并保持 active、0 次重启、无 warning；客户端修复已发布为 v1.0.70。安装后用真实来敌/清空确认远端红标和 QQ 不再等待约 45 秒超时。 |
 
 ### 17.1 整改更新格式
 
@@ -863,3 +866,44 @@ Release Client 的 `actions/cache/restore@v6` 与 `actions/cache/save@v6` 已在
 成功，`/download/latest` 返回 302 并指向 v1.0.69 组合包，固定下载支持 Range 206。
 `eve-sentry-client-source.json` 的 `source_commit` 和 `release_workflow_commit` 均指向上述
 完整目标提交。客户端快速重开仍需安装 v1.0.69 后完成真实端到端验收。
+
+### 17.10 v1.0.70 快速开关、空星图排版与 SSE 失活修复
+
+- 问题编号：`PUSH-20260909-19`、`PUSH-20260909-20`、`PUSH-20260909-21`
+- 修复提交：`a0b823d7a3ba2da80689a900a4f477284af7a9e5`
+- Client CI：[run 34334915481](https://github.com/xiaqijun/eve-sentry/actions/runs/34334915481)，成功
+- Contract Compatibility：[run 34334915446](https://github.com/xiaqijun/eve-sentry/actions/runs/34334915446)，成功
+- Validate and Deploy Bot：[run 34334915513](https://github.com/xiaqijun/eve-sentry/actions/runs/34334915513)，成功
+- Release Client：[run 34335120833](https://github.com/xiaqijun/eve-sentry/actions/runs/34335120833)，成功
+- Release：[v1.0.70](https://github.com/xiaqijun/eve-sentry/releases/tag/v1.0.70)
+- 发布时间：`2026-09-09T09:34:41Z`（北京时间 `2026-09-09 17:34:41`）
+- 目标提交：`a0b823d7a3ba2da80689a900a4f477284af7a9e5`
+
+| 资产 | 大小（bytes） | SHA-256 |
+|---|---:|---|
+| `EVE-Sentry-Monitor-ONNX-program-1.0.70.zip` | 132,401,843 | `c04a4d69b54e2e6bc0edf6de45cef4c0b2295d6d2b8c169c078bfa52897caa68` |
+| `EVE-Sentry-Monitor-ONNX-models-eb1a177a0f6e7133c001d4284890844f18b6f1f732b29ccc4307fa5f7364ea2d.zip` | 105,099,126 | `7ad3888d68123edbb315468c4eda0e897f3c4c18df8d32d2d04dbe1563bd8a6c` |
+| `latest.json` | 1,276 | `5a8b5aacabe800753d18a3478b30c07cb03dcf5b46a599b15a9e8c0c9c464dcc` |
+| `EVE-Sentry-Monitor-ONNX-1.0.70.zip` | 237,501,151 | `aae45b1314963e8472629028a906ee155d8abc5dcbce85d83b04a3f77e653810` |
+| `EVE-Sentry-Channel-1.0.70.zip` | 60,245,842 | `236384439b7a23934c0139563920e2fa337de0a3702e7ef903b556081a8be617` |
+| `eve-sentry-client-source.json` | 260 | `f82e24a44ac53e4fa3158958eb7837c9cb3c48e65273b64bae612cd43c892f5c` |
+
+Windows 崩溃证据为 16:16:05 的 `Qt6Core.dll 6.11.2 / 0xc0000409`，对应 dump 位于
+`%LOCALAPPDATA%\\CrashDumps`；客户端日志在崩溃前反复初始化 OCR 调度器和模型，没有 Python
+traceback。修复后普通开关不再销毁并重建 ONNX 调度器，旧工作线程回收期间的重复启动只
+保留一次待执行请求。离屏 UI 回归同时确认空节点状态下标题、列表/星图切换器和 SSE 状态
+均位于 `y=13` 且高度为 26px。
+
+16:19:20～16:20:46 的生产事件证明服务端 `state:566 alert.cleared` 在 16:20:03 前后即已
+提交，而机器人直到 16:20:45 触发旧 45 秒 SSE 空闲超时并重连后才于 16:20:46 投递清空。
+因此本次没有修改服务端；桌面客户端和机器人改为 1 秒 comment、5 秒无字节失活边界，
+保留持久游标重放。机器人生产目录已于北京时间 17:31:09 切换到上述提交，bot 与 worker
+均为 active、`NRestarts=0`，部署后 journal 无 warning 及以上日志。
+
+本地回归包括主窗口 112 项、客户端 SSE 71 项、预警浮窗 36 项、机器人全量 137 项、服务端
+SSE 子集 10 项和发布流程 4 项；27 个客户端测试文件逐个隔离运行全部通过。生产
+`latest.json` 与 Release 附件大小和 SHA-256 一致，包含 `ed25519` 签名与
+`eve-sentry-release-v1` 密钥标识；`/download/latest` 已指向 v1.0.70 组合包，固定下载的
+Range 请求返回 206。`eve-sentry-client-source.json` 的源码仓库、发布仓库、源码提交和
+发布工作流提交均指向本单体仓库及上述完整 SHA。客户端侧仍需安装 v1.0.70 后完成快速开关、
+空节点排版和真实来敌/清空端到端验收。
