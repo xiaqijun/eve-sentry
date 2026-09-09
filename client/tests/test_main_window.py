@@ -4384,11 +4384,23 @@ def test_stop_monitor_keeps_connection_timer_and_publishes_idle_status():
     window._refresh_status_cards = lambda: None
     heartbeat_calls = []
     presence_calls = []
+    publish_order = []
     stop_worker_timeouts = []
-    window._publish_heartbeat = lambda **kwargs: heartbeat_calls.append(kwargs)
+    window._publish_heartbeat = lambda **kwargs: (
+        publish_order.append("heartbeat"),
+        heartbeat_calls.append(kwargs),
+    )
     window._publish_hostile_presence = (
-        lambda count, context, refresh_location=False: presence_calls.append(
-            (count, context["system_name"], refresh_location, window._uploads_enabled)
+        lambda count, context, refresh_location=False: (
+            publish_order.append("presence"),
+            presence_calls.append(
+                (
+                    count,
+                    context["system_name"],
+                    refresh_location,
+                    window._uploads_enabled,
+                )
+            ),
         )
     )
     window._stop_monitor_workers = (
@@ -4414,6 +4426,7 @@ def test_stop_monitor_keeps_connection_timer_and_publishes_idle_status():
         }
     ]
     assert presence_calls == [(0, "S-KSWL", False, True)]
+    assert publish_order == ["heartbeat", "presence"]
     assert window._log_messages == ["监控已停止"]
 
 

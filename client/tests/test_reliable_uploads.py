@@ -340,6 +340,44 @@ def test_reliable_uploader_prioritizes_presence_then_heartbeat_then_ocr(tmp_path
         manager.shutdown()
 
 
+def test_reliable_uploader_prioritizes_state_heartbeat_before_presence(tmp_path):
+    calls = []
+
+    class Client:
+        def post_hostile_presence(self, **_payload):
+            calls.append("presence")
+            return {"ok": True}
+
+        def post_heartbeat(self, **_payload):
+            calls.append("heartbeat")
+            return {"ok": True}
+
+    manager = ReliableUploadManager(
+        Client(),
+        state_path=tmp_path / "uploads.json",
+    )
+    try:
+        with manager._condition:
+            manager.submit_presence(
+                "window-1",
+                {
+                    "client_id": "window-1",
+                    "source_instance": "EVE - A",
+                    "system_name": "Tama",
+                    "hostile_icon_count": 0,
+                },
+            )
+            manager.submit_heartbeat(
+                {"client_id": "detector-1", "status": "idle"},
+                {"kind": "heartbeat", "task_key": "heartbeat:offline"},
+            )
+
+        assert wait_until(lambda: len(calls) == 2)
+        assert calls == ["heartbeat", "presence"]
+    finally:
+        manager.shutdown()
+
+
 def test_reliable_uploader_exposes_heartbeat_commands_to_ui(tmp_path):
     class Client:
         def post_heartbeat(self, **payload):

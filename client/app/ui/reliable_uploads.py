@@ -313,6 +313,12 @@ class ReliableUploadManager(QObject):
                 self._persist_snapshots_locked()
 
     def _next_upload(self) -> _PendingUpload | None:
+        if self._heartbeat is not None:
+            task_key = str(
+                self._heartbeat.metadata.get("task_key") or "heartbeat"
+            ).strip()
+            if task_key != "heartbeat":
+                return self._heartbeat
         if self._presence:
             return min(self._presence.values(), key=lambda item: item.expires_at)
         if self._heartbeat is not None:

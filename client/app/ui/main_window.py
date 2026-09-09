@@ -3261,18 +3261,18 @@ class MainWindow(QMainWindow):
         network_tasks = _instance_attr(self, "_network_tasks")
         if network_tasks is not None:
             network_tasks.cancel_latest()
-        for context in list(_instance_attr(self, "_worker_contexts", {}).values()):
-            self._clear_hostile_presence(context, clear_local=False)
-        controller = _instance_attr(self, "_alert_controller")
-        forget_systems = getattr(controller, "forget_local_monitoring_systems", None)
-        if callable(forget_systems):
-            forget_systems(monitoring_systems)
         self._heartbeat_last_action = "monitor_stopped"
         if _instance_attr(self, "_uploads_enabled", False):
             self._publish_heartbeat(
                 monitoring_override=False,
                 task_key="heartbeat:offline",
             )
+        for context in list(_instance_attr(self, "_worker_contexts", {}).values()):
+            self._clear_hostile_presence(context, clear_local=False)
+        controller = _instance_attr(self, "_alert_controller")
+        forget_systems = getattr(controller, "forget_local_monitoring_systems", None)
+        if callable(forget_systems):
+            forget_systems(monitoring_systems)
         self._uploads_enabled = False
         self._stop_monitor_workers(
             timeout_ms=None if wait_for_workers else 0,
