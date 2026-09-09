@@ -1019,6 +1019,7 @@ async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event()
                 "alerts": [],
             }
         )
+        await relay.wait_for_monitoring_node_idle()
         assert qq.send_proactive_markdown.await_count == 1
         qq.send_proactive_text.assert_not_awaited()
         message = qq.send_proactive_markdown.await_args.args[1]
@@ -1041,9 +1042,125 @@ async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event()
                 "alerts": [],
             }
         )
+        await relay.wait_for_monitoring_node_idle()
         assert qq.send_proactive_markdown.await_count == 2
         assert "在线监控节点｜1" in qq.send_proactive_markdown.await_args.args[1]
 
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_relay_coalesces_rapid_node_snapshots_while_qq_is_slow() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    first_delivery_started = asyncio.Event()
+    release_first_delivery = asyncio.Event()
+    messages: list[str] = []
+
+    async def send_markdown(_group_openid: str, message: str) -> dict[str, str]:
+        messages.append(message)
+        if len(messages) == 1:
+            first_delivery_started.set()
+            await release_first_delivery.wait()
+        return {"id": f"snapshot-{len(messages)}"}
+
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(side_effect=send_markdown),
+        send_proactive_text=AsyncMock(return_value={"id": "fallback"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(
+            http,
+            redis,
+            qq,
+            "http://sentry.test/events",
+            monitoring_node_merge_seconds=0.0,
+        )
+        await relay.subscribe("group-1")
+
+        await relay.process_monitoring_node(
+            {
+                "generated_at": "2026-09-09T03:00:00+00:00",
+                "nodes_version": "v1",
+                "nodes": [{"client_id": "client:alpha", "system_name": "Jita"}],
+            }
+        )
+        await first_delivery_started.wait()
+        await relay.process_monitoring_node(
+            {
+                "generated_at": "2026-09-09T03:00:01+00:00",
+                "nodes_version": "v2",
+                "nodes": [],
+            }
+        )
+        await relay.process_monitoring_node(
+            {
+                "generated_at": "2026-09-09T03:00:02+00:00",
+                "nodes_version": "v3",
+                "nodes": [{"client_id": "client:beta", "system_name": "Tama"}],
+            }
+        )
+        release_first_delivery.set()
+        await relay.wait_for_monitoring_node_idle()
+
+    assert len(messages) == 2
+    assert "Jita" in messages[0]
+    assert "Tama" in messages[1]
+    assert "暂无在线监控节点" not in messages[1]
+    assert await redis.get(MONITORING_NODE_SNAPSHOT_STATE_KEY) == b"v3"
+    cached = json.loads((await redis.get(MONITORING_NODE_SNAPSHOT_DATA_KEY)).decode())
+    assert cached["version"] == "v3"
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_relay_times_out_stale_node_delivery_and_sends_latest() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    first_delivery_started = asyncio.Event()
+    messages: list[str] = []
+
+    async def send_markdown(_group_openid: str, message: str) -> dict[str, str]:
+        messages.append(message)
+        if len(messages) == 1:
+            first_delivery_started.set()
+            await asyncio.Event().wait()
+        return {"id": "latest"}
+
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(side_effect=send_markdown),
+        send_proactive_text=AsyncMock(return_value={"id": "fallback"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(
+            http,
+            redis,
+            qq,
+            "http://sentry.test/events",
+            monitoring_node_merge_seconds=0.0,
+            monitoring_node_delivery_timeout_seconds=0.1,
+        )
+        await relay.subscribe("group-1")
+        await relay.process_monitoring_node(
+            {
+                "generated_at": "2026-09-09T03:00:00+00:00",
+                "nodes_version": "v1",
+                "nodes": [{"client_id": "client:alpha", "system_name": "Jita"}],
+            }
+        )
+        await first_delivery_started.wait()
+        await relay.process_monitoring_node(
+            {
+                "generated_at": "2026-09-09T03:00:01+00:00",
+                "nodes_version": "v2",
+                "nodes": [{"client_id": "client:beta", "system_name": "Tama"}],
+            }
+        )
+        await relay.wait_for_monitoring_node_idle()
+
+    assert len(messages) == 2
+    assert "Jita" in messages[0]
+    assert "Tama" in messages[1]
+    qq.send_proactive_text.assert_not_awaited()
+    assert await redis.get(MONITORING_NODE_SNAPSHOT_STATE_KEY) == b"v2"
     await redis.aclose()
 
 

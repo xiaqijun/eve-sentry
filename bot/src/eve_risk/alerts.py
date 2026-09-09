@@ -297,6 +297,8 @@ class EveSentryAlertRelay:
         public_url: str = "",
         reconnect_delay_seconds: float = 5.0,
         personnel_push_interval_seconds: float = 0.0,
+        monitoring_node_merge_seconds: float = 0.25,
+        monitoring_node_delivery_timeout_seconds: float = 3.0,
         # Kept for compatibility with older bot deployments; automatic
         # analysis is intentionally disabled and this callback is ignored.
         analysis_enqueue: Callable[[str, dict[str, Any], str, str], Awaitable[bool]]
@@ -313,10 +315,23 @@ class EveSentryAlertRelay:
         self.personnel_push_interval_seconds = max(
             0.0, float(personnel_push_interval_seconds)
         )
+        self.monitoring_node_merge_seconds = max(
+            0.0, float(monitoring_node_merge_seconds)
+        )
+        self.monitoring_node_delivery_timeout_seconds = max(
+            0.1, float(monitoring_node_delivery_timeout_seconds)
+        )
         self._active_alert_ids: set[str] = set()
         self._personnel_last_sent_at: dict[str, float] = {}
         self._personnel_pending: dict[str, tuple[dict[str, Any], str]] = {}
         self._personnel_flush_tasks: dict[str, asyncio.Task[None]] = {}
+        self._monitoring_node_pending: tuple[
+            list[dict[str, Any]],
+            str,
+            str,
+            list[dict[str, Any]] | None,
+        ] | None = None
+        self._monitoring_node_flush_task: asyncio.Task[None] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -718,6 +733,7 @@ class EveSentryAlertRelay:
         *,
         nodes_version: str = "",
         changes: list[dict[str, Any]] | None = None,
+        cache_snapshot: bool = True,
     ) -> bool:
         """Deliver the complete anonymous online-node list once per event."""
         normalized_nodes = [node for node in nodes if isinstance(node, dict)]
@@ -730,14 +746,8 @@ class EveSentryAlertRelay:
                 separators=(",", ":"),
             ).encode("utf-8")
             version = hashlib.sha256(version_payload).hexdigest()[:16]
-        await self.redis.set(
-            MONITORING_NODE_SNAPSHOT_DATA_KEY,
-            json.dumps(
-                {"nodes": normalized_nodes, "version": version},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-        )
+        if cache_snapshot:
+            await self._cache_monitoring_node_snapshot(normalized_nodes, version)
         change_payload = json.dumps(
             changes or [],
             ensure_ascii=False,
@@ -757,22 +767,33 @@ class EveSentryAlertRelay:
             if await self.redis.exists(delivered_key):
                 continue
             try:
-                send_markdown = getattr(self.qq, "send_proactive_markdown", None)
-                if send_markdown is None:
-                    await self.qq.send_proactive_text(
-                        group_openid, _markdown_to_plain_text(message)
-                    )
-                else:
-                    try:
-                        await send_markdown(group_openid, message)
-                    except Exception:
-                        logger.warning(
-                            "QQ monitoring-node markdown delivery failed; "
-                            "falling back to text"
-                        )
+                async with asyncio.timeout(
+                    self.monitoring_node_delivery_timeout_seconds
+                ):
+                    send_markdown = getattr(self.qq, "send_proactive_markdown", None)
+                    if send_markdown is None:
                         await self.qq.send_proactive_text(
                             group_openid, _markdown_to_plain_text(message)
                         )
+                    else:
+                        try:
+                            await send_markdown(group_openid, message)
+                        except Exception:
+                            logger.warning(
+                                "QQ monitoring-node markdown delivery failed; "
+                                "falling back to text"
+                            )
+                            await self.qq.send_proactive_text(
+                                group_openid, _markdown_to_plain_text(message)
+                            )
+            except TimeoutError:
+                failed = True
+                logger.warning(
+                    "EVE Sentry monitoring node snapshot delivery timed out "
+                    "after %.1fs",
+                    self.monitoring_node_delivery_timeout_seconds,
+                )
+                continue
             except Exception:
                 failed = True
                 logger.exception("EVE Sentry monitoring node snapshot delivery failed")
@@ -794,6 +815,93 @@ class EveSentryAlertRelay:
         )
         return not failed
 
+    async def queue_monitoring_node_snapshot(
+        self,
+        nodes: list[dict[str, Any]],
+        occurred_at: str,
+        *,
+        nodes_version: str = "",
+        changes: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """Persist the latest node snapshot and schedule bounded background delivery."""
+        normalized_nodes = [node for node in nodes if isinstance(node, dict)]
+        version = str(nodes_version or "").strip()
+        if not version:
+            version_payload = json.dumps(
+                normalized_nodes,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            version = hashlib.sha256(version_payload).hexdigest()[:16]
+        await self._cache_monitoring_node_snapshot(normalized_nodes, version)
+        self._monitoring_node_pending = (
+            normalized_nodes,
+            occurred_at,
+            version,
+            changes,
+        )
+        task = self._monitoring_node_flush_task
+        if task is None or task.done():
+            self._monitoring_node_flush_task = asyncio.create_task(
+                self._flush_monitoring_node_snapshots(),
+                name="eve-sentry-monitoring-nodes",
+            )
+        return True
+
+    async def _cache_monitoring_node_snapshot(
+        self,
+        nodes: list[dict[str, Any]],
+        version: str,
+    ) -> None:
+        await self.redis.set(
+            MONITORING_NODE_SNAPSHOT_DATA_KEY,
+            json.dumps(
+                {"nodes": nodes, "version": version},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+
+    async def _flush_monitoring_node_snapshots(self) -> None:
+        retry_delay = 1.0
+        try:
+            await asyncio.sleep(self.monitoring_node_merge_seconds)
+            while self._monitoring_node_pending is not None:
+                snapshot = self._monitoring_node_pending
+                self._monitoring_node_pending = None
+                nodes, occurred_at, version, changes = snapshot
+                try:
+                    delivered = await self.deliver_monitoring_node_snapshot(
+                        nodes,
+                        occurred_at,
+                        nodes_version=version,
+                        changes=changes,
+                        cache_snapshot=False,
+                    )
+                except Exception:
+                    delivered = False
+                    logger.exception(
+                        "EVE Sentry queued monitoring node snapshot delivery failed"
+                    )
+                if delivered:
+                    retry_delay = 1.0
+                elif self._monitoring_node_pending is None:
+                    self._monitoring_node_pending = snapshot
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(10.0, retry_delay * 2)
+                if self._monitoring_node_pending is not None:
+                    await asyncio.sleep(self.monitoring_node_merge_seconds)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._monitoring_node_flush_task = None
+
+    async def wait_for_monitoring_node_idle(self) -> None:
+        """Wait until queued node snapshots finish; primarily useful for shutdown/tests."""
+        while self._monitoring_node_flush_task is not None:
+            await asyncio.shield(self._monitoring_node_flush_task)
+
     async def process_monitoring_node(self, payload: dict[str, Any]) -> bool:
         changes = payload.get("changes")
         occurred_at = str(
@@ -801,7 +909,7 @@ class EveSentryAlertRelay:
         ).strip()
         nodes = payload.get("nodes")
         if isinstance(nodes, list):
-            return await self.deliver_monitoring_node_snapshot(
+            return await self.queue_monitoring_node_snapshot(
                 nodes,
                 occurred_at,
                 nodes_version=str(payload.get("nodes_version") or ""),
@@ -858,7 +966,7 @@ class EveSentryAlertRelay:
                 await self.redis.get(MONITORING_NODE_SNAPSHOT_STATE_KEY)
             )
             if last_version != nodes_version:
-                node_delivery_succeeded = await self.deliver_monitoring_node_snapshot(
+                node_delivery_succeeded = await self.queue_monitoring_node_snapshot(
                     monitoring_nodes,
                     str(payload.get("generated_at") or datetime.now(UTC).isoformat()),
                     nodes_version=nodes_version,
