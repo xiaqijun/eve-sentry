@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.test_personnel_postgres import postgres_archive  # noqa: F401
+from tests.test_personnel_postgres import postgres_archive, postgres_dsn  # noqa: F401
 from tests.test_personnel_runtime import Client
 from app.esi.personnel_archive import IdentityUpdate, AffiliationUpdate
 from app.esi.personnel_runtime import PersonnelRuntime, PersonnelResolver
@@ -20,7 +20,7 @@ from app.intel.classification import ClassificationEngine
 from app.intel.scoring import Watchlist
 
 
-def test_live_membership_correction_never_clears_visual_presence(postgres_archive, tmp_path):
+def test_live_membership_correction_never_clears_visual_presence(postgres_archive, postgres_dsn, tmp_path):
     archive, factory = postgres_archive
     now = time.time()
     archive.save_identity(IdentityUpdate(1, "Pilot 1", now, now))
@@ -28,8 +28,7 @@ def test_live_membership_correction_never_clears_visual_presence(postgres_archiv
     runtime = PersonnelRuntime(archive, Client())
     runtime._remember(list(archive.get_profiles([1]).values()))
     resolver = PersonnelResolver(EsiResolver(cache=EsiCache(tmp_path / "legacy.json")), runtime)
-    with factory() as connection:
-        dsn = connection.info.dsn
+    dsn = postgres_dsn
     scorer = ClassificationEngine(watchlist=Watchlist(hostile_corporation_ids={10}, friendly_corporation_ids={20}))
     store = PostgreSQLIntelStore(dsn, systems={}, links=[], resolver=resolver, scorer=scorer,
                                 enricher=PersonnelEnricher(resolver, None))
@@ -63,10 +62,9 @@ def test_live_membership_correction_never_clears_visual_presence(postgres_archiv
         store.close()
 
 
-def test_history_backfill_resumes_without_promoting_cold_people(postgres_archive):
+def test_history_backfill_resumes_without_promoting_cold_people(postgres_archive, postgres_dsn):
     archive, factory = postgres_archive
-    with factory() as connection:
-        dsn = connection.info.dsn
+    dsn = postgres_dsn
     store = PostgreSQLIntelStore(dsn, systems={}, links=[])
     try:
         store.add_observation({"system_name": "Tama", "names": ["Confirmed"], "character_ids": [1],
@@ -101,11 +99,11 @@ def test_realtime_lane_isolated_from_large_cold_backlog(postgres_archive):
 
 
 @pytest.mark.parametrize("mode", ["shadow", "on"])
-def test_opt_in_startup_preserves_schema_and_resumes_worker(postgres_archive, tmp_path, mode):
+def test_opt_in_startup_preserves_schema_and_resumes_worker(postgres_archive, postgres_dsn, tmp_path, mode):
     archive, factory = postgres_archive
     with factory() as connection:
-        dsn = connection.info.dsn
         expected_schema = connection.execute("SELECT current_schema() AS name").fetchone()["name"]
+    dsn = postgres_dsn
     resolver = EsiResolver(client=Client(), cache=EsiCache(tmp_path / "cache.json"))
     store = PostgreSQLIntelStore(dsn, systems={}, links=[], resolver=resolver)
     try:

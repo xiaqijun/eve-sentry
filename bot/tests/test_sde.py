@@ -1,5 +1,7 @@
 import json
+import sqlite3
 import zipfile
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -8,6 +10,50 @@ import respx
 from eve_risk.clients.esi import ESIClient
 from eve_risk.sde import SDELocalization, _build_from_url, build_sde_index
 from eve_risk.ship_roles import ShipRoleClassifier
+
+
+@pytest.mark.parametrize("state", ["valid", "missing", "corrupt", "incomplete", "old"])
+def test_check_only_validates_local_index_without_network(tmp_path, monkeypatch, state):
+    from eve_risk import sde
+
+    index_path = tmp_path / "sde.sqlite3"
+    if state in {"valid", "incomplete", "old"}:
+        archive_path = tmp_path / "sde.zip"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            for member in sde.SDE_MEMBERS:
+                archive.writestr(member, "")
+        build_sde_index(archive_path, index_path, "123")
+        with sqlite3.connect(index_path) as connection:
+            if state == "incomplete":
+                connection.execute("DROP TABLE types")
+            elif state == "old":
+                connection.execute("UPDATE metadata SET value = '1' WHERE key = 'schema_version'")
+    elif state == "corrupt":
+        index_path.write_bytes(b"not sqlite")
+
+    monkeypatch.setattr("eve_risk.config.get_settings", lambda: SimpleNamespace(sde_index_path=index_path))
+
+    def forbidden_sync(*args):
+        pytest.fail("check-only must not access the network")
+
+    monkeypatch.setattr(sde, "sync_sde", forbidden_sync)
+    if state == "valid":
+        sde.main(["--check-only"])
+    else:
+        with pytest.raises((RuntimeError, sqlite3.Error)):
+            sde.main(["--check-only"])
+
+
+def test_sync_cli_rejects_unusable_index_after_sync(tmp_path, monkeypatch):
+    from eve_risk import sde
+
+    settings = SimpleNamespace(sde_index_path=tmp_path / "missing.sqlite3", sde_url="unused")
+    monkeypatch.setattr("eve_risk.config.get_settings", lambda: settings)
+    calls = []
+    monkeypatch.setattr(sde, "sync_sde", lambda *args: calls.append(args))
+    with pytest.raises(RuntimeError, match="No usable SDE"):
+        sde.main([])
+    assert calls == [(settings.sde_url, settings.sde_index_path)]
 
 
 def _line(item: dict[str, object]) -> str:

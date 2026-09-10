@@ -21,7 +21,7 @@ from psycopg.rows import dict_row
 
 
 @pytest.fixture
-def postgres_archive():
+def postgres_dsn():
     schema = "eve_sentry_personnel_test_" + uuid4().hex
     isolated_dsn = make_conninfo(
         DSN, options=f"-csearch_path={schema} -clock_timeout=2000 -cstatement_timeout=5000",
@@ -29,14 +29,20 @@ def postgres_archive():
     with psycopg.connect(DSN) as connection:
         connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
     try:
-        factory = lambda: psycopg.connect(isolated_dsn, row_factory=dict_row)
-        archive = PersonnelArchive(factory)
-        archive.migrate()
-        yield archive, factory
+        # ConnectionInfo.dsn omits passwords; consumers must reuse this input.
+        yield isolated_dsn
     finally:
         # Only the exact random schema created above can be removed.
         with psycopg.connect(DSN) as connection:
             connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+@pytest.fixture
+def postgres_archive(postgres_dsn):
+    factory = lambda: psycopg.connect(postgres_dsn, row_factory=dict_row)
+    archive = PersonnelArchive(factory)
+    archive.migrate()
+    yield archive, factory
 
 
 def test_postgres_personnel_persistence_and_fenced_completion(postgres_archive):

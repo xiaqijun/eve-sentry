@@ -119,8 +119,10 @@ jobs:
           remote_archive="/tmp/eve-risk-analysis-${GITHUB_SHA}.tar.gz"
           remote_script="/tmp/eve-risk-analysis-deploy-${GITHUB_SHA}.sh"
           remote_credentials="/tmp/eve-risk-analysis-credentials-${GITHUB_SHA}.env"
-          ssh_options=(-i ~/.ssh/eve-risk-analysis -p "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes)
-          scp_options=(-i ~/.ssh/eve-risk-analysis -P "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes)
+          transport_options=(-o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=6)
+          ssh_options=(-i ~/.ssh/eve-risk-analysis -p "$DEPLOY_PORT" "${transport_options[@]}")
+          scp_options=(-i ~/.ssh/eve-risk-analysis -P "$DEPLOY_PORT" "${transport_options[@]}")
           normalized_script="$RUNNER_TEMP/deploy_release.sh"
           credentials_file="$RUNNER_TEMP/deploy_credentials.env"
           sed 's/\r$//' scripts/ci/deploy_release.sh > "$normalized_script"

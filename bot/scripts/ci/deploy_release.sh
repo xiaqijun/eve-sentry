@@ -458,6 +458,22 @@ asyncio.run(main())
 PY
 }
 
+prepare_sde() {
+    local source_dir=$1
+    echo "Synchronizing SDE (180-second deadline; existing valid index may be reused)"
+    if (cd "$source_dir" && timeout --kill-after=10s 180s env \
+        DATABASE_URL="$database_url" REDIS_URL="$redis_url" \
+        SDE_INDEX_PATH="$data_dir/sde.sqlite3" .venv/bin/python -m eve_risk.sde); then
+        return 0
+    fi
+    echo "SDE sync failed or timed out; validating the existing index" >&2
+    (cd "$source_dir" && timeout --kill-after=5s 15s env \
+        DATABASE_URL="$database_url" REDIS_URL="$redis_url" \
+        SDE_INDEX_PATH="$data_dir/sde.sqlite3" .venv/bin/python -m eve_risk.sde --check-only) \
+        || return 1
+    echo "Retaining the existing valid SDE index; refresh it separately when connectivity recovers"
+}
+
 run_release_setup() {
     local source_dir=$1
     if [[ -n "$uv_bin" ]]; then
@@ -474,10 +490,10 @@ run_release_setup() {
     fi
     ensure_chinese_font "$source_dir" || return 1
     ensure_postgres "$source_dir" || return 1
+    echo "Applying database migrations"
     (cd "$source_dir" && env DATABASE_URL="$database_url" REDIS_URL="$redis_url" \
         .venv/bin/alembic upgrade head) || return 1
-    (cd "$source_dir" && env DATABASE_URL="$database_url" REDIS_URL="$redis_url" \
-        SDE_INDEX_PATH="$data_dir/sde.sqlite3" .venv/bin/python -m eve_risk.sde) || return 1
+    prepare_sde "$source_dir" || return 1
 }
 
 verify_sentry_connection() {

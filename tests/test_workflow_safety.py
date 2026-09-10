@@ -4,6 +4,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_bot_deploy_uses_transport_keepalive_without_disabling_host_verification():
+    workflow = (ROOT / ".github/workflows/deploy-bot.yml").read_text(encoding="utf-8")
+    assert "ConnectTimeout=15" in workflow
+    assert "ServerAliveInterval=15" in workflow
+    assert "ServerAliveCountMax=6" in workflow
+    assert workflow.count('"${transport_options[@]}"') == 2
+    assert "StrictHostKeyChecking=no" not in workflow
+
+
 def _read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 

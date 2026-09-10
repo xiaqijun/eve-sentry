@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import logging
@@ -352,11 +353,32 @@ def _build_from_url(url: str) -> str | None:
     return match.group(1) if match else None
 
 
-def main() -> None:
+def validate_sde(index_path: str | Path) -> None:
+    """Reject missing, incompatible or structurally incomplete fallback indexes."""
+    index = SDELocalization(index_path)
+    try:
+        if not index.available:
+            raise RuntimeError("No usable SDE index is available")
+        # Exercise both consumer queries, even when these IDs are absent.
+        index.type_info(0)
+        index.solar_system_info(0)
+    finally:
+        index.close()
+
+
+def main(argv: list[str] | None = None) -> None:
     from eve_risk.config import get_settings
 
+    parser = argparse.ArgumentParser(description="Synchronize or validate the local SDE index")
+    parser.add_argument("--check-only", action="store_true", help="Validate without network access")
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     settings = get_settings()
-    sync_sde(settings.sde_url, settings.sde_index_path)
+    if not args.check_only:
+        logger.info("Starting official SDE synchronization")
+        sync_sde(settings.sde_url, settings.sde_index_path)
+    validate_sde(settings.sde_index_path)
+    logger.info("SDE index validation passed")
 
 
 if __name__ == "__main__":

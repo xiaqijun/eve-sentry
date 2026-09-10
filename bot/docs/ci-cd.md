@@ -38,12 +38,26 @@ Variables：
 虚拟环境。PostgreSQL 和 Redis 复用主机上的现有 Docker 容器，SDE 索引保存在
 `${EVE_RISK_DEPLOY_ROOT}/data`。远端 `flock` 与 Actions `concurrency` 共同防止两个机器人版本同时部署。
 
+SSH/SCP 使用 15 秒连接超时、15 秒保活间隔和 6 次保活失败上限，保留 known_hosts 校验。
+数据库迁移与 SDE 同步有明确阶段日志。SDE 同步设 180 秒整体截止时间，超时后最多再给
+10 秒退出；同步失败或超时时，使用 `python -m eve_risk.sde --check-only` 在无网络访问下
+检查已有索引（15 秒截止、5 秒强制退出宽限）。仅当 schema 版本及舰船/星系查询结构有效时
+允许复用；缺失、损坏或不兼容的索引会阻止新版本激活。同步正常返回后同样校验索引。
+
+该兜底只保证部署可用性，不保证 SDE 已更新到最新版本。网络恢复后，可在对应版本目录、
+加载生产运行环境后执行 `python -m eve_risk.sde` 重新刷新，或由后续受保护的部署重新尝试。
+整体超时强制中止可能留下数据目录下本次生成的临时下载/构建文件；排查时确认没有运行中的
+同步任务后再按确切文件清理，不要删除 `sde.sqlite3` 或整个数据目录。
+
+Actions 报 SSH 断开不等于远端进程立即终止。重跑前应只读检查该提交的远端部署进程、锁、
+`current` 与两项服务状态；若旧任务仍在运行，先按生产运维审批处理，不要删除锁文件或并行覆盖发布目录。
+
 部署后会确认两个 systemd 服务均处于运行状态，并请求主机上的 `/health/ready`，仅当返回 JSON
 中的 `status` 为 `ok` 才切换 `current` 链接。若健康检查失败，脚本会重新启动上一个版本的代码。
 数据库迁移必须保持向后兼容，因为代码回滚不会反向回滚 PostgreSQL schema。
 
 非 root 部署使用 `systemctl --user`，生产用户需要预先执行 `loginctl enable-linger <user>`，并确保
 该用户拥有部署目录和 systemd user manager。生产主机需预先安装 Python 3.12、Docker、
-`curl`、`flock` 与 `python3-venv`。主机如已安装 uv，脚本会优先使用锁定依赖；否则使用 pip
+`curl`、`flock`、GNU `timeout` 与 `python3-venv`。主机如已安装 uv，脚本会优先使用锁定依赖；否则使用 pip
 从 `PIP_INDEX_URL`（默认阿里云镜像）安装项目。部署会在现有 PostgreSQL 容器中创建或更新
 `eve_risk` 角色与同名数据库，并在现有 Redis 容器中创建或更新 `eve_risk` ACL 用户。
