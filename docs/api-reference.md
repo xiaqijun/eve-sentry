@@ -4,6 +4,12 @@
 `alert.updated.hostile_personnel=[]` 是有效的当前名单更正，不等于视觉清空；消费者必须接受
 空数组，并优先按角色 ID 去重。公共档案不保存授权主体的联系人声望。
 
+私有 ESI Gateway 的公共查询 envelope 在普通内存缓存和可选 ID 缓存两种模式下均返回
+逐实体 `freshness`：键为字符串 ID（`universe/ids` 为归一化姓名），值包含 UTC 秒数
+`fetched_at`、`last_validated_at`、`expires_at` 及布尔值 `stale`。时间与返回资料一同保存，
+缓存命中及过期回退不重置时间；缺失实体不生成时间信息。未知时间不能作为可信归属，
+需通过正常刷新取得有效时间，不能将读取时间填作获取时间。原 `data`、`cache` 字段保持兼容。
+
 管理员 ESI Gateway 观测接口的 `resolver_cache.archive` 为可选对象，包含 `mode`、
 `profiles`、`hot_profiles`、`pending_names`、`background_slots`、`degraded`、
 `hot_hits/hot_misses`、`database_hits/database_misses`、`refresh_success/refresh_errors`、

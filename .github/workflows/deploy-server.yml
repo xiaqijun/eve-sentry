@@ -125,6 +125,7 @@ jobs:
           tests/test_postgres_integration.py
           tests/test_personnel_postgres.py
           tests/test_personnel_live_store.py
+          tests/test_personnel_gateway_recovery.py
 
   package:
     needs: [validate, quality]

@@ -5,8 +5,13 @@ opt-in business cache. Gateway responses add `freshness`, keyed by entity ID str
 or normalized request name for `universe/ids`, with `fetched_at`, `last_validated_at`,
 `expires_at` (UTC seconds) and `stale` per returned entity. Metadata is captured from
 the same cache record as the payload. Reading stale data never resets fetch time.
-The simple non-ID cache reports `{}` (unknown freshness); old consumers may ignore
-the new field. No force-refresh API bypasses upstream limits. Private contacts stay
+Both the simple in-memory cache and the optional ID cache report this metadata.
+The simple cache stores payload and acquisition timestamps together; all entities
+in one batch share that acquisition time. Hits, coalesced readers and stale/error
+fallbacks retain it. Missing entities receive no metadata. Legacy entries without
+timestamps remain unknown rather than being stamped with the current read time;
+the simple in-memory cache starts empty after a gateway deployment/restart.
+Old consumers may ignore the field. No force-refresh API bypasses upstream limits. Private contacts stay
 outside this cache. The affiliation TTL default is 300 seconds; an existing explicit
 3600-second environment setting must be changed separately.
 

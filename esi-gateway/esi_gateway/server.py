@@ -10,6 +10,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,6 +26,25 @@ from .rate_limit import RateLimiter
 MAX_BODY_BYTES = 64 * 1024
 MAX_BATCH_ITEMS = 1000
 ID_PATHS = {"characters": ("get_character", "/characters/{id}"), "corporations": ("get_corporation", "/corporations/{id}"), "alliances": ("get_alliance", "/alliances/{id}"), "systems": ("get_system", "/universe/systems/{id}")}
+
+
+@dataclass(frozen=True)
+class CachedResponse:
+    """Keep payload and its original successful acquisition time atomic."""
+
+    data: Any
+    fetched_at: float
+    expires_at: float
+
+
+def _cache_result(value: Any, status: str, freshness: dict[str, Any] | None) -> tuple[Any, str]:
+    if isinstance(value, CachedResponse):
+        if freshness is not None:
+            freshness.update(fetched_at=value.fetched_at, last_validated_at=value.fetched_at,
+                             expires_at=value.expires_at, stale=status == "stale")
+        return value.data, status
+    # Legacy entries have unknown age. Never invent a fresh timestamp for them.
+    return value, status
 
 
 class GatewayState:
@@ -46,19 +66,22 @@ class GatewayState:
         self._inflight_lock = threading.Lock()
         self._inflight: dict[str, threading.Event] = {}
 
-    def fetch(self, key: str, loader: Callable[[], Any], *, endpoint: str) -> tuple[Any, str]:
+    def fetch(self, key: str, loader: Callable[[], Any], *, endpoint: str,
+              freshness: dict[str, Any] | None = None) -> tuple[Any, str]:
+        if freshness is not None:
+            freshness.clear()
         stale_hit, stale_value = self.cache.get_stale(key)
         hit, value = self.cache.get(key)
         self.metrics.record_request(endpoint, cached=hit)
         if hit:
             self.metrics.cache_hits += 1
-            return value, "hit"
+            return _cache_result(value, "hit", freshness)
         if self._negative_hit(key):
             if stale_hit:
                 self.metrics.cache_misses += 1
                 self.negative_hits += 1
                 self.stale_served += 1
-                return stale_value, "stale"
+                return _cache_result(stale_value, "stale", freshness)
             self.metrics.cache_misses += 1
             self.negative_hits += 1
             raise EsiApiError("cached_upstream_error")
@@ -79,12 +102,12 @@ class GatewayState:
                 hit, value = self.cache.get(key)
                 if hit:
                     self.metrics.cache_hits += 1
-                    return value, "hit"
+                    return _cache_result(value, "hit", freshness)
                 stale_hit, stale_value = self.cache.get_stale(key)
                 if self._negative_hit(key):
                     if stale_hit:
                         self.stale_served += 1
-                        return stale_value, "stale"
+                        return _cache_result(stale_value, "stale", freshness)
                     self.negative_hits += 1
                     raise EsiApiError("cached_upstream_error")
                 continue
@@ -93,7 +116,7 @@ class GatewayState:
                 hit, value = self.cache.get(key)
                 if hit:
                     self.metrics.cache_hits += 1
-                    return value, "hit"
+                    return _cache_result(value, "hit", freshness)
                 self.rate_limiter.wait()
                 started = time.monotonic()
                 try:
@@ -103,13 +126,15 @@ class GatewayState:
                     self._negative_set(key)
                     if stale_hit:
                         self.stale_served += 1
-                        return stale_value, "stale"
+                        return _cache_result(stale_value, "stale", freshness)
                     raise
                 duration = time.monotonic() - started
-                self.cache.set(key, value)
+                fetched_at = time.time()
+                cached = CachedResponse(value, fetched_at, fetched_at + self.cache.ttl)
+                self.cache.set(key, cached)
                 self._negative_clear(key)
                 self.metrics.record_upstream(endpoint, duration)
-                return value, "miss"
+                return _cache_result(cached, "miss", freshness)
             finally:
                 with self._inflight_lock:
                     self._inflight.pop(key, None)
@@ -186,7 +211,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 data, cache = self.server.state.id_cache.fetch_single(method_name, entity_id, lambda: getattr(self.server.state.client, method_name)(entity_id), freshness=freshness)
                 self.server.state.metrics.record_request(method_name, cached=cache == "hit")
             else:
-                data, cache = self.server.state.fetch(f"GET:{kind}:{entity_id}", lambda: getattr(self.server.state.client, method_name)(entity_id), endpoint=method_name)
+                data, cache = self.server.state.fetch(f"GET:{kind}:{entity_id}", lambda: getattr(self.server.state.client, method_name)(entity_id), endpoint=method_name, freshness=freshness)
+                freshness = {str(entity_id): dict(freshness)} if freshness else {}
         except (EsiApiError, ValueError) as exc:
             self._send_upstream_error(exc)
             return
@@ -234,7 +260,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         return self.server.state.client.resolve_ids(payload)
 
                     key = f"POST:{endpoint}:" + hashlib.sha256(json.dumps(canonical).encode()).hexdigest()
-                    data, cache = self.server.state.fetch(key, loader, endpoint=endpoint)
+                    data, cache = self.server.state.fetch(key, loader, endpoint=endpoint, freshness=freshness)
+                    freshness = {entity: dict(freshness) for entity in _split_ids_payload(data)} if freshness else {}
             elif route.endswith("/names"):
                 ids = [int(item) for item in payload]
                 if any(item <= 0 for item in ids):
@@ -257,7 +284,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         return self.server.state.client.resolve_names(ids)
 
                     key = f"POST:{endpoint}:" + hashlib.sha256(json.dumps(canonical).encode()).hexdigest()
-                    data, cache = self.server.state.fetch(key, loader, endpoint=endpoint)
+                    data, cache = self.server.state.fetch(key, loader, endpoint=endpoint, freshness=freshness)
+                    freshness = {entity: dict(freshness) for entity in _split_names_payload(data)} if freshness else {}
             else:
                 ids = [int(item) for item in payload]
                 if any(item <= 0 for item in ids):
@@ -282,7 +310,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         return self.server.state.client.get_character_affiliations(ids)
 
                     key = f"POST:{endpoint}:" + hashlib.sha256(json.dumps(canonical).encode()).hexdigest()
-                    data, cache = self.server.state.fetch(key, loader, endpoint=endpoint)
+                    data, cache = self.server.state.fetch(key, loader, endpoint=endpoint, freshness=freshness)
+                    freshness = {entity: dict(freshness) for entity in _split_affiliations_payload(data)} if freshness else {}
         except (ValueError, TypeError, json.JSONDecodeError):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_payload")
             return

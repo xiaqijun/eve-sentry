@@ -2,7 +2,9 @@
 
 The server's [personnel archive](../docs/personnel-cache-plan.md) is opt-in.
 Public responses now include additive per-entity `freshness` metadata; stale reads
-retain the original fetch time. The default affiliation TTL is 300 seconds.
+retain the original fetch time. This applies to both the default in-memory cache
+and the optional durable ID cache. The default ID-cache affiliation TTL is 300 seconds;
+the simple cache uses the generic `EVE_SENTRY_ESI_GATEWAY_CACHE_TTL` setting.
 Upstream 420/429 responses are returned as 429 with a sanitized `Retry-After`.
 Existing explicitly configured TTLs must be updated during deployment.
 

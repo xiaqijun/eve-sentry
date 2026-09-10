@@ -69,6 +69,26 @@ the deployment verifier can use it; keep it bound to the private network.
 
 ## CI/CD and rollback
 
+### Personnel freshness recovery
+
+A healthy HTTP response is not sufficient to verify personnel classification.
+After deploying a freshness fix through the protected workflow, use an authorized
+affiliation lookup for a currently observed character and verify that
+`freshness[character_id].fetched_at` is positive. Repeat the same lookup: a cache
+hit must retain the original timestamp, not the second request time. Verify this
+even when the optional PostgreSQL/Redis ID cache is disabled.
+
+Keep server personnel profiles whose affiliation timestamp is zero. Normal
+active-priority refresh should replace the unknown timestamp, reclassify valid
+current observations and emit `alert.updated` when the roster changes. Confirm
+the resulting bot delivery separately; cleared observations must not return.
+Do not clear the personnel database, stamp old profiles with the current time,
+or disable the untrusted-affiliation guard. Server/client/QQ behavior does not
+need to change for this gateway-only fix. A rollback to the missing-metadata
+version can make confirmation unavailable again; `/health` alone will not reveal it.
+
+### Protected release process
+
 The workflow in [`.github/workflows/deploy-esi-gateway.yml`](../../.github/workflows/deploy-esi-gateway.yml)
 validates Python 3.10–3.13, dependency consistency, Ruff, byte-code
 compilation, tests, Bash syntax, and ShellCheck. Only a push to `main` creates
