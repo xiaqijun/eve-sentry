@@ -23,6 +23,7 @@
 - [认证与 EVE 身份校验](authentication.md)：认证模式、管理员初始化、设备密钥和 Listener 风控。
 - [Web 管理系统](web-console.md)：页面职责、实时工作台、来袭分析和管理页面约束。
 - [ESI 与缓存现状](server-deployment.md#公共-esi-gateway)：公共 ESI Gateway 的现行边界、缓存 TTL 和回退配置。
+- [全量人员档案与分级刷新](personnel-cache-plan.md)：已实现的档案、刷新、名单更正、观测与灰度方案，以及本地验收和生产发布边界。
 
 ## 集成与发布
 

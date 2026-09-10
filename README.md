@@ -10,6 +10,11 @@ Windows 用户可直接[下载最新版客户端](https://evesentrydownload.kise
 
 ## 仓库结构
 
+已实现[全量人员档案与分级刷新](docs/personnel-cache-plan.md)：长期保留已确认身份，
+缓存优先返回，按活跃度批量刷新归属，并对当前敌我分类变化发送人员名单更正。
+功能通过服务端 `EVE_SENTRY_PERSONNEL_CACHE=off|shadow|on` 灰度启用，默认关闭；
+代码完成不代表已部署生产。客户端不需要为此升级。
+
 | 目录 | 内容 | 主要入口 |
 | --- | --- | --- |
 | `app/`、`tests/` | 情报服务、认证、HTTP/SSE、PostgreSQL 和服务端测试 | `python -m app.server` |

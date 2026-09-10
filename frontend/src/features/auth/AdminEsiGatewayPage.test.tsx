@@ -92,6 +92,33 @@ describe("AdminEsiGatewayPage", () => {
     expect(container).toHaveTextContent("P95 (ms)");
   });
 
+  it("shows archive disabled and shadow states without inventing counts", async () => {
+    fetchEsiGatewayMock.mockResolvedValue(snapshot);
+    await renderPage();
+    expect(container).toHaveTextContent("未启用人员档案");
+    fetchEsiGatewayMock.mockResolvedValue({ ...snapshot, resolver_cache: {
+      archive: { mode: "shadow", profiles: 120, due_by_priority: [] },
+    } });
+    await act(async () => { root?.unmount(); });
+    root = createRoot(container);
+    await renderPage();
+    expect(container).toHaveTextContent("影子模式");
+    expect(container).toHaveTextContent("暂无到期刷新任务");
+    expect(container).toHaveTextContent("120");
+  });
+
+  it("shows archive backoff while retaining successful profile counts", async () => {
+    fetchEsiGatewayMock.mockResolvedValue({ ...snapshot, resolver_cache: {
+      archive: { mode: "on", degraded: true, profiles: 42,
+        due_by_priority: [{ priority: 1, kind: "affiliation", count: 3, oldest_due_at: 1 }] },
+    } });
+    await renderPage();
+    expect(container).toHaveTextContent("刷新退避中，保留成功缓存");
+    expect(container).toHaveTextContent("42");
+    expect(container).toHaveTextContent("P1");
+    expect(container).toHaveTextContent("affiliation");
+  });
+
   it("shows a recoverable warning when gateway is unavailable", async () => {
     fetchEsiGatewayMock.mockResolvedValue({
       ...snapshot,

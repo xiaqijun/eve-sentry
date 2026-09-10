@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from app.core.models import Evidence, Observation, ThreatEvent, threat_level
 from app.intel.evidence import make_evidence
+from app.esi.personnel_policy import classification_profile
 
 
 SCORING_VERSION = "scoring.v1"
@@ -468,6 +469,7 @@ class ScoringEngine:
         return target_count > 0 and len(friendly_profiles) >= target_count
 
     def _is_friendly_profile(self, profile: dict[str, Any]) -> bool:
+        profile = classification_profile(profile)
         corporation_id = _optional_int(profile.get("corporation_id"))
         alliance_id = _optional_int(profile.get("alliance_id"))
         standing = _optional_float(profile.get("contact_standing"))

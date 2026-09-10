@@ -113,6 +113,7 @@ export function AdminEsiGatewayPage() {
   const state = gatewayState(snapshot);
   const resolverTotals = snapshot.resolver_cache?.totals || {};
   const personnelCache = snapshot.resolver_cache?.personnel;
+  const archive = snapshot.resolver_cache?.archive;
   const nameNamespaceCache = snapshot.resolver_cache?.namespaces?.name;
   const resolverCacheRows = useMemo(() => Object.entries(snapshot.resolver_cache?.namespaces || {})
     .map(([namespace, values]) => ({
@@ -179,6 +180,31 @@ export function AdminEsiGatewayPage() {
         { label: "114 名单命中率", value: `${nameHitRate}%` },
         { label: "Gateway 上游请求", value: upstreamRequestCount },
       ]} />
+
+      <Card className="arco-management-card" title="全量人员档案">
+        {!archive ? <Typography.Text type="secondary">未启用人员档案，或服务端尚未提供指标。</Typography.Text> : (
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <Tag color={archive.degraded ? "orange" : "green"}>{archive.degraded ? "刷新退避中，保留成功缓存" : archive.mode === "shadow" ? "影子模式，仍使用旧读取链路" : "档案服务运行中"}</Tag>
+            <Descriptions border column={{ xs: 1, sm: 2, lg: 3 }} data={[
+              { label: "长期人员档案", value: archive.profiles ?? "统计中" },
+              { label: "内存热点", value: archive.hot_profiles ?? "未知" },
+              { label: "待处理姓名", value: archive.pending_names ?? "未知" },
+              { label: "后台执行槽", value: archive.background_slots ?? "未知" },
+              { label: "成功刷新", value: archive.refresh_success ?? 0 },
+              { label: "刷新失败", value: archive.refresh_errors ?? 0 },
+              { label: "丢弃迟到结果", value: archive.late_results ?? 0 },
+            ]} />
+            <Table pagination={false} size="small" rowKey={(row) => `${row.priority}:${row.kind}`}
+              data={archive.due_by_priority || []}
+              noDataElement="暂无到期刷新任务"
+              columns={[
+                { title: "优先级", dataIndex: "priority", render: (value) => `P${value}` },
+                { title: "任务类型", dataIndex: "kind" },
+                { title: "到期数量", dataIndex: "count" },
+              ]} />
+          </Space>
+        )}
+      </Card>
 
       <Card
         className="arco-management-card"

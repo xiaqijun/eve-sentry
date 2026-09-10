@@ -1,5 +1,17 @@
 # API 参考
 
+[人员缓存方案](personnel-cache-plan.md)已支持可选档案读取和异步刷新，认证方式不变。
+`alert.updated.hostile_personnel=[]` 是有效的当前名单更正，不等于视觉清空；消费者必须接受
+空数组，并优先按角色 ID 去重。公共档案不保存授权主体的联系人声望。
+
+管理员 ESI Gateway 观测接口的 `resolver_cache.archive` 为可选对象，包含 `mode`、
+`profiles`、`hot_profiles`、`pending_names`、`background_slots`、`degraded`、
+`hot_hits/hot_misses`、`database_hits/database_misses`、`refresh_success/refresh_errors`、
+`late_results/storage_errors/queue_rejected` 和 `due_by_priority`。积压行包含
+`priority/kind/count/oldest_due_at`（UTC 秒）；`upstream_batch_ms/database_item_ms` 为最近一次
+批次耗时/每条数据库处理耗时，不是 P95。计数器进程内累计，未出现的计数项可缺省。
+功能关闭时不返回 archive，不能解释为档案数为零；没有新增公开人员枚举接口。
+
 默认地址为 `http://127.0.0.1:8765`。桌面客户端和工作台主要使用 `/api/v1`；旧
 `/api/*` 兼容路由仍存在；来袭分析读取专用的 `/api/v1/alert-history`，新接入应优先使用
 v1。

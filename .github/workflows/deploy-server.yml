@@ -123,6 +123,8 @@ jobs:
           python -m pytest -q
           tests/test_postgres_store.py
           tests/test_postgres_integration.py
+          tests/test_personnel_postgres.py
+          tests/test_personnel_live_store.py
 
   package:
     needs: [validate, quality]

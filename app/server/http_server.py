@@ -2069,9 +2069,13 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         resolver_cache = getattr(resolver, "cache_snapshot", None)
         if not callable(resolver_cache):
             resolver_cache = getattr(getattr(resolver, "cache", None), "snapshot", None)
+        cache_payload = resolver_cache() if callable(resolver_cache) else {}
+        runtime = getattr(self._store(), "_personnel_runtime", None)
+        if runtime is not None:
+            cache_payload["archive"] = runtime.snapshot()
         return {
             "gateway": gateway,
-            "resolver_cache": resolver_cache() if callable(resolver_cache) else {},
+            "resolver_cache": cache_payload,
             "client_metrics": metrics() if callable(metrics) else {},
             "esi": self._public_esi_health(),
         }

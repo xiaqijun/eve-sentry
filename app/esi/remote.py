@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import threading
 import uuid
 from collections import Counter, deque
 from threading import Lock
@@ -145,6 +146,11 @@ class RemoteEsiClient(EsiClient):
         self._remote_opener = opener or urlopen
         self.fallback = fallback
         self.metrics = metrics or EsiRequestMetrics()
+        self._freshness_local = threading.local()
+
+    def response_freshness(self) -> dict[str, Any]:
+        """Metadata belongs to the last public call on this worker thread only."""
+        return dict(getattr(self._freshness_local, "value", {}))
 
     def resolve_ids(self, names: list[str]) -> dict[str, Any]:
         return self._public_call("POST", "/v1/universe/ids", names, "resolve_ids", dict)
@@ -215,6 +221,7 @@ class RemoteEsiClient(EsiClient):
         endpoint: str,
         expected_type: type,
     ) -> Any:
+        self._freshness_local.value = {}
         started = time.monotonic()
         try:
             result, cache_status = self._request_gateway(method, path, payload)
@@ -223,7 +230,10 @@ class RemoteEsiClient(EsiClient):
             self.metrics.record(endpoint, time.monotonic() - started, cache=cache_status, fallback=False)
             return result
         except (EsiApiError, OSError, TimeoutError) as exc:
-            if self.fallback is None:
+            # Do not bypass upstream throttling through the local fallback route.
+            cause = exc.__cause__
+            throttled = isinstance(cause, HTTPError) and cause.code in {420, 429}
+            if self.fallback is None or throttled:
                 self.metrics.record(
                     endpoint,
                     time.monotonic() - started,
@@ -239,6 +249,7 @@ class RemoteEsiClient(EsiClient):
             else:
                 result = getattr(self.fallback, endpoint)(payload)
             self.metrics.record(endpoint, time.monotonic() - started, cache="local", fallback=True)
+            self._freshness_local.value = {"_direct": {"fetched_at": time.time()}}
             return result
 
     def _request_gateway(self, method: str, path: str, payload: Any) -> tuple[Any, str]:
@@ -265,6 +276,7 @@ class RemoteEsiClient(EsiClient):
             raise EsiApiError("ESI Gateway returned invalid JSON") from exc
         if not isinstance(envelope, dict) or "data" not in envelope:
             raise EsiApiError(str(envelope.get("error") if isinstance(envelope, dict) else "invalid gateway response"))
+        self._freshness_local.value = envelope.get("freshness") if isinstance(envelope.get("freshness"), dict) else {}
         return envelope["data"], str(envelope.get("cache") or "miss")
 
 

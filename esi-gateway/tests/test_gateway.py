@@ -27,6 +27,34 @@ class FakeResponse:
         return self.body
 
 
+@pytest.mark.parametrize("path,payload", [("/v1/systems/1", None), ("/v1/universe/ids", ["Pilot"])])
+def test_gateway_preserves_upstream_throttle(path, payload):
+    state = GatewayState("t" * 32, {"127.0.0.1"}, 60, 100)
+    def throttle(*args):
+        try:
+            raise HTTPError("https://esi.invalid", 429, "limited", {"Retry-After": "120"}, None)
+        except HTTPError as cause:
+            raise EsiApiError("limited") from cause
+    state.client.get_system = throttle
+    state.client.resolve_ids = throttle
+    server = GatewayServer(("127.0.0.1", 0), state)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(f"http://127.0.0.1:{server.server_port}{path}",
+                          data=json.dumps(payload).encode() if payload else None,
+                          headers={"Authorization": "Bearer " + "t" * 32})
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=2)
+        assert error.value.code == 429
+        assert error.value.headers["Retry-After"] == "120"
+        assert json.loads(error.value.read()) == {"error": "esi_throttled"}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
 def test_public_client_uses_public_paths_and_maps_transport_errors():
     requests = []
 
@@ -255,7 +283,8 @@ def test_gateway_preserves_batch_response_shape_with_per_id_cache():
             )
             with urlopen(request) as response:
                 payload = json.loads(response.read())
-            assert list(payload) == ["data", "cache"]
+            assert list(payload) == ["data", "cache", "freshness"]
+            assert set(payload["freshness"]) == {"1", "2"}
             assert [item["id"] for item in payload["data"]] == ids
         assert name_calls == [[1, 2]]
 
@@ -268,7 +297,8 @@ def test_gateway_preserves_batch_response_shape_with_per_id_cache():
             )
             with urlopen(request) as response:
                 payload = json.loads(response.read())
-            assert list(payload) == ["data", "cache"]
+            assert list(payload) == ["data", "cache", "freshness"]
+            assert set(payload["freshness"]) == {"alice", "bob"}
             assert set(payload["data"]) == {"characters"}
         assert id_calls == [["Alice", "Bob"]]
         health = state.health()

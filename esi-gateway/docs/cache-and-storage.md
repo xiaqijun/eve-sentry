@@ -1,5 +1,15 @@
 # Cache and storage design
 
+The server's [personnel archive](../../docs/personnel-cache-plan.md) is a separate,
+opt-in business cache. Gateway responses add `freshness`, keyed by entity ID string
+or normalized request name for `universe/ids`, with `fetched_at`, `last_validated_at`,
+`expires_at` (UTC seconds) and `stale` per returned entity. Metadata is captured from
+the same cache record as the payload. Reading stale data never resets fetch time.
+The simple non-ID cache reports `{}` (unknown freshness); old consumers may ignore
+the new field. No force-refresh API bypasses upstream limits. Private contacts stay
+outside this cache. The affiliation TTL default is 300 seconds; an existing explicit
+3600-second environment setting must be changed separately.
+
 This document describes the optional PostgreSQL + Redis deployment for the
 standalone public ESI Gateway. It is the operational source of truth for cache
 behavior; the example environment file contains the corresponding variable
@@ -13,7 +23,7 @@ The gateway serves public ESI data only:
 | --- | --- | ---: |
 | `POST /v1/universe/names` | `resolve_names` | 30 days |
 | `POST /v1/universe/ids` | `resolve_ids` | 30 days |
-| `POST /v1/characters/affiliation` | `get_character_affiliations` | 1 hour |
+| `POST /v1/characters/affiliation` | `get_character_affiliations` | 5 minutes |
 | `GET /v1/characters/{id}` | `get_character` | 2 days |
 | `GET /v1/corporations/{id}` | `get_corporation` | 7 days |
 | `GET /v1/alliances/{id}` | `get_alliance` | 7 days |

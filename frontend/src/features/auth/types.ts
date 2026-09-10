@@ -171,6 +171,20 @@ export interface EsiGatewaySnapshot {
     health?: EsiGatewayHealth;
   };
   resolver_cache?: {
+    archive?: {
+      mode?: "shadow" | "on";
+      profiles?: number;
+      hot_profiles?: number;
+      pending_names?: number;
+      background_slots?: number;
+      degraded?: boolean;
+      hot_hits?: number;
+      hot_misses?: number;
+      refresh_success?: number;
+      refresh_errors?: number;
+      late_results?: number;
+      due_by_priority?: Array<{ priority: number; kind: string; count: number; oldest_due_at: number }>;
+    };
     personnel?: {
       lookups?: number;
       hits?: number;

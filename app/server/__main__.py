@@ -218,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
     server = IntelHTTPServer(store, **server_options)
     started = False
     try:
+        from app.esi.personnel_setup import configure_personnel
+        configure_personnel(store, args, resolver)
         server.start()
         started = True
         print(f"Intel map: {server.url}")

@@ -134,7 +134,7 @@ def format_personnel_alert_message(
         for item in personnel if isinstance(item, dict)
     ] if isinstance(personnel, list) else []
     lines = [
-        "### ⚠️ 敌对事件",
+        "### ℹ️ 人员名单更正" if state.get("personnel_correction") else "### ⚠️ 敌对事件",
         f"**敌对**｜{detected_count} 人",
         f"**识别**｜{len(confirmed_personnel)} 人",
         "| 人员 | 星系 | zKill |",
@@ -552,6 +552,8 @@ class EveSentryAlertRelay:
         system_name = _system_label(state)
         episode_id = str(state.get("episode_id") or "").strip()
         fingerprint = str(state.get("personnel_fingerprint") or "").strip()
+        if not fingerprint and state.get("personnel_correction"):
+            fingerprint = "empty"
         if not episode_id or not fingerprint:
             logger.warning("Ignored malformed EVE Sentry personnel update")
             return True
@@ -999,7 +1001,7 @@ class EveSentryAlertRelay:
                 roster = rosters_by_system.get(system_key)
                 if roster is None:
                     state["personnel"] = []
-                    state["personnel_fingerprint"] = ""
+                    state["personnel_fingerprint"] = _personnel_fingerprint([])
                     continue
                 personnel = [
                     dict(item)
@@ -1039,11 +1041,8 @@ class EveSentryAlertRelay:
                 }
         previous, initialized = await self._load_system_alert_state()
 
-        active_personnel_systems = {
-            system_key
-            for system_key, state in current.items()
-            if state.get("personnel")
-        }
+        # Empty authoritative rosters still have a correction waiting to send.
+        active_personnel_systems = set(current)
         for system_key in set(self._personnel_pending) - active_personnel_systems:
             self._discard_pending_personnel_update(system_key)
 
@@ -1099,11 +1098,14 @@ class EveSentryAlertRelay:
             for system_key in sorted(current.keys()):
                 current_state = current[system_key]
                 previous_state = previous.get(system_key)
-                if not current_state.get("personnel"):
+                if not current_state.get("personnel") and not (previous_state or {}).get("personnel"):
                     # Presence-only and pending-ESI states have no safe names
                     # to publish. Persist the empty baseline so a later
                     # resolved roster produces one personnel update.
                     continue
+                current_state["personnel_correction"] = _personnel_removed(
+                    (previous_state or {}).get("personnel"), current_state.get("personnel")
+                )
                 if previous_state is not None and (
                     current_state.get("personnel_fingerprint")
                     == _personnel_fingerprint(previous_state.get("personnel"))
@@ -1423,7 +1425,7 @@ class EveSentryAlertRelay:
         if system_key in current:
             if str(payload.get("event_type") or "").strip() == "alert.updated":
                 personnel = payload.get("hostile_personnel")
-                if isinstance(personnel, list) and personnel:
+                if isinstance(personnel, list):
                     previous = current[system_key]
                     updated_personnel = [
                         dict(item) for item in personnel if isinstance(item, dict)
@@ -1437,6 +1439,7 @@ class EveSentryAlertRelay:
                             int(payload.get("hostile_count") or 0),
                         ),
                         "personnel": updated_personnel,
+                        "personnel_correction": _personnel_removed(previous.get("personnel"), updated_personnel),
                     }
                     state["personnel_fingerprint"] = _personnel_fingerprint(
                         state["personnel"]
@@ -1781,18 +1784,12 @@ def _personnel_fingerprint(value: object) -> str:
     personnel = [item for item in value if isinstance(item, dict)]
     if not personnel:
         return ""
-    visible_identity = sorted(
-        [
-            {
-                "name": str(item.get("name") or "").strip().casefold(),
-                "system_name": str(item.get("system_name") or "")
-                .strip()
-                .casefold(),
-            }
-            for item in personnel
-        ],
-        key=lambda item: (item["system_name"], item["name"]),
-    )
+    identities = {
+        (str(item.get("system_name") or "").strip().casefold(),
+         f"id:{item['character_id']}" if item.get("character_id") else str(item.get("name") or "").strip().casefold())
+        for item in personnel
+    }
+    visible_identity = [{"system_name": system, "name": identity} for system, identity in sorted(identities)]
     return hashlib.sha256(
         json.dumps(
             visible_identity,
@@ -1801,6 +1798,13 @@ def _personnel_fingerprint(value: object) -> str:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()[:20]
+
+
+def _personnel_removed(previous: object, current: object) -> bool:
+    """Recognize removals by stable ID, including partial and empty corrections."""
+    before = {_personnel_fingerprint([item]) for item in previous or [] if isinstance(item, dict)}
+    after = {_personnel_fingerprint([item]) for item in current or [] if isinstance(item, dict)}
+    return bool(before - after)
 
 
 def _personnel_revision(state: object) -> int:

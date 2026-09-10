@@ -1398,8 +1398,9 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
         assert qq.send_proactive_markdown.await_count == 3
         assert all(
             "### ⚠️ 敌对事件" in call.args[1]
-            for call in qq.send_proactive_markdown.await_args_list
+            for call in qq.send_proactive_markdown.await_args_list[:2]
         )
+        assert "人员名单更正" in qq.send_proactive_markdown.await_args_list[2].args[1]
         assert await redis.hlen(ACTIVE_INTEL_STATE_KEY) == 0
         assert await redis.hlen(SYSTEM_ALERT_STATE_KEY) == 0
         assert await redis.get(SYSTEM_ALERT_STATE_READY_KEY) == b"1"

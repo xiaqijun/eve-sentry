@@ -1,5 +1,10 @@
 # 预警消息 API 接入指南
 
+[人员档案](personnel-cache-plan.md)启用后，归属/规则/联系人变化会重算有效当前观察。
+继续使用 `alert.updated` 和 Bootstrap 的 `hostile_personnel`，没有新增必需事件类型。
+事件中的空人员数组是有效更正，不能跳过，也不能直接当作视觉清空；视觉来敌/清空仍由 Presence 决定。
+机器人按角色 ID 集合及名单修订去重，移除人员显示“人员名单更正”；同 ID 改名不重复告警。
+
 本文面向需要从 EVE Sentry 获取实时预警的第三方程序。示例中的服务端地址统一写为
 `https://YOUR_SERVER`，请替换为实际部署地址。
 
@@ -265,8 +270,9 @@ data: {"id":"evt_0123456789abcdef","level":"critical","score":100,"system_name":
 | `source_observation_id` | string | 报告事件可选 | 来源观察记录 ID |
 | `verified_characters` / `evidence` | object[] | 报告事件可选 | ESI 角色详情和判定依据 |
 
-`verified_characters[].zkill` 是可选的外部统计。消费者必须允许它缺失，并忽略未来新增的
-未知字段。服务端在敌对历史和活动告警中排除 `classification=white` 以及带有
+`verified_characters[].zkill` 仅保留为可选历史兼容字段，当前实时人员解析不再请求战绩。
+消费者必须允许它缺失，并忽略未来新增的未知字段；zKill 链接直接按角色 ID 生成。
+服务端在敌对历史和活动告警中排除 `classification=white` 以及带有
 `friendly_*` 证据的记录；detector 人员只有在 ESI 身份解析完成且当前分类为 `red` 时才会
 进入人员明细。机器人或其他集成应使用 `hostile_count` 作为人数；状态事件使用
 `hostile_personnel`，报告事件可使用 `active_names` 读取当前已确认名单。`names` 只表示一条

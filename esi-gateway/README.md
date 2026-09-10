@@ -1,5 +1,11 @@
 # EVE Sentry ESI Gateway
 
+The server's [personnel archive](../docs/personnel-cache-plan.md) is opt-in.
+Public responses now include additive per-entity `freshness` metadata; stale reads
+retain the original fetch time. The default affiliation TTL is 300 seconds.
+Upstream 420/429 responses are returned as 429 with a sanitized `Retry-After`.
+Existing explicitly configured TTLs must be updated during deployment.
+
 Separately deployed private proxy for allow-listed, public EVE Online ESI
 endpoints. Its source, CI/CD, and operating documentation live in the
 `esi-gateway/` directory of the [EVE Sentry monorepo](../README.md).

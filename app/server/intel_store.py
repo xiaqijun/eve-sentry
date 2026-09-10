@@ -11,6 +11,7 @@ import logging
 from math import isclose
 import threading
 import time
+from app.esi.personnel_policy import classification_profile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -355,13 +356,49 @@ class IntelStore:
 
     def close(self, *, wait: bool = True) -> None:
         """Stop the dedicated ESI worker."""
+        runtime = getattr(self, "_personnel_runtime", None)
+        if runtime is not None:
+            runtime.close()
         self._esi_worker.close(wait=wait)
+        pool = getattr(self, "_personnel_pool", None)
+        if pool is not None:
+            pool.close()
+
+    def refresh_personnel(self, changed_ids: set[int], all_current: bool = False) -> bool:
+        """Reclassify only currently observed OCR rows, never accumulated wave history."""
+        runtime = getattr(self, "_personnel_runtime", None)
+        if runtime is None:
+            return True
+        with self._lock:
+            reports = {report.report_id for report in self._reports}
+            items = [item for item in self._active_intel.values()
+                     if item.active and item.target_type == "character"
+                     and item.source in {"local_ocr", "ocr", "eve-sentry-detector"}]
+            identities = []
+            tasks = []
+            for item in items:
+                try:
+                    seen = datetime.fromisoformat(item.last_seen_at.replace("Z", "+00:00")).timestamp()
+                except (ValueError, TypeError):
+                    continue
+                identities.append((item.character_id, item.name, seen))
+                report_id = next((value for value in reversed(item.source_observation_ids) if value in reports), None)
+                if report_id and (all_current or item.character_id in changed_ids or item.character_id is None):
+                    tasks.append(_OcrEsiTask(item.active_id, report_id, str(item.metadata.get("client_id") or ""), item.name))
+        runtime.set_active(identities)
+        accepted = True
+        if getattr(self._resolver, "personnel_enabled", False):
+            for task in tasks:
+                accepted = self._esi_worker.submit(task.active_id, task) and accepted
+        return accepted
 
     def set_scorer(self, scorer: Any | None) -> None:
         """Replace the alert scorer and force cached alerts to be regenerated."""
         with self._lock:
             self._scorer = scorer
             self._alert_cache.clear()
+        if getattr(self._resolver, "personnel_enabled", False):
+            self.refresh_personnel(set(), True)
 
     def set_enricher(self, enricher: Any | None) -> None:
         """Replace optional alert enrichment and regenerate cached alerts."""
@@ -407,6 +444,9 @@ class IntelStore:
 
     def character_profile(self, character_id: int) -> dict[str, Any] | None:
         """Return a public character profile via optional ESI integration."""
+        if getattr(self._resolver, "personnel_enabled", False):
+            # Never let the legacy enriched-profile cache override newer archive data.
+            return self._call_enricher_profile("character_profile", character_id) or self._resolver.character_profile(character_id)
         character_id = self._optional_int(character_id)
         if character_id is None:
             return None
@@ -677,6 +717,8 @@ class IntelStore:
         character_id: int,
     ) -> dict[str, Any] | None:
         """Merge cached public and previously enriched profile data."""
+        if getattr(self._resolver, "personnel_enabled", False):
+            return self._resolver.cached_character_profile(character_id, allow_stale=True)
         character_id = int(character_id)
         profile: dict[str, Any] = {}
         cached_profile = getattr(self._resolver, "cached_character_profile", None)
@@ -712,7 +754,16 @@ class IntelStore:
         self,
         task: _OcrEsiTask,
     ) -> None:
+        archive_enabled = bool(getattr(self._resolver, "personnel_enabled", False))
+        guard = None
+        scorer_guard = self._scorer
+        contacts_guard = self._enricher.contact_standings() if archive_enabled else None
         with self._lock:
+            if archive_enabled:
+                current_item = self._active_intel.get(task.active_id)
+                if current_item is None or not current_item.active or task.report_id not in current_item.source_observation_ids:
+                    return
+                guard = (current_item.first_seen_at, current_item.last_seen_at, current_item.system_name)
             current_report = next(
                 (
                     report
@@ -725,11 +776,11 @@ class IntelStore:
                 return
             observation = current_report.to_observation()
 
-        canonical_name = self._canonicalize_ocr_name(task.original_name)
+        canonical_name = task.original_name if archive_enabled else self._canonicalize_ocr_name(task.original_name)
         observation.names = self._normalize_names([canonical_name])
         observation.raw_text = canonical_name
         observation = self._enrich_observation(observation)
-        if task.force_profile_refresh:
+        if task.force_profile_refresh and not archive_enabled:
             self._invalidate_ocr_character_profile_cache(observation)
         observation.validate()
         character_profiles = self._character_profiles_for_observation(observation)
@@ -744,6 +795,9 @@ class IntelStore:
         ]
         if profile_summaries:
             observation.metadata["character_profiles"] = profile_summaries
+            if archive_enabled:
+                canonical_name = str(profile_summaries[0].get("name") or canonical_name)
+                observation.names = [canonical_name]
         suppressed = self._observation_is_suppressed(
             observation,
             character_profiles=character_profiles,
@@ -765,6 +819,24 @@ class IntelStore:
         )
 
         with self._lock:
+            if archive_enabled:
+                current_item = self._active_intel.get(task.active_id)
+                runtime = self._personnel_runtime
+                stale_profile = any(
+                    any(profile.get(key) != (runtime.profile(profile["character_id"]) or {}).get(key)
+                        for key in ("name", "revision", "affiliation_fetched_at"))
+                    for profile in character_profiles if profile.get("character_id")
+                )
+                if (current_item is None or not current_item.active
+                        or guard != (current_item.first_seen_at, current_item.last_seen_at, current_item.system_name)
+                        or task.report_id not in current_item.source_observation_ids
+                        or stale_profile or scorer_guard is not self._scorer
+                        or contacts_guard != self._enricher.contact_standings()):
+                    if current_item is not None and current_item.active and current_item.character_id:
+                        with runtime._lock:
+                            runtime._changed.add(current_item.character_id)
+                        runtime._wake.set()
+                    return
             report_index = next(
                 (
                     index
@@ -860,7 +932,7 @@ class IntelStore:
                 item.metadata["identity_status"] = observation.metadata[
                     "identity_status"
                 ]
-                if suppressed:
+                if suppressed and not archive_enabled:
                     item.active = False
                     item.left_at = item.last_seen_at or checked_at
 
@@ -1583,7 +1655,7 @@ class IntelStore:
                     if self._observation_is_suppressed(
                         observation,
                         character_profiles=character_profiles,
-                    ):
+                    ) and not getattr(self._resolver, "personnel_enabled", False):
                         item = self._active_intel.get(active_id)
                         if item is not None and item.active:
                             item.active = False
@@ -3925,6 +3997,9 @@ class IntelStore:
             "standing_contact_type",
             "standing_label",
             "cache_status",
+            "affiliation_trusted",
+            "affiliation_fetched_at",
+            "revision",
             "cached_at",
             "expires_at",
             "zkill_url",
@@ -4725,6 +4800,7 @@ class IntelStore:
                 for profile in profiles:
                     if not isinstance(profile, dict):
                         continue
+                    profile = classification_profile(profile)
                     corporation_id = self._optional_int(profile.get("corporation_id"))
                     alliance_id = self._optional_int(profile.get("alliance_id"))
                     if (
@@ -4767,6 +4843,11 @@ class IntelStore:
                     return False
                 if neutral_hostile_profile:
                     return True
+
+                if any(isinstance(profile, dict) and profile.get("affiliation_trusted") is False
+                       for profile in profiles):
+                    # Do not reintroduce rejected organization standing via flattened metadata.
+                    return False
 
         standing = self._optional_float(
             metadata.get("contact_standing", metadata.get("standing"))

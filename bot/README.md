@@ -1,5 +1,10 @@
 # EVE Online 敌对舰队分析 QQ 机器人
 
+服务端支持[全量人员档案与分级刷新](../docs/personnel-cache-plan.md)，默认关闭、可灰度启用。
+主动预警按角色 ID 去重；人员移除（包括最后一人）推送名单更正，不冒充视觉清空或节点下线。
+同 ID 改名不重发，重复 Bootstrap 不取消待发送的空名单更正。
+自动预警不请求 zKill 战绩，以下手动战报分析功能独立保留。
+
 面向 EVE Online 国际服 Tranquility 的军团战前情报工具。机器人接收最多 30 个角色名，按角色分别结合 CCP ESI 与 zKillboard 的公开数据，生成可解释的单人战斗画像。
 
 本组件位于 EVE Sentry 单体仓库的 `bot/` 目录，服务端、客户端、Gateway 和接口文档均在

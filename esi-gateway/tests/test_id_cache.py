@@ -126,3 +126,20 @@ def test_refresh_failure_keeps_old_value_and_records_retry() -> None:
         assert record.next_retry_at is not None
     finally:
         coordinator.close()
+
+
+def test_background_refresh_respects_retry_after():
+    from urllib.error import HTTPError
+    durable = MemoryStore()
+    coordinator = IdCacheCoordinator(durable, refresh_interval_seconds=1000)
+    now = time.time()
+    durable.put_many([CacheRecord("systems", "42", {"name": "Old"}, now - 2, now - 1, now + 500)])
+    def loader(keys):
+        raise HTTPError("https://esi.invalid", 429, "limited", {"Retry-After": "120"}, None)
+    try:
+        coordinator.fetch_batch("systems", [42], loader, lambda value: value)
+        coordinator._run_refresh_batch()
+        assert coordinator._pending[("systems", "42")].next_due >= now + 120
+        assert durable.get_many([("systems", "42")])[("systems", "42")].next_retry_at >= now + 120
+    finally:
+        coordinator.close()

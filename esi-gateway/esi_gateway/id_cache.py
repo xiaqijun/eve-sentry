@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import secrets
 import threading
 import time
@@ -10,10 +11,30 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
-
 CacheKey = tuple[str, str]
+
+
+def _retry_after(error: Exception) -> float:
+    """Honor server delay without allowing malformed headers to poison the queue."""
+    delay = 0.0
+    cause = error
+    while cause is not None:
+        raw = (getattr(cause, "headers", None) or {}).get("Retry-After")
+        if raw is not None:
+            try:
+                try:
+                    seconds = float(raw)
+                except ValueError:
+                    seconds = parsedate_to_datetime(raw).timestamp() - time.time()
+                if math.isfinite(seconds):
+                    delay = max(delay, seconds)
+            except (ValueError, TypeError, OverflowError):
+                pass
+        cause = cause.__cause__
+    return delay
 Loader = Callable[[list[str]], Any]
 Splitter = Callable[[Any], dict[str, Any]]
 
@@ -54,7 +75,7 @@ class CacheRecord:
         )
 
     @classmethod
-    def from_json(cls, raw: str) -> "CacheRecord":
+    def from_json(cls, raw: str) -> CacheRecord:
         value = json.loads(raw)
         return cls(
             endpoint=str(value["endpoint"]),
@@ -132,8 +153,8 @@ class PostgresStore:
 
     def __init__(self, dsn: str, *, max_connections: int = 4, table: str = "esi_id_cache") -> None:
         try:
-            from psycopg_pool import ConnectionPool
             from psycopg.types.json import Jsonb
+            from psycopg_pool import ConnectionPool
         except ImportError as exc:  # pragma: no cover - depends on deployment extras
             raise RuntimeError("PostgreSQL caching requires the 'storage' extra") from exc
         if not table.replace("_", "").isalnum():
@@ -380,6 +401,7 @@ class IdCacheCoordinator:
         endpoint: str,
         entity_key: str | int,
         loader: Callable[[], Any],
+        *, freshness: dict[str, Any] | None = None,
     ) -> tuple[Any, str]:
         def batch_loader(_keys: list[str]) -> Any:
             return {str(entity_key): loader()}
@@ -387,7 +409,7 @@ class IdCacheCoordinator:
         def splitter(payload: Any) -> dict[str, Any]:
             return dict(payload) if isinstance(payload, dict) and str(entity_key) in payload else {str(entity_key): payload}
 
-        values, statuses = self.fetch_batch(endpoint, [str(entity_key)], batch_loader, splitter)
+        values, statuses = self.fetch_batch(endpoint, [str(entity_key)], batch_loader, splitter, freshness=freshness)
         return values.get(str(entity_key)), statuses.get(str(entity_key), "miss")
 
     def fetch_batch(
@@ -396,6 +418,7 @@ class IdCacheCoordinator:
         entity_keys: Sequence[str | int],
         loader: Loader,
         splitter: Splitter,
+        *, freshness: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         keys = [str(value) for value in entity_keys]
         unique = list(dict.fromkeys(keys))
@@ -408,7 +431,7 @@ class IdCacheCoordinator:
             try:
                 records.update(self.hot.get_many(cache_keys))
                 self._metric("hot_hits", sum(1 for record in records.values() if record.is_fresh(now)))
-            except Exception:
+            except Exception:  # noqa: BLE001 -- Optional Redis must not break public reads.
                 self._metric("redis_errors")
         missing: list[str] = []
         stale: dict[str, CacheRecord] = {}
@@ -434,9 +457,9 @@ class IdCacheCoordinator:
                 if self.hot is not None and durable_records:
                     try:
                         self.hot.put_many(durable_records.values())
-                    except Exception:
+                    except Exception:  # noqa: BLE001 -- Preserve the durable result on Redis failure.
                         self._metric("redis_errors")
-            except Exception:
+            except Exception:  # noqa: BLE001 -- Cache failure falls back to the upstream loader.
                 self._metric("postgres_errors")
 
         to_load: list[str] = []
@@ -479,12 +502,12 @@ class IdCacheCoordinator:
                 if new_records:
                     try:
                         self.durable.put_many(new_records)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 -- Return successful ESI data even when persistence fails.
                         self._metric("postgres_errors")
                     if self.hot is not None:
                         try:
                             self.hot.put_many(new_records)
-                        except Exception:
+                        except Exception:  # noqa: BLE001 -- Redis is an optional accelerator.
                             self._metric("redis_errors")
                     for record in new_records:
                         records[self.key(endpoint, record.entity_key)] = record
@@ -499,6 +522,13 @@ class IdCacheCoordinator:
             record = records.get(self.key(endpoint, value))
             if record is not None and (record.is_fresh(now) or record.is_stale(now)):
                 values[value] = record.payload
+                if freshness is not None:
+                    freshness[value] = {
+                        "fetched_at": record.fetched_at,
+                        "last_validated_at": record.fetched_at,
+                        "expires_at": record.expires_at,
+                        "stale": not record.is_fresh(time.time()),
+                    }
             elif value in loaded:
                 values[value] = loaded[value]
         return values, statuses
@@ -543,7 +573,7 @@ class IdCacheCoordinator:
         while not self._stop.wait(self.refresh_interval_seconds):
             try:
                 self._run_refresh_batch()
-            except Exception:
+            except Exception:  # noqa: BLE001 -- Keep the worker alive and report failure metrics.
                 self._metric("refresh_failures")
 
     def _run_refresh_batch(self) -> None:
@@ -569,7 +599,7 @@ class IdCacheCoordinator:
                     token = self.hot.acquire_lock(key, int(self.refresh_interval_seconds * 3))
                 else:
                     token = "local"
-            except Exception:
+            except Exception:  # noqa: BLE001 -- Skip this lease when its backend is unavailable.
                 self._metric("redis_errors")
             if token is not None:
                 acquired.append((task, token))
@@ -608,32 +638,33 @@ class IdCacheCoordinator:
                         pending.attempts += 1
                         pending.next_due = time.time() + self.retry_max_seconds
             self._metric("refresh_success", len(records))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- Retry failed background work without dropping cached data.
+            retry_after = _retry_after(exc)
             for item, _token in acquired:
                 item.attempts += 1
-                delay = min(self.retry_max_seconds, self.retry_base_seconds * (2 ** (item.attempts - 1)))
+                delay = max(retry_after, min(self.retry_max_seconds, self.retry_base_seconds * (2 ** min(20, item.attempts - 1))))
                 item.next_due = time.time() + delay
-                self._mark_refresh_failure([self.key(item.endpoint, item.entity_key)], str(exc), item.attempts)
+                self._mark_refresh_failure([self.key(item.endpoint, item.entity_key)], str(exc), item.attempts, retry_after=retry_after)
             self._metric("refresh_retries", len(acquired))
         finally:
             if self.hot is not None:
                 for item, token in acquired:
                     try:
                         self.hot.release_lock(self.key(item.endpoint, item.entity_key), token)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 -- Expiring lock is recoverable; report the release failure.
                         self._metric("redis_errors")
 
-    def _mark_refresh_failure(self, keys: Sequence[CacheKey], error: str, attempts: int) -> None:
-        delay = min(self.retry_max_seconds, self.retry_base_seconds * (2 ** max(0, attempts - 1)))
+    def _mark_refresh_failure(self, keys: Sequence[CacheKey], error: str, attempts: int, *, retry_after: float = 0) -> None:
+        delay = max(retry_after, min(self.retry_max_seconds, self.retry_base_seconds * (2 ** min(20, max(0, attempts - 1)))))
         retry_at = time.time() + delay
         try:
             self.durable.mark_failure(keys, error, retry_at)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- Failure bookkeeping must not mask the original upstream failure.
             self._metric("postgres_errors")
         if self.hot is not None:
             try:
                 self.hot.mark_failure(keys, error, retry_at)
-            except Exception:
+            except Exception:  # noqa: BLE001 -- Redis failure bookkeeping is best effort.
                 self._metric("redis_errors")
         self._metric("refresh_failures")
 

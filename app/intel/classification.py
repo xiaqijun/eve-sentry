@@ -8,6 +8,7 @@ from time import time
 from typing import Any, Callable
 
 from app.core.models import Evidence, Observation, ThreatEvent
+from app.esi.personnel_policy import classification_profile
 from app.intel.scoring import ChannelMention, Watchlist
 
 
@@ -382,7 +383,7 @@ class ClassificationEngine:
         if character_profile:
             profiles.append(character_profile)
         profiles.extend(item for item in character_profiles or [] if item)
-        return profiles
+        return [classification_profile(item) for item in profiles]
 
     def _event_names(self, observation: Observation) -> list[str]:
         if observation.names:

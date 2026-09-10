@@ -11,9 +11,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from esi_gateway.id_cache import (
+    IdCacheCoordinator,
+    MemoryStore,
+    PostgresStore,
+    RedisHotStore,
+)
 from esi_gateway.server import GatewayServer, GatewayState
-from esi_gateway.id_cache import IdCacheCoordinator, MemoryStore, PostgresStore, RedisHotStore
-
 
 SECONDS_PER_DAY = 24 * 60 * 60
 
@@ -33,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--redis-url", default=os.environ.get("EVE_SENTRY_ESI_GATEWAY_REDIS_URL", ""))
     parser.add_argument("--id-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_ID_CACHE_TTL", str(30 * SECONDS_PER_DAY))))
     parser.add_argument("--character-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_CHARACTER_CACHE_TTL", str(2 * SECONDS_PER_DAY))))
-    parser.add_argument("--affiliation-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_AFFILIATION_CACHE_TTL", "3600")))
+    parser.add_argument("--affiliation-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_AFFILIATION_CACHE_TTL", "300")))
     parser.add_argument("--corporation-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_CORPORATION_CACHE_TTL", str(7 * SECONDS_PER_DAY))))
     parser.add_argument("--alliance-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_ALLIANCE_CACHE_TTL", str(7 * SECONDS_PER_DAY))))
     parser.add_argument("--system-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_SYSTEM_CACHE_TTL", str(30 * SECONDS_PER_DAY))))

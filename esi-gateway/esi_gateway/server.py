@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
+from email.utils import parsedate_to_datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -178,18 +180,20 @@ class GatewayHandler(BaseHTTPRequestHandler):
         kind, raw_id = match.groups()
         entity_id = int(raw_id)
         method_name, esi_path = ID_PATHS[kind]
+        freshness: dict[str, Any] = {}
         try:
             if self.server.state.id_cache is not None:
-                data, cache = self.server.state.id_cache.fetch_single(method_name, entity_id, lambda: getattr(self.server.state.client, method_name)(entity_id))
+                data, cache = self.server.state.id_cache.fetch_single(method_name, entity_id, lambda: getattr(self.server.state.client, method_name)(entity_id), freshness=freshness)
                 self.server.state.metrics.record_request(method_name, cached=cache == "hit")
             else:
                 data, cache = self.server.state.fetch(f"GET:{kind}:{entity_id}", lambda: getattr(self.server.state.client, method_name)(entity_id), endpoint=method_name)
-        except (EsiApiError, ValueError):
-            self._send_error(HTTPStatus.BAD_GATEWAY, "esi_unavailable")
+        except (EsiApiError, ValueError) as exc:
+            self._send_upstream_error(exc)
             return
-        self._send_json({"data": data, "cache": cache, "endpoint": esi_path.format(id=entity_id)})
+        self._send_json({"data": data, "cache": cache, "freshness": freshness, "endpoint": esi_path.format(id=entity_id)})
 
     def do_POST(self) -> None:
+        freshness: dict[str, Any] = {}
         if not self._authorized():
             return
         route = self.path.split("?", 1)[0].rstrip("/")
@@ -218,8 +222,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     values, statuses = self.server.state.id_cache.fetch_batch(
                         endpoint,
                         canonical,
-                        lambda names: self.server.state.client.resolve_ids([canonical_names[name] for name in names]),
+                        lambda names: self.server.state.client.resolve_ids([canonical_names.get(name, name) for name in names]),
                         _split_ids_payload,
+                        freshness=freshness,
                     )
                     data = _assemble_ids_payload(normalized, values)
                     cache = _batch_cache_status(statuses)
@@ -242,6 +247,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         canonical,
                         lambda missing_ids: self.server.state.client.resolve_names([int(item) for item in missing_ids]),
                         _split_names_payload,
+                        freshness=freshness,
                     )
                     data = [values[str(item)] for item in ids if str(item) in values]
                     cache = _batch_cache_status(statuses)
@@ -266,6 +272,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                             [int(item) for item in missing_ids]
                         ),
                         _split_affiliations_payload,
+                        freshness=freshness,
                     )
                     data = [values[str(item)] for item in ids if str(item) in values]
                     cache = _batch_cache_status(statuses)
@@ -279,10 +286,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, json.JSONDecodeError):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_payload")
             return
-        except EsiApiError:
-            self._send_error(HTTPStatus.BAD_GATEWAY, "esi_unavailable")
+        except EsiApiError as exc:
+            self._send_upstream_error(exc)
             return
-        self._send_json({"data": data, "cache": cache})
+        self._send_json({"data": data, "cache": cache, "freshness": freshness})
 
     def _authorized(self) -> bool:
         code = self.server.state.authorizer.check(self.client_address[0], self.headers.get("Authorization", ""))
@@ -291,11 +298,31 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _send_upstream_error(self, error: Exception) -> None:
+        cause = error
+        while cause is not None:
+            if getattr(cause, "code", None) in {420, 429}:
+                raw = (getattr(cause, "headers", None) or {}).get("Retry-After", "5")
+                try:
+                    try:
+                        delay = float(raw)
+                    except ValueError:
+                        delay = parsedate_to_datetime(raw).timestamp() - time.time()
+                    delay = max(1, math.ceil(delay)) if math.isfinite(delay) else 5
+                except (ValueError, TypeError, OverflowError):
+                    delay = 5
+                self._send_json({"error": "esi_throttled"}, HTTPStatus.TOO_MANY_REQUESTS, retry_after=delay)
+                return
+            cause = cause.__cause__
+        self._send_error(HTTPStatus.BAD_GATEWAY, "esi_unavailable")
+
+    def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK, *, retry_after: int | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        if retry_after is not None:
+            self.send_header("Retry-After", str(retry_after))
         self.end_headers()
         self.wfile.write(body)
 
