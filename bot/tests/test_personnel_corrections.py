@@ -32,7 +32,8 @@ async def test_empty_correction_delivers_once_without_new_presence_alert():
         assert await relay.deliver_system_personnel_update(state, "t1")
         assert qq.send_proactive_markdown.await_count == 1
         message = qq.send_proactive_markdown.await_args.args[1]
-        assert "人员名单更正" in message and "暂无已确认敌对" in message
+        assert "### ⚠️ 敌对事件" in message and "暂无已确认敌对" in message
+        assert "人员名单更正" not in message
         assert "清空" not in message and "来敌" not in message
     await redis.aclose()
 
@@ -65,5 +66,5 @@ async def test_repeated_bootstrap_keeps_pending_empty_correction():
         assert "tama" in relay._personnel_pending
         await asyncio.sleep(0.1)
         assert qq.send_proactive_markdown.await_count == 1
-        assert "人员名单更正" in qq.send_proactive_markdown.await_args.args[1]
+        assert "### ⚠️ 敌对事件" in qq.send_proactive_markdown.await_args.args[1]
     await redis.aclose()

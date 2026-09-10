@@ -12,6 +12,7 @@ from math import isclose
 import threading
 import time
 from app.esi.personnel_policy import classification_profile
+from app.server.personnel_routing import PersonnelRoutingMixin, personnel_read, personnel_task
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -282,7 +283,7 @@ DEFAULT_LINKS: list[tuple[str, str]] = [
 ]
 
 
-class IntelStore:
+class IntelStore(PersonnelRoutingMixin):
     """Stores hostile sightings and derives star-map friendly snapshots."""
 
     def __init__(
@@ -299,6 +300,9 @@ class IntelStore:
         self._systems = dict(DEFAULT_SYSTEMS if systems is None else systems)
         self._links = list(DEFAULT_LINKS if links is None else links)
         self._allow_unmapped_systems = bool(allow_unmapped_systems)
+        self._personnel_local = threading.local()
+        self._personnel_generation = 0
+        self._live_personnel_runtime = None
         self._resolver = resolver
         self._scorer = scorer
         self._enricher = enricher
@@ -356,6 +360,11 @@ class IntelStore:
 
     def close(self, *, wait: bool = True) -> None:
         """Stop the dedicated ESI worker."""
+        controller = getattr(self, "_personnel_controller", None)
+        if controller is not None:
+            controller.close()
+            self._esi_worker.close(wait=wait)
+            return
         runtime = getattr(self, "_personnel_runtime", None)
         if runtime is not None:
             runtime.close()
@@ -364,12 +373,15 @@ class IntelStore:
         if pool is not None:
             pool.close()
 
-    def refresh_personnel(self, changed_ids: set[int], all_current: bool = False) -> bool:
+    @personnel_read
+    def refresh_personnel(self, changed_ids: set[int], all_current: bool = False, *, expected_runtime=None) -> bool:
         """Reclassify only currently observed OCR rows, never accumulated wave history."""
         runtime = getattr(self, "_personnel_runtime", None)
-        if runtime is None:
+        if runtime is None or (expected_runtime is not None and runtime is not expected_runtime):
             return True
         with self._lock:
+            if not self._personnel_read_current():
+                return True
             reports = {report.report_id for report in self._reports}
             items = [item for item in self._active_intel.values()
                      if item.active and item.target_type == "character"
@@ -442,6 +454,7 @@ class IntelStore:
             name=str(getattr(resolved, "name", name)).strip(),
         )
 
+    @personnel_read
     def character_profile(self, character_id: int) -> dict[str, Any] | None:
         """Return a public character profile via optional ESI integration."""
         if getattr(self._resolver, "personnel_enabled", False):
@@ -470,7 +483,8 @@ class IntelStore:
             id_value=character_id,
         )
         with self._lock:
-            self._character_profile_cache[character_id] = dict(result)
+            if self._personnel_read_current():
+                self._character_profile_cache[character_id] = dict(result)
         return result
 
     def system_by_name(self, name: str) -> dict[str, Any] | None:
@@ -750,6 +764,7 @@ class IntelStore:
         self._character_profile_cache[character_id] = dict(profile)
         return profile
 
+    @personnel_task
     def _process_ocr_esi_task(
         self,
         task: _OcrEsiTask,
@@ -759,6 +774,9 @@ class IntelStore:
         scorer_guard = self._scorer
         contacts_guard = self._enricher.contact_standings() if archive_enabled else None
         with self._lock:
+            current_item = self._active_intel.get(task.active_id)
+            if current_item is None or not current_item.active or task.report_id not in current_item.source_observation_ids:
+                return
             if archive_enabled:
                 current_item = self._active_intel.get(task.active_id)
                 if current_item is None or not current_item.active or task.report_id not in current_item.source_observation_ids:
@@ -819,6 +837,8 @@ class IntelStore:
         )
 
         with self._lock:
+            if not self._personnel_read_current():
+                return
             if archive_enabled:
                 current_item = self._active_intel.get(task.active_id)
                 runtime = self._personnel_runtime

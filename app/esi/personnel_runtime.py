@@ -352,18 +352,36 @@ class PersonnelRuntime:
                     "upstream_batch_ms": self._latency_ms, "database_item_ms": self._db_wait_ms,
                     "degraded": self._retry_until > self.now()}
 
-    def start(self, callback) -> None:
+    def start(self, callback, *, paused: bool = False) -> None:
         self._callback = callback
+        self._ready = threading.Event()
+        if not paused:
+            self._ready.set()
         self._thread = threading.Thread(target=self._run, name="personnel-refresh", daemon=True)
         self._thread.start()
 
-    def close(self) -> None:
+    def activate(self) -> None:
+        with self._lock:
+            self._force_current = True
+        self._ready.set()
+        self._wake.set()
+
+    def request_stop(self) -> None:
         self._stop.set()
         self._wake.set()
-        if self._thread and self._thread is not threading.current_thread():
-            self._thread.join(timeout=60)
+        ready = getattr(self, "_ready", None)
+        if ready is not None:
+            ready.set()
+
+    def close(self, *, timeout: float | None = 60) -> None:
+        self.request_stop()
+        if self._thread and self._thread.ident is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=timeout)
 
     def _run(self) -> None:
+        ready = getattr(self, "_ready", None)
+        if ready is not None:
+            ready.wait()
         kinds = ("resolve", "affiliation", "identity", "corporation", "alliance")
         futures = {}
         cycle = 0
@@ -380,6 +398,8 @@ class PersonnelRuntime:
                     self.drain_requests()
                     with self._lock:
                         changed, self._changed = self._changed, set()
+                        force_current = force_current or getattr(self, "_force_current", False)
+                        self._force_current = False
                     if self._callback and (changed or force_current or cycle % 5 == 0):
                         try:
                             accepted = self._callback(changed, force_current or cycle % 30 == 0)

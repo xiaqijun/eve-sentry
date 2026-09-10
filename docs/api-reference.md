@@ -35,14 +35,20 @@
 确认再保存；缺少 PostgreSQL/ESI 时不能保存非 off 模式，返回 409 `personnel_settings_unavailable`。
 配置管理未初始化时返回 503 `personnel_settings_unavailable`；存储失败返回 503
 `personnel_settings_storage_error`，不返回数据库凭据或异常细节，需重新读取确认保存结果。
+资源初始化失败返回 503 `personnel_switch_failed`，不保存配置、不切换原模式；旧任务尚未回收且
+已达到退休资源上限时，重新启用返回 409 `personnel_switch_busy`，稍后重试，关闭操作仍可执行。
 
 响应 `settings` 包含：`values`（已保存或默认配置）、`effective`（当前实例模式与调度配置）、
-`revision`（不透明并发版本）、`source`（environment/database）、`restart_required`、
+`revision`（不透明并发版本）、`source`（environment/database）、`restart_required`、`apply_required`、
 `available`、`unavailable_reason`、`writable`。当前档案关闭时 effective 的后台开关为 false、
-并发为 0，表示未启动调度，不是丢失已保存配置。模式变更需下次重启；调度设置由当前实例即时接收，
-下个周期采用，在途任务自然完成。不是跨实例配置广播接口，也不自动重启服务或更改 SSE 连接。
+并发为 0，表示未启动调度，不是丢失已保存配置。模式保存后安全在线切换，无需重启；调度设置
+下个周期采用，在途任务安全收尾。`restart_required` 为兼容旧调用方保留，恒为 false；
+`apply_required` 表示已保存与当前实例运行配置不一致，可 GET 后使用同一 values/revision 再 POST
+重试应用。GET 只读，不隐式应用配置。不是跨实例配置广播接口，也不重启服务或更改 SSE 连接。
 首次写入及后续更新使用事务内比较更新，并与 `personnel.settings_changed` 审计一起提交。
-存储配置优先于启动环境默认值。无变化保存不新增审计；同一旧 revision 不能覆盖后续修改。
+初始化在状态锁外完成，准备成功且配置/审计事务提交后才发布解析器及运行时；初始化或事务失败
+清理未发布资源、保留原运行模式。若提交结果不确定，重新 GET 核对，不假定保存失败。
+存储配置优先于启动环境默认值。无变化保存可重试应用但不新增审计；同一旧 revision 不能覆盖后续修改。
 观测 `resolver_cache.archive.scheduling` 补充当前配置的两个布尔开关和并发上限；
 `background_slots` 仍表示负载调度后的容量，不表示配置上限或即时在途请求数。
 

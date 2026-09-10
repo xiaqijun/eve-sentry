@@ -114,7 +114,8 @@ def test_admin_saved_personnel_configuration_survives_postgres_restart(postgres_
                 manager.update({"revision": "environment", "values": {**DEFAULTS,
                     "mode": "shadow", "background_refresh": False, "history_backfill": False,
                     "background_max": 1}}, "admin")
-                assert manager.snapshot()["restart_required"]
+                assert not manager.snapshot()["restart_required"]
+                assert manager.snapshot()["effective"]["mode"] == "shadow"
             else:
                 configure_personnel(store, args, resolver, configuration=manager.startup_values())
                 state = manager.snapshot()
@@ -149,4 +150,70 @@ def test_opt_in_startup_preserves_schema_and_resumes_worker(postgres_archive, po
         assert runtime.lookup("Pilot 1")["character_id"] == 1
         assert archive.get_profiles([1])[1]["name"] == "Pilot 1"
     finally:
+        store.close()
+
+
+def test_admin_hot_modes_reuse_resources_and_retire_off_pool(postgres_dsn, tmp_path):
+    from app.server.auth import AuthService
+    from app.server.auth_store import AuthRepository
+    from app.server.personnel_settings import DEFAULTS, PersonnelSettings
+
+    resolver = EsiResolver(client=Client(), cache=EsiCache(tmp_path / "switch.json"))
+    store = PostgreSQLIntelStore(postgres_dsn, systems={}, links=[], resolver=resolver)
+    auth = AuthService(AuthRepository(store._connect), resolver)
+    manager = PersonnelSettings(store, SimpleNamespace(storage="postgres", postgres_dsn=postgres_dsn),
+                                resolver, auth, environment={})
+    state = manager.snapshot()
+    first = None
+    try:
+        for mode in ("shadow", "on", "shadow", "off", "on", "off"):
+            state = manager.update({"revision": state["revision"], "values": {**DEFAULTS, "mode": mode}}, "admin")
+            assert state["effective"]["mode"] == mode
+            assert not state["apply_required"]
+            if first is None:
+                first = manager.controller.resources
+            if mode == "shadow":
+                assert manager.controller.resources is first
+                assert store._resolver is resolver
+            if mode == "on":
+                assert store._resolver.personnel_enabled
+                store.record_hostile_presence({"client_id": "node", "system_name": "Tama", "hostile_icon_count": 1})
+                store.record_hostile_presence({"client_id": "node", "system_name": "Tama", "hostile_icon_count": 0})
+                assert store._hostile_system_state() == {}
+        for thread in manager.controller.retired:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+        assert first.pool.closed
+        assert not first.runtime._thread.is_alive()
+        assert len(auth.repository.list_audit()) == 6
+    finally:
+        auth.close()
+        store.close()
+
+
+def test_hot_prepare_failure_does_not_publish_or_persist(postgres_dsn, tmp_path, monkeypatch):
+    from app.server.auth import AuthError, AuthService
+    from app.server.auth_store import AuthRepository
+    from app.server.personnel_settings import DEFAULTS, PersonnelSettings
+    from app.esi.personnel_archive import PersonnelArchive
+
+    resolver = EsiResolver(client=Client(), cache=EsiCache(tmp_path / "failure.json"))
+    store = PostgreSQLIntelStore(postgres_dsn, systems={}, links=[], resolver=resolver)
+    auth = AuthService(AuthRepository(store._connect), resolver)
+    manager = PersonnelSettings(store, SimpleNamespace(storage="postgres", postgres_dsn=postgres_dsn),
+                                resolver, auth, environment={})
+    def fail(_self):
+        raise RuntimeError("migration failed with private connection details")
+    monkeypatch.setattr(PersonnelArchive, "migrate", fail)
+    try:
+        with pytest.raises(AuthError) as error:
+            manager.update({"revision": "environment", "values": {**DEFAULTS, "mode": "on"}}, "admin")
+        assert error.value.code == "personnel_switch_failed"
+        assert "private" not in str(error.value)
+        assert store._resolver is resolver
+        assert store._personnel_runtime is None
+        assert manager.snapshot()["values"] == DEFAULTS
+        assert auth.repository.list_audit() == []
+    finally:
+        auth.close()
         store.close()

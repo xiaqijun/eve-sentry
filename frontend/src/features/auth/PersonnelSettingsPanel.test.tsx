@@ -37,14 +37,25 @@ describe("PersonnelSettingsPanel", () => {
     expect(button("保存配置")).not.toBeDisabled();
     expect(container).toHaveTextContent("有未保存修改");
   });
-  it("keeps saved mode separate from running mode after save", async () => {
+  it("shows a mode as effective only after the server confirms hot activation", async () => {
     mocks.update.mockResolvedValue({ ...initial, values: { ...initial.values, mode: "shadow" },
-      revision: "v2", source: "database", restart_required: true });
+      effective: { ...initial.values, mode: "shadow" }, revision: "v2", source: "database" });
     await render(); await click(mode("shadow")); await click(button("保存配置"));
     expect(mocks.update).toHaveBeenCalledWith({ ...initial.values, mode: "shadow" }, "environment");
-    expect(container).toHaveTextContent("当前运行：关闭");
+    expect(container).toHaveTextContent("当前运行：影子运行");
     expect(container).toHaveTextContent("已保存：影子运行");
-    expect(container).toHaveTextContent("运行模式尚未生效");
+    expect(container).toHaveTextContent("配置已保存并生效，无需重启");
+    expect(button("保存配置")).toBeDisabled();
+  });
+  it("permits retrying saved but unapplied configuration without editing", async () => {
+    const saved = { ...initial, values: { ...initial.values, mode: "on" as const }, apply_required: true };
+    mocks.fetch.mockResolvedValue(saved);
+    mocks.update.mockResolvedValue({ ...saved, effective: saved.values, apply_required: false });
+    await render();
+    expect(button("重试应用")).not.toBeDisabled();
+    expect(container).toHaveTextContent("当前运行：关闭");
+    await click(button("重试应用"));
+    expect(container).toHaveTextContent("当前运行：正式启用");
     expect(button("保存配置")).toBeDisabled();
   });
   it("retains a failed draft and permits discard and reload after a conflict", async () => {

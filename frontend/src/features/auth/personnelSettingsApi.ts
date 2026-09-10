@@ -13,6 +13,7 @@ export type PersonnelSettingsSnapshot = {
   revision: string;
   source: "environment" | "database";
   restart_required: boolean;
+  apply_required?: boolean;
   available: boolean;
   unavailable_reason: string;
   writable: boolean;

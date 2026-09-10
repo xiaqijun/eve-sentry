@@ -134,7 +134,7 @@ def format_personnel_alert_message(
         for item in personnel if isinstance(item, dict)
     ] if isinstance(personnel, list) else []
     lines = [
-        "### ℹ️ 人员名单更正" if state.get("personnel_correction") else "### ⚠️ 敌对事件",
+        "### ⚠️ 敌对事件",
         f"**敌对**｜{detected_count} 人",
         f"**识别**｜{len(confirmed_personnel)} 人",
         "| 人员 | 星系 | zKill |",

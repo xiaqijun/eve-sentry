@@ -1,7 +1,7 @@
 """Persisted admin settings, authorization, and live scheduling regression tests."""
 
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event
 from types import SimpleNamespace
 
 import pytest
@@ -18,10 +18,27 @@ from tests.test_personnel_runtime import Client
 
 
 @pytest.fixture
-def settings_service(tmp_path):
+def settings_service(tmp_path, archive_factory, monkeypatch):
     store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
     manager = PersonnelSettings(store, SimpleNamespace(storage="postgres"), auth.resolver, auth, environment={})
+    from app.esi.personnel_control import PersonnelResources
+    from app.esi.personnel_setup import PersonnelEnricher
+    from app.esi.personnel_runtime import PersonnelResolver
+    from app.esi.resolver import EsiResolver
+    from app.esi.cache import EsiCache
+    original = EsiResolver(client=Client(), cache=EsiCache(tmp_path / "legacy.json"))
+    def prepare(values):
+        if values["mode"] == "off":
+            return None
+        if manager.controller.resources is not None:
+            return manager.controller.resources
+        runtime = store._personnel_runtime or PersonnelRuntime(archive_factory(), original.client)
+        runtime._ready = Event()
+        replacement = PersonnelResolver(original, runtime)
+        return PersonnelResources(SimpleNamespace(close=lambda: None), runtime, replacement,
+                                  PersonnelEnricher(replacement, None))
+    monkeypatch.setattr(manager.controller, "prepare", prepare)
     store._personnel_settings = manager
     try:
         yield manager, store, auth
@@ -37,9 +54,10 @@ def test_mode_is_persisted_but_not_falsely_reported_as_running(settings_service)
     assert original["effective"]["mode"] == "off"
     result = manager.update({"revision": original["revision"], "values": {**DEFAULTS, "mode": "shadow"}}, "admin")
     assert result["values"]["mode"] == "shadow"
-    assert result["effective"]["mode"] == "off"
-    assert result["restart_required"]
-    assert getattr(store, "_personnel_runtime", None) is None
+    assert result["effective"]["mode"] == "shadow"
+    assert not result["restart_required"]
+    assert not result["apply_required"]
+    assert store._personnel_runtime is not None
     restarted = PersonnelSettings(store, SimpleNamespace(storage="postgres"), auth.resolver, auth,
                                   environment={"EVE_SENTRY_PERSONNEL_CACHE": "on"})
     assert restarted.startup_values()["mode"] == "shadow"
@@ -95,9 +113,9 @@ def test_scheduler_changes_apply_without_replacing_runtime(settings_service, arc
         **DEFAULTS, "mode": "on", "background_refresh": False, "history_backfill": False,
         "background_max": 1}}, "admin")
     assert store._personnel_runtime is runtime
-    assert result["effective"] == {"mode": "shadow", "background_refresh": False,
+    assert result["effective"] == {"mode": "on", "background_refresh": False,
                                     "history_backfill": False, "background_max": 1}
-    assert result["restart_required"]
+    assert not result["restart_required"]
     runtime.request("Pilot 1", seen_at=0)
     runtime.drain_requests()
     assert runtime.run_batch("resolve", realtime=False) == 0
@@ -143,9 +161,11 @@ def test_same_values_are_idempotent(settings_service):
     assert auth.repository.list_audit() == []
 
 
-def test_database_compare_and_swap_protects_independent_controllers(settings_service):
+def test_database_compare_and_swap_protects_independent_controllers(settings_service, tmp_path):
     first, store, auth = settings_service
-    second = PersonnelSettings(store, SimpleNamespace(storage="postgres"), auth.resolver, auth, environment={})
+    # Distinct instances share the durable repository, not an in-process lock.
+    other_store = AuthTestStore(tmp_path / "other.json")
+    second = PersonnelSettings(other_store, SimpleNamespace(storage="postgres"), auth.resolver, auth, environment={})
     barrier = Barrier(2)
     for manager in (first, second):
         original_read = manager._read
@@ -156,7 +176,7 @@ def test_database_compare_and_swap_protects_independent_controllers(settings_ser
         manager._read = racing_read
     def save(manager):
         try:
-            return manager.update({"revision": "environment", "values": {**DEFAULTS, "mode": "shadow"}}, "admin")
+            return manager.update({"revision": "environment", "values": {**DEFAULTS, "background_max": 1}}, "admin")
         except AuthError as exc:
             return exc.code
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -164,6 +184,7 @@ def test_database_compare_and_swap_protects_independent_controllers(settings_ser
     assert sum(isinstance(result, dict) for result in results) == 1
     assert "settings_conflict" in results
     assert len(auth.repository.list_audit()) == 1
+    other_store.close()
 
 
 def test_admin_settings_http_permissions_csrf_validation_and_revision(settings_service):
@@ -190,7 +211,8 @@ def test_admin_settings_http_permissions_csrf_validation_and_revision(settings_s
         assert authenticated_request(url, method="POST", payload={**payload, "extra": True}, headers=headers)[0] == 400
         status, _, data = authenticated_request(url, method="POST", payload=payload, headers=headers)
         assert status == 200
-        assert data["settings"]["restart_required"]
+        assert not data["settings"]["restart_required"]
+        assert data["settings"]["effective"]["mode"] == "shadow"
         assert authenticated_request(url, method="POST", payload=payload, headers=headers)[0] == 409
         assert manager.snapshot()["values"]["mode"] == "shadow"
     finally:

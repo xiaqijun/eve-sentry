@@ -57,9 +57,9 @@ export function PersonnelSettingsPanel() {
       if (!mounted.current) return;
       setSnapshot(next);
       setDraft({ ...next.values });
-      setMessage(next.restart_required ? "配置已保存；运行模式将在下次服务端重启时生效。" :
+      setMessage(next.apply_required || next.restart_required ? "配置已保存但尚未生效，请重新读取并重试应用。" :
         next.effective.mode === "off" ? "配置已保存，档案关闭期间不执行后台任务。" :
-          "配置已保存，调度项已应用；正在执行的任务会自然完成。");
+          "配置已保存并生效，无需重启；正在执行的任务会安全收尾。");
     } catch (reason) {
       if (mounted.current) setError(reason instanceof Error ? reason.message : "保存失败，请重新读取确认实际配置。");
     } finally {
@@ -74,6 +74,7 @@ export function PersonnelSettingsPanel() {
   };
   const dirty = !!draft && !!snapshot && JSON.stringify(draft) !== JSON.stringify(snapshot.values);
   const disabled = loading || saving || !snapshot?.writable;
+  const pending = !!snapshot && (snapshot.apply_required || snapshot.restart_required);
 
   return (
     <section aria-label="人员档案配置" className="personnel-settings-panel">
@@ -87,10 +88,10 @@ export function PersonnelSettingsPanel() {
         <form onSubmit={(event) => void save(event)}>
           <Space wrap style={{ marginBottom: 16 }}>
             <Tag>当前运行：{MODE_LABELS[snapshot.effective.mode]}</Tag>
-            <Tag color={snapshot.restart_required ? "orange" : "gray"}>已保存：{MODE_LABELS[snapshot.values.mode]}</Tag>
+            <Tag color={pending ? "orange" : "gray"}>已保存：{MODE_LABELS[snapshot.values.mode]}</Tag>
             <Typography.Text type="secondary">来源：{snapshot.source === "database" ? "后台持久配置" : "启动默认值"}</Typography.Text>
           </Space>
-          {snapshot.restart_required ? <Alert type="warning" content="运行模式尚未生效。请在维护窗口通过受控部署/运维流程重启服务端；保存不会自动重启或断开监控。" /> : null}
+          {pending ? <Alert type="warning" content="保存配置与实际运行不一致，请重新读取确认后重试应用；无需重启服务端。" /> : null}
           {!snapshot.available ? <Alert type="warning" content={snapshot.unavailable_reason} /> : null}
           <div className="personnel-settings-grid">
             <div>
@@ -102,7 +103,7 @@ export function PersonnelSettingsPanel() {
                 ))}
               </Radio.Group>
               <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>{MODE_HELP[draft.mode]}</Typography.Paragraph>
-              <Typography.Paragraph type="secondary">模式变更需要重启；推荐先影子验证，再正式启用。</Typography.Paragraph>
+              <Typography.Paragraph type="secondary">模式保存后在线切换，无需重启或断开监控；推荐先影子验证，再正式启用。</Typography.Paragraph>
             </div>
             <div>
               <Typography.Title heading={6}>后台调度</Typography.Title>
@@ -130,15 +131,15 @@ export function PersonnelSettingsPanel() {
           </div>
           <Divider />
           <Space wrap>
-            <Button type="primary" htmlType="submit" loading={saving} disabled={disabled || !dirty}>
-              保存配置
+            <Button type="primary" htmlType="submit" loading={saving} disabled={disabled || (!dirty && !pending)}>
+              {pending && !dirty ? "重试应用" : "保存配置"}
             </Button>
             <Button disabled={loading || saving} onClick={() => { setDraft({ ...snapshot.values }); setMessage(""); setError(""); }}>撤销未保存修改</Button>
             <Button disabled={loading || saving || dirty} loading={loading} onClick={() => void load()}>重新读取配置</Button>
             <Typography.Text type="secondary">{dirty ? "有未保存修改" : "无未保存修改"}</Typography.Text>
           </Space>
           <div role="status" aria-live="polite" style={{ marginTop: 12 }}>
-            {message || (snapshot.effective.mode === "off" ? "当前档案已关闭，调度配置保留但不执行。" : "调度项保存后即时应用，已执行中的任务自然完成。")}
+            {saving ? "正在准备并应用配置，监控保持连接…" : message || (snapshot.effective.mode === "off" ? "当前档案已关闭，调度配置保留但不执行。" : "配置保存后在线生效，已执行中的任务安全收尾。")}
           </div>
         </form>
       )}

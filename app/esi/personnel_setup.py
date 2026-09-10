@@ -7,8 +7,6 @@ import threading
 import time
 
 from app.intel.enrichment import ThreatEnricher
-from app.esi.personnel_archive import PersonnelArchive
-from app.esi.personnel_runtime import PersonnelResolver, PersonnelRuntime
 
 
 class PersonnelEnricher(ThreatEnricher):
@@ -76,32 +74,11 @@ def configure_personnel(store, args, resolver, *, environment=None, configuratio
         return
     if args.storage != "postgres" or resolver is None:
         raise ValueError("personnel cache requires PostgreSQL and enabled ESI")
-    from psycopg.rows import dict_row
-    from psycopg_pool import ConnectionPool
-    from psycopg.conninfo import make_conninfo, conninfo_to_dict
+    from app.esi.personnel_control import personnel_controller
+    from app.server.personnel_settings import DEFAULTS
 
-    options = conninfo_to_dict(args.postgres_dsn).get("options", "")
-    dsn = make_conninfo(args.postgres_dsn, options=options + " -cstatement_timeout=5000 -clock_timeout=2000")
-    pool = ConnectionPool(dsn, min_size=1, max_size=8, timeout=2, open=True, kwargs={"row_factory": dict_row})
-    try:
-        archive = PersonnelArchive(pool.connection)
-        archive.migrate()
-        runtime = PersonnelRuntime(archive, resolver.client)
-        runtime.mode = mode
-        if configuration is not None:
-            runtime.configure_scheduling(**{key: value for key, value in configuration.items() if key != "mode"})
-        from app.esi.personnel_backfill import PersonnelBackfill
-        runtime.backfill = PersonnelBackfill(archive, resolver.cache)
-        store._personnel_pool = pool
-        store._personnel_runtime = runtime
-        if mode == "on":
-            replacement = PersonnelResolver(resolver, runtime)
-            session = getattr(store._enricher, "esi_session", None)
-            enricher = PersonnelEnricher(replacement, session)
-            store._resolver = replacement
-            store._enricher = enricher
-            runtime.contact_refresher = enricher.refresh_contacts
-        runtime.start(store.refresh_personnel)
-    except Exception:
-        pool.close()
-        raise
+    controller = personnel_controller(store, args, resolver)
+    values = configuration or {**DEFAULTS, "mode": mode}
+    with controller.lock:
+        prepared = controller.prepare(values)
+        controller.publish(values, prepared)
