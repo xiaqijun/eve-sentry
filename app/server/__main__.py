@@ -219,7 +219,10 @@ def main(argv: list[str] | None = None) -> int:
     started = False
     try:
         from app.esi.personnel_setup import configure_personnel
-        configure_personnel(store, args, resolver)
+        from app.server.personnel_settings import PersonnelSettings
+        personnel_settings = PersonnelSettings(store, args, resolver, auth_service)
+        configure_personnel(store, args, resolver, configuration=personnel_settings.startup_values())
+        store._personnel_settings = personnel_settings
         server.start()
         started = True
         print(f"Intel map: {server.url}")

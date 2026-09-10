@@ -57,6 +57,25 @@ class PersonnelRuntime:
         self._db_wait_ms = 0.0
         self._last_request = 0.0
         self._budget = threading.Lock()
+        self._scheduling = {"background_refresh": True, "history_backfill": True, "background_max": 4}
+
+    def scheduling_settings(self):
+        with self._lock:
+            return dict(self._scheduling)
+
+    def configure_scheduling(self, *, background_refresh, history_backfill, background_max):
+        if type(background_refresh) is not bool or type(history_backfill) is not bool:
+            raise ValueError("scheduler switches must be booleans")
+        if type(background_max) is not int or not 1 <= background_max <= 4:
+            raise ValueError("background_max must be 1-4")
+        with self._lock:
+            next_settings = {"background_refresh": background_refresh, "history_backfill": history_backfill,
+                             "background_max": background_max}
+            if next_settings == self._scheduling:
+                return
+            self._scheduling = next_settings
+            self._background = min(self._background, background_max) if background_refresh else 0
+        self._wake.set()
 
     def lookup(self, name: str) -> dict[str, Any] | None:
         key = name_key(name)
@@ -204,6 +223,8 @@ class PersonnelRuntime:
         return fetched, expires
 
     def run_batch(self, kind: str, *, realtime: bool, cold: bool = False) -> int:
+        if not realtime and not self.scheduling_settings()["background_refresh"]:
+            return 0
         now = self.now()
         leases = self.archive.claim(now=now, limit=100 if kind in {"resolve", "identity", "affiliation"} else 1,
                                     lease_seconds=90, minimum_priority=0 if realtime else 2,
@@ -326,6 +347,7 @@ class PersonnelRuntime:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {**self._stats, **self._counts, "mode": self.mode, "hot_profiles": len(self._profiles),
+                    "scheduling": dict(self._scheduling),
                     "pending_names": len(self._pending), "background_slots": self._background,
                     "upstream_batch_ms": self._latency_ms, "database_item_ms": self._db_wait_ms,
                     "degraded": self._retry_until > self.now()}
@@ -367,14 +389,17 @@ class PersonnelRuntime:
                             raise
                         force_current = accepted is False
                     self._stats = self.archive.statistics(self.now())
+                    controls = self.scheduling_settings()
                     if cycle % 5 == 0:
                         realtime_due = any(row["priority"] <= 1 for row in self._stats["due_by_priority"])
                         self._background = background_slots(self._background, RefreshLoad(
                             cpu_fraction=os.getloadavg()[0] / max(1, os.cpu_count() or 1) if hasattr(os, "getloadavg") else 0,
                             realtime_pending=int(realtime_due), database_wait_ms=self._db_wait_ms,
-                            upstream_latency_ms=self._latency_ms, throttled=self._retry_until > self.now()))
-                        self.maintenance()
-                        if self.backfill and not realtime_due:
+                            upstream_latency_ms=self._latency_ms, throttled=self._retry_until > self.now()),
+                            maximum=controls["background_max"]) if controls["background_refresh"] else 0
+                        if controls["background_refresh"]:
+                            self.maintenance()
+                        if self.backfill and controls["history_backfill"] and not realtime_due:
                             if not self._legacy_import_done:
                                 self._legacy_import_done = not self.backfill.step("legacy")
                             else:
@@ -384,7 +409,8 @@ class PersonnelRuntime:
                             and sum(not lane[0] for lane in futures.values()) < 4):
                         future = executor.submit(self.contact_refresher)
                         futures[future] = (False, "contacts")
-                    for realtime, capacity in ((True, 2), (False, self._background)):
+                    capacity = min(self._background, controls["background_max"]) if controls["background_refresh"] else 0
+                    for realtime, capacity in ((True, 2), (False, capacity)):
                         if self._retry_until > self.now():
                             continue
                         running = [value for value in futures.values() if value[0] == realtime]

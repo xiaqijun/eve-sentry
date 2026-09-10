@@ -317,6 +317,7 @@ class AuthHttpMixin:
             "/api/v1/admin/audit",
             "/api/v1/admin/security-settings",
             "/api/v1/admin/esi-gateway",
+            "/api/v1/admin/personnel-settings",
         }
         if path not in auth_paths:
             return False
@@ -336,6 +337,12 @@ class AuthHttpMixin:
             return True
         if path == "/api/v1/admin/security-settings":
             self._send_json({"settings": service.security_settings()})
+            return True
+        if path == "/api/v1/admin/personnel-settings":
+            try:
+                self._send_json({"settings": self._personnel_settings().snapshot()})
+            except AuthError as exc:
+                self._send_auth_error(exc)
             return True
         if path == "/api/v1/admin/clients":
             snapshot = self._store().management_heartbeat_snapshot()
@@ -371,6 +378,7 @@ class AuthHttpMixin:
             "/api/v1/admin/users",
             "/api/v1/admin/corporations",
             "/api/v1/admin/security-settings",
+            "/api/v1/admin/personnel-settings",
         }
         user_action = self._admin_user_action(path)
         key_action = self._api_key_action(path)
@@ -392,6 +400,10 @@ class AuthHttpMixin:
 
             principal = self._require_principal()
             payload = self._read_optional_json()
+            if path == "/api/v1/admin/personnel-settings":
+                settings = self._personnel_settings().update(payload, principal.user_id)
+                self._send_json({"ok": True, "settings": settings})
+                return True
             if path == "/api/v1/auth/logout":
                 service.logout(principal)
                 self._send_auth_json(
@@ -546,6 +558,12 @@ class AuthHttpMixin:
             self._send_auth_exception(exc)
             return True
         return False
+
+    def _personnel_settings(self):
+        settings = getattr(self._store(), "_personnel_settings", None)
+        if settings is None:
+            raise AuthError("人员档案配置尚不可用，请确认服务端已升级", 503, "personnel_settings_unavailable")
+        return settings
 
     def _login_client_ip(self) -> str:
         peer = str(getattr(self, "client_address", ("",))[0]).strip()

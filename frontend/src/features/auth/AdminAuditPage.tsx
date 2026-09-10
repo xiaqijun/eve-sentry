@@ -22,6 +22,7 @@ import { fetchClients, listAudit } from "./api";
 import type { AuditRecord, ClientHeartbeatRecord } from "./types";
 
 const AUDIT_ACTION_LABELS: Record<string, string> = {
+  "personnel.settings_changed": "修改人员档案配置",
   "security.key_risk_control_changed": "切换密钥风控",
   "api_key.created": "创建密钥",
   "api_key.deleted": "删除密钥",
@@ -74,6 +75,14 @@ function auditCharacterNames(details: Record<string, unknown>): string[] {
 function formatAuditDetails(item: AuditRecord): string {
   const details = auditDetails(item);
   const parts: string[] = [];
+  if (item.action === "personnel.settings_changed") {
+    const previous = (details.previous || {}) as Record<string, unknown>;
+    const values = (details.values || {}) as Record<string, unknown>;
+    const labels: Record<string, string> = { mode: "模式", background_refresh: "闲时刷新", history_backfill: "历史回填", background_max: "后台上限" };
+    const display = (value: unknown) => ({ off: "关闭", shadow: "影子运行", on: "正式启用", true: "开启", false: "暂停" }[String(value)] || String(value ?? "未知"));
+    return Object.entries(labels).filter(([key]) => previous[key] !== values[key])
+      .map(([key, label]) => `${label}：${display(previous[key])} → ${display(values[key])}`).join(" · ");
+  }
   const keyName = String(details.api_key_name || "");
   const keyPrefix = String(details.api_key_prefix || "");
   if (keyName || keyPrefix) {

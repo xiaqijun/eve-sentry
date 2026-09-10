@@ -20,6 +20,7 @@ import {
 } from "../../components/ManagementPage";
 import { fetchEsiGateway } from "./api";
 import type { EsiGatewayHealth, EsiGatewaySnapshot } from "./types";
+import { PersonnelSettingsPanel } from "./PersonnelSettingsPanel";
 
 const EMPTY_SNAPSHOT: EsiGatewaySnapshot = {
   gateway: { configured: false, reachable: false },
@@ -182,6 +183,7 @@ export function AdminEsiGatewayPage() {
       ]} />
 
       <Card className="arco-management-card" title="全量人员档案">
+        <PersonnelSettingsPanel />
         {!archive ? <Typography.Text type="secondary">未启用人员档案，或服务端尚未提供指标。</Typography.Text> : (
           <Space direction="vertical" size={16} style={{ width: "100%" }}>
             <Tag color={archive.degraded ? "orange" : "green"}>{archive.degraded ? "刷新退避中，保留成功缓存" : archive.mode === "shadow" ? "影子模式，仍使用旧读取链路" : "档案服务运行中"}</Tag>

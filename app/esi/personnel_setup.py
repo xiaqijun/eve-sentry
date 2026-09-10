@@ -63,10 +63,13 @@ class PersonnelEnricher(ThreatEnricher):
         return changed
 
 
-def configure_personnel(store, args, resolver, *, environment=None):
+def configure_personnel(store, args, resolver, *, environment=None, configuration=None):
     """Off is a zero-I/O rollback; shadow writes archives without changing consumers."""
     environment = os.environ if environment is None else environment
-    mode = environment.get("EVE_SENTRY_PERSONNEL_CACHE", "off").strip().lower()
+    from app.server.personnel_settings import validate_settings
+
+    configuration = validate_settings(configuration) if configuration is not None else None
+    mode = configuration["mode"] if configuration is not None else environment.get("EVE_SENTRY_PERSONNEL_CACHE", "off").strip().lower()
     if mode not in {"off", "shadow", "on"}:
         raise ValueError("EVE_SENTRY_PERSONNEL_CACHE must be off, shadow, or on")
     if mode == "off":
@@ -85,6 +88,8 @@ def configure_personnel(store, args, resolver, *, environment=None):
         archive.migrate()
         runtime = PersonnelRuntime(archive, resolver.client)
         runtime.mode = mode
+        if configuration is not None:
+            runtime.configure_scheduling(**{key: value for key, value in configuration.items() if key != "mode"})
         from app.esi.personnel_backfill import PersonnelBackfill
         runtime.backfill = PersonnelBackfill(archive, resolver.cache)
         store._personnel_pool = pool

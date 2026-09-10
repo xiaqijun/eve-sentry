@@ -98,6 +98,35 @@ def test_realtime_lane_isolated_from_large_cold_backlog(postgres_archive):
     print(f"\n100k cold jobs: realtime claim {elapsed * 1000:.2f} ms")
 
 
+def test_admin_saved_personnel_configuration_survives_postgres_restart(postgres_dsn, tmp_path):
+    from app.server.auth import AuthService
+    from app.server.auth_store import AuthRepository
+    from app.server.personnel_settings import DEFAULTS, PersonnelSettings
+
+    args = SimpleNamespace(storage="postgres", postgres_dsn=postgres_dsn)
+    resolver = EsiResolver(client=Client(), cache=EsiCache(tmp_path / "saved-settings.json"))
+    for restarting in (False, True):
+        store = PostgreSQLIntelStore(postgres_dsn, systems={}, links=[], resolver=resolver)
+        auth = AuthService(AuthRepository(store._connect), resolver)
+        try:
+            manager = PersonnelSettings(store, args, resolver, auth, environment={})
+            if not restarting:
+                manager.update({"revision": "environment", "values": {**DEFAULTS,
+                    "mode": "shadow", "background_refresh": False, "history_backfill": False,
+                    "background_max": 1}}, "admin")
+                assert manager.snapshot()["restart_required"]
+            else:
+                configure_personnel(store, args, resolver, configuration=manager.startup_values())
+                state = manager.snapshot()
+                assert state["effective"] == state["values"]
+                assert not state["restart_required"]
+                assert store._resolver is resolver
+                assert len(auth.repository.list_audit()) == 1
+        finally:
+            auth.close()
+            store.close()
+
+
 @pytest.mark.parametrize("mode", ["shadow", "on"])
 def test_opt_in_startup_preserves_schema_and_resumes_worker(postgres_archive, postgres_dsn, tmp_path, mode):
     archive, factory = postgres_archive

@@ -12,6 +12,40 @@
 批次耗时/每条数据库处理耗时，不是 P95。计数器进程内累计，未出现的计数项可缺省。
 功能关闭时不返回 archive，不能解释为档案数为零；没有新增公开人员枚举接口。
 
+### 管理员人员档案配置
+
+`GET /api/v1/admin/personnel-settings` 返回 `{ "settings": {...} }`；
+`POST` 同一路径保存配置，返回 `{ "ok": true, "settings": {...} }`。
+沿用管理员权限、网页登录 CSRF 和服务密钥只读限制，不允许普通用户访问。POST 请求必须完整包含：
+
+```json
+{
+  "revision": "从 GET 返回原样携带",
+  "values": {
+    "mode": "shadow",
+    "background_refresh": true,
+    "history_backfill": true,
+    "background_max": 4
+  }
+}
+```
+
+`mode` 只能为 `off/shadow/on`；两个开关必须是真正的 JSON 布尔值；并发上限为整数 1～4。
+缺少字段、未知字段、错误类型返回 400；配置版本过期返回 409 `settings_conflict`，重新 GET 后
+确认再保存；缺少 PostgreSQL/ESI 时不能保存非 off 模式，返回 409 `personnel_settings_unavailable`。
+配置管理未初始化时返回 503 `personnel_settings_unavailable`；存储失败返回 503
+`personnel_settings_storage_error`，不返回数据库凭据或异常细节，需重新读取确认保存结果。
+
+响应 `settings` 包含：`values`（已保存或默认配置）、`effective`（当前实例模式与调度配置）、
+`revision`（不透明并发版本）、`source`（environment/database）、`restart_required`、
+`available`、`unavailable_reason`、`writable`。当前档案关闭时 effective 的后台开关为 false、
+并发为 0，表示未启动调度，不是丢失已保存配置。模式变更需下次重启；调度设置由当前实例即时接收，
+下个周期采用，在途任务自然完成。不是跨实例配置广播接口，也不自动重启服务或更改 SSE 连接。
+首次写入及后续更新使用事务内比较更新，并与 `personnel.settings_changed` 审计一起提交。
+存储配置优先于启动环境默认值。无变化保存不新增审计；同一旧 revision 不能覆盖后续修改。
+观测 `resolver_cache.archive.scheduling` 补充当前配置的两个布尔开关和并发上限；
+`background_slots` 仍表示负载调度后的容量，不表示配置上限或即时在途请求数。
+
 默认地址为 `http://127.0.0.1:8765`。桌面客户端和工作台主要使用 `/api/v1`；旧
 `/api/*` 兼容路由仍存在；来袭分析读取专用的 `/api/v1/alert-history`，新接入应优先使用
 v1。
