@@ -84,10 +84,6 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
 
     if _env_flag(values.get("EVE_SENTRY_SERVER_ENABLE_ESI")):
         argv.append("--enable-esi")
-    if _env_flag(values.get("EVE_SENTRY_SERVER_ENABLE_ZKILL")):
-        argv.append("--enable-killboard")
-    if _env_flag(values.get("EVE_SENTRY_SERVER_DISABLE_ZKILL")):
-        argv.append("--disable-killboard")
     _append_option(argv, "--esi-cache", values.get("EVE_SENTRY_SERVER_ESI_CACHE", ""))
     _append_option(argv, "--esi-backend", values.get("EVE_SENTRY_SERVER_ESI_BACKEND", ""))
     _append_option(argv, "--esi-gateway-url", values.get("EVE_SENTRY_SERVER_ESI_GATEWAY_URL", ""))

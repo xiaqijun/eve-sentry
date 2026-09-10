@@ -1578,6 +1578,17 @@ class PostgreSQLIntelStore(IntelStore):
 
     def alert_cursor(self, alert_id: str) -> str:
         """Return the cursor for a hot or historical PostgreSQL alert."""
+        normalized_id = str(alert_id or "").strip()
+        if normalized_id.startswith("evt_"):
+            report = self._report_for_alert_id(normalized_id)
+            if report is None or report.report_id != normalized_id[4:]:
+                return ""
+            snapshot = report.metadata.get(PERSISTED_ALERT_METADATA_KEY)
+            if isinstance(snapshot, dict):
+                timestamp = snapshot.get("created_at") or snapshot.get("seen_at")
+                if timestamp:
+                    return str(timestamp)
+            return str(report.received_at or report.seen_at or "")
         hot_cursor = super().alert_cursor(alert_id)
         if hot_cursor:
             return hot_cursor
@@ -1597,18 +1608,21 @@ class PostgreSQLIntelStore(IntelStore):
         alert_id: str,
     ) -> tuple[int, str] | None:
         """Resolve an alert id without limiting lookup to the hot report set."""
+        normalized_id = str(alert_id or "").strip()
+        if normalized_id.startswith("evt_"):
+            # Standard IDs are immutable report references. The inherited hot
+            # lookup takes the ingestion lock and can score unrelated reports
+            # before finding a match. Resume directly from persisted fields.
+            report = self._report_for_alert_id(normalized_id)
+            if report is None or report.report_id != normalized_id[4:]:
+                return None
+            return self._report_stream_cursor(report)
         hot_cursor = super().resolve_alert_stream_cursor(alert_id)
         if hot_cursor is not None:
             return hot_cursor
         report = self._report_for_alert_id(str(alert_id or "").strip())
         if report is None:
             return None
-        # Standard event ids map one-to-one to report ids.  Returning the
-        # persisted cursor directly avoids rebuilding/scoring the alert and
-        # therefore avoids live enrichment while an SSE client reconnects.
-        normalized_id = str(alert_id or "").strip()
-        if normalized_id.startswith("evt_") and report.report_id == normalized_id[4:]:
-            return self._report_stream_cursor(report)
         alert = self._alert_from_report(report)
         if alert is None:
             return None

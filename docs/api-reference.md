@@ -236,8 +236,13 @@ GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
 或告警历史快照不完整而丢失。客户端仍可将 `/api/v1/alert-history` 中的
 `verified_characters` 作为补充信息来源。
 
-敌对告警的 `verified_characters` 始终保留 `character_id` 和 `name`。取得外部统计时会额外
-包含可选的 `zkill` 对象：
+敌对告警的 `verified_characters` 始终保留 `character_id` 和 `name`。实时人员解析已停止
+请求 zKillboard 战绩；机器人和星图通过角色 ID 直接生成
+`https://zkillboard.com/character/{character_id}/`，不需要查询统计接口。
+星图不再显示威胁等级、分数和评分条。协议中的 `score`、`level` 暂时保留为敌我分类的兼容值，
+并非人员战斗能力评分，不触发额外请求；`classification` 及名单/声望分类逻辑不变。
+
+旧历史记录仍可能包含可选的 `zkill` 对象（兼容示例，不代表当前仍会抓取）：
 
 ```json
 {
@@ -257,9 +262,9 @@ GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
 }
 ```
 
-`zkill` 缺失表示尚未抓取、角色无统计或外部服务暂不可用。消费者必须把字段视为可选，
-不能使用告警 `score` 推断或回填 `danger_ratio`。zKillboard 数据只用于展示和研判，
-不影响 `classification`、告警生成或确认状态。
+`zkill` 缺失是当前正常行为，不应触发补查或重试。消费者必须把字段视为可选，
+不能使用告警 `score` 推断或回填 `danger_ratio`。已有历史统计不删除，
+不影响 `classification`、告警生成或确认状态。机器人独立的手动战报分析不属于实时人员解析。
 
 SSE 常用查询参数：
 
@@ -306,6 +311,11 @@ EventSource 的可靠重连 ID；该块不会派发业务事件，消费者应�
 
 预警客户端不调用完整 `/api/v1/bootstrap`；它在 SSE 上请求精简快照，只包含活跃情报、
 活跃告警和监控节点。生成该快照时只处理活跃情报引用的报告。
+
+服务端共享缓存原子发布状态、水位及活动报告游标索引；新鲜缓存读取不等待构建锁。
+无游标及旧游标连接使用同一索引，标准 PostgreSQL 报告恢复只查持久化字段，时间戳 ID
+直接作为时间游标。缓存仍按状态变更失效并保留 1 秒 TTL；刷新未就绪或水位不足时不发送
+Bootstrap。这些内部优化不改变事件字段、分页、过滤和重放顺序。
 
 ### 第三方敌对星系接口
 
@@ -356,8 +366,8 @@ Authorization: Bearer eve_xxx
 失败时返回最近一次旧快照。该请求始终由服务端携带授权 token 发起，公共 ESI Gateway 不接收
 授权 token，也不按联系人数量拆分请求。
 
-`/api/v1/kill-activity/*` 仅保留兼容行为；人员 zKillboard 统计通过告警的
-`verified_characters[].zkill` 返回，不新增同步查询接口。
+`/api/v1/kill-activity/*` 仅保留兼容行为；实时人员解析不再抓取 zKillboard 统计，
+`verified_characters[].zkill` 仅可能来自旧历史数据，不提供同步补查接口。
 `/api/v1/map/neighborhood` 接受逗号分隔的 `systems`、`system_ids` 和 `hops` 参数，
 `hops` 默认 `3` 且最大为 `5`。响应只包含任一中心星系指定跳数内的节点和节点间连线；
 预警浮窗使用该接口，避免传输完整地图。Windows 预警客户端在后台 `AlertMapWorker` 中

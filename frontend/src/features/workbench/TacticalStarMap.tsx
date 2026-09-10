@@ -30,26 +30,6 @@ const HOSTILE_PORTRAIT_SIZE = 48;
 const HOSTILE_CARD_DRAW_SCALE = 0.8;
 const portraitCache = new Map<number, HTMLImageElement>();
 
-const THREAT_STYLE: Record<ThemeMode, Record<
-  TacticalHostileIntel["threatLevel"],
-  { background: string; foreground: string; label: string }
->> = {
-  light: {
-    critical: { background: "#fde8e7", foreground: "#b42318", label: "严重" },
-    high: { background: "#fff0e8", foreground: "#c2410c", label: "高危" },
-    medium: { background: "#fff7d6", foreground: "#9a6700", label: "中危" },
-    low: { background: "#e8f3ff", foreground: "#1769aa", label: "低危" },
-    unknown: { background: "#eef2f1", foreground: "#66736d", label: "未知" },
-  },
-  dark: {
-    critical: { background: "#452326", foreground: "#ff8b81", label: "严重" },
-    high: { background: "#453024", foreground: "#f0a276", label: "高危" },
-    medium: { background: "#423a21", foreground: "#e9c66e", label: "中危" },
-    low: { background: "#203841", foreground: "#7bc3dc", label: "低危" },
-    unknown: { background: "#263338", foreground: "#b4c2c0", label: "未知" },
-  },
-};
-
 const CANVAS_PALETTE: Record<ThemeMode, {
   cardBackground: string;
   cardBorder: string;
@@ -62,7 +42,8 @@ const CANVAS_PALETTE: Record<ThemeMode, {
   portraitText: string;
   quietLabel: string;
   quietLink: string;
-  riskTrack: string;
+  hostileBackground: string;
+  hostileForeground: string;
   selected: string;
   selectedGlow: string;
   text: string;
@@ -79,7 +60,8 @@ const CANVAS_PALETTE: Record<ThemeMode, {
     portraitText: "#73817a",
     quietLabel: "#697771",
     quietLink: "rgba(91, 112, 119, 0.28)",
-    riskTrack: "#edf1ef",
+    hostileBackground: "#fde8e7",
+    hostileForeground: "#b42318",
     selected: "#176b50",
     selectedGlow: "rgba(23, 107, 80, 0.08)",
     text: "#202c27",
@@ -96,7 +78,8 @@ const CANVAS_PALETTE: Record<ThemeMode, {
     portraitText: "#a3b7b4",
     quietLabel: "#839693",
     quietLink: "rgba(111, 134, 141, 0.42)",
-    riskTrack: "#26373c",
+    hostileBackground: "#452326",
+    hostileForeground: "#ff8b81",
     selected: "#4bb486",
     selectedGlow: "rgba(75, 180, 134, 0.14)",
     text: "#e5efec",
@@ -238,11 +221,6 @@ function drawHostileCard(
   const cardX = Number(node.x || 0);
   const cardY = Number(node.y || 0);
   const palette = CANVAS_PALETTE[theme];
-  const threat = THREAT_STYLE[theme][intel?.threatLevel || node.threatLevel];
-  const threatScore = intel?.threatScore ?? node.threatScore;
-  const score = threatScore === null
-    ? threat.label
-    : `${threat.label} ${Math.round(threatScore)}`;
   const hostileCount = Math.max(0, node.hostileCount);
   const extraCount = Math.max(0, hostileCount - 1);
   const pilotName = intel?.name || "人员名单未获取";
@@ -273,15 +251,7 @@ function drawHostileCard(
   context.textAlign = "left";
   context.textBaseline = "middle";
   context.fillStyle = palette.text;
-  context.fillText(fitCanvasText(context, pilotName, 82), x + 70, y + 18);
-
-  context.font = '700 9px "Segoe UI", "Microsoft YaHei", sans-serif';
-  const threatWidth = Math.max(38, context.measureText(score).width + 10);
-  context.fillStyle = threat.background;
-  context.fillRect(x + cardWidth - threatWidth - 10, y + 9, threatWidth, 19);
-  context.textAlign = "center";
-  context.fillStyle = threat.foreground;
-  context.fillText(score, x + cardWidth - threatWidth / 2 - 10, y + 18.5);
+  context.fillText(fitCanvasText(context, pilotName, cardWidth - 82), x + 70, y + 18);
 
   context.font = '500 9px "Segoe UI", "Microsoft YaHei", sans-serif';
   context.textAlign = "left";
@@ -301,37 +271,12 @@ function drawHostileCard(
     const badge = `+${extraCount}`;
     context.font = '700 9px "Segoe UI", "Microsoft YaHei", sans-serif';
     context.textAlign = "center";
-    context.fillStyle = THREAT_STYLE[theme].critical.background;
+    context.fillStyle = palette.hostileBackground;
     context.fillRect(x + cardWidth - 42, y + 47, 30, 18);
-    context.fillStyle = THREAT_STYLE[theme].critical.foreground;
+    context.fillStyle = palette.hostileForeground;
     context.fillText(badge, x + cardWidth - 27, y + 56);
   }
 
-  context.fillStyle = palette.riskTrack;
-  context.fillRect(x + 4, y + cardHeight - 3, cardWidth - 4, 3);
-  context.fillStyle = threat.foreground;
-  context.fillRect(
-    x + 4,
-    y + cardHeight - 3,
-    (cardWidth - 4) * Math.min(1, Math.max(0.08, (threatScore ?? 35) / 100)),
-    3,
-  );
-  const riskWidth = (cardWidth - 4) *
-    Math.min(1, Math.max(0.08, (threatScore ?? 35) / 100));
-  const shimmerWidth = 24;
-  const shimmerStart = x + 4 - shimmerWidth +
-    ((timeMs % 1800) / 1800) * (riskWidth + shimmerWidth);
-  const shimmerLeft = Math.max(x + 4, shimmerStart);
-  const shimmerRight = Math.min(x + 4 + riskWidth, shimmerStart + shimmerWidth);
-  if (shimmerRight > shimmerLeft) {
-    context.fillStyle = "rgba(255, 255, 255, 0.62)";
-    context.fillRect(
-      shimmerLeft,
-      y + cardHeight - 3,
-      shimmerRight - shimmerLeft,
-      3,
-    );
-  }
   context.restore();
 }
 
@@ -849,7 +794,6 @@ export function TacticalStarMap({
             className="hostile-detail-list"
             dataSource={selectedHostiles}
             render={(intel) => {
-              const threat = THREAT_STYLE[theme][intel.threatLevel];
               return (
                 <List.Item key={`${intel.characterId ?? "unknown"}:${intel.name}`}>
                   <div className="hostile-detail-item">
@@ -864,11 +808,6 @@ export function TacticalStarMap({
                     <div className="hostile-detail-identity">
                       <div>
                         <strong>{intel.name}</strong>
-                        <Tag color="red" size="small">
-                          {intel.threatScore === null
-                            ? threat.label
-                            : `${threat.label} ${Math.round(intel.threatScore)}`}
-                        </Tag>
                       </div>
                       <span title={intel.corporation}>军团 · {intel.corporation}</span>
                       <span title={intel.alliance}>联盟 · {intel.alliance}</span>

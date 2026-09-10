@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import logging
@@ -24,6 +23,7 @@ from app.channels.parser import parse_chat_line
 from app.esi.sso import EsiSsoError
 from app.server.auth_http import AuthHttpMixin
 from app.server.client_status import monitored_system_names
+from app.server.event_cache import ActiveEventSnapshot
 from app.server.intel_store import IntelStore, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -3066,6 +3066,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         store: IntelStore,
         *,
         minimum_state_event_seq: int = 0,
+        report_cursors: dict[str, tuple[int, str]] | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[dict[str, Any]],
@@ -3079,66 +3080,57 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             with _ACTIVE_EVENT_SNAPSHOT_INIT_LOCK:
                 cache = getattr(store, "_sse_active_event_cache", None)
                 if cache is None:
-                    cache = {
-                        "lock": threading.RLock(),
-                        "generation": -1,
-                        "created_at": 0.0,
-                        "state_event_seq": 0,
-                        "state": None,
-                    }
+                    cache = {"lock": threading.Lock(), "entry": None}
                     store._sse_active_event_cache = cache
 
         required_state_event_seq = max(0, int(minimum_state_event_seq or 0))
-        # A single slow snapshot build must not serialize every SSE client.
-        # Return the previous value to compatibility callers when available,
-        # but mark it not-ready: the builder publishes watermark and state in
-        # separate assignments, so a lock-free reader must never pair fields
-        # from different cache generations into a Bootstrap.
-        # A durable event is the exception: every connection must wait for one
-        # shared refresh so an older cached Bootstrap cannot contradict it.
+        if report_cursors is not None:
+            report_cursors.clear()
+        entry = cache["entry"]
+        if entry is not None and entry.is_fresh(
+            _event_stream_generation(),
+            time.monotonic(),
+            _ACTIVE_EVENT_SNAPSHOT_TTL_SECONDS,
+            required_state_event_seq,
+        ):
+            return entry.copy_result(True, report_cursors)
+
+        # Only builders serialize. Ordinary readers do not wait for a slow
+        # refresh; durable replay may wait briefly for its required watermark.
         acquired = (
             cache["lock"].acquire(
                 timeout=_ACTIVE_EVENT_SNAPSHOT_LOCK_WAIT_SECONDS,
             )
             if required_state_event_seq
-            else cache["lock"].acquire(timeout=0.1)
+            else cache["lock"].acquire(blocking=False)
         )
         if not acquired:
-            state = cache.get("state")
-            if state is None:
+            entry = cache["entry"]
+            if entry is None:
                 return [], [], [], 0, False
-            active_items, alerts, presence_alerts = copy.deepcopy(state)
-            cached_state_event_seq = max(
-                0,
-                int(cache.get("state_event_seq") or 0),
+            # A refresh might have completed at the wait boundary. Metadata,
+            # state and cursors all belong to this one published object.
+            ready = entry.is_fresh(
+                _event_stream_generation(),
+                time.monotonic(),
+                _ACTIVE_EVENT_SNAPSHOT_TTL_SECONDS,
+                required_state_event_seq,
             )
-            return (
-                active_items,
-                alerts,
-                presence_alerts,
-                cached_state_event_seq,
-                False,
-            )
+            return entry.copy_result(ready, report_cursors)
         try:
             # Callers may have waited behind a slow builder. Re-read both
             # values under the cache lock so an old waiter cannot publish an
             # already-expired entry or move the cache generation backwards.
             now = time.monotonic()
             generation = _event_stream_generation()
-            cached_state_event_seq = max(
-                0,
-                int(cache.get("state_event_seq") or 0),
-            )
-            if (
-                cache["state"] is not None
-                and cache["generation"] == generation
-                and now - float(cache["created_at"]) < _ACTIVE_EVENT_SNAPSHOT_TTL_SECONDS
-                and cached_state_event_seq >= required_state_event_seq
+            entry = cache["entry"]
+            if entry is None or not entry.is_fresh(
+                generation, now, _ACTIVE_EVENT_SNAPSHOT_TTL_SECONDS,
+                required_state_event_seq,
             ):
-                state = cache["state"]
-            else:
                 snapshot_reader = getattr(store, "read_active_event_snapshot", None)
                 snapshot_state_event_seq = required_state_event_seq
+                snapshot_cursors = None
                 if callable(snapshot_reader):
                     (
                         snapshot_items,
@@ -3150,29 +3142,25 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         active_items=snapshot_items,
                         reports=snapshot_reports,
                     )
+                    snapshot_cursors = {
+                        f"evt_{report.report_id}": store._report_stream_cursor(report)
+                        for report in snapshot_reports
+                    }
                 else:
                     state = self._build_active_event_state(store)
-                cache["generation"] = generation
-                cache["created_at"] = time.monotonic()
-                cache["state_event_seq"] = max(
-                    0,
-                    int(snapshot_state_event_seq or 0),
+                entry = ActiveEventSnapshot(
+                    generation=generation,
+                    created_at=time.monotonic(),
+                    state_event_seq=max(0, int(snapshot_state_event_seq or 0)),
+                    state=state,
+                    report_cursors=snapshot_cursors,
                 )
-                cache["state"] = state
-            active_items, alerts, presence_alerts = copy.deepcopy(state)
-            cached_state_event_seq = max(
-                0,
-                int(cache.get("state_event_seq") or 0),
-            )
-            return (
-                active_items,
-                alerts,
-                presence_alerts,
-                cached_state_event_seq,
-                cached_state_event_seq >= required_state_event_seq,
-            )
+                cache["entry"] = entry
         finally:
             cache["lock"].release()
+        return entry.copy_result(
+            entry.state_event_seq >= required_state_event_seq, report_cursors,
+        )
 
     def _active_presence_alerts(
         self,
@@ -3761,6 +3749,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             # optional timestamp cursor without attempting a report lookup.
             if last_event_id.startswith("presence_"):
                 return since, "", False, None
+            if "T" in last_event_id and last_event_id[:1].isdigit():
+                return last_event_id, "", False, None
             store = self._store()
             stream_cursor = store.resolve_alert_stream_cursor(last_event_id)
             if stream_cursor is not None:
@@ -3770,9 +3760,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     True,
                     stream_cursor,
                 )
-
-            if "T" in last_event_id and last_event_id[:1].isdigit():
-                return last_event_id, "", False, None
 
         if since:
             return since, "", False, None
@@ -3873,6 +3860,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 durable_systems: set[str] = set()
                 active_snapshot_state_event_seq = 0
                 active_snapshot_ready = True
+                active_report_cursors: dict[str, tuple[int, str]] = {}
                 if active_only:
                     (
                         active_items,
@@ -3880,7 +3868,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         active_presence_alerts,
                         active_snapshot_state_event_seq,
                         active_snapshot_ready,
-                    ) = self._cached_active_event_snapshot(store)
+                    ) = self._cached_active_event_snapshot(
+                        store, report_cursors=active_report_cursors,
+                    )
                 else:
                     stream_page = self._store().list_alert_stream_page(
                         after=stream_cursor,
@@ -3993,6 +3983,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                             ) = self._cached_active_event_snapshot(
                                 store,
                                 minimum_state_event_seq=required_state_event_seq,
+                                report_cursors=active_report_cursors,
                             )
                             if not active_snapshot_ready:
                                 logger.warning(
@@ -4131,7 +4122,15 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                         ] = []
                         for alert in alerts:
                             alert_id = str(alert.get("id") or "")
-                            cursor = store.resolve_alert_stream_cursor(alert_id)
+                            if alert_id.startswith("evt_") and callable(
+                                getattr(store, "read_active_event_snapshot", None)
+                            ):
+                                # Resolve from the same cached database view.
+                                # Fresh and legacy connections must not rescan
+                                # hot history or score unrelated reports here.
+                                cursor = active_report_cursors.get(alert_id)
+                            else:
+                                cursor = store.resolve_alert_stream_cursor(alert_id)
                             if cursor is None:
                                 continue
                             if stream_cursor is not None and cursor <= stream_cursor:

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { TacticalStarMap } from "./TacticalStarMap";
 import type { TacticalGraphData } from "./tacticalGraph";
+import { THEME_STORAGE_KEY, ThemeProvider } from "../shell/ThemeContext";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
   .IS_REACT_ACT_ENVIRONMENT = true;
@@ -348,7 +349,8 @@ describe("TacticalStarMap", () => {
     container.remove();
   });
 
-  test("opens current hostile details when a hostile system node is clicked", async () => {
+  test.each(["light", "dark"])("shows identity without ratings in %s hostile details", async (theme) => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
     const hostileMembers = [
       {
         characterId: 90000001,
@@ -401,10 +403,12 @@ describe("TacticalStarMap", () => {
 
     await act(async () => {
       root.render(
-        <TacticalStarMap
-          graphData={hostileGraphData}
-          onSelectSystem={() => {}}
-        />,
+        <ThemeProvider>
+          <TacticalStarMap
+            graphData={hostileGraphData}
+            onSelectSystem={() => {}}
+          />
+        </ThemeProvider>,
       );
     });
 
@@ -463,12 +467,16 @@ describe("TacticalStarMap", () => {
     )).toHaveAttribute("target", "_blank");
     (drawNode as Function)(hostileCard, context, 1);
     expect(fillText).toHaveBeenCalledWith("Pilot One", expect.any(Number), expect.any(Number));
-    expect(fillText).toHaveBeenCalledWith("高危 88", expect.any(Number), expect.any(Number));
+    expect(document.body).not.toHaveTextContent(/高危|严重|中危|低危/);
+    expect(fillText.mock.calls.map((call) => call[0]).join(" ")).not.toMatch(/高危|严重|中危|低危|88/);
     expect(fillText).toHaveBeenCalledWith("Red Horizon", expect.any(Number), expect.any(Number));
     expect(fillText).toHaveBeenCalledWith("Northern Threat", expect.any(Number), expect.any(Number));
     expect(fillText).toHaveBeenCalledWith("+1", expect.any(Number), expect.any(Number));
-    expect(fillRect.mock.calls.length).toBeGreaterThanOrEqual(6);
+    expect(fillRect.mock.calls.length).toBeGreaterThanOrEqual(4);
+    // The retired score track and animated score bar must not be painted.
+    expect(fillRect.mock.calls.some((call) => call[3] === 3)).toBe(false);
     expect(strokeRect).toHaveBeenCalled();
+    expect(document.documentElement.dataset.theme).toBe(theme);
 
     (drawLink as Function)(
       {
@@ -493,6 +501,7 @@ describe("TacticalStarMap", () => {
     (layoutNodes as Function)(context, 1);
     expect(hostileCard.hostileCardHidden).toBe(false);
 
+    window.localStorage.removeItem(THEME_STORAGE_KEY);
     await act(async () => {
       root.unmount();
     });

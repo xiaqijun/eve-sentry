@@ -25,6 +25,7 @@ from app.server.auth import AuthService
 from app.server.auth_http import build_admin_clients_payload
 from app.server.auth_store import AuthRepository
 from app.server.client_status import monitored_system_names
+from app.server.event_cache import ActiveEventSnapshot
 from app.server.http_server import (
     IntelHTTPServer,
     IntelRequestHandler,
@@ -5056,22 +5057,24 @@ def test_v1_events_durable_cursor_skips_active_report_cursor_resolution(tmp_path
     store = DurableCursorStore(tmp_path / "intel.json", systems={}, links=[])
     store._sse_active_event_cache = {
         "lock": threading.RLock(),
-        "generation": _event_stream_generation(),
-        "created_at": time.monotonic(),
-        "state_event_seq": 1,
-        "state": (
-            [],
-            [
-                {
-                    "id": "evt_existing",
-                    "system_name": "HB-FSO",
-                    "created_at": "2026-09-09T09:55:00+00:00",
-                    "score": 100,
-                    "level": "critical",
-                    "acknowledged": False,
-                }
-            ],
-            [],
+        "entry": ActiveEventSnapshot(
+            generation=_event_stream_generation(),
+            created_at=time.monotonic(),
+            state_event_seq=1,
+            state=(
+                [],
+                [
+                    {
+                        "id": "evt_existing",
+                        "system_name": "HB-FSO",
+                        "created_at": "2026-09-09T09:55:00+00:00",
+                        "score": 100,
+                        "level": "critical",
+                        "acknowledged": False,
+                    }
+                ],
+                [],
+            ),
         ),
     }
     server = IntelHTTPServer(store, port=0)
@@ -6246,9 +6249,7 @@ def test_cached_active_event_state_does_not_wait_on_slow_builder(tmp_path):
     lock = threading.Lock()
     store._sse_active_event_cache = {
         "lock": lock,
-        "generation": -1,
-        "created_at": 0.0,
-        "state": cached_state,
+        "entry": ActiveEventSnapshot(-1, 0.0, 0, cached_state),
     }
     lock.acquire()
     handler = object.__new__(IntelRequestHandler)
@@ -6268,10 +6269,7 @@ def test_cached_active_event_snapshot_marks_lock_free_state_not_ready(tmp_path):
     lock = threading.Lock()
     store._sse_active_event_cache = {
         "lock": lock,
-        "generation": _event_stream_generation(),
-        "created_at": time.monotonic(),
-        "state_event_seq": 41,
-        "state": cached_state,
+        "entry": ActiveEventSnapshot(-1, time.monotonic(), 41, cached_state),
     }
     lock.acquire()
     handler = object.__new__(IntelRequestHandler)
@@ -6392,10 +6390,7 @@ def test_v1_events_skips_bootstrap_while_cold_snapshot_is_busy(tmp_path):
     cache_lock = threading.Lock()
     store._sse_active_event_cache = {
         "lock": cache_lock,
-        "generation": _event_stream_generation(),
-        "created_at": 0.0,
-        "state_event_seq": 0,
-        "state": None,
+        "entry": None,
     }
     cache_lock.acquire()
     server = IntelHTTPServer(store, port=0)
@@ -6521,10 +6516,10 @@ def test_v1_events_refreshes_bootstrap_after_durable_clear(tmp_path):
     }
     store._sse_active_event_cache = {
         "lock": threading.RLock(),
-        "generation": _event_stream_generation(),
-        "created_at": time.monotonic(),
-        "state_event_seq": 0,
-        "state": ([stale_item], [], []),
+        "entry": ActiveEventSnapshot(
+            _event_stream_generation(), time.monotonic(), 0,
+            ([stale_item], [], []),
+        ),
     }
     server = IntelHTTPServer(store, port=0)
     server.start()

@@ -1,8 +1,6 @@
 import io
 import json
 
-from app.core.models import Observation
-from app.intel.enrichment import ThreatEnricher
 from app.intel.zkillboard import ZkillboardClient
 
 
@@ -75,48 +73,3 @@ def test_character_stats_negative_caches_empty_and_failed_responses():
     assert client.character_stats(123) is None
     assert client.character_stats(123) is None
     assert calls == 1
-
-
-def test_threat_enricher_adds_zkill_stats_without_changing_profile_fields():
-    class Resolver:
-        def character_profile(self, character_id):
-            return {
-                "character_id": character_id,
-                "name": "Pilot One",
-                "corporation_id": 98000001,
-            }
-
-    class Killboard:
-        def character_stats(self, character_id):
-            return {
-                "source": "zkillboard",
-                "character_id": character_id,
-                "danger_ratio": 68,
-                "ships_destroyed": 1043,
-            }
-
-    observation = Observation.from_payload(
-        {
-            "source": "eve-sentry-detector",
-            "system_name": "Jita",
-            "character_ids": [443630591],
-        }
-    )
-    enricher = ThreatEnricher(resolver=Resolver(), killboard=Killboard())
-
-    enrichment = enricher.enrich(observation)
-
-    assert enrichment.character_profiles == [
-        {
-            "character_id": 443630591,
-            "name": "Pilot One",
-            "corporation_id": 98000001,
-            "zkill": {
-                "source": "zkillboard",
-                "character_id": 443630591,
-                "danger_ratio": 68,
-                "ships_destroyed": 1043,
-            },
-            "zkill_danger_ratio": 68,
-        }
-    ]
