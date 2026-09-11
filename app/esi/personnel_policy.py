@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 from dataclasses import dataclass
 
@@ -22,7 +21,10 @@ def classification_profile(profile: dict) -> dict:
 
 DAY = 86400.0
 NAME_REFRESH_SECONDS = 90 * DAY
-AFFILIATION_INTERVALS = {1: 300.0, 2: 3600.0, 3: 21600.0, 4: 7 * DAY, 5: 30 * DAY}
+# ESI POST /characters/affiliation: x-client-cache-ttl / x-server-cache-ttl.
+# Activity controls queue priority, never extends or shortens data validity.
+AFFILIATION_TTL = 3600.0
+AFFILIATION_INTERVALS = dict.fromkeys(range(1, 6), AFFILIATION_TTL)
 
 
 def timestamp(value: float) -> float:
@@ -62,16 +64,14 @@ def refresh_due_at(
     *, character_id: int, fetched_at: float, tier: int,
     upstream_valid_until: float = 0.0, spare_capacity: bool = False,
 ) -> float:
-    """Stagger scheduling, without refreshing before upstream validity ends."""
+    """All tiers expire together; spare capacity changes throughput, not TTL."""
     positive_id(character_id)
     if tier not in AFFILIATION_INTERVALS:
         raise ValueError("affiliation tier must be 1-5")
-    interval = AFFILIATION_INTERVALS[tier]
-    # Deterministic jitter keeps tests/restarts stable and avoids synchronized waves.
-    fraction = int(hashlib.sha256(str(character_id).encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
-    factor = 0.5 if spare_capacity else 1.0
-    due = timestamp(fetched_at) + interval * factor * (0.9 + 0.1 * fraction)
-    return max(due, timestamp(upstream_valid_until))
+    # Keep keyword compatibility; neither a local legacy one-day deadline nor
+    # extra workers can override the official one-hour affiliation cache policy.
+    timestamp(upstream_valid_until)
+    return timestamp(fetched_at) + AFFILIATION_TTL
 
 
 def retry_delay(failures: int, *, jitter: float = 0.5, retry_after: float = 0.0) -> float:

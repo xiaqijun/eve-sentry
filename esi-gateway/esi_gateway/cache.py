@@ -50,10 +50,10 @@ class TtlCache:
             self._stale.pop(key, None)
             return False, None
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key: str, value: Any, *, ttl: float | None = None) -> None:
         with self._lock:
             self._stale.pop(key, None)
-            self._items[key] = (time.monotonic() + self.ttl, value)
+            self._items[key] = (time.monotonic() + (self.ttl if ttl is None else max(1.0, ttl)), value)
             self._items.move_to_end(key)
             while len(self._items) > self.max_entries:
                 self._items.popitem(last=False)

@@ -37,6 +37,13 @@ class CachedResponse:
     expires_at: float
 
 
+def affiliation_cache_ttl(value: float) -> float:
+    """Use the official one-hour policy, not a legacy generic/local TTL."""
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("affiliation cache TTL must be finite and positive")
+    return 3600.0
+
+
 def _cache_result(value: Any, status: str, freshness: dict[str, Any] | None) -> tuple[Any, str]:
     if isinstance(value, CachedResponse):
         if freshness is not None:
@@ -48,9 +55,10 @@ def _cache_result(value: Any, status: str, freshness: dict[str, Any] | None) -> 
 
 
 class GatewayState:
-    def __init__(self, token: str, allowed_clients: set[str], ttl: float, max_requests_per_second: float, client: EsiClient | None = None, *, max_cache_entries: int = 4096, negative_ttl: float = 30.0, stale_grace: float = 300.0, id_cache: IdCacheCoordinator | None = None) -> None:
+    def __init__(self, token: str, allowed_clients: set[str], ttl: float, max_requests_per_second: float, client: EsiClient | None = None, *, max_cache_entries: int = 4096, negative_ttl: float = 30.0, stale_grace: float = 300.0, id_cache: IdCacheCoordinator | None = None, affiliation_ttl: float = 3600.0) -> None:
         self.authorizer = Authorizer(token, allowed_clients)
         self.cache = TtlCache(ttl, max_entries=max_cache_entries, stale_grace=stale_grace)
+        self.affiliation_ttl = affiliation_cache_ttl(affiliation_ttl)
         self.negative_ttl = max(0.0, float(negative_ttl))
         self._negative: OrderedDict[str, float] = OrderedDict()
         self._negative_lock = threading.Lock()
@@ -130,8 +138,9 @@ class GatewayState:
                     raise
                 duration = time.monotonic() - started
                 fetched_at = time.time()
-                cached = CachedResponse(value, fetched_at, fetched_at + self.cache.ttl)
-                self.cache.set(key, cached)
+                ttl = self.affiliation_ttl if endpoint == "get_character_affiliations" else self.cache.ttl
+                cached = CachedResponse(value, fetched_at, fetched_at + ttl)
+                self.cache.set(key, cached, ttl=ttl)
                 self._negative_clear(key)
                 self.metrics.record_upstream(endpoint, duration)
                 return _cache_result(cached, "miss", freshness)

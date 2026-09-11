@@ -12,8 +12,14 @@ fallbacks retain it. Missing entities receive no metadata. Legacy entries withou
 timestamps remain unknown rather than being stamped with the current read time;
 the simple in-memory cache starts empty after a gateway deployment/restart.
 Old consumers may ignore the field. No force-refresh API bypasses upstream limits. Private contacts stay
-outside this cache. The affiliation TTL default is 300 seconds; an existing explicit
-3600-second environment setting must be changed separately.
+outside this cache. Affiliation TTL is 3600 seconds in both cache modes, matching
+`x-client-cache-ttl` and `x-server-cache-ttl` in the [official specification](https://esi.evetech.net/meta/openapi.json)
+(checked 2026-09-11). This is an endpoint policy constant, not generic dynamic
+HTTP cache-header support. Generic/local TTL settings cannot shorten or lengthen it.
+Legacy affiliation settings are normalized at startup with a warning; other endpoint TTLs are unchanged.
+Existing hot/durable affiliation records are normalized on read by their original
+`fetched_at` plus 3600 seconds, with the stale window adjusted accordingly.
+This does not relabel an old record as newly fetched or require deleting archives.
 
 This document describes the optional PostgreSQL + Redis deployment for the
 standalone public ESI Gateway. It is the operational source of truth for cache

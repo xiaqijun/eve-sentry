@@ -17,7 +17,7 @@ from esi_gateway.id_cache import (
     PostgresStore,
     RedisHotStore,
 )
-from esi_gateway.server import GatewayServer, GatewayState
+from esi_gateway.server import GatewayServer, GatewayState, affiliation_cache_ttl
 
 SECONDS_PER_DAY = 24 * 60 * 60
 
@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--redis-url", default=os.environ.get("EVE_SENTRY_ESI_GATEWAY_REDIS_URL", ""))
     parser.add_argument("--id-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_ID_CACHE_TTL", str(30 * SECONDS_PER_DAY))))
     parser.add_argument("--character-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_CHARACTER_CACHE_TTL", str(2 * SECONDS_PER_DAY))))
-    parser.add_argument("--affiliation-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_AFFILIATION_CACHE_TTL", "300")))
+    parser.add_argument("--affiliation-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_AFFILIATION_CACHE_TTL", "3600")))
     parser.add_argument("--corporation-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_CORPORATION_CACHE_TTL", str(7 * SECONDS_PER_DAY))))
     parser.add_argument("--alliance-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_ALLIANCE_CACHE_TTL", str(7 * SECONDS_PER_DAY))))
     parser.add_argument("--system-cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_SYSTEM_CACHE_TTL", str(30 * SECONDS_PER_DAY))))
@@ -59,6 +59,9 @@ def main(argv: list[str] | None = None) -> int:
     if not 1 <= args.refresh_batch_size <= 1000:
         raise SystemExit("--refresh-batch-size must be between 1 and 1000")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if args.affiliation_cache_ttl != 3600:
+        logging.getLogger("esi_gateway").warning("Normalizing affiliation cache TTL to the official 3600 seconds")
+    args.affiliation_cache_ttl = affiliation_cache_ttl(args.affiliation_cache_ttl)
     id_cache = None
     if args.postgres_dsn or args.redis_url:
         durable = PostgresStore(args.postgres_dsn) if args.postgres_dsn else MemoryStore()
@@ -82,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
             retry_base_seconds=args.cache_retry_base,
             retry_max_seconds=args.cache_retry_max,
         )
-    state = GatewayState(token, allowed, args.cache_ttl, args.rate, max_cache_entries=max(1, args.cache_max_entries), negative_ttl=args.negative_ttl, stale_grace=args.stale_grace, id_cache=id_cache)
+    state = GatewayState(token, allowed, args.cache_ttl, args.rate, max_cache_entries=max(1, args.cache_max_entries), negative_ttl=args.negative_ttl, stale_grace=args.stale_grace, id_cache=id_cache, affiliation_ttl=args.affiliation_cache_ttl)
     server = GatewayServer((args.host, args.port), state)
     logging.getLogger("esi_gateway").info("listening on %s:%s", args.host, args.port)
     try:

@@ -237,9 +237,9 @@ def test_refresh_tiers(age, tier):
 def test_idle_refresh_respects_upstream_and_names_are_low_frequency():
     normal = refresh_due_at(character_id=1, fetched_at=100, tier=1)
     early = refresh_due_at(character_id=1, fetched_at=100, tier=1, spare_capacity=True)
-    assert 235 <= early <= 250 < normal <= 400
+    assert early == normal == 3700
     assert refresh_due_at(character_id=1, fetched_at=100, tier=1,
-                          spare_capacity=True, upstream_valid_until=1000) == 1000
+                          spare_capacity=True, upstream_valid_until=86500) == 3700
     assert NAME_REFRESH_SECONDS == 90*DAY
 
 

@@ -75,7 +75,7 @@ def test_upstream_stale_timestamp_is_not_replaced_with_arrival_time(archive_fact
     archive, client = archive_factory(), Client()
     archive.save_identity(IdentityUpdate(1, "Pilot 1", 100, 100))
     client.response_freshness = lambda: {"1": {"fetched_at": 100, "expires_at": 3000}}
-    runtime = PersonnelRuntime(archive, client, now=lambda: 2000)
+    runtime = PersonnelRuntime(archive, client, now=lambda: 4000)
     archive.request_refresh("affiliation", 1, priority=1, due_at=1000)
     runtime.run_batch("affiliation", realtime=True)
     assert runtime.profile(1)["affiliation_fetched_at"] == 100
@@ -156,10 +156,10 @@ def test_maintenance_does_not_cancel_retry_after_or_success_schedule(archive_fac
     runtime.drain_requests()
     assert not archive.claim(now=1299, kind="affiliation")
     lease = archive.claim(now=1300, kind="affiliation")[0]
-    archive.finish(lease, now=1301, next_due_at=5000, next_priority=1,
-                   update=AffiliationUpdate(1, 10, 100))
+    archive.finish(lease, now=1301, next_due_at=4901, next_priority=1,
+                   update=AffiliationUpdate(1, 10, 1301))
     runtime.maintenance()
-    assert not archive.claim(now=4999, kind="affiliation")
+    assert not archive.claim(now=4900, kind="affiliation")
 
 
 def test_hot_profile_lookup_by_id_queues_cold_database_load(archive_factory):

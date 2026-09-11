@@ -9,7 +9,7 @@ import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
@@ -394,7 +394,18 @@ class IdCacheCoordinator:
         return str(endpoint), str(entity_key)
 
     def _ttl_for(self, endpoint: str) -> float:
-        return self.ttl_by_endpoint.get(endpoint, self.ttl_seconds)
+        ttl = self.ttl_by_endpoint.get(endpoint, self.ttl_seconds)
+        return 3600.0 if endpoint == "get_character_affiliations" else ttl
+
+    def _bound_affiliation_records(self, records: dict[CacheKey, CacheRecord]) -> dict[CacheKey, CacheRecord]:
+        """Normalize legacy local TTLs without resetting successful fetch time."""
+        result = dict(records)
+        for key, record in records.items():
+            if record.endpoint == "get_character_affiliations":
+                expires = record.fetched_at + self._ttl_for(record.endpoint)
+                result[key] = replace(record, expires_at=expires,
+                                      stale_until=expires + self.stale_grace_seconds)
+        return result
 
     def fetch_single(
         self,
@@ -429,7 +440,7 @@ class IdCacheCoordinator:
 
         if self.hot is not None:
             try:
-                records.update(self.hot.get_many(cache_keys))
+                records.update(self._bound_affiliation_records(self.hot.get_many(cache_keys)))
                 self._metric("hot_hits", sum(1 for record in records.values() if record.is_fresh(now)))
             except Exception:  # noqa: BLE001 -- Optional Redis must not break public reads.
                 self._metric("redis_errors")
@@ -451,7 +462,7 @@ class IdCacheCoordinator:
         ]
         if durable_missing_keys:
             try:
-                durable_records = self.durable.get_many(durable_missing_keys)
+                durable_records = self._bound_affiliation_records(self.durable.get_many(durable_missing_keys))
                 records.update(durable_records)
                 self._metric("durable_hits", sum(1 for record in durable_records.values() if record.is_fresh(now)))
                 if self.hot is not None and durable_records:

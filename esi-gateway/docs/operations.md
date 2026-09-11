@@ -32,7 +32,7 @@ EVE_SENTRY_ESI_GATEWAY_REFRESH_INTERVAL=5
 EVE_SENTRY_ESI_GATEWAY_REFRESH_BATCH_SIZE=1000
 EVE_SENTRY_ESI_GATEWAY_ID_CACHE_TTL=2592000
 EVE_SENTRY_ESI_GATEWAY_CHARACTER_CACHE_TTL=172800
-EVE_SENTRY_ESI_GATEWAY_AFFILIATION_CACHE_TTL=300
+EVE_SENTRY_ESI_GATEWAY_AFFILIATION_CACHE_TTL=3600
 EVE_SENTRY_ESI_GATEWAY_CORPORATION_CACHE_TTL=604800
 EVE_SENTRY_ESI_GATEWAY_ALLIANCE_CACHE_TTL=604800
 EVE_SENTRY_ESI_GATEWAY_SYSTEM_CACHE_TTL=2592000
@@ -76,16 +76,27 @@ After deploying a freshness fix through the protected workflow, use an authorize
 affiliation lookup for a currently observed character and verify that
 `freshness[character_id].fetched_at` is positive. Repeat the same lookup: a cache
 hit must retain the original timestamp, not the second request time. Verify this
-even when the optional PostgreSQL/Redis ID cache is disabled.
+even when the optional PostgreSQL/Redis ID cache is disabled. Also verify that
+affiliation `expires_at - fetched_at` is 3600 seconds and that an expired
+response can be refreshed. A positive but hours-old timestamp is not enough.
 
-Keep server personnel profiles whose affiliation timestamp is zero. Normal
-active-priority refresh should replace the unknown timestamp, reclassify valid
+Deploy the gateway TTL fix before the server scheduling fix using their protected
+workflows. Set `EVE_SENTRY_ESI_GATEWAY_AFFILIATION_CACHE_TTL=3600`; other legacy
+values are normalized with a startup warning, including when ID caching is disabled.
+Keep server personnel profiles whose affiliation timestamp is zero or over an hour old.
+The server repairs distant deadlines at every activity tier, even existing same-priority
+jobs, without stealing leases or canceling failure backoff. All expired affiliations
+remain eligible for the continuously running priority queues; activity changes order,
+not cache validity. Successful jobs schedule their next expiry without a new sighting.
+If a still-old gateway
+response arrives during rollout, retry is scheduled after 60 seconds, not tomorrow.
+Normal active-priority refresh should replace the unknown/old timestamp, reclassify valid
 current observations and emit `alert.updated` when the roster changes. Confirm
 the resulting bot delivery separately; cleared observations must not return.
 Do not clear the personnel database, stamp old profiles with the current time,
-or disable the untrusted-affiliation guard. Server/client/QQ behavior does not
-need to change for this gateway-only fix. A rollback to the missing-metadata
-version can make confirmation unavailable again; `/health` alone will not reveal it.
+or disable the untrusted-affiliation guard. Visual presence/clear must not wait
+for personnel refresh. A rollback to missing metadata or day-long affiliation
+caching can make confirmation unavailable again; `/health` alone will not reveal it.
 
 ### Protected release process
 

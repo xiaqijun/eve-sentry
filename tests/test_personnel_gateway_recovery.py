@@ -20,8 +20,9 @@ from app.server.postgres_store import PostgreSQLIntelStore
 
 
 @pytest.mark.parametrize("clear_before_refresh", [False, True])
+@pytest.mark.parametrize("old_affiliation", [False, True])
 def test_gateway_refresh_restores_current_hostile_only(
-    postgres_archive, postgres_dsn, tmp_path, monkeypatch, clear_before_refresh,
+    postgres_archive, postgres_dsn, tmp_path, monkeypatch, clear_before_refresh, old_affiliation,
 ):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "esi-gateway"))
     from esi_gateway.server import GatewayServer, GatewayState
@@ -29,8 +30,9 @@ def test_gateway_refresh_restores_current_hostile_only(
     archive, factory = postgres_archive
     now = time.time()
     archive.save_identity(IdentityUpdate(1, "Pilot", now, now))
-    archive.save_affiliation(AffiliationUpdate(1, 10, 0))
-    gateway = GatewayState("t" * 32, {"127.0.0.1"}, 60, 1000)
+    archive.save_affiliation(AffiliationUpdate(1, 10, now - 7200 if old_affiliation else 0))
+    archive.request_refresh("affiliation", 1, priority=1, due_at=now + 86400)
+    gateway = GatewayState("t" * 32, {"127.0.0.1"}, 86400, 1000)
     gateway.client.get_character_affiliations = lambda ids: [{"character_id": 1, "corporation_id": 10}]
     server = GatewayServer(("127.0.0.1", 0), gateway)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -56,6 +58,8 @@ def test_gateway_refresh_restores_current_hostile_only(
         runtime.set_active([(1, "Pilot", now)])
         runtime.drain_requests()
         assert runtime.run_batch("affiliation", realtime=True) == 1
+        freshness = client.response_freshness()["1"]
+        assert freshness["expires_at"] - freshness["fetched_at"] == 3600
         assert runtime.profile(1)["affiliation_trusted"] is True
         assert archive.get_profiles([1])[1]["affiliation_fetched_at"] > 0
         assert 1 in runtime._changed

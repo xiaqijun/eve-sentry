@@ -258,6 +258,19 @@ class PersonnelArchive:
                 (*key, priority, due_at, promote_only),
             )
 
+    def expedite_stale_affiliation(self, character_id: int, *, now: float, due_at: float | None = None) -> None:
+        """Repair legacy deadlines for all tiers without stealing leases or retries."""
+        positive_id(character_id)
+        timestamp(now)
+        due = now if due_at is None else timestamp(due_at)
+        with self._connection() as connection:
+            connection.execute(
+                "UPDATE personnel_refresh_jobs SET next_due_at = %s, revision = revision + 1 "
+                "WHERE kind = 'affiliation' AND entity_key = %s AND context_key = '' "
+                "AND failures = 0 AND lease_until <= %s AND next_due_at > %s",
+                (due, str(character_id), now, max(due, now + 60)),
+            )
+
     def claim(
         self, *, now: float, limit: int = 100, lease_seconds: float = 30,
         minimum_priority: int = 0, maximum_priority: int = 5, oldest_first: bool = False,

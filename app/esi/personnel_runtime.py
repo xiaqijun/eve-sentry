@@ -16,7 +16,7 @@ from app.esi.personnel_archive import (
     PersonnelArchive, IdentityUpdate, AffiliationUpdate, OrganizationUpdate,
 )
 from app.esi.personnel_policy import (
-    NAME_REFRESH_SECONDS, name_key, personnel_tier, refresh_due_at, background_slots, RefreshLoad,
+    AFFILIATION_TTL, NAME_REFRESH_SECONDS, name_key, personnel_tier, refresh_due_at, background_slots, RefreshLoad,
 )
 from app.esi.resolver import EsiResolver, ResolvedName
 
@@ -95,8 +95,8 @@ class PersonnelRuntime:
             result = dict(value)
         fetched = float(result.get("affiliation_fetched_at") or 0)
         result.update(
-            cache_status="cached" if fetched > 0 and self.now() - fetched < 300 else "stale",
-            fetched_at=fetched, affiliation_trusted=fetched > 0 and self.now() - fetched <= 3600,
+            cache_status="cached" if fetched > 0 and self.now() - fetched < AFFILIATION_TTL else "stale",
+            fetched_at=fetched, affiliation_trusted=fetched > 0 and self.now() - fetched < AFFILIATION_TTL,
             zkill_url=f"https://zkillboard.com/character/{character_id}/",
         )
         return result
@@ -166,6 +166,9 @@ class PersonnelRuntime:
                              upstream_valid_until=self._upstream_until.get(cid, 0),
                              spare_capacity=self._background > 1)
         self.archive.request_refresh("affiliation", cid, priority=tier, due_at=now if not fetched else due, promote_only=True)
+        # Repair legacy multi-day schedules for every tier, including cold history.
+        # Keep retries bounded and never steal an in-flight lease.
+        self.archive.expedite_stale_affiliation(cid, now=now, due_at=due if fetched else now)
         self.archive.request_refresh("identity", cid, priority=tier,
                                      due_at=float(row["name_checked_at"]) + NAME_REFRESH_SECONDS, promote_only=True)
         for kind in ("corporation", "alliance"):
@@ -285,6 +288,10 @@ class PersonnelRuntime:
                     tier = personnel_tier(now=self.now(), last_seen_at=profile["last_seen_at"], active=active)
                     due = max(self.now() + 60, refresh_due_at(character_id=cid, fetched_at=fetched,
                               tier=tier, upstream_valid_until=expires, spare_capacity=self._background > 1))
+                    if not fetched or self.now() - fetched >= AFFILIATION_TTL:
+                        # Still-old responses during rolling deployment must not
+                        # defer confirmation another day or create a tight loop.
+                        due = self.now() + 60
                 else:
                     update = OrganizationUpdate(kind, int(lease.entity_key), row["name"], fetched)
                     due = self.now() + 36500 * 86400  # Names have no periodic refresh obligation.

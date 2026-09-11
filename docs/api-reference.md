@@ -9,6 +9,8 @@
 `fetched_at`、`last_validated_at`、`expires_at` 及布尔值 `stale`。时间与返回资料一同保存，
 缓存命中及过期回退不重置时间；缺失实体不生成时间信息。未知时间不能作为可信归属，
 需通过正常刷新取得有效时间，不能将读取时间填作获取时间。原 `data`、`cache` 字段保持兼容。
+归属查询的 `expires_at - fetched_at` 为官方当前的 3600 秒（两种缓存模式一致），读取旧记录不改变
+其年龄；这不是名单推送等待时间。不可信归属先刷新再分类，视觉来敌/清空不等待该查询。
 
 管理员 ESI Gateway 观测接口的 `resolver_cache.archive` 为可选对象，包含 `mode`、
 `profiles`、`hot_profiles`、`pending_names`、`background_slots`、`degraded`、
