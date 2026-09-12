@@ -32,3 +32,15 @@ def test_expiry_survives_restart_and_does_not_change_affiliation_revision(archiv
     runtime._remember(list(reopened.get_profiles([1]).values()))
     assert runtime.profile(1)["affiliation_trusted"] is False
     assert runtime.profile(1)["corporation_id"] == 10
+
+
+def test_future_affiliation_is_not_trusted_until_observation_time(archive_factory):  # noqa: F811
+    archive = archive_factory()
+    archive.save_identity(IdentityUpdate(1, "Pilot", 100, 100))
+    archive.save_affiliation(AffiliationUpdate(1, 10, 102, expires_at=3600))
+    clock = [100]
+    runtime = PersonnelRuntime(archive, object(), now=lambda: clock[0])
+    runtime._remember(list(archive.get_profiles([1]).values()))
+    assert runtime.profile(1)["affiliation_trusted"] is False
+    clock[0] = 102
+    assert runtime.profile(1)["affiliation_trusted"] is True

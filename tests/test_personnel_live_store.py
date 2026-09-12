@@ -22,7 +22,9 @@ from app.intel.scoring import Watchlist
 
 def test_live_membership_correction_never_clears_visual_presence(postgres_archive, postgres_dsn, tmp_path):
     archive, factory = postgres_archive
-    now = time.time()
+    # Revisions must be distinct but already observed, including on fast CI.
+    # Future-dated affiliations are deliberately not trusted by the runtime.
+    now = time.time() - 10
     archive.save_identity(IdentityUpdate(1, "Pilot 1", now, now))
     archive.save_affiliation(AffiliationUpdate(1, 10, now))
     runtime = PersonnelRuntime(archive, Client())
