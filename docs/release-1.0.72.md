@@ -37,7 +37,26 @@ GitNexus 暂存区扫描为 99 文件、617 符号、50 流程，整体 critical
 失败为不可信 TLS 证书测试缺少 `cryptography` 测试依赖。仅补齐 CI 测试安装项，保留证书拒绝断言，
 不修改生产 TLS 校验或增加运行时依赖。服务端部署仍被门禁拦截，待新流水线通过。
 
-## 发布顺序与回滚
+## 2026-09-13 实际发布结果
+
+- 客户端 [v1.0.72](https://github.com/xiaqijun/eve-sentry/releases/tag/v1.0.72) 已正式发布，
+  [发布流水线](https://github.com/xiaqijun/eve-sentry/actions/runs/34710406258) 成功，下载站 `latest.json` 已核对为 1.0.72。
+  客户端源提交为 `cc1029cbe7df72b96d99cca0354eb2c3b401a1df`；后续两次修正只涉及服务端 CI/测试与台账。
+- [服务端部署](https://github.com/xiaqijun/eve-sentry/actions/runs/34710947332) 全部通过：Windows Python 849 通过/9 跳过，
+  PostgreSQL 92 通过，前端 25 文件/124 用例通过，构建及公网 readiness 通过。
+- [Gateway 部署](https://github.com/xiaqijun/eve-sentry/actions/runs/34710953305) 成功；114 和 47 的部署标记均为
+  `bb5790fa9030a099212d5401f9f393a71b6ee8ab`，服务 active。机器人已随 `cc1029c` 成功部署。
+- [受保护的 ESI 切换](https://github.com/xiaqijun/eve-sentry/actions/runs/34711301033) 成功执行
+  47 dual → 114 relay → 47 relay。114 的 mode 已读取确认为 relay；47 health 返回 relay，2 条隧道建立，
+  旧 JSON 缓存路由及后台缓存队列停用，历史存储保留。以上为切换后短窗口检查，不代表长期无故障。
+- 114 档案 mode=on，后台刷新/历史回填开启，并发上限 4；原有 1,046 份人员档案、431 个组织记录保留，
+  刷新任务 2,938 条；`system_current_state` 已建立并有 69 行。行数为检查时快照，不等于在线节点数。
+- 组织关系分类仍为默认 off，未自动开启；纯组织规则（无个人声望例外）仅在 organization_mode=on 生效。
+  后续在管理界面先 shadow 核对授权、关系来源及比较结果，再 on。没有将生产配置默认为已启用。
+- 切换后服务端 readiness 正常。最近 5 分钟（最多 3,000 条）日志按 ERROR/Traceback/timeout 等标记抽查为零，
+  不是完整故障率统计；尚未执行真实游戏截图、双节点接管、远端清空与 QQ 实际投递的端到端时延验收。
+
+## 发布操作参考
 
 推送 main 后等待服务端、机器人、Gateway、Client CI/客户端发布、协议和下载站工作流完成。
 只有完成新版部署后才运行 `ESI transport rollout`，确认 114 档案可用再关闭 47 成功缓存路线。
