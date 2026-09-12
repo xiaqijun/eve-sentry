@@ -17,6 +17,7 @@ from esi_gateway.id_cache import (
     PostgresStore,
     RedisHotStore,
 )
+from esi_gateway.relay import RelayGatewayServer, validate_relay_binding
 from esi_gateway.server import GatewayServer, GatewayState, affiliation_cache_ttl
 
 SECONDS_PER_DAY = 24 * 60 * 60
@@ -28,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=int(os.environ.get("EVE_SENTRY_ESI_GATEWAY_PORT", "8787")))
     parser.add_argument("--token", default=os.environ.get("EVE_SENTRY_ESI_GATEWAY_TOKEN", ""))
     parser.add_argument("--allowed-client", action="append", default=None)
+    parser.add_argument("--transport-mode", choices=("legacy", "dual", "relay"), default=os.environ.get("EVE_SENTRY_ESI_GATEWAY_TRANSPORT_MODE", "legacy"))
     parser.add_argument("--cache-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_CACHE_TTL", "86400")))
     parser.add_argument("--cache-max-entries", type=int, default=int(os.environ.get("EVE_SENTRY_ESI_GATEWAY_CACHE_MAX_ENTRIES", "4096")))
     parser.add_argument("--negative-ttl", type=float, default=float(os.environ.get("EVE_SENTRY_ESI_GATEWAY_NEGATIVE_TTL", "30")))
@@ -54,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
     if len(token) < 32:
         raise SystemExit("--token or EVE_SENTRY_ESI_GATEWAY_TOKEN must be at least 32 characters")
     allowed = set(args.allowed_client or os.environ.get("EVE_SENTRY_ESI_GATEWAY_ALLOWED_CLIENTS", "").replace(",", " ").split())
+    if args.transport_mode != "legacy":
+        validate_relay_binding(args.host, allowed)
     if not 5 <= args.refresh_interval <= 10:
         raise SystemExit("--refresh-interval must be between 5 and 10 seconds")
     if not 1 <= args.refresh_batch_size <= 1000:
@@ -63,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         logging.getLogger("esi_gateway").warning("Normalizing affiliation cache TTL to the official 3600 seconds")
     args.affiliation_cache_ttl = affiliation_cache_ttl(args.affiliation_cache_ttl)
     id_cache = None
-    if args.postgres_dsn or args.redis_url:
+    if args.transport_mode != "relay" and (args.postgres_dsn or args.redis_url):
         durable = PostgresStore(args.postgres_dsn) if args.postgres_dsn else MemoryStore()
         hot = RedisHotStore(args.redis_url) if args.redis_url else None
         id_cache = IdCacheCoordinator(
@@ -86,7 +90,8 @@ def main(argv: list[str] | None = None) -> int:
             retry_max_seconds=args.cache_retry_max,
         )
     state = GatewayState(token, allowed, args.cache_ttl, args.rate, max_cache_entries=max(1, args.cache_max_entries), negative_ttl=args.negative_ttl, stale_grace=args.stale_grace, id_cache=id_cache, affiliation_ttl=args.affiliation_cache_ttl)
-    server = GatewayServer((args.host, args.port), state)
+    server = (GatewayServer((args.host, args.port), state) if args.transport_mode == "legacy"
+              else RelayGatewayServer((args.host, args.port), state, transport_mode=args.transport_mode))
     logging.getLogger("esi_gateway").info("listening on %s:%s", args.host, args.port)
     try:
         server.serve_forever()

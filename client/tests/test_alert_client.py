@@ -440,6 +440,9 @@ def test_alert_worker_resumes_cursor_and_throttles_event_heartbeats(tmp_path):
 
         def iter_events(self, **kwargs):
             calls.append(("events", kwargs))
+            if kwargs["last_event_id"] == "":
+                yield {"id": "event-40", "event": "bootstrap", "data": {"active_intel": []}}
+                return
             yield {"id": "event-41", "event": "safe", "data": {"system": "Tama"}}
             yield {
                 "id": "event-42",
@@ -462,7 +465,7 @@ def test_alert_worker_resumes_cursor_and_throttles_event_heartbeats(tmp_path):
 
     worker.run()
 
-    assert calls[0][1]["last_event_id"] == "event-40"
+    assert [payload["last_event_id"] for kind, payload in calls if kind == "events"] == ["", "event-40"]
     assert [kind for kind, _payload in calls].count("heartbeat") == 1
     reloaded = AlertClientState(state_path)
     reloaded.load_seen_ids()

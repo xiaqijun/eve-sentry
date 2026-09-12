@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from time import time
-from typing import Any, Callable
+from typing import Any
 
 from app.core.models import Observation
 from app.esi.session import (
@@ -51,6 +53,13 @@ class ThreatEnricher:
         self._now = now or time
         self._contact_standings: list[ContactStanding] | None = None
         self._contact_standings_until = 0.0
+        self._contacts_lock = threading.Lock()
+        self._contacts_refresh_lock = threading.Lock()
+        self._successful_at = None
+        self._context = None
+        self._contacts_org_context = None
+        self._contacts_failures = 0
+        self._contacts_status = "unavailable"
 
     def enrich(self, observation: Observation) -> ThreatEnrichment:
         """Return best-effort enrichment without raising network errors."""
@@ -87,38 +96,11 @@ class ThreatEnricher:
 
     def contact_standings(self) -> list[ContactStanding]:
         """Return cached authenticated contact standings when configured."""
-        if self.esi_session is None or not hasattr(self.esi_session, "snapshot"):
-            return []
-
-        now = float(self._now())
-        if (
-            self._contact_standings is not None
-            and now < self._contact_standings_until
-        ):
-            return list(self._contact_standings)
-
-        try:
-            snapshot = self.esi_session.snapshot(
-                include_location=False,
-                include_contacts=True,
-            )
-        except Exception:
-            # Keep the last successful contact snapshot during a transient
-            # ESI/authentication failure.  Dropping it immediately turns
-            # every resolved OCR character into an unclassified neutral and
-            # can make active hostile personnel disappear from the roster.
-            if self._contact_standings is not None:
-                self._contact_standings_until = now + min(
-                    60.0,
-                    max(1.0, self.standing_ttl_seconds),
-                )
-                return list(self._contact_standings)
-            return []
-
-        contacts = _normalize_contact_standings(getattr(snapshot, "contacts", []))
-        self._contact_standings = contacts
-        self._contact_standings_until = now + self.standing_ttl_seconds
-        return list(contacts)
+        from app.esi.contact_refresh import cached_contacts, refresh_contacts
+        if self._now() < self._contact_standings_until:
+            return cached_contacts(self)
+        refresh_contacts(self)
+        return cached_contacts(self)
 
     def complete_character_name(self, prefix: str) -> str | None:
         """Best-effort ESI completion for an OCR-clipped character name."""
@@ -184,11 +166,17 @@ def _apply_contact_or_neutral_standing(
     profile: dict[str, Any],
     contacts: list[ContactStanding],
 ) -> dict[str, Any]:
+    from app.esi.organization_relations import RelationView
+    if isinstance(contacts, RelationView):
+        return contacts.annotate(profile)
     result = apply_contact_standing(profile, contacts)
     if "contact_standing" not in result:
         result["contact_standing"] = 0.0
         result["standing_source"] = "esi_contacts"
         result["standing_contact_type"] = "neutral"
+    from app.esi.relation_shadow import ShadowContacts
+    if isinstance(contacts, ShadowContacts):
+        contacts.compare(profile, result)
     return result
 
 

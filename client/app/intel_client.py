@@ -141,6 +141,7 @@ class IntelApiClient:
         sequence: int | None = None,
         captured_at: str = "",
         query_id: str = "",
+        capture: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Publish the current OCR-detected pilot-name snapshot."""
         payload: dict[str, Any] = {
@@ -167,6 +168,8 @@ class IntelApiClient:
             payload["captured_at"] = str(captured_at)
         if query_id:
             payload["query_id"] = str(query_id)
+        if capture is not None:
+            payload["capture"] = dict(capture)
         path = self._v1_path("/ocr/snapshot")
         try:
             return self._request("POST", path, payload=payload)
@@ -188,6 +191,8 @@ class IntelApiClient:
         captured_at: str = "",
         presence_version: int | None = None,
         presence_state_id: str = "",
+        capture: dict[str, Any] | None = None,
+        source_status: str = "",
     ) -> dict[str, Any]:
         """Publish visual hostile-count state without waiting for name OCR."""
         payload: dict[str, Any] = {
@@ -210,7 +215,11 @@ class IntelApiClient:
             payload["presence_version"] = max(0, int(presence_version))
         if presence_state_id:
             payload["presence_state_id"] = str(presence_state_id)
+        if capture is not None:
+            payload["capture"] = dict(capture)
         path = self._v1_path("/hostile-presence")
+        if source_status:
+            payload["source_status"] = source_status
         try:
             return self._request("POST", path, payload=payload)
         except IntelApiError as exc:

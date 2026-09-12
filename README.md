@@ -11,9 +11,10 @@ Windows 用户可直接[下载最新版客户端](https://evesentrydownload.kise
 ## 仓库结构
 
 已实现[全量人员档案与分级刷新](docs/personnel-cache-plan.md)：长期保留已确认身份，
-缓存优先返回，按活跃度批量刷新归属，并对当前敌我分类变化发送人员名单更正。
-功能通过服务端 `EVE_SENTRY_PERSONNEL_CACHE=off|shadow|on` 灰度启用，默认关闭；
-代码完成不代表已部署生产。客户端不需要为此升级。
+缓存优先返回，按活跃度批量刷新归属，按军团/联盟 ID 判断关系，不使用个人声望例外。
+管理员可分别设置档案与组织规则的 off/shadow/on；保存后在线生效。
+[星系当前状态](docs/system-current-state.md)由服务端选择一个主监控窗口计算，星图、预警和 QQ 消费同一结果；
+失联显示上次状态，不冒充清空。新版采集会话及防闪动功能需要更新客户端；生产切换按受保护工作流验收。
 
 | 目录 | 内容 | 主要入口 |
 | --- | --- | --- |
@@ -76,10 +77,10 @@ sequenceDiagram
     participant Notice as 浮窗 / Web / QQ
 
     EVE->>Client: 当前成员列表画面
-    Client->>Client: 检测红色敌对图标并立即本地预警
+    Client->>Client: 检测红色敌对图标并记录本帧会话/序号
     Client->>Server: Presence 上报星系和红色敌对图标数量
     Client->>Server: OCR 只上传完整文本名单（可带 query_id）
-    Server->>Server: 以 Presence 更新实时人数，以 OCR 解析角色和敌我关系
+    Server->>Server: 选择主来源，计算并原子保存当前状态与事件
     Server-->>Notice: 来敌事件 + 当前敌对人数
     loop 持续监控
         Client->>Server: 刷新当前名单快照

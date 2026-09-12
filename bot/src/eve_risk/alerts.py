@@ -1414,6 +1414,11 @@ class EveSentryAlertRelay:
             logger.debug("Ignored EVE Sentry alert already delivered by bootstrap")
             return True
 
+        if payload.get("freshness") == "unknown":
+            self._active_alert_ids.update(event_ids)
+            await self._advance_alert_cursor(occurred_at)
+            return True
+
         current, initialized = await self._load_system_alert_state()
         if not initialized:
             # The first bootstrap establishes the current state without
@@ -1435,7 +1440,7 @@ class EveSentryAlertRelay:
                     state = {
                         **previous,
                         "hostile_count": max(
-                            int(previous.get("hostile_count") or 0),
+                            0,
                             int(payload.get("hostile_count") or 0),
                         ),
                         "personnel": updated_personnel,
@@ -1454,6 +1459,9 @@ class EveSentryAlertRelay:
                             state, occurred_at
                         ):
                             return False
+                        current[system_key] = state
+                        await self._save_system_alert_state(current)
+                    elif state["hostile_count"] != previous.get("hostile_count"):
                         current[system_key] = state
                         await self._save_system_alert_state(current)
             self._active_alert_ids.update(event_ids)
@@ -1626,14 +1634,22 @@ def _detector_item_is_hostile(item: dict[str, Any]) -> bool:
     except (TypeError, ValueError):
         pass
 
+    if metadata.get("standing_source") == "esi_organization_pending":
+        return False
+
     standings: list[object] = [
         metadata.get("contact_standing"),
         metadata.get("standing"),
     ]
     profiles = metadata.get("character_profiles")
     if isinstance(profiles, list):
+        if any(isinstance(profile, dict) and profile.get("standing_source") == "esi_organization_pending"
+               for profile in profiles):
+            standings = []  # Flattened alert metadata may predate this partial profile snapshot.
         for profile in profiles:
             if isinstance(profile, dict):
+                if profile.get("standing_source") == "esi_organization_pending":
+                    continue
                 standings.extend(
                     (profile.get("contact_standing"), profile.get("standing"))
                 )

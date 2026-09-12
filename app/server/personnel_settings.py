@@ -11,12 +11,13 @@ from app.server.intel_store import utc_now_iso
 
 SETTING_KEY = "personnel_settings"
 DEFAULTS = {"mode": "off", "background_refresh": True, "history_backfill": True,
-            "background_max": 4}
+            "background_max": 4, "organization_mode": "off"}
 
 
 def validate_settings(values):
-    if not isinstance(values, dict) or set(values) != set(DEFAULTS):
-        raise ValueError("必须完整提供人员档案的四项配置，不能包含未知字段")
+    if not isinstance(values, dict) or set(values) not in (set(DEFAULTS), set(DEFAULTS) - {"organization_mode"}):
+        raise ValueError("必须完整提供人员档案配置，不能包含未知字段")
+    values = {**DEFAULTS, **values}
     if not isinstance(values["mode"], str) or values["mode"] not in {"off", "shadow", "on"}:
         raise ValueError("mode 必须为 off、shadow 或 on")
     for key in ("background_refresh", "history_backfill"):
@@ -24,6 +25,8 @@ def validate_settings(values):
             raise ValueError(f"{key} 必须为布尔值")
     if type(values["background_max"]) is not int or not 1 <= values["background_max"] <= 4:
         raise ValueError("后台并发上限必须是 1～4 的整数")
+    if values["organization_mode"] not in ("off", "shadow", "on"):
+        raise ValueError("organization_mode 必须为 off、shadow 或 on")
     return dict(values)
 
 
@@ -60,9 +63,12 @@ class PersonnelSettings:
     def _snapshot(self, revision, values):
         runtime = getattr(self.store, "_personnel_runtime", None)
         effective = {"mode": runtime.mode if runtime is not None else "off",
+                     "organization_mode": getattr(runtime, "organization_mode", "off"),
                      **(runtime.scheduling_settings() if runtime is not None else {
                          "background_refresh": False, "history_backfill": False, "background_max": 0})}
+        comparisons = getattr(getattr(self.controller.resources, "enricher", None), "shadow_comparisons", None)
         return {"values": values, "effective": effective, "revision": revision,
+                "organization_shadow": comparisons.snapshot() if comparisons is not None else {},
                 "source": "environment" if revision == "environment" else "database",
                 "restart_required": False,
                 "apply_required": values["mode"] != effective["mode"] or (runtime is not None and values != effective),
@@ -97,6 +103,8 @@ class PersonnelSettings:
             raw, revision, previous = self._read()
             if payload["revision"] != revision:
                 raise AuthError("配置已被其他管理员修改，请重新读取后保存", 409, "settings_conflict")
+            if "organization_mode" not in payload["values"]:
+                values["organization_mode"] = previous["organization_mode"]
             if previous == values:
                 prepared = self.controller.prepare(values)
                 self.controller.publish(values, prepared)

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from time import time
-from typing import Any, Callable
+from typing import Any
 
 from app.esi.cache import EsiCache
 from app.esi.client import EsiClient
+from app.esi.contact_http import ContactReadError, validate_rows
 from app.esi.sso import EsiSsoError, EsiTokenStore, EveSsoClient, TokenSet
 
 CHARACTER_CONTACT_SCOPE = "esi-characters.read_contacts.v1"
@@ -61,6 +63,10 @@ class EsiSessionSnapshot:
     location: dict[str, Any] = field(default_factory=dict)
     contacts: list[ContactStanding] = field(default_factory=list)
     standings: list[EsiStanding] = field(default_factory=list)
+    # Internal metadata only; the public snapshot wire remains unchanged.
+    contacts_expires_at: float | None = None
+    contacts_degraded: bool = False
+    contacts_context: tuple[int | None, int | None] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,16 +109,23 @@ class EsiAuthenticatedSession:
         return tokens
 
     def refresh_tokens(self, tokens: TokenSet) -> TokenSet:
-        """Refresh a token set and persist the refreshed result."""
-        if not tokens.refresh_token:
-            raise EsiSsoError("saved ESI token cannot be refreshed")
-        refreshed = self.sso_client.refresh(tokens.refresh_token)
-        if not refreshed.refresh_token:
-            refreshed = TokenSet.from_payload(
-                {**refreshed.to_dict(), "refresh_token": tokens.refresh_token},
-            )
-        self.token_store.save(refreshed)
-        return refreshed
+        """Coalesce refreshes; a login/logout during I/O always wins publication."""
+        with self.token_store.coordinator().refresh_lock:
+            current, revision = self.token_store.load_versioned()
+            if current is None:
+                raise EsiSsoError("no saved ESI token")
+            if current != tokens:
+                return current
+            if not current.refresh_token:
+                raise EsiSsoError("saved ESI token cannot be refreshed")
+            refreshed = self.sso_client.refresh(current.refresh_token)
+            if not refreshed.refresh_token:
+                refreshed = TokenSet.from_payload(
+                    {**refreshed.to_dict(), "refresh_token": current.refresh_token},
+                )
+            if not self.token_store.save_if_unchanged(refreshed, previous=current, revision=revision):
+                raise EsiSsoError("ESI authorization changed during refresh; retry with current session")
+            return refreshed
 
     def snapshot(
         self,
@@ -129,13 +142,39 @@ class EsiAuthenticatedSession:
         location: dict[str, Any] = {}
         contacts: list[ContactStanding] = []
         standings: list[EsiStanding] = []
+        deadlines: list[float] = []
+        degraded = False
+        contacts_context = None
+
+        def checked_contacts(rows):
+            nonlocal degraded
+            validate_rows(rows)
+            deadline = getattr(rows, "expires_at", None)
+            if deadline is not None and float(deadline) <= self._now():
+                error = ContactReadError("contacts_response_already_expired")
+                if contacts_context is not None:
+                    error.contacts_context = contacts_context
+                raise error
+            # Custom adapters without HTTP metadata are immediately due for validation.
+            deadlines.append(float(deadline) if deadline is not None else float(self._now()))
+            degraded = degraded or getattr(rows, "degraded", deadline is None)
+            return contact_standings_from_payload(rows)
+
+        def read_organization(method_name, entity_id):
+            try:
+                return self._optional_contacts(method_name, entity_id, tokens.access_token)
+            except Exception as exc:
+                error = ContactReadError("organization_contacts_unavailable")
+                error.contacts_context = contacts_context
+                raise error from exc
+
         if include_location:
             location = self.esi_client.get_character_location(
                 character_id,
                 tokens.access_token,
             )
         if include_contacts:
-            contacts = contact_standings_from_payload(
+            contacts = checked_contacts(
                 self.esi_client.get_character_contacts(
                     character_id,
                     tokens.access_token,
@@ -144,26 +183,25 @@ class EsiAuthenticatedSession:
             profile = self._authenticated_character_profile(tokens)
             corporation_id = _optional_positive_int(profile.get("corporation_id"))
             alliance_id = _optional_positive_int(profile.get("alliance_id"))
+            contacts_context = (corporation_id, alliance_id)
             if (
                 corporation_id is not None
                 and CORPORATION_CONTACT_SCOPE in set(tokens.scopes)
             ):
                 contacts.extend(
-                    contact_standings_from_payload(
-                        self._optional_contacts(
+                    checked_contacts(
+                        read_organization(
                             "get_corporation_contacts",
                             corporation_id,
-                            tokens.access_token,
                         )
                     )
                 )
             if alliance_id is not None and ALLIANCE_CONTACT_SCOPE in set(tokens.scopes):
                 contacts.extend(
-                    contact_standings_from_payload(
-                        self._optional_contacts(
+                    checked_contacts(
+                        read_organization(
                             "get_alliance_contacts",
                             alliance_id,
-                            tokens.access_token,
                         )
                     )
                 )
@@ -196,6 +234,10 @@ class EsiAuthenticatedSession:
                         source="esi_self",
                     )
                 )
+        if deadlines and not degraded and min(deadlines) <= self._now():
+            error = ContactReadError("contacts_group_expired_during_refresh")
+            error.contacts_context = contacts_context
+            raise error
         if include_standings:
             standings = self._cached_character_standings(tokens)
         return EsiSessionSnapshot(
@@ -203,7 +245,14 @@ class EsiAuthenticatedSession:
             location=location,
             contacts=contacts,
             standings=standings,
+            contacts_expires_at=min(deadlines) if deadlines else None,
+            contacts_degraded=degraded,
+            contacts_context=contacts_context,
         )
+
+    def contacts_snapshot(self) -> EsiSessionSnapshot:
+        """Refresh relationships without unrelated location or character standings calls."""
+        return self.snapshot(include_location=False, include_contacts=True, include_standings=False)
 
     def standings(self) -> list[EsiStanding]:
         """Return the cached character standings snapshot for the authorized account."""
@@ -308,12 +357,15 @@ class EsiAuthenticatedSession:
             return {}
         character_id = tokens.character_id
         if character_id is None or not hasattr(self.esi_client, "get_character"):
-            return {}
-        try:
-            profile = self.esi_client.get_character(character_id)
-        except Exception:
-            return {}
-        return profile if isinstance(profile, dict) else {}
+            raise ContactReadError("own_profile_unavailable")
+        profile = self.esi_client.get_character(character_id)
+        if (not isinstance(profile, dict) or type(profile.get("corporation_id")) is not int
+                or profile["corporation_id"] <= 0):
+            raise ContactReadError("own_profile_invalid")
+        alliance = profile.get("alliance_id")
+        if alliance is not None and (type(alliance) is not int or alliance <= 0):
+            raise ContactReadError("own_alliance_invalid")
+        return profile
 
     def _optional_contacts(
         self,
@@ -322,12 +374,10 @@ class EsiAuthenticatedSession:
         access_token: str,
     ) -> list[dict[str, Any]]:
         if not hasattr(self.esi_client, method_name):
-            return []
-        try:
-            payload = getattr(self.esi_client, method_name)(entity_id, access_token)
-        except Exception:
-            return []
-        return payload if isinstance(payload, list) else []
+            raise ContactReadError("contact_source_unavailable")
+        payload = getattr(self.esi_client, method_name)(entity_id, access_token)
+        validate_rows(payload)
+        return payload
 
 
 def contact_standings_from_payload(rows: Any) -> list[ContactStanding]:

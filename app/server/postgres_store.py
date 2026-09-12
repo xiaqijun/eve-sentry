@@ -28,6 +28,11 @@ from app.server.intel_store import (
     _OcrEsiTask,
     utc_now_iso,
 )
+from app.server.system_state import APPEND_EVENT, migrate_system_state, project_active_items
+from app.server.source_authority import authoritative_items, primary_sources
+from app.server.state_maintenance import StateMaintenance
+from app.server.capture_state import capture_is_current, capture_payload, record_roster_quality, reconcile_zero_events
+from app.server.state_repair import StateRepair, mark_failed_write
 
 POSTGRES_POOL_MIN_SIZE = 2
 POSTGRES_POOL_MAX_SIZE = 8
@@ -40,6 +45,7 @@ REPORT_STREAM_POSITION_KEY = "_stream_position"
 REPORT_STREAM_ADVISORY_LOCK_ID = 1163285842
 INTEL_EVENT_ADVISORY_LOCK_ID = 1163285843
 INTEL_EVENT_RETENTION_DAYS = 14
+
 
 
 logger = logging.getLogger(__name__)
@@ -67,6 +73,7 @@ class PostgreSQLIntelStore(IntelStore):
         self._db_write_condition = threading.Condition()
         self._db_write_next_ticket = 0
         self._db_write_serving_ticket = 0
+        self._state_repair = StateRepair(self)
         self._postgres_pool = _create_connection_pool(self._postgres_dsn)
         self._import_json_path = Path(import_json_path) if import_json_path else None
         self._hot_report_limit = max(1, int(hot_report_limit))
@@ -93,9 +100,13 @@ class PostgreSQLIntelStore(IntelStore):
                 time.monotonic() + STALE_HEARTBEAT_STARTUP_GRACE_SECONDS
             )
         self._resume_pending_ocr_esi_tasks()
+        self._state_maintenance = StateMaintenance(self)
 
     def close(self, *, wait: bool = True) -> None:
         """Stop background work and close reusable PostgreSQL connections."""
+        maintenance = getattr(self, "_state_maintenance", None)
+        if maintenance is not None:
+            maintenance.close(wait=wait)
         try:
             super().close(wait=wait)
         finally:
@@ -285,32 +296,32 @@ class PostgreSQLIntelStore(IntelStore):
             hostile_before = self._hostile_system_state()
             duplicate = self._find_duplicate_observation(report)
             if duplicate is not None:
-                self._apply_channel_active_state(duplicate)
-                hostile_waves = self._hostile_wave_changes(
-                    hostile_before,
-                    duplicate.seen_at or duplicate.received_at or utc_now_iso(),
-                )
-                with self._connect() as connection:
-                    self._upsert_active_intel_rows(
-                        connection,
-                        self._changed_active_rows(active_before),
-                    )
-                    self._persist_hostile_wave_changes(connection, hostile_waves)
-                return duplicate.to_observation()
-            self._ensure_system(report.system)
-            self._reports.append(report)
+                report = duplicate
+            else:
+                self._ensure_system(report.system)
+                self._reports.append(report)
             self._apply_channel_active_state(report)
-            self._upsert_report(report)
+            occurred_at = report.seen_at or report.received_at or utc_now_iso()
             hostile_waves = self._hostile_wave_changes(
-                hostile_before,
-                report.seen_at or report.received_at or utc_now_iso(),
+                hostile_before, occurred_at,
             )
+            state_events = self._hostile_state_events(
+                hostile_before, self._hostile_system_state(), occurred_at,
+            )
+            changed_rows = self._changed_active_rows(active_before)
+            ticket = self._reserve_db_write()
+        self._wait_for_db_write(ticket)
+        try:
             with self._connect() as connection:
-                self._upsert_active_intel_rows(
-                    connection,
-                    self._changed_active_rows(active_before),
-                )
+                self._upsert_report_with_connection(connection, report)
+                self._upsert_active_intel_rows(connection, changed_rows)
                 self._persist_hostile_wave_changes(connection, hostile_waves)
+                self._persist_intel_events(connection, state_events)
+        except Exception:
+            mark_failed_write(self)
+            raise
+        finally:
+            self._finish_db_write(ticket)
         return report.to_observation()
 
     def record_ocr_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -329,12 +340,18 @@ class PostgreSQLIntelStore(IntelStore):
         system_id = self._optional_int(payload.get("system_id"))
         seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
         query_only = bool(str(payload.get("query_id") or "").strip())
+        if query_only:
+            query_key = hashlib.sha256(str(payload["query_id"]).encode()).hexdigest()[:24]
+            client_id = f"{client_id}:query:{query_key}"
         defer_esi = self._resolver is not None or self._enricher is not None
         names = self._normalize_ocr_names(
             payload.get("names"),
             resolve=not defer_esi,
         )
         snapshot_metadata = {"query_only": True} if query_only else {}
+        capture = capture_payload(payload)
+        if capture:
+            snapshot_metadata["capture"] = capture
         raw_text = ", ".join(names)
         result = ActiveIntelSnapshotResult()
         seen_name_keys = {name.casefold() for name in names}
@@ -344,6 +361,8 @@ class PostgreSQLIntelStore(IntelStore):
             new_reports: list[IntelReport] = []
             changed_active_ids: set[str] = set()
             hostile_before = self._hostile_system_state()
+            if not query_only and not capture_is_current(self._active_intel.values(), client_id, capture, ocr=True):
+                return {**result.to_dict(include_active=False), "accepted": False, "stale": True}
             presence_active = any(
                 candidate.active
                 and candidate.source == source
@@ -374,6 +393,11 @@ class PostgreSQLIntelStore(IntelStore):
             for item in moved_items:
                 changed_active_ids.add(item.active_id)
             result.expired += len(moved_items)
+
+            if not query_only:
+                changed_active_ids.update(item.active_id for item in record_roster_quality(
+                    self._active_intel.values(), client_id, system_name, capture,
+                ))
 
             for name in names:
                 active_id = self._active_ocr_id(client_id, system_name, name)
@@ -560,6 +584,8 @@ class PostgreSQLIntelStore(IntelStore):
             ]
             hostile_waves = self._hostile_wave_changes(hostile_before, seen_at)
             state_events = self._hostile_state_events(hostile_before, self._hostile_system_state(), seen_at)
+            state_events = reconcile_zero_events(state_events, self._active_intel.values(), seen_at,
+                                                  positive_systems=self._hostile_system_state())
             db_write_ticket = self._reserve_db_write()
         self._wait_for_db_write(db_write_ticket)
         try:
@@ -612,6 +638,9 @@ class PostgreSQLIntelStore(IntelStore):
                 self._upsert_active_intel_rows(connection, active_rows)
                 self._persist_hostile_wave_changes(connection, hostile_waves)
                 self._persist_intel_events(connection, state_events)
+        except Exception:
+            mark_failed_write(self)
+            raise
         finally:
             self._finish_db_write(db_write_ticket)
         for task in esi_tasks:
@@ -623,6 +652,8 @@ class PostgreSQLIntelStore(IntelStore):
         with self._lock:
             active_before = self._active_rows_snapshot()
             hostile_before = self._hostile_system_state()
+            previous_zeros = [item for item in primary_sources(self._active_intel.values()).values()
+                              if item.metadata.get("hostile_icon_count") == 0]
             result = super().record_hostile_presence(payload)
             if not result.get("accepted", True):
                 return result
@@ -635,6 +666,14 @@ class PostgreSQLIntelStore(IntelStore):
                 hostile_before,
                 self._hostile_system_state(),
                 str(result.get("seen_at") or utc_now_iso()),
+                clear_reasons={item.system_name.casefold(): "node_offline"
+                               for item in self._active_intel.values()
+                               if item.metadata.get("left_reason") in {"system_changed", "monitor_stopped"}},
+            )
+            state_events = reconcile_zero_events(
+                state_events, self._active_intel.values(), str(result.get("seen_at") or utc_now_iso()),
+                previous_zeros=previous_zeros,
+                positive_systems=self._hostile_system_state(),
             )
             db_write_ticket = (
                 self._reserve_db_write() if active_rows or hostile_waves or state_events else None
@@ -646,6 +685,9 @@ class PostgreSQLIntelStore(IntelStore):
                     self._upsert_active_intel_rows(connection, active_rows)
                     self._persist_hostile_wave_changes(connection, hostile_waves)
                     self._persist_intel_events(connection, state_events)
+            except Exception:
+                mark_failed_write(self)
+                raise
             finally:
                 self._finish_db_write(db_write_ticket)
         return result
@@ -727,6 +769,9 @@ class PostgreSQLIntelStore(IntelStore):
                         occurred_at,
                     ),
                 )
+        except Exception:
+            mark_failed_write(self)
+            raise
         finally:
             self._finish_db_write(db_write_ticket)
 
@@ -734,6 +779,9 @@ class PostgreSQLIntelStore(IntelStore):
         """Expire TTL-based active intel and persist changed rows."""
         with self._lock:
             hostile_before = self._hostile_system_state()
+            rows_before = self._active_rows_snapshot()
+            previous_zeros = [item for item in primary_sources(self._active_intel.values()).values()
+                              if item.metadata.get("hostile_icon_count") == 0]
             active_before = {
                 active_id
                 for active_id, item in self._active_intel.items()
@@ -746,13 +794,11 @@ class PostgreSQLIntelStore(IntelStore):
                 if active_id in active_before
                 and not item.active
                 and str(item.metadata.get("left_reason") or "").strip()
-                in {"heartbeat_stale", "target_removed"}
+                in {"heartbeat_stale", "target_removed", "capture_stale", "monitor_stopped"}
             }
-            changed_rows = [
-                self._active_row(item)
-                for active_id, item in self._active_intel.items()
-                if active_id in active_before and not item.active
-            ]
+            changed_rows = self._changed_active_rows(rows_before)
+            if not changed_rows:
+                return expired
             hostile_waves = self._hostile_wave_changes(
                 hostile_before,
                 str(now or utc_now_iso()).strip() or utc_now_iso(),
@@ -763,6 +809,11 @@ class PostgreSQLIntelStore(IntelStore):
                 str(now or utc_now_iso()).strip() or utc_now_iso(),
                 clear_reasons=clear_reasons,
             )
+            state_events = reconcile_zero_events(
+                state_events, self._active_intel.values(), str(now or utc_now_iso()),
+                previous_zeros=previous_zeros,
+                positive_systems=self._hostile_system_state(),
+            )
             db_write_ticket = self._reserve_db_write() if changed_rows else None
         if changed_rows or hostile_waves or state_events:
             self._wait_for_db_write(db_write_ticket)
@@ -771,6 +822,9 @@ class PostgreSQLIntelStore(IntelStore):
                     self._upsert_active_intel_rows(connection, changed_rows)
                     self._persist_hostile_wave_changes(connection, hostile_waves)
                     self._persist_intel_events(connection, state_events)
+            except Exception:
+                mark_failed_write(self)
+                raise
             finally:
                 self._finish_db_write(db_write_ticket)
         return expired
@@ -830,7 +884,9 @@ class PostgreSQLIntelStore(IntelStore):
         self,
         items: Any | None = None,
     ) -> dict[str, dict[str, Any]]:
-        source_items = self._active_intel.values() if items is None else items
+        source_items, primaries = authoritative_items(
+            self._active_intel.values() if items is None else items
+        )
         systems: dict[str, dict[str, Any]] = {}
         detector_counts: dict[str, dict[str, tuple[str, int]]] = {}
         for item in source_items:
@@ -942,6 +998,14 @@ class PostgreSQLIntelStore(IntelStore):
             system_key: {
                 **state,
                 "personnel": list(state.get("personnel", {}).values()),
+                "primary_client_id": (
+                    str(primaries[system_key].metadata.get("client_id") or "")
+                    if system_key in primaries else ""
+                ),
+                "primary_generation": (
+                    int(primaries[system_key].metadata.get("source_join_order") or 0)
+                    if system_key in primaries else 0
+                ),
             }
             for system_key, state in systems.items()
             if int(state.get("hostile_count") or 0) > 0
@@ -983,7 +1047,11 @@ class PostgreSQLIntelStore(IntelStore):
                    cleared_at, active, seen_count, confidence,
                    source_observation_ids_json
             FROM active_intel
-            WHERE active = 1 AND LOWER(system) = ?
+            WHERE (active = 1 OR (
+                source = 'eve-sentry-detector'
+                AND metadata_json::jsonb->>'presence_only' = 'true'
+                AND COALESCE(metadata_json::jsonb->>'left_reason', '') = ''
+            )) AND LOWER(system) = ?
             """,
             (system_key,),
         ).fetchall()
@@ -1159,20 +1227,24 @@ class PostgreSQLIntelStore(IntelStore):
                 event_type = "alert.entered"
                 state = current
             elif previous is not None and current is None:
-                event_type = "alert.cleared"
-                state = {
-                    **previous,
-                    "hostile_count": 0,
-                    "personnel": [],
-                }
+                if (clear_reasons or {}).get(system_key) == "node_offline":
+                    event_type = "alert.updated"
+                    state = {**previous, "freshness": "unknown"}
+                else:
+                    event_type = "alert.cleared"
+                    state = {**previous, "hostile_count": 0, "personnel": []}
             elif previous is not None and current is not None:
                 previous_fingerprint = (
                     int(previous.get("hostile_count") or 0),
                     json.dumps(previous.get("personnel") or [], sort_keys=True, ensure_ascii=False),
+                    previous.get("primary_client_id"), previous.get("primary_generation"),
+                    previous.get("freshness", "fresh"),
                 )
                 current_fingerprint = (
                     int(current.get("hostile_count") or 0),
                     json.dumps(current.get("personnel") or [], sort_keys=True, ensure_ascii=False),
+                    current.get("primary_client_id"), current.get("primary_generation"),
+                    current.get("freshness", "fresh"),
                 )
                 if previous_fingerprint == current_fingerprint:
                     continue
@@ -1191,6 +1263,9 @@ class PostgreSQLIntelStore(IntelStore):
                 "hostile_count": max(0, int(state.get("hostile_count") or 0)),
                 "active": event_type != "alert.cleared",
                 "hostile_personnel": list(state.get("personnel") or []),
+                "primary_client_id": str(state.get("primary_client_id") or ""),
+                "primary_generation": int(state.get("primary_generation") or 0),
+                "freshness": str(state.get("freshness") or "fresh"),
             }
             if event_type == "alert.cleared":
                 clear_reason = str((clear_reasons or {}).get(system_key) or "").strip()
@@ -1227,13 +1302,7 @@ class PostgreSQLIntelStore(IntelStore):
             (INTEL_EVENT_ADVISORY_LOCK_ID,),
         )
         executemany(
-            """
-            INSERT INTO intel_events (
-                event_key, event_type, entity_key, occurred_at, payload_json
-            )
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (event_key) DO NOTHING
-            """,
+            APPEND_EVENT,
             [
                 (
                     event["event_key"],
@@ -1356,7 +1425,12 @@ class PostgreSQLIntelStore(IntelStore):
                                FROM report_rows AS report_row
                            ),
                            '[]'::jsonb
-                       )::text AS report_rows_json
+                       )::text AS report_rows_json,
+                       COALESCE(
+                           (SELECT jsonb_agg(to_jsonb(state_row))
+                            FROM system_current_state AS state_row),
+                           '[]'::jsonb
+                       )::text AS system_states_json
                 FROM event_watermark
                 """
             ).fetchone()
@@ -1385,7 +1459,8 @@ class PostgreSQLIntelStore(IntelStore):
             if isinstance(report_row, dict)
             and (report := self._report_from_row(report_row)) is not None
         ]
-        return active_items, reports, state_event_seq
+        states = json.loads(str(row.get("system_states_json") or "[]"))
+        return project_active_items(active_items, states), reports, state_event_seq
 
     def prune_intel_events_older_than(
         self,
@@ -1452,6 +1527,26 @@ class PostgreSQLIntelStore(IntelStore):
                     after=after,
                     recover=True,
                 ),
+            )
+            # Startup/migration reconciliation compares against the committed
+            # projection, never the wave peak/union roster. It uses the same
+            # event + projection transaction as live writes.
+            state_rows = connection.execute(
+                "SELECT system_key, payload_json FROM system_current_state"
+            ).fetchall()
+            committed = {}
+            for row in state_rows:
+                payload = json.loads(row["payload_json"])
+                if int(payload.get("hostile_count") or 0) > 0:
+                    committed[str(row["system_key"])] = {
+                        **payload, "personnel": payload.get("hostile_personnel") or [],
+                    }
+            self._persist_intel_events(
+                connection, reconcile_zero_events(self._hostile_state_events(
+                    committed, after, now,
+                    clear_reasons={key: "node_offline" for key, state in committed.items()
+                                   if (state.get("freshness") == "unknown" or state.get("primary_client_id")) and key not in after},
+                ), items, now, positive_systems=after),
             )
 
     def _hostile_wave_from_row(self, row: Any) -> dict[str, Any]:
@@ -2226,6 +2321,7 @@ class PostgreSQLIntelStore(IntelStore):
                 ON intel_events(occurred_at)
                 """
             )
+            migrate_system_state(connection)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS client_heartbeats (
@@ -3060,6 +3156,12 @@ class PostgreSQLIntelStore(IntelStore):
                        source_observation_ids_json
                 FROM active_intel
                 WHERE active = 1
+                   OR (source = 'eve-sentry-detector'
+                       AND metadata_json::jsonb->>'presence_only' = 'true'
+                       AND COALESCE(metadata_json::jsonb->>'left_reason', '') = '')
+                   OR (source = 'eve-sentry-detector'
+                       AND metadata_json::jsonb->>'presence_only' = 'true'
+                       AND jsonb_exists(metadata_json::jsonb, 'capture'))
                 ORDER BY last_seen_at ASC
                 """
             ).fetchall()

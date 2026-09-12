@@ -93,4 +93,27 @@ describe("PersonnelSettingsPanel", () => {
     await click(button("撤销未保存修改"));
     expect(container.querySelector('input[type=radio][value="1"]')).not.toBeDisabled();
   });
+  it("keeps organization comparison separate from archive mode and saves online", async () => {
+    const values = { ...initial.values, mode: "on" as const, organization_mode: "off" as const };
+    mocks.fetch.mockResolvedValue({ ...initial, values, effective: values,
+      organization_shadow: { compared: 12, different: 2 } });
+    const updated = { ...values, organization_mode: "shadow" as const };
+    mocks.update.mockResolvedValue({ ...initial, values: updated, effective: updated });
+    await render();
+    expect(container).toHaveTextContent("已比较 12 次，差异 2 次");
+    const organization = container.querySelector('[aria-label="组织关系分类"]')!;
+    await click(organization.querySelector('input[value="shadow"]')!);
+    await click(button("保存配置"));
+    expect(mocks.update).toHaveBeenCalledWith(updated, "environment");
+    expect(container).toHaveTextContent("当前组织模式：影子运行");
+    expect(container).toHaveTextContent("无需重启");
+  });
+  it("disables organization controls while archive is inactive", async () => {
+    const values = { ...initial.values, organization_mode: "on" as const };
+    mocks.fetch.mockResolvedValue({ ...initial, values });
+    await render();
+    const organization = container.querySelector('[aria-label="组织关系分类"]')!;
+    expect(organization.querySelector('input[value="on"]')).toBeDisabled();
+    expect(container).toHaveTextContent("关闭档案时保留配置但不执行");
+  });
 });

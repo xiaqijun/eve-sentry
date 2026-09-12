@@ -1,5 +1,10 @@
 # 预警消息 API 接入指南
 
+新 PostgreSQL 服务的 Bootstrap 标记 `state_source=system_current_state`，三端消费统一结果。
+`freshness=unknown` 表示采集未知、保留上次情况；更新显示与游标，但不能当作新来敌或确认清空。
+人数和名单采用最新状态，不保留历史最大人数，不从原始 `/active-intel` 重新合并监控窗口。
+新增字段与兼容策略见[API 参考](api-reference.md#单主采集与当前状态扩展)。
+
 [人员档案](personnel-cache-plan.md)启用后，归属/规则/联系人变化会重算有效当前观察。
 继续使用 `alert.updated` 和 Bootstrap 的 `hostile_personnel`，没有新增必需事件类型。
 事件中的空人员数组是有效更正，不能跳过，也不能直接当作视觉清空；视觉来敌/清空仍由 Presence 决定。

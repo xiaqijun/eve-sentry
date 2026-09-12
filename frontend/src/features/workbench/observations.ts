@@ -246,6 +246,10 @@ function activeIntelIsHostile(item: ActiveIntelItem): boolean {
     return false;
   }
 
+  if (metadata.standing_source === "esi_organization_pending") {
+    return false;
+  }
+
   const standing = firstNumber(metadata.contact_standing, metadata.standing);
   if (standing === null) {
     return false;

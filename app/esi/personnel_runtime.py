@@ -7,16 +7,20 @@ import math
 import os
 import threading
 import time
-from collections import OrderedDict, Counter
+from collections import Counter, OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from email.utils import parsedate_to_datetime
 from typing import Any
 
 from app.esi.personnel_archive import (
-    PersonnelArchive, IdentityUpdate, AffiliationUpdate, OrganizationUpdate,
+    PersonnelArchive,
 )
+from app.esi.personnel_batches import commit_refresh_batch, schedule_profiles
 from app.esi.personnel_policy import (
-    AFFILIATION_TTL, NAME_REFRESH_SECONDS, name_key, personnel_tier, refresh_due_at, background_slots, RefreshLoad,
+    AFFILIATION_TTL,
+    RefreshLoad,
+    background_slots,
+    name_key,
 )
 from app.esi.resolver import EsiResolver, ResolvedName
 
@@ -94,9 +98,12 @@ class PersonnelRuntime:
                 return None
             result = dict(value)
         fetched = float(result.get("affiliation_fetched_at") or 0)
+        expires = result.get("affiliation_expires_at")
+        deadline = min(fetched + AFFILIATION_TTL, float(expires)) if expires is not None else fetched + AFFILIATION_TTL
+        trusted = fetched > 0 and fetched <= self.now() < deadline
         result.update(
-            cache_status="cached" if fetched > 0 and self.now() - fetched < AFFILIATION_TTL else "stale",
-            fetched_at=fetched, affiliation_trusted=fetched > 0 and self.now() - fetched < AFFILIATION_TTL,
+            cache_status="cached" if trusted else "stale",
+            fetched_at=fetched, affiliation_trusted=trusted,
             zkill_url=f"https://zkillboard.com/character/{character_id}/",
         )
         return result
@@ -156,25 +163,7 @@ class PersonnelRuntime:
                 self._upstream_until.pop(cid, None)
 
     def _schedule(self, row: dict[str, Any], *, seen_at: float | None = None) -> None:
-        now = self.now()
-        cid = row["character_id"]
-        with self._lock:
-            active = cid in self._active or name_key(row["name"]) in self._active_names
-        tier = personnel_tier(now=now, last_seen_at=seen_at if seen_at is not None else row["last_seen_at"], active=active)
-        fetched = float(row.get("affiliation_fetched_at") or 0)
-        due = refresh_due_at(character_id=cid, fetched_at=fetched, tier=tier,
-                             upstream_valid_until=self._upstream_until.get(cid, 0),
-                             spare_capacity=self._background > 1)
-        self.archive.request_refresh("affiliation", cid, priority=tier, due_at=now if not fetched else due, promote_only=True)
-        # Repair legacy multi-day schedules for every tier, including cold history.
-        # Keep retries bounded and never steal an in-flight lease.
-        self.archive.expedite_stale_affiliation(cid, now=now, due_at=due if fetched else now)
-        self.archive.request_refresh("identity", cid, priority=tier,
-                                     due_at=float(row["name_checked_at"]) + NAME_REFRESH_SECONDS, promote_only=True)
-        for kind in ("corporation", "alliance"):
-            entity_id = row.get(kind + "_id")
-            if entity_id and not self.archive.get_organizations(kind, [entity_id]):
-                self.archive.request_refresh(kind, entity_id, priority=2, due_at=now)
+        schedule_profiles(self, [{**row, "last_seen_at": seen_at if seen_at is not None else row["last_seen_at"]}])
 
     def drain_requests(self) -> None:
         with self._lock:
@@ -186,24 +175,21 @@ class PersonnelRuntime:
             if ids:
                 profiles = self.archive.get_profiles(ids)
                 self._remember(list(profiles.values()))
-                for cid in ids:
-                    if cid not in profiles:
-                        self.archive.request_refresh("identity", cid, priority=0, due_at=self.now())
-                    else:
-                        self._schedule(profiles[cid])
+                self.archive.request_refresh_many([
+                    ("identity", cid, 0, self.now()) for cid in ids if cid not in profiles])
+                schedule_profiles(self, list(profiles.values()))
             if not batch:
                 return
             found = self.archive.find_names([row[0] for row in batch])
             self._counts["database_hits"] += len(found)
             self._counts["database_misses"] += len(batch) - len(found)
             self._remember(list(found.values()))
-            for name, seen in batch:
-                row = found.get(name_key(name))
-                if row:
-                    self.archive.observe([row["character_id"]], seen)
-                    self._schedule(row, seen_at=seen)
-                else:
-                    self.archive.request_refresh("resolve", name, priority=0, due_at=self.now())
+            self.archive.observe_many([(found[name_key(name)]["character_id"], seen)
+                                       for name, seen in batch if name_key(name) in found])
+            schedule_profiles(self, [{**found[name_key(name)], "last_seen_at": max(
+                seen, found[name_key(name)]["last_seen_at"])} for name, seen in batch if name_key(name) in found])
+            self.archive.request_refresh_many([("resolve", name, 0, self.now())
+                                               for name, _ in batch if name_key(name) not in found])
         except Exception:
             with self._lock:
                 self._pending_ids.update(ids[:max(0, self.max_hot - len(self._pending_ids))])
@@ -255,65 +241,7 @@ class PersonnelRuntime:
                 rows = {keys[0]: getattr(self.client, "get_" + kind)(int(keys[0]))}
             # Capture metadata before any subsequent public request on this thread.
             freshness = {key: self._freshness(key) for key in keys}
-            for lease in leases:
-                row = rows.get(lease.entity_key)
-                if not row:
-                    # A partial affiliation response is never a null affiliation.
-                    self.archive.fail(lease, now=self.now(), error_code="not_found", retry_after=60)
-                    if kind == "resolve":
-                        with self._lock:
-                            self._negative[lease.entity_key] = self.now() + 60
-                            while len(self._negative) > self.max_hot:
-                                self._negative.popitem(last=False)
-                    continue
-                fetched, expires = freshness[lease.entity_key]
-                cid = None
-                if kind in {"resolve", "identity"}:
-                    cid = int(row["id"])
-                    existing = self.archive.get_profiles([cid]).get(cid)
-                    with self._lock:
-                        seen = max(existing["last_seen_at"] if existing else 0.0,
-                                   self._sightings.get(name_key(row["name"]), 0.0))
-                    update = IdentityUpdate(cid, row["name"], fetched, seen)
-                    due = max(self.now() + 60, fetched + NAME_REFRESH_SECONDS, expires)
-                    if kind == "resolve":
-                        due = self.now() + 36500 * 86400  # Identity-by-ID owns subsequent name validation.
-                elif kind == "affiliation":
-                    cid = int(lease.entity_key)
-                    update = AffiliationUpdate(cid, int(row["corporation_id"]), fetched,
-                                               row.get("alliance_id"), row.get("faction_id"))
-                    profile = self.archive.get_profiles([cid])[cid]
-                    with self._lock:
-                        active = cid in self._active or name_key(profile["name"]) in self._active_names
-                    tier = personnel_tier(now=self.now(), last_seen_at=profile["last_seen_at"], active=active)
-                    due = max(self.now() + 60, refresh_due_at(character_id=cid, fetched_at=fetched,
-                              tier=tier, upstream_valid_until=expires, spare_capacity=self._background > 1))
-                    if not fetched or self.now() - fetched >= AFFILIATION_TTL:
-                        # Still-old responses during rolling deployment must not
-                        # defer confirmation another day or create a tight loop.
-                        due = self.now() + 60
-                else:
-                    update = OrganizationUpdate(kind, int(lease.entity_key), row["name"], fetched)
-                    due = self.now() + 36500 * 86400  # Names have no periodic refresh obligation.
-                if self.archive.finish(lease, now=self.now(), next_due_at=due,
-                                       next_priority=tier if kind == "affiliation" else 2, update=update):
-                    self._counts["refresh_success"] += 1
-                    if cid:
-                        if kind == "affiliation":
-                            with self._lock:
-                                self._upstream_until[cid] = expires
-                        profiles = list(self.archive.get_profiles([cid]).values())
-                        self._remember(profiles)
-                        if kind in {"resolve", "identity"}:
-                            for profile in profiles:
-                                self._schedule(profile)
-                    else:
-                        with self._lock:
-                            affected = [cid for cid, p in self._profiles.items() if p.get(kind + "_id") == int(lease.entity_key)]
-                        for start in range(0, len(affected), 500):
-                            self._remember(list(self.archive.get_profiles(affected[start:start + 500]).values()))
-                else:
-                    self._counts["late_results"] += 1
+            commit_refresh_batch(self, kind, leases, rows, freshness)
             self._latency_ms = (time.monotonic() - started) * 1000
         except Exception as exc:
             self._counts["refresh_errors"] += 1
@@ -347,8 +275,7 @@ class PersonnelRuntime:
         if not rows:
             self._cursor = 0
             return
-        for row in rows:
-            self._schedule(row)
+        schedule_profiles(self, rows)
         self._cursor = rows[-1]["character_id"]
 
     def snapshot(self) -> dict[str, Any]:
@@ -393,6 +320,7 @@ class PersonnelRuntime:
         futures = {}
         cycle = 0
         force_current = False
+        next_statistics_at = 0.0
         with ThreadPoolExecutor(max_workers=6, thread_name_prefix="personnel") as executor:
             while not self._stop.is_set():
                 try:
@@ -415,10 +343,13 @@ class PersonnelRuntime:
                                 self._changed.update(changed)
                             raise
                         force_current = accepted is False
-                    self._stats = self.archive.statistics(self.now())
+                    due_work = self.archive.due_work(self.now())
+                    if self.now() >= next_statistics_at:
+                        self._stats = self.archive.statistics(self.now())
+                        next_statistics_at = self.now() + 30
                     controls = self.scheduling_settings()
                     if cycle % 5 == 0:
-                        realtime_due = any(row["priority"] <= 1 for row in self._stats["due_by_priority"])
+                        realtime_due = any(row["priority"] <= 1 for row in due_work)
                         self._background = background_slots(self._background, RefreshLoad(
                             cpu_fraction=os.getloadavg()[0] / max(1, os.cpu_count() or 1) if hasattr(os, "getloadavg") else 0,
                             realtime_pending=int(realtime_due), database_wait_ms=self._db_wait_ms,
@@ -441,7 +372,7 @@ class PersonnelRuntime:
                         if self._retry_until > self.now():
                             continue
                         running = [value for value in futures.values() if value[0] == realtime]
-                        due = {row["kind"] for row in self._stats["due_by_priority"]
+                        due = {row["kind"] for row in due_work
                                if (row["priority"] <= 1) == realtime}
                         ordered = kinds[cycle % len(kinds):] + kinds[:cycle % len(kinds)]
                         for kind in ordered:

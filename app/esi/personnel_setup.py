@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import threading
 import time
 
 from app.intel.enrichment import ThreatEnricher
@@ -12,52 +11,31 @@ from app.intel.enrichment import ThreatEnricher
 class PersonnelEnricher(ThreatEnricher):
     """Only the refresh lane accesses private ESI; hot reads return a bounded-age copy."""
 
-    def __init__(self, resolver, session, *, now=time.time):
+    def __init__(self, resolver, session, *, now=time.time, relations=None):
         super().__init__(resolver=resolver, esi_session=session, now=now)
-        self._contacts_lock = threading.Lock()
-        self._context = None
-        self._successful_at = 0.0
+        self.relations = relations
+        from app.esi.relation_shadow import ShadowComparisons
+        self.shadow_comparisons = ShadowComparisons()
 
     def contact_standings(self):
-        with self._contacts_lock:
-            if self._now() - self._successful_at > 3600:
-                return []
-            return list(self._contact_standings or [])
+        mode = getattr(self, "organization_mode", "on")
+        if self.relations is not None and mode == "on":
+            return self.relations.view()
+        from app.esi.contact_refresh import cached_contacts
+        contacts = cached_contacts(self)
+        if self.relations is not None and mode == "shadow":
+            from app.esi.relation_shadow import ShadowContacts
+            return ShadowContacts(contacts, self.relations.view(), self.shadow_comparisons)
+        return contacts
 
     def refresh_contacts(self) -> bool:
-        from app.intel.enrichment import _normalize_contact_standings
-        session = self.esi_session
-        if session is None:
-            return False
-        try:
-            tokens = session.load_tokens(refresh_if_needed=False)
-            context = (tokens.character_id, tokens.character_owner_hash, tuple(sorted(tokens.scopes)))
-        except Exception:
-            context = None
-        with self._contacts_lock:
-            changed = context != self._context
-            if changed or context is None:
-                self._context = context
-                self._contact_standings = []
-                self._successful_at = 0
-                self._contact_standings_until = 0
-            if context is None or self._now() < self._contact_standings_until:
-                return changed
-        try:
-            snapshot = session.snapshot(include_location=False, include_contacts=True)
-            current = snapshot.tokens
-            if (current.character_id, current.character_owner_hash, tuple(sorted(current.scopes))) != context:
-                return True
-            contacts = _normalize_contact_standings(snapshot.contacts)
-        except Exception:
-            with self._contacts_lock:
-                self._contact_standings_until = self._now() + 30
-            return changed
-        with self._contacts_lock:
-            changed = changed or contacts != self._contact_standings
-            self._contact_standings = contacts
-            self._successful_at = self._now()
-            self._contact_standings_until = self._now() + 300
+        mode = getattr(self, "organization_mode", "on")
+        if self.relations is not None and mode == "on":
+            return self.relations.refresh()
+        from app.esi.contact_refresh import refresh_contacts
+        changed = refresh_contacts(self)
+        if self.relations is not None and mode == "shadow":
+            self.relations.refresh()
         return changed
 
 

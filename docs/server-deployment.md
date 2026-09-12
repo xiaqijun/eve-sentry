@@ -1,14 +1,48 @@
 # 服务端部署
 
+## 受保护的 ESI 转发切换
+
+网络默认 legacy，不随档案开关改变。确认 114 PostgreSQL 档案、组织资料及刷新队列可用后，使用 main 分支、production 保护的工作流：
+
+```powershell
+gh workflow run configure-esi-transport.yml --ref main -f mode=relay
+```
+
+工作流核对 114/47 均已部署当前提交，依次执行 47 dual → 114 relay → 47 relay-only。
+114 切换前通过新路线正常查询一次 Jita，验证 CONNECT 鉴权及官方 TLS；不绕过缓存、不自动重试或换出口。
+每台机器修改配置前保存原文件及权限，重启/就绪检查失败恢复原配置；中途失败保留兼容的 47 dual 状态。
+切换短暂重启服务，SSE 自动重连。回滚运行同一工作流 `-f mode=legacy`，顺序为 47 dual → 114 legacy → 47 legacy。
+
+固定生产文件为 `/etc/eve-sentry/eve-sentry.env`、`/etc/eve-sentry-esi/gateway.env`；仅写 transport mode，
+不更换 SSH/SSO/Gateway 凭据。部署布局若偏离仓库默认值，先调整受保护脚本及验证，不临时改成公网监听。
+114 已有长期档案继续使用，缺失记录正常入队补齐；47 临时成功缓存不冒充持久档案，不导入缺失期限的数据并标为新鲜。
+关闭 47 缓存/队列后仍保留原存储用于回滚，不执行删除。
+
+ESI status `config.transport` 提供进程内请求/尝试/失败数和最近 5 分钟时延分位；47 `/health.relay` 仅统计隧道连接，
+不解密私有 HTTP。单主状态行为见[星系当前状态](system-current-state.md)。组织模式在 Web 管理界面单独设置：
+先档案 on，再 organization_mode=shadow 比较，确认授权/关系来源完整后 on。
+必须检查真实截图、双节点切换、服务重启和 QQ 实际投递；readiness 成功不等于端到端业务验收。
+
 人员缓存实现和验收见[全量人员档案与分级刷新](personnel-cache-plan.md)。
+
+2026-09-13 本地开发、尚未发布：人员档案支持独立组织关系开关，
+不使用个人声望例外；相同目标的己方军团联系人设置优先于己方联盟设置。
+`shadow/on` 初始化时增量创建 `personnel_relation_snapshots` 和 `personnel_relation_entries`，
+不删除旧表。`organization_mode` 默认 off：已启用档案 `on` 的实例不会自动切换分类规则。
+发布时须先通过受保护工作流更新机器人和前端的 `esi_organization_pending` 兼容处理，
+再更新服务端；档案 on + 组织 shadow 比较后，受控切换组织 on 验收。
+组织 shadow 计数仅比较声望符号，不改变旧分类/预警，不等于去重人数或完整分类器误差率。
+组织 off 只恢复旧分类；档案 off 恢复旧解析链路，两者均保留新增表，不需要手工删除数据。
+本段为待发布变更说明，不代表生产已完成升级。
 
 ### 人员档案灰度发布
 
-管理员可在 **系统管理 → ESI 网关观测 → 全量人员档案** 保存四项配置：
+管理员可在 **系统管理 → ESI 网关观测 → 全量人员档案** 保存五项配置：
 
 | 配置 | 默认值 | 生效方式 |
 | --- | --- | --- |
 | 人员档案模式 | off | 保存后安全在线切换，无需手动重启 |
+| 组织关系分类 | off | off/shadow/on；档案 on 时执行，保存后在线生效 |
 | 闲时资料刷新 | 开启 | 当前实例下个调度周期采用；在途任务自然完成 |
 | 历史回填 | 开启 | 当前实例下个调度周期采用；暂停保留进度 |
 | 后台并发上限 | 4 | 1～4；按负载自适应，不改变两个实时槽 |
@@ -18,6 +52,29 @@
 页面分别显示“当前运行”和“已保存”，保存模式不重启服务或中断 SSE。初始化资源成功、配置与
 审计事务提交后才切换当前实例；重新读取页面可核对两者一致，不一致时可“重试应用”。
 默认 off 不创建人员档案表或启动档案线程；配置仍可管理。
+
+本轮增量迁移还增加 `personnel_profiles.affiliation_expires_at`，不回填虚构获取时间；旧版服务端回滚
+可以忽略该可空字段。联系人在进程启动/授权上下文切换后先重新验证权限，再用于确认友军。
+
+### ESI 固定目标转发（待生产灰度）
+
+Gateway `EVE_SENTRY_ESI_GATEWAY_TRANSPORT_MODE` 默认 legacy；dual 同端口兼容旧 JSON 查询与
+固定目标 CONNECT；relay 禁用旧 JSON 查询及 ID 缓存后台线程，不删除历史缓存数据。
+必须绑定明确的私有 IP（禁止 0.0.0.0）并设置准确来源白名单；114 和 47 之间的链路须受认证并加密
+（生产使用已有 ZeroTier）。CONNECT 使用 Gateway 凭据；114 验证 ESI 官方 TLS 证书和主机名，
+47 不持有 ESI 登录/刷新令牌，不解密 ESI 请求。
+
+114 `EVE_SENTRY_ESI_TRANSPORT=legacy|direct|relay` 默认 legacy；relay 使用已有 gateway URL/token，
+地址必须是私有 IP 的 `http://IP:port`；HTTP 只在受保护内网承载 CONNECT，业务仍是端到端 HTTPS。
+direct 是显式应急直连，不按错误自动回退。新路线的公共和私有 ESI 共用 6 连接/2 请求每秒预算，
+420/429 共享至少 300 秒退避且尊重更长 Retry-After；SSO 仍由 114 直连并协调令牌刷新。
+
+切换顺序：受保护 Gateway 部署 dual → 验证 114 档案和队列 → 受保护服务端部署 relay 配置并灰度
+→ 确認旧 JSON 路由已无消费者 → 受保护 Gateway 部署 relay。禁止提前清除 47 缓存；现有已确认
+历史资料按原回填能力迁移，成功快照年龄不能重置。回滚先恢复 Gateway dual，再恢复 114 legacy。
+当前尚未执行迁移或切换；完整主来源方案未完成前不发布本轮整体版本。
+
+### 人员档案模式与验收
 
 模式含义：
 

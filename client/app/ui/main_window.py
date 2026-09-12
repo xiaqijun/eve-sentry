@@ -2597,6 +2597,7 @@ class MainWindow(QMainWindow):
                         0,
                         previous_context,
                         refresh_location=False,
+                        **({"source_status": "departed"} if previous_context.get("_capture") else {}),
                     )
                     controller = _instance_attr(self, "_alert_controller")
                     if controller is not None:
@@ -2796,13 +2797,6 @@ class MainWindow(QMainWindow):
         set_scan_offset = getattr(worker, "set_scan_offset", None)
         if callable(set_scan_offset):
             set_scan_offset(scan_offset)
-        worker.ocr_snapshot.connect(
-            lambda names, hostile_icon_count, context=target: self._publish_ocr_snapshot(
-                names,
-                context=context,
-                hostile_icon_count=hostile_icon_count,
-            )
-        )
         evidence_snapshot = getattr(worker, "ocr_evidence_snapshot", None)
         if evidence_snapshot is not None:
             evidence_snapshot.connect(
@@ -2811,6 +2805,12 @@ class MainWindow(QMainWindow):
                     context=context,
                     hostile_icon_count=hostile_icon_count,
                     ocr_evidence=evidence,
+                )
+            )
+        else:
+            worker.ocr_snapshot.connect(
+                lambda names, hostile_icon_count, context=target: self._publish_ocr_snapshot(
+                    names, context=context, hostile_icon_count=hostile_icon_count,
                 )
             )
         query_snapshot = getattr(worker, "ocr_query_snapshot", None)
@@ -2832,9 +2832,15 @@ class MainWindow(QMainWindow):
                     context,
                 )
             )
-        worker.hostile_detected.connect(
-            lambda count, context=target: self._on_hostile_icon_detected(count, context)
-        )
+        visual_evidence = getattr(worker, "visual_evidence", None)
+        if visual_evidence is not None:
+            visual_evidence.connect(
+                lambda count, capture, context=target, worker=worker: self._on_visual_evidence(count, capture, context, worker)
+            )
+        else:
+            worker.hostile_detected.connect(
+                lambda count, context=target: self._on_hostile_icon_detected(count, context)
+            )
         worker.status_update.connect(
             lambda message, context=target: self._on_worker_status_update(message, context)
         )
@@ -3127,12 +3133,23 @@ class MainWindow(QMainWindow):
         if controller is not None:
             controller.update_local_hostile_count(system_name, hostile_count)
 
+    def _on_visual_evidence(self, count: int, capture: dict, context: dict, worker) -> None:
+        """Publish frame liveness without re-rendering unchanged local warnings."""
+        if _instance_attr(self, "_workers", {}).get(context.get("key")) is not worker:
+            return
+        context["_capture"] = dict(capture)
+        if context.get("_hostile_icon_count") != count:
+            self._on_hostile_icon_detected(count, context)
+        else:
+            self._publish_hostile_presence(count, context, refresh_location=False)
+
     def _publish_hostile_presence(
         self,
         count: int,
         context: dict,
         *,
         refresh_location: bool = True,
+        source_status: str = "",
     ) -> None:
         """Queue the latest visual hostile count independently from name OCR."""
         client = _instance_attr(self, "_intel_client")
@@ -3156,6 +3173,10 @@ class MainWindow(QMainWindow):
             "system_id": context.get("system_id"),
             "hostile_icon_count": max(0, int(count)),
         }
+        if context.get("_capture"):
+            payload["capture"] = dict(context["_capture"])
+        if source_status:
+            payload["source_status"] = source_status
         captured_at = datetime.now(timezone.utc).isoformat()
         previous_version = max(0, int(context.get("_presence_version") or 0))
         presence_version = max(previous_version + 1, time.time_ns() // 1_000_000)
@@ -3197,7 +3218,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Clear one monitor's server presence and recompute its local map tile."""
         context["_hostile_icon_count"] = 0
-        self._publish_hostile_presence(0, context, refresh_location=False)
+        self._publish_hostile_presence(0, context, refresh_location=False,
+                                       **({"source_status": "stopped"} if context.get("_capture") else {}))
         if not clear_local:
             return
 
@@ -3453,7 +3475,6 @@ class MainWindow(QMainWindow):
     ) -> None:
         # Coordinates are local detection evidence and are intentionally not
         # sent. The server classifies the complete OCR roster through ESI.
-        del ocr_evidence
         if (
             self._intel_client is None
             or not _instance_attr(self, "_uploads_enabled", True)
@@ -3487,6 +3508,8 @@ class MainWindow(QMainWindow):
             # Upload the complete raw OCR roster for server-side ESI lookup.
             "names": list(names),
         }
+        if isinstance(ocr_evidence, dict) and isinstance(ocr_evidence.get("capture"), dict):
+            payload["capture"] = dict(ocr_evidence["capture"])
         normalized_query_id = str(query_id or "").strip()
         if normalized_query_id:
             payload["query_id"] = normalized_query_id

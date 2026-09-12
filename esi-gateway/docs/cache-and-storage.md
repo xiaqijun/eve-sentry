@@ -1,5 +1,23 @@
 # Cache and storage design
 
+## Pending fixed-target relay migration (2026-09-13, not deployed)
+
+`EVE_SENTRY_ESI_GATEWAY_TRANSPORT_MODE=legacy` remains the default described below.
+`dual` adds authenticated `CONNECT esi.evetech.net:443` while keeping existing routes;
+`relay` disables JSON routes (410) and the ID-cache coordinator. It does not delete stored data.
+The listener must bind an explicit private IP with an exact private source allowlist; protect
+the inter-server link with authenticated encryption (the production ZeroTier network).
+114 verifies ESI TLS end to end. The gateway sees ciphertext, never ESI authorization tokens.
+Limits: 8 tunnels, 16 request threads, 30-second idle timeout, 300-second connection lifetime,
+64 MiB per tunnel, bounded forwarding buffers. `/health` remains available.
+ESI request-rate and shared 420/429 backoff run on 114 because the relay cannot inspect TLS.
+Do not disable caching before the 114 archive and migration have been validated.
+Deployment order and rollback are documented in [server deployment](../../docs/server-deployment.md).
+The protected `ESI transport rollout` workflow now implements the ordered mode switch,
+configuration backup and local rollback. Existing storage is retained, not copied as newly fresh data.
+`/health.relay` reports tunnel requests, attempts, connections and errors; HTTP-level timings and
+shared upstream cooldown metrics live on 114, where TLS terminates.
+
 The server's [personnel archive](../../docs/personnel-cache-plan.md) is a separate,
 opt-in business cache. Gateway responses add `freshness`, keyed by entity ID string
 or normalized request name for `universe/ids`, with `fetched_at`, `last_validated_at`,
@@ -34,7 +52,7 @@ The gateway serves public ESI data only:
 | --- | --- | ---: |
 | `POST /v1/universe/names` | `resolve_names` | 30 days |
 | `POST /v1/universe/ids` | `resolve_ids` | 30 days |
-| `POST /v1/characters/affiliation` | `get_character_affiliations` | 5 minutes |
+| `POST /v1/characters/affiliation` | `get_character_affiliations` | 1 hour |
 | `GET /v1/characters/{id}` | `get_character` | 2 days |
 | `GET /v1/corporations/{id}` | `get_corporation` | 7 days |
 | `GET /v1/alliances/{id}` | `get_alliance` | 7 days |

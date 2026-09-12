@@ -1,8 +1,9 @@
 # EVE Sentry Windows 监控客户端
 
 [人员缓存改造](../docs/personnel-cache-plan.md)由服务端统一实现，客户端不承担全量资料
-缓存或 ESI 刷新。此次服务端开关接入不要求客户端升级，继续通过现有 SSE/Bootstrap 消费权威状态；
-资料过期不会阻塞视觉来敌/清空，名单更正与视觉 Presence 分开处理。
+缓存或 ESI 刷新。新版客户端增加逐窗口采集会话、帧序号与质量信息，配合服务端单主来源；
+使用统一 SSE/Bootstrap 当前状态，修复预警启动历史重放闪动，失联显示“上次”而不是假清空。
+资料过期不会阻塞视觉来敌/清空。唯一操作指南为[客户端指南](docs/client.md)，设计见[当前状态](../docs/system-current-state.md)。
 
 `client/` 是 EVE Sentry 单体仓库中的 Windows 客户端组件，负责选择 EVE 窗口、截图、
 红色敌对图标检测、ONNX OCR、本地浮窗和星图展示。服务端代码位于仓库根目录 `app/`，

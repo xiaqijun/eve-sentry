@@ -379,7 +379,7 @@ function drawNode(
     drawHostileCard(node, context, globalScale, timeMs, theme);
     return;
   }
-  const label = node.name;
+  const label = node.freshness === "unknown" ? `${node.name}（上次）` : node.name;
   const color = nodeColor(node);
   const lossCount = Math.max(0, node.killCount ?? 0);
   const isActive = node.hostileCount > 0 || lossCount > 0 || node.channelIntelCount > 0;
@@ -786,7 +786,7 @@ export function TacticalStarMap({
       >
         <div className="hostile-detail-summary">
           <span>当前侦测</span>
-          <strong>{selectedHostileSummary?.hostileCount || 0} 名敌对</strong>
+          <strong>{selectedHostileSummary?.hostileCount || 0} 名敌对{selectedHostileSummary?.freshness === "unknown" ? "（上次，采集状态未知）" : ""}</strong>
           <Tag color="red">实时态势</Tag>
         </div>
         {selectedHostiles.length > 0 ? (

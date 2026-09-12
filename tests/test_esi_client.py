@@ -14,8 +14,10 @@ class FakeResponse:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def read(self):
-        return self._body
+    def read(self, size=-1):
+        result = self._body if size < 0 else self._body[:size]
+        self._body = self._body[len(result):]
+        return result
 
 
 def test_authenticated_esi_requests_send_bearer_token(monkeypatch):
@@ -26,9 +28,9 @@ def test_authenticated_esi_requests_send_bearer_token(monkeypatch):
         if request.full_url.endswith("/location/"):
             return FakeResponse({"solar_system_id": 30002813})
         if request.full_url.endswith("/corporations/456/contacts/"):
-            return FakeResponse([{"contact_id": 789, "standing": 5.0}])
+            return FakeResponse([{"contact_id": 789, "contact_type": "alliance", "standing": 5.0}])
         if request.full_url.endswith("/alliances/789/contacts/"):
-            return FakeResponse([{"contact_id": 900, "standing": 10.0}])
+            return FakeResponse([{"contact_id": 900, "contact_type": "corporation", "standing": 10.0}])
         if request.full_url.endswith("/characters/123/standings/"):
             return FakeResponse(
                 [{"from_id": 456, "from_type": "corporation", "standing": -5.0}]
@@ -37,7 +39,7 @@ def test_authenticated_esi_requests_send_bearer_token(monkeypatch):
             return FakeResponse(
                 [{"character_id": 123, "corporation_id": 456, "alliance_id": 789}]
             )
-        return FakeResponse([{"contact_id": 42, "standing": -10.0}])
+        return FakeResponse([{"contact_id": 42, "contact_type": "character", "standing": -10.0}])
 
     monkeypatch.setattr("app.esi.client.urlopen", fake_urlopen)
     client = EsiClient(base_url="https://esi.test/latest")
@@ -50,9 +52,9 @@ def test_authenticated_esi_requests_send_bearer_token(monkeypatch):
     affiliations = client.get_character_affiliations([123])
 
     assert location == {"solar_system_id": 30002813}
-    assert contacts == [{"contact_id": 42, "standing": -10.0}]
-    assert corp_contacts == [{"contact_id": 789, "standing": 5.0}]
-    assert alliance_contacts == [{"contact_id": 900, "standing": 10.0}]
+    assert contacts == [{"contact_id": 42, "contact_type": "character", "standing": -10.0}]
+    assert corp_contacts == [{"contact_id": 789, "contact_type": "alliance", "standing": 5.0}]
+    assert alliance_contacts == [{"contact_id": 900, "contact_type": "corporation", "standing": 10.0}]
     assert standings == [{"from_id": 456, "from_type": "corporation", "standing": -5.0}]
     assert affiliations == [{"character_id": 123, "corporation_id": 456, "alliance_id": 789}]
     assert all(

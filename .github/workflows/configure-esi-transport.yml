@@ -1,0 +1,78 @@
+name: ESI transport rollout
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "relay: 47 dual → 114 relay → 47 relay-only; legacy: reverse safely"
+        type: choice
+        options: [relay, legacy]
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: esi-transport-production
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      MODE: ${{ inputs.mode }}
+      SERVER_HOST: ${{ vars.EVE_SENTRY_DEPLOY_HOST }}
+      SERVER_USER: ${{ vars.EVE_SENTRY_DEPLOY_USER }}
+      SERVER_PORT: ${{ vars.EVE_SENTRY_DEPLOY_PORT }}
+      GATEWAY_HOST: ${{ vars.EVE_SENTRY_ESI_GATEWAY_DEPLOY_HOST }}
+      GATEWAY_USER: ${{ vars.EVE_SENTRY_ESI_GATEWAY_DEPLOY_USER }}
+      GATEWAY_PORT: ${{ vars.EVE_SENTRY_ESI_GATEWAY_DEPLOY_PORT }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate selected configuration
+        run: |
+          set -euo pipefail
+          [[ "$MODE" == relay || "$MODE" == legacy ]]
+          for value in "$SERVER_HOST" "$GATEWAY_HOST"; do [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]; done
+          for value in "$SERVER_USER" "$GATEWAY_USER"; do [[ "$value" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; done
+          for value in "$SERVER_PORT" "$GATEWAY_PORT"; do
+            [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 65535 ))
+          done
+          python -m compileall -q deploy/ci/configure_esi_transport.py
+      - name: Configure protected deployment identities
+        env:
+          SERVER_KEY: ${{ secrets.EVE_SENTRY_DEPLOY_SSH_KEY }}
+          SERVER_HOSTS: ${{ secrets.EVE_SENTRY_DEPLOY_KNOWN_HOSTS }}
+          GATEWAY_KEY: ${{ secrets.EVE_SENTRY_ESI_GATEWAY_SSH_KEY }}
+          GATEWAY_HOSTS: ${{ secrets.EVE_SENTRY_ESI_GATEWAY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$SERVER_KEY" && test -n "$SERVER_HOSTS" && test -n "$GATEWAY_KEY" && test -n "$GATEWAY_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SERVER_KEY" > ~/.ssh/transport-server
+          printf '%s\n' "$GATEWAY_KEY" > ~/.ssh/transport-gateway
+          printf '%s\n%s\n' "$SERVER_HOSTS" "$GATEWAY_HOSTS" > ~/.ssh/transport-known-hosts
+          chmod 600 ~/.ssh/transport-server ~/.ssh/transport-gateway ~/.ssh/transport-known-hosts
+      - name: Switch with preflight, ordered phases and local rollback
+        run: |
+          set -euo pipefail
+          common=(-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/transport-known-hosts" -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
+          server=(-i "$HOME/.ssh/transport-server" -p "$SERVER_PORT" "${common[@]}" "$SERVER_USER@$SERVER_HOST")
+          gateway=(-i "$HOME/.ssh/transport-gateway" -p "$GATEWAY_PORT" "${common[@]}" "$GATEWAY_USER@$GATEWAY_HOST")
+          if [[ "$MODE" == relay ]]; then
+            [[ "$(ssh "${server[@]}" 'cat /var/lib/eve-sentry/deployed-revision')" == "$GITHUB_SHA" ]]
+            [[ "$(ssh "${gateway[@]}" 'cat /opt/eve-sentry-esi-gateway/deployed-revision')" == "$GITHUB_SHA" ]]
+          fi
+          script="/tmp/eve-sentry-transport-${GITHUB_SHA}.py"
+          scp -i ~/.ssh/transport-server -P "$SERVER_PORT" "${common[@]}" deploy/ci/configure_esi_transport.py "$SERVER_USER@$SERVER_HOST:$script"
+          scp -i ~/.ssh/transport-gateway -P "$GATEWAY_PORT" "${common[@]}" deploy/ci/configure_esi_transport.py "$GATEWAY_USER@$GATEWAY_HOST:$script"
+          ssh "${gateway[@]}" "/opt/eve-sentry-esi-gateway/.venv/bin/python '$script' gateway dual --apply"
+          ssh "${server[@]}" "/opt/eve-sentry/.venv-server/bin/python '$script' server '$MODE' --apply"
+          ssh "${gateway[@]}" "/opt/eve-sentry-esi-gateway/.venv/bin/python '$script' gateway '$MODE' --apply"
+          printf '### ESI transport verified\n- Mode: `%s`\n- Revision: `%s`\n- Existing caches and tokens preserved.\n' "$MODE" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove runner identities
+        if: always()
+        run: rm -f ~/.ssh/transport-server ~/.ssh/transport-gateway ~/.ssh/transport-known-hosts

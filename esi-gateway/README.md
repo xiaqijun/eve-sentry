@@ -1,5 +1,11 @@
 # EVE Sentry ESI Gateway
 
+Transport modes are `legacy`, `dual`, and `relay`. Relay-only forwards authenticated,
+allow-listed TLS tunnels to `esi.evetech.net:443`; 114 owns business caches and queues,
+verifies the official certificate, and retains ESI tokens. JSON cache routes are disabled;
+existing storage is preserved. Use the protected [rollout workflow](../docs/server-deployment.md#受保护的-esi-转发切换).
+The cache/envelope behavior below applies to legacy/dual mode, not relay-only.
+
 The server's [personnel archive](../docs/personnel-cache-plan.md) is opt-in.
 Public responses now include additive per-entity `freshness` metadata; stale reads
 retain the original fetch time. This applies to both the default in-memory cache

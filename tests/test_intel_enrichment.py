@@ -147,12 +147,12 @@ def test_threat_enricher_keeps_last_contact_snapshot_when_esi_fails():
             raise RuntimeError("ESI token temporarily unavailable")
 
     session = FlakySession()
-    clock = iter((1000.0, 1061.0))
+    clock = [1000.0]
     enricher = ThreatEnricher(
         resolver=FakeResolver(),
         esi_session=session,
         standing_ttl_seconds=60,
-        now=lambda: next(clock),
+        now=lambda: clock[0],
     )
     observation = Observation(
         source="local_ocr",
@@ -162,6 +162,7 @@ def test_threat_enricher_keeps_last_contact_snapshot_when_esi_fails():
     )
 
     first = enricher.enrich(observation).character_profiles[0]
+    clock[0] = 1061.0
     second = enricher.enrich(observation).character_profiles[0]
 
     assert first["contact_standing"] == -10.0

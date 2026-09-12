@@ -18,6 +18,7 @@ from app.engine.hostile_icons import find_hostile_icons
 from app.engine.ocr import OCREngine
 from app.engine.ocr_names import ocr_candidate_names
 from app.engine.ocr_scheduler import OCRRequestSuperseded
+from app.engine.capture_evidence import new_capture_session, roster_quality
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class MonitorWorker(QThread):
     ocr_query_snapshot = pyqtSignal(list, int, str)
     ocr_query_failed = pyqtSignal(str, str)
     hostile_detected = pyqtSignal(int)    # emitted when the visible count changes
+    visual_evidence = pyqtSignal(int, object)  # every valid frame, before OCR
     connection_lost = pyqtSignal(str)     # capture/window connection is offline
     connection_restored = pyqtSignal()    # capture resumed after an offline state
 
@@ -206,6 +208,8 @@ class MonitorWorker(QThread):
         """Main loop.  Runs until :meth:`stop` is called."""
         self._running = True
         scan_count = 0
+        capture_sequence = 0
+        capture_session = new_capture_session()
         ocr_ready = False  # track whether OCR has been lazy-initialised
         previous_hostile_count: int | None = None
         published_hostile_count: int | None = None
@@ -256,6 +260,10 @@ class MonitorWorker(QThread):
                     # 2. Publish visual evidence first. OCR is optional enrichment.
                     hostile_icons = find_hostile_icons(img)
                     hostile_count = len(hostile_icons)
+                    capture_sequence += 1
+                    rows_fingerprint = _image_fingerprint(img)
+                    capture = {**capture_session, "sequence": capture_sequence,
+                               "fingerprint": rows_fingerprint.hex() or "unavailable"}
                     force_presence_refresh = self._presence_refresh_requested.is_set()
                     if force_presence_refresh:
                         self._presence_refresh_requested.clear()
@@ -287,11 +295,12 @@ class MonitorWorker(QThread):
                         published_hostile_count = hostile_count
                         self._burst_scans_remaining = 2 if hostile_count > 0 else 0
                     previous_hostile_count = hostile_count
+                    if published_hostile_count is not None:
+                        self.visual_evidence.emit(published_hostile_count, dict(capture))
 
                     # OCR receives the full member list. The fingerprint uses
                     # the name-column view so friendly roster changes are
                     # noticed without reacting to distance/type animations.
-                    rows_fingerprint = _image_fingerprint(img)
                     rows_changed = rows_fingerprint != previous_hostile_rows_fingerprint
                     previous_hostile_rows_fingerprint = rows_fingerprint
                     if hostile_count == 0:
@@ -362,6 +371,7 @@ class MonitorWorker(QThread):
                             (text, confidence)
                             for text, confidence, _bounds in full_ocr_results
                         ]
+                        capture["roster_quality"] = roster_quality(img, full_ocr_results)
                         logger.info(
                             "Full-frame OCR roster published (icons=%d, candidates=%d)",
                             hostile_count,
@@ -381,7 +391,8 @@ class MonitorWorker(QThread):
                             snapshot_names,
                             hostile_count,
                         )
-                        ocr_retry_remaining = 0
+                        self.ocr_evidence_snapshot.emit(snapshot_names, hostile_count, {"capture": dict(capture)})
+                        ocr_retry_remaining = 2 if capture.get("roster_quality") == "truncated" else 0
                     if ocr_query_id:
                         self._complete_ocr_query(ocr_query_id)
                         self.ocr_query_snapshot.emit(

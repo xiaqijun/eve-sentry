@@ -68,10 +68,10 @@ def refresh_due_at(
     positive_id(character_id)
     if tier not in AFFILIATION_INTERVALS:
         raise ValueError("affiliation tier must be 1-5")
-    # Keep keyword compatibility; neither a local legacy one-day deadline nor
-    # extra workers can override the official one-hour affiliation cache policy.
-    timestamp(upstream_valid_until)
-    return timestamp(fetched_at) + AFFILIATION_TTL
+    # Official remaining lifetime may shorten, but never extend, the one-hour cap.
+    deadline = timestamp(upstream_valid_until)
+    cap = timestamp(fetched_at) + AFFILIATION_TTL
+    return min(cap, deadline) if deadline else cap
 
 
 def retry_delay(failures: int, *, jitter: float = 0.5, retry_after: float = 0.0) -> float:

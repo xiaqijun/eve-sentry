@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from app.esi.batch_connections import BatchConnections
 from app.esi.personnel_policy import name_key, positive_id, retry_delay, timestamp
-
 
 MAX_BATCH = 1000
 JOB_KINDS = {"resolve", "identity", "affiliation", "corporation", "alliance"}
@@ -34,6 +34,7 @@ class AffiliationUpdate:
     fetched_at: float
     alliance_id: int | None = None
     faction_id: int | None = None
+    expires_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -81,9 +82,74 @@ class PersonnelArchive:
     def __init__(self, connection_factory: Callable[[], Any], *, dialect: str = "postgres") -> None:
         if dialect not in {"postgres", "sqlite"}:
             raise ValueError("unsupported personnel archive dialect")
-        self._connection = connection_factory
+        self._connection = BatchConnections(connection_factory)
         self._row_lock = " FOR UPDATE" if dialect == "postgres" else ""
         self._claim_lock = " FOR UPDATE SKIP LOCKED" if dialect == "postgres" else ""
+
+    def batch(self):
+        """SQL-only scope; publish hot copies only after successful exit."""
+        return self._connection.batch()
+
+    def request_refresh_many(self, requests, *, promote_only=False):
+        """Upsert bounded jobs without per-person database round trips."""
+        cleaned = {}
+        for kind, entity_key, priority, due_at in requests:
+            key = _job_key(kind, entity_key, "")
+            if type(priority) is not int or not 0 <= priority <= 5:
+                raise ValueError("priority must be 0-5")
+            due_at = timestamp(due_at)
+            old = cleaned.get(key, (priority, due_at))
+            cleaned[key] = (min(priority, old[0]), min(due_at, old[1]))
+        values = [(*key, *schedule) for key, schedule in sorted(cleaned.items())]
+        with self.batch():
+            for start in range(0, len(values), 100):
+                batch = values[start:start + 100]
+                with self._connection() as connection:
+                    connection.execute(
+                        "INSERT INTO personnel_refresh_jobs (kind,entity_key,context_key,priority,next_due_at) VALUES "
+                        + ",".join(["(%s,%s,%s,%s,%s)"] * len(batch))
+                        + " ON CONFLICT (kind,entity_key,context_key) DO UPDATE SET "
+                        "priority = CASE WHEN excluded.priority < personnel_refresh_jobs.priority "
+                        "THEN excluded.priority ELSE personnel_refresh_jobs.priority END, "
+                        "next_due_at = CASE WHEN personnel_refresh_jobs.failures > 0 THEN personnel_refresh_jobs.next_due_at "
+                        "WHEN excluded.next_due_at < personnel_refresh_jobs.next_due_at "
+                        "THEN excluded.next_due_at ELSE personnel_refresh_jobs.next_due_at END, "
+                        "revision = personnel_refresh_jobs.revision + 1 "
+                        "WHERE excluded.priority < personnel_refresh_jobs.priority "
+                        "OR (NOT %s AND personnel_refresh_jobs.failures = 0 "
+                        "AND excluded.next_due_at < personnel_refresh_jobs.next_due_at)",
+                        (*[value for row in batch for value in row], promote_only),
+                    )
+
+    def observe_many(self, sightings):
+        values = {}
+        for cid, seen in sightings:
+            cid, seen = positive_id(cid), timestamp(seen)
+            values[cid] = max(values.get(cid, 0), seen)
+        ordered = sorted(values.items())
+        with self.batch():
+            for start in range(0, len(ordered), 100):
+                batch = ordered[start:start + 100]
+                case = "CASE character_id " + " ".join("WHEN %s THEN %s" for _ in batch) + " END"
+                params = [value for row in batch for value in row]
+                with self._connection() as connection:
+                    connection.execute("UPDATE personnel_profiles SET last_seen_at = " + case
+                                       + " WHERE last_seen_at < " + case + " AND character_id IN ("
+                                       + ",".join(["%s"] * len(batch)) + ")",
+                                       (*params, *params, *[row[0] for row in batch]))
+
+    def due_work(self, now):
+        """Indexed existence probes, not full backlog counts in the hot scheduler."""
+        now = timestamp(now)
+        probes, params = [], []
+        for kind in sorted(JOB_KINDS):
+            for low, high in ((0, 1), (2, 5)):
+                probes.append("SELECT %s AS kind, %s AS priority WHERE EXISTS (SELECT 1 FROM personnel_refresh_jobs "
+                              "WHERE kind = %s AND priority BETWEEN %s AND %s AND next_due_at <= %s "
+                              "AND lease_until <= %s)")
+                params.extend((kind, low, kind, low, high, now, now))
+        with self._connection() as connection:
+            return [dict(row) for row in connection.execute(" UNION ALL ".join(probes), params).fetchall()]
 
     def migrate(self) -> None:
         schema = Path(__file__).with_name("personnel_schema.sql").read_text(encoding="utf-8")
@@ -91,6 +157,12 @@ class PersonnelArchive:
             for statement in schema.split(";"):
                 if statement.strip():
                     connection.execute(statement)
+            if self._row_lock:
+                connection.execute("ALTER TABLE personnel_profiles ADD COLUMN IF NOT EXISTS affiliation_expires_at DOUBLE PRECISION")
+            else:
+                columns = connection.execute("PRAGMA table_info(personnel_profiles)").fetchall()
+                if "affiliation_expires_at" not in {row["name"] for row in columns}:
+                    connection.execute("ALTER TABLE personnel_profiles ADD COLUMN affiliation_expires_at DOUBLE PRECISION")
 
     def find_names(self, names: list[str]) -> dict[str, dict[str, Any]]:
         keys = _bounded([name_key(name) for name in names])
@@ -187,6 +259,7 @@ class PersonnelArchive:
             "faction_id": positive_id(update.faction_id) if update.faction_id is not None else None,
         }
         fetched_at = timestamp(update.fetched_at)
+        expires_at = timestamp(update.expires_at) if update.expires_at is not None else None
         serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         if connection.execute(
             "SELECT character_id FROM personnel_profiles WHERE character_id = %s" + self._row_lock,
@@ -195,10 +268,10 @@ class PersonnelArchive:
             raise ValueError("affiliation requires a confirmed identity")
         # A strictly newer field timestamp prevents late workers undoing a change.
         result = connection.execute(
-            "UPDATE personnel_profiles SET affiliation_json = %s, affiliation_fetched_at = %s, "
+            "UPDATE personnel_profiles SET affiliation_json = %s, affiliation_fetched_at = %s, affiliation_expires_at = %s, "
             "revision = revision + CASE WHEN affiliation_json = %s THEN 0 ELSE 1 END "
             "WHERE character_id = %s AND (affiliation_fetched_at IS NULL OR affiliation_fetched_at < %s)",
-            (serialized, fetched_at, serialized, character_id, fetched_at),
+            (serialized, fetched_at, expires_at, serialized, character_id, fetched_at),
         )
         return result.rowcount == 1
 

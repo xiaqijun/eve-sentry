@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from math import isclose
 from time import time
-from typing import Any, Callable
+from typing import Any
 
 from app.core.models import Evidence, Observation, ThreatEvent
+from app.esi.organization_relations import STANDING_SOURCE
 from app.esi.personnel_policy import classification_profile
 from app.intel.scoring import ChannelMention, Watchlist
-
 
 CLASSIFICATION_VERSION = "classification.v1"
 
@@ -196,17 +197,18 @@ class ClassificationEngine:
         profiles: list[dict[str, Any]],
     ) -> bool:
         """Return whether a threshold match is more severe than neutral 0.0."""
-        threshold = self.watchlist.hostile_standing_threshold
-        if threshold is None:
-            return False
         for profile in profiles:
+            organization_rule = profile.get("standing_source") == STANDING_SOURCE
+            threshold = 0.0 if organization_rule else self.watchlist.hostile_standing_threshold
+            if threshold is None:
+                continue
             standing = _optional_float(profile.get("contact_standing"))
             if standing is None:
                 standing = _optional_float(profile.get("standing"))
             if (
                 standing is not None
                 and standing <= threshold
-                and not isclose(standing, 0.0, abs_tol=1e-9)
+                and not (standing == 0 if organization_rule else isclose(standing, 0.0, abs_tol=1e-9))
             ):
                 return True
         return False
@@ -216,17 +218,18 @@ class ClassificationEngine:
         profiles: list[dict[str, Any]],
     ) -> bool:
         """Return whether a neutral threshold match lacks friendly affiliation."""
-        threshold = self.watchlist.hostile_standing_threshold
-        if threshold is None:
-            return False
         for profile in profiles:
+            organization_rule = profile.get("standing_source") == STANDING_SOURCE
+            threshold = 0.0 if organization_rule else self.watchlist.hostile_standing_threshold
+            if threshold is None:
+                continue
             standing = _optional_float(profile.get("contact_standing"))
             if standing is None:
                 standing = _optional_float(profile.get("standing"))
             if not (
                 standing is not None
                 and standing <= threshold
-                and isclose(standing, 0.0, abs_tol=1e-9)
+                and (standing == 0 if organization_rule else isclose(standing, 0.0, abs_tol=1e-9))
             ):
                 continue
             corporation_id = _optional_int(profile.get("corporation_id"))
@@ -292,6 +295,9 @@ class ClassificationEngine:
         if standing is None:
             standing = _optional_float(profile.get("standing"))
 
+        organization_rule = profile.get("standing_source") == STANDING_SOURCE
+        hostile_threshold = 0.0 if organization_rule else self.watchlist.hostile_standing_threshold
+
         if hostile:
             if corporation_id in self.watchlist.hostile_corporation_ids:
                 evidence.append(
@@ -311,8 +317,8 @@ class ClassificationEngine:
                 )
             if (
                 standing is not None
-                and self.watchlist.hostile_standing_threshold is not None
-                and standing <= self.watchlist.hostile_standing_threshold
+                and hostile_threshold is not None
+                and standing <= hostile_threshold
             ):
                 evidence.append(
                     Evidence("hostile_standing", 100, f"Hostile standing {standing:g}")
@@ -333,8 +339,9 @@ class ClassificationEngine:
             )
         if (
             standing is not None
-            and self.watchlist.friendly_standing_threshold is not None
-            and standing >= self.watchlist.friendly_standing_threshold
+            and (standing > 0 if organization_rule else (
+                self.watchlist.friendly_standing_threshold is not None
+                and standing >= self.watchlist.friendly_standing_threshold))
         ):
             evidence.append(
                 Evidence("friendly_standing", 1, f"Friendly standing {standing:g}")

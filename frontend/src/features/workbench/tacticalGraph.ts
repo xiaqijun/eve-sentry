@@ -11,6 +11,7 @@ export interface TacticalGraphNode {
   fy: number;
   security: number | null;
   hostileCount: number;
+  freshness?: "fresh" | "unknown";
   reportCount: number;
   observationCount: number;
   channelIntelCount: number;
@@ -256,6 +257,10 @@ function activeIntelIsHostile(item: Record<string, unknown>): boolean {
     return true;
   }
   if (!OCR_SOURCES.has(source)) {
+    return false;
+  }
+
+  if (metadata.standing_source === "esi_organization_pending") {
     return false;
   }
 
@@ -507,6 +512,14 @@ export function buildTacticalGraph(
   const monitorsBySystem = summarizeMonitors(graphBootstrap);
   const activeIntelBySystem = summarizeActiveIntel(graphBootstrap);
   const hasActiveIntelPayload = Array.isArray(bootstrap.active_intel);
+  const canonicalFreshness = new Map<string, "fresh" | "unknown">();
+  for (const item of bootstrap.active_intel || []) {
+    const metadata = asRecord(item.metadata);
+    if (metadata.state_version !== undefined && metadata.presence_only) {
+      canonicalFreshness.set(String(item.system_name || "").toLowerCase(),
+        metadata.freshness === "unknown" ? "unknown" : "fresh");
+    }
+  }
 
   const systemNodes = graphBootstrap.map.systems.map((system) => {
       const systemAlerts =
@@ -554,6 +567,8 @@ export function buildTacticalGraph(
         security:
           typeof system.security === "number" ? system.security : null,
         hostileCount,
+        freshness: canonicalFreshness.get(system.name.toLowerCase()) ??
+          (system.freshness === "unknown" ? "unknown" as const : "fresh" as const),
         reportCount,
         observationCount: realtimeSignalCount,
         channelIntelCount,
@@ -606,6 +621,7 @@ export function buildTacticalGraph(
       id: nodeId,
       name: systemNode.name,
       kind: "hostile-summary",
+      freshness: systemNode.freshness,
       systemId: systemNode.systemId,
       x,
       y,

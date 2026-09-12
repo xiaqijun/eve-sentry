@@ -343,6 +343,7 @@ def summarize_alert(alert: dict[str, Any]) -> dict[str, Any]:
         "source_observation_id": str(alert.get("source_observation_id") or "").strip(),
         "active_intel_id": str(alert.get("active_intel_id") or "").strip(),
         "active": bool(alert.get("active", True)),
+        **({"freshness": "unknown"} if alert.get("freshness") == "unknown" else {}),
     }
 
 
@@ -371,11 +372,15 @@ def aggregate_alert_summaries(
                 "active_hostile_count": hostile_count if active else 0,
                 "created_at": str(item.get("created_at") or ""),
                 "active": active,
+                **({"freshness": "unknown"} if item.get("freshness") == "unknown" else {}),
             }
         else:
             existing["hostile_count"] = hostile_count if active else 0
             existing["active_hostile_count"] = hostile_count if active else 0
             existing["active"] = active
+            existing.pop("freshness", None)
+            if item.get("freshness") == "unknown":
+                existing["freshness"] = "unknown"
             if not existing.get("created_at"):
                 existing["created_at"] = str(item.get("created_at") or "")
     ordered = list(by_system.values())
@@ -522,7 +527,7 @@ def sync_alert_summaries_from_bootstrap(
             hostile_count = int(item.get("hostile_count") or 0)
         except (TypeError, ValueError):
             hostile_count = 0
-        if not system or hostile_count <= 0:
+        if not system or (hostile_count <= 0 and item.get("freshness") != "unknown"):
             continue
         system_key = system.casefold()
         previous = previous_by_system.get(system_key, {})
@@ -533,6 +538,7 @@ def sync_alert_summaries_from_bootstrap(
             "created_at": first_seen_by_system.get(system_key)
             or str(previous.get("created_at") or item.get("latest_seen") or ""),
             "active": True,
+            **({"freshness": "unknown"} if item.get("freshness") == "unknown" else {}),
         }
 
     mapped_systems = set(current_by_system)
@@ -1009,6 +1015,8 @@ class LocalStarMapWidget(QWidget):
             if any(bool(item.get("selected", True)) for item in accounts)
         }
         hostile_counts: dict[str, int] = {}
+        unknown_systems = {str(alert.get("system_name") or "").strip().casefold()
+                           for alert in self._alerts if alert.get("freshness") == "unknown"}
         for alert in self._alerts:
             if not bool(alert.get("active", True)):
                 continue
@@ -1100,7 +1108,10 @@ class LocalStarMapWidget(QWidget):
                 painter.setPen(QPen(color, 1))
                 painter.setBrush(QBrush(color))
                 painter.drawEllipse(int(x - 4), int(y - 4), 8, 8)
-            if not monitoring and not degraded and not offline and not hostile:
+            if key in unknown_systems:
+                painter.setPen(QColor("#f6c760"))
+                painter.drawText(int(x + 13), int(y + 4), "上次")
+            if not monitoring and not degraded and not offline and not hostile and key not in unknown_systems:
                 continue
 
             _label, tooltip = self._node_annotation(
@@ -1108,6 +1119,8 @@ class LocalStarMapWidget(QWidget):
                 accounts_by_system.get(key, []),
                 hostile_counts.get(key, 0),
             )
+            if key in unknown_systems:
+                tooltip += "\n采集状态未知，显示上次确认敌情"
             hit_radius = max(12, radius)
             node_rect = QRect(
                 int(x - hit_radius),
@@ -2020,6 +2033,14 @@ class AlertOverlay(QWidget):
             ]
         )
         self.set_map_alerts(rows)
+        render_key = tuple(
+            (item["system_name"], item["hostile_count"], item["active"], item.get("freshness"))
+            for item in rows
+        )
+        layout_key = (len(rows), self._tile_width, self._tile_height)
+        layout_changed = layout_key != getattr(self, "_summary_layout_key", None)
+        if render_key == getattr(self, "_summary_render_key", None) and not layout_changed:
+            return
         self._ensure_row_count(len(rows))
         for index, (frame, system_label, hostile_label, state_label) in enumerate(
             self._rows
@@ -2041,18 +2062,25 @@ class AlertOverlay(QWidget):
             )
             system_label.setText(str(item["system_name"]))
             hostile_label.setText(f"敌 {hostile_count}")
-            state_label.setText("来敌" if hostile_count > 0 else "安全")
-            frame.setProperty("hostile", "true" if hostile_count > 0 else "false")
-            frame.style().unpolish(frame)
-            frame.style().polish(frame)
-            for label in (system_label, hostile_label, state_label):
-                label.style().unpolish(label)
-                label.style().polish(label)
+            unknown = item.get("freshness") == "unknown"
+            state_label.setText("上次" if unknown else ("来敌" if hostile_count > 0 else "安全"))
+            frame.setToolTip("采集状态未知，显示上次确认敌情" if unknown else "")
+            hostile_property = "true" if hostile_count > 0 else "false"
+            if frame.property("hostile") != hostile_property:
+                frame.setProperty("hostile", hostile_property)
+                frame.style().unpolish(frame)
+                frame.style().polish(frame)
+                for label in (system_label, hostile_label, state_label):
+                    label.style().unpolish(label)
+                    label.style().polish(label)
             frame.setVisible(True)
-        self._layout_rows_for_size()
-        self._resize_to_content()
-        if not self._user_positioned:
-            self.move_to_default_position()
+        self._summary_render_key = render_key
+        self._summary_layout_key = layout_key
+        if layout_changed:
+            self._layout_rows_for_size()
+            self._resize_to_content()
+            if not self._user_positioned:
+                self.move_to_default_position()
 
     def _resize_to_content(self) -> None:
         """Resize both larger and smaller when the visible tile count changes."""
@@ -2216,10 +2244,13 @@ class AlertOverlay(QWidget):
 
     def _apply_screen_metrics(self, screen) -> None:
         geometry = screen.availableGeometry()
-        self._tile_width, self._tile_height = overlay_tile_dimensions(
+        dimensions = overlay_tile_dimensions(
             geometry.width(),
             geometry.height(),
         )
+        if dimensions == (self._tile_width, self._tile_height):
+            return
+        self._tile_width, self._tile_height = dimensions
         self.setMinimumSize(OVERLAY_MIN_WIDTH, OVERLAY_MIN_HEIGHT)
         for frame, system_label, _hostile_label, _state_label in self._rows:
             frame.setFixedSize(self._tile_width, self._tile_height)
@@ -2295,13 +2326,30 @@ class AlertEventWorker(QThread):
             api_key=self.api_key,
         )
         backoff = 1.0
+        # A newly enabled warning view needs current state, not every transition
+        # while it was closed. Only reconnects in this run resume a live cursor.
+        resume_event_id = ""
+
+        def remember_cursor(event_id: object) -> None:
+            nonlocal resume_event_id
+            candidate = str(event_id or "").strip()
+            current_seq = _state_event_sequence(resume_event_id)
+            candidate_seq = _state_event_sequence(candidate)
+            if not candidate or (
+                current_seq is not None
+                and (candidate_seq is None or candidate_seq < current_seq)
+            ):
+                return
+            resume_event_id = candidate
+            self.state.save_last_event_id(candidate)
+
         while not self._stop_requested:
             retrying_after_error = False
             try:
                 connection_announced = False
                 for event in api.iter_events(
                     timeout=self.timeout,
-                    last_event_id=self.state.last_event_id(),
+                    last_event_id=resume_event_id,
                     heartbeat=1.0,
                     should_stop=lambda: self._stop_requested,
                     include_bootstrap=True,
@@ -2319,16 +2367,16 @@ class AlertEventWorker(QThread):
                     if event_name == "bootstrap" and isinstance(data, dict):
                         self.bootstrap_received.emit(data)
                         self._post_heartbeat(api, "connected")
-                        self.state.save_last_event_id(event.get("id", ""))
+                        remember_cursor(event.get("id", ""))
                         continue
                     if event_name == "safe" and isinstance(data, dict):
                         self.safe_received.emit(data)
                         self._post_heartbeat(api, "safe:1")
-                        self.state.save_last_event_id(event.get("id", ""))
+                        remember_cursor(event.get("id", ""))
                         continue
                     if event_name != "alert" or not isinstance(data, dict):
                         self._post_heartbeat(api, "connected")
-                        self.state.save_last_event_id(event.get("id", ""))
+                        remember_cursor(event.get("id", ""))
                         continue
                     alert = data
                     if self.consumer.accept(alert):
@@ -2336,7 +2384,7 @@ class AlertEventWorker(QThread):
                         self._post_heartbeat(api, "alert:1")
                     else:
                         self._post_heartbeat(api, "connected")
-                    self.state.save_last_event_id(event.get("id", ""))
+                    remember_cursor(event.get("id", ""))
                 backoff = 1.0
             except IntelApiError as exc:
                 retrying_after_error = True
@@ -2752,6 +2800,8 @@ class AlertTrayController:
 
     def update_local_hostile_count(self, system_name: str, count: int) -> None:
         """Apply authoritative red-icon evidence from this monitor process."""
+        if getattr(self, "_server_authority", False):
+            return
         system = str(system_name or "Unknown").strip() or "Unknown"
         key = system.casefold()
         hostile_count = max(0, int(count))
@@ -2777,6 +2827,8 @@ class AlertTrayController:
 
     def _apply_local_hostile_counts(self) -> None:
         """Keep local visual counts from being reduced by delayed server state."""
+        if getattr(self, "_server_authority", False):
+            return
         for system, hostile_count in getattr(
             self, "_local_hostile_counts", {}
         ).values():
@@ -3045,9 +3097,13 @@ class AlertTrayController:
             self._recent_summaries.append(summary)
             self._recent_summaries = self._recent_summaries[-50:]
         else:
+            existing.pop("freshness", None)
             existing.update(summary)
         self._apply_local_hostile_counts()
         self.overlay.show_summaries(self._recent_summaries)
+        if summary.get("freshness") == "unknown":
+            self.overlay.set_status("采集异常", "warn")
+            return  # Loss of evidence is not another enemy arrival/sound.
         self.overlay.set_status("新告警", "danger")
         hostile_count = int(summary.get("hostile_count") or 0)
         if hostile_count > 0:
@@ -3173,7 +3229,8 @@ class AlertTrayController:
         system_name = str(
             event.get("system_name") or event.get("system") or "Unknown"
         ).strip() or "Unknown"
-        if system_name.casefold() in getattr(self, "_local_hostile_counts", {}):
+        if (not getattr(self, "_server_authority", False)
+                and system_name.casefold() in getattr(self, "_local_hostile_counts", {})):
             return
         active_systems = getattr(self, "_active_alert_systems", set())
         active_systems.discard(system_name.casefold())
@@ -3189,6 +3246,7 @@ class AlertTrayController:
             item["active"] = False
             item["hostile_count"] = 0
             item["active_hostile_count"] = 0
+            item.pop("freshness", None)
         self.overlay.show_summaries(self._recent_summaries)
         self.overlay.set_status("星系安全", "ok")
         message = str(event.get("message") or "").strip()
@@ -3197,6 +3255,9 @@ class AlertTrayController:
         self._notify("星系安全", message)
 
     def _on_bootstrap(self, bootstrap: dict[str, Any]) -> None:
+        self._server_authority = bootstrap.get("state_source") == "system_current_state"
+        if self._server_authority:
+            self._local_hostile_counts = {}
         self._recent_summaries = sync_alert_summaries_from_bootstrap(
             self._recent_summaries,
             bootstrap,

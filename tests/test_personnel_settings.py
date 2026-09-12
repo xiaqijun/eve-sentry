@@ -114,7 +114,8 @@ def test_scheduler_changes_apply_without_replacing_runtime(settings_service, arc
         "background_max": 1}}, "admin")
     assert store._personnel_runtime is runtime
     assert result["effective"] == {"mode": "on", "background_refresh": False,
-                                    "history_backfill": False, "background_max": 1}
+                                    "history_backfill": False, "background_max": 1,
+                                    "organization_mode": "off"}
     assert not result["restart_required"]
     runtime.request("Pilot 1", seen_at=0)
     runtime.drain_requests()

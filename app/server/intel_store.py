@@ -42,6 +42,7 @@ from app.core.models import Observation, ThreatEvent
 from app.engine.ocr_names import is_plausible_ocr_name
 from app.intel.scoring import ChannelMention
 from app.server.esi_worker import EsiWorker
+from app.server.capture_state import capture_guard, capture_is_current, capture_payload, record_roster_quality, expire_captures
 
 
 logger = logging.getLogger(__name__)
@@ -774,6 +775,7 @@ class IntelStore(PersonnelRoutingMixin):
         scorer_guard = self._scorer
         contacts_guard = self._enricher.contact_standings() if archive_enabled else None
         with self._lock:
+            frame_guard = capture_guard(self._active_intel.values(), task.client_id)
             current_item = self._active_intel.get(task.active_id)
             if current_item is None or not current_item.active or task.report_id not in current_item.source_observation_ids:
                 return
@@ -838,6 +840,11 @@ class IntelStore(PersonnelRoutingMixin):
 
         with self._lock:
             if not self._personnel_read_current():
+                return
+            current_item = self._active_intel.get(task.active_id)
+            if (capture_guard(self._active_intel.values(), task.client_id) != frame_guard
+                    or current_item is None or not current_item.active
+                    or task.report_id not in current_item.source_observation_ids):
                 return
             if archive_enabled:
                 current_item = self._active_intel.get(task.active_id)
@@ -1569,18 +1576,27 @@ class IntelStore(PersonnelRoutingMixin):
         system_id = self._optional_int(payload.get("system_id"))
         seen_at = self._clean_snapshot_seen_at(payload.get("seen_at"))
         query_only = bool(str(payload.get("query_id") or "").strip())
+        if query_only:
+            # On-demand queries must never move or overwrite monitor rows.
+            query_key = hashlib.sha256(str(payload["query_id"]).encode()).hexdigest()[:24]
+            client_id = f"{client_id}:query:{query_key}"
         defer_esi = self._resolver is not None or self._enricher is not None
         names = self._normalize_ocr_names(
             payload.get("names"),
             resolve=not defer_esi,
         )
         snapshot_metadata = {"query_only": True} if query_only else {}
+        capture = capture_payload(payload)
+        if capture:
+            snapshot_metadata["capture"] = capture
         raw_text = ", ".join(names)
         result = ActiveIntelSnapshotResult()
         seen_name_keys = {name.casefold() for name in names}
         changed_reports = False
         esi_tasks: list[_OcrEsiTask] = []
         with self._lock:
+            if not query_only and not capture_is_current(self._active_intel.values(), client_id, capture, ocr=True):
+                return {**result.to_dict(include_active=False), "accepted": False, "stale": True}
             presence_active = any(
                 candidate.active
                 and candidate.source == source
@@ -1610,6 +1626,9 @@ class IntelStore(PersonnelRoutingMixin):
                 result.active = self.list_active_intel(source=source)
                 return result.to_dict(include_active=False)
             result.expired += len(moved_items)
+
+            if not query_only:
+                record_roster_quality(self._active_intel.values(), client_id, system_name, capture)
 
             for name in names:
                 active_id = self._active_ocr_id(
@@ -1828,8 +1847,16 @@ class IntelStore(PersonnelRoutingMixin):
         ).strip()
         active_id = self._active_hostile_presence_id(client_id, system_name)
         result = ActiveIntelSnapshotResult()
+        capture = capture_payload(payload)
+        source_status = str(payload.get("source_status") or "active")
+        if source_status not in {"active", "stopped", "departed"}:
+            raise ValueError("source_status must be active, stopped or departed")
+        if source_status != "active" and hostile_count != 0:
+            raise ValueError("a stopped source must have a zero upload count")
 
         with self._lock:
+            if not capture_is_current(self._active_intel.values(), client_id, capture):
+                return {**result.to_dict(include_active=False), "accepted": False, "stale": True}
             accepted, moved_items = self._transition_ocr_client_system(
                 client_id,
                 system_name,
@@ -1917,6 +1944,28 @@ class IntelStore(PersonnelRoutingMixin):
                 "presence_state_id": presence_state_id,
                 "captured_at": str(payload.get("captured_at") or seen_at),
             }
+            if source_status != "active":
+                metadata["left_reason"] = "monitor_stopped" if source_status == "stopped" else "system_changed"
+            from app.server.source_authority import is_resident_presence, next_join_order
+            metadata["source_join_order"] = (
+                int(item.metadata.get("source_join_order") or 0)
+                if item is not None and is_resident_presence(item)
+                else next_join_order(self._active_intel.values())
+            )
+            if capture:
+                previous_capture = item.metadata.get("capture") if item is not None else None
+                if previous_capture and previous_capture["session_id"] == capture["session_id"]:
+                    metadata["roster_quality_samples"] = list(item.metadata.get("roster_quality_samples") or [])
+                    metadata["roster_quality_fingerprint"] = item.metadata.get("roster_quality_fingerprint")
+                else:
+                    metadata["source_join_order"] = next_join_order(self._active_intel.values())
+                    # A restarted monitor cannot inherit an old session's roster.
+                    for candidate in self._active_intel.values():
+                        if candidate.source == source and candidate.metadata.get("client_id") == client_id and candidate.target_type == "character":
+                            candidate.active = False
+                            candidate.left_at = seen_at
+                metadata["capture"] = capture
+                metadata["capture_received_at"] = time.time()
             if hostile_count == 0:
                 for candidate in self._active_intel.values():
                     if not candidate.active or candidate.source != source:
@@ -2784,6 +2833,7 @@ class IntelStore(PersonnelRoutingMixin):
         now_at = self._parse_timestamp(left_at)
         if now_at is None:
             return 0
+        capture_expired = expire_captures(self._active_intel.values(), now_at.timestamp())
         expiring_parent_client_ids: dict[str, tuple[str, str]] = {}
         expiring_child_client_ids: dict[str, tuple[str, str]] = {}
         for heartbeat in self._heartbeats.values():
@@ -2825,11 +2875,14 @@ class IntelStore(PersonnelRoutingMixin):
                 )
 
         if not expiring_parent_client_ids and not expiring_child_client_ids:
-            return 0
+            return capture_expired
 
-        expired = 0
+        expired = capture_expired
         for item in self._active_intel.values():
-            if not item.active:
+            if not item.active and not (
+                item.metadata.get("presence_only")
+                and not item.metadata.get("left_reason")
+            ):
                 continue
             if item.source != "eve-sentry-detector":
                 continue
@@ -4213,7 +4266,12 @@ class IntelStore(PersonnelRoutingMixin):
 
         moved_items: list[ActiveIntelItem] = []
         for item in self._active_intel.values():
-            if not item.active or item.source != "eve-sentry-detector":
+            if item.source != "eve-sentry-detector":
+                continue
+            if not item.active and not (
+                item.metadata.get("presence_only")
+                and not item.metadata.get("left_reason")
+            ):
                 continue
             if item.metadata.get("client_id") != client_id:
                 continue
@@ -4687,6 +4745,8 @@ class IntelStore(PersonnelRoutingMixin):
             metadata = (
                 item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
             )
+            if metadata.get("system_state") and metadata.get("freshness") == "unknown":
+                entry["freshness"] = "unknown"
             source = str(item.get("source") or "").strip().casefold()
             has_identity_metadata = any(
                 key in metadata
@@ -4764,6 +4824,7 @@ class IntelStore(PersonnelRoutingMixin):
         return intel
 
     def _active_item_is_hostile(self, item: dict[str, Any]) -> bool:
+        from app.esi.organization_relations import PENDING_SOURCE, STANDING_SOURCE
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         source = str(item.get("source") or "").strip().casefold()
         if source == "eve-sentry-detector" and metadata.get("presence_only"):
@@ -4840,12 +4901,16 @@ class IntelStore(PersonnelRoutingMixin):
                     standing = self._optional_float(profile.get("contact_standing"))
                     if standing is None:
                         standing = self._optional_float(profile.get("standing"))
+                    organization_rule = profile.get("standing_source") == STANDING_SOURCE
+                    profile_threshold = 0.0 if organization_rule else hostile_threshold
+                    if organization_rule and standing is not None and standing > 0:
+                        friendly_profile = True
                     if (
                         standing is not None
-                        and hostile_threshold is not None
-                        and standing <= float(hostile_threshold)
+                        and profile_threshold is not None
+                        and standing <= float(profile_threshold)
                     ):
-                        if isclose(standing, 0.0, abs_tol=1e-9):
+                        if standing == 0 if organization_rule else isclose(standing, 0.0, abs_tol=1e-9):
                             neutral_hostile_profile = True
                             if not profile_friendly:
                                 unprotected_neutral_hostile_profile = True
@@ -4864,7 +4929,8 @@ class IntelStore(PersonnelRoutingMixin):
                 if neutral_hostile_profile:
                     return True
 
-                if any(isinstance(profile, dict) and profile.get("affiliation_trusted") is False
+                if any(isinstance(profile, dict) and (profile.get("affiliation_trusted") is False
+                       or profile.get("standing_source") == PENDING_SOURCE)
                        for profile in profiles):
                     # Do not reintroduce rejected organization standing via flattened metadata.
                     return False
@@ -4872,6 +4938,10 @@ class IntelStore(PersonnelRoutingMixin):
         standing = self._optional_float(
             metadata.get("contact_standing", metadata.get("standing"))
         )
+        if metadata.get("standing_source") == PENDING_SOURCE:
+            return False
+        if metadata.get("standing_source") == STANDING_SOURCE:
+            return standing is not None and standing <= 0
         if standing is None:
             return False
         watchlist = getattr(scorer, "watchlist", None)

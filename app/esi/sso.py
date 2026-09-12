@@ -8,9 +8,11 @@ import binascii
 import ctypes
 import hashlib
 import json
+import os
 import secrets
 import sys
 import threading
+import tempfile
 import webbrowser
 from ipaddress import ip_address
 from dataclasses import dataclass, field
@@ -22,6 +24,8 @@ from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
+
+from app.esi.token_coordination import token_coordinator
 
 
 DEFAULT_AUTHORIZATION_ENDPOINT = "https://login.eveonline.com/v2/oauth/authorize"
@@ -208,17 +212,46 @@ class EsiTokenStore:
         payload = tokens.to_dict()
         if self.protector is not None:
             payload = self._protect_payload(payload)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        coordinator = self.coordinator()
+        with coordinator.state_lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            # Readers observe a complete old or new file, never partial JSON.
+            fd, temporary = tempfile.mkstemp(prefix=".esi-token-", dir=self.path.parent)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    json.dump(payload, stream, ensure_ascii=False, indent=2)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, self.path)
+                coordinator.revision += 1
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
 
     def clear(self) -> None:
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            return
+        coordinator = self.coordinator()
+        with coordinator.state_lock:
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+            coordinator.revision += 1
+
+    def coordinator(self):
+        return token_coordinator(self.path)
+
+    def load_versioned(self):
+        coordinator = self.coordinator()
+        with coordinator.state_lock:
+            return self.load(), coordinator.revision
+
+    def save_if_unchanged(self, tokens: TokenSet, *, previous: TokenSet, revision: int) -> bool:
+        coordinator = self.coordinator()
+        with coordinator.state_lock:
+            if coordinator.revision != revision or self.load() != previous:
+                return False
+            self.save(tokens)
+            return True
 
     def _protect_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.protector is None:

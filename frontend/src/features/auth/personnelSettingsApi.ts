@@ -6,6 +6,7 @@ export type PersonnelValues = {
   background_refresh: boolean;
   history_backfill: boolean;
   background_max: number;
+  organization_mode?: PersonnelMode;
 };
 export type PersonnelSettingsSnapshot = {
   values: PersonnelValues;
@@ -17,6 +18,7 @@ export type PersonnelSettingsSnapshot = {
   available: boolean;
   unavailable_reason: string;
   writable: boolean;
+  organization_shadow?: Record<string, number>;
 };
 
 async function request(init?: RequestInit): Promise<PersonnelSettingsSnapshot> {

@@ -8,6 +8,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from app.esi.contact_http import ContactHttpReader, ContactReadError
+
 
 class EsiApiError(RuntimeError):
     """Raised when ESI returns an error or invalid response."""
@@ -25,6 +27,7 @@ class EsiClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.user_agent = user_agent
+        self._contacts_reader = ContactHttpReader()
 
     def resolve_ids(self, names: list[str]) -> dict[str, Any]:
         """Resolve names to ESI ids via POST /universe/ids/."""
@@ -112,14 +115,7 @@ class EsiClient:
         access_token: str,
     ) -> list[dict[str, Any]]:
         """Fetch authenticated character contacts and standings."""
-        payload = self._request(
-            "GET",
-            f"/characters/{int(character_id)}/contacts/",
-            access_token=access_token,
-        )
-        if not isinstance(payload, list):
-            raise EsiApiError("ESI returned invalid contacts payload")
-        return payload
+        return self._contact_rows(f"/characters/{int(character_id)}/contacts/", access_token)
 
     def get_character_standings(
         self,
@@ -142,14 +138,7 @@ class EsiClient:
         access_token: str,
     ) -> list[dict[str, Any]]:
         """Fetch authenticated corporation contacts and standings."""
-        payload = self._request(
-            "GET",
-            f"/corporations/{int(corporation_id)}/contacts/",
-            access_token=access_token,
-        )
-        if not isinstance(payload, list):
-            raise EsiApiError("ESI returned invalid corporation contacts payload")
-        return payload
+        return self._contact_rows(f"/corporations/{int(corporation_id)}/contacts/", access_token)
 
     def get_alliance_contacts(
         self,
@@ -157,14 +146,23 @@ class EsiClient:
         access_token: str,
     ) -> list[dict[str, Any]]:
         """Fetch authenticated alliance contacts and standings."""
-        payload = self._request(
-            "GET",
-            f"/alliances/{int(alliance_id)}/contacts/",
-            access_token=access_token,
-        )
-        if not isinstance(payload, list):
-            raise EsiApiError("ESI returned invalid alliance contacts payload")
-        return payload
+        return self._contact_rows(f"/alliances/{int(alliance_id)}/contacts/", access_token)
+
+    def _contact_rows(self, path: str, access_token: str) -> list[dict[str, Any]]:
+        try:
+            return self._contacts_reader.read(
+                f"{self.base_url}{path}", access_token, opener=self._open,
+                timeout=self.timeout, user_agent=self.user_agent,
+            )
+        except ContactReadError as exc:
+            raise EsiApiError(str(exc)) from exc
+
+    def contact_metrics(self) -> dict[str, int]:
+        """Process-local private contact counts, without credentials or contact data."""
+        return self._contacts_reader.metrics()
+
+    def _open(self, request, *, timeout):
+        return urlopen(request, timeout=timeout)
 
     def _request(
         self,
@@ -187,7 +185,7 @@ class EsiClient:
 
         request = Request(url, data=data, headers=headers, method=method)
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            with self._open(request, timeout=self.timeout) as response:
                 body = response.read().decode("utf-8")
         except HTTPError as exc:
             raise EsiApiError(self._read_error_message(exc)) from exc

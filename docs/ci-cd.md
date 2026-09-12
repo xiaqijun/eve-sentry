@@ -14,6 +14,7 @@
 | `ci-contracts.yml` | HTTP/SSE/事件相关服务端、客户端、机器人源码和协议文档 | 并行运行服务端协议、Windows client-server 与机器人契约测试；不部署 |
 | `release-client.yml` | 成功的本仓库 `main` Client CI，或 `main` 手动运行 | 构建、签名并发布客户端；已取消任意 `v*` tag 触发 |
 | `deploy-esi-gateway.yml` | `esi-gateway/` | Gateway 多 Python 版本验证、固定 Jita 上游 smoke、打包和生产部署 |
+| `configure-esi-transport.yml` | main 手动运行，production 保护 | 47 dual → 114 relay → 47 relay；原配置备份、失败恢复及受控反向切换 |
 | `ci-download-site.yml` | `download-site/`、`deploy/cloudflare-download/` | 下载站构建、Worker 测试和 Wrangler dry-run |
 | `deploy-download-site.yml` | 下载站、Worker 和公开文档 | 独立重复构建/验证静态站点，再部署 Cloudflare Worker |
 

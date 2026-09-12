@@ -2004,6 +2004,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         monitoring_nodes = _monitoring_target_state(clients)
         return {
             "schema_version": "intel_bootstrap.v1",
+            "state_source": "system_current_state" if callable(getattr(self._store(), "read_active_event_snapshot", None)) else "legacy",
             "generated_at": snapshot.get("generated_at", ""),
             "map": self._map_snapshot_from_snapshot(snapshot),
             "reports": snapshot.get("reports", []),
@@ -2087,11 +2088,21 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
     ) -> dict[str, Any]:
         """Build the compact state required by alert SSE consumers."""
         hostile_counts = _active_hostile_counts(alerts, active_items)
+        unknown_systems = {
+            str(item.get("system_name") or "").casefold() for item in active_items
+            if isinstance(item.get("metadata"), dict)
+            and item["metadata"].get("freshness") == "unknown"
+        }
+        for item in active_items:
+            name = str(item.get("system_name") or "")
+            if name.casefold() in unknown_systems:
+                hostile_counts.setdefault(name, 0)
         systems = [
             {
                 "name": system_name,
                 "system_name": system_name,
                 "hostile_count": hostile_count,
+                **({"freshness": "unknown"} if system_name.casefold() in unknown_systems else {}),
             }
             for system_name, hostile_count in sorted(hostile_counts.items())
         ]
@@ -2099,6 +2110,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         monitoring_nodes = _monitoring_target_state(clients)
         return {
             "schema_version": "intel_bootstrap.v1",
+            "state_source": "system_current_state" if callable(getattr(self._store(), "read_active_event_snapshot", None)) else "legacy",
             "generated_at": utc_now_iso(),
             "map": {
                 "systems": systems,
@@ -2291,7 +2303,14 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         limit: int = 200,
     ) -> dict[str, Any]:
         store = self._store()
-        active_items = self._visible_active_items(store, store.list_active_intel())
+        snapshot_reader = getattr(store, "read_active_event_snapshot", None)
+        if callable(snapshot_reader):
+            active_items, snapshot_reports, _ = snapshot_reader()
+            active_items = self._visible_active_items_from_reports(
+                store, active_items, snapshot_reports,
+            )
+        else:
+            active_items = self._visible_active_items(store, store.list_active_intel())
         system_intel = store._aggregate_active_by_system(active_items)
         with store._lock:
             system_items = dict(store._systems)
@@ -3290,6 +3309,11 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         session = self._esi_session()
         public_enabled = self._esi_public_resolver() is not None
         config = self._esi_config()
+        resolver = self._esi_public_resolver()
+        connections = getattr(getattr(resolver, "client", None), "connections", None)
+        if connections is not None and hasattr(connections, "telemetry"):
+            config["transport"] = {"mode": "relay" if connections.relay_host else "direct",
+                                   **connections.telemetry.snapshot()}
         if session is None:
             if public_enabled:
                 return {

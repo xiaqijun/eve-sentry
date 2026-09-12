@@ -51,10 +51,16 @@ class PersonnelController:
             pool.wait(timeout=2)
             archive = PersonnelArchive(pool.connection)
             archive.migrate()
+            from app.esi.relation_archive import RelationArchive
+            from app.esi.relation_refresh import OrganizationRelations
+            relation_archive = RelationArchive(pool.connection)
+            relation_archive.migrate()
             runtime = PersonnelRuntime(archive, self.original_resolver.client)
             runtime.backfill = PersonnelBackfill(archive, self.original_resolver.cache)
             replacement = PersonnelResolver(self.original_resolver, runtime)
-            enricher = PersonnelEnricher(replacement, getattr(self.original_enricher, "esi_session", None))
+            session = getattr(self.original_enricher, "esi_session", None)
+            relations = OrganizationRelations(session, relation_archive) if session is not None else None
+            enricher = PersonnelEnricher(replacement, session, relations=relations)
             # Prove thread creation works before saving. No SQL/ESI tasks run
             # until publication activates this gate after the DB commit.
             runtime.start(lambda changed, all_current: self.store.refresh_personnel(
@@ -78,7 +84,9 @@ class PersonnelController:
             runtime = self.store._personnel_runtime
             previous_mode = runtime.mode if runtime is not None else "off"
             mode = values["mode"]
-            if mode != previous_mode:
+            organization_mode = values.get("organization_mode", "off")
+            previous_organization_mode = getattr(runtime, "organization_mode", "off")
+            if mode != previous_mode or organization_mode != previous_organization_mode:
                 self.store._personnel_generation += 1
                 self.store._resolver = prepared.resolver if mode == "on" else self.original_resolver
                 self.store._enricher = prepared.enricher if mode == "on" else self.original_enricher
@@ -89,8 +97,14 @@ class PersonnelController:
             self.resources = prepared
             if prepared is not None:
                 prepared.runtime.mode = mode
+                prepared.runtime.organization_mode = organization_mode
+                prepared.enricher.organization_mode = organization_mode
+                if not hasattr(prepared.enricher, "shadow_comparisons"):
+                    from app.esi.relation_shadow import ShadowComparisons
+                    prepared.enricher.shadow_comparisons = ShadowComparisons()
                 prepared.runtime.contact_refresher = prepared.enricher.refresh_contacts if mode == "on" else None
-                prepared.runtime.configure_scheduling(**{key: value for key, value in values.items() if key != "mode"})
+                prepared.runtime.configure_scheduling(**{key: values[key] for key in (
+                    "background_refresh", "history_backfill", "background_max")})
                 prepared.runtime.activate()
         if old is not None and old is not prepared:
             old.runtime.request_stop()

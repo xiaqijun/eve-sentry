@@ -104,6 +104,24 @@ export function PersonnelSettingsPanel() {
               </Radio.Group>
               <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>{MODE_HELP[draft.mode]}</Typography.Paragraph>
               <Typography.Paragraph type="secondary">模式保存后在线切换，无需重启或断开监控；推荐先影子验证，再正式启用。</Typography.Paragraph>
+              {snapshot.values.organization_mode !== undefined ? <>
+                <Typography.Title heading={6}>组织关系分类</Typography.Title>
+                <Radio.Group aria-label="组织关系分类" direction="vertical" value={draft.organization_mode ?? "off"}
+                  disabled={disabled || draft.mode !== "on"}
+                  onChange={(organization_mode: PersonnelMode) => change({ organization_mode })}>
+                  <Radio value="off">旧规则（回滚）</Radio>
+                  <Radio value="shadow">仅比较，不改变预警</Radio>
+                  <Radio value="on">军团 / 联盟规则</Radio>
+                </Radio.Group>
+                <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
+                  需先正式启用人员档案。新规则不保留个人声望例外；同军团或同联盟优先友好，同一目标己方军团来源优先。
+                  保存后在线生效；关闭档案时保留配置但不执行。
+                </Typography.Paragraph>
+                <Typography.Paragraph type="secondary">
+                  当前组织模式：{MODE_LABELS[snapshot.effective.organization_mode ?? "off"]}；
+                  已比较 {snapshot.organization_shadow?.compared ?? 0} 次，差异 {snapshot.organization_shadow?.different ?? 0} 次。
+                </Typography.Paragraph>
+              </> : null}
             </div>
             <div>
               <Typography.Title heading={6}>后台调度</Typography.Title>

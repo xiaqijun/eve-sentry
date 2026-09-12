@@ -444,9 +444,11 @@ def _build_esi_session(
 ) -> Any:
     from app.esi.session import EsiAuthenticatedSession
     from app.esi.sso import build_token_store
+    from app.esi.transport import configured_client
 
     return EsiAuthenticatedSession(
         sso_client=_build_esi_sso_client(args),
+        esi_client=configured_client(args),
         token_store=build_token_store(
             args.esi_token_file,
             storage=args.esi_token_storage,
@@ -486,7 +488,12 @@ def _build_esi_config(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _build_public_esi_client(args: argparse.Namespace) -> Any:
-    """Build the configured public ESI client without affecting authenticated ESI."""
+    """Build the explicit transport, or retain the legacy public JSON gateway."""
+    from app.esi.transport import configured_client
+
+    transport = configured_client(args)
+    if transport is not None:
+        return transport
     if str(getattr(args, "esi_backend", "local") or "local") != "remote":
         from app.esi.client import EsiClient
 

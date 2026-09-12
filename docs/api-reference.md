@@ -4,6 +4,18 @@
 `alert.updated.hostile_personnel=[]` 是有效的当前名单更正，不等于视觉清空；消费者必须接受
 空数组，并优先按角色 ID 去重。公共档案不保存授权主体的联系人声望。
 
+2026-09-12 本地开发兼容说明（未发布）：私有联系人读取增加完整分页、响应头有效期、ETag/304
+和失败保护；读取失败不再视为空表。内部快照有效期/己方组织上下文字段不加入 HTTP/SSE 响应，
+`EsiSessionSnapshot.to_dict()`、公共 Gateway envelope 保持兼容；后续 Presence/OCR 与事件可选扩展见下节。
+`on` 模式仍由后台刷新私有联系人，热读不访问 ESI；`off/shadow` 保留原增强器的按需读取位置。
+同上下文失败兜底最多 1 小时，401/403 立即隔离，限流按 Retry-After 退避。
+组织 `on` 模式现已本地接入独立的军团/联盟持久快照和不可变分类索引，不使用个人声望例外。
+既有 `standing_source` 字符串新增两个值：`esi_organization` 表示按组织规则确定（>0 友好，<=0 敌对）；
+`esi_organization_pending` 表示当前必要关系/归属不可用，没有可信 `contact_standing`，
+消费者不得继承旧 `standing/contact_standing` 或当成默认 0。独立黑白名单和视觉 Presence 规则不变。
+没有新增私有联系人查询 API。2026-09-13 起由独立 `organization_mode` 控制组织规则：
+默认 off、shadow 比较但不改变分类、on 生效；仅档案 mode=on 时执行，旧档案配置不会自动切换分类。
+
 私有 ESI Gateway 的公共查询 envelope 在普通内存缓存和可选 ID 缓存两种模式下均返回
 逐实体 `freshness`：键为字符串 ID（`universe/ids` 为归一化姓名），值包含 UTC 秒数
 `fetched_at`、`last_validated_at`、`expires_at` 及布尔值 `stale`。时间与返回资料一同保存，
@@ -20,6 +32,32 @@
 批次耗时/每条数据库处理耗时，不是 P95。计数器进程内累计，未出现的计数项可缺省。
 功能关闭时不返回 archive，不能解释为档案数为零；没有新增公开人员枚举接口。
 
+### 单主采集与当前状态扩展
+
+`POST /api/v1/hostile-presence` 和 `/api/v1/ocr/snapshot` 可带 `capture`：
+`session_id`、`fingerprint` 为非空字符串（最多 128 字符），`session_epoch`、`sequence` 为正的 64 位整数，
+可选 `roster_quality=complete|truncated|unknown`。上述两个整数不接受布尔值；第三方须保持整数精度。
+Presence 先上传，OCR 再引用同一会话/画面；旧会话、过时帧返回 `accepted:false, stale:true`，不更新权威状态。
+画面指纹不变时允许较早 OCR 帧，较新 Presence 不会仅因序号增加使同画面解析失效。
+`query_id` 查询仍有效，但其结果独立保存、不移动主监控或进入自动敌情。
+
+Presence 可选 `source_status=active|stopped|departed`，默认 active；停止/离开的上传计数必须是 0，
+但该 0 表示停止采集，不是视觉确认清空。新客户端停监控和跨星系使用此字段；旧字段/旧客户端保持兼容。
+新格式会话一旦建立，同窗口无 capture 的旧上报不再接受。字段结构错误返回 400。
+
+Bootstrap 新增 `state_source=system_current_state|legacy`；PostgreSQL 当前快照的合成 active-intel
+携带 `state_version`，metadata 增加 `system_state`、`primary_client_id`、`primary_generation`、`freshness`。
+事件仍为 `alert.entered/updated/cleared`，载荷增加上述主来源与 `freshness=fresh|unknown`；事件版本仍取 `state:N` 的 N。
+未知更新保留上次数量，不是确认来敌/清空，不能按 `active:true` 单独触发重复提醒。
+`hostile_personnel` 始终为当前确认名单，不是历史累计名单；空名单与人数归零是不同状态。
+读取原始 `/active-intel` 的集成者应改用 Bootstrap/SSE 当前结果，不在本地合并多个监控窗口。
+JSON 存储兼容模式返回 legacy；本轮单主持久化和失败恢复以 PostgreSQL 为准。
+详细规则见[星系当前状态](system-current-state.md)。
+
+显式 direct/relay 模式的 ESI status `config.transport` 增加脱敏进程内请求/尝试/失败计数，
+以及最近 300 秒、最多 1000 条样本的 `p50_ms/p95_ms/max_ms`。无样本为 null；不等于完整预警时延。
+没有隐式重试或出口回退，`retries/fallbacks` 为 0；等待预算失败不计作真实上游尝试。
+
 ### 管理员人员档案配置
 
 `GET /api/v1/admin/personnel-settings` 返回 `{ "settings": {...} }`；
@@ -33,12 +71,14 @@
     "mode": "shadow",
     "background_refresh": true,
     "history_backfill": true,
-    "background_max": 4
+    "background_max": 4,
+    "organization_mode": "off"
   }
 }
 ```
 
-`mode` 只能为 `off/shadow/on`；两个开关必须是真正的 JSON 布尔值；并发上限为整数 1～4。
+`mode`、`organization_mode` 只能为 `off/shadow/on`；两个开关必须是真正的 JSON 布尔值；并发上限为整数 1～4。
+兼容旧版四字段 POST：省略 organization_mode 保留先前保存值，尚无保存值则 off；不是删除该配置。
 缺少字段、未知字段、错误类型返回 400；配置版本过期返回 409 `settings_conflict`，重新 GET 后
 确认再保存；缺少 PostgreSQL/ESI 时不能保存非 off 模式，返回 409 `personnel_settings_unavailable`。
 配置管理未初始化时返回 503 `personnel_settings_unavailable`；存储失败返回 503
@@ -59,6 +99,17 @@
 存储配置优先于启动环境默认值。无变化保存可重试应用但不新增审计；同一旧 revision 不能覆盖后续修改。
 观测 `resolver_cache.archive.scheduling` 补充当前配置的两个布尔开关和并发上限；
 `background_slots` 仍表示负载调度后的容量，不表示配置上限或即时在途请求数。
+
+可选 `settings.organization_shadow` 为本进程按调用累计的声望符号比较计数：`compared`、`same`、
+`different` 及方向计数；不包含姓名/ID/联系人内容。不是按人去重统计，也不包含旧规则阈值与白名单的
+完整分类差异。组织模式切换使用现有配置事务和解析器代数隔离，不新增 SSE 事件种类。
+档案 `due_by_priority` 全量统计最多约每 30 秒更新，调度资格使用独立索引查询，不等待统计更新。
+
+Gateway 新传输模式另见[部署说明](server-deployment.md#esi-固定目标转发待生产灰度)。CONNECT 仅允许
+精确 `esi.evetech.net:443`，沿用来源白名单和 Gateway Bearer；不接受任意目标、请求体或 Transfer-Encoding。
+成功后仅双向转发 TLS 字节，不使用 JSON envelope，ESI 的响应状态/缓存/Retry-After 头保持端到端原样。
+目标错误 400、鉴权失败 401/403、隧道容量满 503 + Retry-After: 5、目标连接失败 502。
+relay 模式旧 JSON 路由返回 410；`/health` 保留并增加 transport_mode。默认 legacy 行为不变。
 
 默认地址为 `http://127.0.0.1:8765`。桌面客户端和工作台主要使用 `/api/v1`；旧
 `/api/*` 兼容路由仍存在；来袭分析读取专用的 `/api/v1/alert-history`，新接入应优先使用
@@ -349,6 +400,12 @@ SSE 常用查询参数：
 事件 ID 降级覆盖。无 `Last-Event-ID`、无 `since` 且请求 Bootstrap 表示初始化到当前状态；
 只有显式 `state:0` 才要求从保留日志起点完整重放；任何显式 `state:*` 均禁用 `since`
 时间过滤。
+
+Windows 预警端的待发布修复（2026-09-12）：每次重新开启预警时，不携带上次运行落盘的
+游标，使用现有无游标 Bootstrap 契约同步当前状态，避免把停用期间的来敌/清空作为实时告警
+逐条显示。本次运行中的连接轮换和网络重连仍携带本次已处理的最高游标，不退回旧落盘值，
+也不允许合成 ID 降级覆盖。告警 ID 去重记录保留；此策略仅适用于实时预警视图，
+不改变机器人等需要持久消费历史事件的消费者策略或服务端重放契约。
 
 SSE wire 事件与内部状态事件的映射如下：
 
