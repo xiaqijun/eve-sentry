@@ -56,3 +56,28 @@ Deploy Server、Validate and Deploy Bot 和下载站工作流。不得覆盖已�
 客户端源提交仍为上述 `e36f862`；补充提交只修测试和记录，不重建或覆盖客户端资产。
 [机器人部署](https://github.com/xiaqijun/eve-sentry/actions/runs/34762298821) 已通过。
 签名清单、下载入口和修正后的服务端部署继续验收，以最终工作流和检查输出为准。
+
+## 最终发布结果（2026-09-13）
+
+- [服务端第二轮部署](https://github.com/xiaqijun/eve-sentry/actions/runs/34762676341) 全部成功，
+  包括完整 PostgreSQL 门禁、Windows 测试、前端测试/构建、生产切换及公网 readiness。
+  SSH 只读复核 `/var/lib/eve-sentry/deployed-revision` 为
+  `0402aa49a746fae6fc0ffe150bb3e06d8e8ad0e2`，`eve-sentry` 服务为 active。
+- [客户端 Release](https://github.com/xiaqijun/eve-sentry/releases/tag/v1.0.73) 和标签指向
+  `e36f862d3c7c65775b59a1190d699d4205ff1702`；源码元数据中的 `source_commit` 与
+  `release_workflow_commit` 相同，未覆盖已有发布资产。
+- [Client CI](https://github.com/xiaqijun/eve-sentry/actions/runs/34762298837)、
+  [协议兼容](https://github.com/xiaqijun/eve-sentry/actions/runs/34762298815)、
+  [机器人部署](https://github.com/xiaqijun/eve-sentry/actions/runs/34762298821)、
+  [下载站部署](https://github.com/xiaqijun/eve-sentry/actions/runs/34762298853) 均成功。
+- 发布和下载站 `latest.json` 内容一致，版本 1.0.73；使用仓库公钥验证 Ed25519 签名通过。
+  GitHub 提供的程序包/模型包 SHA-256 摘要与大小均匹配签名清单；没有将本机未下载完的附件
+  记作完整文件哈希复算。程序包 132,422,267 字节，模型包 105,099,126 字节。
+- 下载站 `/health` 返回 ok；`/download/latest` 返回 302 指向 1.0.73；程序和模型
+  Range 请求均返回 206，Content-Range 总长度与清单一致。
+
+程序包 SHA-256：`363e66731b79197c0be87b0f5f5f50c1d9163b998c99286d611e6b9c4a804e6f`。
+模型包 SHA-256：`370ff641c19876472e48309da52d60085c3a8455c71810cf10a7c654cd2b9f49`。
+
+本次未更改全局代理或生产配置，未重新切换 ESI 路线；本地测试 PostgreSQL 已停止。
+仍待用户实际安装新版并验证游戏中断线重连、远端清空和 QQ 时延，不将发布成功等同于业务时延验收。
