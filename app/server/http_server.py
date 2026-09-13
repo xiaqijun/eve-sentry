@@ -25,6 +25,7 @@ from app.server.auth_http import AuthHttpMixin
 from app.server.client_status import monitored_system_names
 from app.server.event_cache import ActiveEventSnapshot
 from app.server.intel_store import IntelStore, utc_now_iso
+from app.server.system_state import realtime_event_payload
 
 logger = logging.getLogger(__name__)
 access_logger = logging.getLogger(f"{__name__}.access")
@@ -2092,22 +2093,21 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         alerts: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Build the compact state required by alert SSE consumers."""
+        unavailable = [item for item in active_items
+                       if isinstance(item.get("metadata"), dict)
+                       and item["metadata"].get("freshness") == "unknown"]
+        unavailable_ids = {str(item["id"]) for item in unavailable if item.get("id")}
+        active_items = [item for item in active_items
+                        if not (isinstance(item.get("metadata"), dict)
+                                and item["metadata"].get("freshness") == "unknown")]
+        alerts = [alert for alert in alerts if alert.get("freshness") != "unknown"
+                  and str(alert.get("active_intel_id") or "") not in unavailable_ids]
         hostile_counts = _active_hostile_counts(alerts, active_items)
-        unknown_systems = {
-            str(item.get("system_name") or "").casefold() for item in active_items
-            if isinstance(item.get("metadata"), dict)
-            and item["metadata"].get("freshness") == "unknown"
-        }
-        for item in active_items:
-            name = str(item.get("system_name") or "")
-            if name.casefold() in unknown_systems:
-                hostile_counts.setdefault(name, 0)
         systems = [
             {
                 "name": system_name,
                 "system_name": system_name,
                 "hostile_count": hostile_count,
-                **({"freshness": "unknown"} if system_name.casefold() in unknown_systems else {}),
             }
             for system_name, hostile_count in sorted(hostile_counts.items())
         ]
@@ -3968,7 +3968,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                                 payload.get("hostile_personnel")
                             )
                             durable_systems.add(system_name.casefold())
-                            self._write_sse(event_name, event_id, payload)
+                            self._write_sse(event_name, event_id, realtime_event_payload(payload))
                             wrote_event = True
                             state_event_seq = max(state_event_seq, int(event.get("seq") or 0))
                             has_durable_state_cursor = True
@@ -4079,7 +4079,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                                         payload.get("hostile_personnel")
                                     )
                                     durable_systems.add(system_name.casefold())
-                                    self._write_sse(event_name, event_id, payload)
+                                    self._write_sse(event_name, event_id, realtime_event_payload(payload))
                                     wrote_event = True
                                     stream_event_id = event_id
                                     last_seen = max(

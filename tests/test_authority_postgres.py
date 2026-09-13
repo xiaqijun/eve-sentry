@@ -71,9 +71,7 @@ def test_capture_loss_retains_unknown_until_valid_clear_and_does_not_repeat_clea
     assert event["event_type"] == "alert.updated"
     assert event["payload"]["hostile_count"] == 1
     assert event["payload"]["freshness"] == "unknown"
-    assert (
-        store.read_active_event_snapshot()[0][0]["metadata"]["freshness"] == "unknown"
-    )
+    assert store.read_active_event_snapshot()[0] == []
     presence(store, "first", 0, capture=frame(2))
     assert store.read_active_event_snapshot()[0] == []
     before = store.list_intel_event_page()
@@ -127,9 +125,7 @@ def test_zero_capture_loss_becomes_unknown_and_move_does_not_fake_clear(store):
     last = store.list_intel_event_page()[-1]
     assert last["payload"]["freshness"] == "unknown"
     assert last["payload"]["hostile_count"] == 0
-    assert (
-        store.read_active_event_snapshot()[0][0]["metadata"]["freshness"] == "unknown"
-    )
+    assert store.read_active_event_snapshot()[0] == []
     presence(store, "first", 2, capture=frame(2))
     store.record_hostile_presence(
         {

@@ -539,7 +539,10 @@ def _hostile_counts_by_system(
 
 def format_monitoring_nodes(bootstrap: dict[str, Any]) -> str:
     raw_nodes = bootstrap.get("monitoring_nodes")
-    nodes = [item for item in raw_nodes if isinstance(item, dict)] if isinstance(raw_nodes, list) else []
+    nodes = [item for item in raw_nodes if isinstance(item, dict)
+             and str(item.get("health_status") or "online").casefold() == "online"
+             and item.get("monitoring") is not False and item.get("capture_online") is not False
+             ] if isinstance(raw_nodes, list) else []
     ordered = sorted(
         nodes,
         key=lambda item: (
@@ -588,11 +591,12 @@ def _online_nodes(bootstrap: dict[str, Any]) -> list[AlertNode]:
         targets = details.get("targets")
         if isinstance(targets, list) and targets:
             for target in targets:
-                if not isinstance(target, dict) or not target.get("monitoring", True):
+                if (not isinstance(target, dict) or not target.get("monitoring", True)
+                        or target.get("capture_online") is False):
                     continue
                 node = _node_from_target(target, details)
                 nodes.setdefault(node.key, node)
-        else:
+        elif details.get("capture_online") is not False:
             node = _node_from_target({}, details)
             nodes.setdefault(node.key, node)
     return list(nodes.values())

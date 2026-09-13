@@ -173,7 +173,7 @@ function summarizeMonitors(
     const targets = rawTargets.length > 0 ? rawTargets : [details];
     for (const rawTarget of targets) {
       const target = asRecord(rawTarget);
-      if (target.monitoring === false) {
+      if (target.monitoring === false || target.capture_online === false) {
         continue;
       }
       const systemId = firstNumber(
@@ -302,7 +302,7 @@ function summarizeActiveIntel(
 
   const summaries = new Map<string, ActiveIntelSummary>();
   for (const item of bootstrap.active_intel || []) {
-    if (item.active === false) {
+    if (item.active === false || asRecord(item.metadata).freshness === "unknown") {
       continue;
     }
     const source = String(item.source || "").trim().toLowerCase();
@@ -522,6 +522,7 @@ export function buildTacticalGraph(
   }
 
   const systemNodes = graphBootstrap.map.systems.map((system) => {
+      const unavailable = (canonicalFreshness.get(system.name.toLowerCase()) ?? system.freshness) === "unknown";
       const systemAlerts =
         typeof system.system_id === "number"
           ? alertsBySystem.get(system.system_id) || []
@@ -538,7 +539,7 @@ export function buildTacticalGraph(
       const reportCount = hasActiveIntelPayload
         ? activeSummary.reportCount
         : Number(system.report_count || 0);
-      const hostileCount = activeSummary.detectorHostileCount ?? (
+      const hostileCount = unavailable ? 0 : activeSummary.detectorHostileCount ?? (
         hasActiveIntelPayload
           ? activeSummary.ocrCount
           : Number(system.hostile_count || 0)
@@ -567,15 +568,15 @@ export function buildTacticalGraph(
         security:
           typeof system.security === "number" ? system.security : null,
         hostileCount,
-        freshness: canonicalFreshness.get(system.name.toLowerCase()) ??
-          (system.freshness === "unknown" ? "unknown" as const : "fresh" as const),
+        // Topology may remain, but unavailable history is not a live signal.
+        freshness: unavailable ? undefined : "fresh" as const,
         reportCount,
         observationCount: realtimeSignalCount,
         channelIntelCount,
         killCount: firstNumber(system.recent_kill_count) ?? 0,
-        monitorCount: monitorSummary.count,
-        monitorOnlineCount: monitorSummary.onlineCount,
-        monitorLabels: monitorSummary.labels,
+        monitorCount: unavailable ? 0 : monitorSummary.count,
+        monitorOnlineCount: unavailable ? 0 : monitorSummary.onlineCount,
+        monitorLabels: unavailable ? [] : monitorSummary.labels,
         hasAlerts: hasRealtimeIntel,
         isSelected:
           typeof selectedSystemId === "number" &&

@@ -2477,6 +2477,8 @@ class MainWindow(QMainWindow):
 
     def _handle_presence_publish_error(self, exc: Exception, metadata: dict) -> None:
         context = metadata.get("context")
+        if isinstance(context, dict):
+            context.pop("_presence_logged_confirmation", None)
         window_title = "EVE"
         if isinstance(context, dict):
             window_title = str(
@@ -2499,9 +2501,16 @@ class MainWindow(QMainWindow):
                 or context.get("source_instance")
                 or window_title
             ).strip()
-        self._log_message(
-            f"{window_title}: 服务器已确认实时敌对数量（{hostile_count}）"
+        signature = details.get("confirmation_signature") or (
+            str((context or {}).get("system_name") or ""), hostile_count,
+            str(((context or {}).get("_capture") or {}).get("session_id") or ""), "active",
         )
+        if not isinstance(context, dict) or context.get("_presence_logged_confirmation") != signature:
+            self._log_message(
+                f"{window_title}: 服务器已确认实时敌对数量（{hostile_count}）"
+            )
+            if isinstance(context, dict):
+                context["_presence_logged_confirmation"] = signature
         status = "敌对告警" if hostile_count > 0 else "监控中"
         self._update_window_status(
             context,
@@ -3196,6 +3205,10 @@ class MainWindow(QMainWindow):
             "kind": "hostile_presence",
             "context": context,
             "hostile_icon_count": payload["hostile_icon_count"],
+            "confirmation_signature": (
+                payload["system_name"], payload["hostile_icon_count"],
+                (payload.get("capture") or {}).get("session_id", ""), source_status or "active",
+            ),
         }
         upload_manager = _instance_attr(self, "_upload_manager")
         if upload_manager is not None:

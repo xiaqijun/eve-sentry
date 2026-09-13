@@ -41,7 +41,7 @@ def monitored_system_names(client_snapshot: Any) -> list[str]:
             for target in targets:
                 if not isinstance(target, dict):
                     continue
-                if not bool(target.get("monitoring", True)):
+                if not bool(target.get("monitoring", True)) or target.get("capture_online") is False:
                     continue
                 active_target_seen = True
                 before = len(systems)
@@ -50,5 +50,6 @@ def monitored_system_names(client_snapshot: Any) -> list[str]:
             if active_target_seen and not target_system_seen:
                 add_system(details.get("system_name") or details.get("system"))
             continue
-        add_system(details.get("system_name") or details.get("system"))
+        if details.get("capture_online") is not False:
+            add_system(details.get("system_name") or details.get("system"))
     return systems

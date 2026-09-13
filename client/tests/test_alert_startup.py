@@ -33,12 +33,13 @@ def test_startup_skips_disk_history_but_network_reconnect_resumes(tmp_path):
                 }
                 yield {"id": "presence_one", "event": "heartbeat", "data": {}}
                 raise IntelApiError("temporary disconnect")
-            yield {
-                "id": "state:41",
-                "event": "alert",
-                "data": {"id": "state:41", "system": "S-KSWL", "hostile_count": 1},
-            }
-            yield {"id": "state:42", "event": "safe", "data": {"system": "S-KSWL"}}
+            if kwargs["last_event_id"]:
+                yield {
+                    "id": "state:41", "event": "alert",
+                    "data": {"id": "state:41", "system": "S-KSWL", "hostile_count": 1},
+                }
+                yield {"id": "state:42", "event": "safe", "data": {"system": "S-KSWL"}}
+            yield {"id": "state:42", "event": "bootstrap", "data": {"active_intel": []}}
             worker._stop_requested = True
 
         def post_heartbeat(self, **kwargs):
@@ -51,10 +52,10 @@ def test_startup_skips_disk_history_but_network_reconnect_resumes(tmp_path):
     worker.bootstrap_received.connect(snapshots.append)
     worker.run()
 
-    assert [request["last_event_id"] for request in requests] == ["", "state:40"]
-    assert len(snapshots) == 1
-    assert [alert["id"] for alert in alerts] == ["state:41"]
-    assert len(safes) == 1
+    assert [request["last_event_id"] for request in requests] == ["", ""]
+    assert len(snapshots) == 2
+    assert alerts == []
+    assert safes == []
 
 
 def test_repeated_visible_state_does_not_rebuild_overlay(monkeypatch):

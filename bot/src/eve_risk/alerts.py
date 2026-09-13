@@ -173,6 +173,9 @@ def format_monitoring_nodes_message(
     for node in nodes:
         if not isinstance(node, dict):
             continue
+        if (str(node.get("health_status") or "online").casefold() != "online"
+                or node.get("monitoring") is False or node.get("capture_online") is False):
+            continue
         client_id = str(node.get("client_id") or "").strip()
         heartbeat_id = str(node.get("heartbeat_client_id") or "").strip()
         source_instance = str(node.get("source_instance") or "").strip()
@@ -980,6 +983,17 @@ class EveSentryAlertRelay:
             logger.warning("Ignored EVE Sentry bootstrap without active_intel list")
             return True
 
+        unavailable_systems = {
+            str(item.get("system_name") or item.get("system") or "").casefold()
+            for item in active_intel if isinstance(item, dict)
+            and (item.get("metadata") or {}).get("freshness") == "unknown"
+        }
+        unavailable_systems.update(
+            str(item.get("name") or item.get("system_name") or "").casefold()
+            for item in (payload.get("map") or {}).get("systems", [])
+            if isinstance(item, dict) and item.get("freshness") == "unknown"
+        )
+        node_offline_systems.update(unavailable_systems)
         generated_at = str(payload.get("generated_at") or datetime.now(UTC).isoformat())
         active_items = {
             active_id: item
@@ -996,6 +1010,7 @@ class EveSentryAlertRelay:
                 for roster in authoritative_rosters
                 if isinstance(roster, dict)
                 and str(roster.get("system_name") or "").strip()
+                and str(roster.get("system_name") or "").casefold() not in unavailable_systems
             }
             for system_key, state in current.items():
                 roster = rosters_by_system.get(system_key)
@@ -1040,6 +1055,16 @@ class EveSentryAlertRelay:
                     "personnel_fingerprint": _personnel_fingerprint(personnel),
                 }
         previous, initialized = await self._load_system_alert_state()
+        if payload.get("state_source") == "system_current_state":
+            # Absence can mean monitoring stopped, not a visual zero. Only an
+            # online monitoring source can support Bootstrap-derived safety.
+            live_systems = {
+                str(node.get("system_name") or node.get("system") or "").casefold()
+                for node in (monitoring_nodes if isinstance(monitoring_nodes, list) else [])
+                if isinstance(node, dict) and node.get("health_status", "online") == "online"
+                and node.get("monitoring") is not False and node.get("capture_online") is not False
+            }
+            node_offline_systems.update(set(previous) - live_systems)
 
         # Empty authoritative rosters still have a correction waiting to send.
         active_personnel_systems = set(current)
@@ -1387,6 +1412,17 @@ class EveSentryAlertRelay:
         state here lets the later bootstrap enrich the same episode without
         sending a duplicate entry notification.
         """
+        if payload.get("freshness") == "unknown":
+            system_key = _system_label(payload).casefold()
+            current, initialized = await self._load_system_alert_state()
+            if initialized:
+                current.pop(system_key, None)
+                await self._save_system_alert_state(current)
+            self._discard_pending_personnel_update(system_key)
+            occurred_at = str(payload.get("created_at") or payload.get("occurred_at") or "")
+            if occurred_at:
+                await self._advance_alert_cursor(occurred_at)
+            return True
         if payload.get("active") is False or not self._allows_transition(payload):
             return True
 
@@ -1412,11 +1448,6 @@ class EveSentryAlertRelay:
         }
         if event_ids.intersection(self._active_alert_ids):
             logger.debug("Ignored EVE Sentry alert already delivered by bootstrap")
-            return True
-
-        if payload.get("freshness") == "unknown":
-            self._active_alert_ids.update(event_ids)
-            await self._advance_alert_cursor(occurred_at)
             return True
 
         current, initialized = await self._load_system_alert_state()
@@ -1556,6 +1587,8 @@ def _active_intel_map(
         active_id = str(raw_item.get("id") or "").strip()
         alert = alerts_by_active_id.get(active_id)
         metadata = raw_item.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("freshness") == "unknown":
+            continue
         source = str(raw_item.get("source") or "").strip().casefold()
         is_detector = source == "eve-sentry-detector"
         is_presence_only = bool(

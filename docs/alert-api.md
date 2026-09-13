@@ -1,7 +1,9 @@
 # 预警消息 API 接入指南
 
 新 PostgreSQL 服务的 Bootstrap 标记 `state_source=system_current_state`，三端消费统一结果。
-`freshness=unknown` 表示采集未知、保留上次情况；更新显示与游标，但不能当作新来敌或确认清空。
+`freshness=unknown` 表示采集失效：移除实时节点/敌情和待发名单、推进游标，不显示历史“上次情况”，
+不能当作新来敌或确认清空。2026-09-13 本地补丁的 wire 人数为 0、名单为空；旧服务端仍可能
+携带旧值，消费者必须优先判断 freshness。历史明细仅保存在服务端，实时 Bootstrap 不加载历史未知星系。
 人数和名单采用最新状态，不保留历史最大人数，不从原始 `/active-intel` 重新合并监控窗口。
 新增字段与兼容策略见[API 参考](api-reference.md#单主采集与当前状态扩展)。
 
@@ -88,12 +90,17 @@ curl -N --fail-with-body \
 | `min_score` | 空 | 只接收不低于该分数的告警，必须为非负整数 |
 | `min_level` | 空 | 最低等级：`low`、`medium`、`high` 或 `critical` |
 
-重连时应把最后处理成功的可靠 SSE 游标持久化并放入 `Last-Event-ID` 请求头。
+机器人等需要可靠补发的消费者重连时，应把最后处理成功的可靠 SSE 游标持久化并放入 `Last-Event-ID` 请求头。
 `state:<sequence>` 直接恢复状态事件序列；一旦取得该游标，只能由更高状态序号替换，后续
 alert/report、`presence_*` 或 `monitoring_node` ID 不得把它降级覆盖。已存储的 alert/report ID
 可解析到报告流游标，ISO 8601 ID 可按时间恢复；没有状态序号时，合成 ID 由 `bootstrap`
 权威对账，并可通过 `since` 提供时间回退。任何显式 `state:*`（包括 `state:0`）都优先于并
 禁用 `since` 过滤。机器人保存的状态 ACK 不使用短期去重 TTL。
+
+Windows 实时预警端采用不同策略（2026-09-13 本地补丁，待发布）：启动、网络重连和正常
+连接轮换均请求 `bootstrap=1`，不发送 `Last-Event-ID` 或 `since`。以当前原子快照及水位
+整体替换显示，再在同一流消费水位之后的新变化；不补播断线期间已结束的敌情。
+这不改变下述持久消费/重放契约，也不改变机器人策略。
 
 ### `bootstrap` 事件
 

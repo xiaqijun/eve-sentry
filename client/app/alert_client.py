@@ -356,6 +356,9 @@ def aggregate_alert_summaries(
     for item in summaries:
         system = str(item.get("system_name") or "Unknown").strip() or "Unknown"
         system_key = system.casefold()
+        if item.get("freshness") == "unknown":
+            by_system.pop(system_key, None)
+            continue
         active = bool(item.get("active", True))
         raw_hostile_count = item.get("hostile_count")
         try:
@@ -451,6 +454,24 @@ def prune_inactive_alert_summaries(
     return [dict(summary) for summary in summaries]
 
 
+def unavailable_systems_from_bootstrap(bootstrap: dict[str, Any]) -> set[str]:
+    """Recognize invalidation in both current and legacy bootstrap projections."""
+    map_payload = bootstrap.get("map")
+    map_systems = map_payload.get("systems") if isinstance(map_payload, dict) else []
+    unavailable: set[str] = set()
+    for rows in (map_systems, bootstrap.get("active_intel"), bootstrap.get("alerts")):
+        for item in rows if isinstance(rows, list) else []:
+            if not isinstance(item, dict):
+                continue
+            metadata = item.get("metadata")
+            metadata = metadata if isinstance(metadata, dict) else {}
+            if item.get("freshness") == "unknown" or metadata.get("freshness") == "unknown":
+                system = str(item.get("system_name") or item.get("name") or "").strip()
+                if system:
+                    unavailable.add(system.casefold())
+    return unavailable
+
+
 def sync_alert_summaries_from_bootstrap(
     summaries: list[dict[str, Any]],
     bootstrap: dict[str, Any],
@@ -463,9 +484,17 @@ def sync_alert_summaries_from_bootstrap(
     monitoring_keys = {system.casefold() for system in monitoring_systems}
     map_payload = bootstrap.get("map")
     map_systems = map_payload.get("systems") if isinstance(map_payload, dict) else None
+    unavailable = unavailable_systems_from_bootstrap(bootstrap)
+    monitoring_systems = [system for system in monitoring_systems if system.casefold() not in unavailable]
+    monitoring_keys.difference_update(unavailable)
     if not isinstance(map_systems, list):
         active_keys = active_alert_keys_from_bootstrap(bootstrap)
-        updated = update_alert_summaries_active(summaries, active_keys)
+        updated = update_alert_summaries_active(
+            [item for item in summaries
+             if str(item.get("system_name") or "").strip().casefold() not in unavailable
+             and item.get("freshness") != "unknown"],
+            active_keys,
+        )
         for item in updated:
             if item.get("active"):
                 item["active_hostile_count"] = item.get("hostile_count", 0)
@@ -527,7 +556,7 @@ def sync_alert_summaries_from_bootstrap(
             hostile_count = int(item.get("hostile_count") or 0)
         except (TypeError, ValueError):
             hostile_count = 0
-        if not system or (hostile_count <= 0 and item.get("freshness") != "unknown"):
+        if not system or hostile_count <= 0 or system.casefold() in unavailable:
             continue
         system_key = system.casefold()
         previous = previous_by_system.get(system_key, {})
@@ -538,7 +567,6 @@ def sync_alert_summaries_from_bootstrap(
             "created_at": first_seen_by_system.get(system_key)
             or str(previous.get("created_at") or item.get("latest_seen") or ""),
             "active": True,
-            **({"freshness": "unknown"} if item.get("freshness") == "unknown" else {}),
         }
 
     mapped_systems = set(current_by_system)
@@ -553,7 +581,7 @@ def sync_alert_summaries_from_bootstrap(
         active_id = str(item.get("id") or "").strip()
         system = str(item.get("system_name") or "").strip()
         system_key = system.casefold()
-        if not active_id or active_id not in hostile_active_ids or not system:
+        if not active_id or active_id not in hostile_active_ids or not system or system_key in unavailable:
             continue
         if system_key in mapped_systems:
             continue
@@ -627,7 +655,7 @@ def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[st
             heartbeat.get("health_status")
             or ("online" if heartbeat.get("online") else "removed")
         ).strip().casefold()
-        if heartbeat_health == "removed":
+        if heartbeat_health != "online":
             continue
         details = heartbeat.get("details")
         if not isinstance(details, dict) or not bool(details.get("monitoring")):
@@ -640,7 +668,7 @@ def monitored_accounts_from_bootstrap(bootstrap: dict[str, Any]) -> list[dict[st
                 continue
             health_status = heartbeat_health
             if target.get("capture_online") is False:
-                health_status = "offline"
+                continue
             client_id = str(target.get("client_id") or heartbeat.get("client_id") or "").strip()
             character_name = str(target.get("character_name") or "").strip()
             source_instance = str(
@@ -840,7 +868,7 @@ class LocalStarMapWidget(QWidget):
         self.update()
 
     def set_alerts(self, alerts: list[dict[str, Any]]) -> None:
-        self._alerts = [dict(item) for item in alerts]
+        self._alerts = [dict(item) for item in alerts if item.get("freshness") != "unknown"]
         self.update()
 
     def set_message(self, message: str) -> None:
@@ -2326,8 +2354,8 @@ class AlertEventWorker(QThread):
             api_key=self.api_key,
         )
         backoff = 1.0
-        # A newly enabled warning view needs current state, not every transition
-        # while it was closed. Only reconnects in this run resume a live cursor.
+        # Track acknowledgements within a connection; they are not a request to
+        # replay the gap when this live-only view opens another connection.
         resume_event_id = ""
 
         def remember_cursor(event_id: object) -> None:
@@ -2344,6 +2372,10 @@ class AlertEventWorker(QThread):
             self.state.save_last_event_id(candidate)
 
         while not self._stop_requested:
+            # Bootstrap and its state:W watermark come from the same server
+            # snapshot. Start there after errors AND normal EOF, then consume
+            # seq > W on this stream instead of replaying an ended incursion.
+            resume_event_id = ""
             retrying_after_error = False
             try:
                 connection_announced = False
@@ -3068,6 +3100,8 @@ class AlertTrayController:
         self._worker_restart_pending = False
 
     def _on_status(self, status: str, message: str) -> None:
+        if status in {"reconnecting", "error"}:
+            self._discard_realtime_state()
         if status == "connected":
             self.overlay.set_status("SSE 在线", "ok")
         elif status == "reconnecting":
@@ -3084,6 +3118,10 @@ class AlertTrayController:
         summary["active_hostile_count"] = summary["hostile_count"]
         system = str(summary.get("system_name") or "Unknown")
         system_key = system.casefold()
+        if summary.get("freshness") == "unknown":
+            self._discard_realtime_state(system_key)
+            self.overlay.set_status("采集异常", "warn")
+            return  # Removing unavailable data must never announce safety or arrival.
         existing = next(
             (
                 item
@@ -3101,9 +3139,6 @@ class AlertTrayController:
             existing.update(summary)
         self._apply_local_hostile_counts()
         self.overlay.show_summaries(self._recent_summaries)
-        if summary.get("freshness") == "unknown":
-            self.overlay.set_status("采集异常", "warn")
-            return  # Loss of evidence is not another enemy arrival/sound.
         self.overlay.set_status("新告警", "danger")
         hostile_count = int(summary.get("hostile_count") or 0)
         if hostile_count > 0:
@@ -3138,6 +3173,28 @@ class AlertTrayController:
             "敌对告警",
             f"❗ {summary['system_name']} 来敌 {hostile_count} 人",
         )
+
+    def _discard_realtime_state(self, system_key: str | None = None) -> None:
+        """Remove unavailable evidence and its sounds without manufacturing a clear."""
+        def keep(item):
+            return system_key is not None and str(item.get("system_name") or "").casefold() != system_key
+
+        self._recent_summaries = [item for item in self._recent_summaries if keep(item)]
+        self._remote_map_accounts = [item for item in getattr(self, "_remote_map_accounts", []) if keep(item)]
+        counts = getattr(self, "_local_hostile_counts", {})
+        self._local_hostile_counts = {key: value for key, value in counts.items() if system_key is not None and key != system_key}
+        self._active_alert_systems = {
+            str(item.get("system_name") or "").casefold() for item in self._recent_summaries
+            if item.get("active", True) and int(item.get("hostile_count") or 0) > 0
+        }
+        if not self._active_alert_systems:
+            self._remaining_sound_plays = 0
+            timer = getattr(self, "_sound_repeat_timer", None)
+            if timer is not None:
+                timer.stop()
+            self._stop_continuous_alert_sound()
+        self.overlay.show_summaries(self._recent_summaries)
+        self._sync_map_accounts()
 
     def _play_alert_sound_sequence(self) -> None:
         """Play the configured number of alert sounds without blocking the UI."""
@@ -3263,8 +3320,20 @@ class AlertTrayController:
             bootstrap,
         )
         self._apply_local_hostile_counts()
+        self._active_alert_systems = {
+            str(item.get("system_name") or "").casefold() for item in self._recent_summaries
+            if item.get("active", True) and int(item.get("hostile_count") or 0) > 0
+        }
+        if not self._active_alert_systems:
+            self._remaining_sound_plays = 0
+            timer = getattr(self, "_sound_repeat_timer", None)
+            if timer is not None:
+                timer.stop()
+            self._stop_continuous_alert_sound()
         self.overlay.show_summaries(self._recent_summaries)
         accounts = monitored_accounts_from_bootstrap(bootstrap)
+        unknown = unavailable_systems_from_bootstrap(bootstrap)
+        accounts = [item for item in accounts if item["system_name"].casefold() not in unknown]
         worker = getattr(self, "_worker", None)
         alert_client_id = str(getattr(worker, "client_id", "") or "")
         for account in accounts:

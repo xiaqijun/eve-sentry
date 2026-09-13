@@ -10,12 +10,19 @@ from eve_risk.alerts import EveSentryAlertRelay
 
 @pytest.mark.asyncio
 async def test_unknown_event_is_acknowledged_without_delivery():
-    relay = SimpleNamespace(_active_alert_ids=set(), _advance_alert_cursor=AsyncMock(), _allows_transition=lambda _: True)
+    state = {'s-kswl': {'hostile_count': 1}}
+    discarded = []
+    relay = SimpleNamespace(_active_alert_ids=set(), _advance_alert_cursor=AsyncMock(), _allows_transition=lambda _: True,
+                            _load_system_alert_state=AsyncMock(return_value=(state, True)),
+                            _save_system_alert_state=AsyncMock(), _discard_pending_personnel_update=discarded.append)
     assert await EveSentryAlertRelay.process_alert_event(relay, {
         "id": "state:2", "created_at": "2026-09-13T00:00:00Z", "system_name": "S-KSWL",
         "hostile_count": 1, "freshness": "unknown",
     })
-    assert relay._active_alert_ids == {"state:2"}
+    assert state == {}
+    assert discarded == ['s-kswl']
+    relay._save_system_alert_state.assert_awaited_once_with({})
+    relay._advance_alert_cursor.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -92,9 +92,9 @@ def project_active_items(
     for row in states:
         payload = json.loads(row["payload_json"])
         count = max(0, int(payload.get("hostile_count") or 0))
-        if (not count or not payload.get("active", True)) and payload.get(
-            "freshness"
-        ) != "unknown":
+        # Retain the durable history, but never turn it into a live node.
+        # Its raw observations remain covered and cannot leak back either.
+        if payload.get("freshness") == "unknown" or not count or not payload.get("active", True):
             continue
         system_key = str(row["system_key"])
         timestamp = str(row["occurred_at"])
@@ -149,3 +149,16 @@ def project_active_items(
                 }
             )
     return items
+
+
+def realtime_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Unknown is an invalidation, not a replay of the last known enemy roster."""
+    if payload.get("freshness") != "unknown":
+        return payload
+    return {
+        **payload,
+        "hostile_count": 0,
+        "hostile_personnel": [],
+        "presence_only": True,
+        "message": "监控数据已失效",
+    }

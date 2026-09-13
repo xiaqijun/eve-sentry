@@ -92,19 +92,7 @@ def test_monitored_accounts_from_bootstrap_keeps_capture_offline_targets():
         }
     )
 
-    assert accounts == [
-        {
-            "key": "window:offline|alice|",
-            "label": "Alice",
-            "character_name": "Alice",
-            "client_id": "window:offline",
-            "system_name": "Tama",
-            "system_id": None,
-            "monitoring": True,
-            "health_status": "offline",
-            "hostile_count": 0,
-        }
-    ]
+    assert accounts == []
 
 
 def test_monitored_accounts_from_bootstrap_has_stable_account_order():
@@ -440,9 +428,10 @@ def test_alert_worker_resumes_cursor_and_throttles_event_heartbeats(tmp_path):
 
         def iter_events(self, **kwargs):
             calls.append(("events", kwargs))
-            if kwargs["last_event_id"] == "":
+            if sum(kind == "events" for kind, _ in calls) == 1:
                 yield {"id": "event-40", "event": "bootstrap", "data": {"active_intel": []}}
                 return
+            yield {"id": "event-40", "event": "bootstrap", "data": {"active_intel": []}}
             yield {"id": "event-41", "event": "safe", "data": {"system": "Tama"}}
             yield {
                 "id": "event-42",
@@ -465,7 +454,7 @@ def test_alert_worker_resumes_cursor_and_throttles_event_heartbeats(tmp_path):
 
     worker.run()
 
-    assert [payload["last_event_id"] for kind, payload in calls if kind == "events"] == ["", "event-40"]
+    assert [payload["last_event_id"] for kind, payload in calls if kind == "events"] == ["", ""]
     assert [kind for kind, _payload in calls].count("heartbeat") == 1
     reloaded = AlertClientState(state_path)
     reloaded.load_seen_ids()
