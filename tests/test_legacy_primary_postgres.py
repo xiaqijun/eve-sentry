@@ -66,10 +66,8 @@ def test_restart_repairs_previously_suppressed_enemy_without_upload(
         reopened.close()
     again = PostgreSQLIntelStore(postgres_dsn, systems={}, links=[])
     try:
-        assert (
-            again.read_active_event_snapshot()[0][0]["metadata"]["freshness"]
-            == "unknown"
-        )
+        assert again.read_active_event_snapshot()[0] == []
+        assert again.list_intel_event_page()[-1]["payload"]["freshness"] == "unknown"
         assert again.list_intel_event_page() == events
         assert "s-kswl" not in authority.primary_sources(again._active_intel.values())
     finally:
@@ -93,9 +91,7 @@ def test_stop_then_restart_before_cleanup_does_not_resurrect_parent(
     try:
         assert "s-kswl" not in primary_sources(reopened._active_intel.values())
         assert reopened.list_intel_event_page() == before
-        assert (
-            reopened.read_active_event_snapshot()[0][0]["metadata"]["freshness"]
-            == "unknown"
-        )
+        assert reopened.read_active_event_snapshot()[0] == []
+        assert reopened.list_intel_event_page()[-1]["payload"]["freshness"] == "unknown"
     finally:
         reopened.close()

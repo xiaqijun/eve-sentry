@@ -42,3 +42,17 @@ Deploy Server、Validate and Deploy Bot 和下载站工作流。不得覆盖已�
 服务端/机器人按受保护工作流和已有备份回滚，不删除历史表。
 
 具体操作见[客户端发布流程](../client/docs/release-process.md)与[统一 CI/CD](ci-cd.md)。
+
+## 首次 CI 门禁与修正
+
+候选提交 `e36f862d3c7c65775b59a1190d699d4205ff1702` 已推送，客户端 CI、协议兼容与下载站
+验证/部署通过。服务端首次 PostgreSQL 门禁 93 项通过、2 项失败，部署被正确拦截。
+失败来自 `test_legacy_primary_postgres.py` 的旧断言：重启后仍要求 unknown 出现在实时快照。
+修正为实时快照为空，同时验证持久历史仍为 unknown、事件未丢失、旧主来源不复活。
+不删除测试、不跳过门禁、不修改业务代码；完整 PostgreSQL 门禁复跑后再触发受保护部署。
+
+修正后本地完整 PostgreSQL 门禁 **95 项通过**。客户端 [v1.0.73](https://github.com/xiaqijun/eve-sentry/releases/tag/v1.0.73)
+已创建，[发布工作流](https://github.com/xiaqijun/eve-sentry/actions/runs/34762383096) 成功，
+客户端源提交仍为上述 `e36f862`；补充提交只修测试和记录，不重建或覆盖客户端资产。
+[机器人部署](https://github.com/xiaqijun/eve-sentry/actions/runs/34762298821) 已通过。
+签名清单、下载入口和修正后的服务端部署继续验收，以最终工作流和检查输出为准。
