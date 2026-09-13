@@ -116,4 +116,25 @@ describe("PersonnelSettingsPanel", () => {
     expect(organization.querySelector('input[value="on"]')).toBeDisabled();
     expect(container).toHaveTextContent("关闭档案时保留配置但不执行");
   });
+
+  it("separates all pending calls from valid comparisons without inventing a rate", async () => {
+    const values = { ...initial.values, mode: "on" as const, organization_mode: "shadow" as const };
+    mocks.fetch.mockResolvedValue({ ...initial, values, effective: values,
+      organization_shadow: { compared: 2288, different: 2288, comparable: 0, pending: 2288, decision_different: 0 } });
+    await render();
+    expect(container).toHaveTextContent("有效比较 0 次");
+    expect(container).toHaveTextContent("待确认 2288 次");
+    expect(container).toHaveTextContent("敌我差异 0 次");
+    expect(container).toHaveTextContent("暂无（无有效样本）");
+    expect(container).not.toHaveTextContent("100.0%");
+  });
+
+  it("uses only known decisions as the rate denominator", async () => {
+    const values = { ...initial.values, mode: "on" as const, organization_mode: "shadow" as const };
+    mocks.fetch.mockResolvedValue({ ...initial, values, effective: values,
+      organization_shadow: { compared: 10, different: 8, comparable: 4, pending: 6, decision_different: 2 } });
+    await render();
+    expect(container).toHaveTextContent("差异率 50.0%");
+    expect(container).toHaveTextContent("非去重人数");
+  });
 });

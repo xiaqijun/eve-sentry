@@ -129,6 +129,8 @@ export interface AdminClientsSnapshot {
 }
 
 export interface EsiGatewayHealth {
+  transport_mode?: "relay" | "dual";
+  relay?: Partial<Record<"requests" | "attempts" | "active" | "connected" | "connect_errors" | "stream_errors", number>>;
   ok?: boolean;
   service?: string;
   version?: string;
@@ -163,6 +165,7 @@ export interface EsiGatewayHealth {
 
 export interface EsiGatewaySnapshot {
   gateway: {
+    transport_mode?: "legacy" | "direct" | "relay";
     configured: boolean;
     reachable: boolean;
     url?: string;

@@ -25,6 +25,14 @@ def public_freshness(metadata, *, maximum=3600):
             lifetimes.append(lifetime)
         if expires is not None and date is not None:
             lifetimes.append(max(0, expires - date))
+        # ESI's official OpenAPI specifies a 3600-second client cache TTL for
+        # POST affiliation, whose responses may omit HTTP cache directives.
+        # Explicit (even invalid) cache headers must never get this fallback.
+        if ("cache-control" not in headers and "expires" not in headers
+                and metadata.get("method") == "POST"
+                and metadata.get("path", "").rstrip("/") in {
+                    "/latest/characters/affiliation", "/characters/affiliation"}):
+            lifetimes.append(3600.0)
         if date is None or len(lifetimes) == 1 or "no-cache" in directives or "no-store" in directives:
             return {"fetched_at": received, "expires_at": received, "degraded": True}
         age = max(max(0, received - date), age + max(0, received - started))

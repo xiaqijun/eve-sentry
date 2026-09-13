@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from email.utils import parsedate_to_datetime
 from typing import Any
 
+from app.esi.diagnostics import failure_summary
 from app.esi.personnel_archive import (
     PersonnelArchive,
 )
@@ -243,7 +244,7 @@ class PersonnelRuntime:
             freshness = {key: self._freshness(key) for key in keys}
             commit_refresh_batch(self, kind, leases, rows, freshness)
             self._latency_ms = (time.monotonic() - started) * 1000
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- Preserve successful cache and retry the failed batch.
             self._counts["refresh_errors"] += 1
             delay = 5.0
             cause = exc
@@ -265,9 +266,11 @@ class PersonnelRuntime:
             for lease in leases:
                 try:
                     self.archive.fail(lease, now=self.now(), error_code="throttled" if delay > 5 else "upstream", retry_after=delay)
-                except Exception:
+                except Exception as storage_exc:  # noqa: BLE001 -- Keep processing other leased jobs.
                     self._counts["storage_errors"] += 1
-            logger.warning("Personnel refresh batch failed (%s); successful cache retained", kind)
+                    logger.warning("Personnel retry state persistence failed; %s", failure_summary(storage_exc))
+            logger.warning("Personnel refresh batch failed (%s); successful cache retained; %s",
+                           kind, failure_summary(exc))
         return len(leases)
 
     def maintenance(self) -> None:
@@ -384,10 +387,11 @@ class PersonnelRuntime:
                                 running.append((realtime, kind))
                                 future.add_done_callback(lambda _: self._wake.set())
                     cycle += 1
-                except Exception:
+                except Exception as exc:  # noqa: BLE001 -- Scheduler retries without discarding committed data.
                     self._counts["storage_errors"] += 1
                     self._retry_until = self.now() + 5
-                    logger.warning("Personnel scheduler degraded; will retry without discarding archive")
+                    logger.warning("Personnel scheduler degraded; will retry without discarding archive; %s",
+                                   failure_summary(exc))
                 self._wake.clear()
                 self._wake.wait(1)
 

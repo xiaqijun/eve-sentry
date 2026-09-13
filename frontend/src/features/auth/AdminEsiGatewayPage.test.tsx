@@ -92,6 +92,45 @@ describe("AdminEsiGatewayPage", () => {
     expect(container).toHaveTextContent("P95 (ms)");
   });
 
+  it("recognizes relay and does not display legacy zero cache or latency", async () => {
+    fetchEsiGatewayMock.mockResolvedValue({ ...snapshot, gateway: {
+      ...snapshot.gateway, transport_mode: "relay", health: {
+        transport_mode: "relay", relay: { connected: 632, active: 2 },
+      },
+    } });
+    await renderPage();
+    expect(container).toHaveTextContent("Relay 网关在线");
+    expect(container).toHaveTextContent("当前隧道");
+    expect(container).toHaveTextContent("632");
+    expect(container).toHaveTextContent("网关业务缓存命中率与上游请求延迟不适用");
+    expect(container).not.toHaveTextContent("未启用远端网关");
+    expect(container).not.toHaveTextContent("最近上游延迟");
+  });
+
+  it("distinguishes direct transport from an unavailable relay", async () => {
+    fetchEsiGatewayMock.mockResolvedValue({ ...snapshot, gateway: {
+      configured: false, reachable: false, transport_mode: "direct",
+    } });
+    await renderPage();
+    expect(container).toHaveTextContent("ESI 直连模式");
+    expect(container).toHaveTextContent("这不是网关启动失败");
+    expect(container).not.toHaveTextContent("网关不可达");
+  });
+
+  it("labels retained relay data as old after a failed health probe", async () => {
+    vi.useFakeTimers();
+    const gateway = { configured: true, reachable: true, transport_mode: "relay" as const,
+      health: { relay: { connected: 632, active: 2 } } };
+    fetchEsiGatewayMock.mockResolvedValueOnce({ ...snapshot, gateway }).mockResolvedValueOnce({
+      ...snapshot, gateway: { configured: true, reachable: false, transport_mode: "relay", error: "timeout" },
+    });
+    await renderPage();
+    await act(async () => { vi.advanceTimersByTime(15_000); await Promise.resolve(); });
+    expect(container).toHaveTextContent("Relay 网关不可达");
+    expect(container).toHaveTextContent("不代表当前在线");
+    expect(container).toHaveTextContent("632");
+  });
+
   it("shows archive disabled and shadow states without inventing counts", async () => {
     fetchEsiGatewayMock.mockResolvedValue(snapshot);
     await renderPage();

@@ -63,6 +63,9 @@ function formatCheckedAt(value: unknown): string {
 }
 
 function gatewayState(snapshot: EsiGatewaySnapshot): { label: string; color: "green" | "orange" | "red" | "gray" } {
+  if (snapshot.gateway.transport_mode === "direct") return { label: "ESI 直连模式", color: "gray" };
+  if (snapshot.gateway.transport_mode === "relay") return snapshot.gateway.reachable
+    ? { label: "Relay 网关在线", color: "green" } : { label: "Relay 网关不可达", color: "red" };
   if (!snapshot.gateway.configured) return { label: "未启用远端网关", color: "gray" };
   if (snapshot.gateway.reachable) return { label: "网关在线", color: "green" };
   return { label: "网关不可达", color: "red" };
@@ -86,6 +89,7 @@ export function AdminEsiGatewayPage() {
         const keepLastHealth = next.gateway.configured
           && !next.gateway.reachable
           && current.gateway.configured
+          && next.gateway.transport_mode === current.gateway.transport_mode
           && current.gateway.health;
         return keepLastHealth
           ? {
@@ -111,6 +115,8 @@ export function AdminEsiGatewayPage() {
   }, [load]);
 
   const health = healthOf(snapshot);
+  const relayMode = snapshot.gateway.transport_mode === "relay";
+  const directMode = snapshot.gateway.transport_mode === "direct";
   const state = gatewayState(snapshot);
   const resolverTotals = snapshot.resolver_cache?.totals || {};
   const personnelCache = snapshot.resolver_cache?.personnel;
@@ -179,7 +185,8 @@ export function AdminEsiGatewayPage() {
         { label: "114 缓存命中", value: nameHits },
         { label: "114 缓存未命中", value: nameMisses },
         { label: "114 名单命中率", value: `${nameHitRate}%` },
-        { label: "Gateway 上游请求", value: upstreamRequestCount },
+        { label: relayMode ? "Relay 已建立连接" : "Gateway 上游请求",
+          value: relayMode ? health.relay?.connected ?? "暂无" : directMode ? "不适用" : upstreamRequestCount },
       ]} />
 
       <Card className="arco-management-card" title="全量人员档案">
@@ -259,16 +266,27 @@ export function AdminEsiGatewayPage() {
             extra={<Tag color={state.color}>{state.label}</Tag>}
           >
             {!snapshot.gateway.configured ? (
-              <Alert content="当前服务使用本地 ESI 后端，未配置远端 Gateway。" type="info" />
+              <Alert content={directMode ? "114 直接访问 ESI，不使用远端网关；这不是网关启动失败。" : "当前服务使用本地 ESI 后端，未配置远端 Gateway。"} type="info" />
             ) : (
               <Space direction="vertical" size={18} style={{ width: "100%" }}>
                 {!snapshot.gateway.reachable ? (
                   <Alert content={snapshot.gateway.error || "Gateway 健康检查失败，请检查 47 主机和 ZeroTier 网络。"} type="error" />
                 ) : null}
+                {!snapshot.gateway.reachable && snapshot.gateway.health ? <Typography.Text type="secondary">以下为上次成功检查数据，不代表当前在线。</Typography.Text> : null}
+                {relayMode ? <Alert type="info" content="47 仅转发 TLS 流量，不维护业务缓存。连接数不是 ESI 请求数；健康检查正常不保证上游 ESI 请求成功。" /> : null}
                 <Descriptions
                   border
                   column={1}
-                  data={[
+                  data={relayMode ? [
+                    { label: "传输模式", value: "Relay TLS 转发" },
+                    { label: "地址", value: snapshot.gateway.url || "未配置" },
+                    { label: "运行时间", value: health.uptime_seconds === undefined ? "暂无" : formatUptime(health.uptime_seconds) },
+                    { label: "当前隧道", value: health.relay?.active ?? "暂无" },
+                    { label: "已建立连接", value: health.relay?.connected ?? "暂无" },
+                    { label: "连接失败", value: health.relay?.connect_errors ?? "暂无" },
+                    { label: "流传输异常", value: health.relay?.stream_errors ?? "暂无" },
+                    { label: "最后检查", value: formatCheckedAt(snapshot.gateway.checked_at) },
+                  ] : [
                     { label: "服务", value: health.service || "eve-sentry-esi-gateway" },
                     { label: "版本", value: health.version || "未知" },
                     { label: "地址", value: snapshot.gateway.url || "未配置" },
@@ -285,6 +303,9 @@ export function AdminEsiGatewayPage() {
         </Grid.Col>
         <Grid.Col flex="1" xs={24} md={10}>
           <Card className="arco-management-card" title="延迟与缓存">
+            {relayMode || directMode ? <Alert type="info" content={relayMode
+              ? "Relay 不解析 ESI 请求，网关业务缓存命中率与上游请求延迟不适用。业务缓存位于 114。"
+              : "直连模式不使用 Gateway 缓存；业务缓存位于 114。"} /> : (
             <Space direction="vertical" size={20} style={{ width: "100%" }}>
               <Grid.Row gutter={16}>
                 <Grid.Col span={12}><Statistic title="最近上游延迟" value={numberValue(health.latency_ms?.last)} suffix="ms" /></Grid.Col>
@@ -297,6 +318,7 @@ export function AdminEsiGatewayPage() {
               <Typography.Text type="secondary">当前缓存条目：{numberValue(health.cache_entries)}</Typography.Text>
               <Typography.Text type="secondary">缓存未命中：{cacheMisses}</Typography.Text>
             </Space>
+            )}
           </Card>
         </Grid.Col>
       </Grid.Row>

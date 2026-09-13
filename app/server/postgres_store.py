@@ -3161,7 +3161,8 @@ class PostgreSQLIntelStore(IntelStore):
                        AND COALESCE(metadata_json::jsonb->>'left_reason', '') = '')
                    OR (source = 'eve-sentry-detector'
                        AND metadata_json::jsonb->>'presence_only' = 'true'
-                       AND jsonb_exists(metadata_json::jsonb, 'capture'))
+                       AND (jsonb_exists(metadata_json::jsonb, 'capture')
+                            OR metadata_json::jsonb->>'client_id' LIKE '%:user-%'))
                 ORDER BY last_seen_at ASC
                 """
             ).fetchall()

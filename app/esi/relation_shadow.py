@@ -19,10 +19,15 @@ class ShadowComparisons:
             self._counts["compared"] += 1
             self._counts["different" if before != after else "same"] += 1
             self._counts[f"{before}_to_{after}"] += 1
+            pending = "pending" in (before, after)
+            # Keep legacy totals; only two known decisions form a comparison.
+            self._counts["pending"] += int(pending)
+            self._counts["comparable"] += int(not pending)
+            self._counts["decision_different"] += int(not pending and before != after)
 
     def snapshot(self):
         with self._lock:
-            return dict(self._counts)
+            return {"comparable": 0, "pending": 0, "decision_different": 0, **self._counts}
 
 
 class ShadowContacts(list):

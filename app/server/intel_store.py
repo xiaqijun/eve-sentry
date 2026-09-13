@@ -2828,6 +2828,8 @@ class IntelStore(PersonnelRoutingMixin):
         }
 
     def _expire_stale_detector_ocr_active_intel(self, left_at: str) -> int:
+        from app.server.source_authority import superseded_parent_clients
+
         if time.monotonic() < self._stale_heartbeat_cleanup_after:
             return 0
         now_at = self._parse_timestamp(left_at)
@@ -2836,6 +2838,13 @@ class IntelStore(PersonnelRoutingMixin):
         capture_expired = expire_captures(self._active_intel.values(), now_at.timestamp())
         expiring_parent_client_ids: dict[str, tuple[str, str]] = {}
         expiring_child_client_ids: dict[str, tuple[str, str]] = {}
+        retired = superseded_parent_clients(self._active_intel.values())
+        for item in self._active_intel.values():
+            client_id = str(item.metadata.get("client_id") or "").strip()
+            if client_id in retired and item.metadata.get("presence_only"):
+                # Exact identity only: expiring a parent heartbeat here would
+                # also retire the live windows that replaced this legacy row.
+                expiring_child_client_ids[client_id] = (item.last_seen_at, "target_removed")
         for heartbeat in self._heartbeats.values():
             if str(heartbeat.get("client_type") or "").strip() != "detector_client":
                 continue

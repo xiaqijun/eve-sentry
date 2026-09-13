@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Divider, Radio, Space, Switch, Tag, Typography } from "@arco-design/web-react";
+import { OrganizationShadowSummary } from "./OrganizationShadowSummary";
 import {
   fetchPersonnelSettings, updatePersonnelSettings,
   type PersonnelMode, type PersonnelSettingsSnapshot, type PersonnelValues,
@@ -119,8 +120,8 @@ export function PersonnelSettingsPanel() {
                 </Typography.Paragraph>
                 <Typography.Paragraph type="secondary">
                   当前组织模式：{MODE_LABELS[snapshot.effective.organization_mode ?? "off"]}；
-                  已比较 {snapshot.organization_shadow?.compared ?? 0} 次，差异 {snapshot.organization_shadow?.different ?? 0} 次。
                 </Typography.Paragraph>
+                <OrganizationShadowSummary counts={snapshot.organization_shadow} />
               </> : null}
             </div>
             <div>

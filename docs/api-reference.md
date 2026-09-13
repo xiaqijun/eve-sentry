@@ -24,6 +24,13 @@
 归属查询的 `expires_at - fetched_at` 为官方当前的 3600 秒（两种缓存模式一致），读取旧记录不改变
 其年龄；这不是名单推送等待时间。不可信归属先刷新再分类，视觉来敌/清空不等待该查询。
 
+114 直连/relay 路线不使用上述 Gateway JSON envelope。2026-09-13 本地修复（未部署）：
+仅 `POST /latest/characters/affiliation/` 或 `/characters/affiliation` 同时缺少 `Cache-Control`、
+`Expires` 时，采用[官方 OpenAPI](https://esi.evetech.net/meta/openapi.json) 的 3600 秒 TTL。
+仍须有合法 `Date`，扣除响应年龄、`Age` 和传输耗时的保守估计，故实际剩余期限可以不足一小时。
+显式缓存限制、非法日期/年龄不被兜底覆盖；联系人和其他接口不套用该策略。旧档案通过真实刷新恢复可信，
+不批量改写旧获取时间。HTTP/SSE 字段、认证与事件名称不变。
+
 管理员 ESI Gateway 观测接口的 `resolver_cache.archive` 为可选对象，包含 `mode`、
 `profiles`、`hot_profiles`、`pending_names`、`background_slots`、`degraded`、
 `hot_hits/hot_misses`、`database_hits/database_misses`、`refresh_success/refresh_errors`、
@@ -31,6 +38,22 @@
 `priority/kind/count/oldest_due_at`（UTC 秒）；`upstream_batch_ms/database_item_ms` 为最近一次
 批次耗时/每条数据库处理耗时，不是 P95。计数器进程内累计，未出现的计数项可缺省。
 功能关闭时不返回 archive，不能解释为档案数为零；没有新增公开人员枚举接口。
+
+2026-09-13 本地观测补丁（未部署）：管理员 `/api/v1/admin/esi-gateway` 的 `gateway`
+新增可选 `transport_mode=direct|relay`。Relay 使用固定私网地址 `/health` 检查服务，
+`configured=true` 表示已配置 relay，`reachable=true` 仅表示健康检查成功，不保证 ESI 上游成功。
+直连返回 `configured=false, reachable=false, transport_mode=direct`，不是网关故障；旧 Gateway 返回保持兼容。
+Relay 的 `health.relay` 提供可选 `requests/attempts/active/connected/connect_errors/stream_errors` 计数，
+单位为连接/隧道，不是 ESI 请求。Relay 不提供业务缓存命中率或 ESI 请求级延迟，缺失指标不能填成 0。
+探测不携带 ESI/网关令牌、不使用本地代理、不自动重试或切换出口，响应体限 64 KiB，socket 超时 2 秒并检查读取总预算。
+异常仅返回脱敏类别。管理员认证边界、公共 health 和 ESI 请求调度不变。
+
+`/api/v1/admin/personnel-settings` 的 `organization_shadow` 新增数值字段：
+`comparable`（双方均确定的有效比较）、`pending`（至少一方待确认）、`decision_different`（确定的敌我翻转）。
+`compared = comparable + pending`；敌我差异率仅为 `decision_different / comparable`，有效样本为 0 时无差异率。
+为兼容旧消费者，原 `compared/different/same` 和方向计数保留原义，其中 `different` 仍可能含待确认变化。
+旧服务端缺少新字段时页面提示旧口径，不将原差异数冒充敌我差异。计数是进程内调用累计，非去重人数，重启清零；
+这些字段仅用于观测，不改变影子模式的实际分类、配置或消息发布行为。
 
 ### 单主采集与当前状态扩展
 
@@ -44,6 +67,9 @@ Presence 先上传，OCR 再引用同一会话/画面；旧会话、过时帧返
 Presence 可选 `source_status=active|stopped|departed`，默认 active；停止/离开的上传计数必须是 0，
 但该 0 表示停止采集，不是视觉确认清空。新客户端停监控和跨星系使用此字段；旧字段/旧客户端保持兼容。
 新格式会话一旦建立，同窗口无 capture 的旧上报不再接受。字段结构错误返回 400。
+同机已存在 `parent:user-<window>` Presence 时，裸 `parent` 旧监控身份不再参选主来源；
+停止窗口和重启不会恢复该旧身份。父心跳仍管理子窗口，不代表父身份本身仍在监控。
+本项为 2026-09-13 本地兼容修复，未改变不同机器的先到先服务顺序，未部署。
 
 Bootstrap 新增 `state_source=system_current_state|legacy`；PostgreSQL 当前快照的合成 active-intel
 携带 `state_version`，metadata 增加 `system_state`、`primary_client_id`、`primary_generation`、`freshness`。

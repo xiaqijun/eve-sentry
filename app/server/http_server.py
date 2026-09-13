@@ -2050,6 +2050,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
 
     def _esi_gateway_observability(self) -> dict[str, Any]:
         """Return admin-only gateway and client metrics without credentials."""
+        from app.esi.gateway_observation import transport_gateway
+
         config = self._esi_config()
         resolver = self._esi_public_resolver()
         client = getattr(resolver, "client", None) if resolver is not None else None
@@ -2060,7 +2062,10 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             "checked_at": utc_now_iso(),
         }
         health = getattr(client, "gateway_health", None)
-        if callable(health):
+        transport = transport_gateway(client)
+        if transport is not None:
+            gateway.update(transport)
+        elif callable(health):
             try:
                 gateway["health"] = health()
                 gateway["reachable"] = True

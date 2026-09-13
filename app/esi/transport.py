@@ -144,7 +144,8 @@ class EsiConnections:
             body = b"".join(chunks)
             reusable = not response.will_close
             received = time.time()
-            self.local.metadata = {"headers": response.headers, "started": started, "received": received}
+            self.local.metadata = {"headers": response.headers, "started": started, "received": received,
+                                   "path": parsed.path, "method": request.get_method()}
             if response.status >= 300:
                 # Preserve status and headers for conditional requests and Retry-After.
                 raise HTTPError(request.full_url, response.status, "ESI HTTP error", response.headers, io.BytesIO(body))

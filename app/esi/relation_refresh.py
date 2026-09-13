@@ -12,6 +12,7 @@ from dataclasses import replace
 
 from app.esi.contact_http import ContactReadError, failure_details
 from app.esi.contact_refresh import token_context
+from app.esi.diagnostics import failure_summary
 from app.esi.organization_relations import (
     RULE_VERSION,
     RelationSource,
@@ -134,14 +135,14 @@ class OrganizationRelations:
             result = replace(source, failures=failures,
                              authorized=source.authorized and status not in {401, 403},
                              retry_at=self.now() + max(delay, retry_after))
-            LOG.warning("organization_contacts source=%s status=%s error=%s retry_after=%.1f",
-                        source.kind, status, type(exc).__name__, max(delay, retry_after))
+            LOG.warning("organization_contacts source=%s status=%s %s retry_after=%.1f",
+                        source.kind, status, failure_summary(exc), max(delay, retry_after))
         if not self._same_authority(self._auth):
             raise ContactReadError("organization_authority_changed")
         try:
             return self._save(source, result)
         except Exception as exc:  # noqa: BLE001 -- Never preserve a revoked relation because its DB write failed.
-            LOG.warning("organization_snapshot_persist error=%s", type(exc).__name__)
+            LOG.warning("organization_snapshot_persist %s", failure_summary(exc))
             return replace(source, authorized=source.authorized and result.authorized,
                            retry_at=self.now() + 30)
 
@@ -178,7 +179,7 @@ class OrganizationRelations:
                     self._own_failures += 1
                     self._own_due = self.now() + max(retry, 300 if status in {401, 403, 420, 429} else
                                                      min(300, 30 * 2 ** min(self._own_failures - 1, 4)))
-                    LOG.warning("organization_context status=%s error=%s", status, type(exc).__name__)
+                    LOG.warning("organization_context status=%s %s", status, failure_summary(exc))
                     return before != self.view()
             if not self._context or self._own_success is None:
                 return before != self.view()
@@ -206,7 +207,7 @@ class OrganizationRelations:
                         values = list(self._sources)
                         values[index] = replace(source, retry_at=self.now() + 30)
                         self._sources = tuple(values)
-                    LOG.warning("organization_snapshot error=%s", type(exc).__name__)
+                    LOG.warning("organization_snapshot %s", failure_summary(exc))
             return before != self.view()
         finally:
             self._writer.release()

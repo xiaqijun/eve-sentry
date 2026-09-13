@@ -130,6 +130,7 @@ jobs:
           tests/test_personnel_batch_postgres.py
           tests/test_system_state_postgres.py
           tests/test_authority_postgres.py
+          tests/test_legacy_primary_postgres.py
 
   package:
     needs: [validate, quality]

@@ -20,9 +20,30 @@ def next_join_order(items: Any) -> int:
     )
 
 
+def superseded_parent_clients(items: Any) -> set[str]:
+    """Per-window Presence retires only its exact legacy machine identity.
+
+    Departed windows still prove migration: stopping them must not resurrect a
+    machine's old zero frame. Query rows are not monitoring-window evidence.
+    """
+    parents = set()
+    for item in items:
+        if (item.source != "eve-sentry-detector"
+                or not item.metadata.get("presence_only")
+                or item.metadata.get("query_only")):
+            continue
+        client_id = str(item.metadata.get("client_id") or "")
+        parent, marker, window = client_id.partition(":user-")
+        if parent and marker and window and ":" not in window:
+            parents.add(parent)
+    return parents
+
+
 def primary_sources(items: Any) -> dict[str, Any]:
     """Choose the oldest continuous resident, including its confirmed clear."""
     sources: dict[str, Any] = {}
+    items = list(items)
+    retired = superseded_parent_clients(items)
 
     def rank(item):
         # Legacy rows precede newly joined nodes. Their stored first frame is
@@ -35,7 +56,8 @@ def primary_sources(items: Any) -> dict[str, Any]:
         )
 
     for item in items:
-        if not is_resident_presence(item):
+        if (not is_resident_presence(item)
+                or item.metadata.get("client_id") in retired):
             continue
         key = item.system_name.casefold()
         if key not in sources or rank(item) < rank(sources[key]):
