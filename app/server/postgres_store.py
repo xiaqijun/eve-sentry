@@ -397,6 +397,7 @@ class PostgreSQLIntelStore(IntelStore):
             if not query_only:
                 changed_active_ids.update(item.active_id for item in record_roster_quality(
                     self._active_intel.values(), client_id, system_name, capture,
+                    has_names=bool(names),
                 ))
 
             for name in names:

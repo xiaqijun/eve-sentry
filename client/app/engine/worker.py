@@ -217,6 +217,7 @@ class MonitorWorker(QThread):
         last_health_status_at = time.monotonic()
         previous_hostile_rows_fingerprint: bytes | None = None
         ocr_retry_remaining = 0
+        empty_ocr_retry_at = 0.0
         capturer = self._capturer
         owns_capturer = False
 
@@ -305,6 +306,7 @@ class MonitorWorker(QThread):
                     previous_hostile_rows_fingerprint = rows_fingerprint
                     if hostile_count == 0:
                         ocr_retry_remaining = 0
+                        empty_ocr_retry_at = 0.0
                     elif count_changed or rows_changed:
                         # Allow the list to finish repainting before giving up on
                         # a transiently incomplete OCR frame.
@@ -314,7 +316,8 @@ class MonitorWorker(QThread):
                     should_run_regular_ocr = (
                         self._ocr_enabled
                         and hostile_count > 0
-                        and (count_changed or rows_changed or ocr_retry_remaining > 0)
+                        and (count_changed or rows_changed or ocr_retry_remaining > 0
+                             or (empty_ocr_retry_at > 0 and time.monotonic() >= empty_ocr_retry_at))
                     )
                     should_run_ocr = bool(ocr_query_id) or should_run_regular_ocr
                     if not should_run_ocr:
@@ -386,13 +389,17 @@ class MonitorWorker(QThread):
                             priority=100 if ocr_query_id else 10,
                         )
                     snapshot_names = build_ocr_snapshot_names(ocr_results)
-                    if ocr_results and should_run_regular_ocr:
-                        self.ocr_snapshot.emit(
-                            snapshot_names,
-                            hostile_count,
-                        )
+                    if should_run_regular_ocr:
+                        if ocr_results:
+                            self.ocr_snapshot.emit(snapshot_names, hostile_count)
                         self.ocr_evidence_snapshot.emit(snapshot_names, hostile_count, {"capture": dict(capture)})
-                        ocr_retry_remaining = 2 if capture.get("roster_quality") == "truncated" else 0
+                        if snapshot_names:
+                            ocr_retry_remaining = 2 if capture.get("roster_quality") == "truncated" else 0
+                        empty_ocr_retry_at = time.monotonic() + 5.0 if not snapshot_names else 0.0
+                        if not snapshot_names:
+                            self.status_update.emit(
+                                "检测到敌对但 OCR 名单为空，请检查截图是否包含完整姓名列；将自动重试"
+                            )
                     if ocr_query_id:
                         self._complete_ocr_query(ocr_query_id)
                         self.ocr_query_snapshot.emit(

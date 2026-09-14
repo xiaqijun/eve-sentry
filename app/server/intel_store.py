@@ -42,7 +42,7 @@ from app.core.models import Observation, ThreatEvent
 from app.engine.ocr_names import is_plausible_ocr_name
 from app.intel.scoring import ChannelMention
 from app.server.esi_worker import EsiWorker
-from app.server.capture_state import capture_guard, capture_is_current, capture_payload, record_roster_quality, expire_captures
+from app.server.capture_state import capture_guard, capture_is_current, capture_payload, record_roster_quality, expire_captures, update_roster_wait, reconcile_missing_roster
 
 
 logger = logging.getLogger(__name__)
@@ -1628,7 +1628,7 @@ class IntelStore(PersonnelRoutingMixin):
             result.expired += len(moved_items)
 
             if not query_only:
-                record_roster_quality(self._active_intel.values(), client_id, system_name, capture)
+                record_roster_quality(self._active_intel.values(), client_id, system_name, capture, has_names=bool(names))
 
             for name in names:
                 active_id = self._active_ocr_id(
@@ -1954,9 +1954,14 @@ class IntelStore(PersonnelRoutingMixin):
             )
             if capture:
                 previous_capture = item.metadata.get("capture") if item is not None else None
-                if previous_capture and previous_capture["session_id"] == capture["session_id"]:
+                if (previous_capture and previous_capture["session_id"] == capture["session_id"]
+                        and previous_capture["session_epoch"] == capture["session_epoch"]):
                     metadata["roster_quality_samples"] = list(item.metadata.get("roster_quality_samples") or [])
                     metadata["roster_quality_fingerprint"] = item.metadata.get("roster_quality_fingerprint")
+                    for key in ("roster_has_names", "roster_observed_at", "roster_missing_since",
+                                "roster_missing_frames", "roster_wait_sequence", "authority_change_reason"):
+                        if key in item.metadata:
+                            metadata[key] = item.metadata[key]
                 else:
                     metadata["source_join_order"] = next_join_order(self._active_intel.values())
                     # A restarted monitor cannot inherit an old session's roster.
@@ -2003,6 +2008,7 @@ class IntelStore(PersonnelRoutingMixin):
                     item.last_seen_at = seen_at
                     item.left_at = seen_at
                     item.active = False
+                update_roster_wait(self._active_intel[active_id], time.time())
                 response = result.to_dict(include_active=False)
                 response.update(
                     {
@@ -2044,6 +2050,9 @@ class IntelStore(PersonnelRoutingMixin):
                 item.seen_count = item.seen_count + 1 if was_active else 1
                 result.refreshed = 1
 
+            now = time.time()
+            update_roster_wait(self._active_intel[active_id], now)
+            reconcile_missing_roster(self._active_intel.values(), system_name, now)
             response = result.to_dict(include_active=False)
             response.update(
                 {

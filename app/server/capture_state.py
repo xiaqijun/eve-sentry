@@ -1,5 +1,6 @@
 """Validate and fence capture sessions; never trust upload retries as frames."""
 
+import logging
 import time
 from typing import Any
 
@@ -10,6 +11,73 @@ from app.server.source_authority import (
 )
 
 CAPTURE_LEASE_SECONDS = 45.0
+ROSTER_MISSING_GRACE_SECONDS = 15.0
+logger = logging.getLogger(__name__)
+
+
+def update_roster_wait(presence: Any, now: float) -> None:
+    """Count accepted new frames without a matching nonempty OCR result."""
+    metadata = presence.metadata
+    capture = metadata.get("capture") or {}
+    usable = (
+        metadata.get("roster_has_names") is True
+        and metadata.get("roster_quality_fingerprint") == capture.get("fingerprint")
+    )
+    if not capture or metadata.get("hostile_icon_count", 0) <= 0 or usable:
+        for key in ("roster_missing_since", "roster_missing_frames", "roster_wait_sequence"):
+            metadata.pop(key, None)
+        if metadata.get("hostile_icon_count", 0) <= 0:
+            for key in ("roster_has_names", "roster_quality_samples", "roster_quality_fingerprint",
+                        "roster_observed_at"):
+                metadata.pop(key, None)
+        return
+    metadata.setdefault("roster_missing_since", now)
+    sequence = capture["sequence"]
+    if sequence > metadata.get("roster_wait_sequence", 0):
+        metadata["roster_missing_frames"] = metadata.get("roster_missing_frames", 0) + 1
+        metadata["roster_wait_sequence"] = sequence
+
+
+def reconcile_missing_roster(items: Any, system: str, now: float) -> list[Any]:
+    """Promote a proven standby, never infer safety from missing OCR."""
+    rows = list(items)
+    primary = primary_sources(rows).get(system.casefold())
+    if primary is None:
+        return []
+    metadata = primary.metadata
+    since = metadata.get("roster_missing_since")
+    if (metadata.get("hostile_icon_count", 0) <= 0 or since is None
+            or now - since < ROSTER_MISSING_GRACE_SECONDS
+            or metadata.get("roster_missing_frames", 0) < 3):
+        return []
+    residents = [item for item in rows if is_resident_presence(item)
+                 and item.system_name.casefold() == system.casefold()]
+    qualified = []
+    for item in residents:
+        meta = item.metadata
+        capture = meta.get("capture") or {}
+        if (item is primary or meta.get("hostile_icon_count", 0) <= 0
+                or meta.get("roster_has_names") is not True
+                or not meta.get("roster_quality_samples")
+                or meta["roster_quality_samples"][-1][1] != "complete"
+                or meta.get("roster_quality_fingerprint") != capture.get("fingerprint")
+                or not 0 <= now - float(meta.get("capture_received_at") or 0) <= CAPTURE_LEASE_SECONDS
+                or not 0 <= now - float(meta.get("roster_observed_at") or 0) <= CAPTURE_LEASE_SECONDS):
+            continue
+        qualified.append(item)
+    if not qualified:
+        return []
+    chosen = primary_sources(qualified)[system.casefold()]
+    changed = []
+    remaining = list(residents)
+    while primary_sources(remaining)[system.casefold()] is not chosen:
+        displaced = primary_sources(remaining)[system.casefold()]
+        remaining.remove(displaced)
+        displaced.metadata["source_join_order"] = next_join_order(rows)
+        displaced.metadata["authority_change_reason"] = "roster_missing"
+        changed.append(displaced)
+    logger.info("Monitoring authority changed: system=%s reason=roster_missing", system)
+    return changed
 
 
 def capture_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -83,10 +151,10 @@ def capture_guard(items: Any, client_id: str) -> tuple:
 
 
 def record_roster_quality(
-    items: Any, client_id: str, system: str, capture: dict
+    items: Any, client_id: str, system: str, capture: dict, *, has_names: bool | None = None
 ) -> list[Any]:
-    """Demote a repeatedly truncated primary only when a good standby exists."""
-    if not capture or capture["roster_quality"] == "unknown":
+    """Record OCR outcomes and demote failing primaries only with a good standby."""
+    if not capture:
         return []
     rows = list(items)
     presence = next(
@@ -105,9 +173,19 @@ def record_roster_quality(
     seq = capture["sequence"]
     if samples and seq <= samples[-1][0]:
         return []
-    samples = (samples + [[seq, capture["roster_quality"]]])[-5:]
+    quality = "unknown" if has_names is False else capture["roster_quality"]
+    samples = (samples + [[seq, quality]])[-5:]
     presence.metadata["roster_quality_samples"] = samples
     presence.metadata["roster_quality_fingerprint"] = capture["fingerprint"]
+    presence.metadata["roster_has_names"] = (
+        capture["roster_quality"] == "complete" if has_names is None else has_names
+    )
+    now = time.time()
+    presence.metadata["roster_observed_at"] = now
+    update_roster_wait(presence, now)
+    missing_changes = reconcile_missing_roster(rows, system, now)
+    if missing_changes:
+        return [presence] + [item for item in missing_changes if item is not presence]
     primary = primary_sources(rows).get(system.casefold())
     if primary is not None:
         bad = primary.metadata.get("roster_quality_samples") or []
