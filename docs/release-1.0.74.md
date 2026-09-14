@@ -1,6 +1,9 @@
-# 1.0.74 空名单重试与可靠来源接管
+# 名单缺失接管服务端补丁（1.0.74 客户端发布已取消）
 
-发布候选记录；实际部署、Release 和签名清单验收结果在发布后补充。
+2026-09-14 按用户要求仅部署服务端，取消客户端 1.0.74 发布。
+[客户端发布流程](https://github.com/xiaqijun/eve-sentry/actions/runs/34825374136) 已取消，
+未创建 v1.0.74 Release 或标签；仓库客户端版本号恢复为 1.0.73，防止后续 CI 自动补发。
+客户端重试代码保留在仓库但尚未发布；文件名保留用于记录这次取消的发布候选。
 
 ## 改动
 
@@ -8,14 +11,14 @@
   满足 15 秒及 3 个独立采集帧后，允许同星系有新鲜、完整、非空名单的备用来源接管。
 - 备用的采集与名单接收时间均须在 45 秒内，当前指纹匹配且图标计数大于零。
   无合格备用保留图标预警，不推断清空；旧主重新排队，恢复后不抢回，不拼接节点名单。
-- 客户端常规 OCR 为空也会上报采集证据；保留快速重试，画面不变时每 5 秒继续重试，
+- 尚未发布的客户端改动：常规 OCR 为空也会上报采集证据；保留快速重试，画面不变时每 5 秒继续重试，
   提示检查截图是否包含完整姓名列。识别成功、敌对归零后停止空名单定时重试。
 - 已有名单且画面未变不要求重复上传；关闭 OCR 时不强制识别；手动查询不作为接管依据。
   仅 ESI 解析慢不会触发缺失名单接管。
 
 ## 兼容与发布边界
 
-服务端部署到 114；客户端安装 1.0.74 后获得空名单重试与提示。
+本次仅将服务端部署到 114，线上客户端保持 1.0.73，不要求升级。
 旧客户端仍可通过有效 Presence 帧触发服务端接管，但不会获得客户端重试修复。
 沿用现有 capture、OCR、alert.updated 和 Bootstrap 契约，没有新增数据库表或事件类型。
 不修改心跳、代理、ESI 路线、组织开关、机器人开服通知或生产凭据。
@@ -36,7 +39,19 @@
 
 ## 发布与回滚
 
-通过 main 的 Deploy Server、Client CI / Release Client 和 Contract Compatibility 发布验证。
+通过 main 的 Deploy Server 和 Contract Compatibility 验证服务端部署。
+Client CI 已通过，但 Release Client 已取消，本次不发布客户端资产。
 服务端沿用受保护 production 部署与 readiness 失败自动恢复备份；客户端发布递增版本，
 不覆盖已有 Release，启动健康检查失败由更新器恢复旧安装。
 具体流程见[服务端部署](server-deployment.md)、[客户端发布](../client/docs/release-process.md)。
+
+## 实际服务端部署结果（2026-09-14）
+
+- [Deploy Server](https://github.com/xiaqijun/eve-sentry/actions/runs/34825232075) 全部成功，
+  包括 PostgreSQL 门禁、Windows 测试、前端验证和生产部署。
+- [Contract Compatibility](https://github.com/xiaqijun/eve-sentry/actions/runs/34825232116) 成功。
+- SSH 只读复核 `eve-sentry` 为 active，`/var/lib/eve-sentry/deployed-revision` 为
+  `6c4b5433a0d965e15d640a0605c647dd116c52d3`；内网、公网 `/api/readyz` 均为 ok。
+- GitHub 最新 Release 与下载站 `latest.json` 仍为 1.0.73；客户端无需升级。
+
+以上为部署及健康验收，未将其视为真实敌情接管和 QQ 时效的现场验收。
