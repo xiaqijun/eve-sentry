@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Button } from "@arco-design/web-react";
+import { Button, Tooltip } from "@arco-design/web-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 
@@ -231,7 +231,11 @@ export function WorkbenchPage() {
         />
 
         <section className="star-map-status" aria-label="态势统计">
-          <div><span>在线监控星系</span><strong>{bootstrap ? onlineMonitorNodeCount : "—"}</strong></div>
+          <div><span>在线监控星系</span>{bootstrap && !dataFailed && onlineMonitorNodeCount === 0 ? (
+            <Tooltip trigger={["hover", "focus"]} content="暂无在线监控，暂不能判断星系是否安全">
+              <strong className="star-map-coverage-hint" tabIndex={0} aria-label="在线监控星系 0，暂无监控覆盖">0 <small>未覆盖</small></strong>
+            </Tooltip>
+          ) : <strong>{bootstrap ? onlineMonitorNodeCount : "—"}</strong>}</div>
           <div><span>当前有敌星系</span><strong className={hostileSystemNodes.length > 0 ? "danger-text" : ""}>{bootstrap ? hostileSystemNodes.length : "—"}</strong></div>
           <div><span>当前敌对人数</span><strong className={currentHostileCount > 0 ? "danger-text" : ""}>{bootstrap ? currentHostileCount : "—"}</strong></div>
           <div><span>更新时间</span><strong>{formatClock(bootstrap?.generated_at)}</strong></div>
@@ -261,7 +265,7 @@ export function WorkbenchPage() {
           }}>重置视图</Button>
         </div>
 
-        {selected && !dataFailed && onlineMonitorNodeCount > 0 ? (
+        {selected && !dataFailed ? (
           <div className="star-map-selection">
             <span>已选星系</span>
             <strong>{selected.name}</strong>
@@ -269,9 +273,9 @@ export function WorkbenchPage() {
           </div>
         ) : null}
 
-        {(graphData.nodes.length > 0 && (dataFailed || onlineMonitorNodeCount === 0)) || (requestedSystem && bootstrap && !requestedId) ?
+        {(graphData.nodes.length > 0 && dataFailed) || (requestedSystem && bootstrap && !requestedId) ?
           <div className="star-map-feedback-banner" role={dataFailed ? "alert" : "status"}>
-            {graphData.nodes.length > 0 && (dataFailed || onlineMonitorNodeCount === 0) ? <div>{feedback}</div> : null}
+            {graphData.nodes.length > 0 && dataFailed ? <div>{feedback}</div> : null}
             {requestedSystem && bootstrap && !requestedId ? <div>当前星图没有 {requestedSystem}，未定位到该星系。</div> : null}
           </div> : null}
       </section>
