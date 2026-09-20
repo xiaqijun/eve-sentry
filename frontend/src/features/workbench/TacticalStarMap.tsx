@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Avatar, Button, Drawer, Empty, List, Tag, Tooltip } from "@arco-design/web-react";
 import { ExternalLink } from "lucide-react";
 import ForceGraph2D, {
@@ -21,6 +21,8 @@ import {
 import { type ThemeMode, useTheme } from "../shell/ThemeContext";
 
 interface TacticalStarMapProps {
+  emptyContent?: ReactNode;
+  focusSystemId?: number;
   fitSignal?: number;
   graphData: TacticalGraphData;
   onSelectSystem: (systemId: number | null) => void;
@@ -556,6 +558,8 @@ function visibleOverlayRects(container: HTMLDivElement | null): HostileLayoutRec
 }
 
 export function TacticalStarMap({
+  emptyContent = "暂无实时敌对目标",
+  focusSystemId,
   fitSignal = 0,
   graphData,
   onSelectSystem,
@@ -619,9 +623,17 @@ export function TacticalStarMap({
   const fitPadding = hasHostileCards
     ? Math.min(200, Math.max(96, size.width * 0.2))
     : Math.min(96, Math.max(48, size.width * 0.15));
+  const focusedNode = graphData.nodes.find((node) => node.kind === "system" && node.systemId === focusSystemId);
+  const focusX = focusedNode?.x;
+  const focusY = focusedNode?.y;
   const fitGraph = useCallback((duration = 650) => {
-    graphRef.current?.zoomToFit(duration, fitPadding);
-  }, [fitPadding]);
+    if (typeof focusX === "number" && typeof focusY === "number") {
+      graphRef.current?.centerAt(focusX, focusY, duration);
+      graphRef.current?.zoom(1.6, duration);
+    } else {
+      graphRef.current?.zoomToFit(duration, fitPadding);
+    }
+  }, [fitPadding, focusX, focusY]);
   const hasGraphData = graphData.nodes.length > 0;
 
   useEffect(() => {
@@ -728,7 +740,7 @@ export function TacticalStarMap({
       ref={containerRef}
     >
       {graphData.nodes.length === 0 ? (
-        <div className="tactical-star-map-empty">暂无实时敌对目标</div>
+        <div className="tactical-star-map-empty">{emptyContent}</div>
       ) : null}
       <ForceGraph2D<TacticalGraphNode, TacticalGraphLink>
         ref={graphRef}

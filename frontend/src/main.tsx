@@ -10,6 +10,7 @@ import { AuthProvider } from "./features/auth/AuthContext";
 import { ThemeProvider } from "./features/shell/ThemeContext";
 import "@arco-design/web-react/dist/css/arco.css";
 import "./styles.css";
+import "./console-usability.css";
 
 const queryClient = new QueryClient();
 

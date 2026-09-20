@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@arco-design/web-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 
 import { connectAlerts, fetchBootstrap } from "./api";
 import { useWorkbenchStore } from "./store";
 import { buildTacticalGraph } from "./tacticalGraph";
 import { TacticalStarMap } from "./TacticalStarMap";
+import { intelFeedback } from "./intelFeedback";
 import type {
   AlertItem,
   BootstrapPayload,
@@ -137,6 +139,9 @@ export function mergeBootstrapStreamUpdate(
 
 export function WorkbenchPage() {
   const [fitSignal, setFitSignal] = useState(0);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedSystem = searchParams.get("system")?.trim() || "";
+  const [streamFailed, setStreamFailed] = useState(false);
   const {
     selectedSystemId,
     setSelectedSystemId,
@@ -151,6 +156,11 @@ export function WorkbenchPage() {
   });
 
   const bootstrap = bootstrapQuery.data;
+  const requestedId = bootstrap?.map.systems.find((system) =>
+    system.name.toLowerCase() === requestedSystem.toLowerCase())?.system_id;
+  useEffect(() => {
+    if (requestedSystem && requestedId) setSelectedSystemId(requestedId);
+  }, [requestedSystem, requestedId, setSelectedSystemId]);
   const selected = selectedSystem(bootstrap, selectedSystemId);
   const graphData = useMemo(() => {
     if (!bootstrap) {
@@ -175,8 +185,9 @@ export function WorkbenchPage() {
         });
       },
       bootstrap?.generated_at,
-      undefined,
+      () => setStreamFailed(true),
       (nextBootstrap) => {
+        setStreamFailed(false);
         queryClient.setQueryData<BootstrapPayload>(["bootstrap"], (current) => (
           current
             ? mergeBootstrapStreamUpdate(current, nextBootstrap)
@@ -199,19 +210,30 @@ export function WorkbenchPage() {
   const onlineMonitorNodeCount = graphData.nodes.filter((item) =>
     item.kind === "system" && item.monitorOnlineCount > 0,
   ).length;
+  const dataFailed = bootstrapQuery.isError || streamFailed;
+  const feedback = intelFeedback(Boolean(bootstrap), dataFailed, onlineMonitorNodeCount);
+  const emptyContent = <div className="star-map-empty-feedback" role="status">
+    <p>{feedback}</p>
+    {bootstrap || dataFailed ? <div className="star-map-empty-actions">
+      <a href="/dashboard">查看监控覆盖</a>
+      <Button loading={bootstrapQuery.isFetching} onClick={() => void bootstrapQuery.refetch()}>刷新数据</Button>
+    </div> : null}
+  </div>;
   return (
     <div className="star-map-workspace">
       <section className="star-map-stage" id="workbench-map-panel" aria-label="星图工作区">
         <TacticalStarMap
           fitSignal={fitSignal}
           graphData={graphData}
+          emptyContent={emptyContent}
+          focusSystemId={requestedId}
           onSelectSystem={setSelectedSystemId}
         />
 
         <section className="star-map-status" aria-label="态势统计">
-          <div><span>在线预警节点</span><strong>{onlineMonitorNodeCount}</strong></div>
-          <div><span>当前有敌星系</span><strong className={hostileSystemNodes.length > 0 ? "danger-text" : ""}>{hostileSystemNodes.length}</strong></div>
-          <div><span>当前敌对人数</span><strong className={currentHostileCount > 0 ? "danger-text" : ""}>{currentHostileCount}</strong></div>
+          <div><span>在线监控星系</span><strong>{bootstrap ? onlineMonitorNodeCount : "—"}</strong></div>
+          <div><span>当前有敌星系</span><strong className={hostileSystemNodes.length > 0 ? "danger-text" : ""}>{bootstrap ? hostileSystemNodes.length : "—"}</strong></div>
+          <div><span>当前敌对人数</span><strong className={currentHostileCount > 0 ? "danger-text" : ""}>{bootstrap ? currentHostileCount : "—"}</strong></div>
           <div><span>更新时间</span><strong>{formatClock(bootstrap?.generated_at)}</strong></div>
         </section>
 
@@ -230,10 +252,16 @@ export function WorkbenchPage() {
             <span>当前定位</span>
             <strong>{selected?.name || "全部星系"}</strong>
           </div>
-          <Button aria-label="Fit 星图" size="small" type="outline" onClick={() => setFitSignal((value) => value + 1)}>重置视图</Button>
+          <Button aria-label="Fit 星图" size="small" type="outline" onClick={() => {
+            const next = new URLSearchParams(searchParams);
+            next.delete("system");
+            setSearchParams(next, { replace: true });
+            setSelectedSystemId(null);
+            setFitSignal((value) => value + 1);
+          }}>重置视图</Button>
         </div>
 
-        {selected ? (
+        {selected && !dataFailed && onlineMonitorNodeCount > 0 ? (
           <div className="star-map-selection">
             <span>已选星系</span>
             <strong>{selected.name}</strong>
@@ -241,7 +269,11 @@ export function WorkbenchPage() {
           </div>
         ) : null}
 
-        {bootstrapQuery.isError ? <div className="star-map-error" role="alert">星图态势加载失败</div> : null}
+        {(graphData.nodes.length > 0 && (dataFailed || onlineMonitorNodeCount === 0)) || (requestedSystem && bootstrap && !requestedId) ?
+          <div className="star-map-feedback-banner" role={dataFailed ? "alert" : "status"}>
+            {graphData.nodes.length > 0 && (dataFailed || onlineMonitorNodeCount === 0) ? <div>{feedback}</div> : null}
+            {requestedSystem && bootstrap && !requestedId ? <div>当前星图没有 {requestedSystem}，未定位到该星系。</div> : null}
+          </div> : null}
       </section>
 
     </div>

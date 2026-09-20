@@ -127,9 +127,9 @@ describe("DashboardPage", () => {
     expect(container).toHaveTextContent("异常客户端");
     expect(container).toHaveTextContent("当前敌对星系");
     expect(container).toHaveTextContent("S-KSWL");
-    expect(container).toHaveTextContent("威胁度 86");
+    expect(container).not.toHaveTextContent("威胁度");
     expect(container).toHaveTextContent("最新告警事件");
-    expect(container).toHaveTextContent("高");
+    expect(container).not.toHaveTextContent("级别");
     expect(container).toHaveTextContent("监控覆盖");
     expect(container).toHaveTextContent("2 个节点 · 2 个星系");
     expect(container).toHaveTextContent("监控节点");

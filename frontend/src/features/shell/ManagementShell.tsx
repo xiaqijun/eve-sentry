@@ -1,4 +1,5 @@
-import { Badge, Breadcrumb, Layout, Menu, Tag, Typography } from "@arco-design/web-react";
+import { useEffect, useRef, useState } from "react";
+import { Breadcrumb, Button, Drawer, Layout, Menu, Tag } from "@arco-design/web-react";
 import {
   IconApps,
   IconBook,
@@ -12,6 +13,7 @@ import {
   IconSafe,
   IconSettings,
   IconUserGroup,
+  IconMenu,
 } from "@arco-design/web-react/icon";
 import { ShieldCheck } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
@@ -48,10 +50,19 @@ export function ManagementShell() {
   const { theme } = useTheme();
   const location = useLocation();
   const page = PAGE_META[location.pathname] || PAGE_META["/"];
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  const navigationTrigger = useRef<HTMLButtonElement>(null);
 
-  return (
-    <Layout className="management-shell arco-management-shell">
-      <Sider className="management-sidebar arco-management-sider" width={236}>
+  useEffect(() => setNavigationOpen(false), [location.pathname, location.search]);
+  useEffect(() => {
+    const desktop = window.matchMedia("(min-width: 1001px)");
+    const closeOnDesktop = () => { if (desktop.matches) setNavigationOpen(false); };
+    desktop.addEventListener("change", closeOnDesktop);
+    return () => desktop.removeEventListener("change", closeOnDesktop);
+  }, []);
+
+  const navigation = (
+    <>
         <div className="management-brand">
           <span className="management-brand-mark"><ShieldCheck size={20} /></span>
           <div>
@@ -112,27 +123,60 @@ export function ManagementShell() {
             </MenuItemGroup>
           ) : null}
         </Menu>
-      </Sider>
+    </>
+  );
 
+  return (
+    <Layout className="management-shell arco-management-shell">
+      <a className="management-skip-link" href="#management-content">跳到页面内容</a>
+      <Sider className="management-sidebar arco-management-sider" width={236}>
+        {navigation}
+      </Sider>
+      <Drawer
+        className="management-navigation-drawer"
+        title="页面导航"
+        placement="left"
+        width="min(320px, 88vw)"
+        visible={navigationOpen}
+        footer={null}
+        unmountOnExit
+        focusLock
+        autoFocus
+        escToExit
+        onCancel={() => setNavigationOpen(false)}
+        afterClose={() => navigationTrigger.current?.focus()}
+      >
+        <div id="mobile-navigation" role="dialog" aria-label="页面导航" aria-modal="true" onClick={(event) => {
+          if ((event.target as HTMLElement).closest("a")) setNavigationOpen(false);
+        }}>{navigation}</div>
+      </Drawer>
       <Layout className="management-main">
         <Header className="management-topbar arco-management-header">
+          <Button
+            ref={navigationTrigger}
+            className="management-navigation-trigger"
+            aria-label="打开导航菜单"
+            aria-controls="mobile-navigation"
+            aria-expanded={navigationOpen}
+            icon={<IconMenu />}
+            onClick={() => setNavigationOpen(true)}
+          />
           <div className="management-page-context">
             <Breadcrumb className="management-breadcrumb">
               <Breadcrumb.Item>EVE Sentry</Breadcrumb.Item>
               <Breadcrumb.Item>{page.title}</Breadcrumb.Item>
             </Breadcrumb>
-            <Typography.Title heading={5}>{page.title}</Typography.Title>
+            {location.pathname === "/" ? <h1 className="management-map-title">{page.title}</h1> : null}
           </div>
           <div className="management-topbar-actions">
             <ThemeToggle />
-            <Tag className="management-live-status" color={authEnabled ? "green" : "gray"}>
-              <Badge status={authEnabled ? "success" : "default"} />
-              {authEnabled ? "服务在线" : "公开模式"}
+            <Tag className="management-live-status" color="gray">
+              {authEnabled ? "登录模式" : "公开模式"}
             </Tag>
             <AccountMenu />
           </div>
         </Header>
-        <Content className={`management-content${location.pathname === "/" ? " management-content-workbench" : ""}`}>
+        <Content id="management-content" role="main" tabIndex={-1} className={`management-content${location.pathname === "/" ? " management-content-workbench" : ""}`}>
           <Outlet />
         </Content>
       </Layout>

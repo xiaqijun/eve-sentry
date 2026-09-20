@@ -2,6 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, forwardRef } from "react";
 import { createRoot } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { mergeBootstrapStreamUpdate, WorkbenchPage } from "./WorkbenchPage";
@@ -292,7 +293,7 @@ describe("WorkbenchPage", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <WorkbenchPage />
+          <MemoryRouter><WorkbenchPage /></MemoryRouter>
         </QueryClientProvider>,
       );
     });
@@ -313,7 +314,7 @@ describe("WorkbenchPage", () => {
     expect(container).not.toHaveTextContent("预警情报工作台");
     const situationStats = container.querySelector('[aria-label="态势统计"]');
     expect(situationStats).toBeInTheDocument();
-    expect(situationStats).toHaveTextContent("在线预警节点1");
+    expect(situationStats).toHaveTextContent("在线监控星系1");
     expect(situationStats).toHaveTextContent("当前有敌星系1");
     expect(situationStats).toHaveTextContent("当前敌对人数1");
     expect(situationStats).toHaveTextContent("更新时间");
@@ -384,7 +385,7 @@ describe("WorkbenchPage", () => {
     expect(apiMocks.connectAlerts).toHaveBeenCalledWith(
       expect.any(Function),
       "2026-07-02T12:00:00Z",
-      undefined,
+      expect.any(Function),
       expect.any(Function),
     );
     const nextAlert = {
