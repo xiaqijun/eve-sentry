@@ -37,6 +37,29 @@ TARGETED_QUERY_COMMANDS = {
     "查询军团": ("corporation", "军团名称"),
     "查询联盟": ("alliance", "联盟名称"),
 }
+QUERY_ALIASES = {
+    "查人": "查询人员",
+    "查人员": "查询人员",
+    "查角色": "查询人员",
+    "查询角色": "查询人员",
+    "查军团": "查询军团",
+    "查联盟": "查询联盟",
+    "查星系": "查询星系",
+    "查敌情": "查询节点敌情",
+    "敌情": "查询节点敌情",
+    "查节点": "查询预警节点",
+    "节点": "查询预警节点",
+    "查名单": "查询所有节点",
+    "查询菜单": "查询",
+}
+QUERY_COMMANDS.update(QUERY_ALIASES)
+QUERY_COMMANDS.update({"再查", "刷新查询"})
+QUERY_EXAMPLES = {
+    "name": "查人 Alice",
+    "corporation": "查军团 Blue Corp",
+    "alliance": "查联盟 Example Alliance",
+    "system_name": "查星系 S-KSWL",
+}
 DETECTOR_SOURCES = {"eve-sentry-detector", "local_ocr", "ocr"}
 MAX_NODES = 20
 MAX_HOSTILES = 30
@@ -114,14 +137,14 @@ class EveSentryStatusClient:
     def _validate_ocr_query(self, query: dict[str, str]) -> None:
         mode = str(query.get("mode") or "filtered")
         if mode == "system_roster" and not str(query.get("system_name") or "").strip():
-            raise SentryStatusError("请指定要查询的星系名称。")
+            raise SentryStatusError(f"请指定要查询的星系名称。例如：{QUERY_EXAMPLES['system_name']}")
         for key, label in (
             ("name", "人员名称"),
             ("corporation", "军团名称"),
             ("alliance", "联盟名称"),
         ):
             if key in query and not str(query[key]).strip():
-                raise SentryStatusError(f"请指定要查询的{label}。")
+                raise SentryStatusError(f"请指定要查询的{label}。例如：{QUERY_EXAMPLES[key]}")
 
     async def create_ocr_query(self, query: dict[str, str]) -> dict[str, Any]:
         self._validate_ocr_query(query)
@@ -213,6 +236,22 @@ def is_sentry_status_command(content: str) -> bool:
 
 def parse_sentry_query(content: str) -> dict[str, str] | None:
     normalized = normalize_command_content(content)
+    if normalized in {"再查", "刷新查询"}:
+        return {"mode": "repeat"}
+    for alias, command in QUERY_ALIASES.items():
+        match = re.fullmatch(rf"{re.escape(alias)}(?=$|\s|[：:])(.*)", normalized, re.DOTALL)
+        if match:
+            normalized = command + match.group(1)
+            break
+    # Accept spaced target types, including missing arguments, through the same
+    # parser as the standard command. Never interpret an empty type as a name.
+    generic_target = re.fullmatch(
+        r"(?:查询|查)\s+(人员|角色|军团|联盟|星系)(.*)", normalized, re.DOTALL
+    )
+    if generic_target:
+        label = "人员" if generic_target.group(1) == "角色" else generic_target.group(1)
+        normalized = f"查询{label} " + generic_target.group(2).lstrip(" ：:")
+        normalized = normalized.rstrip()
     if normalized in {"查询", "查"}:
         return {"mode": "menu"}
     if normalized in {"查询节点敌情", "查询预警", "查预警", "预警详情", "敌对详情", "节点敌对"}:
@@ -224,7 +263,7 @@ def parse_sentry_query(content: str) -> dict[str, str] | None:
     if normalized == "查询星系":
         return {"mode": "system_roster", "system_name": ""}
     system_match = re.match(
-        r"^查询星系(?:\s+|[：:]\s*)(.+)$",
+        r"^查询星系(?:\s*[：:]\s*|\s+)(.*)$",
         normalized,
         flags=re.IGNORECASE | re.DOTALL,
     )
@@ -233,27 +272,11 @@ def parse_sentry_query(content: str) -> dict[str, str] | None:
             "mode": "system_roster",
             "system_name": str(system_match.group(1) or "").strip(),
         }
-    generic_target = re.match(
-        r"^(?:查询|查)\s+(人员|角色|军团|联盟)\s*(.+)$",
-        normalized,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if generic_target:
-        key = {
-            "人员": "name",
-            "角色": "name",
-            "军团": "corporation",
-            "联盟": "alliance",
-        }[str(generic_target.group(1))]
-        return {
-            "mode": "filtered",
-            key: str(generic_target.group(2) or "").strip(),
-        }
     for command, (key, _label) in TARGETED_QUERY_COMMANDS.items():
         if normalized == command:
             return {"mode": "filtered", key: ""}
         match = re.match(
-            rf"^{re.escape(command)}(?:\s+|[：:]\s*)(.+)$",
+            rf"^{re.escape(command)}(?:\s*[：:]\s*|\s+)(.*)$",
             normalized,
             flags=re.IGNORECASE | re.DOTALL,
         )
@@ -282,10 +305,9 @@ def format_query_menu() -> str:
     return "\n".join(
         (
             "### 🔎 哨兵查询",
-            "请选择查询方式：",
-            "`查询星系 名称`｜`查询节点敌情`｜`查询人员 名称`",
-            "`查询军团 名称`｜`查询所有节点`｜`查询联盟 名称`",
-            "`查询预警节点`｜`上线监测 人员/军团/联盟 名称 间隔`",
+            "点击下方按钮即可查询，无需填写参数。",
+            "节点敌情｜所有节点名单｜在线监控节点",
+            "名单查询需要等待客户端回传。",
         )
     )
 

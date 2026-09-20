@@ -18,11 +18,11 @@ PANEL_TARGET_TYPE = "all"
 PANEL_REMARK = "EVE Sentry 群聊指令"
 PANEL_ITEMS: tuple[dict[str, object], ...] = (
     {"type": "command", "name": "分析", "desc": "分析当前已确认敌对"},
-    {"type": "command", "name": "查询预警", "desc": "查看当前敌对和监控节点"},
-    {"type": "command", "name": "查询", "desc": "快捷查看当前敌对"},
-    {"type": "command", "name": "查询人员", "desc": "查询指定敌对人员"},
-    {"type": "command", "name": "查询军团", "desc": "查询指定军团人员"},
-    {"type": "command", "name": "查询联盟", "desc": "查询指定联盟人员"},
+    {"type": "command", "name": "预设", "desc": "管理快捷查询；添加用预设 监控 名称"},
+    {"type": "command", "name": "查询", "desc": "打开一键查询与本群预设按钮"},
+    {"type": "command", "name": "查询人员", "desc": "补充名称；也可发送查人 名称"},
+    {"type": "command", "name": "查询军团", "desc": "补充军团名称后发送"},
+    {"type": "command", "name": "查询联盟", "desc": "补充联盟名称后发送"},
     {"type": "command", "name": "帮助", "desc": "查看机器人使用说明"},
     {"type": "command", "name": "开启预警", "desc": "开启本群主动预警"},
     {"type": "command", "name": "关闭预警", "desc": "关闭本群主动预警"},

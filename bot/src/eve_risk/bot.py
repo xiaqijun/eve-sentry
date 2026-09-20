@@ -24,6 +24,15 @@ from eve_risk.parser import (
     is_help_command,
     parse_roster,
 )
+from eve_risk.query_history import recall_query, remember_query
+from eve_risk.query_presets import (
+    PRESET_HELP,
+    PresetCommand,
+    PresetError,
+    QueryPreset,
+    QueryPresetStore,
+    parse_preset_command,
+)
 from eve_risk.queueing import AnalysisQueue
 from eve_risk.sentry_status import (
     EveSentryStatusClient,
@@ -53,8 +62,11 @@ HELP_TEXT = (
     "一次最多 30 人，默认分析近 90 天公开战报。\n"
     "预警：@机器人 开启预警 / 关闭预警 / 预警状态。\n"
     "查询菜单：@机器人 查询。\n"
-    "查询：查询星系 名称 / 查询节点敌情 / 查询所有节点 / 查询预警节点。\n"
-    "定向查询：查询人员 名称 / 查询军团 名称 / 查询联盟 名称。\n"
+    "快捷查询：@机器人 敌情 / 节点（无需先打开菜单，不触发 OCR）。\n"
+    "本次名单：查星系 S-KSWL / 查人 Alice / 查军团 Blue Corp / 查联盟 Example Alliance。\n"
+    "查名单：请求所有在线监控节点的本次 OCR 名单；原查询命令仍可用。\n"
+    "再查：复用你在本群最近 10 分钟的文字查询条件，重新查询，不复用旧结果。\n"
+    "快捷预设：预设 监控 Alice / 预设 监控 星系 S-KSWL；预设列表；删除预设 编号。\n"
     "上线监测：上线监测 人员/军团/联盟 名称 间隔（最低 30 秒）。"
 )
 
@@ -65,7 +77,7 @@ ADMISSION_MESSAGES = {
 }
 
 
-def query_keyboard_content() -> dict[str, object]:
+def query_keyboard_content(presets: list[QueryPreset] | None = None) -> dict[str, object]:
     def button(
         button_id: str,
         label: str,
@@ -102,19 +114,18 @@ def query_keyboard_content() -> dict[str, object]:
         }
 
     definitions = (
-        ("query_system", "查询星系", "查询星系 ", 2),
         ("query_hostiles", "节点敌情", "查询节点敌情", 1),
-        ("query_character", "查询人员", "查询人员 ", 2),
-        ("query_corporation", "查询军团", "查询军团 ", 2),
-        ("query_alliance", "查询联盟", "查询联盟 ", 2),
-        ("query_all_nodes", "所有节点", "查询所有节点", 1),
-        ("query_monitoring_nodes", "预警节点", "查询预警节点", 1),
-        ("watch_online", "上线监测", "上线监测 人员 ", 2),
+        ("query_all_nodes", "所有节点名单", "查询所有节点", 1),
+        ("query_monitoring_nodes", "在线监控节点", "查询预警节点", 1),
     )
     buttons = [
         button(button_id, label, data, action_type=action_type)
         for button_id, label, data, action_type in definitions
     ]
+    buttons.extend(
+        button(f"preset_{item.preset_id}", item.label, f"preset:{item.preset_id}", action_type=1)
+        for item in (presets or [])
+    )
     return {
         "rows": [
             {"buttons": buttons[index:index + 2]}
@@ -259,6 +270,13 @@ class RiskBotClient(botpy.Client):
         if is_help_command(content):
             await self.qq.send_text(group_openid, msg_id, HELP_TEXT, msg_seq=1)
             return
+        preset_command = parse_preset_command(content)
+        if preset_command is not None:
+            await self._handle_preset_command(
+                preset_command, group_openid=group_openid,
+                member_openid=member_openid, msg_id=msg_id,
+            )
+            return
         watch_command = parse_watch_command(
             content,
             default_interval=self.settings.eve_sentry_watch_default_interval_seconds,
@@ -277,6 +295,15 @@ class RiskBotClient(botpy.Client):
             return
         sentry_query = parse_sentry_query(content)
         if sentry_query is not None:
+            if sentry_query.get("mode") == "repeat":
+                sentry_query = await recall_query(self.redis, group_openid, member_openid)
+                if sentry_query is None:
+                    await self.qq.send_text(
+                        group_openid, msg_id,
+                        "你在本群没有最近 10 分钟的查询记录。直接发送：查星系 S-KSWL 或 查人 Alice。",
+                        msg_seq=1,
+                    )
+                    return
             if sentry_query.get("mode") == "menu":
                 await self._send_query_markdown(
                     group_openid,
@@ -286,11 +313,13 @@ class RiskBotClient(botpy.Client):
                 )
                 return
             if sentry_query.get("mode") in {"system_roster", "filtered", "all_nodes"}:
-                await self._start_sentry_ocr_query(
+                started = await self._start_sentry_ocr_query(
                     sentry_query,
                     group_openid=group_openid,
                     msg_id=msg_id,
                 )
+                if started:
+                    await remember_query(self.redis, group_openid, member_openid, sentry_query)
                 return
             try:
                 reply = await self.sentry_status.query(sentry_query)
@@ -299,6 +328,7 @@ class RiskBotClient(botpy.Client):
                     group_openid, msg_id, str(exc), msg_seq=1
                 )
                 return
+            await remember_query(self.redis, group_openid, member_openid, sentry_query)
             try:
                 await self.qq.send_proactive_markdown(group_openid, reply)
             except Exception:
@@ -417,6 +447,38 @@ class RiskBotClient(botpy.Client):
                 msg_seq=1,
             )
 
+    async def _handle_preset_command(
+        self, command: PresetCommand, *, group_openid: str, member_openid: str, msg_id: str,
+    ) -> None:
+        store = QueryPresetStore(self.redis, group_openid)
+        try:
+            if command.action == "error":
+                raise PresetError(command.error)
+            if command.action == "add":
+                preset, created = await store.add(member_openid, command.kind, command.target)
+                reply = (
+                    f"{'已添加' if created else '已存在'}快捷预设：{preset.kind} {preset.target}\n"
+                    f"编号：{preset.preset_id}。点击下方按钮查询一次，不开启周期监测。"
+                )
+            elif command.action == "delete":
+                await store.delete(member_openid, command.preset_id)
+                reply = "已删除预设，旧消息中的对应按钮已失效。"
+            else:
+                presets = await store.list()
+                lines = [f"{item.preset_id}｜{item.kind} {item.target}" for item in presets]
+                reply = "本群快捷预设：\n" + ("\n".join(lines) or "暂无预设") + "\n\n" + PRESET_HELP
+        except PresetError as exc:
+            await self.qq.send_text(group_openid, msg_id, str(exc), msg_seq=1)
+            return
+        except Exception:
+            logger.warning("Could not update query presets")
+            await self.qq.send_text(group_openid, msg_id, "预设存储暂不可用，请稍后重试。", msg_seq=1)
+            return
+        await self._send_query_markdown(
+            group_openid, reply + "\n\n" + format_query_menu(),
+            msg_id=msg_id, include_keyboard=True,
+        )
+
     async def _send_query_markdown(
         self,
         group_openid: str,
@@ -425,12 +487,18 @@ class RiskBotClient(botpy.Client):
         msg_id: str = "",
         include_keyboard: bool = False,
     ) -> None:
-        keyboard_id = self.settings.qq_query_keyboard_id if include_keyboard else ""
-        keyboard_content = (
-            query_keyboard_content()
-            if include_keyboard and not keyboard_id
-            else None
-        )
+        # The query menu must not resurrect parameter-entry buttons from an
+        # older platform template. Keep callbacks versioned in code.
+        keyboard_id = ""
+        keyboard_content = None
+        if include_keyboard:
+            try:
+                presets = await QueryPresetStore(self.redis, group_openid).list()
+            except Exception:
+                logger.warning("Could not load query menu presets")
+                presets = []
+                content += "\n预设暂不可用，以下仅显示基础查询按钮。"
+            keyboard_content = query_keyboard_content(presets)
         try:
             if msg_id:
                 await self.qq.send_markdown(
@@ -479,20 +547,30 @@ class RiskBotClient(botpy.Client):
         command_text = str(
             getattr(resolved, "button_data", "") or ""
         ).strip()
-        query = parse_sentry_query(command_text)
-        if query is None or query.get("mode") not in {
-            "node_hostiles",
-            "monitoring_nodes",
-            "all_nodes",
-        }:
-            return
         group_openid = str(
             getattr(interaction, "group_openid", "") or ""
         ).strip()
         if not group_openid:
             logger.warning("Ignored QQ query interaction without a group")
             return
-        if query.get("mode") == "all_nodes":
+        if command_text.startswith("preset:"):
+            try:
+                preset = await QueryPresetStore(self.redis, group_openid).get(command_text[7:])
+            except Exception:
+                logger.warning("Could not resolve query preset callback")
+                await self.qq.send_proactive_text(group_openid, "预设暂不可用，请稍后重试。")
+                return
+            if preset is None:
+                await self.qq.send_proactive_text(group_openid, "预设已失效，请重新发送查询打开菜单。")
+                return
+            query = preset.query
+        else:
+            query = parse_sentry_query(command_text)
+            if query is None or query.get("mode") not in {
+                "node_hostiles", "monitoring_nodes", "all_nodes",
+            }:
+                return
+        if query.get("mode") in {"all_nodes", "filtered", "system_roster"}:
             await self._start_sentry_ocr_query(
                 query,
                 group_openid=group_openid,
@@ -512,7 +590,7 @@ class RiskBotClient(botpy.Client):
         *,
         group_openid: str,
         msg_id: str,
-    ) -> None:
+    ) -> bool:
         async def send_ack(content: str) -> None:
             if msg_id:
                 await self.qq.send_text(
@@ -535,13 +613,13 @@ class RiskBotClient(botpy.Client):
         )
         if not locked:
             await send_ack("本群已有 OCR 查询正在进行，请等待当前结果。")
-            return
+            return False
         try:
             created = await self.sentry_status.create_ocr_query(query)
         except SentryStatusError as exc:
             await self.redis.delete(lock_key)
             await send_ack(str(exc))
-            return
+            return False
         requested = created.get("requested_clients")
         requested_count = len(requested) if isinstance(requested, list) else 0
         await send_ack(f"OCR 查询任务已下发｜目标节点 {requested_count}")
@@ -557,6 +635,7 @@ class RiskBotClient(botpy.Client):
         )
         self.query_tasks.add(task)
         task.add_done_callback(self.query_tasks.discard)
+        return True
 
     async def _finish_sentry_ocr_query(
         self,

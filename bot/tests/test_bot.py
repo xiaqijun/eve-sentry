@@ -329,7 +329,9 @@ async def test_query_command_opens_markdown_keyboard_menu() -> None:
     try:
         await client.on_group_at_message_create(Message())
         client.qq.send_markdown.assert_awaited_once()
-        assert client.qq.send_markdown.await_args.kwargs["keyboard_id"] == "query-keyboard"
+        # Even a configured legacy template cannot add parameter-entry buttons.
+        assert client.qq.send_markdown.await_args.kwargs["keyboard_id"] == ""
+        assert client.qq.send_markdown.await_args.kwargs["keyboard_content"] == query_keyboard_content()
         assert "哨兵查询" in client.qq.send_markdown.await_args.args[2]
     finally:
         await client.http_client.aclose()
@@ -352,8 +354,9 @@ def test_query_keyboard_uses_callbacks_for_fixed_group_actions() -> None:
     assert actions["查询节点敌情"]["type"] == 1
     assert actions["查询所有节点"]["type"] == 1
     assert actions["查询预警节点"]["type"] == 1
-    assert actions["查询星系 "]["type"] == 2
-    assert actions["查询星系 "]["enter"] is False
+    assert set(actions) == {"查询节点敌情", "查询所有节点", "查询预警节点"}
+    assert len(buttons) == 3
+    assert all("enter" not in action and "reply" not in action for action in actions.values())
 
 
 @pytest.mark.asyncio
