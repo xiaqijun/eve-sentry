@@ -2,7 +2,7 @@
 
 from app.esi.organization_relations import RelationSource, RelationView
 from app.esi.relation_shadow import ShadowComparisons, ShadowContacts
-from app.esi.session import ContactStanding
+from app.esi.contact_models import ContactStanding
 from app.intel.enrichment import _apply_contact_or_neutral_standing
 from app.server.personnel_settings import DEFAULTS, validate_settings
 from tests.test_personnel_settings import settings_service  # noqa: F401

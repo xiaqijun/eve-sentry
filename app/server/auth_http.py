@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
+import hmac
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from ipaddress import ip_address
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlencode, urlparse
+from urllib.parse import unquote
 
-from app.esi.sso import EsiSsoError
 from app.server.auth import AuthError, AuthPrincipal, AuthService, SESSION_COOKIE_NAME
 
 
@@ -27,7 +27,6 @@ _PUBLIC_KEY_FIELDS = (
     "key_prefix",
     "key_type",
     "status",
-    "identity_verified",
     "created_at",
     "last_used_at",
     "revoked_at",
@@ -41,6 +40,61 @@ _USAGE_CLIENT_FIELDS = (
     "online",
     "seen_at",
     "remote_ip",
+)
+
+
+_SEAT_PERMISSION_ROUTES: dict[str, tuple[tuple[str, str], ...]] = {
+    "monitor": (
+        ("GET", "/api/v1/bootstrap"),
+        ("GET", "/api/v1/map"),
+        ("GET", "/api/v1/map/neighborhood"),
+        ("GET", "/api/v1/clients"),
+        ("GET", "/api/v1/systems"),
+        ("GET", "/api/v1/systems/*"),
+        ("GET", "/api/v1/map/systems/*"),
+        ("GET", "/api/v1/characters/*"),
+        ("GET", "/api/v1/esi/status"),
+        ("POST", "/api/v1/channel-lines"),
+        ("POST", "/api/v1/clients/heartbeats"),
+        ("POST", "/api/v1/hostile-presence"),
+        ("POST", "/api/v1/ocr/query"),
+        ("POST", "/api/v1/ocr/snapshot"),
+        ("POST", "/api/v1/reports"),
+        ("POST", "/api/v1/observations"),
+    ),
+    "alert": (
+        ("GET", "/api/v1/bootstrap"),
+        ("GET", "/api/v1/map"),
+        ("GET", "/api/v1/map/neighborhood"),
+        ("GET", "/api/v1/active-intel"),
+        ("GET", "/api/v1/alert-history"),
+        ("GET", "/api/v1/hostile-waves"),
+        ("GET", "/api/v1/integrations/hostile-systems"),
+        ("GET", "/api/v1/events"),
+        ("GET", "/api/v1/alerts"),
+        ("GET", "/api/v1/alerts/*"),
+        ("GET", "/api/v1/clients"),
+    ),
+}
+
+
+_LEGACY_CLIENT_ROUTES: tuple[tuple[str, str], ...] = (
+    ("GET", "/api/heartbeats"),
+    ("GET", "/api/esi/status"),
+    ("GET", "/api/intel"),
+    ("GET", "/api/systems"),
+    ("GET", "/api/systems/*"),
+    ("GET", "/api/characters/*"),
+    ("GET", "/api/intel/*"),
+    ("GET", "/api/reports"),
+    ("GET", "/api/observations"),
+    ("GET", "/api/alerts"),
+    ("GET", "/api/alerts/*"),
+    ("GET", "/api/events"),
+    ("POST", "/api/heartbeats"),
+    ("POST", "/api/channel-lines"),
+    ("POST", "/api/intel"),
+    ("POST", "/api/observations"),
 )
 
 
@@ -177,6 +231,37 @@ def build_admin_clients_payload(
     return {"clients": clients, "keys": usage_records}
 
 
+def _seat_permissions_for_request(method: str, path: str) -> set[str]:
+    """Return permissions accepted by one Seat principal request."""
+    normalized_method = str(method or "").upper()
+    normalized_path = str(path or "")
+    accepted: set[str] = set()
+    for permission, routes in _SEAT_PERMISSION_ROUTES.items():
+        for route_method, route_path in routes:
+            if normalized_method != route_method:
+                continue
+            if normalized_path == route_path:
+                accepted.add(permission)
+                continue
+            if route_path.endswith("/*") and normalized_path.startswith(route_path[:-1]):
+                accepted.add(permission)
+    return accepted
+
+
+def _is_legacy_client_route(method: str, path: str) -> bool:
+    """Identify compatibility endpoints that must not accept historical keys."""
+    normalized_method = str(method or "").upper()
+    normalized_path = str(path or "")
+    for route_method, route_path in _LEGACY_CLIENT_ROUTES:
+        if normalized_method != route_method:
+            continue
+        if normalized_path == route_path:
+            return True
+        if route_path.endswith("/*") and normalized_path.startswith(route_path[:-1]):
+            return True
+    return False
+
+
 class AuthHttpMixin:
     """Mixin used by the standard-library request handler."""
 
@@ -188,19 +273,31 @@ class AuthHttpMixin:
     def _authorize_request(self, method: str, path: str) -> bool:
         service = self._auth_service()
         self._auth_principal = None
+        if self._is_seat_integration_request(method, path):
+            return self._authorize_seat_integration_request()
         if service is None:
             return True
         if path in {"/api/health", "/api/livez", "/api/readyz"}:
             return True
         if path == "/api/v1/auth/login" and method == "POST":
             return True
-        if path in {
-            "/api/v1/auth/esi/start",
-            "/api/v1/auth/esi/callback",
-        } and method == "GET":
-            return True
+        client_route = bool(_seat_permissions_for_request(method, path))
+        legacy_client_route = _is_legacy_client_route(method, path)
         if not service.enforce_requests and not self._is_auth_management_path(path):
-            return True
+            # Keep the historical auth=off behavior for anonymous and ordinary
+            # requests. When Seat auth is enabled, inspect a supplied Bearer
+            # key so Seat principals can be scoped without making all legacy
+            # clients authenticate during the rollout.
+            authorization = str(self.headers.get("Authorization") or "").strip()
+            seat_mode = str(getattr(service, "seat_auth_mode", "off") or "off")
+            if (
+                not client_route
+                or (
+                    seat_mode != "enforce"
+                    and not authorization.casefold().startswith("bearer ")
+                )
+            ):
+                return True
 
         try:
             authorization = str(self.headers.get("Authorization") or "").strip()
@@ -212,6 +309,33 @@ class AuthHttpMixin:
                 if not session_token:
                     raise AuthError("authentication is required", 401, "authentication_required")
                 principal = service.authenticate_session(session_token)
+
+            if client_route and principal.auth_type == "api_key" and not principal.is_seat:
+                raise AuthError(
+                    "Client key must be issued by SeAT",
+                    403,
+                    "seat_client_key_required",
+                )
+            if (
+                legacy_client_route
+                and principal.auth_type == "api_key"
+                and not principal.is_seat
+            ):
+                raise AuthError(
+                    "Client key must be issued by SeAT",
+                    403,
+                    "seat_client_key_required",
+                )
+            if principal.is_seat:
+                required = _seat_permissions_for_request(method, path)
+                if not required or not any(
+                    permission in principal.permissions for permission in required
+                ):
+                    raise AuthError(
+                        "Seat key does not have permission for this endpoint",
+                        403,
+                        "seat_permission_denied",
+                    )
 
             # The OCR query endpoint is a command request for connected
             # detector clients, but it does not mutate persisted intel data.
@@ -251,12 +375,54 @@ class AuthHttpMixin:
         self._auth_principal = principal
         return True
 
+    def _is_seat_integration_request(self, method: str, path: str) -> bool:
+        """Identify Seat integration methods before browser auth middleware."""
+        create_path = "/api/v1/integrations/seat/keys"
+        revoke_prefix = f"{create_path}/"
+        if method == "POST" and path == create_path:
+            return True
+        if method != "DELETE" or not path.startswith(revoke_prefix):
+            return False
+        key_id = path[len(revoke_prefix):].strip("/")
+        return bool(key_id) and "/" not in key_id
+
+    def _authorize_seat_integration_request(self) -> bool:
+        """Authenticate the Seat service token without accepting a browser session."""
+        configured = str(
+            getattr(type(self), "seat_integration_token", "") or ""
+        ).strip()
+        if not configured:
+            self._send_json(
+                {
+                    "error": "Seat integration is disabled",
+                    "code": "seat_integration_disabled",
+                },
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return False
+        authorization = str(self.headers.get("Authorization") or "").strip()
+        provided = (
+            authorization[7:].strip()
+            if authorization.casefold().startswith("bearer ")
+            else ""
+        )
+        if not provided or not hmac.compare_digest(provided, configured):
+            self._send_json(
+                {
+                    "error": "Seat integration service token is invalid",
+                    "code": "seat_integration_unauthorized",
+                },
+                HTTPStatus.UNAUTHORIZED,
+            )
+            return False
+        self._seat_integration_authenticated = True
+        return True
+
     def _is_auth_management_path(self, path: str) -> bool:
         return path.startswith((
             "/api/v1/auth/",
             "/api/v1/me/",
             "/api/v1/admin/",
-            "/api/v1/client/identity-check",
         ))
 
     def _stream_principal_active(self) -> bool:
@@ -268,54 +434,14 @@ class AuthHttpMixin:
 
     def _handle_auth_get(self, path: str) -> bool:
         service = self._auth_service()
-        if path == "/api/v1/auth/esi/callback":
-            esi_login = self._esi_login()
-            owns_callback = getattr(esi_login, "owns_callback", None)
-            if callable(owns_callback) and owns_callback(self.path):
-                try:
-                    esi_login.complete_callback(self.path)
-                except EsiSsoError:
-                    self._send_auth_redirect("/?esi_login=error")
-                    return True
-                self._send_auth_redirect("/?esi_login=authenticated")
-                return True
-            if service is None:
-                return False
-            try:
-                login = service.complete_esi_login(self.path)
-            except AuthError as exc:
-                self._send_auth_redirect(
-                    f"/login?{urlencode({'esi_error': exc.code})}"
-                )
-                return True
-            self._send_auth_redirect(
-                str(login["return_to"]),
-                cookie=self._session_cookie_header(str(login["session_token"])),
-            )
-            return True
         if service is None:
             return False
-        if path == "/api/v1/auth/esi/start":
-            query = parse_qs(urlparse(self.path).query)
-            try:
-                authorization_url = service.begin_esi_login(
-                    str((query.get("return_to") or ["/"])[0])
-                )
-            except AuthError as exc:
-                self._send_auth_redirect(
-                    f"/login?{urlencode({'esi_error': exc.code})}"
-                )
-                return True
-            self._send_auth_redirect(authorization_url)
-            return True
         auth_paths = {
             "/api/v1/auth/me",
             "/api/v1/me/keys",
             "/api/v1/admin/users",
             "/api/v1/admin/clients",
-            "/api/v1/admin/corporations",
             "/api/v1/admin/audit",
-            "/api/v1/admin/security-settings",
             "/api/v1/admin/esi-gateway",
             "/api/v1/admin/personnel-settings",
         }
@@ -335,9 +461,6 @@ class AuthHttpMixin:
         if path == "/api/v1/admin/users":
             self._send_json({"users": service.list_users()})
             return True
-        if path == "/api/v1/admin/security-settings":
-            self._send_json({"settings": service.security_settings()})
-            return True
         if path == "/api/v1/admin/personnel-settings":
             try:
                 self._send_json({"settings": self._personnel_settings().snapshot()})
@@ -352,9 +475,6 @@ class AuthHttpMixin:
                     service.list_users_with_api_keys(),
                 )
             )
-            return True
-        if path == "/api/v1/admin/corporations":
-            self._send_json({"corporations": service.repository.list_allowed_corporations()})
             return True
         if path == "/api/v1/admin/audit":
             self._send_json({"audit": service.repository.list_audit()})
@@ -373,11 +493,7 @@ class AuthHttpMixin:
             "/api/v1/auth/logout",
             "/api/v1/auth/password",
             "/api/v1/me/keys",
-            "/api/v1/client/identity-check",
-            "/api/v1/client/identity-checks",
             "/api/v1/admin/users",
-            "/api/v1/admin/corporations",
-            "/api/v1/admin/security-settings",
             "/api/v1/admin/personnel-settings",
         }
         user_action = self._admin_user_action(path)
@@ -399,6 +515,18 @@ class AuthHttpMixin:
                 return True
 
             principal = self._require_principal()
+            if path == "/api/v1/me/keys" or (
+                user_action is not None
+                and user_action[1] in {"keys", "service-keys"}
+            ):
+                self._send_json(
+                    {
+                        "error": "Client keys are issued and managed by GloryNavy_Seat",
+                        "code": "seat_key_management_required",
+                    },
+                    HTTPStatus.GONE,
+                )
+                return True
             payload = self._read_optional_json()
             if path == "/api/v1/admin/personnel-settings":
                 settings = self._personnel_settings().update(payload, principal.user_id)
@@ -419,65 +547,12 @@ class AuthHttpMixin:
                 )
                 self._send_json({"ok": True, "user": user})
                 return True
-            if path == "/api/v1/me/keys":
-                key = service.create_api_key(
-                    principal.user_id,
-                    str(payload.get("name") or "Device"),
-                    principal.user_id,
-                )
-                self._send_json({"ok": True, "key": key}, HTTPStatus.CREATED)
-                return True
             if key_action is not None:
                 key_id, action = key_action
                 if action == "enable":
                     service.enable_api_key(key_id, principal)
                     self._send_json({"ok": True})
                     return True
-            if path in {
-                "/api/v1/client/identity-check",
-                "/api/v1/client/identity-checks",
-            }:
-                names = payload.get("characters", payload.get("names", []))
-                if not isinstance(names, list):
-                    raise AuthError("characters must be a list", 400, "invalid_characters")
-                character_ids = payload.get("character_ids", [])
-                if not isinstance(character_ids, list):
-                    raise AuthError(
-                        "character_ids must be a list",
-                        400,
-                        "invalid_character_ids",
-                    )
-                clean_names = [
-                    str(item.get("name") if isinstance(item, dict) else item)
-                    for item in names
-                ]
-                character_ids = list(character_ids) + [
-                    item.get("character_id")
-                    for item in names
-                    if isinstance(item, dict)
-                    and item.get("character_id") not in {None, ""}
-                ]
-                if path == "/api/v1/client/identity-checks":
-                    result = service.submit_character_report(
-                        principal,
-                        clean_names,
-                        client_id=str(payload.get("client_id") or ""),
-                        character_ids=character_ids,
-                    )
-                    status = (
-                        HTTPStatus.ACCEPTED
-                        if result.get("pending")
-                        else HTTPStatus.OK
-                    )
-                    self._send_json({"identity": result}, status)
-                    return True
-                result = service.verify_characters(
-                    principal,
-                    clean_names,
-                    character_ids=character_ids,
-                )
-                self._send_json({"identity": result})
-                return True
             if path == "/api/v1/admin/users":
                 user = service.create_user(
                     username=str(payload.get("username") or ""),
@@ -488,27 +563,6 @@ class AuthHttpMixin:
                 )
                 self._send_json({"ok": True, "user": user}, HTTPStatus.CREATED)
                 return True
-            if path == "/api/v1/admin/corporations":
-                corporation = service.add_allowed_corporation(
-                    payload.get("corporation_id"), principal.user_id
-                )
-                self._send_json({"ok": True, "corporation": corporation}, HTTPStatus.CREATED)
-                return True
-            if path == "/api/v1/admin/security-settings":
-                key_risk_control = payload.get("key_risk_control")
-                if not isinstance(key_risk_control, bool):
-                    raise AuthError(
-                        "key_risk_control must be a boolean",
-                        400,
-                        "invalid_key_risk_control",
-                    )
-                settings = service.set_key_risk_control(
-                    key_risk_control,
-                    principal.user_id,
-                )
-                self._send_json({"ok": True, "settings": settings})
-                return True
-
             if user_action is None:
                 return False
             user_id, action = user_action
@@ -526,33 +580,6 @@ class AuthHttpMixin:
                     user_id, str(payload.get("password") or ""), principal.user_id
                 )
                 self._send_json({"ok": True, "user": user})
-                return True
-            if action == "characters":
-                item = service.add_whitelist_character(
-                    user_id,
-                    payload.get("character_id"),
-                    str(payload.get("note") or ""),
-                    principal.user_id,
-                )
-                self._send_json({"ok": True, "character": item}, HTTPStatus.CREATED)
-                return True
-            if action == "service-keys":
-                key = service.create_api_key(
-                    user_id,
-                    str(payload.get("name") or "Service"),
-                    principal.user_id,
-                    key_type="service_readonly",
-                )
-                self._send_json({"ok": True, "key": key}, HTTPStatus.CREATED)
-                return True
-            if action == "keys":
-                key = service.create_api_key(
-                    user_id,
-                    str(payload.get("name") or "Device"),
-                    principal.user_id,
-                    key_type=str(payload.get("key_type") or "desktop"),
-                )
-                self._send_json({"ok": True, "key": key}, HTTPStatus.CREATED)
                 return True
         except (AuthError, ValueError, json.JSONDecodeError) as exc:
             self._send_auth_exception(exc)
@@ -598,23 +625,7 @@ class AuthHttpMixin:
                     return False
                 self._send_json({"ok": True})
                 return True
-            prefix = "/api/v1/admin/corporations/"
-            if path.startswith(prefix):
-                service.delete_allowed_corporation(
-                    int(unquote(path[len(prefix):]).strip()), principal.user_id
-                )
-                self._send_json({"ok": True})
-                return True
-            marker = "/characters/"
             users_prefix = "/api/v1/admin/users/"
-            if path.startswith(users_prefix) and marker in path:
-                suffix = path[len(users_prefix):]
-                user_id, character_id = suffix.split(marker, 1)
-                service.delete_whitelist_character(
-                    user_id.strip(), int(unquote(character_id).strip()), principal.user_id
-                )
-                self._send_json({"ok": True})
-                return True
             if path.startswith(users_prefix):
                 user_id = unquote(path[len(users_prefix):]).strip("/")
                 if user_id and "/" not in user_id:
@@ -633,7 +644,7 @@ class AuthHttpMixin:
         suffix = path[len(prefix):].strip("/")
         user_id, separator, action = suffix.partition("/")
         if not separator or action not in {
-            "status", "reset-password", "characters", "keys", "service-keys",
+            "status", "reset-password", "keys", "service-keys",
         }:
             return None
         return user_id, action

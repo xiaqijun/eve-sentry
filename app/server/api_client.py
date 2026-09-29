@@ -257,57 +257,6 @@ class IntelApiClient:
             ]
         return heartbeat
 
-    def verify_eve_characters(self, names: list[str]) -> dict[str, Any]:
-        """Permanently authorize the API key against detected EVE Listeners."""
-        payload = self._request(
-            "POST",
-            self._v1_path("/client/identity-check"),
-            payload={"characters": list(names)},
-        )
-        identity = payload.get("identity")
-        if not isinstance(identity, dict):
-            raise IntelApiError("server returned an invalid identity payload")
-        return identity
-
-    def verify_eve_character_ids(
-        self,
-        character_ids: list[int],
-    ) -> dict[str, Any]:
-        """Authorize the API key using Local-log character IDs."""
-        payload = self._request(
-            "POST",
-            self._v1_path("/client/identity-check"),
-            payload={"character_ids": [int(item) for item in character_ids]},
-        )
-        identity = payload.get("identity")
-        if not isinstance(identity, dict):
-            raise IntelApiError("server returned an invalid identity payload")
-        return identity
-
-    def ensure_eve_character_check(
-        self,
-        character_ids: list[int],
-        client_id: str = "",
-    ) -> dict[str, Any]:
-        """Report Local-log character IDs and return the durable job state."""
-        try:
-            payload = self._request(
-                "POST",
-                self._v1_path("/client/identity-checks"),
-                payload={
-                    "character_ids": [int(item) for item in character_ids],
-                    "client_id": str(client_id or "").strip(),
-                },
-            )
-        except IntelApiError as exc:
-            if getattr(exc, "status_code", None) != 404 and "404" not in str(exc):
-                raise
-            return self.verify_eve_character_ids(character_ids)
-        identity = payload.get("identity")
-        if not isinstance(identity, dict):
-            raise IntelApiError("server returned an invalid identity payload")
-        return identity
-
     def validate_api_key(self) -> dict[str, Any]:
         """Validate the configured API key through an always-protected route."""
         payload = self._request("GET", self._v1_path("/auth/me"))
@@ -334,7 +283,7 @@ class IntelApiClient:
         return clients
 
     def esi_status(self) -> dict[str, Any]:
-        """Return authenticated ESI session status without token secrets."""
+        """Return public ESI status; authenticated ESI is permanently disabled."""
         return self._request("GET", self._v1_path("/esi/status"))
 
     def esi_session(
@@ -342,19 +291,9 @@ class IntelApiClient:
         include_location: bool = True,
         include_contacts: bool = True,
     ) -> dict[str, Any]:
-        """Return the authenticated ESI session snapshot."""
-        payload = self._request(
-            "GET",
-            self._v1_path("/esi/session"),
-            params={
-                "location": _bool_param(include_location),
-                "contacts": _bool_param(include_contacts),
-            },
-        )
-        snapshot = payload.get("snapshot")
-        if not isinstance(snapshot, dict):
-            raise IntelApiError("server returned an invalid ESI session payload")
-        return snapshot
+        """Reject the retired authenticated ESI session endpoint."""
+        del include_location, include_contacts
+        raise IntelApiError("authenticated ESI is disabled")
 
     def system_profile(self, system_id: int) -> dict[str, Any]:
         """Fetch one solar-system profile by ESI id."""
@@ -469,35 +408,8 @@ class IntelApiClient:
         return system
 
     def current_esi_system(self) -> dict[str, Any] | None:
-        """Return the current ESI solar system when the server session exposes it."""
-        snapshot = self.esi_session(include_location=True, include_contacts=False)
-        location = snapshot.get("location")
-        if not isinstance(location, dict):
-            return None
-
-        system_id = _optional_positive_int(location.get("solar_system_id"))
-        if system_id is None:
-            return None
-
-        embedded = location.get("solar_system")
-        system = dict(embedded) if isinstance(embedded, dict) else {}
-        name = str(
-            location.get("solar_system_name")
-            or system.get("name")
-            or ""
-        ).strip()
-        if not name:
-            try:
-                system = self.system_profile(system_id)
-                name = str(system.get("name") or "").strip()
-            except IntelApiError:
-                system = {}
-
-        system["system_id"] = system_id
-        if name:
-            system["name"] = name
-            system["system_name"] = name
-        return system
+        """Return no location because authenticated ESI is disabled."""
+        return None
 
     def list_reports(
         self,

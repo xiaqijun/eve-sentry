@@ -17,6 +17,7 @@ from typing import Any, Callable
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from app.intel_client import IntelApiClient, IntelApiError
+from app.monitoring_scope import allows_remote
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +244,11 @@ class ReliableUploadManager(QObject):
                 close()
 
     def _send(self, upload: _PendingUpload) -> None:
+        if upload.key != "heartbeat" and not allows_remote(
+            getattr(self, "_monitoring_scope", None), upload.payload.get("system_name"), upload.payload.get("system_id"),
+        ):
+            self._discard(upload)
+            return
         response: dict[str, Any] | None = None
         try:
             if upload.key == "heartbeat":
@@ -311,6 +317,17 @@ class ReliableUploadManager(QObject):
             if current is upload:
                 self._snapshots.pop(upload.key, None)
                 self._persist_snapshots_locked()
+
+    def set_monitoring_scope(self, scope: dict) -> None:
+        """Drop obsolete pending uploads, including restored offline snapshots."""
+        with self._condition:
+            self._monitoring_scope = scope
+            for pending in (self._presence, self._snapshots):
+                for key, upload in list(pending.items()):
+                    if not allows_remote(scope, upload.payload.get("system_name"), upload.payload.get("system_id")):
+                        pending.pop(key, None)
+            self._persist_snapshots_locked()
+            self._condition.notify_all()
 
     def _next_upload(self) -> _PendingUpload | None:
         if self._heartbeat is not None:

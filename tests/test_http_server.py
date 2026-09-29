@@ -1,7 +1,9 @@
 import http.client
+import hashlib
 import json
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -14,8 +16,7 @@ from app.core.active_intel import ActiveIntelItem
 from app.core.models import Evidence, ThreatEvent
 from app.esi.cache import EsiCache
 from app.esi.resolver import EsiResolver
-from app.esi.session import ContactStanding
-from app.esi.sso import AuthorizationSession, EsiSsoError, TokenSet
+from app.esi.contact_models import ContactStanding
 from app.intel.classification import CLASSIFICATION_VERSION
 from app.intel.config import IntelConfigStore
 from app.intel.enrichment import ThreatEnricher
@@ -38,6 +39,40 @@ from app.server.http_server import (
 from app.server.intel_store import IntelStore, StarSystem
 from app.server.map_config import MapConfigStore
 from tests.auth_test_store import AuthTestStore
+
+
+def _create_seat_http_key(
+    auth: AuthService,
+    user_id: str,
+    permissions: tuple[str, ...] = ("monitor", "alert"),
+    account_id: str | None = None,
+) -> dict[str, str]:
+    """Create the test-only representation of a Seat-issued client key."""
+    key_id = f"seat-{uuid.uuid4().hex}"
+    account_id = account_id or f"account-{uuid.uuid4().hex}"
+    secret = f"eve_seat_{uuid.uuid4().hex}"
+    created_at = "2026-09-29T00:00:00+00:00"
+    auth.repository.create_seat_integration_key(
+        {
+            "key_id": key_id,
+            "account_id": account_id,
+            "name": "Seat test key",
+            "key_prefix": secret[:12],
+            "key_hash": hashlib.sha256(secret.encode()).hexdigest(),
+            "permissions_json": json.dumps(list(permissions)),
+            "protocol_version": 1,
+            "status": "active",
+            "created_at": created_at,
+            "revoked_at": "",
+            "revoked_reason": "",
+        },
+        f"operation-{key_id}",
+        f"request-{key_id}",
+        auth._audit_record("seat-integration", key_id, "seat_key.created", {}),
+    )
+    if auth.repository.external_account_by_id("seat", account_id) is None:
+        auth.bind_seat_account(account_id, user_id, "seat-test")
+    return {"secret": secret, "key_id": key_id, "account_id": account_id}
 
 
 def _record_ocr_snapshot(store: IntelStore, payload: dict):
@@ -564,23 +599,6 @@ def test_integration_hostile_systems_returns_only_active_hostile_systems(tmp_pat
         server.stop()
 
 
-class AuthTestSsoClient:
-    def create_authorization_session(self, scopes=None):
-        return AuthorizationSession(
-            authorization_url="https://login.eve.test/authorize?state=web-state",
-            state="web-state",
-            redirect_uri="http://sentry.test/api/v1/auth/esi/callback",
-            code_verifier="verifier",
-            scopes=list(scopes or []),
-        )
-
-    def parse_callback_url(self, session, callback_url):
-        return "web-code"
-
-    def exchange_code(self, code, session):
-        return TokenSet(access_token="token", character_id=101)
-
-
 def request_json(url, method="GET", payload=None):
     data = None
     headers = {}
@@ -1005,18 +1023,14 @@ def test_health_reports_postgres_storage_without_secret(tmp_path):
         server.stop()
 
 
-def test_public_health_sanitizes_esi_configuration_paths(tmp_path):
-    token_file = tmp_path / "private" / "esi_tokens.json"
+def test_public_health_reports_public_esi_only(tmp_path):
     server = IntelHTTPServer(
         IntelStore(tmp_path / "intel.json"),
         port=0,
         esi_config={
-            "client_id_configured": True,
-            "redirect_uri": "https://internal.example/api/v1/auth/esi/callback",
-            "token_file": str(token_file),
-            "token_file_present": False,
-            "token_storage": "plain",
-            "scopes": ["private.scope"],
+            "backend": "remote",
+            "gateway_url": "http://gateway.test",
+            "authenticated_esi_enabled": False,
         },
     )
     server.start()
@@ -1025,15 +1039,9 @@ def test_public_health_sanitizes_esi_configuration_paths(tmp_path):
 
         assert status == 200
         esi = payload["health"]["esi"]
-        assert esi["config"] == {
-            "client_id_configured": True,
-            "token_file_present": False,
-            "token_storage": "plain",
-        }
-        serialized = json.dumps(esi)
-        assert str(token_file) not in serialized
-        assert "internal.example" not in serialized
-        assert "private.scope" not in serialized
+        assert esi["authenticated"] is False
+        assert esi["refreshable"] is False
+        assert esi["config"] == {}
     finally:
         server.stop()
 
@@ -1165,7 +1173,7 @@ def test_v1_bootstrap_and_map_routes_expose_workbench_payload(tmp_path):
         assert bootstrap["config"]["schema_version"] == "scoring_config.v1"
         assert bootstrap["esi"]["enabled"] is False
         assert bootstrap["esi"]["authenticated"] is False
-        assert bootstrap["esi"]["config"] == {}
+        assert bootstrap["esi"]["config"] == {"authenticated_esi_enabled": False}
 
         status, map_payload = request_json(f"{server.url}/api/v1/map")
         assert status == 200
@@ -1990,14 +1998,14 @@ def test_esi_status_reports_disabled_session(tmp_path):
         assert status == 200
         assert payload["enabled"] is False
         assert payload["authenticated"] is False
-        assert payload["config"] == {}
+        assert payload["config"] == {"authenticated_esi_enabled": False}
 
         try:
             request_json(f"{server.url}/api/esi/session")
         except HTTPError as exc:
             assert exc.code == 404
             error = json.loads(exc.read().decode("utf-8"))
-            assert "ESI session" in error["error"]
+            assert error["error"] == "not found"
         else:
             raise AssertionError("expected HTTP 404")
     finally:
@@ -2013,11 +2021,8 @@ def test_esi_status_reports_public_resolver_without_session(tmp_path):
         IntelStore(tmp_path / "intel.json", resolver=FakeResolver()),
         port=0,
         esi_config={
-            "client_id_configured": False,
-            "token_file": str(tmp_path / "esi_tokens.json"),
-            "token_file_present": False,
-            "token_storage": "plain",
-            "scopes": ["esi-location.read_location.v1"],
+            "backend": "local",
+            "authenticated_esi_enabled": False,
         },
     )
     server.start()
@@ -2028,258 +2033,14 @@ def test_esi_status_reports_public_resolver_without_session(tmp_path):
         assert payload["public"] is True
         assert payload["authenticated"] is False
         assert payload["session"] is False
-        assert payload["config"]["client_id_configured"] is False
-        assert payload["config"]["token_file_present"] is False
+        assert payload["config"]["authenticated_esi_enabled"] is False
 
         status, health = request_json(f"{server.url}/api/health")
         assert status == 200
         assert health["health"]["esi"]["enabled"] is True
         assert health["health"]["esi"]["public"] is True
         assert health["health"]["esi"]["authenticated"] is False
-        assert health["health"]["esi"]["config"]["token_storage"] == "plain"
-    finally:
-        server.stop()
-
-
-def test_v1_esi_login_route_reports_missing_configuration(tmp_path):
-    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
-    server.start()
-    try:
-        try:
-            request_json(f"{server.url}/api/v1/esi/login", method="POST")
-        except HTTPError as exc:
-            assert exc.code == 404
-            error = json.loads(exc.read().decode("utf-8"))
-            assert "ESI login" in error["error"]
-        else:
-            raise AssertionError("expected HTTP 404")
-    finally:
-        server.stop()
-
-
-def test_v1_esi_login_route_starts_configured_flow(tmp_path):
-    class FakeLogin:
-        def __init__(self):
-            self.calls = 0
-
-        def start(self):
-            self.calls += 1
-            return {
-                "status": "pending",
-                "authorization_url": "https://login.test/authorize",
-                "started_at": 1000,
-                "expires_at": 1300,
-                "timeout_seconds": 300,
-                "character_id": None,
-                "error": "",
-            }
-
-        def snapshot(self):
-            return {
-                "status": "pending",
-                "authorization_url": "https://login.test/authorize",
-                "started_at": 1000,
-                "expires_at": 1300,
-                "timeout_seconds": 300,
-                "character_id": None,
-                "error": "",
-            }
-
-    login = FakeLogin()
-    server = IntelHTTPServer(
-        IntelStore(tmp_path / "intel.json"),
-        port=0,
-        esi_login=login,
-    )
-    server.start()
-    try:
-        status, payload = request_json(
-            f"{server.url}/api/v1/esi/login",
-            method="POST",
-        )
-        assert status == 200
-        assert payload["ok"] is True
-        assert payload["login"]["status"] == "pending"
-        assert payload["login"]["authorization_url"] == "https://login.test/authorize"
-        assert login.calls == 1
-
-        status, snapshot = request_json(f"{server.url}/api/v1/esi/login")
-        assert status == 200
-        assert snapshot["login"]["status"] == "pending"
-        assert snapshot["login"]["authorization_url"] == "https://login.test/authorize"
-    finally:
-        server.stop()
-
-
-def test_esi_session_routes_expose_status_and_snapshot(tmp_path):
-    class FakeTokens:
-        character_id = 123
-        character_owner_hash = "owner-hash"
-        scopes = ["esi-location.read_location.v1"]
-        expires_at = 2000
-        refresh_token = "refresh-token"
-
-        def is_expired(self):
-            return False
-
-    class FakeSnapshot:
-        def to_dict(self):
-            return {
-                "character_id": 123,
-                "character_owner_hash": "owner-hash",
-                "scopes": ["esi-location.read_location.v1"],
-                "location": {"solar_system_id": 30002813},
-                "contacts": [{"contact_id": 456, "standing": -10}],
-            }
-
-    class FakeResolver:
-        def system_profile(self, system_id):
-            assert system_id == 30002813
-            return {
-                "system_id": 30002813,
-                "name": "Tama",
-                "security_status": 0.3,
-            }
-
-    class FakeSession:
-        def __init__(self):
-            self.load_calls = []
-            self.snapshot_calls = []
-
-        def load_tokens(self, refresh_if_needed=True):
-            self.load_calls.append(refresh_if_needed)
-            return FakeTokens()
-
-        def snapshot(self, include_location=True, include_contacts=True):
-            self.snapshot_calls.append((include_location, include_contacts))
-            return FakeSnapshot()
-
-    session = FakeSession()
-    token_file = tmp_path / "esi_tokens.json"
-    token_file.write_text("{}", encoding="utf-8")
-    server = IntelHTTPServer(
-        IntelStore(tmp_path / "intel.json", resolver=FakeResolver()),
-        port=0,
-        esi_session=session,
-        esi_config={
-            "client_id_configured": True,
-            "token_file": str(token_file),
-            "token_file_present": True,
-            "token_storage": "plain",
-            "scopes": ["esi-location.read_location.v1"],
-        },
-    )
-    server.start()
-    try:
-        status, status_payload = request_json(f"{server.url}/api/esi/status")
-        assert status == 200
-        assert status_payload["enabled"] is True
-        assert status_payload["authenticated"] is True
-        assert status_payload["refreshable"] is True
-        assert status_payload["character_id"] == 123
-        assert status_payload["config"]["client_id_configured"] is True
-        assert status_payload["config"]["token_file_present"] is True
-        assert "client_id" not in status_payload["config"]
-        assert "access_token" not in status_payload
-        assert "refresh_token" not in status_payload
-        assert session.load_calls == [False]
-
-        status, health_payload = request_json(f"{server.url}/api/health")
-        assert status == 200
-        assert health_payload["health"]["esi"]["expired"] is False
-        assert health_payload["health"]["esi"]["refreshable"] is True
-        assert "refresh_token" not in health_payload["health"]["esi"]
-        assert session.load_calls == [False, False]
-
-        status, snapshot = request_json(
-            f"{server.url}/api/esi/session?location=false&contacts=true"
-        )
-        assert status == 200
-        assert snapshot["authenticated"] is True
-        assert snapshot["snapshot"]["contacts"][0]["standing"] == -10
-        assert session.snapshot_calls == [(False, True)]
-
-        status, location_snapshot = request_json(
-            f"{server.url}/api/esi/session?location=true&contacts=false"
-        )
-        assert status == 200
-        assert location_snapshot["snapshot"]["location"]["solar_system_id"] == (
-            30002813
-        )
-        assert location_snapshot["snapshot"]["location"]["solar_system_name"] == "Tama"
-        assert location_snapshot["snapshot"]["location"]["solar_system"]["name"] == (
-            "Tama"
-        )
-        assert session.snapshot_calls == [(False, True), (True, False)]
-    finally:
-        server.stop()
-
-
-def test_esi_session_snapshot_reports_missing_token(tmp_path):
-    class MissingTokenSession:
-        def load_tokens(self, refresh_if_needed=True):
-            raise EsiSsoError("no saved ESI token")
-
-        def snapshot(self, include_location=True, include_contacts=True):
-            raise EsiSsoError("no saved ESI token")
-
-    server = IntelHTTPServer(
-        IntelStore(tmp_path / "intel.json"),
-        port=0,
-        esi_session=MissingTokenSession(),
-        esi_config={
-            "client_id_configured": True,
-            "token_file": str(tmp_path / "missing_esi_tokens.json"),
-            "token_file_present": False,
-        },
-    )
-    server.start()
-    try:
-        status, payload = request_json(f"{server.url}/api/esi/status")
-        assert status == 200
-        assert payload["authenticated"] is False
-        assert payload["config"]["token_file_present"] is False
-        assert "no saved ESI token" in payload["error"]
-
-        try:
-            request_json(f"{server.url}/api/esi/session")
-        except HTTPError as exc:
-            assert exc.code == 401
-            error = json.loads(exc.read().decode("utf-8"))
-            assert "no saved ESI token" in error["error"]
-        else:
-            raise AssertionError("expected HTTP 401")
-    finally:
-        server.stop()
-
-
-def test_esi_status_refreshes_token_file_presence_after_start(tmp_path):
-    class MissingTokenSession:
-        def load_tokens(self, refresh_if_needed=True):
-            raise EsiSsoError("no saved ESI token")
-
-    token_file = tmp_path / "late_esi_tokens.json"
-    server = IntelHTTPServer(
-        IntelStore(tmp_path / "intel.json"),
-        port=0,
-        esi_session=MissingTokenSession(),
-        esi_config={
-            "client_id_configured": True,
-            "token_file": str(token_file),
-            "token_file_present": False,
-        },
-    )
-    server.start()
-    try:
-        status, before = request_json(f"{server.url}/api/v1/esi/status")
-        assert status == 200
-        assert before["config"]["token_file_present"] is False
-
-        token_file.write_text("{}", encoding="utf-8")
-
-        status, after = request_json(f"{server.url}/api/v1/esi/status")
-        assert status == 200
-        assert after["config"]["token_file_present"] is True
+        assert health["health"]["esi"]["config"] == {}
     finally:
         server.stop()
 
@@ -2566,71 +2327,6 @@ def test_public_lookup_routes_report_disabled_sources(tmp_path):
             assert "alliance_id" in payload["error"]
         else:
             raise AssertionError("expected HTTP 400")
-    finally:
-        server.stop()
-
-
-def test_authenticated_standings_contribute_to_alert_scoring(tmp_path):
-    class FakeResolver:
-        def character_profile(self, character_id):
-            assert character_id == 123
-            return {
-                "character_id": 123,
-                "name": "Alice",
-                "corporation_id": 456,
-            }
-
-    class FakeSession:
-        def snapshot(self, include_location=True, include_contacts=True):
-            return SimpleNamespace(
-                contacts=[
-                    ContactStanding(
-                        contact_id=456,
-                        contact_type="corporation",
-                        standing=-10,
-                    )
-                ]
-            )
-
-    store = IntelStore(
-        tmp_path / "intel.json",
-        scorer=ScoringEngine(cooldown_seconds=0),
-        enricher=ThreatEnricher(
-            resolver=FakeResolver(),
-            esi_session=FakeSession(),
-        ),
-    )
-    server = IntelHTTPServer(store, port=0)
-    server.start()
-    try:
-        status, created = request_json(
-            f"{server.url}/api/observations",
-            method="POST",
-            payload={
-                "source": "intel_channel",
-                "system_name": "Tama",
-                "names": ["Alice"],
-                "character_ids": [123],
-                "metadata": {"hostile_count": 1},
-                "seen_at": "2026-06-30T12:00:00+00:00",
-            },
-        )
-
-        assert status == 201
-        evidence_types = {item["type"] for item in created["alert"]["evidence"]}
-        assert "hostile_standing" in evidence_types
-        assert created["alert"]["score"] == 100
-
-        status, payload = request_json(
-            f"{server.url}/api/alerts/{created['alert']['id']}"
-        )
-        assert status == 200
-        profile = payload["detail"]["context"]["character_profiles"][0]
-        assert profile["contact_standing"] == -10.0
-        assert "Hostile standing -10" in payload["detail"]["explanation"]["reasons"]
-        assert "ESI profile Alice: corp 456, standing -10" in (
-            payload["detail"]["explanation"]["context"]
-        )
     finally:
         server.stop()
 
@@ -3929,6 +3625,7 @@ def test_v1_events_push_monitoring_node_offline_at_stale_deadline(tmp_path):
         server.stop()
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_auth_enforcement_accepts_valid_key_before_listener_is_discovered(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
@@ -3979,45 +3676,260 @@ def test_auth_enforcement_accepts_valid_key_before_listener_is_discovered(tmp_pa
         server.stop()
 
 
-def test_admin_can_issue_desktop_key_without_member_esi_login(tmp_path):
+def test_admin_cannot_issue_client_key_from_sentry(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
-    auth = AuthService(
-        AuthRepository(store._connect),
-        resolver=None,
-        key_risk_control=False,
-    )
+    auth = AuthService(AuthRepository(store._connect), resolver=None)
     admin = auth.create_user("admin", "admin-password-123", role="admin")
-    member = auth.create_user("pilot", "", role="member")
     admin_key = auth.create_api_key(admin["user_id"], "Admin", admin["user_id"])
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()
     try:
         status, _, payload = authenticated_request(
-            f"{server.url}/api/v1/admin/users/{member['user_id']}/keys",
+            f"{server.url}/api/v1/admin/users/user-missing/keys",
             method="POST",
             payload={"name": "Remote monitor", "key_type": "desktop"},
             headers={"Authorization": f"Bearer {admin_key['secret']}"},
         )
 
-        assert status == 201
-        issued = payload["key"]
-        assert issued["key_type"] == "desktop"
-        assert issued["identity_verified"] is True
+        assert status == 410
+        assert payload["code"] == "seat_key_management_required"
 
         status, _, payload = authenticated_request(
             f"{server.url}/api/v1/bootstrap",
-            headers={"Authorization": f"Bearer {issued['secret']}"},
+            headers={"Authorization": f"Bearer {admin_key['secret']}"},
+        )
+        assert status == 403
+        assert payload["code"] == "seat_client_key_required"
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/events?timeout=0",
+            headers={"Authorization": f"Bearer {admin_key['secret']}"},
+        )
+        assert status == 403
+        assert payload["code"] == "seat_client_key_required"
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {admin_key['secret']}"},
         )
         assert status == 200
-        assert "bootstrap" in payload
-        principal = auth.authenticate_api_key(issued["secret"])
-        assert principal.user_id == member["user_id"]
+        assert payload["user"]["user_id"] == admin["user_id"]
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/me/keys",
+            method="POST",
+            payload={"name": "Remote monitor"},
+            headers={"Authorization": f"Bearer {admin_key['secret']}"},
+        )
+        assert status == 410
+        assert payload["code"] == "seat_key_management_required"
     finally:
         server.stop()
         auth.close()
         store.close()
 
 
+def test_seat_integration_key_lifecycle_is_bearer_only_and_idempotent(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    token = "seat-service-token-" + "x" * 40
+    server = IntelHTTPServer(
+        store,
+        port=0,
+        seat_integration_token=token,
+    )
+    server.start()
+    url = f"{server.url}/api/v1/integrations/seat/keys"
+    headers = {
+        "Authorization": f"Bearer {token}",
+    }
+    request_payload = {
+        "operation_id": "00000000-0000-0000-0000-000000000001",
+        "key_id": "00000000-0000-0000-0000-000000000002",
+        "account_id": "00000000-0000-0000-0000-000000000003",
+        "name": "Seat monitor",
+        "key_prefix": "seat_abcd",
+        "key_hash": hashlib.sha256(b"seat-secret").hexdigest(),
+        "permissions": ["monitor", "alert"],
+        "protocol_version": 1,
+    }
+    try:
+        status, _, payload = authenticated_request(
+            url,
+            method="POST",
+            payload=request_payload,
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        assert status == 401
+        assert payload["code"] == "seat_integration_unauthorized"
+
+        status, _, payload = authenticated_request(
+            url,
+            method="POST",
+            payload=request_payload,
+            headers=headers,
+        )
+        assert status == 201
+        assert payload["permissions"] == ["monitor", "alert"]
+        key_id = payload["key_id"]
+        assert payload["version"] == 1
+        assert "secret" not in payload
+
+        status, _, replay = authenticated_request(
+            url,
+            method="POST",
+            payload=request_payload,
+            headers=headers,
+        )
+        assert status == 200
+        assert replay["key_id"] == key_id
+        assert replay["idempotent_replay"] is True
+        assert "secret" not in replay
+
+        status, _, conflict = authenticated_request(
+            url,
+            method="POST",
+            payload={**request_payload, "name": "Different"},
+            headers=headers,
+        )
+        assert status == 409
+        assert conflict["code"] == "operation_conflict"
+
+        repository = AuthRepository(store._connect)
+        stored = repository._one(
+            "SELECT * FROM seat_integration_keys WHERE key_id = ?",
+            (key_id,),
+        )
+        assert stored is not None
+        assert stored["key_hash"] == request_payload["key_hash"]
+        assert request_payload["key_hash"] not in json.dumps(repository.list_audit())
+
+        revoke_url = f"{server.url}/api/v1/integrations/seat/keys/{key_id}"
+        status, _, revoked = authenticated_request(
+            revoke_url,
+            method="DELETE",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert status == 200
+        assert revoked["revoked"] is True
+        assert revoked["status"] == "revoked"
+
+        status, _, revoked_again = authenticated_request(
+            revoke_url,
+            method="DELETE",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert status == 200
+        assert revoked_again["revoked_at"] == revoked["revoked_at"]
+
+        status, _, missing = authenticated_request(
+            f"{server.url}/api/v1/integrations/seat/keys/seat_missing",
+            method="DELETE",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert status == 404
+        assert missing["code"] == "seat_key_not_found"
+
+        actions = [item["action"] for item in repository.list_audit()]
+        assert actions.count("seat_key.created") == 1
+        assert actions.count("seat_key.revoked") == 1
+    finally:
+        server.stop()
+        store.close()
+
+
+def test_seat_integration_is_disabled_without_service_token(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/integrations/seat/keys",
+            method="POST",
+            payload={
+                "operation_id": "00000000-0000-0000-0000-000000000001",
+                "key_id": "00000000-0000-0000-0000-000000000002",
+                "account_id": "00000000-0000-0000-0000-000000000003",
+                "name": "Seat monitor",
+                "key_prefix": "seat_abcd",
+                "key_hash": "a" * 64,
+                "permissions": ["monitor"],
+                "protocol_version": 1,
+            },
+        )
+        assert status == 503
+        assert payload["code"] == "seat_integration_disabled"
+    finally:
+        server.stop()
+        store.close()
+
+
+def test_seat_principal_permission_whitelist_isolated_from_regular_auth(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    repository = AuthRepository(store._connect)
+    auth = AuthService(repository, resolver=None, seat_auth_mode="enforce")
+    user = auth.create_user("pilot", "a-strong-password", role="member")
+    alert_secret = "seat-alert-secret"
+    alert_key_id = "seat-key-alert"
+    created_at = "2026-09-29T00:00:00+00:00"
+    repository.create_seat_integration_key(
+        {
+            "key_id": alert_key_id,
+            "account_id": "seat-alert-account",
+            "name": "Seat alert",
+            "key_prefix": alert_secret[:12],
+            "key_hash": hashlib.sha256(alert_secret.encode()).hexdigest(),
+            "permissions_json": json.dumps(["alert"]),
+            "protocol_version": 1,
+            "status": "active",
+            "created_at": created_at,
+            "revoked_at": "",
+            "revoked_reason": "",
+        },
+        "seat-http-op-alert",
+        "seat-http-request-alert",
+        auth._audit_record("seat-integration", alert_key_id, "seat_key.created", {}),
+    )
+    auth.bind_seat_account("seat-alert-account", user["user_id"], "admin")
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    headers = {"Authorization": f"Bearer {alert_secret}"}
+    try:
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/active-intel",
+            headers=headers,
+        )
+        assert status == 200
+        assert payload["count"] == 0
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/clients/heartbeats",
+            method="POST",
+            payload={},
+            headers=headers,
+        )
+        assert status == 403
+        assert payload["code"] == "seat_permission_denied"
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/users",
+            headers=headers,
+        )
+        assert status == 403
+        assert payload["code"] == "seat_permission_denied"
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/config",
+            headers=headers,
+        )
+        assert status == 403
+        assert payload["code"] == "seat_permission_denied"
+    finally:
+        server.stop()
+        auth.close()
+        store.close()
+
+
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_admin_can_toggle_key_risk_control_from_web(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
@@ -4128,6 +4040,7 @@ def test_admin_can_read_esi_gateway_observability(tmp_path):
         store.close()
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_async_identity_report_acknowledges_before_esi_finishes(tmp_path):
     started = threading.Event()
     release = threading.Event()
@@ -4184,9 +4097,11 @@ def test_async_identity_report_acknowledges_before_esi_finishes(tmp_path):
 
 def test_authenticated_business_posts_preserve_their_request_body(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
-    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    auth = AuthService(
+        AuthRepository(store._connect), AuthTestResolver(), seat_auth_mode="enforce"
+    )
     member = auth.create_user("pilot", "pilot-password-123", role="member")
-    key = auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
+    key = _create_seat_http_key(auth, member["user_id"], ("monitor",))
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()
     headers = {"Authorization": f"Bearer {key['secret']}"}
@@ -4223,9 +4138,11 @@ def test_authenticated_business_posts_preserve_their_request_body(tmp_path):
 
 def test_heartbeat_credential_binding_is_server_owned_and_private(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
-    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    auth = AuthService(
+        AuthRepository(store._connect), AuthTestResolver(), seat_auth_mode="enforce"
+    )
     member = auth.create_user("pilot", "pilot-password-123", role="member")
-    key = auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
+    key = _create_seat_http_key(auth, member["user_id"], ("monitor", "alert"))
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()
     headers = {
@@ -4277,9 +4194,11 @@ def test_heartbeat_credential_binding_is_server_owned_and_private(tmp_path):
 )
 def test_heartbeat_routes_replace_client_time_and_attribution(tmp_path, path):
     store = AuthTestStore(tmp_path / "intel.json")
-    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    auth = AuthService(
+        AuthRepository(store._connect), AuthTestResolver(), seat_auth_mode="enforce"
+    )
     member = auth.create_user("pilot", "pilot-password-123", role="member")
-    key = auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
+    key = _create_seat_http_key(auth, member["user_id"], ("monitor",))
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()
     before = datetime.now(timezone.utc) - timedelta(seconds=1)
@@ -4316,14 +4235,16 @@ def test_heartbeat_rejects_cross_user_takeover_and_allows_same_user_new_key(
     tmp_path,
 ):
     store = AuthTestStore(tmp_path / "intel.json")
-    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    auth = AuthService(
+        AuthRepository(store._connect), AuthTestResolver(), seat_auth_mode="enforce"
+    )
     first = auth.create_user("pilot-one", "pilot-password-123", role="member")
     second = auth.create_user("pilot-two", "pilot-password-123", role="member")
-    first_key = auth.create_api_key(first["user_id"], "First", first["user_id"])
-    replacement_key = auth.create_api_key(
-        first["user_id"], "Replacement", first["user_id"]
+    first_key = _create_seat_http_key(auth, first["user_id"], ("monitor",))
+    replacement_key = _create_seat_http_key(
+        auth, first["user_id"], ("monitor",), first_key["account_id"]
     )
-    second_key = auth.create_api_key(second["user_id"], "Second", second["user_id"])
+    second_key = _create_seat_http_key(auth, second["user_id"], ("monitor",))
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()
     client_id = "detector:shared"
@@ -4379,12 +4300,16 @@ def test_heartbeat_rejects_browser_session_when_auth_is_enforced(tmp_path):
 
 def test_admin_clients_aggregates_all_key_usage_and_rejects_members(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
-    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    auth = AuthService(
+        AuthRepository(store._connect), AuthTestResolver(), seat_auth_mode="enforce"
+    )
     admin = auth.create_user("admin", "admin-password-123", role="admin")
     member = auth.create_user("pilot", "pilot-password-123", role="member")
-    admin_key = auth.create_api_key(admin["user_id"], "Admin", admin["user_id"])
-    member_key = auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
-    unused_key = auth.create_api_key(member["user_id"], "Spare", member["user_id"])
+    admin_key = _create_seat_http_key(auth, admin["user_id"], ("alert",))
+    member_key = _create_seat_http_key(auth, member["user_id"], ("monitor",))
+    unused_key = _create_seat_http_key(
+        auth, member["user_id"], ("monitor",), member_key["account_id"]
+    )
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()
     member_headers = {"Authorization": f"Bearer {member_key['secret']}"}
@@ -4410,11 +4335,21 @@ def test_admin_clients_aggregates_all_key_usage_and_rejects_members(tmp_path):
             headers=member_headers,
         )
         assert status == 403
-        assert payload["code"] == "forbidden"
+        assert payload["code"] == "seat_permission_denied"
+
+        status, response_headers, _ = authenticated_request(
+            f"{server.url}/api/v1/auth/login",
+            method="POST",
+            payload={"username": "admin", "password": "admin-password-123"},
+        )
+        assert status == 200
+        admin_session_headers = {
+            "Cookie": response_headers["Set-Cookie"].split(";", 1)[0],
+        }
 
         status, _, payload = authenticated_request(
             f"{server.url}/api/v1/admin/clients",
-            headers={"Authorization": f"Bearer {admin_key['secret']}"},
+            headers=admin_session_headers,
         )
         assert status == 200
         assert set(payload) == {"clients", "keys"}
@@ -4433,7 +4368,7 @@ def test_admin_clients_aggregates_all_key_usage_and_rejects_members(tmp_path):
             assert client["user_id"] == member["user_id"]
             assert client["api_key_id"] == member_key["key_id"]
             assert client["owner"]["username"] == "pilot"
-            assert client["key"]["name"] == "Desktop"
+            assert client["key"]["name"] == "Seat test key"
         assert clients_by_id["alert-client:one"]["remote_ip"] == "203.0.113.22"
         assert clients_by_id["detector-client:one"]["remote_ip"] == "203.0.113.21"
 
@@ -4456,123 +4391,6 @@ def test_admin_clients_aggregates_all_key_usage_and_rejects_members(tmp_path):
         assert usage_by_key[unused_key["key_id"]]["linked_clients"] == []
         assert usage_by_key[unused_key["key_id"]]["last_client"] is None
     finally:
-        server.stop()
-
-
-def test_eve_sso_http_flow_sets_member_session_cookie(tmp_path):
-    store = AuthTestStore(tmp_path / "intel.json")
-    auth = AuthService(
-        AuthRepository(store._connect),
-        AuthTestResolver(),
-        esi_sso_client=AuthTestSsoClient(),
-    )
-    member = auth.create_user("pilot", "", role="member")
-    auth.add_allowed_corporation(9001, member["user_id"])
-    auth.add_whitelist_character(member["user_id"], 101, "main", member["user_id"])
-    server = IntelHTTPServer(store, port=0, auth_service=auth)
-    server.start()
-    parsed = urlparse(server.url)
-    connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3)
-    try:
-        connection.request(
-            "GET",
-            "/api/v1/auth/esi/start?return_to=%2Faccount%2Fkeys",
-        )
-        start = connection.getresponse()
-        start.read()
-        assert start.status == 302
-        assert start.getheader("Location") == (
-            "https://login.eve.test/authorize?state=web-state"
-        )
-
-        connection.request(
-            "GET",
-            "/api/v1/auth/esi/callback?state=web-state&code=web-code",
-        )
-        callback = connection.getresponse()
-        callback.read()
-        assert callback.status == 302
-        assert callback.getheader("Location") == "/account/keys"
-        assert "eve_sentry_session=" in str(callback.getheader("Set-Cookie"))
-    finally:
-        connection.close()
-        server.stop()
-
-
-def test_shared_esi_callback_routes_tactical_authorization_by_state(tmp_path):
-    class TacticalLogin:
-        def __init__(self):
-            self.callbacks = []
-
-        def owns_callback(self, callback_url):
-            return "state=tactical-state" in callback_url
-
-        def complete_callback(self, callback_url):
-            self.callbacks.append(callback_url)
-            return {"status": "authenticated"}
-
-    store = AuthTestStore(tmp_path / "intel.json")
-    auth = AuthService(
-        AuthRepository(store._connect),
-        AuthTestResolver(),
-        esi_sso_client=AuthTestSsoClient(),
-    )
-    tactical_login = TacticalLogin()
-    server = IntelHTTPServer(
-        store,
-        port=0,
-        auth_service=auth,
-        esi_login=tactical_login,
-    )
-    server.start()
-    parsed = urlparse(server.url)
-    connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3)
-    try:
-        connection.request(
-            "GET",
-            "/api/v1/auth/esi/callback?state=tactical-state&code=tactical-code",
-        )
-        callback = connection.getresponse()
-        callback.read()
-
-        assert callback.status == 302
-        assert callback.getheader("Location") == "/?esi_login=authenticated"
-        assert tactical_login.callbacks == [
-            "/api/v1/auth/esi/callback?state=tactical-state&code=tactical-code"
-        ]
-    finally:
-        connection.close()
-        server.stop()
-
-
-def test_shared_esi_callback_completes_tactical_flow_without_auth_service(tmp_path):
-    class TacticalLogin:
-        def owns_callback(self, callback_url):
-            return "state=tactical-state" in callback_url
-
-        def complete_callback(self, callback_url):
-            return {"status": "authenticated"}
-
-    server = IntelHTTPServer(
-        IntelStore(tmp_path / "intel.json"),
-        port=0,
-        esi_login=TacticalLogin(),
-    )
-    server.start()
-    parsed = urlparse(server.url)
-    connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3)
-    try:
-        connection.request(
-            "GET",
-            "/api/v1/auth/esi/callback?state=tactical-state&code=tactical-code",
-        )
-        callback = connection.getresponse()
-        callback.read()
-
-        assert callback.status == 302
-        assert callback.getheader("Location") == "/?esi_login=authenticated"
-    finally:
-        connection.close()
         server.stop()
 
 
@@ -4630,7 +4448,12 @@ def test_browser_session_requires_csrf_and_service_key_is_read_only(tmp_path):
         status, _, _ = authenticated_request(
             f"{server.url}/api/v1/bootstrap", headers=service_headers
         )
-        assert status == 200
+        assert status == 403
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/auth/me", headers=service_headers
+        )
+        assert status == 403
+        assert payload["code"] == "service_key_scope_denied"
         status, _, payload = authenticated_request(
             f"{server.url}/api/v1/clients/heartbeats",
             method="POST",
@@ -4638,7 +4461,7 @@ def test_browser_session_requires_csrf_and_service_key_is_read_only(tmp_path):
             headers=service_headers,
         )
         assert status == 403
-        assert payload["code"] == "read_only_key"
+        assert payload["code"] == "seat_client_key_required"
     finally:
         server.stop()
 
@@ -4711,7 +4534,7 @@ def test_api_key_can_be_revoked_enabled_and_permanently_deleted_over_http(tmp_pa
         server.stop()
 
 
-def test_member_session_cannot_access_administrator_routes(tmp_path):
+def test_member_session_uses_local_password_and_cannot_access_administrator_routes(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
     auth.create_user("pilot", "pilot-password-123", role="member")
@@ -4723,20 +4546,27 @@ def test_member_session_cannot_access_administrator_routes(tmp_path):
             method="POST",
             payload={"username": "pilot", "password": "pilot-password-123"},
         )
+        assert status == 200
+        assert "Set-Cookie" in response_headers
+        assert payload["user"]["role"] == "member"
+
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/admin/users",
+            headers={"Cookie": response_headers["Set-Cookie"]},
+        )
         assert status == 403
-        assert "Set-Cookie" not in response_headers
-        assert payload["code"] == "eve_sso_required"
+        assert payload["code"] == "forbidden"
     finally:
         server.stop()
 
 
-def test_service_key_is_scoped_to_bootstrap_and_sse(tmp_path):
+def test_seat_alert_key_is_scoped_to_bootstrap_and_sse(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
-    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
-    admin = auth.create_user("admin", "admin-password-123", role="admin")
-    service_key = auth.create_api_key(
-        admin["user_id"], "QQ bot", admin["user_id"], key_type="service_readonly"
+    auth = AuthService(
+        AuthRepository(store._connect), AuthTestResolver(), seat_auth_mode="enforce"
     )
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    service_key = _create_seat_http_key(auth, admin["user_id"], ("alert",))
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()
     headers = {"Authorization": f"Bearer {service_key['secret']}"}
@@ -4750,27 +4580,24 @@ def test_service_key_is_scoped_to_bootstrap_and_sse(tmp_path):
             f"{server.url}/api/v1/admin/users", headers=headers
         )
         assert status == 403
-        assert payload["code"] == "service_key_scope_denied"
+        assert payload["code"] == "seat_permission_denied"
 
         status, _, payload = authenticated_request(
             f"{server.url}/api/alerts", headers=headers
         )
         assert status == 403
-        assert payload["code"] == "service_key_scope_denied"
+        assert payload["code"] == "seat_permission_denied"
     finally:
         server.stop()
 
 
-def test_service_key_can_read_integration_hostile_systems(tmp_path):
+def test_seat_alert_key_can_read_integration_hostile_systems(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
-    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
-    admin = auth.create_user("admin", "admin-password-123", role="admin")
-    service_key = auth.create_api_key(
-        admin["user_id"],
-        "External integration",
-        admin["user_id"],
-        key_type="service_readonly",
+    auth = AuthService(
+        AuthRepository(store._connect), AuthTestResolver(), seat_auth_mode="enforce"
     )
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    service_key = _create_seat_http_key(auth, admin["user_id"], ("alert",))
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()
     headers = {"Authorization": f"Bearer {service_key['secret']}"}
@@ -4800,11 +4627,11 @@ def test_service_key_can_read_integration_hostile_systems(tmp_path):
 
 def test_sse_disconnects_after_service_key_owner_is_disabled(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
-    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
-    admin = auth.create_user("admin", "admin-password-123", role="admin")
-    service_key = auth.create_api_key(
-        admin["user_id"], "QQ bot", admin["user_id"], key_type="service_readonly"
+    auth = AuthService(
+        AuthRepository(store._connect), AuthTestResolver(), seat_auth_mode="enforce"
     )
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    service_key = _create_seat_http_key(auth, admin["user_id"], ("alert",))
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()
     request = Request(
@@ -4830,11 +4657,11 @@ def test_sse_does_not_revalidate_unchanged_service_key_every_second(
     monkeypatch,
 ):
     store = AuthTestStore(tmp_path / "intel.json")
-    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
-    admin = auth.create_user("admin", "admin-password-123", role="admin")
-    service_key = auth.create_api_key(
-        admin["user_id"], "QQ bot", admin["user_id"], key_type="service_readonly"
+    auth = AuthService(
+        AuthRepository(store._connect), AuthTestResolver(), seat_auth_mode="enforce"
     )
+    admin = auth.create_user("admin", "admin-password-123", role="admin")
+    service_key = _create_seat_http_key(auth, admin["user_id"], ("alert",))
     active_checks = 0
     original_check = auth.is_principal_active
 
@@ -5036,6 +4863,25 @@ def test_events_stream_sends_keepalive_comments_when_idle(tmp_path):
         assert headers["Content-Type"].startswith("text/event-stream")
         assert ": keepalive" in body
         assert "event: alert" not in body
+    finally:
+        server.stop()
+def test_retired_esi_auth_routes_are_not_exposed(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    try:
+        for method, path in (
+            ("GET", "/api/v1/esi/login"),
+            ("POST", "/api/v1/esi/login"),
+            ("GET", "/api/v1/esi/session"),
+            ("GET", "/api/v1/auth/esi/start"),
+            ("GET", "/api/v1/auth/esi/callback?state=retired"),
+        ):
+            try:
+                request_json(f"{server.url}{path}", method=method)
+            except HTTPError as exc:
+                assert exc.code == 404
+            else:
+                raise AssertionError(f"retired route still exposed: {method} {path}")
     finally:
         server.stop()
 
@@ -7049,3 +6895,4 @@ def test_invalid_post_returns_400(tmp_path):
             raise AssertionError("expected HTTP 400")
     finally:
         server.stop()
+

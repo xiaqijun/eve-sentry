@@ -9,10 +9,7 @@ import { AccountKeysPage } from "./features/auth/AccountKeysPage";
 import { AdminAuditPage } from "./features/auth/AdminAuditPage";
 import { AdminEsiGatewayPage } from "./features/auth/AdminEsiGatewayPage";
 import { AdminClientsPage } from "./features/auth/AdminClientsPage";
-import { AdminIdentityPage } from "./features/auth/AdminIdentityPage";
-import { AdminSecurityPage } from "./features/auth/AdminSecurityPage";
 import { AdminUsersPage } from "./features/auth/AdminUsersPage";
-import { AdminWhitelistPage } from "./features/auth/AdminWhitelistPage";
 import { LoginPage } from "./features/auth/LoginPage";
 import { ProtectedRoute } from "./features/auth/RouteGuards";
 import { ManagementShell } from "./features/shell/ManagementShell";
@@ -54,9 +51,6 @@ export const router = createBrowserRouter([
       { path: "admin", element: <Navigate replace to="/admin/users" /> },
       { path: "admin/users", element: <ProtectedRoute admin><AdminUsersPage /></ProtectedRoute> },
       { path: "admin/clients", element: <ProtectedRoute admin><AdminClientsPage /></ProtectedRoute> },
-      { path: "admin/identity", element: <ProtectedRoute admin><AdminIdentityPage /></ProtectedRoute> },
-      { path: "admin/security", element: <ProtectedRoute admin><AdminSecurityPage /></ProtectedRoute> },
-      { path: "admin/whitelist", element: <ProtectedRoute admin><AdminWhitelistPage /></ProtectedRoute> },
       { path: "admin/audit", element: <ProtectedRoute admin><AdminAuditPage /></ProtectedRoute> },
       { path: "admin/esi-gateway", element: <ProtectedRoute admin><AdminEsiGatewayPage /></ProtectedRoute> },
     ],

@@ -9,7 +9,7 @@ from time import time
 from typing import Any
 
 from app.core.models import Observation
-from app.esi.session import (
+from app.esi.contact_models import (
     ContactStanding,
     apply_contact_standing,
     contact_standings_from_payload,

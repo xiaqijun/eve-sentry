@@ -50,16 +50,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["off", "setup", "enforce"],
         default="off",
     )
-    parser.add_argument(
-        "--key-risk-control",
-        choices=["on", "off"],
-        default="on",
-        help="enable ESI-backed desktop-key identity risk control",
-    )
     parser.add_argument("--auth-bootstrap-admin", default="")
     parser.add_argument("--auth-bootstrap-password-file", default="")
-    parser.add_argument("--auth-esi-client-id", default="")
-    parser.add_argument("--auth-esi-redirect-uri", default="")
+    parser.add_argument(
+        "--seat-integration-token",
+        default="",
+        help="Bearer token for the optional SeAT key-management integration",
+    )
+    parser.add_argument(
+        "--seat-auth-mode",
+        choices=["off", "enforce"],
+        default="off",
+        help="Authenticate and scope SeAT-issued keys independently of general auth",
+    )
     parser.add_argument("--config", default="intel_config.json")
     parser.add_argument("--map-config", default="intel_map.json")
     parser.add_argument(
@@ -87,37 +90,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not fall back to direct public ESI when the Gateway fails",
     )
-    parser.add_argument("--esi-client-id", default="")
-    parser.add_argument(
-        "--esi-redirect-uri",
-        default="http://127.0.0.1:8766/callback",
-    )
-    parser.add_argument("--esi-token-file", default="esi_tokens.json")
-    parser.add_argument(
-        "--esi-standings-ttl",
-        type=float,
-        default=600.0,
-        help="authenticated character standings cache TTL in seconds (300-900)",
-    )
-    parser.add_argument(
-        "--esi-token-storage",
-        choices=["auto", "secure", "plain"],
-        default="auto",
-        help="ESI token storage protection mode",
-    )
-    parser.add_argument(
-        "--esi-login",
-        action="store_true",
-        help="complete local EVE SSO authorization before starting the server",
-    )
-    parser.add_argument(
-        "--esi-login-only",
-        action="store_true",
-        help="complete local EVE SSO authorization, save tokens, and exit",
-    )
-    parser.add_argument("--esi-login-timeout", type=float, default=300.0)
-    parser.add_argument("--esi-no-browser", action="store_true")
-    parser.add_argument("--esi-scope", action="append", default=[], dest="esi_scopes")
     parser.add_argument(
         "--enable-killboard",
         action="store_true",
@@ -142,14 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    if args.esi_login or args.esi_login_only:
-        _run_esi_login(args)
-        if args.esi_login_only:
-            return 0
-
     resolver = None
-    esi_session = None
-    esi_login = None
     esi_cache = None
     enable_esi = _should_enable_esi(args)
     if enable_esi:
@@ -161,29 +126,28 @@ def main(argv: list[str] | None = None) -> int:
         resolver_client = _build_public_esi_client(args)
 
         resolver = EsiResolver(client=resolver_client, cache=esi_cache)
-        if args.esi_client_id:
-            esi_session = _build_esi_session(args, cache=esi_cache)
-            esi_login = _build_esi_login(args)
 
     enricher = None
-    if resolver is not None or esi_session is not None:
+    if resolver is not None:
         from app.intel.enrichment import ThreatEnricher
 
         enricher = ThreatEnricher(
             resolver=resolver,
-            esi_session=esi_session,
         )
 
     from app.intel.config import IntelConfigStore
 
     config_store = IntelConfigStore(args.config)
     map_config_store = MapConfigStore(args.map_config)
+    from app.server.map_settings import restore_monitoring_config
+
+    saved_monitoring = restore_monitoring_config(map_config_store)
     map_overrides: dict[str, Any] = {}
-    if args.map_source is not None:
+    if args.map_source is not None and not saved_monitoring:
         map_overrides["source"] = args.map_source
-    if args.map_region is not None:
+    if args.map_region is not None and not saved_monitoring:
         map_overrides["region_ids"] = args.map_region
-    if args.map_system is not None:
+    if args.map_system is not None and not saved_monitoring:
         map_overrides["system_ids"] = args.map_system
     if args.map_sde_path is not None:
         map_overrides["sde_path"] = args.map_sde_path
@@ -208,11 +172,11 @@ def main(argv: list[str] | None = None) -> int:
         "host": args.host,
         "port": args.port,
         "config_store": config_store,
-        "esi_session": esi_session,
         "esi_config": _build_esi_config(args),
-        "esi_login": esi_login,
         "map_config_store": map_config_store,
     }
+    if args.seat_integration_token:
+        server_options["seat_integration_token"] = args.seat_integration_token
     if auth_service is not None:
         server_options["auth_service"] = auth_service
     server = IntelHTTPServer(store, **server_options)
@@ -336,16 +300,12 @@ def _validate_args(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
 ) -> None:
-    if (args.esi_login or args.esi_login_only) and not args.esi_client_id.strip():
-        parser.error("--esi-client-id is required when using ESI login")
     if args.storage == "postgres" and not str(args.postgres_dsn or "").strip():
         parser.error("--postgres-dsn is required when using PostgreSQL storage")
     if args.report_retention_days < 0:
         parser.error("--report-retention-days must not be negative")
     if args.inactive_intel_retention_days < 0:
         parser.error("--inactive-intel-retention-days must not be negative")
-    if not 300.0 <= float(getattr(args, "esi_standings_ttl", 600.0)) <= 900.0:
-        parser.error("--esi-standings-ttl must be between 300 and 900 seconds")
     if args.hot_report_limit <= 0:
         parser.error("--hot-report-limit must be positive")
     if args.auth_mode != "off" and args.storage == "json":
@@ -354,6 +314,8 @@ def _validate_args(
         parser.error(
             "--auth-bootstrap-password-file is required with --auth-bootstrap-admin"
         )
+    if args.seat_integration_token and len(args.seat_integration_token) < 32:
+        parser.error("--seat-integration-token must be at least 32 characters")
     if args.esi_backend == "remote":
         if not str(args.esi_gateway_url or "").strip():
             parser.error("--esi-gateway-url is required with --esi-backend remote")
@@ -364,11 +326,7 @@ def _validate_args(
 
 
 def _should_enable_esi(args: argparse.Namespace) -> bool:
-    return bool(
-        args.enable_esi
-        or args.auth_mode != "off"
-        or (args.esi_login and not args.esi_login_only)
-    )
+    return bool(args.enable_esi)
 
 
 def _build_auth_service(
@@ -376,15 +334,11 @@ def _build_auth_service(
     store: IntelStore,
     resolver: Any | None,
 ) -> Any | None:
-    key_risk_control = str(getattr(args, "key_risk_control", "on") or "on")
-    if args.auth_mode == "off":
+    if args.auth_mode == "off" and args.seat_auth_mode == "off":
         return None
     connect = getattr(store, "_connect", None)
     if not callable(connect):
         raise RuntimeError("authentication requires a SQL-backed store")
-    if resolver is None and key_risk_control == "on":
-        raise RuntimeError("key risk control requires public ESI")
-
     from app.server.auth import AuthService
     from app.server.auth_store import AuthRepository
 
@@ -392,8 +346,7 @@ def _build_auth_service(
         AuthRepository(connect),
         resolver,
         enforce_requests=args.auth_mode == "enforce",
-        esi_sso_client=_build_auth_esi_sso_client(args),
-        key_risk_control=key_risk_control == "on",
+        seat_auth_mode=args.seat_auth_mode,
     )
     username = str(args.auth_bootstrap_admin or "").strip()
     if username:
@@ -410,80 +363,15 @@ def _build_auth_service(
             "authentication has no users; configure --auth-bootstrap-admin and "
             "--auth-bootstrap-password-file for the first start"
         )
-    service.start_identity_worker()
     return service
 
 
-def _build_esi_sso_client(args: argparse.Namespace) -> Any:
-    from app.esi.sso import DEFAULT_SCOPES, EveSsoClient
-
-    return EveSsoClient(
-        client_id=args.esi_client_id,
-        redirect_uri=args.esi_redirect_uri,
-        scopes=args.esi_scopes or DEFAULT_SCOPES,
-    )
-
-
-def _build_auth_esi_sso_client(args: argparse.Namespace) -> Any | None:
-    client_id = str(args.esi_client_id or "").strip()
-    redirect_uri = str(args.esi_redirect_uri or "").strip()
-    if not client_id or not redirect_uri:
-        return None
-    from app.esi.sso import EveSsoClient
-
-    return EveSsoClient(
-        client_id=client_id,
-        redirect_uri=redirect_uri,
-        scopes=[],
-    )
-
-
-def _build_esi_session(
-    args: argparse.Namespace,
-    cache: Any | None = None,
-) -> Any:
-    from app.esi.session import EsiAuthenticatedSession
-    from app.esi.sso import build_token_store
-    from app.esi.transport import configured_client
-
-    return EsiAuthenticatedSession(
-        sso_client=_build_esi_sso_client(args),
-        esi_client=configured_client(args),
-        token_store=build_token_store(
-            args.esi_token_file,
-            storage=args.esi_token_storage,
-        ),
-        cache=cache,
-        standing_ttl_seconds=float(getattr(args, "esi_standings_ttl", 600.0)),
-    )
-
-
-def _build_esi_login(args: argparse.Namespace) -> Any:
-    from app.esi.sso import EsiLoginManager, build_token_store
-
-    return EsiLoginManager(
-        client=_build_esi_sso_client(args),
-        token_store=build_token_store(
-            args.esi_token_file,
-            storage=args.esi_token_storage,
-        ),
-        timeout_seconds=args.esi_login_timeout,
-    )
-
-
 def _build_esi_config(args: argparse.Namespace) -> dict[str, Any]:
-    token_file = str(args.esi_token_file or "").strip()
-    token_path = Path(token_file) if token_file else None
     return {
         "backend": str(getattr(args, "esi_backend", "local") or "local"),
         "gateway_url": str(getattr(args, "esi_gateway_url", "") or "").strip(),
         "local_fallback": not bool(getattr(args, "esi_no_local_fallback", False)),
-        "client_id_configured": bool(str(args.esi_client_id or "").strip()),
-        "redirect_uri": str(args.esi_redirect_uri or "").strip(),
-        "token_file": token_file,
-        "token_file_present": bool(token_path and token_path.exists()),
-        "token_storage": str(args.esi_token_storage or "").strip(),
-        "scopes": list(args.esi_scopes or []),
+        "authenticated_esi_enabled": False,
     }
 
 
@@ -508,29 +396,6 @@ def _build_public_esi_client(args: argparse.Namespace) -> Any:
         timeout=args.esi_remote_timeout,
         fallback=fallback,
     )
-
-
-def _run_esi_login(args: argparse.Namespace) -> Any:
-    from app.esi.sso import build_token_store, run_local_sso_login
-
-    token_store = build_token_store(
-        args.esi_token_file,
-        storage=args.esi_token_storage,
-    )
-    tokens = run_local_sso_login(
-        _build_esi_sso_client(args),
-        token_store,
-        timeout_seconds=args.esi_login_timeout,
-        open_browser=not args.esi_no_browser,
-        announce_url=lambda url: print(f"Open this URL to authorize:\n{url}"),
-    )
-    character = tokens.character_id or "unknown"
-    storage = "secure" if token_store.is_secure else "plain"
-    print(
-        f"Saved ESI token for character {character} to {token_store.path} "
-        f"({storage} storage)"
-    )
-    return tokens
 
 
 if __name__ == "__main__":

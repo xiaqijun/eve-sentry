@@ -149,28 +149,15 @@ export interface EsiPayload {
   session?: boolean;
   character_id?: number;
   config?: {
-    client_id_configured?: boolean;
-    token_file_present?: boolean;
-    token_storage?: string;
-    scopes?: string[];
+    authenticated_esi_enabled?: boolean;
     [key: string]: unknown;
   };
   error?: string;
   [key: string]: unknown;
 }
 
-export interface EsiLoginPayload {
-  status: string;
-  authorization_url?: string;
-  started_at?: number;
-  expires_at?: number;
-  timeout_seconds?: number;
-  character_id?: number | null;
-  error?: string;
-  [key: string]: unknown;
-}
-
 export interface BootstrapPayload {
+  monitoring_scope?: { enabled: boolean; version: string; systems: Array<{ name: string; system_id: number | null }> };
   schema_version: string;
   generated_at: string;
   map: MapSnapshotPayload;

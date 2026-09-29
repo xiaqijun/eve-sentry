@@ -1,5 +1,8 @@
 # Web 管理系统
 
+星图管理员可使用「监控范围」配置整个星域、额外包含及排除星系，保存前预览覆盖数量。
+区域外仅本地预警；完整规则与发布要求见[星图监控范围](monitoring-regions.md)。本项尚未发布。
+
 2026-09-13 本地修复（未部署）：网关观测区区分 Relay 在线/不可达、ESI 直连与旧 Gateway。
 Relay 展示连接和当前隧道计数，不把旧 JSON 缓存的零计数当成未启动；其业务缓存和 ESI 请求级延迟显示不适用。
 健康检查失败后保留的数据标注为上次成功结果，不代表当前在线；直连不使用网关，不显示为启动失败。
@@ -33,11 +36,9 @@ Relay 展示连接和当前隧道计数，不把旧 JSON 缓存的零计数当�
 | `/reports/history` | 来袭历史数据查询 | 登录用户 |
 | `/account/keys` | 设备密钥列表 | 登录用户 |
 | `/admin/users` | 用户管理 | 管理员 |
-| `/admin/identity` | 已验证身份记录 | 管理员 |
-| `/admin/whitelist` | 允许军团和用户角色白名单 | 管理员 |
 | `/admin/audit` | 中文审计日志 | 管理员 |
 | `/admin/esi-gateway` | ESI 网关运行观测 | 管理员 |
-| `/login` | 管理员密码和普通用户 EVE SSO 登录 | 未登录用户 |
+| `/login` | 管理员和普通用户平台账号密码登录 | 未登录用户 |
 
 `/account` 和兼容路由 `/account/security` 重定向到 `/account/keys`，`/admin` 重定向到
 `/admin/users`。管理功能按职责拆分为独立页面，不在同一页面堆叠用户、身份和审计内容。
@@ -166,7 +167,7 @@ npm run preview
 
 ## 稳定性与错误恢复
 
-- 前端 API wrapper 会在返回边界规范化集合字段。服务端省略 `keys`、`whitelist`、`verified_characters`、`heartbeats`、`alerts` 等字段时，页面显示为空状态而不会抛出 `undefined.map`。
+- 前端 API wrapper 会在返回边界规范化集合字段。服务端省略 `keys`、`heartbeats`、`alerts` 等字段时，页面显示为空状态而不会抛出 `undefined.map`。
 - 路由提供统一可恢复错误页。页面渲染异常时可以重新加载当前路由或返回工作台，错误编号可用于日志关联。
 - SSE 的 `alert` 和 `bootstrap` 事件解析失败会进入连接错误处理，不会让事件监听器抛出未捕获异常。
 - Dashboard、Workbench、来袭分析和来袭历史的后台刷新已暂停；回到页面后由 React Query 按需恢复请求。

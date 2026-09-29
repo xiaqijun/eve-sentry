@@ -1,4 +1,8 @@
-"""SQL persistence for server users, sessions, API keys, and EVE identities."""
+"""SQL persistence for server users, sessions, and API keys.
+
+The legacy EVE identity tables are still created for non-destructive upgrades,
+but no authorization path reads or writes them anymore.
+"""
 
 from __future__ import annotations
 
@@ -128,6 +132,46 @@ def migrate_auth_schema(connection: Any) -> None:
         ON auth_identity_jobs(status, next_attempt_at, lease_until)
         """,
         """
+        CREATE TABLE IF NOT EXISTS seat_integration_keys (
+            key_id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL,
+            key_prefix TEXT NOT NULL,
+            key_hash TEXT NOT NULL UNIQUE,
+            permissions_json TEXT NOT NULL DEFAULT '[]',
+            protocol_version INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            revoked_at TEXT NOT NULL DEFAULT '',
+            revoked_reason TEXT NOT NULL DEFAULT ''
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS seat_integration_idempotency (
+            idempotency_key TEXT PRIMARY KEY,
+            request_hash TEXT NOT NULL,
+            key_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS auth_external_accounts (
+            provider TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            revision INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (provider, account_id),
+            UNIQUE (provider, user_id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_auth_external_accounts_user
+        ON auth_external_accounts(provider, user_id)
+        """,
+        """
         CREATE TABLE IF NOT EXISTS auth_settings (
             setting_key TEXT PRIMARY KEY,
             setting_value TEXT NOT NULL,
@@ -137,6 +181,43 @@ def migrate_auth_schema(connection: Any) -> None:
     )
     for statement in statements:
         connection.execute(statement)
+    # The Seat projection was introduced after the initial integration table.
+    # Add its non-secret ownership/version fields without rewriting existing
+    # rows when a deployment is upgraded in place.
+    for table, column, definition in (
+        ("seat_integration_keys", "account_id", "TEXT NOT NULL DEFAULT ''"),
+        ("seat_integration_keys", "protocol_version", "INTEGER NOT NULL DEFAULT 1"),
+    ):
+        if _auth_column_exists(connection, table, column):
+            continue
+        connection.execute(
+            f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+        )
+
+
+def _auth_column_exists(connection: Any, table: str, column: str) -> bool:
+    """Check an auth table column on both SQLite test stores and PostgreSQL."""
+    module_name = str(type(connection).__module__ or "").casefold()
+    if "sqlite" in module_name:
+        rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(str(row[1]) == column for row in rows)
+    result = connection.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = ?
+          AND column_name = ?
+        """,
+        (table, column),
+    )
+    fetchall = getattr(result, "fetchall", None)
+    if callable(fetchall):
+        rows = fetchall()
+    else:
+        row = result.fetchone()
+        rows = [row] if row is not None else []
+    return bool(rows)
 
 
 class AuthRepository:
@@ -310,6 +391,156 @@ class AuthRepository:
     def api_key_by_id(self, key_id: str) -> dict[str, Any] | None:
         return self._one("SELECT * FROM auth_api_keys WHERE key_id = ?", (key_id,))
 
+    def seat_integration_key_by_hash(self, key_hash: str) -> dict[str, Any] | None:
+        """Return the public Seat key projection matched by its secret hash."""
+        row = self._one(
+            "SELECT * FROM seat_integration_keys WHERE key_hash = ?",
+            (str(key_hash),),
+        )
+        return self._seat_integration_key_from_row(row)
+
+    def external_account_by_id(
+        self,
+        provider: str,
+        account_id: str,
+    ) -> dict[str, Any] | None:
+        return self._one(
+            """
+            SELECT * FROM auth_external_accounts
+            WHERE provider = ? AND account_id = ?
+            """,
+            (str(provider), str(account_id)),
+        )
+
+    def external_account_by_user(
+        self,
+        provider: str,
+        user_id: str,
+    ) -> dict[str, Any] | None:
+        return self._one(
+            """
+            SELECT * FROM auth_external_accounts
+            WHERE provider = ? AND user_id = ?
+            """,
+            (str(provider), str(user_id)),
+        )
+
+    def bind_external_account(
+        self,
+        record: dict[str, Any],
+        audit: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create an explicit one-to-one external account binding."""
+        provider = str(record["provider"])
+        account_id = str(record["account_id"])
+        user_id = str(record["user_id"])
+        with self._connect() as connection:
+            existing_account = connection.execute(
+                """
+                SELECT * FROM auth_external_accounts
+                WHERE provider = ? AND account_id = ?
+                """,
+                (provider, account_id),
+            ).fetchone()
+            existing_user = connection.execute(
+                """
+                SELECT * FROM auth_external_accounts
+                WHERE provider = ? AND user_id = ?
+                """,
+                (provider, user_id),
+            ).fetchone()
+            if existing_account is not None:
+                existing = dict(existing_account)
+                if str(existing.get("user_id")) != user_id:
+                    return {"bound": False, "conflict": "account_already_bound", **existing}
+                if existing_user is not None and str(existing_user["account_id"]) != account_id:
+                    return {"bound": False, "conflict": "user_already_bound", **dict(existing_user)}
+                return {"bound": False, "conflict": "already_bound", **existing}
+            if existing_user is not None:
+                return {
+                    "bound": False,
+                    "conflict": "user_already_bound",
+                    **dict(existing_user),
+                }
+            connection.execute(
+                """
+                INSERT INTO auth_external_accounts (
+                    provider, account_id, user_id, status, revision,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    provider,
+                    account_id,
+                    user_id,
+                    str(record.get("status") or "active"),
+                    int(record.get("revision") or 1),
+                    str(record["created_at"]),
+                    str(record["updated_at"]),
+                ),
+            )
+            self._insert_audit(connection, audit)
+            created = connection.execute(
+                """
+                SELECT * FROM auth_external_accounts
+                WHERE provider = ? AND account_id = ?
+                """,
+                (provider, account_id),
+            ).fetchone()
+        return {"bound": True, **(dict(created) if created is not None else record)}
+
+    def set_external_account_status(
+        self,
+        provider: str,
+        account_id: str,
+        status: str,
+        updated_at: str,
+        audit: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Set binding status and advance its authorization revision."""
+        with self._connect() as connection:
+            current = connection.execute(
+                """
+                SELECT * FROM auth_external_accounts
+                WHERE provider = ? AND account_id = ?
+                """,
+                (str(provider), str(account_id)),
+            ).fetchone()
+            if current is None:
+                return None
+            current_dict = dict(current)
+            next_status = str(status)
+            changed = str(current_dict.get("status") or "") != next_status
+            revision = int(current_dict.get("revision") or 1) + (1 if changed else 0)
+            if changed:
+                connection.execute(
+                    """
+                    UPDATE auth_external_accounts
+                    SET status = ?, revision = ?, updated_at = ?
+                    WHERE provider = ? AND account_id = ?
+                    """,
+                    (
+                        next_status,
+                        revision,
+                        str(updated_at),
+                        str(provider),
+                        str(account_id),
+                    ),
+                )
+                if audit is not None:
+                    self._insert_audit(connection, audit)
+            updated = connection.execute(
+                """
+                SELECT * FROM auth_external_accounts
+                WHERE provider = ? AND account_id = ?
+                """,
+                (str(provider), str(account_id)),
+            ).fetchone()
+        return {
+            **(dict(updated) if updated is not None else current_dict),
+            "changed": changed,
+        }
+
     def list_api_keys(self, user_id: str) -> list[dict[str, Any]]:
         return self._all(
             """
@@ -318,6 +549,48 @@ class AuthRepository:
             """,
             (user_id,),
         )
+
+    def list_seat_integration_keys(self, user_id: str = "") -> list[dict[str, Any]]:
+        """Return Seat-issued key projections joined to explicit bindings."""
+        query = """
+            SELECT keys.*, accounts.user_id AS bound_user_id
+            FROM seat_integration_keys AS keys
+            JOIN auth_external_accounts AS accounts
+              ON accounts.provider = 'seat'
+             AND accounts.account_id = keys.account_id
+            WHERE accounts.user_id = ?
+            ORDER BY keys.created_at DESC
+        """
+        rows = self._all(query, (str(user_id),))
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._seat_integration_key_from_row(row) or {}
+            item["user_id"] = str(row.get("bound_user_id") or "")
+            item["key_type"] = "seat"
+            item["last_used_at"] = ""
+            result.append(item)
+        return result
+
+    def list_seat_integration_keys_with_users(self) -> list[dict[str, Any]]:
+        """Return all active or historical Seat projections with local owners."""
+        rows = self._all(
+            """
+            SELECT keys.*, accounts.user_id AS bound_user_id
+            FROM seat_integration_keys AS keys
+            JOIN auth_external_accounts AS accounts
+              ON accounts.provider = 'seat'
+             AND accounts.account_id = keys.account_id
+            ORDER BY keys.created_at DESC
+            """,
+        )
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._seat_integration_key_from_row(row) or {}
+            item["user_id"] = str(row.get("bound_user_id") or "")
+            item["key_type"] = "seat"
+            item["last_used_at"] = ""
+            result.append(item)
+        return result
 
     def mark_api_key_used(self, key_id: str, used_at: str) -> None:
         with self._connect() as connection:
@@ -399,6 +672,158 @@ class AuthRepository:
     def delete_api_key(self, key_id: str) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM auth_api_keys WHERE key_id = ?", (key_id,))
+
+    def create_seat_integration_key(
+        self,
+        record: dict[str, Any],
+        operation_id: str,
+        request_hash: str,
+        audit: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Project one Seat key, or return the operation's idempotent record."""
+        normalized_idempotency = str(operation_id or "").strip()
+        try:
+            with self._connect() as connection:
+                if normalized_idempotency:
+                    existing = connection.execute(
+                        """
+                        SELECT idempotency_key, request_hash, key_id
+                        FROM seat_integration_idempotency
+                        WHERE idempotency_key = ?
+                        """,
+                        (normalized_idempotency,),
+                    ).fetchone()
+                    if existing is not None:
+                        key = connection.execute(
+                            """
+                            SELECT * FROM seat_integration_keys WHERE key_id = ?
+                            """,
+                            (str(existing["key_id"]),),
+                        ).fetchone()
+                        return {
+                            "key": self._seat_integration_key_from_row(
+                                dict(key) if key is not None else None
+                            ),
+                            "created": False,
+                            "idempotency_conflict": (
+                                str(existing["request_hash"]) != str(request_hash)
+                            ),
+                        }
+                connection.execute(
+                    """
+                    INSERT INTO seat_integration_keys (
+                        key_id, account_id, name, key_prefix, key_hash,
+                        permissions_json, protocol_version, status, created_at,
+                        revoked_at, revoked_reason
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record["key_id"],
+                        record["account_id"],
+                        record["name"],
+                        record["key_prefix"],
+                        record["key_hash"],
+                        record["permissions_json"],
+                        int(record["protocol_version"]),
+                        record["status"],
+                        record["created_at"],
+                        record["revoked_at"],
+                        record["revoked_reason"],
+                    ),
+                )
+                if normalized_idempotency:
+                    connection.execute(
+                        """
+                        INSERT INTO seat_integration_idempotency (
+                            idempotency_key, request_hash, key_id, created_at
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            normalized_idempotency,
+                            str(request_hash),
+                            record["key_id"],
+                            record["created_at"],
+                        ),
+                    )
+                self._insert_audit(connection, audit)
+                key = connection.execute(
+                    "SELECT * FROM seat_integration_keys WHERE key_id = ?",
+                    (record["key_id"],),
+                ).fetchone()
+                return {
+                    "key": self._seat_integration_key_from_row(
+                        dict(key) if key is not None else None
+                    ),
+                    "created": True,
+                    "idempotency_conflict": False,
+                }
+        except Exception:
+            # A concurrent request may have won the idempotency insert. Resolve
+            # that race without exposing a database error to the integration.
+            if normalized_idempotency:
+                existing = self._one(
+                    """
+                    SELECT idempotency_key, request_hash, key_id
+                    FROM seat_integration_idempotency
+                    WHERE idempotency_key = ?
+                    """,
+                    (normalized_idempotency,),
+                )
+                if existing is not None:
+                    key = self.seat_integration_key_by_id(str(existing["key_id"]))
+                    return {
+                        "key": key,
+                        "created": False,
+                        "idempotency_conflict": (
+                            str(existing["request_hash"]) != str(request_hash)
+                        ),
+                    }
+            raise
+
+    def seat_integration_key_by_id(self, key_id: str) -> dict[str, Any] | None:
+        row = self._one(
+            "SELECT * FROM seat_integration_keys WHERE key_id = ?",
+            (str(key_id),),
+        )
+        return self._seat_integration_key_from_row(row)
+
+    def revoke_seat_integration_key(
+        self,
+        key_id: str,
+        revoked_at: str,
+        reason: str,
+        audit: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Revoke a Seat key idempotently and return its public record."""
+        with self._connect() as connection:
+            key = connection.execute(
+                "SELECT * FROM seat_integration_keys WHERE key_id = ?",
+                (str(key_id),),
+            ).fetchone()
+            if key is None:
+                return None
+            key_dict = dict(key)
+            changed = str(key_dict.get("status") or "") != "revoked"
+            if changed:
+                connection.execute(
+                    """
+                    UPDATE seat_integration_keys
+                    SET status = 'revoked', revoked_at = ?, revoked_reason = ?
+                    WHERE key_id = ?
+                    """,
+                    (str(revoked_at), str(reason), str(key_id)),
+                )
+                self._insert_audit(connection, audit)
+            updated = connection.execute(
+                "SELECT * FROM seat_integration_keys WHERE key_id = ?",
+                (str(key_id),),
+            ).fetchone()
+        return {
+            **(self._seat_integration_key_from_row(
+                dict(updated) if updated is not None else key_dict
+            ) or {}),
+            "changed": changed,
+        }
 
     def create_session(self, record: dict[str, Any]) -> None:
         with self._connect() as connection:
@@ -780,6 +1205,26 @@ class AuthRepository:
                 record["created_at"],
             ),
         )
+
+    def _seat_integration_key_from_row(
+        self,
+        row: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        item = dict(row)
+        try:
+            permissions = json.loads(str(item.pop("permissions_json", "[]")))
+        except json.JSONDecodeError:
+            permissions = []
+        item["permissions"] = [
+            str(value).strip()
+            for value in permissions
+            if str(value).strip()
+        ] if isinstance(permissions, list) else []
+        item.pop("key_hash", None)
+        item.pop("permissions_json", None)
+        return item
 
     def _one(self, query: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
         with self._connect() as connection:

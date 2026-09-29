@@ -13,6 +13,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from app.monitoring_scope import allows_remote
 
 from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QBrush, QColor, QFont, QPainter, QPainterPath, QPen
@@ -2832,7 +2833,7 @@ class AlertTrayController:
 
     def update_local_hostile_count(self, system_name: str, count: int) -> None:
         """Apply authoritative red-icon evidence from this monitor process."""
-        if getattr(self, "_server_authority", False):
+        if getattr(self, "_server_authority", False) and allows_remote(getattr(self, "_monitoring_scope", None), system_name):
             return
         system = str(system_name or "Unknown").strip() or "Unknown"
         key = system.casefold()
@@ -2845,6 +2846,7 @@ class AlertTrayController:
                 {
                     "system_name": system,
                     "hostile_count": hostile_count,
+                    "_local_visual": True,
                 }
             )
             return
@@ -2854,16 +2856,17 @@ class AlertTrayController:
                 "system_name": system,
                 "hostile_count": 0,
                 "message": f"✅ {system} 清空",
+                "_local_visual": True,
             }
         )
 
     def _apply_local_hostile_counts(self) -> None:
         """Keep local visual counts from being reduced by delayed server state."""
-        if getattr(self, "_server_authority", False):
-            return
         for system, hostile_count in getattr(
             self, "_local_hostile_counts", {}
         ).values():
+            if getattr(self, "_server_authority", False) and allows_remote(getattr(self, "_monitoring_scope", None), system):
+                continue
             existing = next(
                 (
                     item
@@ -3113,7 +3116,20 @@ class AlertTrayController:
         else:
             self.overlay.set_status(status, "idle")
 
+    def _remote_alerts_allowed(self) -> bool:
+        """A detector whose windows are all outside the map only warns locally."""
+        scope = getattr(self, "_monitoring_scope", None)
+        if not isinstance(scope, dict) or not scope.get("enabled"):
+            return True
+        provider = getattr(self, "_monitoring_system_provider", None)
+        systems = list(provider()) if callable(provider) else [
+            item.get("system_name") for item in getattr(self, "_local_map_accounts", [])
+        ]
+        return not systems or any(allows_remote(scope, name) for name in systems)
+
     def _on_alert(self, alert: dict[str, Any]) -> None:
+        if not alert.get("_local_visual") and not self._remote_alerts_allowed():
+            return
         summary = summarize_alert(alert)
         summary["active_hostile_count"] = summary["hostile_count"]
         system = str(summary.get("system_name") or "Unknown")
@@ -3283,6 +3299,8 @@ class AlertTrayController:
 
     def _on_safe(self, event: dict[str, Any]) -> None:
         """Notify once after the final hostile leaves a solar system."""
+        if not event.get("_local_visual") and not self._remote_alerts_allowed():
+            return
         system_name = str(
             event.get("system_name") or event.get("system") or "Unknown"
         ).strip() or "Unknown"
@@ -3313,8 +3331,18 @@ class AlertTrayController:
 
     def _on_bootstrap(self, bootstrap: dict[str, Any]) -> None:
         self._server_authority = bootstrap.get("state_source") == "system_current_state"
+        if isinstance(bootstrap.get("monitoring_scope"), dict):
+            self._monitoring_scope = bootstrap["monitoring_scope"]
+            callback = getattr(self, "_monitoring_scope_callback", None)
+            if callable(callback):
+                callback(self._monitoring_scope)
+        if not self._remote_alerts_allowed():
+            bootstrap = {**bootstrap, "map": {"systems": []}, "alerts": [], "active_intel": [], "clients": {"heartbeats": []}}
         if self._server_authority:
-            self._local_hostile_counts = {}
+            self._local_hostile_counts = {
+                key: value for key, value in getattr(self, "_local_hostile_counts", {}).items()
+                if not allows_remote(getattr(self, "_monitoring_scope", None), value[0])
+            }
         self._recent_summaries = sync_alert_summaries_from_bootstrap(
             self._recent_summaries,
             bootstrap,

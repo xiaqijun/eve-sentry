@@ -1,10 +1,11 @@
+import hashlib
+import json
 import time
+import uuid
 from types import SimpleNamespace
-from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from app.esi.sso import AuthorizationSession, EsiSsoError, TokenSet
 from app.server.auth import LOGIN_IP_FAILURE_LIMIT, AuthError, AuthService
 from app.server.auth_store import AuthRepository
 from tests.auth_test_store import AuthTestStore
@@ -34,32 +35,6 @@ class FakeResolver:
         return {"corporation_id": int(corporation_id), "name": "Blue Corp"}
 
 
-class FakeSsoClient:
-    def __init__(self, character_id=101, fail=False):
-        self.character_id = character_id
-        self.fail = fail
-
-    def create_authorization_session(self, scopes=None):
-        return AuthorizationSession(
-            authorization_url="https://login.eve.test/authorize?state=state-1",
-            state="state-1",
-            redirect_uri="http://sentry.test/api/v1/auth/esi/callback",
-            code_verifier="verifier",
-            scopes=list(scopes or []),
-        )
-
-    def parse_callback_url(self, session, callback_url):
-        query = parse_qs(urlparse(callback_url).query)
-        if query.get("state", [""])[0] != session.state:
-            raise EsiSsoError("state mismatch")
-        return query.get("code", [""])[0]
-
-    def exchange_code(self, code, session):
-        if self.fail:
-            raise EsiSsoError("token endpoint unavailable")
-        return TokenSet(access_token="token", character_id=self.character_id)
-
-
 @pytest.fixture()
 def auth(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
@@ -75,6 +50,37 @@ def _member(auth):
     return auth.create_user("pilot", "a-strong-password", role="member")
 
 
+def _seat_key(auth, account_id="seat-account-1", permissions=("monitor",)):
+    secret = f"seat-secret-{account_id}"
+    now = "2026-09-29T00:00:00+00:00"
+    key_id = uuid.uuid4().hex
+    auth.repository.create_seat_integration_key(
+        {
+            "key_id": key_id,
+            "account_id": account_id,
+            "name": "Seat key",
+            "key_prefix": secret[:12],
+            "key_hash": hashlib.sha256(secret.encode("utf-8")).hexdigest(),
+            "permissions_json": json.dumps(list(permissions)),
+            "protocol_version": 1,
+            "status": "active",
+            "created_at": now,
+            "revoked_at": "",
+            "revoked_reason": "",
+        },
+        f"operation-{key_id}",
+        f"request-{key_id}",
+        auth._audit_record(
+            "seat-integration",
+            key_id,
+            "seat_key.created",
+            {"account_id": account_id},
+            now=now,
+        ),
+    )
+    return secret, key_id
+
+
 def test_login_session_and_api_key_secrets_are_not_returned_from_lists(auth):
     user = auth.create_user("admin", "a-strong-password", role="admin")
     login = auth.login("admin", "a-strong-password", "test")
@@ -86,9 +92,117 @@ def test_login_session_and_api_key_secrets_are_not_returned_from_lists(auth):
     assert created["secret"].startswith("eve_")
     assert "secret" not in auth.list_api_keys(user["user_id"])[0]
     principal = auth.authenticate_api_key(created["secret"])
-    assert principal.identity_verified is False
+    assert principal.api_key_type == "desktop"
 
 
+def test_desktop_key_works_without_esi_identity(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    service = AuthService(AuthRepository(store._connect), resolver=None)
+    try:
+        user = service.create_user("pilot", "", role="member")
+        created = service.create_api_key(user["user_id"], "Monitor", user["user_id"])
+        principal = service.authenticate_api_key(created["secret"])
+        assert principal.user_id == user["user_id"]
+        assert service.list_api_keys(user["user_id"])[0]["status"] == "active"
+    finally:
+        service.close()
+        store.close()
+
+
+def test_seat_binding_authenticates_and_enforces_one_to_one_mapping(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    repository = AuthRepository(store._connect)
+    service = AuthService(repository, resolver=None, seat_auth_mode="enforce")
+    try:
+        first = service.create_user("pilot", "a-strong-password", role="member")
+        second = service.create_user("pilot-two", "a-strong-password", role="member")
+        secret, key_id = _seat_key(service)
+
+        with pytest.raises(AuthError) as unbound:
+            service.authenticate_api_key(secret)
+        assert unbound.value.code == "seat_account_unmapped"
+
+        bound = service.bind_seat_account("seat-account-1", first["user_id"], "admin")
+        assert bound["bound"] is True
+        principal = service.authenticate_api_key(secret)
+        assert principal.user_id == first["user_id"]
+        assert principal.integration == "seat"
+        assert principal.account_id == "seat-account-1"
+        assert principal.permissions == ("monitor",)
+        assert principal.api_key_id == key_id
+        assert service.is_principal_active(principal) is True
+
+        with pytest.raises(AuthError) as conflict:
+            service.bind_seat_account("seat-account-1", second["user_id"], "admin")
+        assert conflict.value.code == "seat_account_conflict"
+        with pytest.raises(AuthError) as user_conflict:
+            service.bind_seat_account("seat-account-2", first["user_id"], "admin")
+        assert user_conflict.value.code == "seat_account_conflict"
+    finally:
+        service.close()
+        store.close()
+
+
+def test_seat_auth_modes_and_revocation_disable_active_principal(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    repository = AuthRepository(store._connect)
+    try:
+        user = AuthService(repository, resolver=None).create_user(
+            "pilot", "a-strong-password", role="member"
+        )
+        off = AuthService(repository, resolver=None, seat_auth_mode="off")
+        secret, key_id = _seat_key(off, account_id="seat-account-2", permissions=("alert",))
+        with pytest.raises(AuthError) as off_error:
+            off.authenticate_api_key(secret)
+        assert off_error.value.code == "invalid_api_key"
+        off.close()
+
+        with pytest.raises(ValueError, match="off or enforce"):
+            AuthService(repository, resolver=None, seat_auth_mode="shadow")
+
+        enforce = AuthService(repository, resolver=None, seat_auth_mode="enforce")
+        enforce.bind_seat_account("seat-account-2", user["user_id"], "admin")
+        principal = enforce.authenticate_api_key(secret)
+        assert principal.permissions == ("alert",)
+        enforce.set_seat_account_status("seat-account-2", False, "admin")
+        assert enforce.is_principal_active(principal) is False
+        with pytest.raises(AuthError) as disabled:
+            enforce.authenticate_api_key(secret)
+        assert disabled.value.code == "seat_account_disabled"
+        enforce.set_seat_account_status("seat-account-2", True, "admin")
+        principal = enforce.authenticate_api_key(secret)
+        enforce.set_user_status(user["user_id"], False, "admin")
+        assert enforce.is_principal_active(principal) is False
+        with pytest.raises(AuthError) as user_disabled:
+            enforce.authenticate_api_key(secret)
+        assert user_disabled.value.code == "user_disabled"
+        repository.revoke_seat_integration_key(
+            key_id,
+            "2026-09-29T00:01:00+00:00",
+            "test",
+            enforce._audit_record("admin", key_id, "seat_key.revoked", {}),
+        )
+        assert enforce.is_principal_active(principal) is False
+        enforce.close()
+    finally:
+        store.close()
+
+
+def test_seat_mode_keeps_regular_api_keys_unchanged(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    service = AuthService(AuthRepository(store._connect), resolver=None, seat_auth_mode="enforce")
+    try:
+        user = service.create_user("pilot", "a-strong-password", role="member")
+        created = service.create_api_key(user["user_id"], "Desktop", user["user_id"])
+        principal = service.authenticate_api_key(created["secret"])
+        assert principal.integration == ""
+        assert principal.api_key_type == "desktop"
+    finally:
+        service.close()
+        store.close()
+
+
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_disabled_key_risk_control_trusts_desktop_keys_without_esi(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     service = AuthService(
@@ -129,6 +243,7 @@ def test_disabled_key_risk_control_trusts_desktop_keys_without_esi(tmp_path):
         store.close()
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_key_risk_control_setting_is_persistent_and_pauses_identity_queue(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     repository = AuthRepository(store._connect)
@@ -195,37 +310,22 @@ def test_automatically_revoked_api_key_cannot_be_enabled(auth):
     assert exc_info.value.code == "api_key_restore_forbidden"
 
 
-def test_member_password_login_requires_eve_sso(auth):
+def test_member_password_login_works_without_eve_sso(auth):
     _member(auth)
 
-    with pytest.raises(AuthError) as exc_info:
-        auth.login("pilot", "a-strong-password", "test")
+    login = auth.login("pilot", "a-strong-password", "test")
 
-    assert exc_info.value.status == 403
-    assert exc_info.value.code == "eve_sso_required"
+    assert auth.authenticate_session(login["session_token"]).role == "member"
 
 
 def test_administrator_deletes_user_and_owned_authentication_records(auth):
     admin = auth.create_user("admin", "admin-password-123", role="admin")
     member = _member(auth)
     auth.create_api_key(member["user_id"], "Desktop", member["user_id"])
-    auth.add_whitelist_character(member["user_id"], 101, "main", admin["user_id"])
-    auth.repository.upsert_verified_character({
-        "user_id": member["user_id"],
-        "character_id": 101,
-        "character_name": "Alice",
-        "corporation_id": 9001,
-        "corporation_name": "Blue Corp",
-        "first_seen_at": "2026-07-28T00:00:00+00:00",
-        "last_seen_at": "2026-07-28T00:00:00+00:00",
-    })
-
     auth.delete_user(member["user_id"], admin["user_id"])
 
     assert auth.repository.user_by_id(member["user_id"]) is None
     assert auth.repository.list_api_keys(member["user_id"]) == []
-    assert auth.repository.list_whitelist(member["user_id"]) == []
-    assert auth.repository.list_verified_characters(member["user_id"]) == []
     assert auth.repository.list_audit()[0]["action"] == "user.deleted"
 
 
@@ -240,120 +340,6 @@ def test_administrator_cannot_delete_current_account_or_last_admin(auth):
     with pytest.raises(AuthError) as last_admin_error:
         auth.delete_user(admin["user_id"], member["user_id"])
     assert last_admin_error.value.code == "cannot_delete_last_admin"
-
-
-def test_eve_sso_logs_in_exactly_assigned_active_member(auth):
-    user = _member(auth)
-    auth.add_allowed_corporation(9001, user["user_id"])
-    auth.add_whitelist_character(user["user_id"], 101, "main", user["user_id"])
-    auth.esi_sso_client = FakeSsoClient(101)
-
-    assert auth.begin_esi_login("/account/keys").startswith("https://login.eve.test/")
-    assert auth.owns_esi_login_callback(
-        "/api/v1/auth/esi/callback?state=state-1&code=code-1"
-    ) is True
-    assert auth.owns_esi_login_callback(
-        "/api/v1/auth/esi/callback?state=another-state&code=code-1"
-    ) is False
-    login = auth.complete_esi_login(
-        "/api/v1/auth/esi/callback?state=state-1&code=code-1"
-    )
-
-    assert login["return_to"] == "/account/keys"
-    assert login["user"]["user_id"] == user["user_id"]
-    assert auth.authenticate_session(login["session_token"]).role == "member"
-
-
-def test_eve_sso_rejects_unknown_ambiguous_and_replayed_characters(auth):
-    first = _member(auth)
-    auth.add_allowed_corporation(9001, first["user_id"])
-    second = auth.create_user("pilot-two", "another-password", role="member")
-    auth.add_whitelist_character(first["user_id"], 101, "main", first["user_id"])
-    auth.add_whitelist_character(second["user_id"], 101, "alt", first["user_id"])
-    auth.esi_sso_client = FakeSsoClient(101)
-    auth.begin_esi_login()
-
-    with pytest.raises(AuthError) as exc_info:
-        auth.complete_esi_login("/callback?state=state-1&code=code-1")
-    assert exc_info.value.code == "eve_character_ambiguous"
-
-    with pytest.raises(AuthError) as replay_info:
-        auth.complete_esi_login("/callback?state=state-1&code=code-1")
-    assert replay_info.value.code == "invalid_esi_state"
-
-    auth.esi_sso_client = FakeSsoClient(202)
-    auth.begin_esi_login()
-    with pytest.raises(AuthError) as unknown_info:
-        auth.complete_esi_login("/callback?state=state-1&code=code-2")
-    assert unknown_info.value.code == "eve_corporation_not_allowed"
-
-
-def test_eve_sso_auto_creates_and_reuses_member_for_allowed_corporation(auth):
-    auth.add_allowed_corporation(9001, "bootstrap")
-    auth.esi_sso_client = FakeSsoClient(101)
-
-    auth.begin_esi_login()
-    first_login = auth.complete_esi_login("/callback?state=state-1&code=code-1")
-    auth.begin_esi_login()
-    second_login = auth.complete_esi_login("/callback?state=state-1&code=code-2")
-
-    assert first_login["user"]["role"] == "member"
-    assert first_login["user"]["display_name"] == "Alice"
-    assert second_login["user"]["user_id"] == first_login["user"]["user_id"]
-    assert len(auth.repository.list_users()) == 1
-    assert auth.repository.list_verified_characters(first_login["user"]["user_id"])[0][
-        "character_id"
-    ] == 101
-
-
-def test_eve_sso_does_not_treat_listener_verification_as_account_binding(auth):
-    observer = _member(auth)
-    auth.add_allowed_corporation(9001, observer["user_id"])
-    auth.repository.upsert_verified_character({
-        "user_id": observer["user_id"],
-        "character_id": 101,
-        "character_name": "Alice",
-        "corporation_id": 9001,
-        "corporation_name": "Blue Corp",
-        "first_seen_at": "2026-07-28T00:00:00+00:00",
-        "last_seen_at": "2026-07-28T00:00:00+00:00",
-    })
-    auth.esi_sso_client = FakeSsoClient(101)
-
-    auth.begin_esi_login()
-    first_login = auth.complete_esi_login("/callback?state=state-1&code=code-1")
-    auth.begin_esi_login()
-    second_login = auth.complete_esi_login("/callback?state=state-1&code=code-2")
-
-    assert first_login["user"]["username"] == "eve-101"
-    assert first_login["user"]["user_id"] != observer["user_id"]
-    assert second_login["user"]["user_id"] == first_login["user"]["user_id"]
-
-
-def test_eve_sso_rejects_assigned_member_outside_allowed_corporations(auth):
-    user = _member(auth)
-    auth.add_whitelist_character(user["user_id"], 202, "alt", user["user_id"])
-    auth.esi_sso_client = FakeSsoClient(202)
-    auth.begin_esi_login()
-
-    with pytest.raises(AuthError) as exc_info:
-        auth.complete_esi_login("/callback?state=state-1&code=code-1")
-
-    assert exc_info.value.code == "eve_corporation_not_allowed"
-    assert auth.repository.list_verified_characters(user["user_id"]) == []
-
-
-def test_eve_sso_network_failure_does_not_create_session(auth):
-    user = _member(auth)
-    auth.add_whitelist_character(user["user_id"], 101, "main", user["user_id"])
-    auth.esi_sso_client = FakeSsoClient(101, fail=True)
-    auth.begin_esi_login()
-
-    with pytest.raises(AuthError) as exc_info:
-        auth.complete_esi_login("/callback?state=state-1&code=code-1")
-
-    assert exc_info.value.code == "identity_validation_unavailable"
-    assert auth.repository.list_audit()[-1]["action"] != "session.login"
 
 
 def test_password_and_api_key_secrets_are_only_persisted_as_hashes(auth):
@@ -400,6 +386,7 @@ def test_login_rate_limit_blocks_one_ip_rotating_usernames(auth):
     assert other_ip_error.value.code == "invalid_credentials"
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_allowed_corporation_permanently_verifies_desktop_key(auth):
     user = _member(auth)
     auth.add_allowed_corporation(9001, user["user_id"])
@@ -413,6 +400,7 @@ def test_allowed_corporation_permanently_verifies_desktop_key(auth):
     assert auth.authenticate_api_key(created["secret"]).identity_verified is True
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_character_id_verification_skips_name_resolution(auth):
     user = _member(auth)
     auth.add_allowed_corporation(9001, user["user_id"])
@@ -435,6 +423,7 @@ def test_character_id_verification_skips_name_resolution(auth):
     ]
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_character_report_is_idempotent_and_returns_completed_result(auth):
     user = _member(auth)
     auth.add_allowed_corporation(9001, user["user_id"])
@@ -476,6 +465,7 @@ def test_character_report_is_idempotent_and_returns_completed_result(auth):
     assert verified_audits[0]["details"]["client_id"] == "detector:test"
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_character_report_retries_transient_failures_without_audit_flood(
     auth,
     monkeypatch,
@@ -512,6 +502,7 @@ def test_character_report_retries_transient_failures_without_audit_flood(
     assert actions.count("identity.verified") == 1
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_identity_worker_does_not_audit_success_after_losing_its_lease(auth):
     user = _member(auth)
     auth.add_allowed_corporation(9001, user["user_id"])
@@ -534,6 +525,7 @@ def test_identity_worker_does_not_audit_success_after_losing_its_lease(auth):
     assert "identity.verified" not in actions
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_user_bound_character_whitelist_allows_character(auth):
     user = _member(auth)
     auth.add_whitelist_character(user["user_id"], 202, "alt", user["user_id"])
@@ -543,6 +535,7 @@ def test_user_bound_character_whitelist_allows_character(auth):
     assert auth.verify_characters(pending, ["Mallory"])["verified"] is True
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_confirmed_unauthorized_character_revokes_only_submitting_key(auth):
     user = _member(auth)
     first = auth.create_api_key(user["user_id"], "One", user["user_id"])
@@ -567,6 +560,7 @@ def test_confirmed_unauthorized_character_revokes_only_submitting_key(auth):
     assert audit["details"]["api_key_id"] == first["key_id"]
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_identity_audit_records_client_key_character_and_failure_reason(auth):
     user = _member(auth)
     auth.add_allowed_corporation(9001, user["user_id"])
@@ -600,6 +594,7 @@ def test_identity_audit_records_client_key_character_and_failure_reason(auth):
     assert auth.repository.api_key_by_id(created["key_id"])["status"] == "active"
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_unresolved_character_blocks_without_disabling_user(auth):
     user = _member(auth)
     created = auth.create_api_key(user["user_id"], "Desktop", user["user_id"])
@@ -612,6 +607,7 @@ def test_unresolved_character_blocks_without_disabling_user(auth):
     assert auth.repository.user_by_id(user["user_id"])["status"] == "active"
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_missing_listener_does_not_disable_user_or_key(auth):
     user = _member(auth)
     created = auth.create_api_key(user["user_id"], "Desktop", user["user_id"])
@@ -625,6 +621,7 @@ def test_missing_listener_does_not_disable_user_or_key(auth):
     assert auth.repository.api_key_by_id(created["key_id"])["status"] == "active"
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_removed_rule_revokes_desktop_keys_without_disabling_user(auth):
     user = _member(auth)
     auth.add_allowed_corporation(9001, user["user_id"])

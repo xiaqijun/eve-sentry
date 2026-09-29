@@ -33,7 +33,6 @@ const clients: AdminClientHeartbeatRecord[] = [
     owner,
     key: {
       created_at: "2026-08-01T08:00:00Z",
-      identity_verified: true,
       key_id: "key-1",
       key_prefix: "eve_alpha",
       key_type: "desktop",

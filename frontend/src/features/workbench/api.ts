@@ -3,7 +3,6 @@ import type {
   BootstrapPayload,
   ClientsPayload,
   ConfigPayload,
-  EsiLoginPayload,
   MapSnapshotPayload,
 } from "./types";
 
@@ -22,6 +21,7 @@ export async function fetchBootstrap(): Promise<BootstrapPayload> {
   return {
     schema_version: String(bootstrap.schema_version || "intel_bootstrap.v1"),
     generated_at: String(bootstrap.generated_at || new Date().toISOString()),
+    monitoring_scope: bootstrap.monitoring_scope,
     map: {
       schema_version: String(bootstrap.map?.schema_version || "map.v1"),
       generated_at: String(bootstrap.map?.generated_at || new Date().toISOString()),
@@ -73,18 +73,6 @@ export async function submitObservation(
     method: "POST",
     body: JSON.stringify(observation),
   });
-}
-
-export async function startEsiLogin(): Promise<EsiLoginPayload> {
-  const payload = await request<{ login: EsiLoginPayload }>("/api/v1/esi/login", {
-    method: "POST",
-  });
-  return payload.login;
-}
-
-export async function fetchEsiLoginStatus(): Promise<EsiLoginPayload> {
-  const payload = await request<{ login: EsiLoginPayload }>("/api/v1/esi/login");
-  return payload.login;
 }
 
 export function connectAlerts(

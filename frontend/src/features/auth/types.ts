@@ -12,53 +12,24 @@ export interface AuthUser {
   updated_at?: string;
 }
 
-export interface SecuritySettings {
-  key_risk_control: boolean;
-}
-
 export interface ApiKeyRecord {
   key_id: string;
   user_id: string;
   name: string;
   key_prefix: string;
-  key_type: "desktop" | "service_readonly";
+  key_type: "desktop" | "service_readonly" | "seat";
   status: "active" | "revoked";
-  identity_verified: boolean;
   created_at: string;
   last_used_at?: string;
   revoked_at?: string;
   revoked_reason?: string;
+  account_id?: string;
+  permissions?: string[];
   secret?: string;
-}
-
-export interface WhitelistCharacter {
-  user_id: string;
-  character_id: number;
-  character_name: string;
-  note?: string;
-  created_at: string;
-}
-
-export interface VerifiedCharacter {
-  user_id: string;
-  character_id: number;
-  character_name: string;
-  corporation_id?: number | null;
-  corporation_name?: string;
-  first_seen_at: string;
-  last_seen_at: string;
 }
 
 export interface AdminUser extends AuthUser {
   keys: ApiKeyRecord[];
-  whitelist: WhitelistCharacter[];
-  verified_characters: VerifiedCharacter[];
-}
-
-export interface AllowedCorporation {
-  corporation_id: number;
-  corporation_name: string;
-  created_at: string;
 }
 
 export interface AuditRecord {

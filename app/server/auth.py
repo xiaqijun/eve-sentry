@@ -11,11 +11,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlparse
 
-from app.esi.sso import EsiSsoError
 from app.server.auth_store import AuthRepository
-from app.server.identity_worker import IdentityVerificationWorker
 
 
 SESSION_COOKIE_NAME = "eve_sentry_session"
@@ -23,13 +20,7 @@ SESSION_HOURS = 12
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_FAILURE_LIMIT = 5
 LOGIN_IP_FAILURE_LIMIT = 25
-ESI_LOGIN_STATE_SECONDS = 5 * 60
-IDENTITY_JOB_LEASE_SECONDS = 90
-IDENTITY_RETRY_BASE_SECONDS = 10
-IDENTITY_RETRY_MAX_SECONDS = 5 * 60
-
 logger = logging.getLogger(__name__)
-KEY_RISK_CONTROL_SETTING = "key_risk_control"
 
 
 class AuthError(RuntimeError):
@@ -39,13 +30,6 @@ class AuthError(RuntimeError):
         super().__init__(message)
         self.status = int(status)
         self.code = code
-
-
-class IdentityUnavailableError(AuthError):
-    """Raised when ESI cannot safely decide whether a character is allowed."""
-
-    def __init__(self, message: str):
-        super().__init__(message, status=503, code="identity_validation_unavailable")
 
 
 @dataclass(frozen=True)
@@ -59,9 +43,11 @@ class AuthPrincipal:
     auth_type: str
     api_key_id: str = ""
     api_key_type: str = ""
-    identity_verified: bool = True
     session_hash: str = ""
     csrf_token: str = ""
+    integration: str = ""
+    account_id: str = ""
+    permissions: tuple[str, ...] = ()
 
     @property
     def is_admin(self) -> bool:
@@ -71,8 +57,12 @@ class AuthPrincipal:
     def is_read_only(self) -> bool:
         return self.api_key_type == "service_readonly"
 
+    @property
+    def is_seat(self) -> bool:
+        return self.integration == "seat"
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "user_id": self.user_id,
             "username": self.username,
             "display_name": self.display_name,
@@ -80,85 +70,45 @@ class AuthPrincipal:
             "auth_type": self.auth_type,
             "api_key_id": self.api_key_id,
             "api_key_type": self.api_key_type,
-            "identity_verified": self.identity_verified,
         }
+        if self.integration:
+            payload.update(
+                {
+                    "integration": self.integration,
+                    "account_id": self.account_id,
+                    "permissions": list(self.permissions),
+                }
+            )
+        return payload
 
 
 class AuthService:
-    """Manage users, sessions, API keys, and EVE identity decisions."""
+    """Manage users, sessions, and API keys.
+
+    API keys are independent credentials.  The former EVE identity/risk
+    control flow has been retired; account access is governed by the user and
+    key status only.
+    """
 
     def __init__(
         self,
         repository: AuthRepository,
         resolver: Any,
         enforce_requests: bool = True,
-        esi_sso_client: Any | None = None,
-        key_risk_control: bool = True,
+        seat_auth_mode: str = "off",
     ) -> None:
         self.repository = repository
         self.resolver = resolver
         self.enforce_requests = bool(enforce_requests)
-        self.esi_sso_client = esi_sso_client
-        self._key_risk_control_lock = threading.Lock()
-        stored_risk_control = self.repository.setting(KEY_RISK_CONTROL_SETTING)
-        self._key_risk_control = (
-            stored_risk_control == "on"
-            if stored_risk_control in {"on", "off"}
-            else bool(key_risk_control)
-        )
+        normalized_seat_mode = str(seat_auth_mode or "off").strip().casefold()
+        if normalized_seat_mode not in {"off", "enforce"}:
+            raise ValueError("seat_auth_mode must be off or enforce")
+        self.seat_auth_mode = normalized_seat_mode
         self._login_failures: dict[str, list[float]] = {}
         self._login_lock = threading.Lock()
-        self._esi_login_states: dict[str, dict[str, Any]] = {}
-        self._esi_login_lock = threading.Lock()
         self._authorization_generation = 0
         self._authorization_change_lock = threading.Lock()
         self._authorization_change_listeners: set[Callable[[], None]] = set()
-        self._identity_worker = IdentityVerificationWorker(
-            self._claim_identity_job,
-            self._process_identity_job,
-        )
-
-    @property
-    def key_risk_control(self) -> bool:
-        with self._key_risk_control_lock:
-            return self._key_risk_control
-
-    def security_settings(self) -> dict[str, Any]:
-        return {"key_risk_control": self.key_risk_control}
-
-    def set_key_risk_control(
-        self,
-        enabled: bool,
-        actor_user_id: str,
-    ) -> dict[str, Any]:
-        enabled = bool(enabled)
-        if enabled and self.resolver is None:
-            raise AuthError(
-                "public ESI is required to enable key risk control",
-                409,
-                "key_risk_control_unavailable",
-            )
-        with self._key_risk_control_lock:
-            previous = self._key_risk_control
-            if previous == enabled:
-                return {"key_risk_control": enabled}
-            now = _now_iso()
-            self.repository.set_setting(
-                KEY_RISK_CONTROL_SETTING,
-                "on" if enabled else "off",
-                now,
-            )
-            self._key_risk_control = enabled
-        self._audit(
-            actor_user_id,
-            actor_user_id,
-            "security.key_risk_control_changed",
-            {"previous": previous, "enabled": enabled},
-        )
-        if enabled:
-            self._identity_worker.start()
-            self._identity_worker.wake()
-        return {"key_risk_control": enabled}
 
     @property
     def authorization_generation(self) -> int:
@@ -180,6 +130,10 @@ class AuthService:
                 listener()
             except Exception:
                 logger.exception("Authorization change listener failed")
+
+    def notify_external_authorization_changed(self) -> None:
+        """Invalidate active streams after an external credential change."""
+        self._notify_authorization_changed()
 
     def ensure_bootstrap_admin(self, username: str, password: str) -> dict[str, Any]:
         """Create the first administrator only while the user table is empty."""
@@ -254,133 +208,8 @@ class AuthService:
             raise AuthError("invalid username or password", 401, "invalid_credentials")
         if str(user.get("status")) != "active":
             raise AuthError("user is disabled", 403, "user_disabled")
-        if str(user.get("role")) != "admin":
-            raise AuthError(
-                "non-administrator users must sign in with EVE Online",
-                403,
-                "eve_sso_required",
-            )
         self._clear_login_failures(pair_throttle_key)
         return self._create_browser_session(user, "password")
-
-    def begin_esi_login(self, return_to: str = "/") -> str:
-        """Create a one-time EVE SSO authorization URL for a member login."""
-        if self.esi_sso_client is None:
-            raise AuthError("EVE Online login is not configured", 503, "esi_login_unavailable")
-        safe_return_to = _safe_return_path(return_to)
-        session = self.esi_sso_client.create_authorization_session(scopes=[])
-        now = time.monotonic()
-        with self._esi_login_lock:
-            self._esi_login_states = {
-                key: value
-                for key, value in self._esi_login_states.items()
-                if float(value["expires_at"]) > now
-            }
-            self._esi_login_states[_secret_hash(session.state)] = {
-                "session": session,
-                "return_to": safe_return_to,
-                "expires_at": now + ESI_LOGIN_STATE_SECONDS,
-            }
-        return str(session.authorization_url)
-
-    def complete_esi_login(self, callback_url: str) -> dict[str, Any]:
-        """Exchange an EVE callback and create a browser session for its member."""
-        query = parse_qs(urlparse(callback_url).query)
-        state = str((query.get("state") or [""])[0])
-        if not state:
-            raise AuthError("EVE login state is missing", 400, "invalid_esi_state")
-        with self._esi_login_lock:
-            pending = self._esi_login_states.pop(_secret_hash(state), None)
-        if pending is None:
-            raise AuthError("EVE login state is invalid or already used", 400, "invalid_esi_state")
-        if float(pending["expires_at"]) <= time.monotonic():
-            raise AuthError("EVE login state has expired", 400, "expired_esi_state")
-        try:
-            code = self.esi_sso_client.parse_callback_url(
-                pending["session"], callback_url
-            )
-            tokens = self.esi_sso_client.exchange_code(code, pending["session"])
-        except EsiSsoError as exc:
-            raise IdentityUnavailableError(f"EVE login failed: {exc}") from exc
-        character_id = getattr(tokens, "character_id", None)
-        if character_id is None:
-            raise AuthError(
-                "EVE login did not identify a character",
-                403,
-                "eve_character_missing",
-            )
-        try:
-            profile = self.resolver.character_profile(int(character_id))
-        except Exception as exc:
-            raise IdentityUnavailableError(f"EVE identity lookup failed: {exc}") from exc
-        corporation_id = profile.get("corporation_id")
-        if corporation_id in {None, ""}:
-            raise IdentityUnavailableError("EVE character corporation could not be resolved")
-        corporation_id = int(corporation_id)
-        if corporation_id not in self.repository.allowed_corporation_ids():
-            raise AuthError(
-                "this EVE character is not in an allowed corporation",
-                403,
-                "eve_corporation_not_allowed",
-            )
-        matches = self.repository.users_for_character_id(int(character_id))
-        if len(matches) != 1:
-            if matches:
-                raise AuthError(
-                    "this EVE character is assigned to multiple platform users",
-                    409,
-                    "eve_character_ambiguous",
-                )
-            username = f"eve-{int(character_id)}"
-            existing = self.repository.user_by_username(_username_key(username))
-            if existing is not None and str(existing.get("role")) != "member":
-                username = f"eve-member-{int(character_id)}"
-                existing = self.repository.user_by_username(_username_key(username))
-            user = existing or self.create_user(
-                username=username,
-                password="",
-                display_name=str(profile.get("name") or username),
-                role="member",
-                must_change_password=False,
-                actor_user_id="eve_sso",
-            )
-        else:
-            user = matches[0]
-        if str(user.get("status")) != "active":
-            raise AuthError("user is disabled", 403, "user_disabled")
-        now = _now_iso()
-        previous = {
-            int(item["character_id"]): item
-            for item in self.repository.list_verified_characters(str(user["user_id"]))
-        }.get(int(character_id))
-        self.repository.upsert_verified_character({
-            "user_id": str(user["user_id"]),
-            "character_id": int(character_id),
-            "character_name": str(profile.get("name") or f"EVE {int(character_id)}"),
-            "corporation_id": corporation_id,
-            "corporation_name": str(profile.get("corporation_name") or ""),
-            "first_seen_at": str(previous.get("first_seen_at") if previous else now),
-            "last_seen_at": now,
-        })
-        login = self._create_browser_session(
-            user,
-            "eve_sso",
-            {
-                "character_id": int(character_id),
-                "character_name": str(profile.get("name") or ""),
-            },
-        )
-        login["return_to"] = str(pending["return_to"])
-        return login
-
-    def owns_esi_login_callback(self, callback_url: str) -> bool:
-        """Return whether a callback state belongs to a pending member login."""
-        query = parse_qs(urlparse(callback_url).query)
-        state = str((query.get("state") or [""])[0])
-        if not state:
-            return False
-        with self._esi_login_lock:
-            return _secret_hash(state) in self._esi_login_states
 
     def _create_browser_session(
         self,
@@ -445,26 +274,19 @@ class AuthService:
     def authenticate_api_key(
         self,
         secret: str,
-        allow_unverified: bool = True,
     ) -> AuthPrincipal:
-        key = self.repository.api_key_by_hash(_secret_hash(secret))
-        if key is None or str(key.get("status")) != "active":
+        secret_hash = _secret_hash(secret)
+        key = self.repository.api_key_by_hash(secret_hash)
+        if key is None:
+            if self.seat_auth_mode != "off":
+                return self._authenticate_seat_api_key(secret_hash)
+            raise AuthError("API key is invalid or revoked", 401, "invalid_api_key")
+        if str(key.get("status")) != "active":
             raise AuthError("API key is invalid or revoked", 401, "invalid_api_key")
         user = self.repository.user_by_id(str(key["user_id"]))
         if user is None or str(user.get("status")) != "active":
             raise AuthError("user is disabled", 403, "user_disabled")
         key_type = str(key.get("key_type") or "desktop")
-        verified = (
-            not self.key_risk_control
-            or bool(key.get("identity_verified"))
-            or key_type == "service_readonly"
-        )
-        if not verified and not allow_unverified:
-            raise AuthError(
-                "EVE character validation is required",
-                428,
-                "identity_validation_required",
-            )
         self.repository.mark_api_key_used(str(key["key_id"]), _now_iso())
         return AuthPrincipal(
             user_id=str(user["user_id"]),
@@ -474,14 +296,67 @@ class AuthService:
             auth_type="api_key",
             api_key_id=str(key["key_id"]),
             api_key_type=key_type,
-            identity_verified=verified,
         )
+
+    def _authenticate_seat_api_key(self, secret_hash: str) -> AuthPrincipal:
+        key = self.repository.seat_integration_key_by_hash(secret_hash)
+        if key is None:
+            raise AuthError("API key is invalid or revoked", 401, "invalid_api_key")
+        key_id = str(key.get("key_id") or "")
+        account_id = str(key.get("account_id") or "")
+        binding = self.repository.external_account_by_id("seat", account_id)
+        error: AuthError | None = None
+        if str(key.get("status") or "") != "active":
+            error = AuthError("Seat API key is revoked", 401, "invalid_api_key")
+        elif binding is None:
+            error = AuthError("Seat account is not bound", 403, "seat_account_unmapped")
+        elif str(binding.get("status") or "") != "active":
+            error = AuthError("Seat account binding is disabled", 403, "seat_account_disabled")
+        else:
+            user = self.repository.user_by_id(str(binding.get("user_id") or ""))
+            if user is None or str(user.get("status") or "") != "active":
+                error = AuthError("user is disabled", 403, "user_disabled")
+        if error is not None:
+            raise error
+        user = self.repository.user_by_id(str(binding["user_id"]))
+        assert user is not None
+        principal = AuthPrincipal(
+            user_id=str(user["user_id"]),
+            username=str(user["username"]),
+            display_name=str(user["display_name"]),
+            role=str(user["role"]),
+            auth_type="api_key",
+            api_key_id=key_id,
+            api_key_type="seat",
+            integration="seat",
+            account_id=account_id,
+            permissions=tuple(
+                sorted(
+                    {
+                        str(value).strip()
+                        for value in (key.get("permissions") or [])
+                        if str(value).strip() in {"monitor", "alert"}
+                    }
+                )
+            ),
+        )
+        return principal
 
     def is_principal_active(self, principal: AuthPrincipal) -> bool:
         """Return whether an already-authenticated SSE principal remains valid."""
         user = self.repository.user_by_id(principal.user_id)
         if user is None or str(user.get("status")) != "active":
             return False
+        if principal.is_seat:
+            key = self.repository.seat_integration_key_by_id(principal.api_key_id)
+            if not key or str(key.get("status") or "") != "active":
+                return False
+            binding = self.repository.external_account_by_id("seat", principal.account_id)
+            return bool(
+                binding
+                and str(binding.get("status") or "") == "active"
+                and str(binding.get("user_id") or "") == principal.user_id
+            )
         if principal.auth_type == "api_key":
             key = self.repository.api_key_by_id(principal.api_key_id)
             return bool(key and str(key.get("status")) == "active")
@@ -489,6 +364,79 @@ class AuthService:
             session = self.repository.session_by_hash(principal.session_hash)
             return bool(session and str(session.get("expires_at")) > _now_iso())
         return False
+
+    def bind_seat_account(
+        self,
+        account_id: str,
+        user_id: str,
+        actor_user_id: str,
+        revision: int = 1,
+    ) -> dict[str, Any]:
+        """Bind one Seat account to one local user, without implicit merging."""
+        account_id = str(account_id or "").strip()
+        user_id = str(user_id or "").strip()
+        if not account_id:
+            raise AuthError("Seat account ID is required", 400, "invalid_seat_account")
+        user = self.repository.user_by_id(user_id)
+        if user is None:
+            raise AuthError("user not found", 404, "user_not_found")
+        if str(user.get("status") or "") != "active":
+            raise AuthError("user is disabled", 403, "user_disabled")
+        now = _now_iso()
+        result = self.repository.bind_external_account(
+            {
+                "provider": "seat",
+                "account_id": account_id,
+                "user_id": user_id,
+                "status": "active",
+                "revision": max(1, int(revision)),
+                "created_at": now,
+                "updated_at": now,
+            },
+            self._audit_record(
+                actor_user_id,
+                user_id,
+                "seat_account.bound",
+                {"provider": "seat", "account_id": account_id},
+                now=now,
+            ),
+        )
+        conflict = str(result.get("conflict") or "")
+        if conflict and conflict != "already_bound":
+            raise AuthError("Seat account binding conflicts with an existing binding", 409, "seat_account_conflict")
+        if result.get("bound"):
+            self._notify_authorization_changed()
+        return result
+
+    def set_seat_account_status(
+        self,
+        account_id: str,
+        active: bool,
+        actor_user_id: str,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """Disable or enable a Seat binding and invalidate active streams."""
+        binding = self.repository.external_account_by_id("seat", str(account_id))
+        if binding is None:
+            raise AuthError("Seat account binding not found", 404, "seat_account_not_found")
+        now = _now_iso()
+        status = "active" if active else "disabled"
+        result = self.repository.set_external_account_status(
+            "seat",
+            str(account_id),
+            status,
+            now,
+            self._audit_record(
+                actor_user_id,
+                str(binding.get("user_id") or ""),
+                "seat_account.enabled" if active else "seat_account.disabled",
+                {"provider": "seat", "account_id": str(account_id), "reason": str(reason or "")},
+                now=now,
+            ),
+        )
+        if result and result.get("changed"):
+            self._notify_authorization_changed()
+        return result or binding
 
     def change_password(
         self,
@@ -534,9 +482,7 @@ class AuthService:
             "key_hash": _secret_hash(secret),
             "key_type": key_type,
             "status": "active",
-            "identity_verified": (
-                key_type == "service_readonly" or not self.key_risk_control
-            ),
+            "identity_verified": True,
             "created_at": now,
             "last_used_at": "",
             "revoked_at": "",
@@ -549,6 +495,12 @@ class AuthService:
         return {**self._public_api_key_record(key), "secret": secret}
 
     def revoke_api_key(self, key_id: str, principal: AuthPrincipal) -> None:
+        if self.repository.seat_integration_key_by_id(key_id) is not None:
+            raise AuthError(
+                "Seat client keys must be revoked by GloryNavy_Seat",
+                410,
+                "seat_key_management_required",
+            )
         key = self.repository.api_key_by_id(key_id)
         if key is None:
             raise AuthError("API key not found", 404, "api_key_not_found")
@@ -566,6 +518,12 @@ class AuthService:
         self._notify_authorization_changed()
 
     def enable_api_key(self, key_id: str, principal: AuthPrincipal) -> None:
+        if self.repository.seat_integration_key_by_id(key_id) is not None:
+            raise AuthError(
+                "Seat client keys are managed by GloryNavy_Seat",
+                410,
+                "seat_key_management_required",
+            )
         key = self.repository.api_key_by_id(key_id)
         if key is None:
             raise AuthError("API key not found", 404, "api_key_not_found")
@@ -592,6 +550,12 @@ class AuthService:
         self._notify_authorization_changed()
 
     def delete_api_key(self, key_id: str, principal: AuthPrincipal) -> None:
+        if self.repository.seat_integration_key_by_id(key_id) is not None:
+            raise AuthError(
+                "Seat client keys must be deleted by GloryNavy_Seat",
+                410,
+                "seat_key_management_required",
+            )
         key = self.repository.api_key_by_id(key_id)
         if key is None:
             raise AuthError("API key not found", 404, "api_key_not_found")
@@ -607,345 +571,29 @@ class AuthService:
         self._audit(principal.user_id, str(key["user_id"]), "api_key.deleted", {"key_id": key_id})
 
     def list_api_keys(self, user_id: str) -> list[dict[str, Any]]:
-        return [
+        legacy = [
             self._public_api_key_record(item)
             for item in self.repository.list_api_keys(user_id)
         ]
-
-    def verify_characters(
-        self,
-        principal: AuthPrincipal,
-        names: list[str] | None = None,
-        *,
-        character_ids: list[int] | None = None,
-        audit_failure: bool = True,
-        audit_success: bool = True,
-        audit_context: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        if principal.auth_type != "api_key" or principal.api_key_type != "desktop":
-            raise AuthError("desktop API key is required", 403, "desktop_key_required")
-        if not self.key_risk_control:
-            return {
-                "verified": True,
-                "permanent": True,
-                "skipped": True,
-                "characters": [],
-            }
-        clean_names = _clean_names(names or [])
-        clean_character_ids = _clean_character_ids(character_ids or [])
-        if not clean_names and not clean_character_ids:
-            raise AuthError("at least one EVE Listener is required", 428, "eve_listener_required")
-        key = self.repository.api_key_by_id(principal.api_key_id) or {}
-        key_details = {
-            "api_key_id": principal.api_key_id,
-            "api_key_name": str(key.get("name") or ""),
-            "api_key_prefix": str(key.get("key_prefix") or ""),
-        }
-        audit_inputs = (
-            {"character_ids": clean_character_ids}
-            if clean_character_ids
-            else {"characters": clean_names}
-        )
-        try:
-            resolved = (
-                [
-                    self._resolve_character_id(character_id)
-                    for character_id in clean_character_ids
-                ]
-                if clean_character_ids
-                else [self._resolve_character(name) for name in clean_names]
-            )
-        except AuthError as exc:
-            if audit_failure:
-                self._audit(
-                    principal.user_id,
-                    principal.user_id,
-                    "identity.check_failed",
-                    {
-                        **key_details,
-                        **dict(audit_context or {}),
-                        **audit_inputs,
-                        "error_code": exc.code,
-                        "reason": str(exc),
-                    },
-                )
-            raise
-        if not self.key_risk_control:
-            return {
-                "verified": True,
-                "permanent": True,
-                "skipped": True,
-                "characters": [],
-            }
-        allowed_corps = self.repository.allowed_corporation_ids()
-        whitelisted = self.repository.whitelist_ids(principal.user_id)
-        unauthorized = [
-            item for item in resolved
-            if item["character_id"] not in whitelisted
-            and item.get("corporation_id") not in allowed_corps
+        seat_keys = [
+            self._public_seat_api_key_record(item)
+            for item in self.repository.list_seat_integration_keys(user_id)
         ]
-        if unauthorized:
-            reason = "unauthorized EVE character detected"
-            now = _now_iso()
-            self.repository.revoke_api_key_and_audit(
-                principal.api_key_id,
-                now,
-                reason,
-                self._audit_record(
-                    principal.user_id,
-                    principal.user_id,
-                    "identity.key_revoked",
-                    {
-                        **key_details,
-                        "characters": unauthorized,
-                        "error_code": "unauthorized_eve_character",
-                        "reason": reason,
-                    },
-                    now=now,
-                ),
-            )
-            self._notify_authorization_changed()
-            raise AuthError(reason, 403, "unauthorized_eve_character")
-        now = _now_iso()
-        existing = {
-            int(item["character_id"]): item
-            for item in self.repository.list_verified_characters(principal.user_id)
-        }
-        for item in resolved:
-            previous = existing.get(int(item["character_id"]))
-            self.repository.upsert_verified_character({
-                "user_id": principal.user_id,
-                **item,
-                "first_seen_at": str(previous.get("first_seen_at") if previous else now),
-                "last_seen_at": now,
-            })
-        self.repository.mark_api_key_verified(principal.api_key_id)
-        if audit_success:
-            self._audit(principal.user_id, principal.user_id, "identity.verified", {
-                **key_details,
-                **dict(audit_context or {}),
-                "characters": resolved,
-            })
-        return {
-            "verified": True,
-            "permanent": True,
-            "characters": resolved,
-        }
-
-    def submit_character_report(
-        self,
-        principal: AuthPrincipal,
-        names: list[str] | None = None,
-        client_id: str = "",
-        *,
-        character_ids: list[int] | None = None,
-    ) -> dict[str, Any]:
-        """Persist an idempotent report and return its current state immediately."""
-        if principal.auth_type != "api_key" or principal.api_key_type != "desktop":
-            raise AuthError("desktop API key is required", 403, "desktop_key_required")
-        if not self.key_risk_control:
-            response = {
-                "accepted": True,
-                "status": "verified",
-                "pending": False,
-                "verified": True,
-                "permanent": True,
-                "skipped": True,
-                "job_id": "",
-                "characters": [],
-            }
-            if client_id:
-                response["client_id"] = str(client_id).strip()[:160]
-            return response
-        clean_names = sorted(_clean_names(names or []), key=str.casefold)
-        clean_character_ids = sorted(_clean_character_ids(character_ids or []))
-        if not clean_names and not clean_character_ids:
-            raise AuthError("at least one EVE Listener is required", 428, "eve_listener_required")
-        names_hash = (
-            _identity_character_ids_hash(clean_character_ids)
-            if clean_character_ids
-            else _identity_names_hash(clean_names)
+        return sorted(
+            [*legacy, *seat_keys],
+            key=lambda item: str(item.get("created_at") or ""),
+            reverse=True,
         )
-        job_id = hashlib.sha256(
-            f"{principal.api_key_id}\0{names_hash}".encode("utf-8")
-        ).hexdigest()
-        now = _now_iso()
-        job = self.repository.ensure_identity_job({
-            "job_id": job_id,
-            "api_key_id": principal.api_key_id,
-            "user_id": principal.user_id,
-            "client_id": str(client_id or "").strip()[:160],
-            "names_hash": names_hash,
-            "names": clean_names,
-            "character_ids": clean_character_ids,
-            "status": "queued",
-            "next_attempt_at": now,
-            "created_at": now,
-            "updated_at": now,
-        })
-        if not job:
-            raise AuthError("identity report could not be queued", 503, "identity_queue_unavailable")
-        self._identity_worker.start()
-        self._identity_worker.wake()
-        return self._identity_job_response(job, client_id=client_id)
-
-    def start_identity_worker(self) -> None:
-        """Start recovery of queued identity reports after server startup."""
-        if not self.key_risk_control:
-            return
-        self._identity_worker.start()
-        self._identity_worker.wake()
-
-    def wait_for_identity_idle(self, timeout: float | None = None) -> bool:
-        """Wait until the identity worker is not executing a job."""
-        return self._identity_worker.wait_idle(timeout=timeout)
 
     def close(self, *, wait: bool = True) -> None:
-        """Stop the persistent identity worker before closing the repository."""
-        self._identity_worker.close(wait=wait)
-
-    def _claim_identity_job(self, lease_owner: str) -> dict[str, Any] | None:
-        if not self.key_risk_control:
-            return None
-        now = datetime.now(UTC)
-        return self.repository.claim_identity_job(
-            now.isoformat(),
-            lease_owner,
-            (now + timedelta(seconds=IDENTITY_JOB_LEASE_SECONDS)).isoformat(),
-        )
-
-    def _process_identity_job(
-        self,
-        job: dict[str, Any],
-        lease_owner: str,
-    ) -> None:
-        job_id = str(job.get("job_id") or "")
-        key = self.repository.api_key_by_id(str(job.get("api_key_id") or "")) or {}
-        user = self.repository.user_by_id(str(job.get("user_id") or "")) or {}
-        if (
-            not job_id
-            or str(key.get("status") or "") != "active"
-            or str(key.get("user_id") or "") != str(job.get("user_id") or "")
-            or str(user.get("status") or "") != "active"
-        ):
-            self.repository.complete_identity_job(
-                job_id, lease_owner, "cancelled", {}, "inactive_principal",
-                "API key or user is no longer active", _now_iso(),
-            )
-            return
-        principal = AuthPrincipal(
-            user_id=str(user.get("user_id") or ""),
-            username=str(user.get("username") or ""),
-            display_name=str(user.get("display_name") or ""),
-            role=str(user.get("role") or "member"),
-            auth_type="api_key",
-            api_key_id=str(key.get("key_id") or ""),
-            api_key_type=str(key.get("key_type") or "desktop"),
-            identity_verified=bool(key.get("identity_verified")),
-        )
-        names = [str(item) for item in job.get("names") or []]
-        character_ids = _clean_character_ids(job.get("character_ids") or [])
-        audit_context = {
-            "identity_job_id": job_id,
-            "identity_attempt": int(job.get("attempt_count") or 1),
-        }
-        if str(job.get("client_id") or "").strip():
-            audit_context["client_id"] = str(job.get("client_id") or "").strip()
-        try:
-            result = self.verify_characters(
-                principal,
-                names,
-                character_ids=character_ids,
-                audit_failure=int(job.get("attempt_count") or 1) <= 1,
-                audit_success=False,
-                audit_context=audit_context,
-            )
-        except IdentityUnavailableError as exc:
-            attempt = max(1, int(job.get("attempt_count") or 1))
-            delay = min(
-                IDENTITY_RETRY_MAX_SECONDS,
-                IDENTITY_RETRY_BASE_SECONDS * (2 ** min(5, attempt - 1)),
-            )
-            next_attempt = datetime.now(UTC) + timedelta(seconds=delay)
-            self.repository.retry_identity_job(
-                job_id,
-                lease_owner,
-                next_attempt.isoformat(),
-                exc.code,
-                str(exc),
-                _now_iso(),
-            )
-            return
-        except AuthError as exc:
-            self.repository.complete_identity_job(
-                job_id,
-                lease_owner,
-                "rejected",
-                {},
-                exc.code,
-                str(exc),
-                _now_iso(),
-            )
-            return
-        success_details = {
-            "api_key_id": str(key.get("key_id") or ""),
-            "api_key_name": str(key.get("name") or ""),
-            "api_key_prefix": str(key.get("key_prefix") or ""),
-            **audit_context,
-            "characters": list(result.get("characters") or []),
-        }
-        audit = None
-        if not result.get("skipped"):
-            audit = self._audit_record(
-                principal.user_id,
-                principal.user_id,
-                "identity.verified",
-                success_details,
-            )
-        self.repository.complete_identity_job(
-            job_id,
-            lease_owner,
-            "verified",
-            result,
-            "",
-            "",
-            _now_iso(),
-            audit=audit,
-        )
-
-    def _identity_job_response(
-        self,
-        job: dict[str, Any],
-        client_id: str = "",
-    ) -> dict[str, Any]:
-        status = str(job.get("status") or "queued")
-        result = job.get("result") if isinstance(job.get("result"), dict) else {}
-        verified = status == "verified" and bool(result.get("verified"))
-        response = {
-            "accepted": True,
-            "status": status,
-            "pending": status in {"queued", "processing", "retrying"},
-            "verified": verified,
-            "permanent": True,
-            "job_id": str(job.get("job_id") or ""),
-            "characters": list(result.get("characters") or []),
-        }
-        if client_id:
-            response["client_id"] = str(client_id).strip()[:160]
-        if status == "retrying":
-            response["retry_after"] = str(job.get("next_attempt_at") or "")
-        if status in {"rejected", "cancelled"}:
-            response["error_code"] = str(job.get("error_code") or "identity_rejected")
-            response["reason"] = str(job.get("error_message") or "identity verification failed")
-        return response
+        """Keep shutdown call sites compatible; no background auth worker remains."""
+        return None
 
     def list_users(self) -> list[dict[str, Any]]:
         users = []
         for item in self.repository.list_users():
             user = _public_user(item)
             user["keys"] = self.list_api_keys(str(item["user_id"]))
-            user["whitelist"] = self.repository.list_whitelist(str(item["user_id"]))
-            user["verified_characters"] = self.repository.list_verified_characters(str(item["user_id"]))
             users.append(user)
         return users
 
@@ -958,6 +606,12 @@ class AuthService:
             keys_by_user.setdefault(user_id, []).append(
                 self._public_api_key_record(item)
             )
+        for item in self.repository.list_seat_integration_keys_with_users():
+            user_id = str(item.get("user_id") or "")
+            if user_id:
+                keys_by_user.setdefault(user_id, []).append(
+                    self._public_seat_api_key_record(item)
+                )
         users = []
         for item in user_rows:
             user = _public_user(item)
@@ -967,9 +621,17 @@ class AuthService:
 
     def _public_api_key_record(self, key: dict[str, Any]) -> dict[str, Any]:
         result = _public_api_key(key)
-        if not self.key_risk_control and result.get("key_type") == "desktop":
-            result["identity_verified"] = True
         return result
+
+    def _public_seat_api_key_record(self, key: dict[str, Any]) -> dict[str, Any]:
+        return {
+            field: key.get(field)
+            for field in (
+                "key_id", "user_id", "name", "key_prefix", "key_type", "status",
+                "created_at", "last_used_at", "revoked_at", "revoked_reason",
+                "account_id", "permissions",
+            )
+        }
 
     def set_user_status(
         self,
@@ -999,7 +661,7 @@ class AuthService:
         return updated
 
     def delete_user(self, user_id: str, actor_user_id: str) -> None:
-        """Delete a user and all owned authentication and EVE identity records."""
+        """Delete a user and all owned authentication records."""
         user = self.repository.user_by_id(user_id)
         if user is None:
             raise AuthError("user not found", 404, "user_not_found")
@@ -1054,147 +716,6 @@ class AuthService:
         self._audit(actor_user_id, user_id, "password.reset", {})
         self._notify_authorization_changed()
         return _public_user(updated)
-
-    def add_allowed_corporation(
-        self,
-        corporation_id: int,
-        actor_user_id: str,
-    ) -> dict[str, Any]:
-        corporation_id = _positive_int(corporation_id, "corporation_id")
-        name = ""
-        try:
-            profile = self.resolver.corporation_profile(corporation_id)
-            name = str(profile.get("name") or "")
-        except Exception as exc:
-            raise IdentityUnavailableError(f"could not verify corporation: {exc}") from exc
-        record = {"corporation_id": corporation_id, "corporation_name": name, "created_at": _now_iso()}
-        self.repository.upsert_allowed_corporation(record)
-        self._audit(actor_user_id, "", "corporation.allowed", record)
-        return record
-
-    def delete_allowed_corporation(self, corporation_id: int, actor_user_id: str) -> None:
-        corporation_id = _positive_int(corporation_id, "corporation_id")
-        self.repository.delete_allowed_corporation(corporation_id)
-        self._audit(actor_user_id, "", "corporation.removed", {"corporation_id": corporation_id})
-        self.reevaluate_all_users(actor_user_id)
-
-    def add_whitelist_character(
-        self,
-        user_id: str,
-        character_id: int,
-        note: str,
-        actor_user_id: str,
-    ) -> dict[str, Any]:
-        if self.repository.user_by_id(user_id) is None:
-            raise AuthError("user not found", 404, "user_not_found")
-        character_id = _positive_int(character_id, "character_id")
-        try:
-            profile = self.resolver.character_profile(character_id)
-        except Exception as exc:
-            raise IdentityUnavailableError(f"could not verify character: {exc}") from exc
-        record = {
-            "user_id": user_id,
-            "character_id": character_id,
-            "character_name": str(profile.get("name") or ""),
-            "note": str(note or "").strip()[:500],
-            "created_at": _now_iso(),
-        }
-        self.repository.upsert_whitelist(record)
-        self._audit(actor_user_id, user_id, "character.whitelisted", record)
-        return record
-
-    def delete_whitelist_character(
-        self,
-        user_id: str,
-        character_id: int,
-        actor_user_id: str,
-    ) -> None:
-        character_id = _positive_int(character_id, "character_id")
-        self.repository.delete_whitelist(user_id, character_id)
-        self._audit(actor_user_id, user_id, "character.whitelist_removed", {"character_id": character_id})
-        self.reevaluate_user(user_id, actor_user_id)
-
-    def reevaluate_all_users(self, actor_user_id: str) -> None:
-        for user in self.repository.list_users():
-            if str(user.get("status")) == "active":
-                self.reevaluate_user(str(user["user_id"]), actor_user_id)
-
-    def reevaluate_user(self, user_id: str, actor_user_id: str) -> None:
-        allowed_corps = self.repository.allowed_corporation_ids()
-        whitelisted = self.repository.whitelist_ids(user_id)
-        unauthorized = [
-            item for item in self.repository.list_verified_characters(user_id)
-            if int(item["character_id"]) not in whitelisted
-            and item.get("corporation_id") not in allowed_corps
-        ]
-        if not unauthorized:
-            return
-        now = _now_iso()
-        self.repository.revoke_desktop_keys_and_audit(
-            user_id,
-            now,
-            "authorization rules no longer allow a verified EVE character",
-            self._audit_record(
-                actor_user_id,
-                user_id,
-                "identity.desktop_keys_revoked",
-                {"characters": unauthorized},
-                now=now,
-            ),
-        )
-        self._notify_authorization_changed()
-
-    def _resolve_character(self, name: str) -> dict[str, Any]:
-        try:
-            resolved = self.resolver.resolve_names([name])
-            exact = next(
-                (
-                    item for item in resolved
-                    if str(getattr(item, "category", "")).casefold() == "character"
-                    and str(getattr(item, "name", "")).casefold() == name.casefold()
-                ),
-                None,
-            )
-            if exact is None:
-                raise IdentityUnavailableError(f"EVE character could not be resolved: {name}")
-            profile = self.resolver.character_profile(int(exact.entity_id))
-        except IdentityUnavailableError:
-            raise
-        except Exception as exc:
-            raise IdentityUnavailableError(f"EVE identity lookup failed for {name}: {exc}") from exc
-        corporation_id = profile.get("corporation_id")
-        return {
-            "character_id": int(exact.entity_id),
-            "character_name": str(profile.get("name") or exact.name),
-            "corporation_id": int(corporation_id) if corporation_id not in {None, ""} else None,
-            "corporation_name": str(profile.get("corporation_name") or ""),
-        }
-
-    def _resolve_character_id(self, character_id: int) -> dict[str, Any]:
-        character_id = _positive_int(character_id, "character_id")
-        try:
-            profile = self.resolver.character_profile(character_id)
-            if not isinstance(profile, dict) or not str(profile.get("name") or "").strip():
-                raise IdentityUnavailableError(
-                    f"EVE character could not be resolved: {character_id}"
-                )
-        except IdentityUnavailableError:
-            raise
-        except Exception as exc:
-            raise IdentityUnavailableError(
-                f"EVE identity lookup failed for {character_id}: {exc}"
-            ) from exc
-        corporation_id = profile.get("corporation_id")
-        return {
-            "character_id": character_id,
-            "character_name": str(profile.get("name") or "").strip(),
-            "corporation_id": (
-                int(corporation_id)
-                if corporation_id not in {None, ""}
-                else None
-            ),
-            "corporation_name": str(profile.get("corporation_name") or ""),
-        }
 
     def _audit(
         self,
@@ -1283,54 +804,13 @@ def _public_api_key(key: dict[str, Any]) -> dict[str, Any]:
         field: key.get(field)
         for field in (
             "key_id", "user_id", "name", "key_prefix", "key_type", "status",
-            "identity_verified", "created_at", "last_used_at", "revoked_at", "revoked_reason",
+            "created_at", "last_used_at", "revoked_at", "revoked_reason",
         )
     }
 
 
-def _clean_names(values: list[str]) -> list[str]:
-    result: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        name = str(value or "").strip()
-        key = name.casefold()
-        if name and key not in seen:
-            seen.add(key)
-            result.append(name)
-    return result
-
-
-def _clean_character_ids(values: list[Any]) -> list[int]:
-    result: list[int] = []
-    seen: set[int] = set()
-    for value in values:
-        character_id = _positive_int(value, "character_id")
-        if character_id not in seen:
-            seen.add(character_id)
-            result.append(character_id)
-    return result
-
-
-def _positive_int(value: Any, label: str) -> int:
-    try:
-        number = int(value)
-    except (TypeError, ValueError) as exc:
-        raise AuthError(f"{label} must be a positive integer", 400, f"invalid_{label}") from exc
-    if number <= 0:
-        raise AuthError(f"{label} must be a positive integer", 400, f"invalid_{label}")
-    return number
-
-
 def _username_key(value: str) -> str:
     return str(value or "").strip().casefold()
-
-
-def _safe_return_path(value: str) -> str:
-    path = str(value or "/").strip()
-    parsed = urlparse(path)
-    if not path.startswith("/") or path.startswith("//") or parsed.scheme or parsed.netloc:
-        return "/"
-    return path
 
 
 def _secret_hash(value: str) -> str:
@@ -1339,15 +819,3 @@ def _secret_hash(value: str) -> str:
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _identity_names_hash(names: list[str]) -> str:
-    normalized = "\n".join(sorted({name.strip().casefold() for name in names if name.strip()}))
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def _identity_character_ids_hash(character_ids: list[int]) -> str:
-    normalized = "\n".join(
-        f"id:{item}" for item in sorted(set(character_ids))
-    )
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()

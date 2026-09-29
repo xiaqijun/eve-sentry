@@ -19,7 +19,6 @@ import {
 import { IconEye, IconMore, IconPlus, IconUserAdd, IconUserGroup } from "@arco-design/web-react/icon";
 import {
   Ban,
-  KeyRound,
   RotateCcw,
   Trash2,
 } from "lucide-react";
@@ -32,8 +31,6 @@ import {
   UserIdentity,
 } from "../../components/ManagementPage";
 import {
-  createAdminKey,
-  createServiceKey,
   createUser,
   deleteKey,
   deleteUser,
@@ -58,8 +55,6 @@ export function AdminUsersPage() {
   const [page, setPage] = useState(1);
   const [createRole, setCreateRole] = useState<"admin" | "member">("member");
   const [createOpen, setCreateOpen] = useState(false);
-  const [createdSecret, setCreatedSecret] = useState("");
-  const [createdSecretLabel, setCreatedSecretLabel] = useState("");
   const [actionsOpen, setActionsOpen] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -133,34 +128,8 @@ export function AdminUsersPage() {
     });
   };
 
-  const createReadonlyKey = async () => {
-    if (!selectedUserId) return;
-    try {
-      const key: ApiKeyRecord = await createServiceKey(selectedUserId, "QQ 机器人");
-      setCreatedSecret(key.secret || "");
-      setCreatedSecretLabel("只读服务密钥");
-      await load();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "服务密钥创建失败");
-    }
-  };
-
-  const createDesktopKey = async () => {
-    if (!selectedUserId) return;
-    try {
-      const key = await createAdminKey(selectedUserId, "监控客户端", "desktop");
-      setCreatedSecret(key.secret || "");
-      setCreatedSecretLabel("设备密钥");
-      await load();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "设备密钥创建失败");
-    }
-  };
-
   const openUser = (userId: string) => {
     setSelectedUserId(userId);
-    setCreatedSecret("");
-    setCreatedSecretLabel("");
     setActionsOpen(false);
   };
 
@@ -201,14 +170,6 @@ export function AdminUsersPage() {
       if (password) void run(() => resetUserPassword(selectedUser.user_id, password));
       return;
     }
-    if (action === "create-desktop-key") {
-      void createDesktopKey();
-      return;
-    }
-    if (action === "create-service-key") {
-      void createReadonlyKey();
-      return;
-    }
     if (action === "delete-user") {
       void deleteSelectedUser();
     }
@@ -219,7 +180,6 @@ export function AdminUsersPage() {
     { title: "角色", dataIndex: "role", render: (role: AdminUser["role"]) => <Tag color={role === "admin" ? "arcoblue" : "gray"}>{role === "admin" ? "管理员" : "普通用户"}</Tag> },
     { title: "状态", dataIndex: "status", render: (status: AdminUser["status"]) => <AccountStatusTag status={status} /> },
     { title: "有效密钥", dataIndex: "keys", render: (keys: AdminUser["keys"]) => keys.filter((key) => key.status === "active").length },
-    { title: "已验证角色", dataIndex: "verified_characters", render: (items: AdminUser["verified_characters"]) => items.length },
     {
       title: "操作",
       width: 72,
@@ -282,11 +242,9 @@ export function AdminUsersPage() {
               <Select.Option value="admin">管理员</Select.Option>
             </Select>
           </Form.Item>
-          {createRole === "admin" ? (
-            <Form.Item field="password" label="初始密码" rules={[{ required: true, minLength: 12, message: "请输入至少 12 位密码" }]}>
-              <Input.Password placeholder="至少 12 位" />
-            </Form.Item>
-          ) : null}
+          <Form.Item field="password" label="初始密码" rules={[{ required: true, minLength: 12, message: "请输入至少 12 位密码" }]}>
+            <Input.Password placeholder="至少 12 位" />
+          </Form.Item>
           <div className="management-dialog-actions">
             <Button type="secondary" onClick={() => { setCreateRole("member"); setCreateOpen(false); }}>取消</Button>
             <Button htmlType="submit" icon={<IconUserAdd />} type="primary">创建用户</Button>
@@ -308,8 +266,6 @@ export function AdminUsersPage() {
                 <Menu aria-label="用户操作菜单" selectable={false}>
                   <Menu.Item key="toggle-status" onClick={() => runSelectedUserAction("toggle-status")}>{selectedUser.status === "active" ? "禁用用户" : "解禁用户"}</Menu.Item>
                   {selectedUser.role === "admin" ? <Menu.Item key="reset-password" onClick={() => runSelectedUserAction("reset-password")}>重置密码</Menu.Item> : null}
-                  <Menu.Item key="create-desktop-key" onClick={() => runSelectedUserAction("create-desktop-key")}><KeyRound size={14} />创建设备密钥</Menu.Item>
-                  <Menu.Item key="create-service-key" onClick={() => runSelectedUserAction("create-service-key")}><KeyRound size={14} />创建只读服务密钥</Menu.Item>
                   {selectedUser.user_id !== currentUser?.user_id ? <Menu.Item key="delete-user" onClick={() => runSelectedUserAction("delete-user")}><span className="danger-text"><Trash2 size={14} />删除用户</span></Menu.Item> : null}
                 </Menu>
               )}
@@ -331,11 +287,11 @@ export function AdminUsersPage() {
         {selectedUser ? (
           <div className="management-drawer-body">
               <div className="management-drawer-status"><span>账号状态</span><AccountStatusTag status={selectedUser.status} /></div>
-              {createdSecret ? <div className="secret-once"><strong>{createdSecretLabel}只显示这一次</strong><code>{createdSecret}</code></div> : null}
               <section className="management-drawer-section">
-                <div className="admin-section-heading"><h3>设备与服务密钥</h3><span>{selectedUser.keys.length} 个</span></div>
+                <div className="admin-section-heading"><h3>Seat 客户端密钥</h3><span>{selectedUser.keys.length} 个</span></div>
+                <p className="management-hint">客户端密钥统一由 GloryNavy_Seat 签发和吊销；此处仅查看历史投影。</p>
                 <div className="compact-list">
-                  {selectedUser.keys.map((key) => <div key={key.key_id}><span>{key.name}<small>{key.key_prefix}… · {key.key_type}</small></span><span className="compact-key-actions"><em className={`status-text ${key.status}`}>{key.status === "active" ? "有效" : "已吊销"}</em>{key.status === "active" ? <Button aria-label={`吊销 ${key.name}`} icon={<Ban size={14} />} shape="circle" size="mini" title="吊销密钥" type="text" onClick={() => void run(() => revokeKey(key.key_id))} /> : null}{key.status === "revoked" && canEnableKey(key) ? <Button aria-label={`重新启用 ${key.name}`} icon={<RotateCcw size={14} />} shape="circle" size="mini" title="重新启用密钥" type="text" onClick={() => void run(() => enableKey(key.key_id))} /> : null}{key.status === "revoked" ? <Button aria-label={`删除 ${key.name}`} icon={<Trash2 size={14} />} shape="circle" size="mini" status="danger" title="永久删除密钥" type="text" onClick={() => { if (window.confirm(`确定永久删除密钥“${key.name}”吗？`)) void run(() => deleteKey(key.key_id)); }} /> : null}</span></div>)}
+                  {selectedUser.keys.map((key) => <div key={key.key_id}><span>{key.name}<small>{key.key_prefix}… · {key.key_type}</small></span><span className="compact-key-actions"><em className={`status-text ${key.status}`}>{key.status === "active" ? "有效" : "已吊销"}</em>{key.key_type !== "seat" && key.status === "active" ? <Button aria-label={`吊销 ${key.name}`} icon={<Ban size={14} />} shape="circle" size="mini" title="吊销密钥" type="text" onClick={() => void run(() => revokeKey(key.key_id))} /> : null}{key.key_type !== "seat" && key.status === "revoked" && canEnableKey(key) ? <Button aria-label={`重新启用 ${key.name}`} icon={<RotateCcw size={14} />} shape="circle" size="mini" title="重新启用密钥" type="text" onClick={() => void run(() => enableKey(key.key_id))} /> : null}{key.key_type !== "seat" && key.status === "revoked" ? <Button aria-label={`删除 ${key.name}`} icon={<Trash2 size={14} />} shape="circle" size="mini" status="danger" title="永久删除密钥" type="text" onClick={() => { if (window.confirm(`确定永久删除密钥“${key.name}”吗？`)) void run(() => deleteKey(key.key_id)); }} /> : null}</span></div>)}
                   {selectedUser.keys.length === 0 ? <p className="admin-empty">暂无密钥</p> : null}
                 </div>
               </section>

@@ -1,5 +1,9 @@
 # 预警消息 API 接入指南
 
+[星图监控范围](monitoring-regions.md)功能尚未发布：启用后服务端只推送范围内实时敌情和监控节点。
+Bootstrap 可带 `monitoring_scope`；区域外客户端保留诊断连接但不计为监控节点。
+过滤事件仍推进游标；范围变化不是视觉确认清空，不能据此制造清空通知。
+
 新 PostgreSQL 服务的 Bootstrap 标记 `state_source=system_current_state`，三端消费统一结果。
 `freshness=unknown` 表示采集失效：移除实时节点/敌情和待发名单、推进游标，不显示历史“上次情况”，
 不能当作新来敌或确认清空。2026-09-13 本地补丁的 wire 人数为 0、名单为空；旧服务端仍可能

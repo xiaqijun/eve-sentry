@@ -1,6 +1,5 @@
-import { FormEvent, useEffect, useState } from "react";
-import { Button, Card, Input, Message, Pagination, Space, Table, Tag, Typography } from "@arco-design/web-react";
-import { IconCopy, IconPlus } from "@arco-design/web-react/icon";
+import { useEffect, useState } from "react";
+import { Button, Card, Pagination, Space, Table, Typography } from "@arco-design/web-react";
 import { Ban, KeyRound, RotateCcw, Trash2 } from "lucide-react";
 
 import {
@@ -9,38 +8,11 @@ import {
   ManagementPageHeader,
   ManagementSummary,
 } from "../../components/ManagementPage";
-import { createMyKey, deleteKey, enableKey, listMyKeys, revokeKey } from "./api";
+import { deleteKey, enableKey, listMyKeys, revokeKey } from "./api";
 import type { ApiKeyRecord } from "./types";
 
 function formatTime(value?: string): string {
   return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "从未";
-}
-
-async function copyText(value: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(value);
-      return true;
-    }
-  } catch {
-    // Some WebViews expose Clipboard API but reject it outside a secure context.
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = value;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-  textarea.setSelectionRange(0, value.length);
-  try {
-    return document.execCommand?.("copy") === true;
-  } catch {
-    return false;
-  } finally {
-    textarea.remove();
-  }
 }
 
 const ACCOUNT_KEY_PAGE_SIZE = 20;
@@ -49,11 +21,8 @@ export function AccountKeysPage() {
   const [keys, setKeys] = useState<ApiKeyRecord[]>([]);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [newKeyName, setNewKeyName] = useState("");
-  const [createdSecret, setCreatedSecret] = useState("");
   const [error, setError] = useState("");
   const activeKeys = keys.filter((key) => key.status === "active");
-  const verifiedKeys = activeKeys.filter((key) => key.identity_verified);
   const canEnable = (key: ApiKeyRecord) => [
     "revoked by user",
     "revoked by administrator",
@@ -73,19 +42,6 @@ export function AccountKeysPage() {
     setPage((current) => Math.min(current, Math.max(1, Math.ceil(keys.length / ACCOUNT_KEY_PAGE_SIZE))));
   }, [keys.length]);
 
-  const createKey = async (event: FormEvent) => {
-    event.preventDefault();
-    setError("");
-    try {
-      const key = await createMyKey(newKeyName || "监控客户端");
-      setCreatedSecret(key.secret || "");
-      setNewKeyName("");
-      await loadKeys();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "密钥创建失败");
-    }
-  };
-
   const runKeyAction = async (action: () => Promise<void>) => {
     setError("");
     try {
@@ -103,21 +59,20 @@ export function AccountKeysPage() {
       render: (_: unknown, key: ApiKeyRecord) => (
         <Space>
           <span className="arco-key-icon"><KeyRound size={14} /></span>
-          <span className="arco-key-name"><strong>{key.name}</strong><small>{key.key_type === "service_readonly" ? "只读服务" : "监控客户端"}</small></span>
+          <span className="arco-key-name"><strong>{key.name}</strong><small>{key.key_type === "seat" ? "Seat 客户端" : key.key_type === "service_readonly" ? "只读服务" : "历史监控客户端"}</small></span>
         </Space>
       ),
     },
     { title: "密钥前缀", dataIndex: "key_prefix", render: (value: string) => <Typography.Text code>{value}…</Typography.Text> },
-    { title: "身份校验", dataIndex: "identity_verified", render: (value: boolean) => <Tag color={value ? "green" : "orange"}>{value ? "已校验" : "等待校验"}</Tag> },
     { title: "状态", dataIndex: "status", render: (value: ApiKeyRecord["status"]) => <KeyStatusTag status={value} /> },
     { title: "最后使用", dataIndex: "last_used_at", render: (value?: string) => formatTime(value) },
     {
       title: "操作",
       render: (_: unknown, key: ApiKeyRecord) => (
         <Space size={4}>
-          {key.status === "active" ? <Button aria-label={`吊销 ${key.name}`} icon={<Ban size={14} />} shape="circle" size="mini" title="吊销密钥" type="text" onClick={() => void runKeyAction(() => revokeKey(key.key_id))} /> : null}
-          {key.status === "revoked" && canEnable(key) ? <Button aria-label={`重新启用 ${key.name}`} icon={<RotateCcw size={14} />} shape="circle" size="mini" title="重新启用密钥" type="text" onClick={() => void runKeyAction(() => enableKey(key.key_id))} /> : null}
-          {key.status === "revoked" ? <Button aria-label={`删除 ${key.name}`} icon={<Trash2 size={14} />} shape="circle" size="mini" status="danger" title="永久删除密钥" type="text" onClick={() => { if (window.confirm(`确定永久删除密钥“${key.name}”吗？`)) void runKeyAction(() => deleteKey(key.key_id)); }} /> : null}
+          {key.key_type !== "seat" && key.status === "active" ? <Button aria-label={`吊销 ${key.name}`} icon={<Ban size={14} />} shape="circle" size="mini" title="吊销密钥" type="text" onClick={() => void runKeyAction(() => revokeKey(key.key_id))} /> : null}
+          {key.key_type !== "seat" && key.status === "revoked" && canEnable(key) ? <Button aria-label={`重新启用 ${key.name}`} icon={<RotateCcw size={14} />} shape="circle" size="mini" title="重新启用密钥" type="text" onClick={() => void runKeyAction(() => enableKey(key.key_id))} /> : null}
+          {key.key_type !== "seat" && key.status === "revoked" ? <Button aria-label={`删除 ${key.name}`} icon={<Trash2 size={14} />} shape="circle" size="mini" status="danger" title="永久删除密钥" type="text" onClick={() => { if (window.confirm(`确定永久删除密钥“${key.name}”吗？`)) void runKeyAction(() => deleteKey(key.key_id)); }} /> : null}
         </Space>
       ),
     },
@@ -128,39 +83,14 @@ export function AccountKeysPage() {
       <ManagementPageHeader title="设备密钥" />
       <ManagementError error={error} />
       <ManagementSummary ariaLabel="密钥摘要" items={[
+        { label: "密钥总数", value: keys.length },
         { label: "有效密钥", value: activeKeys.length },
-        { label: "身份已校验", value: verifiedKeys.length },
-        { label: "等待校验", value: activeKeys.length - verifiedKeys.length },
       ]} />
 
       <section className="account-grid account-grid-single">
         <Card className="account-key-card arco-management-card" title={<Space><KeyRound size={17} />客户端访问凭据</Space>}>
-          <div className="account-key-controls">
-            <form className="inline-form account-key-form" onSubmit={createKey}>
-              <Input maxLength={80} placeholder="设备名称" value={newKeyName} onChange={setNewKeyName} />
-              <Button htmlType="submit" icon={<IconPlus />} type="primary">创建设备密钥</Button>
-            </form>
-            {createdSecret ? (
-              <div className="secret-once" role="status">
-                <strong>密钥只显示这一次</strong>
-                <code>{createdSecret}</code>
-                <Button
-                  aria-label="复制设备密钥"
-                  className="account-key-copy"
-                  icon={<IconCopy />}
-                  shape="square"
-                  size="small"
-                  title="复制密钥"
-                  type="outline"
-                  onClick={() => void copyText(createdSecret).then((copied) => {
-                    if (copied) Message.success("密钥已复制");
-                    else Message.error("复制失败，请手动选择密钥复制");
-                  })}
-                />
-              </div>
-            ) : null}
-          </div>
-          <Table<ApiKeyRecord> border={false} columns={columns} data={pagedKeys} loading={loading} noDataElement="尚未创建设备密钥" pagination={false} rowKey="key_id" />
+          <p className="management-hint">客户端密钥统一由 GloryNavy_Seat 签发、绑定和吊销；此处仅查看状态，密钥管理请在 GloryNavy_Seat 完成。</p>
+          <Table<ApiKeyRecord> border={false} columns={columns} data={pagedKeys} loading={loading} noDataElement="暂无已接入的 Seat 密钥" pagination={false} rowKey="key_id" />
           {keys.length > ACCOUNT_KEY_PAGE_SIZE ? <Pagination current={page} pageSize={ACCOUNT_KEY_PAGE_SIZE} showTotal total={keys.length} onChange={setPage} /> : null}
         </Card>
       </section>

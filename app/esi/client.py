@@ -68,7 +68,7 @@ class EsiClient:
         access_token: str,
         search: str,
     ) -> list[int]:
-        """Search character ids through the authenticated ESI search route."""
+        """Search character ids through the public ESI search route."""
         query = urlencode(
             {
                 "categories": "character",

@@ -167,7 +167,6 @@ def test_intel_api_client_targets_v1_routes_for_http_requests():
     api.post_heartbeat("client-1", "channel_client")
     api.list_heartbeats()
     api.esi_status()
-    api.esi_session(include_location=True, include_contacts=False)
     api.system_profile(30002813)
     api.character_profile(123)
     api.character_by_name("Alice Prime")
@@ -188,7 +187,6 @@ def test_intel_api_client_targets_v1_routes_for_http_requests():
         "/api/v1/clients/heartbeats",
         "/api/v1/clients",
         "/api/v1/esi/status",
-        "/api/v1/esi/session",
         "/api/v1/systems/30002813",
         "/api/v1/characters/123",
         "/api/v1/characters/by-name/Alice%20Prime",
@@ -736,98 +734,17 @@ def test_intel_api_client_posts_raw_channel_lines(tmp_path):
         server.stop()
 
 
-def test_intel_api_client_fetches_esi_session_and_current_system(tmp_path):
-    class FakeResolver:
-        def resolve_names(self, names):
-            assert names == ["Alice"] or names == ["Tama"]
-            if names == ["Alice"]:
-                return [
-                    SimpleNamespace(
-                        name="Alice",
-                        category="character",
-                        entity_id=123,
-                    )
-                ]
-            return [
-                SimpleNamespace(
-                    name="Tama",
-                    category="solar_system",
-                    entity_id=30002813,
-                )
-            ]
-
-        def character_profile(self, character_id):
-            assert character_id == 123
-            return {
-                "character_id": 123,
-                "name": "Alice",
-                "corporation_id": 456,
-            }
-
-        def system_profile(self, system_id):
-            assert system_id == 30002813
-            return {
-                "system_id": 30002813,
-                "name": "Tama",
-                "security_status": 0.3,
-            }
-
-    class FakeTokens:
-        character_id = 123
-        character_owner_hash = "owner-hash"
-        scopes = ["esi-location.read_location.v1"]
-        expires_at = 2000
-
-        def is_expired(self):
-            return False
-
-    class FakeSession:
-        def load_tokens(self, refresh_if_needed=True):
-            return FakeTokens()
-
-        def snapshot(self, include_location=True, include_contacts=True):
-            return SimpleNamespace(
-                to_dict=lambda: {
-                    "character_id": 123,
-                    "character_owner_hash": "owner-hash",
-                    "scopes": ["esi-location.read_location.v1"],
-                    "location": {"solar_system_id": 30002813},
-                    "contacts": [],
-                }
-            )
-
-    server = IntelHTTPServer(
-        IntelStore(tmp_path / "intel.json", resolver=FakeResolver()),
-        port=0,
-        esi_session=FakeSession(),
-    )
+def test_intel_api_client_reports_public_esi_only(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
     try:
         api = IntelApiClient(server.url)
-
         status = api.esi_status()
-        assert status["authenticated"] is True
-        assert "access_token" not in status
-
-        snapshot = api.esi_session(include_location=True, include_contacts=False)
-        assert snapshot["location"]["solar_system_name"] == "Tama"
-
-        system = api.system_profile(30002813)
-        assert system["name"] == "Tama"
-
-        character = api.character_profile(123)
-        assert character["name"] == "Alice"
-
-        character = api.character_by_name("Alice")
-        assert character["character_id"] == 123
-
-        system = api.system_by_name("Tama")
-        assert system["system_id"] == 30002813
-
-        current = api.current_esi_system()
-        assert current is not None
-        assert current["system_id"] == 30002813
-        assert current["system_name"] == "Tama"
+        assert status["authenticated"] is False
+        assert status["refreshable"] is False
+        assert api.current_esi_system() is None
+        with pytest.raises(IntelApiError, match="authenticated ESI is disabled"):
+            api.esi_session(include_location=True, include_contacts=False)
     finally:
         server.stop()
 
@@ -2331,6 +2248,7 @@ def test_alert_client_heartbeat_details_are_events_overlay_only():
     assert details["last_success_at"] == "2026-07-10T00:00:00Z"
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_intel_api_client_sends_api_key_for_json_and_identity_requests(monkeypatch):
     requests = []
     responses = iter(

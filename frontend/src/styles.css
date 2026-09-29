@@ -757,49 +757,6 @@ button {
   font-size: 12px;
 }
 
-.esi-login-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  min-height: 34px;
-  border: 1px solid rgba(56, 178, 212, 0.78);
-  border-radius: 3px;
-  color: #e9fbff;
-  font-size: 13px;
-  font-weight: 800;
-  background:
-    linear-gradient(180deg, rgba(27, 107, 132, 0.9), rgba(7, 39, 54, 0.92));
-  box-shadow:
-    inset 0 0 18px rgba(55, 205, 255, 0.13),
-    0 0 16px rgba(16, 164, 211, 0.12);
-}
-
-.esi-login-button:disabled {
-  cursor: not-allowed;
-  border-color: rgba(54, 83, 94, 0.72);
-  color: #6f8792;
-  background: rgba(7, 20, 28, 0.74);
-  box-shadow: none;
-}
-
-.esi-login-button:not(:disabled):hover {
-  border-color: rgba(111, 229, 255, 0.95);
-  color: #ffffff;
-}
-
-.esi-login-error {
-  color: #ff6b60;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.esi-login-note {
-  color: #8eddf6;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
 .left-rail .intel-row {
   grid-template-columns: 42px minmax(0, 1fr) 56px minmax(0, 1fr);
   gap: 6px;
@@ -1895,10 +1852,6 @@ button {
 
   .esi-actions {
     margin-top: 0;
-  }
-
-  .esi-login-button {
-    min-height: 31px;
   }
 
   .map-pane {

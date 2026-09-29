@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from app.core.models import Observation
-from app.esi.session import ContactStanding
+from app.esi.contact_models import ContactStanding
 from app.intel.classification import ClassificationEngine
 from app.intel.enrichment import ThreatEnricher
 from app.server import __main__ as server_main

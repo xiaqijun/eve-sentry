@@ -1,5 +1,6 @@
 import json
 import os
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -459,6 +460,7 @@ def test_detector_client_has_no_local_threat_handler():
     assert not hasattr(MainWindow, "_on_threat_detected")
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_key_validation_is_independent_from_listener_scan():
     class FakeScanner:
         def __init__(self):
@@ -509,6 +511,7 @@ def test_key_validation_is_independent_from_listener_scan():
     assert window._identity_scanner.marked == 2
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_identity_check_submits_listener_found_after_key_validation():
     class FakeScanner:
         def __init__(self):
@@ -554,6 +557,7 @@ def test_identity_check_submits_listener_found_after_key_validation():
     assert window._identity_scanner.verified == ["Alice"]
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_identity_check_does_not_resubmit_historical_unresolved_name():
 
     class FakeScanner:
@@ -598,6 +602,7 @@ def test_identity_check_does_not_resubmit_historical_unresolved_name():
     assert result["identity"] == {"verified": True, "permanent": True}
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_async_identity_report_keeps_pending_names_until_server_verifies():
     verified = []
     remembered = []
@@ -658,6 +663,7 @@ def test_async_identity_report_keeps_pending_names_until_server_verifies():
     assert remembered == [{"character_id": 101, "character_name": "Alice"}]
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_listener_poll_uses_cached_log_path_and_runs_as_silent_task():
     submissions = []
 
@@ -687,6 +693,7 @@ def test_listener_poll_uses_cached_log_path_and_runs_as_silent_task():
     assert submissions[0][2] == {"kind": "listener"}
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_listener_poll_skips_without_api_key():
     submissions = []
     window = MainWindow.__new__(MainWindow)
@@ -704,6 +711,7 @@ def test_listener_poll_skips_without_api_key():
     assert submissions == []
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_listener_background_errors_back_off_and_only_disable_for_auth(
     monkeypatch,
 ):
@@ -739,6 +747,7 @@ def test_listener_background_errors_back_off_and_only_disable_for_auth(
     assert disabled == ["API key is invalid or revoked"]
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_identity_success_displays_success_without_character_count():
     class FakeButton:
         def __init__(self):
@@ -781,6 +790,7 @@ def test_identity_success_displays_success_without_character_count():
     assert window._alert_btn.enabled is True
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_cached_key_validation_starts_monitor_without_network_wait():
     class FakeSettings:
         def get_api_key(self):
@@ -802,6 +812,7 @@ def test_cached_key_validation_starts_monitor_without_network_wait():
     assert window._identity_wants_monitor is False
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_empty_key_starts_monitor_and_alert_without_authentication():
     class FakeSettings:
         def __init__(self):
@@ -844,6 +855,7 @@ def test_empty_key_starts_monitor_and_alert_without_authentication():
     assert window._identity_wants_alert is False
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_empty_server_starts_local_monitor_without_identity_request():
     class FakeSettings:
         def __init__(self):
@@ -876,6 +888,7 @@ def test_empty_server_starts_local_monitor_without_identity_request():
     assert window._api_key_validated is False
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_auth_rejection_clears_cached_key_validation():
     class FakeButton:
         def setChecked(self, _checked):
@@ -3796,6 +3809,7 @@ def test_start_monitor_rejects_missing_eve_windows(monkeypatch):
     assert messages == ["当前没有可用的 EVE 窗口。"]
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_monitor_prerequisites_fail_before_identity_when_window_or_region_missing(monkeypatch):
     messages = []
     monkeypatch.setattr(
@@ -3813,6 +3827,7 @@ def test_monitor_prerequisites_fail_before_identity_when_window_or_region_missin
     assert "监控区域" in messages[-1]
 
 
+@pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_toggle_monitor_off_cancels_pending_identity_resume():
     window = MainWindow.__new__(MainWindow)
     window._identity_wants_monitor = True
@@ -3851,26 +3866,22 @@ def test_toggle_alert_requires_server_and_cancels_pending_resume(monkeypatch):
     window._intel_url = ""
     window._settings = FakeSettings()
     window._alert_btn = FakeButton()
-    window._identity_wants_alert = True
     started = []
     window._start_alert = lambda: started.append(True)
 
     MainWindow._toggle_alert(window, True)
 
     assert window._alert_btn.checked is False
-    assert window._identity_wants_alert is False
     assert window._settings.status == ("请先填写服务端地址", True)
     assert messages == ["请先在设置中填写服务端地址，再开启预警。"]
     assert started == []
 
     window._intel_url = "https://example.test"
-    window._identity_wants_alert = True
     stopped = []
     window._stop_alert = lambda: stopped.append(True)
 
     MainWindow._toggle_alert(window, False)
 
-    assert window._identity_wants_alert is False
     assert stopped == [True]
 
 

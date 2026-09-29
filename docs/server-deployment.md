@@ -1,5 +1,8 @@
 # 服务端部署
 
+星图监控范围配置见[监控区域](monitoring-regions.md)（本地开发，尚未发布）。运行时配置保存在
+地图配置旁的 `.monitoring.json`，部署不能覆盖，备份时须一并保留；完整功能需要配套新客户端。
+
 ## 受保护的 ESI 转发切换
 
 网络默认 legacy，不随档案开关改变。确认 114 PostgreSQL 档案、组织资料及刷新队列可用后，使用 main 分支、production 保护的工作流：
@@ -67,8 +70,8 @@ Gateway `EVE_SENTRY_ESI_GATEWAY_TRANSPORT_MODE` 默认 legacy；dual 同端口�
 
 114 `EVE_SENTRY_ESI_TRANSPORT=legacy|direct|relay` 默认 legacy；relay 使用已有 gateway URL/token，
 地址必须是私有 IP 的 `http://IP:port`；HTTP 只在受保护内网承载 CONNECT，业务仍是端到端 HTTPS。
-direct 是显式应急直连，不按错误自动回退。新路线的公共和私有 ESI 共用 6 连接/2 请求每秒预算，
-420/429 共享至少 300 秒退避且尊重更长 Retry-After；SSO 仍由 114 直连并协调令牌刷新。
+direct 是显式应急直连，不按错误自动回退。新路线仅承载公共 ESI，共用 6 连接/2 请求每秒预算；
+420/429 共享至少 300 秒退避且尊重更长 Retry-After。
 
 切换顺序：受保护 Gateway 部署 dual → 验证 114 档案和队列 → 受保护服务端部署 relay 配置并灰度
 → 确認旧 JSON 路由已无消费者 → 受保护 Gateway 部署 relay。禁止提前清除 47 缓存；现有已确认
@@ -133,7 +136,7 @@ Optional public ESI Gateway (47.243.104.165)
 ```text
 /opt/eve-sentry/                       仓库和服务端虚拟环境
 /etc/eve-sentry/eve-sentry.env         环境配置
-/var/lib/eve-sentry/                   运行数据、SDE、ESI token/cache
+/var/lib/eve-sentry/                   运行数据、SDE、公共 ESI cache
 /opt/1panel/www/eve-sentry/            当前 1Panel/OpenResty 静态目录
 ```
 
@@ -207,7 +210,8 @@ EVE_SENTRY_SERVER_REPORT_RETENTION_DAYS=0
 EVE_SENTRY_SERVER_INACTIVE_INTEL_RETENTION_DAYS=30
 EVE_SENTRY_SERVER_CONFIG=/var/lib/eve-sentry/intel_config.json
 EVE_SENTRY_SERVER_AUTH_MODE=setup
-EVE_SENTRY_SERVER_KEY_RISK_CONTROL=on
+EVE_SENTRY_SERVER_SEAT_INTEGRATION_TOKEN=
+EVE_SENTRY_SERVER_SEAT_AUTH_MODE=off
 EVE_SENTRY_SERVER_MAP_SOURCE=sde
 EVE_SENTRY_SERVER_MAP_SDE_PATH=/var/lib/eve-sentry/sde/BUILD_NUMBER
 EVE_SENTRY_SERVER_MAP_REGION_IDS=10000045
@@ -217,10 +221,6 @@ EVE_SENTRY_SERVER_ESI_GATEWAY_URL=http://10.233.53.17:8787
 EVE_SENTRY_SERVER_ESI_GATEWAY_TOKEN=
 EVE_SENTRY_SERVER_ESI_REMOTE_TIMEOUT=8
 EVE_SENTRY_SERVER_ESI_NO_LOCAL_FALLBACK=0
-EVE_SENTRY_SERVER_ESI_CLIENT_ID=YOUR_EVE_APP_CLIENT_ID
-EVE_SENTRY_SERVER_ESI_REDIRECT_URI=http://YOUR_SERVER/api/v1/auth/esi/callback
-EVE_SENTRY_SERVER_ESI_TOKEN_FILE=/var/lib/eve-sentry/esi_tokens.json
-EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain
 ```
 
 `EVE_SENTRY_SERVER_REPORT_RETENTION_DAYS` 默认为 `0`，不会自动删除历史。设为正整数后，
@@ -236,11 +236,18 @@ EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain
 单次 `limit` 后停止评分。部署后可用访问日志的耗时字段监控 `/api/v1/events` 首帧和历史
 列表延迟。
 
-`EVE_SENTRY_SERVER_KEY_RISK_CONTROL` 默认为 `on`，设备密钥会经过 Listener、公共 ESI、
-允许军团和角色白名单校验。设为 `off` 后，有效设备密钥直接获得客户端权限，管理员可为
-未登录 EVE SSO 的用户签发密钥；身份检查接口直接确认并跳过 ESI。管理员也可以在 Web 的
-“系统管理 → 安全设置”中切换，Web 保存的值会写入 PostgreSQL 并覆盖启动默认值。该开关不
-关闭密钥认证、账号禁用、吊销或只读密钥权限限制。
+设备密钥不再经过 EVE Listener、公共 ESI、允许军团或角色白名单校验。Seat 客户端 key
+由 GloryNavy_Seat 签发并投影到 Sentry，只有有效绑定、密钥状态、所属用户状态和接口
+权限全部满足时才可用。账号禁用和 Seat 吊销会阻止后续请求；普通旧 key 仅用于管理/迁移，
+不能访问客户端接口。旧数据库中的风控配置和身份任务表仅作为历史兼容数据，
+服务端不会再读取或创建新任务。
+
+SeAT 认证单独由 `EVE_SENTRY_SERVER_SEAT_AUTH_MODE=off|enforce` 控制，默认 `off`；`off`
+表示 Seat 集成未启用，不能作为旧客户端 key 的绕过入口。确认白名单和绑定后再切 `enforce`。启用前须
+先为每个 Seat `account_id` 创建唯一的 `auth_external_accounts` 绑定；它与本地用户 ID
+不是同一命名空间。SeAT key 仅能访问认证文档列出的 monitor/alert 接口，吊销或禁用会让
+SSE 在下一次授权代数检查时结束。普通 desktop/service key 仅保留管理/迁移用途，不能访问
+客户端接口。
 
 ### 公共 ESI Gateway
 
@@ -253,7 +260,7 @@ esi-gateway/deploy/linux/eve-sentry-esi-gateway.service
 esi-gateway/deploy/linux/eve-sentry-esi-gateway.env.example
 ```
 
-Gateway 不处理 EVE SSO、OAuth token、角色当前位置或联系人 standings。启用前先从 114
+Gateway 只处理公共 ESI 请求，不处理 EVE OAuth2、角色当前位置或联系人 standings。启用前先从 114
 验证：
 
 ```bash
@@ -308,8 +315,8 @@ TTL 只控制网络层响应缓存，不能替代服务端人员资料的业务 
 监控服务无需为人员解析配置 zKillboard 出站访问。机器人和星图的 zKillboard 链接直接由角色 ID
 生成；点击链接才由用户浏览器打开。机器人独立的手动战报分析仍按机器人部署文档配置。
 
-认证不依赖 HTTPS 才能启用。HTTP 仅适合可信网络；公网建议配置 TLS，并把回调地址、
-客户端地址和机器人地址统一切换为 HTTPS。
+认证不依赖 HTTPS 才能启用。HTTP 仅适合可信网络；公网建议配置 TLS，并把客户端地址
+和机器人地址统一切换为 HTTPS。
 
 ## SDE 地图
 
@@ -322,18 +329,11 @@ sudo -u eve-sentry .venv-server/bin/python scripts/sync_sde.py \
 `EVE_SENTRY_SERVER_MAP_SDE_PATH` 指向解压后的 SDE 根目录。Tenal 的 region ID 为
 `10000045`。配置区域外的情报仍会存储，但不会自动扩展当前星图拓扑。
 
-## EVE SSO
+## EVE OAuth2
 
-普通用户登录和态势页 ESI 授权共用一个 EVE 应用及回调：
-
-```dotenv
-EVE_SENTRY_SERVER_ESI_REDIRECT_URI=http://YOUR_SERVER/api/v1/auth/esi/callback
-EVE_SENTRY_SERVER_ESI_SCOPES=esi-location.read_location.v1,esi-characters.read_contacts.v1,esi-characters.read_standings.v1,esi-corporations.read_contacts.v1,esi-alliances.read_contacts.v1,esi-search.search_structures.v1
-EVE_SENTRY_SERVER_ESI_STANDINGS_TTL=600
-```
-
-普通用户登录只接受允许军团中的角色。态势页授权需要的 scopes 由同一回调根据 OAuth
-state 区分。不要提交 `esi_tokens.json`。
+EVE Online OAuth2/SSO 已从项目中停用。平台用户使用本地账号密码登录，公共 ESI
+解析继续通过无用户令牌的 ESI 接口或 Gateway 完成。历史 `esi_tokens.json` 文件不再
+读取；部署迁移时可将其移出运行目录并按内部保留策略处理。
 
 ## systemd
 
@@ -394,10 +394,9 @@ npm run build
 1. 备份 PostgreSQL 和运行配置。
 2. 更新代码并安装 `requirements-server.txt`。
 3. 使用 `setup` 模式创建初始管理员。
-4. 配置允许军团和必要的用户角色白名单。
-5. 配置 EVE SSO 和 QQ 机器人只读服务密钥；若使用机器人手动战报分析，另按机器人文档配置出站访问。
-6. 升级桌面客户端并完成身份校验。
-7. 切换到 `enforce`，重启服务并验证健康、登录、OCR、心跳和 SSE。
+4. 配置 QQ 机器人只读服务密钥；若使用机器人手动战报分析，另按机器人文档配置出站访问。
+5. 升级桌面客户端并验证密钥、OCR、心跳和 SSE。
+6. 切换到 `enforce`，重启服务并验证健康、登录、OCR、心跳和 SSE。
 
 ## 自动部署
 

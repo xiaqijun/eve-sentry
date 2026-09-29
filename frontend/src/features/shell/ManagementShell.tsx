@@ -8,10 +8,7 @@ import {
   IconCloud,
   IconFile,
   IconHistory,
-  IconIdcard,
   IconLock,
-  IconSafe,
-  IconSettings,
   IconUserGroup,
   IconMenu,
 } from "@arco-design/web-react/icon";
@@ -31,9 +28,6 @@ const PAGE_META: Record<string, { title: string }> = {
   "/account/keys": { title: "设备密钥" },
   "/admin/users": { title: "用户管理" },
   "/admin/clients": { title: "客户端管理" },
-  "/admin/identity": { title: "身份记录" },
-  "/admin/security": { title: "安全设置" },
-  "/admin/whitelist": { title: "白名单管理" },
   "/admin/audit": { title: "审计日志" },
   "/admin/esi-gateway": { title: "ESI 网关观测" },
 };
@@ -104,15 +98,6 @@ export function ManagementShell() {
               </MenuItem>
               <MenuItem key="/admin/clients">
                 <NavLink className={navigationClass} to="/admin/clients"><IconDesktop /><span>客户端管理</span></NavLink>
-              </MenuItem>
-              <MenuItem key="/admin/identity">
-                <NavLink className={navigationClass} to="/admin/identity"><IconIdcard /><span>身份记录</span></NavLink>
-              </MenuItem>
-              <MenuItem key="/admin/security">
-                <NavLink className={navigationClass} to="/admin/security"><IconSettings /><span>安全设置</span></NavLink>
-              </MenuItem>
-              <MenuItem key="/admin/whitelist">
-                <NavLink className={navigationClass} to="/admin/whitelist"><IconSafe /><span>白名单管理</span></NavLink>
               </MenuItem>
               <MenuItem key="/admin/audit">
                 <NavLink className={navigationClass} to="/admin/audit"><IconFile /><span>审计日志</span></NavLink>

@@ -46,11 +46,6 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
     _append_option(argv, "--auth-mode", values.get("EVE_SENTRY_SERVER_AUTH_MODE", ""))
     _append_option(
         argv,
-        "--key-risk-control",
-        values.get("EVE_SENTRY_SERVER_KEY_RISK_CONTROL", ""),
-    )
-    _append_option(
-        argv,
         "--auth-bootstrap-admin",
         values.get("EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_ADMIN", ""),
     )
@@ -58,6 +53,16 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
         argv,
         "--auth-bootstrap-password-file",
         values.get("EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_PASSWORD_FILE", ""),
+    )
+    _append_option(
+        argv,
+        "--seat-integration-token",
+        values.get("EVE_SENTRY_SERVER_SEAT_INTEGRATION_TOKEN", ""),
+    )
+    _append_option(
+        argv,
+        "--seat-auth-mode",
+        values.get("EVE_SENTRY_SERVER_SEAT_AUTH_MODE", ""),
     )
     _append_option(argv, "--config", values.get("EVE_SENTRY_SERVER_CONFIG", ""))
     _append_option(
@@ -91,44 +96,6 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
     _append_option(argv, "--esi-remote-timeout", values.get("EVE_SENTRY_SERVER_ESI_REMOTE_TIMEOUT", ""))
     if _env_flag(values.get("EVE_SENTRY_SERVER_ESI_NO_LOCAL_FALLBACK")):
         argv.append("--esi-no-local-fallback")
-    _append_option(
-        argv,
-        "--esi-client-id",
-        values.get("EVE_SENTRY_SERVER_ESI_CLIENT_ID", ""),
-    )
-    _append_option(
-        argv,
-        "--esi-redirect-uri",
-        values.get("EVE_SENTRY_SERVER_ESI_REDIRECT_URI", ""),
-    )
-    _append_option(
-        argv,
-        "--esi-token-file",
-        values.get("EVE_SENTRY_SERVER_ESI_TOKEN_FILE", ""),
-    )
-    _append_option(
-        argv,
-        "--esi-token-storage",
-        values.get("EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE", ""),
-    )
-    _append_option(
-        argv,
-        "--esi-standings-ttl",
-        values.get("EVE_SENTRY_SERVER_ESI_STANDINGS_TTL", ""),
-    )
-    if _env_flag(values.get("EVE_SENTRY_SERVER_ESI_LOGIN")):
-        argv.append("--esi-login")
-    if _env_flag(values.get("EVE_SENTRY_SERVER_ESI_LOGIN_ONLY")):
-        argv.append("--esi-login-only")
-    _append_option(
-        argv,
-        "--esi-login-timeout",
-        values.get("EVE_SENTRY_SERVER_ESI_LOGIN_TIMEOUT", ""),
-    )
-    if _env_flag(values.get("EVE_SENTRY_SERVER_ESI_NO_BROWSER")):
-        argv.append("--esi-no-browser")
-    for scope in _split_scopes(values.get("EVE_SENTRY_SERVER_ESI_SCOPES", "")):
-        argv.extend(["--esi-scope", scope])
 
     return argv
 
@@ -148,18 +115,6 @@ def _append_option(argv: list[str], flag: str, value: str) -> None:
 
 def _env_flag(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _split_scopes(value: str) -> list[str]:
-    text = str(value or "").replace(",", " ")
-    scopes: list[str] = []
-    seen: set[str] = set()
-    for item in text.split():
-        scope = item.strip()
-        if scope and scope not in seen:
-            seen.add(scope)
-            scopes.append(scope)
-    return scopes
 
 
 def _split_csv(value: str) -> list[str]:

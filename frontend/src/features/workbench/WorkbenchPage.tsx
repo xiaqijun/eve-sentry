@@ -8,6 +8,7 @@ import { useWorkbenchStore } from "./store";
 import { buildTacticalGraph } from "./tacticalGraph";
 import { TacticalStarMap } from "./TacticalStarMap";
 import { intelFeedback } from "./intelFeedback";
+import { MapSettingsButton } from "./MapSettingsButton";
 import type {
   AlertItem,
   BootstrapPayload,
@@ -188,6 +189,10 @@ export function WorkbenchPage() {
       () => setStreamFailed(true),
       (nextBootstrap) => {
         setStreamFailed(false);
+        const previousScope = queryClient.getQueryData<BootstrapPayload>(["bootstrap"])?.monitoring_scope?.version;
+        if (nextBootstrap.monitoring_scope?.version !== undefined && nextBootstrap.monitoring_scope.version !== previousScope) {
+          void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+        }
         queryClient.setQueryData<BootstrapPayload>(["bootstrap"], (current) => (
           current
             ? mergeBootstrapStreamUpdate(current, nextBootstrap)
@@ -252,6 +257,7 @@ export function WorkbenchPage() {
         </div>
 
         <div className="star-map-tools" aria-label="星图工具">
+          <MapSettingsButton />
           <div>
             <span>当前定位</span>
             <strong>{selected?.name || "全部星系"}</strong>

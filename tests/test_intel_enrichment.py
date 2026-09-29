@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from app.core.models import Observation
-from app.esi.session import ContactStanding
+from app.esi.contact_models import ContactStanding
 from app.intel.enrichment import ThreatEnricher
 
 

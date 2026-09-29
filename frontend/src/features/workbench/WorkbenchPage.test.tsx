@@ -112,12 +112,7 @@ const bootstrap: BootstrapPayload = {
     enabled: true,
     authenticated: false,
     session: false,
-    config: {
-      client_id_configured: false,
-      token_file_present: false,
-      token_storage: "plain",
-      scopes: ["esi-location.read_location.v1"],
-    },
+    config: { authenticated_esi_enabled: false },
   },
 };
 
@@ -322,7 +317,6 @@ describe("WorkbenchPage", () => {
     expect(container.querySelector(".sector-panel")).not.toBeInTheDocument();
     expect(container).not.toHaveTextContent("敌对飞行员观察列表");
     expect(container).not.toHaveTextContent("ESI 状态");
-    expect(container.querySelector(".esi-login-button")).not.toBeInTheDocument();
 
     expect(container.querySelector('[aria-label="情报详情"]')).not.toBeInTheDocument();
     expect(container.querySelector('[aria-label="右侧面板切换"]')).not.toBeInTheDocument();

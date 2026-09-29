@@ -326,6 +326,10 @@ class PostgreSQLIntelStore(IntelStore):
 
     def record_ocr_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Record an OCR snapshot and persist derived active intel state."""
+        from app.server.monitoring_scope import in_scope, ignored_upload
+
+        if not in_scope(self, payload):
+            return ignored_upload(self)
         client_id = str(payload.get("client_id") or "").strip()
         if not client_id:
             raise ValueError("client_id is required")
@@ -358,6 +362,8 @@ class PostgreSQLIntelStore(IntelStore):
         esi_tasks: list[_OcrEsiTask] = []
 
         with self._lock:
+            if not in_scope(self, payload):
+                return ignored_upload(self)
             new_reports: list[IntelReport] = []
             changed_active_ids: set[str] = set()
             hostile_before = self._hostile_system_state()
@@ -656,7 +662,7 @@ class PostgreSQLIntelStore(IntelStore):
             previous_zeros = [item for item in primary_sources(self._active_intel.values()).values()
                               if item.metadata.get("hostile_icon_count") == 0]
             result = super().record_hostile_presence(payload)
-            if not result.get("accepted", True):
+            if not result.get("accepted", True) and not result.get("scope_expired"):
                 return result
             active_rows = self._changed_active_rows(active_before)
             hostile_waves = self._hostile_wave_changes(
@@ -795,7 +801,7 @@ class PostgreSQLIntelStore(IntelStore):
                 if active_id in active_before
                 and not item.active
                 and str(item.metadata.get("left_reason") or "").strip()
-                in {"heartbeat_stale", "target_removed", "capture_stale", "monitor_stopped"}
+                in {"heartbeat_stale", "target_removed", "capture_stale", "monitor_stopped", "outside_monitoring_scope"}
             }
             changed_rows = self._changed_active_rows(rows_before)
             if not changed_rows:

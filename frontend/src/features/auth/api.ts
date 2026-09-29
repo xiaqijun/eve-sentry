@@ -3,13 +3,11 @@ import type {
   AdminClientHeartbeatRecord,
   AdminClientKeyUsage,
   AdminClientsSnapshot,
-  AllowedCorporation,
   ApiKeyRecord,
   AuditRecord,
   AuthUser,
   ClientsSnapshot,
   ClientHeartbeatRecord,
-  SecuritySettings,
   EsiGatewaySnapshot,
 } from "./types";
 
@@ -42,8 +40,6 @@ function normalizeAdminUser(user: AdminUser): AdminUser {
   return {
     ...user,
     keys: arrayOrEmpty<ApiKeyRecord>(user?.keys),
-    whitelist: arrayOrEmpty<AdminUser["whitelist"][number]>(user?.whitelist),
-    verified_characters: arrayOrEmpty<AdminUser["verified_characters"][number]>(user?.verified_characters),
   };
 }
 
@@ -118,13 +114,6 @@ export async function listMyKeys(): Promise<ApiKeyRecord[]> {
   return arrayOrEmpty<ApiKeyRecord>(payload.keys);
 }
 
-export async function createMyKey(name: string): Promise<ApiKeyRecord> {
-  return (await apiRequest<{ key: ApiKeyRecord }>("/api/v1/me/keys", {
-    method: "POST",
-    body: JSON.stringify({ name }),
-  })).key;
-}
-
 export async function revokeKey(keyId: string): Promise<void> {
   await apiRequest(`/api/v1/me/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
 }
@@ -144,21 +133,6 @@ export async function deleteKey(keyId: string): Promise<void> {
 export async function listAdminUsers(): Promise<AdminUser[]> {
   const payload = await apiRequest<{ users?: unknown }>("/api/v1/admin/users");
   return arrayOrEmpty<AdminUser>(payload.users).map(normalizeAdminUser);
-}
-
-export async function fetchSecuritySettings(): Promise<SecuritySettings> {
-  return (await apiRequest<{ settings: SecuritySettings }>(
-    "/api/v1/admin/security-settings",
-  )).settings;
-}
-
-export async function updateSecuritySettings(
-  settings: SecuritySettings,
-): Promise<SecuritySettings> {
-  return (await apiRequest<{ settings: SecuritySettings }>(
-    "/api/v1/admin/security-settings",
-    { method: "POST", body: JSON.stringify(settings) },
-  )).settings;
 }
 
 export async function createUser(input: {
@@ -188,63 +162,6 @@ export async function resetUserPassword(userId: string, password: string): Promi
     method: "POST",
     body: JSON.stringify({ password }),
   });
-}
-
-export async function createServiceKey(userId: string, name: string): Promise<ApiKeyRecord> {
-  return (await apiRequest<{ key: ApiKeyRecord }>(
-    `/api/v1/admin/users/${encodeURIComponent(userId)}/service-keys`,
-    { method: "POST", body: JSON.stringify({ name }) },
-  )).key;
-}
-
-export async function createAdminKey(
-  userId: string,
-  name: string,
-  keyType: ApiKeyRecord["key_type"] = "desktop",
-): Promise<ApiKeyRecord> {
-  return (await apiRequest<{ key: ApiKeyRecord }>(
-    `/api/v1/admin/users/${encodeURIComponent(userId)}/keys`,
-    { method: "POST", body: JSON.stringify({ name, key_type: keyType }) },
-  )).key;
-}
-
-export async function listCorporations(): Promise<AllowedCorporation[]> {
-  const payload = await apiRequest<{ corporations?: unknown }>(
-    "/api/v1/admin/corporations",
-  );
-  return arrayOrEmpty<AllowedCorporation>(payload.corporations);
-}
-
-export async function addCorporation(corporationId: number): Promise<void> {
-  await apiRequest("/api/v1/admin/corporations", {
-    method: "POST",
-    body: JSON.stringify({ corporation_id: corporationId }),
-  });
-}
-
-export async function removeCorporation(corporationId: number): Promise<void> {
-  await apiRequest(`/api/v1/admin/corporations/${corporationId}`, { method: "DELETE" });
-}
-
-export async function addWhitelistCharacter(
-  userId: string,
-  characterId: number,
-  note: string,
-): Promise<void> {
-  await apiRequest(`/api/v1/admin/users/${encodeURIComponent(userId)}/characters`, {
-    method: "POST",
-    body: JSON.stringify({ character_id: characterId, note }),
-  });
-}
-
-export async function removeWhitelistCharacter(
-  userId: string,
-  characterId: number,
-): Promise<void> {
-  await apiRequest(
-    `/api/v1/admin/users/${encodeURIComponent(userId)}/characters/${characterId}`,
-    { method: "DELETE" },
-  );
 }
 
 export async function listAudit(): Promise<AuditRecord[]> {

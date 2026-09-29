@@ -1,143 +1,65 @@
-# 认证与 EVE 身份校验
+# 认证与账号管理
 
-## 登录与密钥
+EVE Sentry 使用本地账号会话和 API 密钥保护管理端、客户端和服务间接口。EVE
+Online OAuth2、Listener 身份扫描、角色/军团白名单以及自动密钥风控均已移除，
+不会再因为 EVE 角色、军团或联盟信息拒绝账号或密钥。
 
-| 身份 | 登录方式 | 权限 |
+## 认证方式
+
+| 方式 | 用途 | 生命周期 |
 | --- | --- | --- |
-| 管理员 | 用户名和密码 | 全部管理页面、账号安全和业务接口 |
-| 普通用户 | EVE SSO | 态势页、报表和自己的设备密钥 |
-| 桌面设备密钥（可选） | 填写后使用 `Authorization: Bearer <key>` | 有效密钥可访问客户端 API；开启密钥风控时同时启用 Listener 持续校验 |
-| 只读服务密钥 | `Authorization: Bearer <key>` | 仅 Bootstrap、SSE 和第三方敌对星系接口 |
+| 管理端账号会话 | Web 控制台登录 | 服务端签发，默认 12 小时过期 |
+| Seat 客户端密钥 | Windows 监控/预警客户端调用客户端接口 | 仅由 GloryNavy_Seat 签发、绑定和吊销 |
+| 历史 desktop/service key | 迁移和管理兼容 | 不得访问监控/预警客户端接口 |
 
-普通用户只有在 EVE SSO 角色属于管理员配置的允许军团时才能登录。管理员账号不使用
-EVE SSO。EVE SSO 登录和态势页 ESI 授权共用一个应用和回调：
+启用 `--auth-mode setup` 或 `enforce` 后，客户端使用：
 
-```text
-/api/v1/auth/esi/callback
+```http
+Authorization: Bearer eve_...
 ```
 
-密码使用 Argon2id。会话和 API 密钥只保存哈希，完整密钥只在创建时显示一次。设备
-密钥可吊销、重新启用或删除记录；已被用户禁用流程吊销的旧密钥不会因解禁自动恢复。
-管理员可以直接为任意已启用用户签发设备密钥，目标用户无需先通过 EVE SSO 登录。
+有效密钥只受密钥状态、所属用户状态和接口权限约束。新建密钥直接处于可用
+状态，不需要 ESI、游戏客户端、Chatlogs 或额外的身份上报。
 
-## 认证模式
+## 账号管理
 
-- `off`：认证服务关闭，旧业务接口保持开放。
-- `setup`：认证和管理接口受保护，现有业务接口暂不强制认证，供上线迁移使用。
-- `enforce`：除 `/api/health`、管理员登录和 EVE SSO 起止接口外均要求认证。
+管理员可以在 Web 控制台中创建用户、重置密码、启用/禁用用户，并查看密钥状态、
+客户端心跳和审计日志。客户端密钥统一由 GloryNavy_Seat 签发和管理，Sentry 不再
+提供 desktop/service_readonly 创建、恢复或删除入口；Seat 密钥的生命周期操作必须
+回到 GloryNavy_Seat 完成。禁用本地用户会同时使其 Seat principal 失效。
 
-密钥风控由 `EVE_SENTRY_SERVER_KEY_RISK_CONTROL` 独立控制，默认 `on`：
-管理员也可以在 Web 的“系统管理 → 安全设置”中切换；保存后的 Web 设置优先于启动环境变量，
-并在服务重启后保留。
+旧数据库中可能仍保留 `auth_settings`、`auth_identity_jobs`、角色白名单和
+允许军团表，用于平滑升级和历史审计。服务端不再读取这些表来做授权，也不会
+创建新身份任务；后续数据库维护窗口可以再清理这些遗留表。
 
-- `on`：客户端上报 Listener 角色，服务端通过公共 ESI、允许军团和角色白名单持续校验。
-- `off`：所有有效设备密钥直接可信；身份上报立即返回 `skipped=true`，不访问 ESI、
-  不创建身份任务，也不会因角色判定吊销密钥。密钥本身的认证、吊销、账号禁用和权限范围
-  仍然生效。
+## 客户端行为
 
-客户端允许设备密钥留空。留空时不会调用 `/api/v1/auth/me` 预检，不会扫描或上报
-Listener 身份，也不会发送 `Authorization` 请求头。这只是客户端行为，不会绕过服务端
-策略；`enforce` 模式仍会拒绝未认证的受保护请求。
+客户端启动监控或预警时，只检查服务端地址和本地 API 密钥配置，然后直接开始
+业务连接。客户端不会扫描 EVE Chatlogs，不会调用 `/api/v1/client/identity-check`
+或 `/api/v1/client/identity-checks`，也不会因 Listener 缺失而延迟上线。
 
-## 公共 ESI 代理边界
+## 安全边界
 
-生产环境可以把角色、军团、联盟和星系等无用户令牌的公共 ESI 请求交给独立 Gateway，
-以降低主服务端到 ESI 的网络抖动。Gateway 只接收白名单路径，并通过独立服务密钥和
-ZeroTier 来源限制保护；114 保留本地直连回退。
+移除 EVE 身份风控不等于移除基础认证：生产环境仍应使用 HTTPS/内网、最小权限
+服务密钥、定期人工轮换密钥，并通过 Web 审计日志检查异常登录、客户端心跳和
+密钥吊销记录。
 
-Gateway 不接触 EVE SSO 的 OAuth token，也不处理登录回调、角色当前位置或联系人
-standings。认证 ESI 仍由 114 上的 `EsiAuthenticatedSession` 发起。除非完成 token
-加密存储、日志脱敏、密钥轮换、CSRF、备份和回滚评审，否则不要把 OAuth 流程迁移到
-Gateway。
+## SeAT 业务认证
 
-HTTP 可以启用认证，但密码、Cookie 和 API 密钥会明文经过网络。可信内网可按实际环境
-使用 HTTP，公网入口建议使用 HTTPS。
+SeAT 密钥管理使用独立的服务端 Bearer Token；业务密钥认证由
+`EVE_SENTRY_SERVER_SEAT_AUTH_MODE`（启动参数 `--seat-auth-mode`）单独控制，默认 `off`：
 
-## 初始管理员
+| 模式 | 行为 |
+| --- | --- |
+| `off` | Seat 集成未启用；不把任何旧客户端 key 当作 Seat key 或客户端绕过入口 |
+| `enforce` | 仅有效的 SeAT 密钥、有效绑定和启用用户可以建立 SeAT principal |
 
-创建权限受限的密码文件：
+SeAT `account_id` 不等同于本地 `auth_users.user_id`。`auth_external_accounts` 维护
+provider=`seat` 下的一对一显式绑定（账号 ID、本地用户 ID、active/disabled、revision）。
+冲突绑定返回 `409 seat_account_conflict`；吊销、绑定禁用或本地用户禁用会使已有 SeAT
+SSE/请求失效。普通 API key 不读取这张绑定表。
 
-```bash
-sudo install -o eve-sentry -g eve-sentry -m 600 /dev/null /etc/eve-sentry/admin-password
-sudo sh -c 'printf "%s" "请替换为至少12位随机密码" > /etc/eve-sentry/admin-password'
-```
-
-配置：
-
-```dotenv
-EVE_SENTRY_SERVER_AUTH_MODE=setup
-EVE_SENTRY_SERVER_KEY_RISK_CONTROL=on
-EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_ADMIN=admin
-EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_PASSWORD_FILE=/etc/eve-sentry/admin-password
-```
-
-服务只在管理员不存在时创建账号，不会重复重置密码。创建完成后移除两个 Bootstrap
-变量并删除密码文件。
-
-## 桌面身份验证
-
-以下流程仅在 `EVE_SENTRY_SERVER_KEY_RISK_CONTROL=on` 时执行。关闭风控时，管理员可在
-用户管理中直接签发设备密钥，客户端无需 EVE SSO，Listener 上报也不会进入 ESI 校验队列。
-
-1. 设备密钥是可选配置；用户可以从网页创建并填入，也可以保持为空。
-2. 密钥为空时，客户端不调用 `/api/v1/auth/me`，不执行 Listener 身份扫描，也不发送
-   `Authorization` 请求头，可直接尝试开启监控或预警；能否访问接口仍由服务端认证模式决定。
-3. 已填写密钥时，客户端在开启监控或预警前通过受保护的账号接口验证；无效密钥会阻止开启。
-4. 填写密钥后，客户端自动使用已缓存的 EVE Chatlogs 路径发现角色身份，无需手动开启。
-   扫描只检查最近 24 小时修改过的 Local 日志；按账号分组后，每个账号只读取
-   修改时间最新的一份。分组键使用中英文客户端日志文件名末尾的 `character_id`，最多处理
-   64 个角色，不扫描全部历史日志。
-   没有发现 `Listener` 不算校验失败，也不阻止启动。
-5. 发现有效日志后，客户端调用 `/api/v1/client/identity-checks`，只提交文件名末尾的
-   `character_id` 列表和客户端 ID。
-6. 服务端持久化幂等任务并立即确认；后台 worker 直接按角色 ID 通过 ESI 获取规范角色名、
-   军团和联盟，不再依赖名称搜索。
-7. 角色属于任一允许军团，或角色 ID 位于该用户白名单时继续使用；否则触发风控。
-8. 已配置密钥的验证长期有效；后续只有新增角色、规则变化或管理员操作会重新判定角色身份。
-
-仅在已配置设备密钥时，客户端每 10 秒检查 Chatlogs 目录。目录没有新增文件时不重复枚举；
-新文件按修改时间筛选，并且每个账号只保留
-当前最新的 Local 文件。尚未写出 `Listener` 的文件会在修改时间或大小变化后单独重读。
-目录时间戳未变化时每 30 秒执行一次元数据兜底枚举；相同密钥和角色 ID 集合复用
-同一个服务端任务，因此客户端超时、重试或重启都不会重复执行身份检查和写入成功审计。
-带有效末尾 ID 的新格式日志只读取文件名和修改时间，不打开日志内容；没有末尾 ID 的旧日志
-才读取文件头并通过角色名兼容接口校验。
-新角色遇到 ESI 超时或无法解析时，服务端按退避策略静默重试，不停止已开启的监控或
-预警，也不禁用用户。旧的 `/api/v1/client/identity-check` 同步接口仅用于滚动升级兼容。
-
-确认任一角色既不属于允许军团、也不在该用户白名单时，服务端在同一事务内：
-
-- 禁用整个用户。
-- 吊销该用户全部会话和密钥。
-- 保存角色、军团和判定原因到审计记录。
-- 断开 SSE，并使客户端停止监控与预警。
-
-管理员修改允许军团或角色白名单时，服务端根据已保存的验证角色立即重新计算授权。
-如需恢复经过认证的客户端访问，管理员解禁后必须签发新密钥。客户端填写并验证新密钥
-后会保留已处理文件记录，不重新扫描历史；开启 Listener 扫描并发现新角色后提交风控校验。
-未配置密钥的客户端仍由
-服务端认证模式决定能否访问。
-
-## 服务密钥
-
-QQ 机器人使用管理员为服务账号创建的 `service_readonly` 密钥：
-
-```dotenv
-EVE_SENTRY_EVENTS_URL=http://YOUR_SERVER/api/v1/events
-EVE_SENTRY_API_KEY=eve_创建时显示的完整密钥
-EVE_SENTRY_PUBLIC_URL=http://YOUR_SERVER
-```
-
-第三方程序接收 `bootstrap`、`monitoring_node`、`alert` 和 `safe` 事件的完整方式见
-[预警消息 API 接入指南](alert-api.md)。
-
-轮换时先创建新密钥并更新机器人，确认 SSE 已重连后再吊销旧密钥。
-
-## 安全控制
-
-- 网页会话 Cookie 为 `HttpOnly; SameSite=Strict`；HTTPS 请求额外设置 `Secure`。
-- 网页非只读请求必须携带 `X-CSRF-Token`。
-- 管理员登录同时按“IP + 用户名”和 IP 汇总失败次数限流，避免轮换用户名绕过。
-- 普通用户不能访问 `/api/v1/admin/*`。
-- 只读服务密钥不能写入数据，也不能读取其授权范围外的接口。
-- SSE 每 30 秒检查一次主体状态，认证变更会主动唤醒检查。
+SeAT principal 只能访问最小白名单：`monitor` 用于 bootstrap/map、心跳、Presence、OCR
+和监控上报；`alert` 用于 bootstrap/map、active-intel、alert-history、hostile-waves、
+hostile-systems 和 events。未知路径以及 `/auth/*`、`/me/*`、`/admin/*` 统一返回
+`403 seat_permission_denied`，不包含结算或管理员能力。

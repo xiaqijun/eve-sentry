@@ -2,19 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   apiRequest,
-  createAdminKey,
   deleteKey,
   enableKey,
-  fetchSecuritySettings,
   fetchEsiGateway,
   listAdminClients,
   listAdminUsers,
   listAudit,
-  listCorporations,
   listMyKeys,
   login,
   setCsrfToken,
-  updateSecuritySettings,
 } from "./api";
 
 describe("authenticated API client", () => {
@@ -115,50 +111,6 @@ describe("authenticated API client", () => {
     );
   });
 
-  it("creates a desktop key for a selected user", async () => {
-    const created = {
-      key_id: "key-1",
-      user_id: "user/1",
-      name: "监控客户端",
-      key_prefix: "eve_example",
-      key_type: "desktop" as const,
-      status: "active" as const,
-      identity_verified: true,
-      created_at: "2026-08-07T00:00:00Z",
-      secret: "eve_secret",
-    };
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ key: created }), { status: 201 }),
-    );
-
-    await expect(
-      createAdminKey("user/1", "监控客户端", "desktop"),
-    ).resolves.toEqual(created);
-    expect(fetchMock.mock.calls[0][0]).toBe(
-      "/api/v1/admin/users/user%2F1/keys",
-    );
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
-      name: "监控客户端",
-      key_type: "desktop",
-    });
-  });
-
-  it("loads and updates administrator security settings", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        settings: { key_risk_control: true },
-      }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        settings: { key_risk_control: false },
-      }), { status: 200 }));
-
-    await expect(fetchSecuritySettings()).resolves.toEqual({ key_risk_control: true });
-    await expect(updateSecuritySettings({ key_risk_control: false }))
-      .resolves.toEqual({ key_risk_control: false });
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/admin/security-settings");
-    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
-  });
-
   it("normalizes partial collection responses at the API boundary", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ users: [{ user_id: "u1", username: "pilot" }] }), { status: 200 }),
@@ -166,15 +118,12 @@ describe("authenticated API client", () => {
     await expect(listAdminUsers()).resolves.toEqual([expect.objectContaining({
       user_id: "u1",
       keys: [],
-      whitelist: [],
-      verified_characters: [],
     })]);
 
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({}), { status: 200 }),
     );
     await expect(listMyKeys()).resolves.toEqual([]);
-    await expect(listCorporations()).resolves.toEqual([]);
     await expect(listAudit()).resolves.toEqual([]);
   });
 

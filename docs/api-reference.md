@@ -1,15 +1,30 @@
 # API 参考
 
-[人员缓存方案](personnel-cache-plan.md)已支持可选档案读取和异步刷新，认证方式不变。
-`alert.updated.hostile_personnel=[]` 是有效的当前名单更正，不等于视觉清空；消费者必须接受
-空数组，并优先按角色 ID 去重。公共档案不保存授权主体的联系人声望。
+## 星图监控范围（本地开发，未发布）
 
-2026-09-12 本地开发兼容说明（未发布）：私有联系人读取增加完整分页、响应头有效期、ETag/304
-和失败保护；读取失败不再视为空表。内部快照有效期/己方组织上下文字段不加入 HTTP/SSE 响应，
-`EsiSessionSnapshot.to_dict()`、公共 Gateway envelope 保持兼容；后续 Presence/OCR 与事件可选扩展见下节。
-`on` 模式仍由后台刷新私有联系人，热读不访问 ESI；`off/shadow` 保留原增强器的按需读取位置。
-同上下文失败兜底最多 1 小时，401/403 立即隔离，限流按 Retry-After 退避。
-组织 `on` 模式现已本地接入独立的军团/联盟持久快照和不可变分类索引，不使用个人声望例外。
+- `GET /api/v1/admin/map-settings` 返回 `{settings}`：`enabled`、`version`、`region_ids`、
+  `system_ids`、`excluded_system_ids`，以及选择器 `regions:[{id,name}]`、`systems:[{id,name,region_id}]`。
+- `PUT /api/v1/admin/map-settings` 提交布尔值、版本和三组 ID 数组，不传路径或完整拓扑。
+  成功返回 `{settings:{enabled,version,region_ids,system_ids,excluded_system_ids,system_count}}`。
+  未知 ID、空范围、版本冲突返回 400；SDE/存储不可用返回 503；认证及 CSRF 规则不变。
+- HTTP/SSE Bootstrap 和 `/api/v1/clients/heartbeats` 响应增加可选
+  `monitoring_scope:{enabled,version,systems:[{name,system_id}]}`。版本改变时 Web 重取完整拓扑。
+  旧消费者可忽略该字段；旧服务端缺少字段时新客户端保留原行为。
+- 区域外 Presence/OCR 返回 HTTP 200，`accepted:false, ignored:true, local_only:true,
+  reason:"outside_monitoring_scope"`，不是网络失败，不缓存重试。
+  可选 `scope_expired` 表示同时撤下的旧范围内观察数量。
+- 区域外 target 投影为 `local_only:true, monitoring:false`；诊断连接不等于监控在线。
+  实时数据仅含范围内敌情；过滤事件继续推进游标，历史不删除。
+
+范围、存储、兼容及回滚要求见[星图监控范围](monitoring-regions.md)。
+
+[人员缓存方案](personnel-cache-plan.md)已支持可选档案读取和异步刷新，使用平台设备密钥和公共 ESI。
+`alert.updated.hostile_personnel=[]` 是有效的当前名单更正，不等于视觉清空；消费者必须接受
+空数组，并优先按角色 ID 去重。公共档案不保存授权主体的联系人声望，项目不提供 EVE OAuth2 登录。
+
+2026-09-12 本地开发兼容说明（未发布）：公共 ESI 解析继续使用统一 Gateway envelope；
+不再提供 ESI 登录、授权账号快照或私有联系人读取 API。后续 Presence/OCR 与事件可选扩展见下节。
+组织 `on` 模式只消费服务端维护的军团/联盟关系快照，不读取个人联系人或角色 standings。
 既有 `standing_source` 字符串新增两个值：`esi_organization` 表示按组织规则确定（>0 友好，<=0 敌对）；
 `esi_organization_pending` 表示当前必要关系/归属不可用，没有可信 `contact_standing`，
 消费者不得继承旧 `standing/contact_standing` 或当成默认 0。独立黑白名单和视觉 Presence 规则不变。
@@ -177,6 +192,39 @@ Authorization: Bearer eve_xxx
 `/api/v1/integrations/hostile-systems`，以及按需 OCR 查询的创建和结果接口。
 `POST /api/v1/ocr/query` 是唯一允许的有界命令写入例外；它不直接修改持久化情报。
 
+SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录会话或普通 API 密钥。
+配置 `EVE_SENTRY_SERVER_SEAT_INTEGRATION_TOKEN`（至少 32 个字符）后才启用；未配置时接口
+返回 `503`、`seat_integration_disabled`。真实令牌不进入仓库、响应或日志。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/v1/integrations/seat/keys` | 保存 Seat 已生成的密钥投影（`operation_id`、`key_id`、`account_id`、`key_prefix`、`key_hash`、`permissions`、`protocol_version`）；响应不含明文 |
+| `DELETE` | `/api/v1/integrations/seat/keys/{key_id}` | 幂等吊销 Seat 密钥；未知 ID 返回 `404`、`seat_key_not_found` |
+
+创建/吊销分别写入 `auth_audit_log`；审计只记录调用方 IP、请求 ID、密钥 ID、权限/原因和
+时间。相同 `operation_id` 配不同请求返回 `409`、`operation_conflict`。该最小切片只管理密钥生命周期，
+尚未启用监控奖励、预警扣费或跨项目对账，完整契约见[Seat 接入计划](seat-integration-plan.md)。
+
+### SeAT 业务认证（M1）
+
+`EVE_SENTRY_SERVER_SEAT_AUTH_MODE=off|enforce` 与上面的生命周期服务令牌相互独立，默认关闭。
+`off` 仅表示 Seat 集成未启用，不能把旧客户端 key 当成客户端凭据。SeAT 生成的明文密钥只在平台侧保存；Sentry 通过哈希匹配
+`seat_integration_keys`，再检查 `auth_external_accounts` 的 provider=`seat` 绑定、revision、
+状态和本地用户状态。未绑定返回 `403 seat_account_unmapped`，禁用绑定返回
+`403 seat_account_disabled`。旧 desktop/service key 仅用于管理或迁移，访问客户端白名单返回
+`403 seat_client_key_required`。
+
+启用 `enforce` 后，SeAT principal 的路径白名单如下：
+
+| 权限 | 允许的请求 |
+| --- | --- |
+| `monitor` | `GET /api/v1/bootstrap`、`/map`、`/map/neighborhood`；`POST /api/v1/clients/heartbeats`、`/hostile-presence`、`/ocr/query`（含结果路径）、`/ocr/snapshot`、`/reports`、`/observations` |
+| `alert` | `GET /api/v1/bootstrap`、`/map`、`/map/neighborhood`、`/active-intel`、`/alert-history`、`/hostile-waves`、`/integrations/hostile-systems`、`/events` |
+
+未列路径（包括认证、个人、管理员和未知路径）稳定返回 `403 seat_permission_denied`。
+普通 `desktop`/`service_readonly` key 不经过 Seat 绑定表，仅保留认证、吊销和迁移管理用途，
+访问客户端白名单时返回 `403 seat_client_key_required`。
+
 ## 公共接口
 
 | 方法 | 路径 | 说明 |
@@ -184,9 +232,7 @@ Authorization: Bearer eve_xxx
 | `GET` | `/api/livez` | 进程存活探针，不访问外部依赖 |
 | `GET` | `/api/readyz` | 存储就绪探针，未就绪时返回 `503` |
 | `GET` | `/api/health` | 已脱敏的服务、存储、地图、ESI 和事件流状态 |
-| `POST` | `/api/v1/auth/login` | 管理员密码登录 |
-| `GET` | `/api/v1/auth/esi/start` | 开始普通用户 EVE SSO 登录 |
-| `GET` | `/api/v1/auth/esi/callback` | 统一 EVE SSO 回调 |
+| `POST` | `/api/v1/auth/login` | 平台账号密码登录 |
 
 所有 HTTP 响应都包含 `X-Request-ID`，可用于关联服务端访问日志。可信的本机反向代理
 可以传入最长 64 个字符、仅含字母、数字、点、下划线和连字符的请求 ID；其他来源由
@@ -201,43 +247,23 @@ Authorization: Bearer eve_xxx
 | `GET` | `/api/v1/auth/me` | 当前用户和 CSRF token |
 | `POST` | `/api/v1/auth/logout` | 退出登录 |
 | `POST` | `/api/v1/auth/password` | 修改管理员密码 |
-| `GET/POST` | `/api/v1/me/keys` | 列出或创建桌面密钥 |
-| `DELETE` | `/api/v1/me/keys/{id}` | 吊销密钥 |
-| `POST` | `/api/v1/me/keys/{id}/enable` | 重新启用可恢复密钥 |
-| `DELETE` | `/api/v1/me/keys/{id}/record` | 删除密钥记录 |
-| `POST` | `/api/v1/client/identity-checks` | 幂等提交本地日志文件名中的角色 ID 并立即返回任务状态；身份校验在服务端异步执行 |
-| `POST` | `/api/v1/client/identity-check` | 旧版同步身份校验，仅用于滚动升级兼容 |
+| `GET` | `/api/v1/me/keys` | 列出本人已有密钥；客户端密钥由 GloryNavy_Seat 签发 |
+| `DELETE` | `/api/v1/me/keys/{id}` | 仅历史管理/迁移 key 可由兼容接口处理；Seat key 返回 `410 seat_key_management_required` |
+| `POST` | `/api/v1/me/keys/{id}/enable` | 仅历史管理/迁移 key 的兼容操作；Seat key 返回 `410 seat_key_management_required` |
+| `DELETE` | `/api/v1/me/keys/{id}/record` | 仅历史管理/迁移 key 的兼容操作；Seat key 返回 `410 seat_key_management_required` |
 | `GET/POST` | `/api/v1/admin/users` | 用户列表和创建用户 |
 | `GET` | `/api/v1/admin/clients` | 管理员读取包含归属信息的完整客户端心跳和状态 |
 | `GET` | `/api/v1/admin/esi-gateway` | ESI Gateway 健康和客户端指标（管理员） |
-| `GET/POST` | `/api/v1/admin/security-settings` | 查看或切换服务端密钥风控 |
 | `POST` | `/api/v1/admin/users/{id}/status` | 启用或禁用用户 |
 | `POST` | `/api/v1/admin/users/{id}/reset-password` | 重置管理员密码 |
 | `DELETE` | `/api/v1/admin/users/{id}` | 删除用户 |
-| `POST` | `/api/v1/admin/users/{id}/keys` | 管理员为用户创建设备或只读服务密钥；目标用户无需先登录 ESI |
-| `POST` | `/api/v1/admin/users/{id}/service-keys` | 创建只读服务密钥 |
-| `POST` | `/api/v1/admin/users/{id}/characters` | 添加用户角色白名单 |
-| `DELETE` | `/api/v1/admin/users/{id}/characters/{character_id}` | 删除角色白名单 |
-| `GET/POST` | `/api/v1/admin/corporations` | 列出或添加允许军团 |
-| `DELETE` | `/api/v1/admin/corporations/{corporation_id}` | 删除允许军团 |
+| `POST` | `/api/v1/admin/users/{id}/keys` | 已下线，返回 `410 seat_key_management_required` |
+| `POST` | `/api/v1/admin/users/{id}/service-keys` | 已下线，返回 `410 seat_key_management_required` |
 | `GET` | `/api/v1/admin/audit` | 审计日志 |
 
-新客户端提交：
-
-```json
-{
-  "character_ids": [2112345678, 2112345679],
-  "client_id": "detector-client:example"
-}
-```
-
-角色 ID 来自 `Local_..._<character_id>.txt` 或 `本地_..._<character_id>.txt` 文件名末尾。
-异步身份接口在任务排队、处理中或等待重试时返回 `202`，已验证时返回 `200`，并在
-`characters` 中携带服务端通过 ESI 按 ID 取得的角色名和军团资料。客户端可用相同 ID 集合
-重复提交来读取状态，不需要保存任务 ID；服务端按设备密钥和规范化 ID 集合保证幂等。
-旧客户端提交的 `characters` 角色名数组仍受支持，但新客户端不再依赖名称搜索。
-关闭服务端密钥风控时，这两个身份接口直接返回已确认状态和 `skipped=true`，不会访问 ESI
-或创建后台任务。
+客户端不再提交 EVE 角色身份或 Listener 文件信息；只有由 GloryNavy_Seat 签发并投影、
+且已绑定的 Seat key 才能访问监控/预警客户端接口。服务端不提供身份校验、角色白名单
+或允许军团管理接口。
 
 ## 监控与事件
 
@@ -512,20 +538,10 @@ Authorization: Bearer eve_xxx
 | `GET` | `/api/v1/characters/by-name/{name}` | 按准确名称解析角色 |
 | `GET` | `/api/v1/systems/{system_id}` | 星系资料 |
 | `GET` | `/api/v1/systems/by-name/{name}` | 按名称解析星系 |
-| `GET` | `/api/v1/esi/status` | ESI 配置和授权状态 |
-| `GET` | `/api/v1/esi/session` | 位置、contacts 和授权账号声望快照 |
-| `GET/POST` | `/api/v1/esi/login` | 态势页 ESI 授权状态和启动 |
+| `GET` | `/api/v1/esi/status` | 公共 ESI 配置和连接状态；`authenticated` 固定为 `false` |
 
-`/api/v1/esi/status` 和 `/api/health` 的 ESI 摘要会同时返回 `expired` 与
-`refreshable`。`expired=true, refreshable=true` 只表示短时 access token 已过期，后续
-认证 ESI 请求会使用保存的 refresh token 自动刷新，不代表账号授权失效；只有
-`refreshable=false` 或返回 `error` 时才需要重新授权或检查令牌存储。
-
-`/api/v1/esi/session` 的 `standings` 来自授权角色的 ESI standings 接口，服务端按
-`character_id` 保存一份完整快照，默认缓存 600 秒，可通过
-`EVE_SENTRY_SERVER_ESI_STANDINGS_TTL` 配置为 300–900 秒。缓存命中时不重复请求；过期刷新
-失败时返回最近一次旧快照。该请求始终由服务端携带授权 token 发起，公共 ESI Gateway 不接收
-授权 token，也不按联系人数量拆分请求。
+项目不保存 EVE OAuth2 token，也不提供 ESI 登录、回调或授权账号快照。角色、军团、联盟
+和星系资料只通过无用户令牌的公共 ESI 解析和缓存获取。
 
 `/api/v1/kill-activity/*` 仅保留兼容行为；实时人员解析不再抓取 zKillboard 统计，
 `verified_characters[].zkill` 仅可能来自旧历史数据，不提供同步补查接口。

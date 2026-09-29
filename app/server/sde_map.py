@@ -398,6 +398,7 @@ class SdeMapImporter:
                 region_id = constellation_to_region.get(constellation_id)
             region_name = region_name_by_id.get(region_id or 0, "") or "Unknown region"
             x, y = projected[system_id]
+            raw_x, raw_y = self._coordinate_pair(row)
             systems.append(
                 {
                     "system_id": system_id,
@@ -405,6 +406,9 @@ class SdeMapImporter:
                     "x": x,
                     "y": y,
                     "region": region_name,
+                    "region_id": region_id,
+                    "sde_x": raw_x,
+                    "sde_y": raw_y,
                     "security": self._optional_float(
                         row.get("security", row.get("securityStatus"))
                     ),

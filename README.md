@@ -93,24 +93,16 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    member["普通用户"] --> sso["EVE SSO"]
-    sso --> corp{"允许军团？"}
-    corp -->|"是"| session["网页登录会话"]
-
-    admin["管理员"] --> password["密码登录"]
+    member["普通用户"] --> password["平台账号密码"]
+    admin["管理员"] --> password
     password --> session
 
-    session --> key["可选：创建桌面设备密钥"]
+    session --> seat["在 GloryNavy_Seat 签发并绑定客户端密钥"]
     client["桌面客户端"] --> configured{"已填写设备密钥？"}
-    configured -->|"否"| anonymous["跳过认证预检与 Listener 身份扫描<br/>不发送 Authorization"]
-    configured -->|"是"| keycheck["验证设备密钥"]
-    key --> configured
+    configured -->|"否"| anonymous["按服务端模式访问"]
+    configured -->|"是"| keycheck["验证密钥状态"]
+    seat --> configured
     keycheck --> access["开启经过认证的客户端访问"]
-    keycheck --> listener["自动扫描最近修改的 Chatlogs Listener"]
-    listener -->|"发现角色"| check["服务端身份风控"]
-    check --> rule{"允许军团或角色白名单？"}
-    rule -->|"是"| access
-    rule -->|"否"| revoke["禁用用户并吊销会话和密钥"]
     anonymous -.-> policy["enforce 模式仍会拒绝未认证的受保护请求"]
 ```
 
@@ -123,14 +115,14 @@ flowchart LR
   用于角色解析和敌我分类，不携带或改变 Presence。
 - 客户端可同时开启预警浮窗，通过 SSE 接收当前可见监控节点（online、degraded、offline）
   和敌对人数变化。
-- Web 管理系统提供星图态势、实时处置工作台、历史来袭分析、设备密钥、用户、身份规则和审计日志。
+- Web 管理系统提供星图态势、实时处置工作台、历史来袭分析、设备密钥、用户和审计日志。
 - 实时人员解析仅获取 ESI 身份、军团/联盟及敌我判定所需的声望，不再请求 zKillboard 战绩；星图不显示威胁等级和评分，仍保留按角色 ID 生成的 zKillboard 链接。
 - Web 管理系统直接使用 `@arco-design/web-react` 统一标准业务控件，并支持全局明暗主题
   切换；个人账号、系统管理、星图 Canvas、ECharts 和 Arco 组件会同步更新，选择会保存
   在浏览器中。项目未使用 Arco Design Pro 脚手架，星图和图表保留专用实现。
-- 管理员使用密码登录，普通用户使用 EVE SSO；桌面客户端可选使用设备密钥。密钥留空时
-  不进行认证预检、Listener 身份扫描，也不发送 `Authorization`；服务端 `enforce` 模式
-  仍会拒绝未认证的受保护请求。填写有效密钥后，Listener 身份扫描自动运行，无需额外开关。
+- 管理员和普通用户使用平台账号密码登录；桌面客户端使用由 GloryNavy_Seat 签发并绑定的
+  客户端密钥。Sentry 仅保存 Seat 密钥投影，不提供本地创建入口；客户端访问不需要 EVE
+  SSO、Listener 扫描或角色白名单，Seat 吊销、绑定禁用或本地用户禁用会立即失效。
 
 ## 本地启动
 
@@ -219,4 +211,4 @@ npm run build
 
 完整文档索引见 [docs/README.md](docs/README.md)。
 
-运行时数据库、配置、EVE SSO token、本地密钥状态和模型缓存均不应提交到仓库。
+运行时数据库、配置、本地密钥状态和模型缓存均不应提交到仓库。

@@ -23,15 +23,10 @@ import type { AuditRecord, ClientHeartbeatRecord } from "./types";
 
 const AUDIT_ACTION_LABELS: Record<string, string> = {
   "personnel.settings_changed": "修改人员档案配置",
-  "security.key_risk_control_changed": "切换密钥风控",
   "api_key.created": "创建密钥",
   "api_key.deleted": "删除密钥",
   "api_key.enabled": "启用密钥",
   "api_key.revoked": "吊销密钥",
-  "character.whitelist_removed": "移除角色白名单",
-  "character.whitelisted": "添加角色白名单",
-  "corporation.allowed": "添加允许军团",
-  "corporation.removed": "移除允许军团",
   "identity.check_failed": "身份检查异常",
   "identity.user_disabled": "身份违规禁用用户",
   "identity.key_revoked": "违规角色吊销密钥",

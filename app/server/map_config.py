@@ -283,6 +283,8 @@ class MapConfigStore:
     def _configured_systems(self) -> dict[str, StarSystem]:
         systems: dict[str, StarSystem] = {}
         for item in self._config.get("systems", []):
+            if item.get("system_id") in self._config.get("excluded_system_ids", []):
+                continue
             name = str(item.get("name") or "").strip()
             if not name:
                 continue
@@ -422,6 +424,9 @@ class MapConfigStore:
             "layout_mode": layout_mode,
             "region_ids": self._normalize_int_list(payload.get("region_ids")),
             "system_ids": self._normalize_int_list(payload.get("system_ids")),
+            "excluded_system_ids": self._normalize_int_list(payload.get("excluded_system_ids")),
+            "monitoring_enabled": payload.get("monitoring_enabled") is True,
+            "monitoring_version": str(payload.get("monitoring_version") or ""),
             "sde_path": str(payload.get("sde_path") or "").strip(),
             "systems": self._normalize_system_entries(payload.get("systems")),
             "links": self._normalize_link_entries(payload.get("links")),
@@ -449,6 +454,7 @@ class MapConfigStore:
             systems.append(
                 {
                     "system_id": self._optional_int(item.get("system_id")),
+                    "region_id": self._optional_int(item.get("region_id")),
                     "name": name,
                     "x": float(round(x, 1)),
                     "y": float(round(y, 1)),

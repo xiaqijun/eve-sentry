@@ -96,7 +96,7 @@ export function AccountMenu() {
 
           <dl className="management-account-details">
             <div><dt>账号角色</dt><dd>{user.role === "admin" ? "管理员" : "普通用户"}</dd></div>
-            <div><dt>登录方式</dt><dd>{user.role === "admin" ? "账号密码" : "EVE SSO"}</dd></div>
+            <div><dt>登录方式</dt><dd>账号密码</dd></div>
           </dl>
 
           {error ? <div className="management-account-message error" role="alert">{error}</div> : null}

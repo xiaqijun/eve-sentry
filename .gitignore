@@ -37,6 +37,7 @@ Desktop.ini
 whitelist.json
 region_prefs.json
 intel_config.json
+*.monitoring.json
 intel_reports.json
 intel.sqlite3
 channel_offsets.json

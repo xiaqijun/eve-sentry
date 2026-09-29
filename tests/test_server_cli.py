@@ -4,6 +4,7 @@ from app.server import __main__ as server_main
 from app.server.__main__ import build_arg_parser
 from app.server.intel_store import IntelStore, StarSystem
 from app.server.postgres_store import PostgreSQLIntelStore
+from scripts.run_server import build_server_argv
 
 
 def test_server_cli_defaults_to_postgres_storage():
@@ -19,18 +20,16 @@ def test_server_cli_defaults_to_postgres_storage():
     assert args.map_system is None
     assert args.map_sde_path is None
     assert args.map_refresh_on_start is False
-    assert args.esi_client_id == ""
-    assert args.auth_esi_client_id == ""
-    assert args.auth_esi_redirect_uri == ""
-    assert args.key_risk_control == "on"
-    assert args.esi_redirect_uri == "http://127.0.0.1:8766/callback"
-    assert args.esi_token_file == "esi_tokens.json"
-    assert args.esi_token_storage == "auto"
-    assert args.esi_login is False
-    assert args.esi_login_only is False
-    assert args.esi_login_timeout == 300.0
-    assert args.esi_no_browser is False
-    assert args.esi_scopes == []
+    assert args.enable_esi is False
+    assert args.esi_cache == "esi_cache.json"
+    assert args.esi_backend == "local"
+    assert args.seat_auth_mode == "off"
+
+
+@pytest.mark.parametrize("option", ["--esi-login", "--esi-login-only", "--esi-client-id"])
+def test_server_cli_rejects_retired_eve_oauth_options(option):
+    with pytest.raises(SystemExit):
+        build_arg_parser().parse_args([option, "value"] if option == "--esi-client-id" else [option])
 
 
 def test_server_cli_can_select_json_storage():
@@ -54,6 +53,31 @@ def test_server_cli_accepts_postgres_storage_options():
 
     assert args.storage == "postgres"
     assert args.postgres_dsn == "postgresql://user:secret@example.test:5432/eve_sentry"
+
+
+def test_server_cli_validates_optional_seat_integration_token():
+    parser = build_arg_parser()
+    valid = parser.parse_args(["--seat-integration-token", "s" * 32])
+    assert valid.seat_integration_token == "s" * 32
+    invalid = parser.parse_args(["--seat-integration-token", "short"])
+    with pytest.raises(SystemExit):
+        server_main._validate_args(parser, invalid)
+
+
+def test_server_cli_accepts_seat_auth_modes_and_env_binding():
+    parser = build_arg_parser()
+    assert parser.parse_args(["--seat-auth-mode", "enforce"]).seat_auth_mode == "enforce"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--seat-auth-mode", "shadow"])
+    argv = build_server_argv({"EVE_SENTRY_SERVER_SEAT_AUTH_MODE": "enforce"})
+    assert argv[-2:] == ["--seat-auth-mode", "enforce"]
+
+
+def test_server_env_binds_seat_integration_token():
+    argv = build_server_argv(
+        {"EVE_SENTRY_SERVER_SEAT_INTEGRATION_TOKEN": "s" * 32}
+    )
+    assert argv[-2:] == ["--seat-integration-token", "s" * 32]
 
 
 def test_server_cli_requires_postgres_dsn():
@@ -313,119 +337,24 @@ def test_server_cli_build_store_keeps_configured_map_locked(tmp_path):
     assert snapshot["reports"][0]["system_name"] == "Jita"
 
 
-def test_server_cli_accepts_authenticated_esi_options():
+def test_server_cli_builds_public_esi_config_summary():
     args = build_arg_parser().parse_args(
-        [
-            "--enable-esi",
-            "--esi-client-id",
-            "client-id",
-            "--esi-token-file",
-            "tokens.json",
-            "--esi-token-storage",
-            "plain",
-            "--esi-redirect-uri",
-            "http://127.0.0.1:9000/callback",
-            "--esi-login",
-            "--esi-login-timeout",
-            "10",
-            "--esi-no-browser",
-            "--esi-scope",
-            "esi-location.read_location.v1",
-        ]
+        ["--enable-esi", "--esi-backend", "remote", "--esi-gateway-url", "http://gateway.test", "--esi-gateway-token", "x" * 32]
     )
 
-    assert args.enable_esi is True
-    assert args.esi_client_id == "client-id"
-    assert args.esi_token_file == "tokens.json"
-    assert args.esi_token_storage == "plain"
-    assert args.esi_redirect_uri == "http://127.0.0.1:9000/callback"
-    assert args.esi_login is True
-    assert args.esi_login_timeout == 10
-    assert args.esi_no_browser is True
-    assert args.esi_scopes == ["esi-location.read_location.v1"]
-
-
-def test_server_cli_accepts_member_web_esi_login_options():
-    args = build_arg_parser().parse_args(
-        [
-            "--auth-esi-client-id",
-            "member-client-id",
-            "--auth-esi-redirect-uri",
-            "http://sentry.test/api/v1/auth/esi/callback",
-        ]
-    )
-
-    assert args.auth_esi_client_id == "member-client-id"
-    assert args.auth_esi_redirect_uri == "http://sentry.test/api/v1/auth/esi/callback"
-
-
-def test_member_web_login_uses_shared_esi_application_and_callback():
-    args = build_arg_parser().parse_args(
-        [
-            "--esi-client-id",
-            "shared-client-id",
-            "--esi-redirect-uri",
-            "http://sentry.test/api/v1/auth/esi/callback",
-            "--auth-esi-client-id",
-            "ignored-member-client-id",
-            "--auth-esi-redirect-uri",
-            "http://ignored.test/callback",
-        ]
-    )
-
-    client = server_main._build_auth_esi_sso_client(args)
-
-    assert client.client_id == "shared-client-id"
-    assert client.redirect_uri == "http://sentry.test/api/v1/auth/esi/callback"
-    assert client.scopes == []
-
-
-def test_server_cli_builds_esi_config_summary(tmp_path):
-    token_file = tmp_path / "esi_tokens.json"
-    token_file.write_text("{}", encoding="utf-8")
-    args = build_arg_parser().parse_args(
-        [
-            "--esi-client-id",
-            "client-id",
-            "--esi-token-file",
-            str(token_file),
-            "--esi-token-storage",
-            "plain",
-            "--esi-redirect-uri",
-            "http://127.0.0.1:9000/callback",
-            "--esi-scope",
-            "esi-location.read_location.v1",
-        ]
-    )
-
-    summary = server_main._build_esi_config(args)
-
-    assert summary == {
-        "backend": "local",
-        "gateway_url": "",
+    assert server_main._build_esi_config(args) == {
+        "backend": "remote",
+        "gateway_url": "http://gateway.test",
         "local_fallback": True,
-        "client_id_configured": True,
-        "redirect_uri": "http://127.0.0.1:9000/callback",
-        "token_file": str(token_file),
-        "token_file_present": True,
-        "token_storage": "plain",
-        "scopes": ["esi-location.read_location.v1"],
+        "authenticated_esi_enabled": False,
     }
 
 
-def test_server_cli_requires_client_id_for_login():
-    parser = build_arg_parser()
-    args = parser.parse_args(["--esi-login-only"])
+@pytest.mark.skip(reason="key risk control option was retired")
+def test_server_cli_auth_mode_does_not_enable_authenticated_esi():
+    args = build_arg_parser().parse_args(["--auth-mode", "setup", "--key-risk-control", "off"])
 
-    with pytest.raises(SystemExit):
-        server_main._validate_args(parser, args)
-
-
-def test_server_cli_login_implies_esi_for_server_start():
-    args = build_arg_parser().parse_args(
-        ["--esi-login", "--esi-client-id", "client-id"]
-    )
-
+    assert args.key_risk_control == "off"
     assert server_main._should_enable_esi(args) is True
 
 
@@ -452,6 +381,7 @@ def test_server_cli_remote_esi_requires_gateway_credentials():
     server_main._validate_args(parser, valid)
 
 
+@pytest.mark.skip(reason="key risk control option was retired")
 def test_server_cli_can_disable_key_risk_control_while_auth_keeps_esi_available():
     args = build_arg_parser().parse_args(
         ["--auth-mode", "setup", "--key-risk-control", "off"]
@@ -459,29 +389,6 @@ def test_server_cli_can_disable_key_risk_control_while_auth_keeps_esi_available(
 
     assert args.key_risk_control == "off"
     assert server_main._should_enable_esi(args) is True
-
-
-def test_server_cli_login_only_runs_login_and_exits(monkeypatch):
-    calls = []
-
-    def fake_login(args):
-        calls.append(args.esi_client_id)
-
-    monkeypatch.setattr(server_main, "_run_esi_login", fake_login)
-
-    code = server_main.main(
-        [
-            "--storage",
-            "json",
-            "--esi-login-only",
-            "--esi-client-id",
-            "client-id",
-            "--esi-no-browser",
-        ]
-    )
-
-    assert code == 0
-    assert calls == ["client-id"]
 
 
 def test_server_cli_main_starts_server_with_default_postgres_store(monkeypatch):
@@ -500,9 +407,7 @@ def test_server_cli_main_starts_server_with_default_postgres_store(monkeypatch):
             host,
             port,
             config_store,
-            esi_session,
             esi_config,
-            esi_login,
             map_config_store,
         ):
             calls["server"].append(
@@ -511,9 +416,7 @@ def test_server_cli_main_starts_server_with_default_postgres_store(monkeypatch):
                     "host": host,
                     "port": port,
                         "config_store": config_store,
-                        "esi_session": esi_session,
                         "esi_config": esi_config,
-                        "esi_login": esi_login,
                         "map_config_store": map_config_store,
                     }
                 )
@@ -580,9 +483,7 @@ def test_server_cli_main_starts_server_with_default_postgres_store(monkeypatch):
     assert isinstance(calls["server"][0]["store"], DummyStore)
     assert calls["server"][0]["host"] == "127.0.0.1"
     assert calls["server"][0]["port"] == 8765
-    assert calls["server"][0]["esi_session"] is None
-    assert calls["server"][0]["esi_config"]["client_id_configured"] is False
-    assert calls["server"][0]["esi_login"] is None
+    assert calls["server"][0]["esi_config"]["authenticated_esi_enabled"] is False
     assert calls["server"][0]["map_config_store"] is not None
     assert calls["lifecycle"] == [
         "server.start",

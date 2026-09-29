@@ -20,12 +20,13 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from app.channels.parser import parse_chat_line
-from app.esi.sso import EsiSsoError
 from app.server.auth_http import AuthHttpMixin
 from app.server.client_status import monitored_system_names
 from app.server.event_cache import ActiveEventSnapshot
 from app.server.intel_store import IntelStore, utc_now_iso
 from app.server.system_state import realtime_event_payload
+from app.server.monitoring_scope import current_scope, in_scope
+from app.server.map_settings import handle_settings, install_scope
 
 logger = logging.getLogger(__name__)
 access_logger = logging.getLogger(f"{__name__}.access")
@@ -60,6 +61,19 @@ class RequestBodyError(ValueError):
     ) -> None:
         super().__init__(message)
         self.status = status
+
+
+class SeatIntegrationError(RequestBodyError):
+    """Stable error for the SeAT integration contract."""
+
+    def __init__(
+        self,
+        message: str,
+        code: str,
+        status: HTTPStatus = HTTPStatus.BAD_REQUEST,
+    ) -> None:
+        super().__init__(message, status)
+        self.code = str(code)
 
 
 def _request_error_status(exc: ValueError) -> HTTPStatus:
@@ -857,21 +871,22 @@ class IntelHTTPServer:
         host: str = "127.0.0.1",
         port: int = 8765,
         config_store: Any | None = None,
-        esi_session: Any | None = None,
         esi_config: dict[str, Any] | None = None,
         map_config_store: Any | None = None,
-        esi_login: Any | None = None,
         auth_service: Any | None = None,
+        seat_integration_token: str = "",
     ) -> None:
         self.store = store
         self.host = host
         self.port = port
         self.config_store = config_store
-        self.esi_session = esi_session
         self.esi_config = dict(esi_config or {})
-        self.esi_login = esi_login
         self.auth_service = auth_service
+        # Keep this token in process memory only; never include it in logs or
+        # response payloads. Empty means the integration is deliberately off.
+        self.seat_integration_token = str(seat_integration_token or "").strip()
         self.map_config_store = map_config_store
+        install_scope(store, map_config_store)
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         set_change_notifier = getattr(self.store, "set_change_notifier", None)
@@ -898,9 +913,7 @@ class IntelHTTPServer:
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self._httpd.store = self.store  # type: ignore[attr-defined]
         self._httpd.config_store = self.config_store  # type: ignore[attr-defined]
-        self._httpd.esi_session = self.esi_session  # type: ignore[attr-defined]
         self._httpd.esi_config = self.esi_config  # type: ignore[attr-defined]
-        self._httpd.esi_login = self.esi_login  # type: ignore[attr-defined]
         self._httpd.map_config_store = self.map_config_store  # type: ignore[attr-defined]
         self.host, self.port = self._httpd.server_address[:2]
         self._thread = threading.Thread(
@@ -927,6 +940,7 @@ class IntelHTTPServer:
             pass
 
         Handler.auth_service = self.auth_service
+        Handler.seat_integration_token = self.seat_integration_token
         return Handler
 
 
@@ -1043,24 +1057,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         if path == "/api/esi/status":
             self._send_json(self._esi_status_payload())
-            return
-        if path in {"/api/esi/session", "/api/esi/snapshot"}:
-            query = parse_qs(parsed.query)
-            try:
-                include_location = self._parse_optional_bool_default(
-                    query.get("location", [""])[0],
-                    default=True,
-                    label="location",
-                )
-                include_contacts = self._parse_optional_bool_default(
-                    query.get("contacts", [""])[0],
-                    default=True,
-                    label="contacts",
-                )
-            except ValueError as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-                return
-            self._send_esi_snapshot(include_location, include_contacts)
             return
         if path in {"/api/intel", "/api/systems"}:
             snapshot = self._store().snapshot()
@@ -1344,6 +1340,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         if path == "/api/map/refresh":
             map_config_store = self._map_config_store()
+            if map_config_store and map_config_store.to_dict().get("monitoring_version"):
+                self._send_json({"error": "use /api/v1/admin/map-settings"}, HTTPStatus.CONFLICT)
+                return
             if map_config_store is None:
                 self._send_json({"error": "map config not enabled"}, HTTPStatus.NOT_FOUND)
                 return
@@ -1431,6 +1430,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         if path == "/api/map/config":
             map_config_store = self._map_config_store()
+            if map_config_store and map_config_store.to_dict().get("monitoring_version"):
+                self._send_json({"error": "use /api/v1/admin/map-settings"}, HTTPStatus.CONFLICT)
+                return
             if map_config_store is None:
                 self._send_json({"error": "map config not enabled"}, HTTPStatus.NOT_FOUND)
                 return
@@ -1485,6 +1487,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         if self._handle_auth_delete(path):
             return
+        if path.startswith(f"{API_V1_PREFIX}/integrations/seat/keys/"):
+            self._handle_seat_integration_key_revoke(path)
+            return
         if path.startswith(f"{API_V1_PREFIX}/reports/"):
             report_id = unquote(path[len(f"{API_V1_PREFIX}/reports/"):]).strip()
             if not self._store().delete_report(report_id):
@@ -1521,6 +1526,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
 
     def _handle_v1_get(self, parsed) -> None:
         path = parsed.path
+        if path == f"{API_V1_PREFIX}/admin/map-settings":
+            handle_settings(self)
+            return
         if path.startswith(f"{API_V1_PREFIX}/ocr/query/"):
             query_id = unquote(path[len(f"{API_V1_PREFIX}/ocr/query/"):]).strip()
             status = _ocr_query_status(query_id, self._store())
@@ -1581,34 +1589,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         if path == f"{API_V1_PREFIX}/esi/status":
             self._send_json(self._esi_status_payload())
-            return
-        if path == f"{API_V1_PREFIX}/esi/login":
-            esi_login = self._esi_login()
-            if esi_login is None or not hasattr(esi_login, "snapshot"):
-                self._send_json(
-                    {"error": "ESI login not configured"},
-                    HTTPStatus.NOT_FOUND,
-                )
-                return
-            self._send_json({"login": esi_login.snapshot()})
-            return
-        if path == f"{API_V1_PREFIX}/esi/session":
-            query = parse_qs(parsed.query)
-            try:
-                include_location = self._parse_optional_bool_default(
-                    query.get("location", [""])[0],
-                    default=True,
-                    label="location",
-                )
-                include_contacts = self._parse_optional_bool_default(
-                    query.get("contacts", [""])[0],
-                    default=True,
-                    label="contacts",
-                )
-            except ValueError as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-                return
-            self._send_esi_snapshot(include_location, include_contacts)
             return
         if path.startswith(f"{API_V1_PREFIX}/characters/by-name/"):
             name = unquote(path[len(f"{API_V1_PREFIX}/characters/by-name/"):]).strip()
@@ -1801,28 +1781,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def _handle_v1_post(self, path: str) -> None:
-        if path == f"{API_V1_PREFIX}/esi/login":
-            esi_login = self._esi_login()
-            if esi_login is None or not hasattr(esi_login, "start"):
-                self._send_json(
-                    {"error": "ESI login not configured"},
-                    HTTPStatus.NOT_FOUND,
-                )
-                return
-            try:
-                login = esi_login.start()
-            except EsiSsoError as exc:
-                self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
-                return
-            except Exception as exc:
-                self._send_json(
-                    {"error": f"ESI login unavailable: {exc}"},
-                    HTTPStatus.BAD_GATEWAY,
-                )
-                return
-            self._send_json({"ok": True, "login": login})
+        if path == f"{API_V1_PREFIX}/integrations/seat/keys":
+            self._handle_seat_integration_key_create()
             return
-
         if path == f"{API_V1_PREFIX}/channel-lines":
             try:
                 result = self._add_channel_line(self._read_json())
@@ -1890,7 +1851,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
-            if result.get("accepted", True):
+            if result.get("accepted", True) or result.get("scope_expired"):
                 _notify_event_streams()
             status = HTTPStatus.CREATED if result.get("created") else HTTPStatus.OK
             self._send_json(result, status)
@@ -1908,7 +1869,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 return
             _notify_event_streams()
             self._send_json(
-                {"ok": True, "heartbeat": heartbeat, "commands": commands},
+                {"ok": True, "heartbeat": heartbeat, "commands": commands,
+                 "monitoring_scope": current_scope(store).to_dict()},
                 HTTPStatus.CREATED,
             )
             return
@@ -1917,6 +1879,293 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
+    def _handle_seat_integration_key_create(self) -> None:
+        """Persist a key projection supplied by the SeAT service."""
+        try:
+            payload = self._read_json()
+            operation_id = str(payload.get("operation_id") or "").strip()
+            key_id = str(payload.get("key_id") or "").strip()
+            account_id = str(payload.get("account_id") or "").strip()
+            protocol_version = payload.get("protocol_version")
+            if not operation_id or len(operation_id) > 128:
+                raise SeatIntegrationError(
+                    "operation_id must be a non-empty UUID",
+                    "invalid_operation_id",
+                )
+            try:
+                uuid.UUID(operation_id)
+            except (ValueError, AttributeError):
+                raise SeatIntegrationError(
+                    "operation_id must be a valid UUID",
+                    "invalid_operation_id",
+                ) from None
+            if not key_id or len(key_id) > 128:
+                raise SeatIntegrationError(
+                    "key_id must be a non-empty UUID or Seat key ID",
+                    "invalid_key_id",
+                )
+            if not account_id or len(account_id) > 128:
+                raise SeatIntegrationError(
+                    "account_id must be a non-empty UUID",
+                    "invalid_account_id",
+                )
+            try:
+                uuid.UUID(account_id)
+            except (ValueError, AttributeError):
+                raise SeatIntegrationError(
+                    "account_id must be a valid UUID",
+                    "invalid_account_id",
+                ) from None
+            name = str(payload.get("name") or "").strip()
+            if not name or len(name) > 80:
+                raise SeatIntegrationError(
+                    "name must contain 1 to 80 characters",
+                    "invalid_name",
+                )
+            raw_permissions = payload.get("permissions")
+            if not isinstance(raw_permissions, list) or not raw_permissions:
+                raise SeatIntegrationError(
+                    "permissions must be a non-empty array",
+                    "invalid_permissions",
+                )
+            permissions: list[str] = []
+            seen_permissions: set[str] = set()
+            for value in raw_permissions:
+                permission = str(value or "").strip()
+                if not permission or len(permission) > 80:
+                    raise SeatIntegrationError(
+                        "permissions must contain non-empty strings up to 80 characters",
+                        "invalid_permissions",
+                    )
+                if permission.casefold() not in seen_permissions:
+                    seen_permissions.add(permission.casefold())
+                    permissions.append(permission)
+            if len(permissions) > 32:
+                raise SeatIntegrationError(
+                    "permissions must contain at most 32 values",
+                    "invalid_permissions",
+                )
+            if any(
+                permission.casefold() not in {"monitor", "alert"}
+                for permission in permissions
+            ):
+                raise SeatIntegrationError(
+                    "permissions must be monitor or alert",
+                    "invalid_permissions",
+                )
+            if isinstance(protocol_version, bool) or protocol_version != 1:
+                raise SeatIntegrationError(
+                    "protocol_version must be 1",
+                    "invalid_protocol_version",
+                )
+            key_prefix = str(payload.get("key_prefix") or "").strip()
+            if not key_prefix or len(key_prefix) > 32:
+                raise SeatIntegrationError(
+                    "key_prefix must contain 1 to 32 characters",
+                    "invalid_key_prefix",
+                )
+            key_hash = str(payload.get("key_hash") or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", key_hash):
+                raise SeatIntegrationError(
+                    "key_hash must be a SHA-256 hex digest",
+                    "invalid_key_hash",
+                )
+            request_payload = {
+                "operation_id": operation_id,
+                "key_id": key_id,
+                "account_id": account_id,
+                "name": name,
+                "key_prefix": key_prefix,
+                "key_hash": key_hash,
+                "permissions": permissions,
+                "protocol_version": 1,
+            }
+            request_hash = hashlib.sha256(
+                json.dumps(
+                    request_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            now = utc_now_iso()
+            repository = self._seat_integration_repository()
+            result = repository.create_seat_integration_key(
+                {
+                    "key_id": key_id,
+                    "account_id": account_id,
+                    "name": name,
+                    "key_prefix": key_prefix,
+                    "key_hash": key_hash,
+                    "permissions_json": json.dumps(
+                        permissions,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    "protocol_version": 1,
+                    "status": "active",
+                    "created_at": now,
+                    "revoked_at": "",
+                    "revoked_reason": "",
+                },
+                operation_id,
+                request_hash,
+                self._seat_integration_audit(
+                    "seat_key.created",
+                    key_id,
+                    {
+                        "operation_id": operation_id,
+                        "account_id": account_id,
+                        "name": name,
+                        "key_prefix": key_prefix,
+                        "permissions": permissions,
+                        "protocol_version": 1,
+                    },
+                ),
+            )
+            if result.get("idempotency_conflict"):
+                raise SeatIntegrationError(
+                    "operation_id was already used for a different request",
+                    "operation_conflict",
+                    HTTPStatus.CONFLICT,
+                )
+            key = result.get("key")
+            if not isinstance(key, dict):
+                raise SeatIntegrationError(
+                    "Seat integration key could not be persisted",
+                    "integration_storage_error",
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+        except SeatIntegrationError as exc:
+            self._send_json(
+                {"error": str(exc), "code": exc.code},
+                exc.status,
+            )
+            return
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._send_json(
+                {"error": str(exc), "code": "invalid_request"},
+                _request_error_status(exc),
+            )
+            return
+        except Exception:
+            logger.exception("Seat integration key creation failed")
+            self._send_json(
+                {
+                    "error": "Seat integration storage is unavailable",
+                    "code": "integration_storage_error",
+                },
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+
+        response = {
+            "key_id": str(key.get("key_id") or ""),
+            "version": int(key.get("protocol_version") or 1),
+            "status": str(key.get("status") or "active"),
+            "permissions": list(key.get("permissions") or []),
+            "created_at": str(key.get("created_at") or ""),
+        }
+        response["idempotent_replay"] = not bool(result.get("created"))
+        self._send_json(
+            response,
+            HTTPStatus.CREATED if result.get("created") else HTTPStatus.OK,
+        )
+
+    def _handle_seat_integration_key_revoke(self, path: str) -> None:
+        prefix = f"{API_V1_PREFIX}/integrations/seat/keys/"
+        key_id = unquote(path[len(prefix):]).strip("/")
+        if not key_id or "/" in key_id:
+            self._send_json(
+                {"error": "Seat integration key not found", "code": "seat_key_not_found"},
+                HTTPStatus.NOT_FOUND,
+            )
+            return
+        try:
+            repository = self._seat_integration_repository()
+            result = repository.revoke_seat_integration_key(
+                key_id,
+                utc_now_iso(),
+                "revoked by Seat integration",
+                self._seat_integration_audit(
+                    "seat_key.revoked",
+                    key_id,
+                    {"reason": "revoked by Seat integration"},
+                ),
+            )
+        except SeatIntegrationError as exc:
+            self._send_json(
+                {"error": str(exc), "code": exc.code},
+                exc.status,
+            )
+            return
+        except Exception:
+            logger.exception("Seat integration key revoke failed")
+            self._send_json(
+                {
+                    "error": "Seat integration storage is unavailable",
+                    "code": "integration_storage_error",
+                },
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        if result is None:
+            self._send_json(
+                {"error": "Seat integration key not found", "code": "seat_key_not_found"},
+                HTTPStatus.NOT_FOUND,
+            )
+            return
+        if result.get("changed"):
+            service = self._auth_service()
+            notify = getattr(service, "notify_external_authorization_changed", None)
+            if callable(notify):
+                notify()
+        self._send_json(
+            {
+                "key_id": key_id,
+                "status": str(result.get("status") or "revoked"),
+                "revoked": True,
+                "revoked_at": str(result.get("revoked_at") or ""),
+            }
+        )
+
+    def _seat_integration_repository(self) -> Any:
+        service = self._auth_service()
+        repository = getattr(service, "repository", None)
+        if repository is not None:
+            return repository
+        connect = getattr(self._store(), "_connect", None)
+        if not callable(connect):
+            raise SeatIntegrationError(
+                "Seat integration requires SQL-backed storage",
+                "integration_storage_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+        from app.server.auth_store import AuthRepository
+
+        return AuthRepository(connect)
+
+    def _seat_integration_audit(
+        self,
+        action: str,
+        key_id: str,
+        details: dict[str, Any],
+    ) -> dict[str, Any]:
+        audit_details = {
+            "integration": "seat",
+            "caller_ip": self._login_client_ip(),
+            "request_id": str(getattr(self, "_request_id", "") or ""),
+            **details,
+        }
+        return {
+            "audit_id": uuid.uuid4().hex,
+            "actor_user_id": "seat-integration",
+            "target_user_id": str(key_id),
+            "action": action,
+            "details": audit_details,
+            "created_at": utc_now_iso(),
+        }
+
     def _attributed_heartbeat_payload(
         self,
         payload: dict[str, Any],
@@ -1924,11 +2173,15 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         """Replace client-supplied heartbeat trust fields with request state."""
         service = self._auth_service()
         principal = self._auth_principal
-        if service is not None and service.enforce_requests and (
-            principal is None
-            or principal.auth_type != "api_key"
-            or principal.api_key_type != "desktop"
-        ):
+        valid_monitor_principal = bool(
+            principal is not None
+            and principal.auth_type == "api_key"
+            and (
+                principal.api_key_type == "desktop"
+                or (principal.is_seat and "monitor" in principal.permissions)
+            )
+        )
+        if service is not None and service.enforce_requests and not valid_monitor_principal:
             raise RequestBodyError(
                 "desktop API key is required",
                 HTTPStatus.FORBIDDEN,
@@ -1943,6 +2196,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         return attributed
 
     def _handle_v1_put(self, path: str) -> None:
+        if path == f"{API_V1_PREFIX}/admin/map-settings":
+            handle_settings(self, save=True)
+            return
         if path != f"{API_V1_PREFIX}/config":
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
@@ -2016,6 +2272,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             "clients": clients,
             "monitoring_nodes": monitoring_nodes,
             "monitoring_nodes_version": _monitoring_nodes_version(monitoring_nodes),
+            "monitoring_scope": current_scope(self._store()).to_dict(),
             "config": self._config_store().to_dict() if self._config_store() else None,
             "esi": self._esi_status_payload(),
         }
@@ -2093,6 +2350,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         alerts: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Build the compact state required by alert SSE consumers."""
+        active_items = [item for item in active_items if in_scope(self._store(), item)]
+        alerts = [item for item in alerts if in_scope(self._store(), item)]
         unavailable = [item for item in active_items
                        if isinstance(item.get("metadata"), dict)
                        and item["metadata"].get("freshness") == "unknown"]
@@ -2130,6 +2389,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             "clients": clients,
             "monitoring_nodes": monitoring_nodes,
             "monitoring_nodes_version": _monitoring_nodes_version(monitoring_nodes),
+            "monitoring_scope": current_scope(self._store()).to_dict(),
         }
 
     def _hostile_personnel_snapshot(
@@ -2316,6 +2576,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             )
         else:
             active_items = self._visible_active_items(store, store.list_active_intel())
+        active_items = [item for item in active_items if in_scope(store, item)]
         system_intel = store._aggregate_active_by_system(active_items)
         with store._lock:
             system_items = dict(store._systems)
@@ -2392,6 +2653,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         store: IntelStore,
         items: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        items = [item for item in items if in_scope(store, item)]
         scorer = getattr(store, "_scorer", None)
         if not bool(getattr(scorer, "suppress_whitelisted_reports", True)):
             return list(items)
@@ -3013,6 +3275,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 ]
         elif active_items is None:
             active_items = store.list_active_intel()
+        active_items = [item for item in active_items if in_scope(store, item)]
         if reports is None:
             active_items = self._visible_active_items(store, active_items)
             alerts = self._active_alert_list(
@@ -3053,6 +3316,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         reports: list[Any],
     ) -> list[dict[str, Any]]:
         """Apply visibility using reports from the same database snapshot."""
+        items = [item for item in items if in_scope(store, item)]
         scorer = getattr(store, "_scorer", None)
         if not bool(getattr(scorer, "suppress_whitelisted_reports", True)):
             return list(items)
@@ -3282,19 +3546,15 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         for namespace in ("character", "corporation", "alliance"):
             invalidate(namespace)
 
-    def _esi_session(self) -> Any | None:
-        return self.server.esi_session  # type: ignore[attr-defined,no-any-return]
-
-    def _esi_login(self) -> Any | None:
-        return getattr(self.server, "esi_login", None)
-
     def _esi_config(self) -> dict[str, Any]:
         config = getattr(self.server, "esi_config", None)
-        result = dict(config) if isinstance(config, dict) else {}
-        token_file = str(result.get("token_file") or "").strip()
-        if token_file:
-            result["token_file_present"] = os.path.exists(token_file)
-        return result
+        if not isinstance(config, dict):
+            return {"authenticated_esi_enabled": False}
+        return {
+            key: config[key]
+            for key in ("backend", "gateway_url", "local_fallback")
+            if key in config
+        } | {"authenticated_esi_enabled": False}
 
     def _esi_public_resolver(self) -> Any | None:
         resolver = getattr(self._store(), "_resolver", None)
@@ -3311,7 +3571,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         return self.server.map_config_store  # type: ignore[attr-defined,no-any-return]
 
     def _esi_status_payload(self) -> dict[str, Any]:
-        session = self._esi_session()
         public_enabled = self._esi_public_resolver() is not None
         config = self._esi_config()
         resolver = self._esi_public_resolver()
@@ -3319,51 +3578,13 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         if connections is not None and hasattr(connections, "telemetry"):
             config["transport"] = {"mode": "relay" if connections.relay_host else "direct",
                                    **connections.telemetry.snapshot()}
-        if session is None:
-            if public_enabled:
-                return {
-                    "enabled": True,
-                    "public": True,
-                    "authenticated": False,
-                    "session": False,
-                    "refreshable": False,
-                    "config": config,
-                }
-            return {"enabled": False, "authenticated": False, "config": config}
-        if not hasattr(session, "load_tokens"):
-            return {
-                "enabled": True,
-                "public": public_enabled,
-                "authenticated": False,
-                "session": True,
-                "refreshable": False,
-                "config": config,
-                "error": "ESI session cannot load tokens",
-            }
-        try:
-            tokens = session.load_tokens(refresh_if_needed=False)
-        except EsiSsoError as exc:
-            return {
-                "enabled": True,
-                "public": public_enabled,
-                "authenticated": False,
-                "session": True,
-                "refreshable": False,
-                "config": config,
-                "error": str(exc),
-            }
         return {
-            "enabled": True,
+            "enabled": public_enabled,
             "public": public_enabled,
-            "authenticated": True,
-            "session": True,
-            "refreshable": bool(getattr(tokens, "refresh_token", "")),
-            "config": config,
-            "character_id": tokens.character_id,
-            "character_owner_hash": tokens.character_owner_hash,
-            "scopes": list(tokens.scopes),
-            "expires_at": tokens.expires_at,
-            "expired": bool(tokens.is_expired()),
+            "authenticated": False,
+            "session": False,
+            "refreshable": False,
+            "config": {**config, "authenticated_esi_enabled": False},
         }
 
     def _health_payload(self) -> dict[str, Any]:
@@ -3492,56 +3713,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 "active_connections": _active_event_stream_count(),
             },
         }
-
-    def _send_esi_snapshot(
-        self,
-        include_location: bool,
-        include_contacts: bool,
-    ) -> None:
-        session = self._esi_session()
-        if session is None or not hasattr(session, "snapshot"):
-            self._send_json({"error": "ESI session not enabled"}, HTTPStatus.NOT_FOUND)
-            return
-        try:
-            snapshot = session.snapshot(
-                include_location=include_location,
-                include_contacts=include_contacts,
-            )
-        except EsiSsoError as exc:
-            self._send_json({"error": str(exc)}, HTTPStatus.UNAUTHORIZED)
-            return
-        except Exception as exc:
-            self._send_json(
-                {"error": f"ESI session unavailable: {exc}"},
-                HTTPStatus.BAD_GATEWAY,
-            )
-            return
-        data = snapshot.to_dict()
-        self._annotate_esi_location(data.get("location"))
-        self._send_json(
-            {
-                "enabled": True,
-                "authenticated": True,
-                "snapshot": data,
-            }
-        )
-
-    def _annotate_esi_location(self, location: Any) -> None:
-        if not isinstance(location, dict):
-            return
-        system_id = self._optional_positive_int(location.get("solar_system_id"))
-        if system_id is None:
-            return
-        try:
-            profile = self._store().system_profile(system_id)
-        except Exception:
-            profile = None
-        if not isinstance(profile, dict):
-            return
-        location.setdefault("solar_system", profile)
-        name = str(profile.get("name") or "").strip()
-        if name:
-            location.setdefault("solar_system_name", name)
 
     def _alert_for_observation(self, observation_id: str) -> dict[str, Any] | None:
         return self._store().alert_for_observation(observation_id)
@@ -4395,6 +4566,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 "active_intel": payload.get("active_intel"),
                 "alerts": payload.get("alerts"),
                 "hostile_personnel": payload.get("hostile_personnel"),
+                "monitoring_scope": payload.get("monitoring_scope"),
                 "monitoring_targets": _monitoring_target_state(
                     payload.get("clients")
                 ),
@@ -4430,6 +4602,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         event_id: str,
         payload: dict[str, Any],
     ) -> None:
+        if event_name in {"alert", "safe"} and not in_scope(self._store(), payload):
+            self._write_sse_cursor(event_id)
+            return
         data = json.dumps(payload, ensure_ascii=False)
         body = f"id: {event_id}\nevent: {event_name}\ndata: {data}\n\n"
         self.wfile.write(body.encode("utf-8"))

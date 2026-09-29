@@ -13,6 +13,7 @@ import threading
 import time
 from app.esi.personnel_policy import classification_profile
 from app.server.personnel_routing import PersonnelRoutingMixin, personnel_read, personnel_task
+from app.server.monitoring_scope import in_scope, ignored_upload, scoped_heartbeat, expire_outside_scope
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -1562,6 +1563,8 @@ class IntelStore(PersonnelRoutingMixin):
 
     def record_ocr_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Record one detector OCR snapshot and update active intel state."""
+        if not in_scope(self, payload):
+            return ignored_upload(self)
         client_id = str(payload.get("client_id") or "").strip()
         if not client_id:
             raise ValueError("client_id is required")
@@ -1595,6 +1598,8 @@ class IntelStore(PersonnelRoutingMixin):
         changed_reports = False
         esi_tasks: list[_OcrEsiTask] = []
         with self._lock:
+            if not in_scope(self, payload):
+                return ignored_upload(self)
             if not query_only and not capture_is_current(self._active_intel.values(), client_id, capture, ocr=True):
                 return {**result.to_dict(include_active=False), "accepted": False, "stale": True}
             presence_active = any(
@@ -1873,6 +1878,11 @@ class IntelStore(PersonnelRoutingMixin):
                 )
                 return response
             result.expired += len(moved_items)
+
+            if not in_scope(self, payload):
+                # The location transition must still retire this source's old
+                # in-scope presence. Otherwise a legacy node can leave a ghost.
+                return {**ignored_upload(self), "scope_expired": len(moved_items), "seen_at": seen_at}
 
             item = self._active_intel.get(active_id)
             if item is not None:
@@ -2839,12 +2849,13 @@ class IntelStore(PersonnelRoutingMixin):
     def _expire_stale_detector_ocr_active_intel(self, left_at: str) -> int:
         from app.server.source_authority import superseded_parent_clients
 
+        scope_expired = expire_outside_scope(self, left_at)
         if time.monotonic() < self._stale_heartbeat_cleanup_after:
-            return 0
+            return scope_expired
         now_at = self._parse_timestamp(left_at)
         if now_at is None:
             return 0
-        capture_expired = expire_captures(self._active_intel.values(), now_at.timestamp())
+        capture_expired = scope_expired + expire_captures(self._active_intel.values(), now_at.timestamp())
         expiring_parent_client_ids: dict[str, tuple[str, str]] = {}
         expiring_child_client_ids: dict[str, tuple[str, str]] = {}
         retired = superseded_parent_clients(self._active_intel.values())
@@ -3109,7 +3120,7 @@ class IntelStore(PersonnelRoutingMixin):
         item["stale_after_seconds"] = offline_after
         item["health_status"] = health_status
         item["online"] = health_status == "online"
-        return item
+        return scoped_heartbeat(self, item)
 
     def _authoritative_detector_target_ids(
         self,
@@ -4488,7 +4499,7 @@ class IntelStore(PersonnelRoutingMixin):
         return canonical
 
     def _resolve_truncated_esi_name(self, candidates: list[str]) -> str | None:
-        """Use authenticated ESI search after exact name resolution fails."""
+        """Use public ESI search after exact name resolution fails."""
         if self._enricher is None or not hasattr(
             self._enricher, "complete_character_name"
         ):

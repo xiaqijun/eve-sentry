@@ -18,7 +18,7 @@ from app.channels.log_watcher import (
     detect_encoding,
     normalize_channel_name,
 )
-from app.esi.sso import default_token_protector, token_protector_from_name
+from app.security.protection import default_state_protector, state_protector_from_name
 from app.intel_client import INVALID_API_KEY_MESSAGE, is_valid_api_key
 
 
@@ -57,7 +57,7 @@ class ClientAuthStateStore:
 
     def __init__(self, path: str | Path | None = None, protector: Any | None = None):
         self.path = Path(path) if path else default_client_auth_state_path()
-        self.protector = protector if protector is not None else default_token_protector()
+        self.protector = protector if protector is not None else default_state_protector()
 
     def load(self) -> dict[str, Any]:
         try:
@@ -178,7 +178,7 @@ class ClientAuthStateStore:
         }
 
     def _unprotect(self, payload: dict[str, Any]) -> dict[str, Any] | None:
-        protector = self.protector or token_protector_from_name(
+        protector = self.protector or state_protector_from_name(
             str(payload.get("provider") or "")
         )
         if protector is None:

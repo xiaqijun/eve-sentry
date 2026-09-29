@@ -1,38 +1,24 @@
 import "@testing-library/jest-dom/vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountKeysPage } from "./AccountKeysPage";
 import { AdminAuditPage, filterAuditRecords } from "./AdminAuditPage";
-import { AdminIdentityPage } from "./AdminIdentityPage";
-import { AdminSecurityPage } from "./AdminSecurityPage";
 import { AdminUsersPage } from "./AdminUsersPage";
-import { AdminWhitelistPage } from "./AdminWhitelistPage";
 
 const apiMocks = vi.hoisted(() => ({
-  addCorporation: vi.fn(),
-  addWhitelistCharacter: vi.fn(),
-  createAdminKey: vi.fn(),
-  createMyKey: vi.fn(),
-  createServiceKey: vi.fn(),
   createUser: vi.fn(),
   deleteKey: vi.fn(),
   deleteUser: vi.fn(),
   enableKey: vi.fn(),
   fetchClients: vi.fn(),
-  fetchSecuritySettings: vi.fn(),
   listAdminUsers: vi.fn(),
   listAudit: vi.fn(),
-  listCorporations: vi.fn(),
   listMyKeys: vi.fn(),
-  removeCorporation: vi.fn(),
-  removeWhitelistCharacter: vi.fn(),
   resetUserPassword: vi.fn(),
   revokeKey: vi.fn(),
   setUserActive: vi.fn(),
-  updateSecuritySettings: vi.fn(),
 }));
 
 vi.mock("./api", () => apiMocks);
@@ -57,8 +43,6 @@ const user = {
   status: "active",
   user_id: "user-1",
   username: "admin",
-  verified_characters: [],
-  whitelist: [],
 };
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -76,8 +60,6 @@ describe("split management pages", () => {
     apiMocks.listAdminUsers.mockResolvedValue([user]);
     apiMocks.listAudit.mockResolvedValue([]);
     apiMocks.fetchClients.mockResolvedValue({ count: 0, heartbeats: [], summary: {} });
-    apiMocks.fetchSecuritySettings.mockResolvedValue({ key_risk_control: true });
-    apiMocks.listCorporations.mockResolvedValue([]);
     apiMocks.listMyKeys.mockResolvedValue([]);
   });
 
@@ -149,7 +131,7 @@ describe("split management pages", () => {
     expect(body).not.toHaveTextContent("禁用用户");
   });
 
-  it("lets an administrator issue a desktop key for a member", async () => {
+  it("does not expose local client-key issuance for a member", async () => {
     const member = {
       ...user,
       display_name: "侦察员",
@@ -158,17 +140,6 @@ describe("split management pages", () => {
       username: "scout",
     };
     apiMocks.listAdminUsers.mockResolvedValue([user, member]);
-    apiMocks.createAdminKey.mockResolvedValue({
-      key_id: "key-created",
-      user_id: "user-2",
-      name: "监控客户端",
-      key_prefix: "eve_created",
-      key_type: "desktop",
-      status: "active",
-      identity_verified: true,
-      created_at: "2026-08-07T00:00:00Z",
-      secret: "eve_admin_issued",
-    });
     await render(<AdminUsersPage />);
 
     const viewMember = Array.from(container.querySelectorAll("button"))
@@ -178,67 +149,9 @@ describe("split management pages", () => {
       '[aria-label="用户操作"]',
     ) as HTMLButtonElement | null;
     await act(async () => actionButton?.click());
-    const createButton = Array.from(
-      container.querySelectorAll<HTMLElement>('[role="menuitem"]'),
-    ).find((item) => item.textContent?.includes("创建设备密钥"));
-    await act(async () => {
-      createButton?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true, cancelable: true }),
-      );
-      await Promise.resolve();
-    });
-
-    expect(apiMocks.createAdminKey).toHaveBeenCalledWith(
-      "user-2",
-      "监控客户端",
-      "desktop",
-    );
-    expect(container).toHaveTextContent("设备密钥只显示这一次");
-    expect(container).toHaveTextContent("eve_admin_issued");
-  });
-
-  it("keeps verified identities on the identity page", async () => {
-    await render(<AdminIdentityPage />);
-    expect(container).toHaveTextContent("身份记录");
-    expect(container).toHaveTextContent("已验证身份");
-    expect(container).toHaveTextContent("已验证角色");
-    expect(container).not.toHaveTextContent("允许军团");
-    expect(container).not.toHaveTextContent("角色白名单");
-    expect(apiMocks.listCorporations).not.toHaveBeenCalled();
-    expect(container).not.toHaveTextContent("创建只读服务密钥");
-  });
-
-  it("allows administrators to switch key risk control", async () => {
-    apiMocks.updateSecuritySettings.mockResolvedValue({ key_risk_control: false });
-    await render(<MemoryRouter><AdminSecurityPage /></MemoryRouter>);
-    expect(container).toHaveTextContent("设备密钥风控");
-    expect(container).toHaveTextContent("识别角色");
-    expect(container).toHaveTextContent("解析身份");
-    expect(container.querySelector('a[href="/admin/whitelist"]')).toHaveTextContent("白名单管理");
-    expect(container.querySelector('a[href="/admin/audit"]')).toHaveTextContent("审计日志");
-    const toggle = container.querySelector('[aria-label="设备密钥风控"]') as HTMLButtonElement | null;
-    expect(toggle).toBeInTheDocument();
-    await act(async () => toggle?.click());
-    expect(apiMocks.updateSecuritySettings).toHaveBeenCalledWith({ key_risk_control: false });
-    expect(container).toHaveTextContent("当前为关闭状态");
-  });
-
-  it("keeps corporation and character allowlists on the whitelist page", async () => {
-    apiMocks.listCorporations.mockResolvedValue([{
-      corporation_id: 98000001,
-      corporation_name: "测试军团",
-    }]);
-
-    await render(<AdminWhitelistPage />);
-
-    expect(container).toHaveTextContent("白名单管理");
-    expect(container).toHaveTextContent("军团白名单");
-    expect(container).toHaveTextContent("测试军团");
-    expect(container).toHaveTextContent("ID 98000001");
-    expect(container).toHaveTextContent("角色白名单");
-    expect(container).not.toHaveTextContent("已验证身份");
-    expect(apiMocks.listAdminUsers).toHaveBeenCalledTimes(1);
-    expect(apiMocks.listCorporations).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="menuitem"]'))
+      .not.toHaveTextContent("创建设备密钥");
+    expect(container).toHaveTextContent("客户端密钥统一由 GloryNavy_Seat 签发");
   });
 
   it("keeps audit records on a dedicated page", async () => {
@@ -588,84 +501,11 @@ describe("split management pages", () => {
     expect(container).not.toHaveTextContent("当前密码");
   });
 
-  it("falls back when Clipboard API rejects and keeps a square icon-only action", async () => {
-    const writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
-    const execCommand = vi.fn().mockReturnValue(true);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
-    Object.defineProperty(document, "execCommand", {
-      configurable: true,
-      value: execCommand,
-    });
-    apiMocks.createMyKey.mockResolvedValue({
-      identity_verified: false,
-      key_id: "key-created",
-      key_prefix: "eve_created",
-      key_type: "desktop",
-      name: "监控客户端",
-      secret: "eve_secret_once",
-      status: "active",
-      user_id: "user-1",
-    });
+  it("shows Seat ownership instead of a local key creation form", async () => {
     await render(<AccountKeysPage />);
-
-    await act(async () => {
-      container.querySelector<HTMLFormElement>(".account-key-form")?.dispatchEvent(
-        new Event("submit", { bubbles: true, cancelable: true }),
-      );
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    const copyButton = container.querySelector<HTMLButtonElement>('[aria-label="复制设备密钥"]');
-    expect(copyButton).toBeInTheDocument();
-    expect(copyButton).toHaveClass("arco-btn-icon-only");
-    expect(copyButton).toHaveTextContent("");
-    await act(async () => {
-      copyButton?.click();
-      await Promise.resolve();
-    });
-    expect(writeText).toHaveBeenCalledWith("eve_secret_once");
-    expect(execCommand).toHaveBeenCalledWith("copy");
-  });
-
-  it("selects an unlisted verified character when adding a whitelist entry", async () => {
-    apiMocks.listAdminUsers.mockResolvedValue([{
-      ...user,
-      verified_characters: [
-        { character_id: 101, character_name: "Pilot Alpha", corporation_name: "Alpha Corp", user_id: "user-1" },
-        { character_id: 102, character_name: "Pilot Bravo", corporation_name: "Bravo Corp", user_id: "user-1" },
-      ],
-      whitelist: [{ character_id: 101, character_name: "Pilot Alpha", user_id: "user-1" }],
-    }]);
-    apiMocks.addWhitelistCharacter.mockResolvedValue({});
-    await render(<AdminWhitelistPage />);
-
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[aria-label="管理 舰队管理员 白名单"]')?.click();
-    });
-    const select = document.body.querySelector<HTMLElement>('[aria-label="选择已验证上报角色"]');
-    expect(select).toBeInTheDocument();
-    expect(document.body).not.toHaveTextContent("角色 ID");
-
-    await act(async () => {
-      select?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-      select?.click();
-    });
-    expect(document.body).toHaveTextContent("Pilot Bravo · Bravo Corp");
-    expect(document.body).not.toHaveTextContent("Pilot Alpha · Alpha Corp");
-    const option = Array.from(document.body.querySelectorAll<HTMLElement>(".arco-select-option"))
-      .find((item) => item.textContent?.includes("Pilot Bravo"));
-    await act(async () => option?.click());
-    await act(async () => {
-      document.body.querySelector<HTMLFormElement>(".identity-character-form")?.dispatchEvent(
-        new Event("submit", { bubbles: true, cancelable: true }),
-      );
-      await Promise.resolve();
-    });
-    expect(apiMocks.addWhitelistCharacter).toHaveBeenCalledWith("user-1", 102, "");
+    expect(container).toHaveTextContent("客户端密钥统一由 GloryNavy_Seat 签发");
+    expect(container.querySelector(".account-key-form")).toBeNull();
+    expect(container).not.toHaveTextContent("创建设备密钥");
   });
 
   it("allows manually revoked keys to be enabled or deleted", async () => {
