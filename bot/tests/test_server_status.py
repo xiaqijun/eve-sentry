@@ -5,7 +5,7 @@ import fakeredis.aioredis
 import httpx
 import pytest
 
-from eve_risk.alerts import ALERT_GROUPS_KEY, startup_subscribers_key
+from eve_risk.alerts import ALERT_GROUPS_KEY
 from eve_risk.server_status import EveServerStartupMonitor, EveServerStatus, _delivered_key
 
 
@@ -96,7 +96,6 @@ async def test_short_status_failure_does_not_create_startup_alert() -> None:
 async def test_startup_message_uses_china_time_without_changing_utc_dedupe() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     await redis.sadd(ALERT_GROUPS_KEY, "group-1")
-    await redis.sadd(startup_subscribers_key("group-1"), "member-1", "member-2")
     qq = AsyncMock()
     monitor = EveServerStartupMonitor(
         AsyncMock(), redis, qq, "https://esi.evetech.net/status"
@@ -114,8 +113,8 @@ async def test_startup_message_uses_china_time_without_changing_utc_dedupe() -> 
 
         qq.send_proactive_text.assert_awaited_once()
         _, message = qq.send_proactive_text.await_args.args
-        assert "<@member-1>" in message
-        assert "<@member-2>" in message
+        assert "<@" not in message
+        assert "qqbot-at-user" not in message
         assert "启动时间｜2026-08-27 19:00:00" in message
         event_id = start_time.astimezone(UTC).isoformat()
         assert await redis.exists(_delivered_key(event_id, "group-1")) == 1

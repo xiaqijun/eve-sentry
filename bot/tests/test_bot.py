@@ -273,7 +273,7 @@ async def test_sentry_status_query_replies_without_analysis_queue() -> None:
 
 
 @pytest.mark.asyncio
-async def test_startup_subscription_is_independent_from_group_alerts() -> None:
+async def test_startup_subscription_commands_report_group_notice_without_member_mentions() -> None:
     client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
     original_redis = client.redis
     redis = fakeredis.aioredis.FakeRedis()
@@ -297,13 +297,13 @@ async def test_startup_subscription_is_independent_from_group_alerts() -> None:
         Message.content = "订阅开服"
         await client.on_group_at_message_create(Message())
         assert await client.alert_relay.is_subscribed("group-1") is True
-        assert await client.alert_relay.is_startup_subscribed("group-1", "member-1") is True
+        assert "不再支持单独 @ 成员" in client.qq.send_text.await_args.args[2]
 
         Message.id = "startup-message-3"
         Message.content = "取消订阅开服"
         await client.on_group_at_message_create(Message())
         assert await client.alert_relay.is_subscribed("group-1") is True
-        assert await client.alert_relay.is_startup_subscribed("group-1", "member-1") is False
+        assert "不再支持单独 @ 成员" in client.qq.send_text.await_args.args[2]
     finally:
         await client.http_client.aclose()
         await redis.aclose()
