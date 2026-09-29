@@ -26,6 +26,7 @@ SYSTEM_ALERT_STATE_READY_KEY = "qq:eve-sentry:system-alert-state-ready"
 MONITORING_NODE_SNAPSHOT_STATE_KEY = "qq:eve-sentry:monitoring-node-snapshot-state"
 MONITORING_NODE_SNAPSHOT_DATA_KEY = "qq:eve-sentry:monitoring-node-snapshot-data"
 MONITORING_NODE_SUBSCRIPTION_PREFIX = "monitoring-node-subscription"
+STARTUP_SUBSCRIBERS_PREFIX = "qq:eve-sentry:startup-subscribers"
 ALERT_DEDUPE_SECONDS = 7 * 24 * 60 * 60
 SSE_HEARTBEAT_SECONDS = 1.0
 SSE_IDLE_TIMEOUT_SECONDS = 15.0
@@ -38,6 +39,9 @@ class SentryAuthenticationError(RuntimeError):
 _ENABLE_COMMANDS = {"开启预警", "订阅预警", "打开预警"}
 _DISABLE_COMMANDS = {"关闭预警", "取消预警", "停止预警"}
 _STATUS_COMMANDS = {"预警状态"}
+_STARTUP_ENABLE_COMMANDS = {"订阅开服", "开服订阅", "订阅开服提醒"}
+_STARTUP_DISABLE_COMMANDS = {"取消订阅开服", "取消开服订阅", "取消开服提醒"}
+_STARTUP_STATUS_COMMANDS = {"开服订阅状态", "开服提醒状态"}
 _LEVEL_LABELS = {
     "low": "低",
     "medium": "中",
@@ -60,6 +64,17 @@ def alert_subscription_action(content: str) -> str | None:
     if normalized in _DISABLE_COMMANDS:
         return "disable"
     if normalized in _STATUS_COMMANDS:
+        return "status"
+    return None
+
+
+def startup_subscription_action(content: str) -> str | None:
+    normalized = normalize_command_content(content)
+    if normalized in _STARTUP_ENABLE_COMMANDS:
+        return "enable"
+    if normalized in _STARTUP_DISABLE_COMMANDS:
+        return "disable"
+    if normalized in _STARTUP_STATUS_COMMANDS:
         return "status"
     return None
 
@@ -348,6 +363,26 @@ class EveSentryAlertRelay:
 
     async def is_subscribed(self, group_openid: str) -> bool:
         return bool(await self.redis.sismember(ALERT_GROUPS_KEY, group_openid))
+
+    async def subscribe_startup(self, group_openid: str, member_openid: str) -> None:
+        member_openid = member_openid.strip()
+        if not member_openid:
+            return
+        await self.redis.sadd(startup_subscribers_key(group_openid), member_openid)
+
+    async def unsubscribe_startup(self, group_openid: str, member_openid: str) -> None:
+        member_openid = member_openid.strip()
+        if not member_openid:
+            return
+        await self.redis.srem(startup_subscribers_key(group_openid), member_openid)
+
+    async def is_startup_subscribed(self, group_openid: str, member_openid: str) -> bool:
+        member_openid = member_openid.strip()
+        if not member_openid:
+            return False
+        return bool(
+            await self.redis.sismember(startup_subscribers_key(group_openid), member_openid)
+        )
 
     async def _deliver_latest_monitoring_snapshot(self, group_openid: str) -> bool:
         """Send the cached node list once when a group enables active alerts."""
@@ -2206,3 +2241,8 @@ def _decode(value: object) -> str:
 def _delivered_key(alert_id: str, group_openid: str) -> str:
     group_hash = hashlib.sha256(group_openid.encode("utf-8")).hexdigest()[:16]
     return f"{ALERT_DELIVERED_PREFIX}:{alert_id}:{group_hash}"
+
+
+def startup_subscribers_key(group_openid: str) -> str:
+    group_hash = hashlib.sha256(group_openid.encode("utf-8")).hexdigest()[:16]
+    return f"{STARTUP_SUBSCRIBERS_PREFIX}:{group_hash}"

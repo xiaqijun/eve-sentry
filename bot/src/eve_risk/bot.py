@@ -13,7 +13,11 @@ import uvicorn
 from redis.asyncio import Redis
 
 from eve_risk.admission import AdmissionController, AdmissionResult
-from eve_risk.alerts import EveSentryAlertRelay, alert_subscription_action
+from eve_risk.alerts import (
+    EveSentryAlertRelay,
+    alert_subscription_action,
+    startup_subscription_action,
+)
 from eve_risk.clients.qq import QQOpenAPIClient
 from eve_risk.config import get_settings
 from eve_risk.domain import AnalysisRequest
@@ -61,6 +65,7 @@ HELP_TEXT = (
     "多人会分别生成报告，角色名支持换行、逗号或分号分隔。\n"
     "一次最多 30 人，默认分析近 90 天公开战报。\n"
     "预警：@机器人 开启预警 / 关闭预警 / 预警状态。\n"
+    "开服提醒：@机器人 订阅开服 / 取消订阅开服 / 开服订阅状态。\n"
     "查询菜单：@机器人 查询。\n"
     "快捷查询：@机器人 敌情 / 节点（无需先打开菜单，不触发 OCR）。\n"
     "本次名单：查星系 S-KSWL / 查人 Alice / 查军团 Blue Corp / 查联盟 Example Alliance。\n"
@@ -264,6 +269,25 @@ class RiskBotClient(botpy.Client):
             else:
                 subscribed = await self.alert_relay.is_subscribed(group_openid)
                 reply = f"本群主动预警：{'已开启' if subscribed else '未开启'}。"
+            await self.qq.send_text(group_openid, msg_id, reply, msg_seq=1)
+            return
+
+        startup_action = startup_subscription_action(content)
+        if startup_action:
+            if startup_action == "enable":
+                if not await self.alert_relay.is_subscribed(group_openid):
+                    reply = "请先发送“开启预警”，再订阅开服提醒。"
+                else:
+                    await self.alert_relay.subscribe_startup(group_openid, member_openid)
+                    reply = "已订阅开服提醒；服务器开服时会在本群 @你。"
+            elif startup_action == "disable":
+                await self.alert_relay.unsubscribe_startup(group_openid, member_openid)
+                reply = "已取消你的开服提醒，不影响本群其他成员和敌情预警。"
+            else:
+                startup_subscribed = await self.alert_relay.is_startup_subscribed(
+                    group_openid, member_openid
+                )
+                reply = f"你的开服提醒：{'已订阅' if startup_subscribed else '未订阅'}。"
             await self.qq.send_text(group_openid, msg_id, reply, msg_seq=1)
             return
 

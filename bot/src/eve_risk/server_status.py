@@ -12,7 +12,11 @@ from zoneinfo import ZoneInfo
 import httpx
 from redis.asyncio import Redis
 
-from eve_risk.alerts import ALERT_DEDUPE_SECONDS, ALERT_GROUPS_KEY
+from eve_risk.alerts import (
+    ALERT_DEDUPE_SECONDS,
+    ALERT_GROUPS_KEY,
+    startup_subscribers_key,
+)
 from eve_risk.clients.qq import QQOpenAPIClient
 
 logger = logging.getLogger(__name__)
@@ -129,7 +133,7 @@ class EveServerStartupMonitor:
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
         groups = sorted(_decode(value) for value in raw_groups if _decode(value))
         started_at = status.start_time.astimezone(SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
-        message = (
+        message_body = (
             "🟢 EVE 服务器已开服\n"
             f"在线人数｜{status.players}\n"
             f"服务器版本｜{status.server_version}\n"
@@ -140,6 +144,14 @@ class EveServerStartupMonitor:
             delivered_key = _delivered_key(event_id, group_openid)
             if await self.redis.exists(delivered_key):
                 continue
+            raw_subscribers = await self.redis.smembers(
+                startup_subscribers_key(group_openid)
+            )
+            subscribers = sorted(
+                {_decode(value) for value in raw_subscribers if _decode(value)}
+            )
+            mentions = " ".join(f"<@{member_openid}>" for member_openid in subscribers)
+            message = f"{mentions}\n{message_body}" if mentions else message_body
             try:
                 await self.qq.send_proactive_text(group_openid, message)
             except Exception:

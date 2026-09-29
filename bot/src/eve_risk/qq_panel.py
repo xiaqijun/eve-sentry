@@ -27,6 +27,9 @@ PANEL_ITEMS: tuple[dict[str, object], ...] = (
     {"type": "command", "name": "开启预警", "desc": "开启本群主动预警"},
     {"type": "command", "name": "关闭预警", "desc": "关闭本群主动预警"},
     {"type": "command", "name": "预警状态", "desc": "查看本群预警状态"},
+    {"type": "command", "name": "订阅开服", "desc": "订阅并 @你开服提醒"},
+    {"type": "command", "name": "取消订阅开服", "desc": "取消你的开服提醒"},
+    {"type": "command", "name": "开服订阅状态", "desc": "查看你的开服提醒状态"},
 )
 
 

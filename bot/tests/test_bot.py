@@ -273,6 +273,44 @@ async def test_sentry_status_query_replies_without_analysis_queue() -> None:
 
 
 @pytest.mark.asyncio
+async def test_startup_subscription_is_independent_from_group_alerts() -> None:
+    client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
+    original_redis = client.redis
+    redis = fakeredis.aioredis.FakeRedis()
+    client.redis = redis
+    client.alert_relay.redis = redis
+    client.alert_relay.events_url = "http://sentry.test/api/v1/events"
+    client.qq.send_text = AsyncMock(return_value={"id": "reply"})
+
+    class Author:
+        member_openid = "member-1"
+
+    class Message:
+        id = "startup-message-1"
+        group_openid = "group-1"
+        content = "开启预警"
+        author = Author()
+
+    try:
+        await client.on_group_at_message_create(Message())
+        Message.id = "startup-message-2"
+        Message.content = "订阅开服"
+        await client.on_group_at_message_create(Message())
+        assert await client.alert_relay.is_subscribed("group-1") is True
+        assert await client.alert_relay.is_startup_subscribed("group-1", "member-1") is True
+
+        Message.id = "startup-message-3"
+        Message.content = "取消订阅开服"
+        await client.on_group_at_message_create(Message())
+        assert await client.alert_relay.is_subscribed("group-1") is True
+        assert await client.alert_relay.is_startup_subscribed("group-1", "member-1") is False
+    finally:
+        await client.http_client.aclose()
+        await redis.aclose()
+        await original_redis.aclose()
+
+
+@pytest.mark.asyncio
 async def test_sentry_status_query_falls_back_when_markdown_delivery_fails() -> None:
     client = RiskBotClient(intents=botpy.Intents(public_messages=True), bot_log=False)
     original_redis = client.redis

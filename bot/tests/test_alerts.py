@@ -30,6 +30,7 @@ from eve_risk.alerts import (
     format_personnel_alert_message,
     format_system_alert_message,
     iter_sse_events,
+    startup_subscription_action,
 )
 
 
@@ -366,6 +367,10 @@ def test_alert_subscription_commands_and_message_format() -> None:
     assert alert_subscription_action("<@!bot-user>/关闭预警") == "disable"
     assert alert_subscription_action("/预警状态") == "status"
     assert alert_subscription_action("分析 Alice") is None
+    assert startup_subscription_action("订阅开服") == "enable"
+    assert startup_subscription_action("<@!bot> 取消订阅开服") == "disable"
+    assert startup_subscription_action("开服订阅状态") == "status"
+    assert startup_subscription_action("开启预警") is None
 
     item = {
         "id": "ocr:alice",
