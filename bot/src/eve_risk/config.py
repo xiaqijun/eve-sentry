@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     sde_index_path: str = "./data/sde.sqlite3"
     zkill_base_url: str = "https://zkillboard.com/api"
     qq_token_url: str = "https://bots.qq.com/app/getAppAccessToken"
-    qq_api_base_url: str = "https://api.sgroup.qq.com"
+    qq_api_base_url: str = "https://api.bot.qq.com"
 
     max_characters: int = 30
     global_max_jobs: int = 3
