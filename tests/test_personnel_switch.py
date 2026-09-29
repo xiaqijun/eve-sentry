@@ -1,6 +1,9 @@
 """Restart-free mode switching and late-result/resource lifetime regressions."""
 
+import hashlib
+import json
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -195,11 +198,33 @@ def test_mode_changes_keep_the_same_sse_connection_open(settings_service):
 
     manager, store, auth = settings_service
     admin = auth.create_user("switch-admin", "admin-password-123", role="admin")
-    key = auth.create_api_key(admin["user_id"], "SSE", admin["user_id"], key_type="service_readonly")
+    key_id = f"seat-{uuid.uuid4().hex}"
+    account_id = f"account-{uuid.uuid4().hex}"
+    secret = f"eve_seat_{uuid.uuid4().hex}"
+    auth.repository.create_seat_integration_key(
+        {
+            "key_id": key_id,
+            "account_id": account_id,
+            "name": "SSE",
+            "key_prefix": secret[:12],
+            "key_hash": hashlib.sha256(secret.encode()).hexdigest(),
+            "permissions_json": json.dumps(["alert"]),
+            "protocol_version": 1,
+            "status": "active",
+            "created_at": "2026-09-29T00:00:00+00:00",
+            "revoked_at": "",
+            "revoked_reason": "",
+        },
+        f"operation-{key_id}",
+        f"request-{key_id}",
+        auth._audit_record("seat-integration", key_id, "seat_key.created", {}),
+    )
+    auth.bind_seat_account(account_id, admin["user_id"], "test")
+    auth.seat_auth_mode = "enforce"
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()
     request = Request(server.url + "/api/v1/events?timeout=10&heartbeat=0.1&bootstrap=0",
-                      headers={"Authorization": f"Bearer {key['secret']}"})
+                      headers={"Authorization": f"Bearer {secret}"})
     try:
         with urlopen(request, timeout=3) as response:
             assert response.readline().startswith(b": connected")
