@@ -20,7 +20,7 @@ dependencies = [
   "pydantic-settings>=2.4,<3",
   "qq-botpy>=1.2,<2",
   "redis>=5.0,<6",
-  "sqlalchemy>=2.0,<3",
+  "sqlalchemy[asyncio]>=2.0,<3",
   "uvicorn>=0.30,<1",
 ]
 
