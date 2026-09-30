@@ -22,5 +22,6 @@
   "vars": {
     "GITHUB_OWNER": "xiaqijun",
     "GITHUB_REPO": "eve-sentry",
+    "PUBLIC_BASE_URL": "https://evesentrydownload.kisectool.com",
   },
 }

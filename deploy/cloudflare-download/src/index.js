@@ -1,5 +1,6 @@
 const ASSET_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.zip$/;
 const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:[+-][0-9A-Za-z.-]+)?$/;
+const DEFAULT_PUBLIC_BASE_URL = "https://evesentrydownload.kisectool.com";
 
 function githubReleaseUrl(env, assetName) {
   const owner = encodeURIComponent(env.GITHUB_OWNER || "xiaqijun");
@@ -54,7 +55,11 @@ async function redirectToLatestClient(request, env) {
   }
 
   const assetName = `EVE-Sentry-Monitor-ONNX-${version}.zip`;
-  const target = new URL(`/download/${encodeURIComponent(assetName)}`, request.url);
+  const publicBaseUrl = String(env.PUBLIC_BASE_URL || DEFAULT_PUBLIC_BASE_URL).trim();
+  const target = new URL(
+    `/download/${encodeURIComponent(assetName)}`,
+    publicBaseUrl,
+  );
   return new Response(null, {
     status: 302,
     headers: {

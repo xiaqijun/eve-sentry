@@ -27,6 +27,31 @@ test("defaults Release requests to the monorepo", async () => {
   }
 });
 
+test("uses the EdgeOne public host for latest-client redirects", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ version: "1.0.32" }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+  try {
+    const request = new Request(
+      "https://eve-sentry-download.xiaqiqi8927.workers.dev/download/latest",
+    );
+    const response = await worker.fetch(request, {
+      ...env,
+      PUBLIC_BASE_URL: "https://evesentrydownload.kisectool.com",
+    });
+
+    assert.equal(response.status, 302);
+    assert.equal(
+      response.headers.get("Location"),
+      "https://evesentrydownload.kisectool.com/download/EVE-Sentry-Monitor-ONNX-1.0.32.zip",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 function invalidUpstreamResponse() {
   return {
     body: null,
