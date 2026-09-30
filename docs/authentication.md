@@ -35,8 +35,10 @@ Authorization: Bearer eve_...
 ## 客户端行为
 
 客户端启动监控或预警时，只检查服务端地址和本地 API 密钥配置，然后直接开始
-业务连接。客户端不会扫描 EVE Chatlogs，不会调用 `/api/v1/client/identity-check`
-或 `/api/v1/client/identity-checks`，也不会因 Listener 缺失而延迟上线。
+业务连接。新客户端不会扫描 EVE Chatlogs，也不会调用身份校验接口。为兼容尚未升级的
+旧客户端，服务端仍接受 `/api/v1/client/identity-check` 和
+`/api/v1/client/identity-checks`，但只返回已确认的空结果，不读取 EVE 身份、不调用 ESI、
+不创建身份任务，也不会因 Listener 缺失而延迟上线。
 
 ## 安全边界
 

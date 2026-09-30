@@ -63,6 +63,10 @@ _SEAT_PERMISSION_ROUTES: dict[str, tuple[tuple[str, str], ...]] = {
         ("GET", "/api/intel/*"),
         ("POST", "/api/v1/channel-lines"),
         ("POST", "/api/v1/clients/heartbeats"),
+        # Compatibility for pre-identity-retirement clients.  These requests
+        # are accepted as a no-op; no EVE identity or ESI lookup is performed.
+        ("POST", "/api/v1/client/identity-check"),
+        ("POST", "/api/v1/client/identity-checks"),
         ("POST", "/api/heartbeats"),
         ("POST", "/api/channel-lines"),
         ("POST", "/api/intel"),

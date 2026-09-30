@@ -277,6 +277,7 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 | `POST` | `/api/v1/ocr/query` | 请求父 detector 心跳在线且已标记监控的目标执行一次独立 OCR（服务密钥可调用） |
 | `GET` | `/api/v1/ocr/query/{query_id}` | 查询独立 OCR 请求的聚合结果 |
 | `POST` | `/api/v1/clients/heartbeats` | 上传客户端状态、窗口目标和最近异常 |
+| `POST` | `/api/v1/client/identity-check`、`/api/v1/client/identity-checks` | 旧客户端兼容空操作；返回已确认，不读取 EVE 身份或创建任务 |
 | `GET` | `/api/v1/clients` | 在线客户端和聚合状态 |
 | `GET` | `/api/v1/active-intel` | 当前实时情报 |
 | `GET` | `/api/v1/alert-history` | 按时间分页读取报表告警历史；生产 PostgreSQL 使用独立历史路径 |

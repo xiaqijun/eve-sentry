@@ -3929,6 +3929,39 @@ def test_seat_principal_permission_whitelist_isolated_from_regular_auth(tmp_path
         store.close()
 
 
+def test_retired_identity_check_is_a_monitor_compatibility_noop(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    auth = AuthService(
+        AuthRepository(store._connect), AuthTestResolver(), seat_auth_mode="enforce"
+    )
+    user = auth.create_user("pilot", "a-strong-password", role="member")
+    key = _create_seat_http_key(auth, user["user_id"], ("monitor",))
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    headers = {"Authorization": f"Bearer {key['secret']}"}
+    try:
+        for path in ("/api/v1/client/identity-check", "/api/v1/client/identity-checks"):
+            status, _, payload = authenticated_request(
+                f"{server.url}{path}",
+                method="POST",
+                payload={"character_ids": [101], "client_id": "detector:test"},
+                headers=headers,
+            )
+            assert status == 200
+            assert payload["identity"] == {
+                "verified": True,
+                "permanent": True,
+                "pending": False,
+                "accepted": True,
+                "status": "retired",
+                "characters": [],
+            }
+    finally:
+        server.stop()
+        auth.close()
+        store.close()
+
+
 @pytest.mark.skip(reason="EVE identity risk control was retired")
 def test_admin_can_toggle_key_risk_control_from_web(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")

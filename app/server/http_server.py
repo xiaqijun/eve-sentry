@@ -1874,6 +1874,29 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 HTTPStatus.CREATED,
             )
             return
+        if path in {
+            f"{API_V1_PREFIX}/client/identity-check",
+            f"{API_V1_PREFIX}/client/identity-checks",
+        }:
+            # EVE identity risk control was retired.  Older clients may still
+            # send this request before starting their monitor; acknowledge it
+            # without reading EVE data or creating an identity job so the
+            # compatibility call cannot block normal monitoring.
+            self._read_optional_json()
+            self._send_json(
+                {
+                    "identity": {
+                        "verified": True,
+                        "permanent": True,
+                        "pending": False,
+                        "accepted": True,
+                        "status": "retired",
+                        "characters": [],
+                    }
+                },
+                HTTPStatus.OK,
+            )
+            return
         if path in {f"{API_V1_PREFIX}/reports", f"{API_V1_PREFIX}/observations"}:
             self._handle_v1_ingest(path)
             return
