@@ -226,8 +226,9 @@ class ChannelClientWorker(QObject):
                 timeout=5.0,
                 api_key=self.api_key,
             )
-            if self.api_key:
-                api.validate_api_key()
+            # Seat keys are client credentials, not management-session keys;
+            # validate them through the first client heartbeat below instead
+            # of calling the browser-only /api/v1/auth/me endpoint.
             self.status_changed.emit(
                 {
                     "state": "running",

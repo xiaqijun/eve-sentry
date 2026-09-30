@@ -343,6 +343,12 @@ class AuthHttpMixin:
                 )
             if principal.is_seat:
                 required = _seat_permissions_for_request(method, path)
+                # Older clients use auth/me as their key-validation probe.
+                # Keep this read-only compatibility exception out of the
+                # monitor/alert route tables so other management paths remain
+                # denied for Seat keys.
+                if method == "GET" and path == "/api/v1/auth/me":
+                    required = {"monitor", "alert"}
                 if not required or not any(
                     permission in principal.permissions for permission in required
                 ):

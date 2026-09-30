@@ -262,7 +262,8 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 | `GET` | `/api/v1/admin/audit` | 审计日志 |
 
 客户端不再提交 EVE 角色身份或 Listener 文件信息；只有由 GloryNavy_Seat 签发并投影、
-且已绑定的 Seat key 才能访问监控/预警客户端接口。服务端不提供身份校验、角色白名单
+且已绑定的 Seat key 才能访问监控/预警客户端接口。旧客户端使用的 `/api/v1/auth/me`
+仅作为只读验钥兼容接口，返回已绑定 principal。服务端不提供身份校验、角色白名单
 或允许军团管理接口。
 
 ## 监控与事件

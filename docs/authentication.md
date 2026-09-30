@@ -63,5 +63,6 @@ SSE/请求失效。普通 API key 不读取这张绑定表。
 
 SeAT principal 只能访问最小白名单：`monitor` 用于 bootstrap/map、心跳、Presence、OCR
 和监控上报；`alert` 用于 bootstrap/map、active-intel、alert-history、hostile-waves、
-hostile-systems 和 events。未知路径以及 `/auth/*`、`/me/*`、`/admin/*` 统一返回
-`403 seat_permission_denied`，不包含结算或管理员能力。
+hostile-systems 和 events。旧客户端的 `GET /api/v1/auth/me` 只用于只读验钥，返回已绑定
+principal；其他 `/auth/*`、`/me/*`、`/admin/*` 统一返回 `403 seat_permission_denied`，不包含
+结算或管理员能力。

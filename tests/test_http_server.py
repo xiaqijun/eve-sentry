@@ -3940,6 +3940,13 @@ def test_retired_identity_check_is_a_monitor_compatibility_noop(tmp_path):
     server.start()
     headers = {"Authorization": f"Bearer {key['secret']}"}
     try:
+        status, _, payload = authenticated_request(
+            f"{server.url}/api/v1/auth/me",
+            headers=headers,
+        )
+        assert status == 200
+        assert payload["user"]["user_id"] == user["user_id"]
+
         for path in ("/api/v1/client/identity-check", "/api/v1/client/identity-checks"):
             status, _, payload = authenticated_request(
                 f"{server.url}{path}",
