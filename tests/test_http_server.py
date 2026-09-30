@@ -3732,10 +3732,12 @@ def test_admin_cannot_issue_client_key_from_sentry(tmp_path):
 def test_seat_integration_key_lifecycle_is_bearer_only_and_idempotent(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     token = "seat-service-token-" + "x" * 40
+    auth = AuthService(AuthRepository(store._connect), resolver=None)
     server = IntelHTTPServer(
         store,
         port=0,
         seat_integration_token=token,
+        auth_service=auth,
     )
     server.start()
     url = f"{server.url}/api/v1/integrations/seat/keys"
@@ -3834,6 +3836,7 @@ def test_seat_integration_key_lifecycle_is_bearer_only_and_idempotent(tmp_path):
         assert actions.count("seat_key.revoked") == 1
     finally:
         server.stop()
+        auth.close()
         store.close()
 
 

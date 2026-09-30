@@ -1485,10 +1485,14 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if not self._authorize_request("DELETE", path):
             return
-        if self._handle_auth_delete(path):
-            return
         if path.startswith(f"{API_V1_PREFIX}/integrations/seat/keys/"):
+            # Seat integration DELETE requests are authenticated by the
+            # service token above, not by a browser/API-key principal.  Route
+            # them before the legacy auth DELETE handler, which requires
+            # ``_auth_principal`` and would otherwise raise a 401/502.
             self._handle_seat_integration_key_revoke(path)
+            return
+        if self._handle_auth_delete(path):
             return
         if path.startswith(f"{API_V1_PREFIX}/reports/"):
             report_id = unquote(path[len(f"{API_V1_PREFIX}/reports/"):]).strip()
