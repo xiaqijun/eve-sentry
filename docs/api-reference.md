@@ -221,10 +221,10 @@ ACK 都返回 `503 alert_consumption_disabled`。打开前必须先完成 GloryN
 | `POST` | `/api/v1/integrations/seat/alert-grants` | 创建有限期限秒数授权；字段为 `operation_id/grant_id/account_id/key_id/price_version/unit_seconds/unit_price_minor/reserved_seconds/expires_at/protocol_version` |
 | `DELETE` | `/api/v1/integrations/seat/alert-grants/{grant_id}` | 幂等撤销授权，停止新增投递 |
 | `POST` | `/api/v1/integrations/seat/alert-events` | 写入收费事件或追加修订；字段为 `charge_event_id/wave_id/revision/event_type/system_id/system_name/rule_version/eligibility/evidence/lifecycle/revocation_reason` |
-| `POST` | `/api/v1/integrations/seat/alert-deliveries` | 记录已发送投递并按账号/授权原子预留有效预警区间秒数；字段为 `delivery_id/charge_event_id/revision/grant_id/account_id/key_id/connection_id/client_version/started_at/ended_at/duration_seconds/ack_deadline_at/sent_at` |
+| `POST` | `/api/v1/integrations/seat/alert-deliveries` | 记录已发送投递并按账号/授权原子预留有效预警区间秒数；字段为 `delivery_id/charge_event_id/revision/grant_id/account_id/key_id/connection_id/client_version/ack_capability/started_at/ended_at/duration_seconds/ack_deadline_at/sent_at`；`ack_capability` 必须为 `alert-ack.v1` |
 | `GET` | `/api/v1/integrations/seat/alert-deliveries?after={cursor}&limit={n}` | Seat 对账读取投递与消费状态；返回 `consumption_state`、区间字段、ACK 状态和游标水位 |
 | `GET` | `/api/v1/integrations/seat/alert-events?after={cursor}&limit={n}` | 只读对账页，返回 `next_cursor/committed_watermark/earliest_available_watermark/has_more/protocol_version` |
-| `POST` | `/api/v1/alert-deliveries/{delivery_id}/ack` | Seat alert key 在客户端完成去重并投递 UI 后确认；请求必须带 `charge_event_id/revision/connection_id` 和 `Idempotency-Key`（或 `ack_idempotency_key`） |
+| `POST` | `/api/v1/alert-deliveries/{delivery_id}/ack` | Seat alert key 在客户端完成去重并投递 UI 后确认；请求必须带 `charge_event_id/revision/connection_id/started_at/ended_at/duration_seconds` 和 `Idempotency-Key`（或 `ack_idempotency_key`），可附 `evidence` 使用证据快照 |
 
 投递预留只占一次 `grant_id + charge_event_id + revision + started_at + ended_at`，多设备重收同一区间不会再扣秒数；ACK 只接受服务端
 已记录且与 `account_id/key_id/connection_id/revision` 完全匹配的投递。ACK 将预留从
@@ -233,6 +233,19 @@ ACK 都返回 `503 alert_consumption_disabled`。打开前必须先完成 GloryN
 释放并返还秒数，已确认区间可按原复合键标记 `refunded`；平台账本结算仍由后续对账任务负责，当前仓库
 尚未连接生产 exchange。事件的 `eligibility` 应保留来源有效、识别可信、事件有效、软件
 收到四关及其规则版本；`acknowledged_at` 仍是人工处置字段，不能替代客户端 ACK。
+
+旧 Windows 客户端或未声明能力的投递会被拒绝，不会预留或扣费。生产环境仍必须保持
+`EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION=0`，直到服务端投递绑定、生产价格和平台真实币账现场验收完成。
+
+当前客户端已声明 `ack_capability=alert-ack.v1`，仅当 SSE 告警携带完整的
+`delivery_id/charge_event_id/revision/connection_id/started_at/ended_at/duration_seconds` 投递绑定时才会
+在 UI 处理后发送 ACK。ACK 的 `evidence` 以 `alert-use-evidence.v1` 保存客户端 ID、版本、主机、连接、
+去重结果、处理时间和原始告警证据；服务端只有在该快照字段完整时才把预留转为已消费，缺少绑定字段的普通告警不会被猜测为收费事件。服务端只把这份证据作为
+可审计快照，收费仍以服务端已登记的 delivery、授权、区间和修订绑定为准。
+
+客户端在 `/api/v1/events` 请求上同时发送 `X-EVE-SENTRY-Alert-ACK`、
+`X-EVE-SENTRY-Connection-ID` 和 `X-EVE-SENTRY-Client-ID`，供 Seat 投递器绑定本次连接；服务端不会把缺少
+投递绑定的普通 SSE 告警自动转换成收费投递。
 
 ### SeAT 业务认证（M1）
 

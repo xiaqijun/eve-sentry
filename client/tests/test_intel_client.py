@@ -266,11 +266,20 @@ def test_intel_api_client_targets_v1_event_stream(monkeypatch):
     monkeypatch.setattr("app.intel_client.urlopen", fake_urlopen)
     api = IntelApiClient("http://example.invalid", timeout=3.0)
 
-    alerts = api.stream_alerts(last_event_id="evt-0", timeout=0)
+    alerts = api.stream_alerts(
+        last_event_id="evt-0",
+        timeout=0,
+        ack_capability="alert-ack.v1",
+        connection_id="connection-1",
+        client_id="client-1",
+    )
 
     assert alerts == [{"id": "evt-1"}]
     assert captured["url"] == "http://example.invalid/api/v1/events?limit=50&timeout=0"
     assert captured["headers"]["Last-event-id"] == "evt-0"
+    assert captured["headers"]["X-eve-sentry-alert-ack"] == "alert-ack.v1"
+    assert captured["headers"]["X-eve-sentry-connection-id"] == "connection-1"
+    assert captured["headers"]["X-eve-sentry-client-id"] == "client-1"
 
 
 def test_intel_api_client_uses_keepalive_as_sse_liveness_watchdog(monkeypatch):

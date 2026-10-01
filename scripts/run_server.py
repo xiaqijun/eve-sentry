@@ -64,6 +64,8 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
         "--seat-auth-mode",
         values.get("EVE_SENTRY_SERVER_SEAT_AUTH_MODE", ""),
     )
+    if _env_flag(values.get("EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION")):
+        argv.append("--allow-alert-consumption")
     if _env_flag(values.get("EVE_SENTRY_SERVER_QQ_BOT_ENABLED")):
         argv.append("--enable-qq-bot")
     _append_option(

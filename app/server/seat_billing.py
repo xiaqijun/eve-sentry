@@ -16,6 +16,7 @@ from http import HTTPStatus
 from typing import Any
 
 SEAT_BILLING_PROTOCOL_VERSION = 1
+ALERT_ACK_PROTOCOL = "alert-ack.v1"
 ALERT_GRANT_STATUSES = {"active", "revoked", "expired"}
 ALERT_CONSUMPTION_STATES = {"reserved", "consumed", "released", "refunded"}
 ALERT_DELIVERY_STATUSES = {"sent", "confirmed", "expired"}
@@ -104,6 +105,7 @@ def migrate_seat_billing_schema(connection: Any) -> None:
             sent_at TEXT NOT NULL,
             ack_at TEXT NOT NULL DEFAULT '',
             ack_idempotency_key TEXT NOT NULL DEFAULT '',
+            ack_evidence_json TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -133,6 +135,15 @@ def migrate_seat_billing_schema(connection: Any) -> None:
     )
     for statement in statements:
         connection.execute(statement)
+    # Keep the embedded SQLite store compatible with databases created by the
+    # first billing protocol revision.  The evidence is an append-only ACK
+    # snapshot; it never changes the server-authoritative interval binding.
+    try:
+        connection.execute(
+            "ALTER TABLE seat_alert_deliveries ADD COLUMN ack_evidence_json TEXT NOT NULL DEFAULT '{}'"
+        )
+    except Exception:
+        pass
 
 
 class SeatBillingRepository:
@@ -201,6 +212,12 @@ class SeatBillingRepository:
         return {"event": self._event(dict(row)), "created": True, "idempotency_conflict": False}
 
     def register_delivery(self, record: dict[str, Any], request_hash: str, now: str) -> dict[str, Any]:
+        if str(record.get("ack_capability") or "").strip() != ALERT_ACK_PROTOCOL:
+            raise SeatBillingError(
+                "client does not advertise the alert ACK protocol",
+                "client_ack_required",
+                HTTPStatus.CONFLICT,
+            )
         delivery_id, event_id, revision = str(record["delivery_id"]), str(record["charge_event_id"]), int(record["revision"])
         duration_seconds, started_at, ended_at = int(record["duration_seconds"]), str(record["started_at"]), str(record["ended_at"])
         with self._connect() as connection:
@@ -275,7 +292,7 @@ class SeatBillingRepository:
             row = connection.execute("SELECT * FROM seat_alert_deliveries WHERE delivery_id = ?", (delivery_id,)).fetchone()
         return {"delivery": self._delivery(dict(row)), "created": True, "idempotency_conflict": False}
 
-    def acknowledge_delivery(self, delivery_id: str, *, account_id: str, key_id: str, charge_event_id: str, revision: int, started_at: str, ended_at: str, duration_seconds: int, connection_id: str, ack_idempotency_key: str, now: str) -> dict[str, Any]:
+    def acknowledge_delivery(self, delivery_id: str, *, account_id: str, key_id: str, charge_event_id: str, revision: int, started_at: str, ended_at: str, duration_seconds: int, connection_id: str, ack_idempotency_key: str, evidence: dict[str, Any] | None = None, now: str) -> dict[str, Any]:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM seat_alert_deliveries WHERE delivery_id = ?", (str(delivery_id),)).fetchone()
             if row is None:
@@ -300,7 +317,28 @@ class SeatBillingRepository:
                 raise SeatBillingError("delivery acknowledgement expired", "delivery_ack_expired", HTTPStatus.CONFLICT)
             if not str(ack_idempotency_key or "").strip():
                 raise SeatBillingError("ack_idempotency_key is required", "invalid_ack_idempotency_key")
-            connection.execute("UPDATE seat_alert_deliveries SET status = 'confirmed', ack_at = ?, ack_idempotency_key = ?, updated_at = ? WHERE delivery_id = ? AND status = 'sent'", (str(now), str(ack_idempotency_key), str(now), str(delivery_id)))
+            if not isinstance(evidence, dict):
+                raise SeatBillingError("ack evidence must be an object", "invalid_ack_evidence")
+            required_evidence = {
+                "schema_version",
+                "alert_id",
+                "client_id",
+                "connection_id",
+                "received_at",
+                "ui_handled_at",
+                "dedupe",
+                "ui_delivery",
+            }
+            if evidence.get("schema_version") != "alert-use-evidence.v1" or any(
+                not str(evidence.get(field) or "").strip()
+                for field in required_evidence - {"schema_version"}
+            ):
+                raise SeatBillingError(
+                    "complete alert acknowledgement evidence is required",
+                    "invalid_ack_evidence",
+                )
+            evidence_json = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            connection.execute("UPDATE seat_alert_deliveries SET status = 'confirmed', ack_at = ?, ack_idempotency_key = ?, ack_evidence_json = ?, updated_at = ? WHERE delivery_id = ? AND status = 'sent'", (str(now), str(ack_idempotency_key), evidence_json, str(now), str(delivery_id)))
             connection.execute("UPDATE seat_alert_consumptions SET state = 'consumed', confirmed_at = ? WHERE grant_id = ? AND charge_event_id = ? AND revision = ? AND started_at = ? AND ended_at = ? AND state = 'reserved'", (str(now), str(row["grant_id"]), str(charge_event_id), int(revision), started_at, ended_at))
             updated = connection.execute("SELECT * FROM seat_alert_deliveries WHERE delivery_id = ?", (str(delivery_id),)).fetchone()
         return {"delivery": self._delivery(dict(updated)), "idempotent_replay": False}
@@ -450,7 +488,13 @@ class SeatBillingRepository:
 
     @staticmethod
     def _delivery(row: dict[str, Any]) -> dict[str, Any]:
-        return {"delivery_id": str(row["delivery_id"]), "charge_event_id": str(row["charge_event_id"]), "revision": int(row["revision"]), "grant_id": str(row["grant_id"]), "account_id": str(row["account_id"]), "key_id": str(row["key_id"]), "connection_id": str(row["connection_id"]), "client_version": str(row.get("client_version") or ""), "started_at": str(row["started_at"]), "ended_at": str(row["ended_at"]), "duration_seconds": int(row["duration_seconds"]), "billed_units": int(row["billed_units"]), "ack_deadline_at": str(row["ack_deadline_at"]), "status": str(row["status"]), "consumption_state": str(row.get("consumption_state") or ""), "sent_at": str(row["sent_at"]), "ack_at": str(row.get("ack_at") or ""), "ack_idempotency_key": str(row.get("ack_idempotency_key") or ""), "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"])}
+        try:
+            ack_evidence = json.loads(row.get("ack_evidence_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            ack_evidence = {}
+        if not isinstance(ack_evidence, dict):
+            ack_evidence = {}
+        return {"delivery_id": str(row["delivery_id"]), "charge_event_id": str(row["charge_event_id"]), "revision": int(row["revision"]), "grant_id": str(row["grant_id"]), "account_id": str(row["account_id"]), "key_id": str(row["key_id"]), "connection_id": str(row["connection_id"]), "client_version": str(row.get("client_version") or ""), "started_at": str(row["started_at"]), "ended_at": str(row["ended_at"]), "duration_seconds": int(row["duration_seconds"]), "billed_units": int(row["billed_units"]), "ack_deadline_at": str(row["ack_deadline_at"]), "status": str(row["status"]), "consumption_state": str(row.get("consumption_state") or ""), "sent_at": str(row["sent_at"]), "ack_at": str(row.get("ack_at") or ""), "ack_idempotency_key": str(row.get("ack_idempotency_key") or ""), "ack_evidence": ack_evidence, "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"])}
 
     @staticmethod
     def _consumption(row: dict[str, Any], **overrides: Any) -> dict[str, Any]:

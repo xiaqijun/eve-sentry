@@ -29,6 +29,7 @@ from app.server.system_state import realtime_event_payload
 from app.server.monitoring_scope import current_scope, in_scope
 from app.server.map_settings import handle_settings, install_scope
 from app.server.seat_billing import (
+    ALERT_ACK_PROTOCOL,
     SEAT_BILLING_PROTOCOL_VERSION,
     SeatBillingError,
     SeatBillingRepository,
@@ -2343,6 +2344,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         self._send_json(response, HTTPStatus.CREATED if result["created"] else HTTPStatus.OK)
 
     def _handle_seat_alert_grant_revoke(self, path: str) -> None:
+        if not self._seat_consumption_enabled():
+            return
         prefix = f"{API_V1_PREFIX}/integrations/seat/alert-grants/"
         grant_id = unquote(path[len(prefix):]).strip("/")
         if not grant_id or "/" in grant_id:
@@ -2362,6 +2365,8 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         self._send_json(result)
 
     def _handle_seat_alert_event_upsert(self) -> None:
+        if not self._seat_consumption_enabled():
+            return
         try:
             payload = self._read_json()
             event_id = str(payload.get("charge_event_id") or "").strip()
@@ -2425,6 +2430,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 "key_id": str(payload.get("key_id") or "").strip(),
                 "connection_id": str(payload.get("connection_id") or "").strip(),
                 "client_version": str(payload.get("client_version") or "").strip(),
+                "ack_capability": str(payload.get("ack_capability") or "").strip(),
                 "sent_at": str(payload.get("sent_at") or utc_now_iso()).strip(),
             }
             interval = self._normalise_alert_interval(payload)
@@ -2442,6 +2448,12 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             normalized["ack_deadline_at"] = ack_deadline_at
             if not normalized["charge_event_id"] or not normalized["key_id"] or not normalized["connection_id"]:
                 raise SeatIntegrationError("charge_event_id, key_id and connection_id are required", "invalid_delivery")
+            if normalized["ack_capability"] != ALERT_ACK_PROTOCOL:
+                raise SeatIntegrationError(
+                    "client must advertise the alert ACK protocol",
+                    "client_ack_required",
+                    HTTPStatus.CONFLICT,
+                )
             result = self._seat_billing_repository().register_delivery(
                 normalized, canonical_hash(normalized), utc_now_iso()
             )
@@ -2477,6 +2489,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             payload = self._read_optional_json() or {}
             if not isinstance(payload, dict):
                 raise SeatIntegrationError("ack payload must be an object", "invalid_ack")
+            evidence = payload.get("evidence") or {}
+            if not isinstance(evidence, dict):
+                raise SeatIntegrationError("ack evidence must be an object", "invalid_ack_evidence")
             revision = self._positive_int(payload.get("revision"), "revision")
             interval = self._normalise_alert_interval(payload)
             result = self._seat_billing_repository().acknowledge_delivery(
@@ -2490,6 +2505,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 duration_seconds=interval["duration_seconds"],
                 connection_id=str(payload.get("connection_id") or "").strip(),
                 ack_idempotency_key=str(self.headers.get("Idempotency-Key") or payload.get("ack_idempotency_key") or "").strip(),
+                evidence=evidence,
                 now=utc_now_iso(),
             )
         except (SeatIntegrationError, SeatBillingError) as exc:

@@ -152,6 +152,7 @@ def test_alert_grant_delivery_ack_is_idempotent(tmp_path):
             "key_id": key_id,
             "connection_id": "conn-test",
             "client_version": "1.0.99",
+            "ack_capability": "alert-ack.v1",
             "started_at": "2026-10-01T00:00:00+00:00",
             "ended_at": "2026-10-01T00:00:30+00:00",
         }
@@ -180,6 +181,16 @@ def test_alert_grant_delivery_ack_is_idempotent(tmp_path):
             "connection_id": "conn-test",
             "started_at": "2026-10-01T00:00:00+00:00",
             "ended_at": "2026-10-01T00:00:30+00:00",
+            "evidence": {
+                "schema_version": "alert-use-evidence.v1",
+                "alert_id": "evt-client",
+                "client_id": "client-1",
+                "connection_id": "conn-test",
+                "received_at": "2026-10-01T00:00:01+00:00",
+                "ui_handled_at": "2026-10-01T00:00:02+00:00",
+                "dedupe": "accepted",
+                "ui_delivery": "alert_received",
+            },
         }
         status, ack = _request(
             f"{server.url}/api/v1/alert-deliveries/{delivery_id}/ack",
@@ -207,8 +218,12 @@ def test_alert_grant_delivery_ack_is_idempotent(tmp_path):
         )
         assert status == 200
         assert deliveries["protocol_version"] == 1
-        assert deliveries["deliveries"][0]["charge_event_id"] == event_id
-        assert deliveries["deliveries"][0]["consumption_state"] == "consumed"
+        consumed = next(
+            item for item in deliveries["deliveries"] if item["delivery_id"] == delivery_id
+        )
+        assert consumed["charge_event_id"] == event_id
+        assert consumed["consumption_state"] == "consumed"
+        assert consumed["ack_evidence"]["schema_version"] == "alert-use-evidence.v1"
 
         expiring_delivery = {
             **delivery_payload,
@@ -239,4 +254,82 @@ def test_alert_grant_delivery_ack_is_idempotent(tmp_path):
     finally:
         server.stop()
         auth.close()
+        store.close()
+
+
+def test_delivery_without_ack_capability_does_not_reserve_seconds(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    token = "seat-service-token-" + "x" * 40
+    server = IntelHTTPServer(
+        store,
+        port=0,
+        seat_integration_token=token,
+        allow_alert_consumption=True,
+    )
+    server.start()
+    service_headers = {"Authorization": f"Bearer {token}"}
+    grant_id = str(uuid.uuid4())
+    event_id = str(uuid.uuid4())
+    account_id = str(uuid.uuid4())
+    try:
+        grant = {
+            "operation_id": str(uuid.uuid4()),
+            "grant_id": grant_id,
+            "account_id": account_id,
+            "price_version": "v1",
+            "unit_seconds": 60,
+            "unit_price_minor": 1,
+            "reserved_seconds": 60,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "protocol_version": 1,
+        }
+        status, _ = _request(
+            f"{server.url}/api/v1/integrations/seat/alert-grants",
+            "POST",
+            grant,
+            service_headers,
+        )
+        assert status == 201
+        event = {
+            "charge_event_id": event_id,
+            "revision": 1,
+            "event_type": "alert.entered",
+            "rule_version": "v1",
+            "lifecycle": "eligible",
+            "eligibility": {},
+            "evidence": {},
+        }
+        status, _ = _request(
+            f"{server.url}/api/v1/integrations/seat/alert-events",
+            "POST",
+            event,
+            service_headers,
+        )
+        assert status == 201
+        delivery = {
+            "delivery_id": str(uuid.uuid4()),
+            "charge_event_id": event_id,
+            "revision": 1,
+            "grant_id": grant_id,
+            "account_id": account_id,
+            "key_id": "key",
+            "connection_id": "connection",
+            "client_version": "old-client",
+            "started_at": "2026-10-01T00:00:00+00:00",
+            "ended_at": "2026-10-01T00:00:10+00:00",
+        }
+        status, payload = _request(
+            f"{server.url}/api/v1/integrations/seat/alert-deliveries",
+            "POST",
+            delivery,
+            service_headers,
+        )
+        assert status == 409
+        assert payload["code"] == "client_ack_required"
+        assert store._auth_connection.execute(
+            "SELECT remaining_seconds FROM seat_alert_grants WHERE grant_id = ?",
+            (grant_id,),
+        ).fetchone()[0] == 60
+    finally:
+        server.stop()
         store.close()

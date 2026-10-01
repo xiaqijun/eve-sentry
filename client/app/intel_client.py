@@ -267,6 +267,51 @@ class IntelApiClient:
             result["monitoring_scope"] = response["monitoring_scope"]
         return result
 
+    def ack_alert_delivery(
+        self,
+        delivery_id: str,
+        *,
+        charge_event_id: str,
+        revision: int,
+        connection_id: str,
+        started_at: str,
+        ended_at: str,
+        duration_seconds: int,
+        ack_idempotency_key: str,
+        evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Confirm one server-recorded alert delivery after local UI handling."""
+        delivery_id = str(delivery_id or "").strip()
+        event_id = str(charge_event_id or "").strip()
+        connection_id = str(connection_id or "").strip()
+        ack_key = str(ack_idempotency_key or "").strip()
+        if not delivery_id or not event_id or not connection_id:
+            raise IntelApiError("alert delivery binding is incomplete")
+        if int(revision) <= 0 or int(duration_seconds) <= 0:
+            raise IntelApiError("alert delivery interval is invalid")
+        if not started_at or not ended_at or not ack_key:
+            raise IntelApiError("alert delivery acknowledgement is incomplete")
+        payload: dict[str, Any] = {
+            "protocol_version": 1,
+            "charge_event_id": event_id,
+            "revision": int(revision),
+            "connection_id": connection_id,
+            "started_at": str(started_at),
+            "ended_at": str(ended_at),
+            "duration_seconds": int(duration_seconds),
+            "ack_idempotency_key": ack_key,
+        }
+        if evidence is not None:
+            if not isinstance(evidence, dict):
+                raise IntelApiError("alert acknowledgement evidence is invalid")
+            payload["evidence"] = dict(evidence)
+        return self._request(
+            "POST",
+            self._v1_path(f"/alert-deliveries/{quote(delivery_id, safe='')}/ack"),
+            payload=payload,
+            headers={"Idempotency-Key": ack_key},
+        )
+
     def validate_api_key(self) -> dict[str, Any]:
         """Validate the configured API key through an always-protected route."""
         payload = self._request("GET", self._v1_path("/auth/me"))
@@ -503,6 +548,9 @@ class IntelApiClient:
         timeout: float = 30.0,
         min_score: int | None = None,
         min_level: str = "",
+        ack_capability: str = "",
+        connection_id: str = "",
+        client_id: str = "",
     ) -> list[dict[str, Any]]:
         """Fetch alert events from the server-sent event stream."""
         return list(
@@ -513,6 +561,9 @@ class IntelApiClient:
                 timeout=timeout,
                 min_score=min_score,
                 min_level=min_level,
+                ack_capability=ack_capability,
+                connection_id=connection_id,
+                client_id=client_id,
             )
         )
 
@@ -524,6 +575,9 @@ class IntelApiClient:
         timeout: float = 30.0,
         min_score: int | None = None,
         min_level: str = "",
+        ack_capability: str = "",
+        connection_id: str = "",
+        client_id: str = "",
     ):
         """Yield alert events incrementally from the server-sent event stream."""
         for event in self.iter_events(
@@ -533,6 +587,9 @@ class IntelApiClient:
             timeout=timeout,
             min_score=min_score,
             min_level=min_level,
+            ack_capability=ack_capability,
+            connection_id=connection_id,
+            client_id=client_id,
         ):
             if event.get("event") == "alert":
                 yield event["data"]
@@ -548,6 +605,9 @@ class IntelApiClient:
         include_bootstrap: bool = False,
         min_score: int | None = None,
         min_level: str = "",
+        ack_capability: str = "",
+        connection_id: str = "",
+        client_id: str = "",
     ):
         """Yield raw server-sent events from the v1 event stream."""
         params = {"limit": str(limit), "timeout": str(timeout)}
@@ -563,6 +623,12 @@ class IntelApiClient:
             params["min_level"] = min_level
         url = f"{self.base_url}{self._v1_path('/events')}?{urlencode(params)}"
         headers = {"Accept": "text/event-stream", **self._authorization_headers()}
+        if ack_capability:
+            headers["X-EVE-SENTRY-Alert-ACK"] = str(ack_capability)
+        if connection_id:
+            headers["X-EVE-SENTRY-Connection-ID"] = str(connection_id)
+        if client_id:
+            headers["X-EVE-SENTRY-Client-ID"] = str(client_id)
         if last_event_id:
             headers["Last-Event-ID"] = last_event_id
         request = Request(
@@ -598,18 +664,21 @@ class IntelApiClient:
         path: str,
         payload: dict[str, Any] | None = None,
         params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
         if params:
             url = f"{url}?{urlencode(params)}"
 
         data = None
-        headers = self._authorization_headers()
+        extra_headers = dict(headers or {})
+        request_headers = self._authorization_headers()
+        request_headers.update(extra_headers)
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")
-            headers["Content-Type"] = "application/json"
+            request_headers["Content-Type"] = "application/json"
 
-        request = Request(url, data=data, headers=headers, method=method)
+        request = Request(url, data=data, headers=request_headers, method=method)
         try:
             with urlopen(request, timeout=self.timeout) as response:
                 body = response.read().decode("utf-8")

@@ -355,6 +355,15 @@ def _validate_args(
         )
     if args.seat_integration_token and len(args.seat_integration_token) < 32:
         parser.error("--seat-integration-token must be at least 32 characters")
+    if args.seat_auth_mode == "enforce" and not args.seat_integration_token:
+        parser.error("--seat-integration-token is required when --seat-auth-mode=enforce")
+    if args.allow_alert_consumption:
+        if args.storage != "postgres":
+            parser.error("--allow-alert-consumption requires --storage=postgres")
+        if not args.seat_integration_token:
+            parser.error("--allow-alert-consumption requires --seat-integration-token")
+        if args.seat_auth_mode != "enforce":
+            parser.error("--allow-alert-consumption requires --seat-auth-mode=enforce")
     if args.esi_backend == "remote":
         if not str(args.esi_gateway_url or "").strip():
             parser.error("--esi-gateway-url is required with --esi-backend remote")

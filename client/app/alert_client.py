@@ -7,12 +7,14 @@ import json
 import logging
 import math
 import os
+import queue
 import sys
 import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 from app.monitoring_scope import allows_remote
 
 from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, Qt, QThread, QUrl, pyqtSignal
@@ -58,6 +60,7 @@ ALERT_CLIENT_LABEL = "Alert Client"
 DEFAULT_EVENT_TIMEOUT = 30.0
 DEFAULT_HEARTBEAT_INTERVAL = 10.0
 DEFAULT_RECONNECT_MAX_DELAY = 30.0
+ALERT_ACK_PROTOCOL = "alert-ack.v1"
 MAX_OVERLAY_ROWS = 4
 OVERLAY_TILE_COLUMNS = 2
 OVERLAY_MIN_WIDTH = 140
@@ -1204,11 +1207,13 @@ def build_heartbeat_details(
     client_version: str = "",
     host: str = "",
     last_success_at: str = "",
+    connection_id: str = "",
 ) -> dict[str, object]:
     """Return the alert-client heartbeat details for status views."""
     details: dict[str, object] = {
         "mode": "events",
         "transport": "events",
+        "ack_capability": ALERT_ACK_PROTOCOL,
         "popup": True,
         "overlay": True,
         "details": False,
@@ -1225,6 +1230,8 @@ def build_heartbeat_details(
         details["host"] = host
     if last_success_at:
         details["last_success_at"] = last_success_at
+    if connection_id:
+        details["connection_id"] = connection_id
     return details
 
 
@@ -2337,10 +2344,20 @@ class AlertEventWorker(QThread):
         self._last_heartbeat_at = 0.0
         self._last_success_at = ""
         self._runtime = resolve_runtime_identity()
+        # A delivery is acknowledged only after the controller confirms that
+        # the alert reached the UI.  The queue keeps HTTP work on this thread
+        # while allowing the Qt UI thread to report that it handled an alert.
+        self.connection_id = f"{self.client_id}:{uuid4().hex}"
+        self._ack_queue: queue.Queue[dict[str, Any]] = queue.Queue()
 
     def stop(self) -> None:
         """Request the worker to stop after the current network call returns."""
         self._stop_requested = True
+
+    def queue_alert_ack(self, alert: dict[str, Any]) -> None:
+        """Queue a UI-handled alert for a retryable, idempotent ACK."""
+        if isinstance(alert, dict):
+            self._ack_queue.put(dict(alert))
 
     def run(self) -> None:
         api = self.api_factory(
@@ -2379,6 +2396,7 @@ class AlertEventWorker(QThread):
             resume_event_id = ""
             retrying_after_error = False
             try:
+                self._drain_alert_acks(api)
                 connection_announced = False
                 for event in api.iter_events(
                     timeout=self.timeout,
@@ -2386,6 +2404,9 @@ class AlertEventWorker(QThread):
                     heartbeat=1.0,
                     should_stop=lambda: self._stop_requested,
                     include_bootstrap=True,
+                    ack_capability=ALERT_ACK_PROTOCOL,
+                    connection_id=self.connection_id,
+                    client_id=self.client_id,
                 ):
                     if self._stop_requested:
                         break
@@ -2398,16 +2419,19 @@ class AlertEventWorker(QThread):
                     event_name = str(event.get("event") or "").strip()
                     data = event.get("data")
                     if event_name == "bootstrap" and isinstance(data, dict):
+                        self._drain_alert_acks(api)
                         self.bootstrap_received.emit(data)
                         self._post_heartbeat(api, "connected")
                         remember_cursor(event.get("id", ""))
                         continue
                     if event_name == "safe" and isinstance(data, dict):
+                        self._drain_alert_acks(api)
                         self.safe_received.emit(data)
                         self._post_heartbeat(api, "safe:1")
                         remember_cursor(event.get("id", ""))
                         continue
                     if event_name != "alert" or not isinstance(data, dict):
+                        self._drain_alert_acks(api)
                         self._post_heartbeat(api, "connected")
                         remember_cursor(event.get("id", ""))
                         continue
@@ -2417,6 +2441,7 @@ class AlertEventWorker(QThread):
                         self._post_heartbeat(api, "alert:1")
                     else:
                         self._post_heartbeat(api, "connected")
+                    self._drain_alert_acks(api)
                     remember_cursor(event.get("id", ""))
                 backoff = 1.0
             except IntelApiError as exc:
@@ -2439,6 +2464,76 @@ class AlertEventWorker(QThread):
         close = getattr(api, "close", None)
         if callable(close):
             close()
+
+    def _drain_alert_acks(self, api: IntelApiClient) -> None:
+        """Send queued UI confirmations without turning them into a charge."""
+        while True:
+            try:
+                alert = self._ack_queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self._post_alert_ack(api, alert)
+            except IntelApiError as exc:
+                # Keep the evidence for the next heartbeat/reconnect.  The
+                # server-side Idempotency-Key makes every retry harmless.
+                logger.warning("Alert acknowledgement failed: %s", exc)
+                self._ack_queue.put(alert)
+                return
+
+    def _post_alert_ack(self, api: IntelApiClient, alert: dict[str, Any]) -> None:
+        """ACK only a delivery carrying all server binding evidence."""
+        delivery = alert.get("delivery")
+        if not isinstance(delivery, dict):
+            delivery = alert.get("billing")
+        if not isinstance(delivery, dict) and alert.get("delivery_id"):
+            delivery = alert
+        if not isinstance(delivery, dict):
+            # Ordinary free alerts have no Seat delivery and must not be
+            # guessed into a chargeable interval.
+            return
+        required = (
+            "delivery_id",
+            "charge_event_id",
+            "revision",
+            "connection_id",
+            "started_at",
+            "ended_at",
+            "duration_seconds",
+        )
+        if any(str(delivery.get(field) or "").strip() == "" for field in required):
+            logger.warning("Ignoring alert delivery without complete binding evidence")
+            return
+        connection_id = str(delivery["connection_id"]).strip()
+        delivery_id = str(delivery["delivery_id"]).strip()
+        ack_key = f"alert-ack:{delivery_id}:{int(delivery['revision'])}"
+        evidence = {
+            "schema_version": "alert-use-evidence.v1",
+            "alert_id": str(alert.get("id") or "").strip(),
+            "event_id": str(alert.get("event_id") or alert.get("id") or "").strip(),
+            "client_id": self.client_id,
+            "client_version": self._runtime["client_version"],
+            "host": self._runtime["host"],
+            "connection_id": connection_id,
+            "received_at": heartbeat_now_iso(),
+            "ui_handled_at": heartbeat_now_iso(),
+            "dedupe": "accepted",
+            "ui_delivery": "alert_received",
+        }
+        source_evidence = alert.get("evidence")
+        if isinstance(source_evidence, (dict, list)):
+            evidence["source_evidence"] = source_evidence
+        api.ack_alert_delivery(
+            delivery_id,
+            charge_event_id=str(delivery["charge_event_id"]),
+            revision=int(delivery["revision"]),
+            connection_id=connection_id,
+            started_at=str(delivery["started_at"]),
+            ended_at=str(delivery["ended_at"]),
+            duration_seconds=int(delivery["duration_seconds"]),
+            ack_idempotency_key=ack_key,
+            evidence=evidence,
+        )
 
     def _sleep_with_stop(self, seconds: float) -> None:
         deadline = time.monotonic() + max(0.0, seconds)
@@ -2468,6 +2563,7 @@ class AlertEventWorker(QThread):
                     client_version=self._runtime["client_version"],
                     host=self._runtime["host"],
                     last_success_at=self._last_success_at,
+                    connection_id=self.connection_id,
                 ),
             )
             self._last_heartbeat_at = now
@@ -3156,6 +3252,9 @@ class AlertTrayController:
         self._apply_local_hostile_counts()
         self.overlay.show_summaries(self._recent_summaries)
         self.overlay.set_status("新告警", "danger")
+        queue_ack = getattr(getattr(self, "_worker", None), "queue_alert_ack", None)
+        if callable(queue_ack):
+            queue_ack(alert)
         hostile_count = int(summary.get("hostile_count") or 0)
         if hostile_count > 0:
             active_systems = getattr(self, "_active_alert_systems", set())

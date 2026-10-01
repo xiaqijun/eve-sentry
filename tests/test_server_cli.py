@@ -76,6 +76,38 @@ def test_server_cli_accepts_seat_auth_modes_and_env_binding():
     assert argv[-2:] == ["--seat-auth-mode", "enforce"]
 
 
+def test_server_cli_requires_token_for_enforced_seat_auth():
+    parser = build_arg_parser()
+    args = parser.parse_args(["--seat-auth-mode", "enforce"])
+    with pytest.raises(SystemExit):
+        server_main._validate_args(parser, args)
+
+
+def test_server_cli_requires_secure_storage_for_alert_consumption():
+    parser = build_arg_parser()
+    valid = parser.parse_args(
+        [
+            "--storage",
+            "postgres",
+            "--postgres-dsn",
+            "postgresql://user:secret@example.test:5432/eve_sentry",
+            "--seat-integration-token",
+            "s" * 32,
+            "--seat-auth-mode",
+            "enforce",
+            "--allow-alert-consumption",
+        ]
+    )
+    server_main._validate_args(parser, valid)
+    for argv in (
+        ["--storage", "json", "--data", "legacy.json", "--seat-integration-token", "s" * 32, "--seat-auth-mode", "enforce", "--allow-alert-consumption"],
+        ["--storage", "postgres", "--postgres-dsn", "postgresql://user:secret@example.test:5432/eve_sentry", "--seat-auth-mode", "enforce", "--allow-alert-consumption"],
+        ["--storage", "postgres", "--postgres-dsn", "postgresql://user:secret@example.test:5432/eve_sentry", "--seat-integration-token", "s" * 32, "--allow-alert-consumption"],
+    ):
+        with pytest.raises(SystemExit):
+            server_main._validate_args(parser, parser.parse_args(argv))
+
+
 def test_server_cli_binds_embedded_qq_bot_settings():
     parser = build_arg_parser()
     args = parser.parse_args(["--enable-qq-bot", "--qq-bot-source", "/srv/eve/bot/src"])
@@ -93,6 +125,11 @@ def test_server_cli_binds_embedded_qq_bot_settings():
 
 def test_server_cli_requires_an_explicit_alert_consumption_flag():
     assert build_arg_parser().parse_args(["--allow-alert-consumption"]).allow_alert_consumption is True
+
+
+def test_server_env_binds_alert_consumption_flag():
+    argv = build_server_argv({"EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION": "1"})
+    assert "--allow-alert-consumption" in argv
 
 
 def test_server_env_binds_seat_integration_token():

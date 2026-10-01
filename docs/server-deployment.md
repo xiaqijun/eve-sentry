@@ -212,6 +212,7 @@ EVE_SENTRY_SERVER_CONFIG=/var/lib/eve-sentry/intel_config.json
 EVE_SENTRY_SERVER_AUTH_MODE=setup
 EVE_SENTRY_SERVER_SEAT_INTEGRATION_TOKEN=
 EVE_SENTRY_SERVER_SEAT_AUTH_MODE=off
+EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION=0
 EVE_SENTRY_SERVER_MAP_SOURCE=sde
 EVE_SENTRY_SERVER_MAP_SDE_PATH=/var/lib/eve-sentry/sde/BUILD_NUMBER
 EVE_SENTRY_SERVER_MAP_REGION_IDS=10000045
@@ -248,6 +249,12 @@ SeAT 认证单独由 `EVE_SENTRY_SERVER_SEAT_AUTH_MODE=off|enforce` 控制，默
 不是同一命名空间。SeAT key 仅能访问认证文档列出的 monitor/alert 接口，吊销或禁用会让
 SSE 在下一次授权代数检查时结束。普通 desktop/service key 仅保留管理/迁移用途，不能访问
 客户端接口。
+
+预警消费默认关闭。只有 PostgreSQL、有效的 `EVE_SENTRY_SERVER_SEAT_INTEGRATION_TOKEN`、
+`EVE_SENTRY_SERVER_SEAT_AUTH_MODE=enforce` 且显式设置
+`EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION=1` 时，服务才接受收费授权、投递和 ACK。
+当前客户端已提供 `alert-ack.v1` 收件确认；旧客户端或未声明 ACK 能力的投递会被拒绝，
+不会预留或扣除果壳币。完成生产价格和平台真实隔离账本验收前，生产值必须保持 `0`。
 
 ### 公共 ESI Gateway
 
