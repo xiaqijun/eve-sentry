@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from datetime import timedelta, timezone
@@ -3773,14 +3774,53 @@ def _create_connection_pool(dsn: str) -> Any:
         raise RuntimeError(
             "PostgreSQL storage requires psycopg with pool support"
         ) from exc
+    options = _conninfo_options(dsn)
+    configure = None
+    search_path = _search_path_from_options(options)
+    if search_path:
+        configure = _configure_search_path(search_path)
+    kwargs = {"row_factory": dict_row}
+    pool_kwargs: dict[str, Any] = {
+        "conninfo": dsn,
+        "min_size": POSTGRES_POOL_MIN_SIZE,
+        "max_size": POSTGRES_POOL_MAX_SIZE,
+        "timeout": POSTGRES_POOL_TIMEOUT_SECONDS,
+        "kwargs": kwargs,
+        "open": True,
+    }
+    if configure is not None:
+        pool_kwargs["configure"] = configure
     return ConnectionPool(
-        conninfo=dsn,
-        min_size=POSTGRES_POOL_MIN_SIZE,
-        max_size=POSTGRES_POOL_MAX_SIZE,
-        timeout=POSTGRES_POOL_TIMEOUT_SECONDS,
-        kwargs={"row_factory": dict_row},
-        open=True,
+        **pool_kwargs,
     )
+
+
+def _conninfo_options(dsn: str) -> str:
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+
+        return str(conninfo_to_dict(dsn).get("options") or "")
+    except (ImportError, ValueError):
+        return ""
+
+
+def _search_path_from_options(options: str) -> str:
+    match = re.search(r"(?:^|\s)-c(?:\s+)?search_path=([^\s]+)", options)
+    return match.group(1).strip() if match else ""
+
+
+def _configure_search_path(search_path: str):
+    quoted = ", ".join(
+        '"' + part.replace('"', '""') + '"'
+        for part in search_path.split(",")
+        if part.strip()
+    )
+
+    def configure(connection: Any) -> None:
+        if quoted:
+            connection.execute(f"SET search_path TO {quoted}")
+
+    return configure
 
 
 def _convert_placeholders(query: str) -> str:

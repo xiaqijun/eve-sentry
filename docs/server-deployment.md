@@ -3,6 +3,9 @@
 星图监控范围配置见[监控区域](monitoring-regions.md)（本地开发，尚未发布）。运行时配置保存在
 地图配置旁的 `.monitoring.json`，部署不能覆盖，备份时须一并保留；完整功能需要配套新客户端。
 
+受保护的 PostgreSQL 集成任务会在测试前初始化数据库，并在连接池每个连接上固定请求的
+`search_path`，确保隔离 schema 与运行时连接行为一致。
+
 ## 受保护的 ESI 转发切换
 
 网络默认 legacy，不随档案开关改变。确认 114 PostgreSQL 档案、组织资料及刷新队列可用后，使用 main 分支、production 保护的工作流：
@@ -457,3 +460,6 @@ curl -N -H "Authorization: Bearer $EVE_SENTRY_API_KEY" \
 
 `scripts/integration_status_check.py` 可用于认证关闭或 `setup` 迁移期的只读现场检查；
 当前脚本不接收 API 密钥，`enforce` 模式应以上述带 Bearer 的 `curl` 检查为准。
+The protected PostgreSQL integration job initializes and pins the requested
+`search_path` on every pooled connection before exercising isolated schemas.
+This keeps disposable CI schemas consistent with the runtime connection pool.
