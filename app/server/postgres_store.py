@@ -3819,6 +3819,7 @@ def _configure_search_path(search_path: str):
     def configure(connection: Any) -> None:
         if quoted:
             connection.execute(f"SET search_path TO {quoted}")
+            connection.commit()
 
     return configure
 
