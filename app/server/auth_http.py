@@ -447,6 +447,7 @@ class AuthHttpMixin:
             ("POST", "/api/v1/integrations/seat/alert-events"),
             ("POST", "/api/v1/integrations/seat/alert-deliveries"),
             ("GET", "/api/v1/integrations/seat/alert-events"),
+            ("GET", "/api/v1/integrations/seat/alert-deliveries"),
         }
         if (method, path) in service_paths:
             return True
