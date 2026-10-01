@@ -106,6 +106,85 @@ done
 rsync -a --delete "$staging/frontend/" "$frontend_root/"
 install -m 0644 "$staging/backend/deploy/linux/eve-sentry.service" "$service_file"
 
+# The former standalone bot kept its credentials in the risk-analysis
+# deployment.  Import them once into the server-scoped environment before the
+# embedded runtime starts.  Values are never echoed to the deployment log.
+legacy_bot_env="/opt/eve-risk-analysis/.runtime.env"
+server_env="/etc/eve-sentry/eve-sentry.env"
+if [[ -r "$legacy_bot_env" ]]; then
+    python3 - "$legacy_bot_env" "$server_env" "$backend_root" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+
+legacy_path = Path(sys.argv[1])
+server_path = Path(sys.argv[2])
+backend_root = sys.argv[3]
+
+
+def parse_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, separator, value = line.partition("=")
+        if not separator:
+            continue
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+legacy = parse_env(legacy_path)
+required = {
+    "QQ_APP_ID": "EVE_SENTRY_SERVER_QQ_BOT_APP_ID",
+    "QQ_APP_SECRET": "EVE_SENTRY_SERVER_QQ_BOT_APP_SECRET",
+    "DATABASE_URL": "EVE_SENTRY_SERVER_QQ_BOT_DATABASE_URL",
+    "REDIS_URL": "EVE_SENTRY_SERVER_QQ_BOT_REDIS_URL",
+    "EVE_SENTRY_PUBLIC_URL": "EVE_SENTRY_SERVER_QQ_BOT_PUBLIC_URL",
+    "EVE_SENTRY_ALERT_MIN_LEVEL": "EVE_SENTRY_SERVER_QQ_BOT_ALERT_MIN_LEVEL",
+}
+updates = {
+    target: legacy[source]
+    for source, target in required.items()
+    if legacy.get(source, "")
+}
+if legacy.get("QQ_APP_ID") and legacy.get("QQ_APP_SECRET"):
+    updates["EVE_SENTRY_SERVER_QQ_BOT_ENABLED"] = "1"
+    updates["EVE_SENTRY_SERVER_QQ_BOT_SOURCE"] = f"{backend_root}/bot/src"
+
+if not updates:
+    print("No legacy QQ bot configuration found to import.")
+    raise SystemExit(0)
+
+server_path.parent.mkdir(parents=True, exist_ok=True)
+existed = server_path.exists()
+old_mode = server_path.stat().st_mode & 0o777 if existed else 0o640
+lines = server_path.read_text(encoding="utf-8").splitlines() if existed else []
+seen: set[str] = set()
+for index, line in enumerate(lines):
+    key, separator, _ = line.partition("=")
+    if not separator or key.strip() not in updates:
+        continue
+    normalized_key = key.strip()
+    lines[index] = f"{normalized_key}={updates[normalized_key]}"
+    seen.add(normalized_key)
+for key, value in updates.items():
+    if key not in seen:
+        lines.append(f"{key}={value}")
+server_path.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
+os.chmod(server_path, old_mode)
+print("Imported legacy QQ bot configuration into the server environment.")
+PY
+fi
+
 chown -R eve-sentry:eve-sentry "$backend_root/app" "$backend_root/scripts" \
     "$backend_root/bot" \
     "$backend_root/deploy" "$backend_root/requirements-server.txt" \

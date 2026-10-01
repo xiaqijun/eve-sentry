@@ -396,6 +396,11 @@ npm run build
 3. 使用 `setup` 模式创建初始管理员。
 4. 如需 QQ 预警，在 `/etc/eve-sentry/eve-sentry.env` 设置
    `EVE_SENTRY_SERVER_QQ_BOT_ENABLED=1`、QQ AppID/Secret 以及机器人专用 Redis/数据库
+
+   如果生产机仍保留旧版独立机器人目录 `/opt/eve-risk-analysis/.runtime.env`，受保护部署
+   会在重启内嵌机器人前自动迁移其中的 QQ AppID/Secret、数据库、Redis、公开地址和预警级别，
+   并将机器人源码路径切换到当前 `/opt/eve-sentry/bot/src`。迁移过程不会把密钥写入部署日志；
+   旧的独立 `eve-risk-analysis-bot.service` 不会重新启动。
    连接。服务端会在 `eve-sentry.service` 内嵌启动 `bot/src`，通过进程内事件桥消费
    当前状态，不再配置或下发 `EVE_SENTRY_API_KEY`，也不再启动独立 bot systemd 单元。手动
    战报分析的 worker 仍可按需部署，详见 `bot/README.md`。
