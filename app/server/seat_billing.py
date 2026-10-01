@@ -373,7 +373,12 @@ class SeatBillingRepository:
                 """
                 SELECT d.*, COALESCE(c.state, '') AS consumption_state
                 FROM seat_alert_deliveries d
-                LEFT JOIN seat_alert_consumptions c ON c.delivery_id = d.delivery_id
+                LEFT JOIN seat_alert_consumptions c
+                  ON c.grant_id = d.grant_id
+                 AND c.charge_event_id = d.charge_event_id
+                 AND c.revision = d.revision
+                 AND c.started_at = d.started_at
+                 AND c.ended_at = d.ended_at
                 WHERE (? = '' OR (d.created_at, d.delivery_id) > (?, ?))
                 ORDER BY d.created_at ASC, d.delivery_id ASC
                 LIMIT ?
