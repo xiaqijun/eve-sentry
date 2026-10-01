@@ -63,6 +63,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="off",
         help="Authenticate and scope SeAT-issued keys independently of general auth",
     )
+    parser.add_argument(
+        "--allow-alert-consumption",
+        action="store_true",
+        help="enable the Seat pre-authorized alert consumption protocol",
+    )
     parser.add_argument("--config", default="intel_config.json")
     parser.add_argument("--map-config", default="intel_map.json")
     parser.add_argument(
@@ -76,6 +81,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--map-refresh-on-start", action="store_true")
     parser.add_argument("--enable-esi", action="store_true")
     parser.add_argument("--esi-cache", default="esi_cache.json")
+    parser.add_argument(
+        "--enable-qq-bot",
+        action="store_true",
+        help="run the QQ bot inside this warning-server process",
+    )
+    parser.add_argument(
+        "--qq-bot-source",
+        default="",
+        help="path to the embedded bot source tree (defaults to repository bot/src)",
+    )
     parser.add_argument(
         "--esi-backend",
         choices=["local", "remote"],
@@ -177,10 +192,13 @@ def main(argv: list[str] | None = None) -> int:
     }
     if args.seat_integration_token:
         server_options["seat_integration_token"] = args.seat_integration_token
+    if args.allow_alert_consumption:
+        server_options["allow_alert_consumption"] = True
     if auth_service is not None:
         server_options["auth_service"] = auth_service
     server = IntelHTTPServer(store, **server_options)
     started = False
+    qq_bot_runtime = None
     try:
         from app.esi.personnel_setup import configure_personnel
         from app.server.personnel_settings import PersonnelSettings
@@ -189,18 +207,39 @@ def main(argv: list[str] | None = None) -> int:
         store._personnel_settings = personnel_settings
         server.start()
         started = True
+        if args.enable_qq_bot:
+            from app.server.qq_bot_runtime import (
+                EmbeddedEventSource,
+                QQBotRuntime,
+                QQBotRuntimeConfig,
+            )
+
+            bot_source = str(args.qq_bot_source or "").strip()
+            if not bot_source:
+                bot_source = str(Path(__file__).resolve().parents[2] / "bot" / "src")
+            embedded_event_source = EmbeddedEventSource(server)
+            qq_bot_runtime = QQBotRuntime(
+                QQBotRuntimeConfig.from_environment(
+                    bot_source,
+                    events_url=f"{server.url}/api/v1/events",
+                ),
+                event_source=embedded_event_source,
+            )
+            qq_bot_runtime.start()
         print(f"Intel map: {server.url}")
         _wait_for_shutdown()
     finally:
         try:
-            if started:
-                server.stop()
+            if qq_bot_runtime is not None:
+                qq_bot_runtime.stop()
         finally:
             try:
+                if started:
+                    server.stop()
+            finally:
                 close_auth = getattr(auth_service, "close", None)
                 if callable(close_auth):
                     close_auth()
-            finally:
                 close_store = getattr(store, "close", None)
                 if callable(close_store):
                     close_store()

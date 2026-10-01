@@ -66,3 +66,14 @@ SeAT principal 只能访问最小白名单：`monitor` 用于 bootstrap/map、�
 hostile-systems 和 events。旧客户端的 `GET /api/v1/auth/me` 只用于只读验钥，返回已绑定
 principal；其他 `/auth/*`、`/me/*`、`/admin/*` 统一返回 `403 seat_permission_denied`，不包含
 结算或管理员能力。
+
+同机 QQ 机器人使用现有 `/api/v1/bootstrap`、`/api/v1/events` 和按需 OCR 路径的
+loopback 例外，必须带 `X-EVE-SENTRY-Embedded-Bot: 1`，不携带 Bearer 密钥；服务端只接受
+来源为 `127.0.0.1` 或 `::1` 的请求。未带标记头的普通本机管理员/服务密钥请求仍按原策略
+鉴权。该例外不适用于公网、内网其他主机或星图公开访问，不会改变 Seat 客户端认证规则。
+
+收费预警 ACK 使用同一 `alert` 权限，但只绑定服务端已经记录的
+`delivery_id + charge_event_id + revision + connection_id`。客户端必须在本地去重并完成 UI
+投递后再发送 ACK；普通人工告警确认、bootstrap、重放、清空和旧客户端请求不会形成收费凭据。
+`--allow-alert-consumption` 默认关闭，生产开启前需与 Seat exchange 的有限额度预留和退款
+契约完成联调。

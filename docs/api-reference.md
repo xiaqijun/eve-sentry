@@ -205,6 +205,35 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 时间。相同 `operation_id` 配不同请求返回 `409`、`operation_conflict`。该最小切片只管理密钥生命周期，
 尚未启用监控奖励、预警扣费或跨项目对账，完整契约见[Seat 接入计划](seat-integration-plan.md)。
 
+### SeAT 预警收费协议（v1，默认关闭）
+
+服务端启动参数 `--allow-alert-consumption` 默认关闭；关闭时 grant、收费投递和客户端
+ACK 都返回 `503 alert_consumption_disabled`。打开前必须先完成 GloryNavy_Seat exchange
+的预留/确认/释放/退款联调；Sentry 不接收余额、不计算币额，也不直接写平台账本。
+
+下面的集成服务端接口使用同一个 Seat 集成 Bearer Token。`operation_id`、`grant_id`、
+`delivery_id` 和 `charge_event_id + revision` 都是幂等边界；重放必须提交相同规范化请求，
+否则返回 `409` 冲突。金额使用平台约定的最小单位整数 `unit_price_minor`，Sentry 只保存
+`price_version` 和单价快照。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/v1/integrations/seat/alert-grants` | 创建有限期限秒数授权；字段为 `operation_id/grant_id/account_id/key_id/price_version/unit_seconds/unit_price_minor/reserved_seconds/expires_at/protocol_version` |
+| `DELETE` | `/api/v1/integrations/seat/alert-grants/{grant_id}` | 幂等撤销授权，停止新增投递 |
+| `POST` | `/api/v1/integrations/seat/alert-events` | 写入收费事件或追加修订；字段为 `charge_event_id/wave_id/revision/event_type/system_id/system_name/rule_version/eligibility/evidence/lifecycle/revocation_reason` |
+| `POST` | `/api/v1/integrations/seat/alert-deliveries` | 记录已发送投递并按账号/授权原子预留有效预警区间秒数；字段为 `delivery_id/charge_event_id/revision/grant_id/account_id/key_id/connection_id/client_version/started_at/ended_at/duration_seconds/ack_deadline_at/sent_at` |
+| `GET` | `/api/v1/integrations/seat/alert-deliveries?after={cursor}&limit={n}` | Seat 对账读取投递与消费状态；返回 `consumption_state`、区间字段、ACK 状态和游标水位 |
+| `GET` | `/api/v1/integrations/seat/alert-events?after={cursor}&limit={n}` | 只读对账页，返回 `next_cursor/committed_watermark/earliest_available_watermark/has_more/protocol_version` |
+| `POST` | `/api/v1/alert-deliveries/{delivery_id}/ack` | Seat alert key 在客户端完成去重并投递 UI 后确认；请求必须带 `charge_event_id/revision/connection_id` 和 `Idempotency-Key`（或 `ack_idempotency_key`） |
+
+投递预留只占一次 `grant_id + charge_event_id + revision + started_at + ended_at`，多设备重收同一区间不会再扣秒数；ACK 只接受服务端
+已记录且与 `account_id/key_id/connection_id/revision` 完全匹配的投递。ACK 将预留从
+`reserved` 变为 `consumed`；秒数授权返回 `unit_seconds/unit_price_minor/reserved_seconds/remaining_seconds`，
+平台按 `ceil(duration_seconds / unit_seconds) * unit_price_minor` 计算快照金额。未确认由超时任务
+释放并返还秒数，已确认区间可按原复合键标记 `refunded`；平台账本结算仍由后续对账任务负责，当前仓库
+尚未连接生产 exchange。事件的 `eligibility` 应保留来源有效、识别可信、事件有效、软件
+收到四关及其规则版本；`acknowledged_at` 仍是人工处置字段，不能替代客户端 ACK。
+
 ### SeAT 业务认证（M1）
 
 `EVE_SENTRY_SERVER_SEAT_AUTH_MODE=off|enforce` 与上面的生命周期服务令牌相互独立，默认关闭。
@@ -224,6 +253,12 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 未列路径（包括认证、个人、管理员和未知路径）稳定返回 `403 seat_permission_denied`。
 普通 `desktop`/`service_readonly` key 不经过 Seat 绑定表，仅保留认证、吊销和迁移管理用途，
 访问客户端白名单时返回 `403 seat_client_key_required`。
+
+同机 QQ 机器人是受限例外：从 `127.0.0.1` 或 `::1` 访问
+`GET /api/v1/bootstrap`、`GET /api/v1/events` 和 OCR 查询路径时，必须同时带
+`X-EVE-SENTRY-Embedded-Bot: 1`，不需要 Bearer 密钥。该例外只对服务端看到的 loopback
+对端地址和专用标记头生效；其他主机、反向代理公网请求仍必须使用 Seat principal。星图和
+客户端的公网/内网认证规则不因该机器人例外改变。
 
 ## 公共接口
 

@@ -209,6 +209,15 @@ class RiskBotClient(botpy.Client):
     async def on_ready(self) -> None:
         if not self.alert_relay.enabled:
             logger.info("EVE Sentry proactive alerts are disabled")
+        elif getattr(self, "embedded_event_bridge", None) is not None:
+            self.alert_task = asyncio.create_task(
+                self.embedded_event_bridge.run(
+                    self.embedded_event_bridge_source,
+                    self.alert_relay,
+                ),
+                name="eve-sentry-embedded-alert-relay",
+            )
+            logger.info("EVE Sentry embedded proactive alert relay started")
         elif self.alert_task is None or self.alert_task.done():
             self.alert_task = asyncio.create_task(
                 self.alert_relay.run_forever(),

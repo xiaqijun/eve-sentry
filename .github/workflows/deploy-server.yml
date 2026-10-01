@@ -7,6 +7,7 @@ on:
       - "app/**"
       - "frontend/**"
       - "scripts/**"
+      - "bot/src/**"
       - "deploy/ci/**"
       - "deploy/linux/**"
       - "requirements*.txt"
@@ -148,6 +149,8 @@ jobs:
           set -euo pipefail
           mkdir -p deployment/backend/deploy deployment/frontend
           cp -a app scripts deployment/backend/
+          mkdir -p deployment/backend/bot
+          cp -a bot/src deployment/backend/bot/
           cp -a deploy/ci deploy/linux deployment/backend/deploy/
           cp -a requirements-server.txt intel_map.json deployment/backend/
           cp -a frontend-dist/. deployment/frontend/

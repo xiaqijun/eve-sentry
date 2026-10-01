@@ -9,6 +9,7 @@ from typing import Any
 
 from app.server.auth_store import migrate_auth_schema
 from app.server.intel_store import IntelStore
+from app.server.seat_billing import migrate_seat_billing_schema
 
 
 class AuthTestStore(IntelStore):
@@ -20,6 +21,7 @@ class AuthTestStore(IntelStore):
         self._auth_connection.row_factory = sqlite3.Row
         self._auth_connection_lock = RLock()
         migrate_auth_schema(self._auth_connection)
+        migrate_seat_billing_schema(self._auth_connection)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

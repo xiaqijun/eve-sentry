@@ -394,7 +394,11 @@ npm run build
 1. 备份 PostgreSQL 和运行配置。
 2. 更新代码并安装 `requirements-server.txt`。
 3. 使用 `setup` 模式创建初始管理员。
-4. 配置 QQ 机器人只读服务密钥；若使用机器人手动战报分析，另按机器人文档配置出站访问。
+4. 如需 QQ 预警，在 `/etc/eve-sentry/eve-sentry.env` 设置
+   `EVE_SENTRY_SERVER_QQ_BOT_ENABLED=1`、QQ AppID/Secret 以及机器人专用 Redis/数据库
+   连接。服务端会在 `eve-sentry.service` 内嵌启动 `bot/src`，通过进程内事件桥消费
+   当前状态，不再配置或下发 `EVE_SENTRY_API_KEY`，也不再启动独立 bot systemd 单元。手动
+   战报分析的 worker 仍可按需部署，详见 `bot/README.md`。
 5. 升级桌面客户端并验证密钥、OCR、心跳和 SSE。
 6. 切换到 `enforce`，重启服务并验证健康、登录、OCR、心跳和 SSE。
 

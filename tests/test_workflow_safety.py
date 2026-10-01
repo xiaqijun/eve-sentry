@@ -17,10 +17,12 @@ def _read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_bot_deploy_requires_main_branch() -> None:
+def test_bot_deploy_is_disabled_after_in_process_migration() -> None:
     workflow = _read(".github/workflows/deploy-bot.yml")
 
-    assert "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'" in workflow
+    assert "name: Validate Bot Components" in workflow
+    assert "if: false" in workflow
+    assert "retired standalone" in workflow
 
 
 def test_server_deploy_excludes_download_worker() -> None:

@@ -361,8 +361,9 @@ P0 事件不能等待 Bootstrap、OCR、ESI 或 zKill。星图在 SSE 连接和�
 
 ## 9. QQ 机器人
 
-现行机器人在 SSE 消费循环中直接处理事件并调用 QQ API。Redis 保存时间游标、最后事件
-ID、活动状态和投递去重数据；当前没有 high/normal/dead Stream，也没有独立 Dispatcher。
+生产机器人现已由服务端进程内事件桥直接唤醒，不再通过 loopback SSE 读取主动预警；桥仍
+调用同一投递逻辑，Redis 保存最后状态序号、活动状态和投递去重数据。独立调试进程仍可
+使用 SSE 兼容入口。当前没有 high/normal/dead Stream，也没有独立 Dispatcher。
 机器人在连接和重连时请求 Bootstrap，并消费服务端状态指纹变化产生的后续 Bootstrap，
 没有独立 30 秒轮询。
 

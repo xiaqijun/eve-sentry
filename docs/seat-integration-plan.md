@@ -132,7 +132,7 @@ GloryNavy_Seat 的 `sentry` 模块提供本人密钥列表、创建、吊销、�
 
 仅服务器 `wfile.flush()` 成功不能证明客户端已收到，更不能证明用户已阅读。新客户端必须在完成本地接收、规则核对、去重并投递 UI 后，以 `key_id + connection_id + charge_event_id + revision + delivery_id` 调用有幂等键的接收确认接口；服务端核对该连接确实发送过对应有效事件，再形成不可变送达记录。现有客户端先在 worker 中把 ID 写入本地 `seen_alert_ids`、随后异步发 UI 信号，UI 还可能因本地范围设置丢弃，不能直接把这一步视作已送达。没有客户端确认、超过确认期限、旧客户端、免费流或被抑制事件均不扣费；确认也只证明软件处理，不证明真人阅读。
 
-预警扣费必须先在平台 `exchange` 预留有限事件数、有限期限的币额，再给哨兵签发绑定账号、价格版本、事件额度和有效期的授权。哨兵须在数据库内按账号原子占用剩余事件额度再发送收费事件，多设备收到同一 `charge_event_id` 只占一格；未确认在超时后释放占用，已确认消耗额度，授权到期或额度用尽后停止新增收费事件。平台同步送达/撤销记录后按唯一事件引用结算或退款，未用预留释放；对账不明时继续占用而非先退款。断网只能消耗尚有效且已预留的额度，不能无限追欠或重复收费。平台 exchange 现有 `Spent` 面向兑换订单，正式扣费前需新增受信服务的预留、消费和退款账本契约。
+预警扣费必须先在平台 `exchange` 按秒数冻结币额，再给哨兵签发绑定账号、价格版本、`unit_seconds`、`unit_price_minor`、`reserved_seconds` 和有效期的授权。哨兵须在数据库内按账号原子占用有效预警区间的 `duration_seconds`，同一 `charge_event_id + revision + started_at + ended_at` 多设备重收只占一次；未确认在超时后释放占用，已确认消耗区间，撤销或误报按原区间引用退款。平台按 `ceil(duration_seconds / unit_seconds) * unit_price_minor` 计算金额并以唯一区间引用结算；对账不明时继续占用而非先退款。断网只能消耗尚有效且已冻结的秒数，不能无限追欠或重复收费。平台 exchange 现有 `Spent` 面向兑换订单，正式扣费前需新增受信服务的预留、消费和退款账本契约。
 
 ## 两端对账：哨兵侧承诺
 
@@ -143,7 +143,7 @@ GloryNavy_Seat 的 `sentry` 模块提供本人密钥列表、创建、吊销、�
 | 密钥 | `operation_id/key_id/version`，实际权限、账号投影、状态、吊销确认时间及租约水位 | 同一操作可查询/重放；哨兵不会因平台请求超时就假称创建或吊销成功。吊销未同步显示差异，超过约定租约后拒绝未知或已吊销密钥的新请求并关闭 SSE |
 | 监控与质量 | `key_id + UTC 分钟 + revision`、秒级区间、质量证据 ID/修订、贡献节点及星系 | 哨兵只提供已采纳事实和更正，不提供“应得币额”；缺帧不补造、迟到修订追加而非覆盖历史。平台逐秒去重及按原权益引用计算差额 |
 | 核验波次事件奖 | `wave_id + 核验版本`、贡献证据 ID 与 `key_id` | 哨兵给出完整波次及贡献修订，不计算奖励池或份额；归因/核验不完整时标记待确认。平台按账号去重、固定池额和原权益引用核对，误报按原引用冲正 |
-| 预警与授权 | `grant_id + account_id + charge_event_id`、`delivery_id`，资格/规则版本、发送、收件 ACK、撤销及授权额度占用 | 哨兵按账号原子占用，不超出已授权额度；无 ACK 不标记消费。状态不明保留占用等待核对，不因一次空页就释放；平台按唯一事件引用结算或退款 |
+| 预警与授权 | `grant_id + account_id + charge_event_id + revision + started_at + ended_at`、`delivery_id`，资格/规则版本、发送、收件 ACK、撤销及秒数占用 | 哨兵按账号原子占用，不超出 `reserved_seconds`；无 ACK 不标记消费。状态不明保留占用等待核对，不因一次空页就释放；平台按唯一区间引用结算或退款 |
 
 哨兵新增受限、只读的分页事件接口，分别暴露密钥操作结果、监控区间/质量修订、核验波次与贡献修订、预警授权/投递/ACK/撤销。每页返回稳定排序的事件、`next_cursor`、`committed_watermark`、`earliest_available_watermark`、`has_more` 与快照/协议版本；游标只覆盖已提交的完整前缀，未提交事务绝不提前发布水位。分页期间的同一水位须可重复读取，重放返回相同不可变 ID 和修订；晚到更正以新事件追加。现有 `intel_events.seq BIGSERIAL` 不能直接充当该结算水位。若请求游标早于最早可读水位，哨兵显式返回不可恢复缺口，不返回看似正常的空页。
 
@@ -153,6 +153,22 @@ GloryNavy_Seat 的 `sentry` 模块提供本人密钥列表、创建、吊销、�
 
 ## 页面与接口草案
 
+## 本轮 Sentry 协议底座（v1，未启用生产扣费）
+
+Sentry 已增加 SQL 持久化的 `seat_alert_grants`、`seat_alert_events`、
+`seat_alert_deliveries` 和 `seat_alert_consumptions`，以及对应的 Seat 集成 API：授权创建/撤销、
+收费事件修订、投递预留、客户端 ACK、事件游标和投递/消费游标读取。`--allow-alert-consumption` 默认关闭；
+关闭时授权预留、投递和 ACK 返回 `alert_consumption_disabled`，不会占用额度。开启测试开关后，
+同一 `operation_id`、同一 `charge_event_id + revision`、同一 `delivery_id` 和同一授权下的
+重复事件分别按规范化请求哈希幂等；同一账号多设备重收只创建一条
+`grant_id + charge_event_id + revision + started_at + ended_at` 预留。ACK 必须绑定已发送的 `delivery_id`、Seat `key_id`、账号、
+连接、事件修订和幂等键，成功后才把 `reserved` 变成 `consumed`。
+
+这部分只保存 Sentry 事实和平台价格快照，不调用 GloryNavy_Seat exchange，不计算或写入币账，
+也不会自动把现有 SSE `alert`/`state:<seq>` 当成收费事件。收费事件的资格四关、生产费率、
+预留期限、未确认释放、撤销退款、对账任务和新客户端消费者标记仍需与 Seat 当前 Goose 58
+接口完成联调后再冻结；在此之前不得把测试开关、事件 API 或文档字段解释为已上线收费能力。
+
 平台新页面 `/sentry` 提供“我的密钥”“监控覆盖/核验事件收益”“预警额度与消费”，管理员另见密钥异常、对账滞后、两类监控奖励政策和预警单价/限额。成员只查看本人；管理员查看他人仍逐次检查当前管理员身份。果壳币余额与流水沿用 `exchange` 页面，仅增加来源和扣费类型标签。固定文案走平台的 `msg` 中英文词表，页面按统一模块声明注册。
 
 | 方向 | 职责 | 约束 |
@@ -160,11 +176,11 @@ GloryNavy_Seat 的 `sentry` 模块提供本人密钥列表、创建、吊销、�
 | 平台 → 哨兵 | 创建、查询、吊销平台密钥 | 专用服务身份、操作 UUID、版本、幂等和脱敏审计 |
 | 平台 → 哨兵 | 批量密钥对账 | 分页、状态版本水位，绝不回传明文 |
 | 平台 ← 哨兵 | 按游标读取监控区间、质量/波次贡献修订与预警送达/撤销事件 | 连续提交水位、有界分页、保留期、修订版本和缺口信号 |
-| 平台 → 哨兵 | 发放/撤销预警有限额度授权 | 账号、价格版本、事件数、到期时间、操作幂等；断网不得超额 |
+| 平台 → 哨兵 | 发放/撤销预警秒数授权 | 账号、价格版本、`unit_seconds/unit_price_minor/reserved_seconds`、到期时间、操作幂等；断网不得超额 |
 | 客户端 → 哨兵 | 确认收费预警接收 | 绑定已发送的连接/投递/事件 ID；幂等、限时、不可凭空确认 |
 | 浏览器 → 平台 | 本人密钥、使用、收益及管理员配置 | 本站会话、CSRF、对象范围和操作审计 |
 
-最低契约数据：密钥操作需 `operation_id/key_id/account_id/permissions/version/status`；监控证据需 `sequence/key_id/client_id/system_id/UTC interval/capture_health/quality_evidence_id/revision`；核验事件奖需 `wave_id/system_id/start_at/end_at/segmentation_policy_version/verification_status/verification_revision/independent_review_ref` 和每个贡献者的 `key_id/client_id/first_valid_detected_at/accepted_samples/quality_evidence_id/contribution_revision`；收费事件需 `charge_event_id/wave_id/revision/event_type/system_id/rule_version/eligibility/revocation_reason`，并附来源健康、识别置信/连续采样或独立复核引用、四关判定结果与复核版本；预警投递需 `delivery_id/connection_id/key_id/account_id/grant_id/sent_at/ack_at`；授权需 `grant_id/account_id/price_version/unit_price/remaining_events/expires_at/status`。所有增量接口须给出游标、提交水位、最早可读水位、分页上限和修订语义。上述仅为拟定字段，冻结前需双方共同确认并写入 API 文档。
+最低契约数据：密钥操作需 `operation_id/key_id/account_id/permissions/version/status`；监控证据需 `sequence/key_id/client_id/system_id/UTC interval/capture_health/quality_evidence_id/revision`；核验事件奖需 `wave_id/system_id/start_at/end_at/segmentation_policy_version/verification_status/verification_revision/independent_review_ref` 和每个贡献者的 `key_id/client_id/first_valid_detected_at/accepted_samples/quality_evidence_id/contribution_revision`；收费事件需 `charge_event_id/wave_id/revision/event_type/system_id/rule_version/eligibility/revocation_reason`，并附来源健康、识别置信/连续采样或独立复核引用、四关判定结果与复核版本；预警投递/消费需 `delivery_id/connection_id/key_id/account_id/grant_id/charge_event_id/revision/started_at/ended_at/duration_seconds/ack_deadline_at/sent_at/ack_at/state`；授权需 `grant_id/account_id/price_version/unit_seconds/unit_price_minor/reserved_seconds/remaining_seconds/expires_at/status`。所有增量接口须给出游标、提交水位、最早可读水位、分页上限和修订语义。上述仅为拟定字段，冻结前需双方共同确认并写入 API 文档。
 
 客户端继续使用现有服务器 URL 与一个设备密钥输入框。收费预警 SSE 需要明确的消费者标记，并由服务端按密钥权限及剩余额度核对；旧客户端未携带标记及接收确认时不得收费。新接口路径、字段、错误码和版本在实现前写入两仓 API 契约。
 
@@ -174,11 +190,11 @@ GloryNavy_Seat 的 `sentry` 模块提供本人密钥列表、创建、吊销、�
 2. **平台管理**：发布平台 Goose 迁移、`sentry` 模块、合并参与方、页面和同步任务，仅测试账号领新密钥。切换管理入口后，哨兵原桌面密钥创建功能全部下线；历史 key 仅保留兼容认证和迁移审计用途，避免双入口继续发行。
 3. **只读证据**：哨兵发布监控区间、质量/波次贡献修订、预警事件/接收确认的游标接口，平台先只读对账至少一晚，不发币也不扣费。核对空敌对图标、多个窗口、代理关闭、SSE 正常重连、跨日、波次闪断合并、过滤与重放。
 4. **监控奖励灰度**：登记 `sentry_monitor` 与 `sentry_monitor_event` 两个独立来源，发放开关默认关闭；先实现费率快照，再仅对测试账号配置覆盖奖励、事件池额/分配规则、上限和生效时间。先验证基础覆盖奖，再验证独立核验、可信归因、账号去重、池额不超发、误报冲正和不依赖预警购买，随后分别开启生产发放，不追溯灰度前时段。
-5. **预警扣费灰度**：平台 exchange 完成服务预留/消费/退款后，哨兵实现有限额度授权、账号级原子占用及接收确认；新客户端发布消费者标记和确认协议。验证无余额、多端重复、重连、超时、断网、撤销、补偿和合并，再仅测试账号开启收费。旧客户端在兼容期可继续免费使用，但不形成收费确认。
+5. **预警扣费灰度**：平台 exchange 完成服务预留/消费/退款后，哨兵实现秒数授权、账号级原子占用及接收确认；新客户端发布消费者标记和确认协议。验证无余额、多端重复、重连、超时、断网、撤销、补偿和合并，再仅测试账号开启收费。旧客户端在兼容期可继续免费使用，但不形成收费确认。
 
 回退时先停用 Seat 新发放与投影同步，保留本地验钥和历史 key 的迁移兼容。产生新密钥、使用事件和币流水后，不得直接回退到不认识新结构/来源的程序或删除迁移；先停后台任务、核对游标和待吊销操作，再切兼容版本。两仓生产发布分别遵守各自受保护流程。
 
-验收至少覆盖：完整密钥只显示一次，成员不能管理他人密钥，吊销后新请求拒绝且 SSE 断开；无密钥、旧密钥及重复设备不发币；两台设备同时运行不翻倍；断线和采集失败不计；平台停机补读不重复；日内调价不重算旧权益；负向冲正、账号合并和重放保持账本一致。事件奖还须证明同波次总份额不超过固定池额、同账号多开不翻倍、单帧抢报/未核验不发奖、误报按原引用冲正且与预警接收者数量无关。收费须证明仅已授权、已发送、客户端已处理且未撤销的有效事件扣一次，bootstrap/更新/清空/旧客户端/未确认均不扣，额度不足或断网时不会超额。
+验收至少覆盖：完整密钥只显示一次，成员不能管理他人密钥，吊销后新请求拒绝且 SSE 断开；无密钥、旧密钥及重复设备不发币；两台设备同时运行不翻倍；断线和采集失败不计；平台停机补读不重复；日内调价不重算旧权益；负向冲正、账号合并和重放保持账本一致。事件奖还须证明同波次总份额不超过固定池额、同账号多开不翻倍、单帧抢报/未核验不发奖、误报按原引用冲正且与预警接收者数量无关。收费须证明仅已授权、已发送、客户端已处理且未撤销的有效区间按秒结算，bootstrap/更新/清空/旧客户端/未确认均不扣，秒数不足或断网时不会超额。
 
 ## 与 19:19 断连的关系
 
@@ -188,7 +204,7 @@ GloryNavy_Seat 的 `sentry` 模块提供本人密钥列表、创建、吊销、�
 
 - 监控每有效小时基础奖励、质量加成条件/最高权重、最低反馈样本量、每日上限与人工复核规则。
 - 核验波次事件奖的固定池额、合格贡献与及时性/质量分配规则、账号每日上限、独立核验渠道及波次闪断合并阈值；未冻结前保持事件奖关闭。
-- 预警每个有效事件的价格、每次预留事件数及期限、接收确认超时、被判无效后的退款时限；是否同一来敌波次只扣一次（本方案默认是）。
+- 预警有效区间的 `unit_seconds/unit_price_minor`、每次冻结 `reserved_seconds` 及期限、接收确认超时、被判无效后的退款时限；是否同一来敌波次同一区间只结算一次（本方案默认是）。
 - 收费识别的置信阈值、连续有效采样的间隔与次数、可接受的独立复核渠道、申诉时限；在这些规则冻结前不启用正式扣费。
 - 是否只给 Web 配置的远程监控范围发监控奖励；本方案默认仅此范围，本地预警模式不算监控收益。
 - 旧哨兵密钥是否由成员重新领取，还是允许一次性迁移其归属；默认不自动迁移，也不补发历史币。

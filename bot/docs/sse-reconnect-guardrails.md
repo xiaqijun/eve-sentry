@@ -2,6 +2,11 @@
 
 本文记录 2026-09-04 的 SSE 首字节阻塞与机器人永久等待问题，防止后续修改重新引入。
 
+生产内嵌模式补充：`app/server/qq_bot_runtime.py` 的 `EmbeddedBotBridge` 不建立事件 SSE，
+而是消费服务端进程内的合并唤醒标记，并按 `state:<sequence>` 从持久化事件表读取。下面的
+SSE 约束仍适用于独立调试进程、第三方消费者和查询兼容接口；内嵌桥必须保持相同的 ACK、
+Bootstrap 对账和单调游标语义。
+
 ## 客户端行为
 
 - SSE HTTP 读取必须有有限空闲超时，当前为 45 秒；服务端 heartbeat 为 15 秒。

@@ -33,6 +33,7 @@ from app.server.source_authority import authoritative_items, primary_sources
 from app.server.state_maintenance import StateMaintenance
 from app.server.capture_state import capture_is_current, capture_payload, record_roster_quality, reconcile_zero_events
 from app.server.state_repair import StateRepair, mark_failed_write
+from app.server.seat_billing import migrate_seat_billing_schema
 
 POSTGRES_POOL_MIN_SIZE = 2
 POSTGRES_POOL_MAX_SIZE = 8
@@ -2382,6 +2383,7 @@ class PostgreSQLIntelStore(IntelStore):
                 """
             )
             migrate_auth_schema(connection)
+            migrate_seat_billing_schema(connection)
 
     def _has_reports(self) -> bool:
         with self._connect() as connection:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
@@ -801,4 +802,6 @@ def _sentry_headers(api_key: str, accept: str = "application/json") -> dict[str,
     headers = {"Accept": accept}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    if os.environ.get("EVE_SENTRY_EMBEDDED_BOT") == "1":
+        headers["X-EVE-SENTRY-Embedded-Bot"] = "1"
     return headers

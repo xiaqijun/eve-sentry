@@ -1,4 +1,4 @@
-name: Validate and Deploy Bot
+name: Validate Bot Components
 
 on:
   pull_request:
@@ -58,7 +58,10 @@ jobs:
             uv run python -c "from eve_risk.config import Settings; Settings(_env_file='.env')"
 
   deploy:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # QQ runtime deployment moved to deploy-server.yml.  Keep this legacy job
+    # disabled so a bot-only push can never resurrect the retired standalone
+    # bot systemd process; the worker remains an explicit, separate opt-in.
+    if: false
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 30

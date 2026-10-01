@@ -24,6 +24,9 @@ def test_server_cli_defaults_to_postgres_storage():
     assert args.esi_cache == "esi_cache.json"
     assert args.esi_backend == "local"
     assert args.seat_auth_mode == "off"
+    assert args.allow_alert_consumption is False
+    assert args.enable_qq_bot is False
+    assert args.qq_bot_source == ""
 
 
 @pytest.mark.parametrize("option", ["--esi-login", "--esi-login-only", "--esi-client-id"])
@@ -71,6 +74,25 @@ def test_server_cli_accepts_seat_auth_modes_and_env_binding():
         parser.parse_args(["--seat-auth-mode", "shadow"])
     argv = build_server_argv({"EVE_SENTRY_SERVER_SEAT_AUTH_MODE": "enforce"})
     assert argv[-2:] == ["--seat-auth-mode", "enforce"]
+
+
+def test_server_cli_binds_embedded_qq_bot_settings():
+    parser = build_arg_parser()
+    args = parser.parse_args(["--enable-qq-bot", "--qq-bot-source", "/srv/eve/bot/src"])
+    assert args.enable_qq_bot is True
+    assert args.qq_bot_source == "/srv/eve/bot/src"
+    argv = build_server_argv(
+        {
+            "EVE_SENTRY_SERVER_QQ_BOT_ENABLED": "1",
+            "EVE_SENTRY_SERVER_QQ_BOT_SOURCE": "/srv/eve/bot/src",
+        }
+    )
+    assert "--enable-qq-bot" in argv
+    assert argv[-2:] == ["--qq-bot-source", "/srv/eve/bot/src"]
+
+
+def test_server_cli_requires_an_explicit_alert_consumption_flag():
+    assert build_arg_parser().parse_args(["--allow-alert-consumption"]).allow_alert_consumption is True
 
 
 def test_server_env_binds_seat_integration_token():

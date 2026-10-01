@@ -10,7 +10,7 @@ ESI Gateway 已按目录导入并保留历史。功能分支和 Pull Request 可
 | --- | --- |
 | `app/`、`frontend/` | 服务端、Web Console、HTTP/SSE、认证和 PostgreSQL |
 | `client/` | Windows OCR/监控客户端、星图态势和客户端更新器 |
-| `bot/` | QQ 机器人、事件消费、投递队列和 QQ 适配 |
+| `bot/` | QQ 机器人命令、事件消费和 QQ 适配；生产运行时由 `app/server/qq_bot_runtime.py` 内嵌托管 |
 | `esi-gateway/` | 公共 ESI 代理、鉴权、缓存、限流和健康检查 |
 | `download-site/`、`deploy/cloudflare-download/` | 下载站静态页面、Cloudflare 下载 Worker 和发布校验 |
 | `docs/` | 跨组件协议、架构、部署、故障和联调文档 |
@@ -32,6 +32,12 @@ ESI Gateway 已按目录导入并保留历史。功能分支和 Pull Request 可
    检查，失败时使用已记录的回滚流程。
 6. 工作树中已有的用户修改必须保留，不得用重置或强制覆盖方式清理。
 
+Seat 预警收费联调保持两端事实源分离：Sentry 保存事件资格、修订、授权投递、客户端 ACK
+和对账游标；GloryNavy_Seat 保存账号归属、价格政策、币预留、消费、释放和退款。任何跨项目
+字段变更都要同时更新 `docs/api-reference.md` 与 Seat 侧 OpenAPI/模块文档，并明确协议版本、
+幂等键、重放结果和不可恢复游标缺口。收费开关默认关闭，不能以本地服务端测试代替 exchange
+生产费率或结算验收。
+
 ## 组件验证
 
 - 服务端：在仓库根目录运行 `python -m pytest -q tests`，并在 `frontend/` 执行前端测试
@@ -44,7 +50,8 @@ ESI Gateway 已按目录导入并保留历史。功能分支和 Pull Request 可
   ```
 
   第二个进程临时组合客户端与服务端两个 `app` 包路径，不能并入第一个 pytest 进程。
-- 机器人：在 `bot/` 运行 `uv sync --frozen --extra dev`，再运行 `uv run pytest -q`。
+- 机器人：在 `bot/` 运行 `uv sync --frozen --extra dev`，再运行 `uv run pytest -q`。生产预警
+  由服务端内嵌运行时托管；只有手动战报分析的 worker 仍按需单独启动。
 - ESI Gateway：在 `esi-gateway/` 安装 `.[test,storage]` 后运行 `pytest` 和 `ruff`。
 
 `Contract Compatibility` 的本地等价验证为：

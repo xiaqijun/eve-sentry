@@ -7,7 +7,7 @@
 | Windows 监控客户端 | `client/` | 窗口选择、截图、红框检测、OCR、身份日志校验、心跳和 SSE 预警浮窗 |
 | 情报服务 | `app/server/` | 数据存储、角色解析、敌我分类、实时态、告警、认证和 SSE |
 | Web 管理系统 | `frontend/` | 态势图、来袭报表、账号和管理员功能 |
-| QQ 机器人 | `bot/`（独立进程部署） | 使用只读服务密钥读取 Bootstrap 和 SSE，发送主动预警 |
+| QQ 机器人 | `bot/` 由 `app/server/qq_bot_runtime.py` 托管 | 由预警服务主进程在独立 asyncio 线程运行，消费同机持久化事件并发送 QQ 消息；不再需要独立 bot systemd 进程 |
 | ESI Gateway | `esi-gateway/`（独立进程部署） | 公共 ESI 代理、缓存、限流和健康检查 |
 | 下载与更新服务 | `download-site/`、`deploy/cloudflare-download/` | 发布客户端/服务端公开文档，代理签名清单和版本化 Release 附件 |
 
@@ -47,7 +47,7 @@ OCR 任务和资料读取固定使用进入时的依赖快照；模式版本变�
        -> 服务端逐名执行 ESI 解析和敌我分类
        -> 补充活动名单和人员详情
   -> SSE /api/v1/events
-  -> Windows 预警客户端、Web 管理系统、QQ 机器人消费同一当前结果
+  -> Windows 预警客户端、Web 管理系统、内嵌 QQ 机器人消费同一当前结果
 ```
 
 Presence 和 OCR 共用同一轮截图，但承担不同职责。Presence 由红色敌对图标检测产生，是
@@ -109,9 +109,8 @@ zKill 角色链接直接由 `character_id` 生成。服务端收到数量后立�
 ## 预警客户端、SSE 与局部星图
 
 `GET /api/v1/events` 是有界长连接：服务端默认在 30 秒后正常结束本次响应，并默认每
-15 秒写入 SSE 注释心跳。Windows 客户端和 QQ 机器人都请求 1 秒注释心跳，并把连续 15 秒
-无字节作为失活连接的重连边界；正常流结束后立即重新连接，只有请求错误才进入有上限的
-指数退避。
+15 秒写入 SSE 注释心跳。Windows 客户端和 Web 仍通过 SSE 接收状态；内嵌 QQ 机器人不再
+建立本机 SSE 连接，而是消费同一服务进程发布的合并唤醒标记，再按持久化游标读取事件。
 
 SSE wire 事件名是 `bootstrap`、`alert`、`safe` 和 `monitoring_node`。持久化状态事件在
 `data.event_type` 中使用 `alert.entered`、`alert.updated` 和 `alert.cleared`；其中前两者
@@ -134,6 +133,22 @@ PostgreSQL 用一条一致性查询读取 active 条目、其引用报告和状�
 轮询。`monitoring_node` 主要用于提示变化，实际节点集合和状态以伴随的 `bootstrap` 为准。
 全新客户端没有游标时直接以当前快照水位初始化，不回放 14 天保留历史；显式 `state:0`
 才表示从保留日志起点重放。
+
+### 内嵌 QQ 机器人运行时
+
+生产环境可设置 `EVE_SENTRY_SERVER_QQ_BOT_ENABLED=1`，由 `eve-sentry.service` 在
+HTTP 服务启动后创建 `QQBotRuntime`。运行时把 `bot/src` 加入同一 Python 环境，使用独立
+asyncio 线程运行 botpy；QQ 网络请求不会占用 HTTP 工作线程，服务停止时先关闭 QQ 客户端，
+再关闭 SSE 和存储连接。预警、清空、名单更新和节点变化由服务端直接唤醒内嵌桥，桥按
+`state:<sequence>` 从 `intel_events` 读取并调用现有投递逻辑；因此主动预警链路不再经过
+loopback HTTP，也不会因为 SSE 重连延迟。启动时先同步权威 Bootstrap，重启或短暂阻塞后按
+持久化游标补齐事件。查询、OCR 和兼容性接口仍可使用同机 loopback，公网客户端和 Web 管理
+接口继续按原认证策略保护。QQ 凭据、机器人 Redis/数据库连接使用服务端环境变量
+`EVE_SENTRY_SERVER_QQ_BOT_*`，旧的 `EVE_SENTRY_API_KEY` 不再读取。
+
+机器人代码继续保留在 `bot/` 目录以便测试和复用，但不再由独立 bot systemd 单元启动。
+手动战报分析的队列执行器仍可按需单独运行；它不是预警 HTTP 服务的依赖，QQ API 变慢时也
+不会阻塞客户端上报、星图或 SSE。
 
 Windows 客户端只为选中账户请求局部拓扑，不下载整张星图。拓扑请求在后台
 `AlertMapWorker` 线程中执行，请求超时为 5 秒；已有请求运行时只保留最后一个待处理请求，

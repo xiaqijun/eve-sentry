@@ -25,7 +25,9 @@ Bootstrap 可带 `monitoring_scope`；区域外客户端保留诊断连接但不
 
 服务端事件字段和兼容路由的完整定义见[完整 API 参考](api-reference.md)。SSE 首字节、
 快照复用和心跳约束见[SSE 性能与重连约束](sse-performance-guardrails.md)；机器人消费端
-还需遵守[机器人 SSE 重连约束](../bot/docs/sse-reconnect-guardrails.md)。
+若以独立进程运行还需遵守[机器人 SSE 重连约束](../bot/docs/sse-reconnect-guardrails.md)。
+生产内嵌机器人由进程内事件桥消费持久化事件，不建立事件 SSE；该指南中的游标语义由
+内嵌桥继续保留，用于同样的重启补齐保证。
 
 ## 接口选择
 

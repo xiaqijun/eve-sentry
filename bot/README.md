@@ -18,10 +18,15 @@
 本组件位于 EVE Sentry 单体仓库的 `bot/` 目录，服务端、客户端、Gateway 和接口文档均在
 [同一仓库](../README.md)维护。
 
+生产环境的 QQ 接入由 `app/server/qq_bot_runtime.py` 嵌入 `eve-sentry.service` 托管，
+机器人通过服务端进程内事件桥读取预警当前状态，不再使用独立 bot systemd 进程或
+`EVE_SENTRY_API_KEY`。本目录仍保留可测试的命令和投递实现；手动战报分析的 worker 可按需
+单独运行。
+
 ## 功能
 
 - QQ 官方机器人群聊 `@` 指令接入，不依赖 OneBot 或非官方客户端。
-- 订阅 EVE Sentry 实时 SSE 状态，按星系向已启用的 QQ 群主动推送来敌与清空通知。
+- 消费 EVE Sentry 进程内实时状态，按星系向已启用的 QQ 群主动推送来敌与清空通知。
 - 近 90 天公开战报分析，并按最近 30 个 KM、近 7 天、近 30 天、近 90 天统计小队规模。
 - 舰船角色、舰队规模、单收比例、北京时间活跃热力图、共现关系与重复构成。
 - 指挥视角的可解释威胁指数、近 7 天击杀/损失、舰队体系识别和关键人物画像。
@@ -197,12 +202,11 @@ PostgreSQL；多个到期规则合并使用一次全节点 OCR，只在目标从
 
 监控节点上线、下线或移动到新星系时，同一批订阅群会收到完整在线节点列表；移动事件
 同时使用“去向｜原星系 → 新星系”表达，不公开
-本地角色名。机器人同时兼容独立的 `monitoring_node` SSE 事件和 Bootstrap 节点快照，
-通过快照版本与 Redis 去重；即使实时移动事件恰逢断线，也会在重连后补发最新列表。
-机器人也处理独立的 `alert` SSE 事件：已包含在 active bootstrap 的事件不会重复推送，
-在下一次快照前已经清空的短暂敌对会通过该事件补发，成功投递后才推进告警游标。
-SSE 请求 1 秒注释心跳并把连续 15 秒无字节作为失活边界；正常 EOF 立即重连，只有网络或
-协议异常才按 `0.2、1、3、5` 秒退避。持久事件游标会在重连后补齐失活窗口内的状态变化。
+本地角色名。机器人由进程内事件桥消费 `monitoring_node` 快照和 `alert.entered`、
+`alert.updated`、`alert.cleared` 持久事件；桥以 `state:<sequence>` 作为游标，事件标记
+会合并，实际状态从服务端当前快照读取。即使机器人线程短暂阻塞或服务重启，也会先同步
+权威 Bootstrap，再从持久化游标补齐失活窗口内的状态变化。查询、OCR 等交互功能仍可使用
+同机 loopback API；这不影响主动预警不经过网络层。
 
 机器人会轮询 CCP 官方 ESI 服务器状态。连续 6 次检查不可用后才确认停服，服务器恢复时
 向所有已开启主动预警的群推送一次开服通知，包括在线人数、服务器版本和启动时间。
@@ -220,7 +224,7 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
 
    ```dotenv
    EVE_SENTRY_EVENTS_URL=http://127.0.0.1:8765/api/v1/events
-   EVE_SENTRY_API_KEY=eve_请填写管理员签发的只读服务密钥
+   # 主动预警由服务端进程内事件桥驱动，不需要 EVE_SENTRY_API_KEY；该地址仅供查询兼容接口
    EVE_SENTRY_PUBLIC_URL=http://YOUR_EVE_SENTRY_HOST
    EVE_SENTRY_ALERT_MIN_LEVEL=
    EVE_SENTRY_PERSONNEL_PUSH_INTERVAL_SECONDS=1
@@ -233,8 +237,10 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
    EVE_SENTRY_WATCH_SNAPSHOT_REUSE_SECONDS=30
    ```
 
-   `EVE_SENTRY_API_KEY` 必须使用 EVE Sentry 管理员页面签发的只读服务密钥，
-   仅用于 Bootstrap 和 SSE。`EVE_SENTRY_ALERT_MIN_LEVEL` 留空表示推送所有等级，
+   内嵌运行时的主动预警不调用事件 HTTP 入口；查询、OCR 等兼容请求仅接受预警服务
+   同机 loopback 请求。公网请求仍需 Seat 预警权限；如机器人与预警服务不在同一台机器上，
+   必须改用受保护的 Seat 预警密钥。
+   `EVE_SENTRY_ALERT_MIN_LEVEL` 留空表示推送所有等级，
    也可设置为 `low`、`medium`、`high` 或 `critical`。
    `EVE_SENTRY_PERSONNEL_PUSH_INTERVAL_SECONDS` 控制同一星系名单更新的最小推送间隔；
    间隔内的变化会合并并在到期后推送最新完整名单，设为 `0` 可关闭合并。
@@ -250,8 +256,9 @@ Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和
    ```
 
    部署脚本会创建隔离虚拟环境、执行 Alembic 迁移和 SDE 同步，并注册
-   `eve-risk-analysis-bot` 与 `eve-risk-analysis-worker` 两个 systemd 服务。
-   非 root 用户可使用 `systemctl --user`，并需要预先启用 user service linger。
+   预警机器人由 `eve-sentry.service` 内嵌托管；仅在启用手动战报分析时再注册
+   `eve-risk-analysis-worker` worker systemd 服务。非 root 用户可使用 `systemctl --user`，
+   并需要预先启用 user service linger。
 
 5. 检查状态：
 

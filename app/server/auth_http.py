@@ -89,6 +89,7 @@ _SEAT_PERMISSION_ROUTES: dict[str, tuple[tuple[str, str], ...]] = {
         ("GET", "/api/v1/alerts"),
         ("GET", "/api/v1/alerts/*"),
         ("GET", "/api/v1/clients"),
+        ("POST", "/api/v1/alert-deliveries/*/ack"),
     ),
 }
 
@@ -111,6 +112,17 @@ _LEGACY_CLIENT_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/intel"),
     ("POST", "/api/observations"),
 )
+
+# The QQ bot runs on the same host as the warning service.  Keep its
+# credential-free path strictly loopback-only; never turn the public SSE or
+# map routes into anonymous endpoints.
+_LOCAL_BOT_ROUTES: tuple[tuple[str, str], ...] = (
+    ("GET", "/api/v1/bootstrap"),
+    ("GET", "/api/v1/events"),
+    ("GET", "/api/v1/ocr/query/*"),
+    ("POST", "/api/v1/ocr/query"),
+)
+_LOCAL_BOT_HEADER = "X-EVE-SENTRY-Embedded-Bot"
 
 
 def build_admin_clients_payload(
@@ -258,6 +270,11 @@ def _seat_permissions_for_request(method: str, path: str) -> set[str]:
             if normalized_path == route_path:
                 accepted.add(permission)
                 continue
+            if route_path.endswith("/*/ack") and normalized_path.startswith(route_path[:-5]) and normalized_path.endswith("/ack"):
+                middle = normalized_path[len(route_path[:-5]):-4].strip("/")
+                if middle and "/" not in middle:
+                    accepted.add(permission)
+                    continue
             if route_path.endswith("/*") and normalized_path.startswith(route_path[:-1]):
                 accepted.add(permission)
     return accepted
@@ -285,6 +302,29 @@ class AuthHttpMixin:
     def _auth_service(self) -> AuthService | None:
         return getattr(type(self), "auth_service", None)
 
+    def _is_local_bot_request(self, method: str, path: str) -> bool:
+        """Allow only marked loopback bot requests on narrow read/query routes."""
+        if str(self.headers.get(_LOCAL_BOT_HEADER) or "").strip() != "1":
+            return False
+        peer = str(getattr(self, "client_address", ("",))[0]).strip()
+        try:
+            if not ip_address(peer).is_loopback:
+                return False
+        except ValueError:
+            return False
+        normalized_method = str(method or "").upper()
+        normalized_path = str(path or "")
+        for route_method, route_path in _LOCAL_BOT_ROUTES:
+            if normalized_method != route_method:
+                continue
+            if normalized_path == route_path:
+                return True
+            if route_path.endswith("/*") and normalized_path.startswith(route_path[:-1]):
+                suffix = normalized_path[len(route_path[:-1]):].strip("/")
+                if suffix and "/" not in suffix:
+                    return True
+        return False
+
     def _authorize_request(self, method: str, path: str) -> bool:
         service = self._auth_service()
         self._auth_principal = None
@@ -293,6 +333,8 @@ class AuthHttpMixin:
         if service is None:
             return True
         if path in {"/api/health", "/api/livez", "/api/readyz"}:
+            return True
+        if self._is_local_bot_request(method, path):
             return True
         if path == "/api/v1/auth/login" and method == "POST":
             return True
@@ -399,13 +441,26 @@ class AuthHttpMixin:
     def _is_seat_integration_request(self, method: str, path: str) -> bool:
         """Identify Seat integration methods before browser auth middleware."""
         create_path = "/api/v1/integrations/seat/keys"
-        revoke_prefix = f"{create_path}/"
-        if method == "POST" and path == create_path:
+        service_paths = {
+            ("POST", create_path),
+            ("POST", "/api/v1/integrations/seat/alert-grants"),
+            ("POST", "/api/v1/integrations/seat/alert-events"),
+            ("POST", "/api/v1/integrations/seat/alert-deliveries"),
+            ("GET", "/api/v1/integrations/seat/alert-events"),
+        }
+        if (method, path) in service_paths:
             return True
-        if method != "DELETE" or not path.startswith(revoke_prefix):
+        revoke_prefixes = (
+            f"{create_path}/",
+            "/api/v1/integrations/seat/alert-grants/",
+        )
+        if method != "DELETE":
             return False
-        key_id = path[len(revoke_prefix):].strip("/")
-        return bool(key_id) and "/" not in key_id
+        for prefix in revoke_prefixes:
+            item_id = path[len(prefix):].strip("/") if path.startswith(prefix) else ""
+            if item_id and "/" not in item_id:
+                return True
+        return False
 
     def _authorize_seat_integration_request(self) -> bool:
         """Authenticate the Seat service token without accepting a browser session."""

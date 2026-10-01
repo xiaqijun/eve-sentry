@@ -75,3 +75,32 @@ def test_login_falls_back_to_loopback_peer_for_invalid_x_real_ip() -> None:
     )
 
     assert client_ip == "::1"
+
+
+def test_local_bot_routes_require_marked_loopback_requests() -> None:
+    service = RecordingAuthService()
+    handler = AuthHandlerStub(
+        service,
+        "127.0.0.1",
+        {"X-EVE-SENTRY-Embedded-Bot": "1"},
+    )
+
+    assert handler._is_local_bot_request("GET", "/api/v1/events") is True
+    assert handler._is_local_bot_request("GET", "/api/v1/bootstrap") is True
+    assert handler._is_local_bot_request("POST", "/api/v1/ocr/query") is True
+    assert handler._is_local_bot_request("GET", "/api/v1/ocr/query/query-1") is True
+    unmarked = AuthHandlerStub(service, "127.0.0.1", {})
+    assert unmarked._is_local_bot_request("GET", "/api/v1/events") is False
+
+
+def test_local_bot_routes_do_not_allow_remote_peers_or_map() -> None:
+    service = RecordingAuthService()
+    remote = AuthHandlerStub(service, "10.1.0.2", {})
+    loopback = AuthHandlerStub(
+        service,
+        "127.0.0.1",
+        {"X-EVE-SENTRY-Embedded-Bot": "1"},
+    )
+
+    assert remote._is_local_bot_request("GET", "/api/v1/events") is False
+    assert loopback._is_local_bot_request("GET", "/api/v1/map") is False

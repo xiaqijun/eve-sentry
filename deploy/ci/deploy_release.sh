@@ -29,7 +29,7 @@ staging="$(mktemp -d /tmp/eve-sentry-deploy.XXXXXX)"
 backup_root="$backend_root/.deploy-backups"
 backup="$backup_root/$timestamp-$revision"
 service_file="/etc/systemd/system/$service_name.service"
-managed_directories=(app scripts deploy)
+managed_directories=(app scripts deploy bot)
 managed_files=(requirements-server.txt intel_map.json)
 deployment_started=0
 deployment_complete=0
@@ -53,6 +53,7 @@ restore_backup() {
         install -m 0644 "$backup/service/eve-sentry.service" "$service_file"
     fi
     chown -R eve-sentry:eve-sentry "$backend_root/app" "$backend_root/scripts" \
+        "$backend_root/bot" \
         "$backend_root/deploy" "$backend_root/requirements-server.txt" \
         "$backend_root/intel_map.json" 2>/dev/null || true
     systemctl daemon-reload
@@ -74,6 +75,7 @@ mkdir -p "$backend_root" "$frontend_root" "$backup/backend" "$backup/frontend" "
 tar -xzf "$archive" -C "$staging"
 test -f "$staging/backend/app/server/__main__.py"
 test -f "$staging/backend/scripts/run_server.py"
+test -f "$staging/backend/bot/src/eve_risk/bot.py"
 test -f "$staging/backend/requirements-server.txt"
 test -f "$staging/backend/deploy/linux/eve-sentry.service"
 test -s "$staging/frontend/index.html"
@@ -105,6 +107,7 @@ rsync -a --delete "$staging/frontend/" "$frontend_root/"
 install -m 0644 "$staging/backend/deploy/linux/eve-sentry.service" "$service_file"
 
 chown -R eve-sentry:eve-sentry "$backend_root/app" "$backend_root/scripts" \
+    "$backend_root/bot" \
     "$backend_root/deploy" "$backend_root/requirements-server.txt" \
     "$backend_root/intel_map.json"
 runuser -u eve-sentry -- "$backend_root/.venv-server/bin/python" -m pip install \
