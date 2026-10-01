@@ -138,12 +138,20 @@ def migrate_seat_billing_schema(connection: Any) -> None:
     # Keep the embedded SQLite store compatible with databases created by the
     # first billing protocol revision.  The evidence is an append-only ACK
     # snapshot; it never changes the server-authoritative interval binding.
+    # Keep the compatibility ALTER isolated.  PostgreSQL marks the whole
+    # transaction as failed when ADD COLUMN sees an already-present column;
+    # swallowing that exception without a savepoint would roll back every
+    # table created above and make the next startup fail with missing tables.
+    savepoint = "seat_billing_ack_evidence_column"
+    connection.execute(f"SAVEPOINT {savepoint}")
     try:
         connection.execute(
             "ALTER TABLE seat_alert_deliveries ADD COLUMN ack_evidence_json TEXT NOT NULL DEFAULT '{}'"
         )
     except Exception:
-        pass
+        connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+    finally:
+        connection.execute(f"RELEASE SAVEPOINT {savepoint}")
 
 
 class SeatBillingRepository:
