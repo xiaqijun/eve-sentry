@@ -31,6 +31,7 @@ from app.server.map_settings import handle_settings, install_scope
 from app.server.seat_billing import (
     ALERT_ACK_PROTOCOL,
     SEAT_BILLING_PROTOCOL_VERSION,
+    SEAT_TIME_GRANT_PROTOCOL_VERSION,
     SeatBillingError,
     SeatBillingRepository,
     canonical_hash,
@@ -2304,18 +2305,34 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             operation_id = self._required_uuid(payload, "operation_id", "invalid_operation_id")
             grant_id = self._required_uuid(payload, "grant_id", "invalid_grant_id")
             account_id = self._required_uuid(payload, "account_id", "invalid_account_id")
-            price_version = str(payload.get("price_version") or "").strip()
-            if not price_version or len(price_version) > 80:
-                raise SeatIntegrationError("price_version is required", "invalid_price_version")
-            unit_seconds = self._positive_int(payload.get("unit_seconds"), "unit_seconds")
-            unit_price_minor = self._positive_or_zero_int(payload.get("unit_price_minor"), "unit_price_minor")
+            protocol_version = payload.get("protocol_version", SEAT_BILLING_PROTOCOL_VERSION)
+            if isinstance(protocol_version, bool) or protocol_version not in {
+                SEAT_BILLING_PROTOCOL_VERSION,
+                SEAT_TIME_GRANT_PROTOCOL_VERSION,
+            }:
+                raise SeatIntegrationError("protocol_version is unsupported", "invalid_protocol_version")
+            if protocol_version == SEAT_TIME_GRANT_PROTOCOL_VERSION:
+                # v2 is intentionally a seconds-only contract. The price and
+                # unit policy stay in Seat's exchange ledger and never cross
+                # into Sentry.
+                if any(field in payload for field in ("price_version", "unit_seconds", "unit_price_minor")):
+                    raise SeatIntegrationError(
+                        "protocol v2 does not accept pricing fields",
+                        "pricing_not_allowed",
+                    )
+                price_version = "seat-managed-v2"
+                unit_seconds = 1
+                unit_price_minor = 0
+            else:
+                price_version = str(payload.get("price_version") or "").strip()
+                if not price_version or len(price_version) > 80:
+                    raise SeatIntegrationError("price_version is required", "invalid_price_version")
+                unit_seconds = self._positive_int(payload.get("unit_seconds"), "unit_seconds")
+                unit_price_minor = self._positive_or_zero_int(payload.get("unit_price_minor"), "unit_price_minor")
             reserved_seconds = self._positive_int(payload.get("reserved_seconds"), "reserved_seconds")
             expires_at = str(payload.get("expires_at") or "").strip()
             if not expires_at or self._parse_iso_timestamp(expires_at) is None:
                 raise SeatIntegrationError("expires_at must be an ISO timestamp", "invalid_expires_at")
-            protocol_version = payload.get("protocol_version", SEAT_BILLING_PROTOCOL_VERSION)
-            if isinstance(protocol_version, bool) or protocol_version != SEAT_BILLING_PROTOCOL_VERSION:
-                raise SeatIntegrationError("protocol_version must be 1", "invalid_protocol_version")
             normalized = {
                 "operation_id": operation_id,
                 "grant_id": grant_id,
@@ -2326,7 +2343,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 "unit_seconds": unit_seconds,
                 "reserved_seconds": reserved_seconds,
                 "expires_at": expires_at,
-                "protocol_version": SEAT_BILLING_PROTOCOL_VERSION,
+                "protocol_version": int(protocol_version),
             }
             result = self._seat_billing_repository().create_grant(
                 {**normalized, "created_at": utc_now_iso()},
@@ -2346,6 +2363,11 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             self._send_json({"error": "Seat billing storage is unavailable", "code": "billing_storage_error"}, HTTPStatus.SERVICE_UNAVAILABLE)
             return
         response = dict(result["grant"])
+        if int(response.get("protocol_version") or 0) == SEAT_TIME_GRANT_PROTOCOL_VERSION:
+            # Do not leak the compatibility columns that exist solely for
+            # historical v1 rows. Seat remains the only pricing authority.
+            for field in ("price_version", "unit_seconds", "unit_price_minor"):
+                response.pop(field, None)
         response["idempotent_replay"] = not bool(result["created"])
         self._send_json(response, HTTPStatus.CREATED if result["created"] else HTTPStatus.OK)
 

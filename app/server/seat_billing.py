@@ -1,9 +1,10 @@
-"""SeAT-compatible alert interval consumption persistence.
+"""SeAT-compatible alert interval evidence persistence.
 
-This module stores the Sentry-side facts needed by GloryNavy_Seat. Grants
-freeze seconds, deliveries reserve an exact eligible warning interval, and
-ACKs confirm that interval. Currency calculation and exchange settlement
-remain platform responsibilities.
+This module stores the Sentry-side facts needed by GloryNavy_Seat. Protocol v2
+grants only freeze seconds, deliveries reserve an exact eligible warning
+interval, and ACKs confirm that interval. Pricing, coin calculation, exchange
+settlement and refunds remain Seat responsibilities. Protocol v1 rows remain
+readable for historical reconciliation.
 """
 
 from __future__ import annotations
@@ -16,7 +17,12 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import Any
 
+# v1 remains the event/delivery wire version. v2 is used only for the new
+# time-grant request, which deliberately removes pricing from the Sentry
+# contract: Seat owns policy, coin reservation, settlement and refunds;
+# Sentry only authorizes/report seconds and delivery evidence.
 SEAT_BILLING_PROTOCOL_VERSION = 1
+SEAT_TIME_GRANT_PROTOCOL_VERSION = 2
 ALERT_ACK_PROTOCOL = "alert-ack.v1"
 ALERT_GRANT_STATUSES = {"active", "revoked", "expired"}
 ALERT_CONSUMPTION_STATES = {"reserved", "consumed", "released", "refunded"}
@@ -197,7 +203,7 @@ class SeatBillingRepository:
                     created_at, updated_at, revoked_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (record["grant_id"], operation_id, request_hash, record["account_id"], record.get("key_id", ""), record["price_version"], int(record["unit_seconds"]), int(record["unit_price_minor"]), int(record["reserved_seconds"]), int(record["reserved_seconds"]), record["expires_at"], "active", SEAT_BILLING_PROTOCOL_VERSION, record["created_at"], record["created_at"], ""),
+                (record["grant_id"], operation_id, request_hash, record["account_id"], record.get("key_id", ""), record["price_version"], int(record["unit_seconds"]), int(record["unit_price_minor"]), int(record["reserved_seconds"]), int(record["reserved_seconds"]), record["expires_at"], "active", int(record.get("protocol_version") or SEAT_BILLING_PROTOCOL_VERSION), record["created_at"], record["created_at"], ""),
             )
             row = connection.execute("SELECT * FROM seat_alert_grants WHERE grant_id = ?", (record["grant_id"],)).fetchone()
         return {"grant": self._grant(dict(row)), "created": True, "idempotency_conflict": False}

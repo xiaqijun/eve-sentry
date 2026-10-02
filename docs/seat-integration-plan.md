@@ -135,7 +135,7 @@ Presence/OCR 上传仍携带客户端窗口标识，但监控贡献由服务端�
 
 仅服务器 `wfile.flush()` 成功不能证明客户端已收到，更不能证明用户已阅读。新客户端必须在完成本地接收、规则核对、去重并投递 UI 后，以 `key_id + connection_id + charge_event_id + revision + delivery_id` 调用有幂等键的接收确认接口；服务端核对该连接确实发送过对应有效事件，再形成不可变送达记录。现有客户端先在 worker 中把 ID 写入本地 `seen_alert_ids`、随后异步发 UI 信号，UI 还可能因本地范围设置丢弃，不能直接把这一步视作已送达。没有客户端确认、超过确认期限、旧客户端、免费流或被抑制事件均不扣费；确认也只证明软件处理，不证明真人阅读。
 
-预警扣费必须先在平台 `exchange` 按秒数冻结币额，再给哨兵签发绑定账号、价格版本、`unit_seconds`、`unit_price_minor`、`reserved_seconds` 和有效期的授权。哨兵须在数据库内按账号原子占用有效预警区间的 `duration_seconds`，同一 `charge_event_id + revision + started_at + ended_at` 多设备重收只占一次；未确认在超时后释放占用，已确认消耗区间，撤销或误报按原区间引用退款。平台按 `ceil(duration_seconds / unit_seconds) * unit_price_minor` 计算金额并以唯一区间引用结算；对账不明时继续占用而非先退款。断网只能消耗尚有效且已冻结的秒数，不能无限追欠或重复收费。平台 exchange 现有 `Spent` 面向兑换订单，正式扣费前需新增受信服务的预留、消费和退款账本契约。
+预警扣费必须先在平台 `exchange` 按秒数冻结币额，再给哨兵签发只绑定账号、`reserved_seconds` 和有效期的 v2 秒数授权。费率版本、`unit_seconds` 和 `unit_price_minor` 只留在 Seat 的 exchange 账本，不再发送到哨兵。哨兵须在数据库内按账号原子占用有效预警区间的 `duration_seconds`，同一 `charge_event_id + revision + started_at + ended_at` 多设备重收只占一次；未确认在超时后释放占用，已确认消耗区间，撤销或误报按原区间引用退款。平台按自己的冻结价格计算金额并以唯一区间引用结算；对账不明时继续占用而非先退款。断网只能消耗尚有效且已冻结的秒数，不能无限追欠或重复收费。
 
 ## 两端对账：哨兵侧承诺
 
@@ -156,7 +156,7 @@ Presence/OCR 上传仍携带客户端窗口标识，但监控贡献由服务端�
 
 ## 页面与接口草案
 
-## 本轮 Sentry 协议底座（v1，未启用生产扣费）
+## 本轮 Sentry 协议底座（v2 秒数上报，未启用生产扣费）
 
 Sentry 已增加 SQL 持久化的 `seat_alert_grants`、`seat_alert_events`、
 `seat_alert_deliveries` 和 `seat_alert_consumptions`，以及对应的 Seat 集成 API：授权创建/撤销、
@@ -167,7 +167,7 @@ Sentry 已增加 SQL 持久化的 `seat_alert_grants`、`seat_alert_events`、
 `grant_id + charge_event_id + revision + started_at + ended_at` 预留。ACK 必须绑定已发送的 `delivery_id`、Seat `key_id`、账号、
 连接、事件修订和幂等键，成功后才把 `reserved` 变成 `consumed`。
 
-这部分只保存 Sentry 事实和平台价格快照，不调用 GloryNavy_Seat exchange，不计算或写入币账，
+这部分只保存 Sentry 事实和秒数授权，不调用 GloryNavy_Seat exchange，不计算或写入币账，
 也不会自动把现有 SSE `alert`/`state:<seq>` 当成收费事件。收费事件的资格四关、生产费率、
 预留期限、未确认释放、撤销退款、对账任务和新客户端消费者标记仍需与 Seat 当前 Goose 58
 接口完成联调后再冻结；在此之前不得把测试开关、事件 API 或文档字段解释为已上线收费能力。
@@ -179,11 +179,11 @@ Sentry 已增加 SQL 持久化的 `seat_alert_grants`、`seat_alert_events`、
 | 平台 → 哨兵 | 创建、查询、吊销平台密钥 | 专用服务身份、操作 UUID、版本、幂等和脱敏审计 |
 | 平台 → 哨兵 | 批量密钥对账 | 分页、状态版本水位，绝不回传明文 |
 | 平台 ← 哨兵 | 按游标读取监控区间、质量/波次贡献修订与预警送达/撤销事件 | 连续提交水位、有界分页、保留期、修订版本和缺口信号 |
-| 平台 → 哨兵 | 发放/撤销预警秒数授权 | 账号、价格版本、`unit_seconds/unit_price_minor/reserved_seconds`、到期时间、操作幂等；断网不得超额 |
+| 平台 → 哨兵 | 发放/撤销预警秒数授权 | 账号、`reserved_seconds`、到期时间、操作幂等；费率和币额只在 Seat；断网不得超额 |
 | 客户端 → 哨兵 | 确认收费预警接收 | 绑定已发送的连接/投递/事件 ID；幂等、限时、不可凭空确认 |
 | 浏览器 → 平台 | 本人密钥、使用、收益及管理员配置 | 本站会话、CSRF、对象范围和操作审计 |
 
-最低契约数据：密钥操作需 `operation_id/key_id/account_id/permissions/version/status`；主节点监控证据需 `contribution_id/key_id/client_id/system_id/system_name/primary_generation/started_at/ended_at/duration_seconds/rule_version/eligibility/evidence/created_at`；收费事件需 `charge_event_id/wave_id/revision/event_type/system_id/rule_version/eligibility/revocation_reason`，并附来源健康、识别置信/连续采样或独立复核引用、四关判定结果与复核版本；预警投递/消费需 `delivery_id/connection_id/key_id/account_id/grant_id/charge_event_id/revision/started_at/ended_at/duration_seconds/ack_deadline_at/sent_at/ack_at/state`；授权需 `grant_id/account_id/price_version/unit_seconds/unit_price_minor/reserved_seconds/remaining_seconds/expires_at/status`。所有增量接口须给出游标、提交水位、最早可读水位、分页上限和修订语义。上述仅为拟定字段，冻结前需双方共同确认并写入 API 文档。
+最低契约数据：密钥操作需 `operation_id/key_id/account_id/permissions/version/status`；主节点监控证据需 `contribution_id/key_id/client_id/system_id/system_name/primary_generation/started_at/ended_at/duration_seconds/rule_version/eligibility/evidence/created_at`；收费事件需 `charge_event_id/wave_id/revision/event_type/system_id/rule_version/eligibility/revocation_reason`，并附来源健康、识别置信/连续采样或独立复核引用、四关判定结果与复核版本；预警投递/消费需 `delivery_id/connection_id/key_id/account_id/grant_id/charge_event_id/revision/started_at/ended_at/duration_seconds/ack_deadline_at/sent_at/ack_at/state`；v2 授权需 `grant_id/account_id/reserved_seconds/remaining_seconds/expires_at/status`，不得出现价格字段。所有增量接口须给出游标、提交水位、最早可读水位、分页上限和修订语义。上述字段需与两仓 API 文档同步冻结。
 
 客户端继续使用现有服务器 URL 与一个设备密钥输入框。收费预警 SSE 需要明确的消费者标记，并由服务端按密钥权限及剩余额度核对；旧客户端未携带标记及接收确认时不得收费。新接口路径、字段、错误码和版本在实现前写入两仓 API 契约。
 

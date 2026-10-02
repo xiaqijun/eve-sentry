@@ -336,6 +336,50 @@ def test_delivery_without_ack_capability_does_not_reserve_seconds(tmp_path):
         store.close()
 
 
+def test_seconds_only_grant_v2_does_not_accept_or_return_pricing(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    token = "seat-service-token-" + "x" * 40
+    server = IntelHTTPServer(
+        store,
+        port=0,
+        seat_integration_token=token,
+        allow_alert_consumption=True,
+    )
+    server.start()
+    try:
+        payload = {
+            "operation_id": str(uuid.uuid4()),
+            "grant_id": str(uuid.uuid4()),
+            "account_id": str(uuid.uuid4()),
+            "reserved_seconds": 120,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "protocol_version": 2,
+        }
+        status, result = _request(
+            f"{server.url}/api/v1/integrations/seat/alert-grants",
+            method="POST",
+            headers={"Authorization": f"Bearer {token}"},
+            payload=payload,
+        )
+        assert status == 201
+        assert result["protocol_version"] == 2
+        assert result["reserved_seconds"] == 120
+        assert "unit_price_minor" not in result
+        assert "price_version" not in result
+        rejected = {**payload, "operation_id": str(uuid.uuid4()), "grant_id": str(uuid.uuid4()), "unit_price_minor": 1}
+        status, error = _request(
+            f"{server.url}/api/v1/integrations/seat/alert-grants",
+            method="POST",
+            headers={"Authorization": f"Bearer {token}"},
+            payload=rejected,
+        )
+        assert status == 400
+        assert error["code"] == "pricing_not_allowed"
+    finally:
+        server.stop()
+        store.close()
+
+
 def test_primary_monitor_contribution_export_is_idempotent(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     token = "seat-service-token-" + "x" * 40
