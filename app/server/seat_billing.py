@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import Any
@@ -41,7 +42,7 @@ def canonical_hash(payload: dict[str, Any]) -> str:
 
 
 def migrate_seat_billing_schema(connection: Any) -> None:
-    """Create the append-only grant/event/delivery interval ledger tables."""
+    """Create Seat alert ledgers and primary-monitor contribution evidence."""
     statements = (
         """
         CREATE TABLE IF NOT EXISTS seat_alert_grants (
@@ -132,6 +133,27 @@ def migrate_seat_billing_schema(connection: Any) -> None:
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_seat_alert_consumptions_state ON seat_alert_consumptions(state, reserved_at)",
+        """
+        CREATE TABLE IF NOT EXISTS seat_monitor_contributions (
+            contribution_id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL DEFAULT '',
+            key_id TEXT NOT NULL DEFAULT '',
+            client_id TEXT NOT NULL,
+            system_id BIGINT,
+            system_name TEXT NOT NULL,
+            primary_generation INTEGER NOT NULL CHECK (primary_generation > 0),
+            started_at TEXT NOT NULL,
+            ended_at TEXT NOT NULL,
+            duration_seconds INTEGER NOT NULL CHECK (duration_seconds > 0),
+            rule_version TEXT NOT NULL DEFAULT 'primary-presence.v1',
+            eligibility TEXT NOT NULL DEFAULT 'eligible',
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            UNIQUE (client_id, system_name, primary_generation, started_at, ended_at)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_seat_monitor_contributions_created ON seat_monitor_contributions(created_at, contribution_id)",
+        "CREATE INDEX IF NOT EXISTS idx_seat_monitor_contributions_system ON seat_monitor_contributions(system_name, started_at, ended_at)",
     )
     for statement in statements:
         connection.execute(statement)
@@ -155,7 +177,7 @@ def migrate_seat_billing_schema(connection: Any) -> None:
 
 
 class SeatBillingRepository:
-    """SQL operations for grants, eligible events, interval reservations and ACKs."""
+    """SQL operations for alert billing and primary-monitor evidence."""
 
     def __init__(self, connect: Callable[[], Any]) -> None:
         self._connect = connect
@@ -438,6 +460,155 @@ class SeatBillingRepository:
         watermark = self._delivery_cursor(str(latest["created_at"]), str(latest["delivery_id"])) if latest is not None else ""
         return {"deliveries": deliveries, "next_cursor": next_cursor, "committed_watermark": watermark, "earliest_available_watermark": str(earliest["created_at"] or "") if earliest is not None else "", "has_more": len(deliveries) >= page_limit, "protocol_version": SEAT_BILLING_PROTOCOL_VERSION}
 
+    def record_monitor_contribution(
+        self,
+        record: dict[str, Any],
+        *,
+        connection: Any | None = None,
+    ) -> dict[str, Any]:
+        """Persist one server-confirmed primary-node monitoring interval."""
+        client_id = str(record.get("client_id") or "").strip()
+        system_name = str(record.get("system_name") or "").strip()
+        started_at = str(record.get("started_at") or "").strip()
+        ended_at = str(record.get("ended_at") or "").strip()
+        try:
+            generation = int(record.get("primary_generation") or 0)
+            duration_seconds = int(record.get("duration_seconds") or 0)
+        except (TypeError, ValueError) as exc:
+            raise SeatBillingError(
+                "monitor contribution interval is invalid",
+                "invalid_monitor_contribution",
+            ) from exc
+        if (
+            not client_id
+            or not system_name
+            or not started_at
+            or not ended_at
+            or generation <= 0
+            or duration_seconds <= 0
+        ):
+            raise SeatBillingError(
+                "monitor contribution interval is invalid",
+                "invalid_monitor_contribution",
+            )
+        contribution_id = str(record.get("contribution_id") or "").strip()
+        if not contribution_id:
+            contribution_id = hashlib.sha256(
+                "|".join(
+                    (
+                        client_id,
+                        system_name.casefold(),
+                        str(generation),
+                        started_at,
+                        ended_at,
+                    )
+                ).encode("utf-8")
+            ).hexdigest()
+        created_at = str(record.get("created_at") or utc_now_iso())
+        evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
+        normalized = {
+            "contribution_id": contribution_id,
+            "account_id": str(record.get("account_id") or ""),
+            "key_id": str(record.get("key_id") or ""),
+            "client_id": client_id,
+            "system_id": record.get("system_id"),
+            "system_name": system_name,
+            "primary_generation": generation,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_seconds": duration_seconds,
+            "rule_version": str(record.get("rule_version") or "primary-presence.v1"),
+            "eligibility": str(record.get("eligibility") or "eligible"),
+            "evidence_json": json.dumps(
+                evidence,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "created_at": created_at,
+        }
+        connection_context = nullcontext(connection) if connection is not None else self._connect()
+        with connection_context as connection:
+            existing = connection.execute(
+                "SELECT * FROM seat_monitor_contributions WHERE contribution_id = ?",
+                (contribution_id,),
+            ).fetchone()
+            if existing is not None:
+                return {"contribution": self._monitor_contribution(dict(existing)), "created": False}
+            connection.execute(
+                """
+                INSERT INTO seat_monitor_contributions (
+                    contribution_id, account_id, key_id, client_id, system_id,
+                    system_name, primary_generation, started_at, ended_at,
+                    duration_seconds, rule_version, eligibility, evidence_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (client_id, system_name, primary_generation, started_at, ended_at)
+                DO NOTHING
+                """,
+                tuple(normalized.values()),
+            )
+            row = connection.execute(
+                "SELECT * FROM seat_monitor_contributions WHERE contribution_id = ?",
+                (contribution_id,),
+            ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    """
+                    SELECT * FROM seat_monitor_contributions
+                    WHERE client_id = ? AND system_name = ? AND primary_generation = ?
+                      AND started_at = ? AND ended_at = ?
+                    """,
+                    (client_id, system_name, generation, started_at, ended_at),
+                ).fetchone()
+        return {
+            "contribution": self._monitor_contribution(dict(row)) if row is not None else normalized,
+            "created": row is not None and str(row["contribution_id"]) == contribution_id,
+        }
+
+    def list_monitor_contributions(self, *, after: str = "", limit: int = 100) -> dict[str, Any]:
+        """Return primary-only monitoring evidence for Seat reconciliation."""
+        page_limit = max(1, min(500, int(limit)))
+        created_at, contribution_id = self._parse_monitor_cursor(after)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM seat_monitor_contributions
+                WHERE (? = '' OR (created_at, contribution_id) > (?, ?))
+                ORDER BY created_at ASC, contribution_id ASC
+                LIMIT ?
+                """,
+                ("" if not after else after, created_at, contribution_id, page_limit),
+            ).fetchall()
+            earliest = connection.execute(
+                "SELECT MIN(created_at) AS created_at FROM seat_monitor_contributions"
+            ).fetchone()
+            latest = connection.execute(
+                "SELECT created_at, contribution_id FROM seat_monitor_contributions ORDER BY created_at DESC, contribution_id DESC LIMIT 1"
+            ).fetchone()
+        contributions = [self._monitor_contribution(dict(row)) for row in rows]
+        next_cursor = (
+            self._monitor_cursor(
+                contributions[-1]["created_at"], contributions[-1]["contribution_id"]
+            )
+            if contributions
+            else ""
+        )
+        watermark = (
+            self._monitor_cursor(str(latest["created_at"]), str(latest["contribution_id"]))
+            if latest is not None
+            else ""
+        )
+        return {
+            "contributions": contributions,
+            "next_cursor": next_cursor,
+            "committed_watermark": watermark,
+            "earliest_available_watermark": str(earliest["created_at"] or "") if earliest is not None else "",
+            "has_more": len(contributions) >= page_limit,
+            "protocol_version": SEAT_BILLING_PROTOCOL_VERSION,
+            "rule_version": "primary-presence.v1",
+        }
+
     def _cursor_params(self, cursor: str, limit: int) -> tuple[Any, ...]:
         created, event_id, revision = self._parse_cursor(cursor)
         return ("" if not cursor else cursor, created, event_id, revision, limit)
@@ -475,6 +646,20 @@ class SeatBillingRepository:
         return f"{created_at}|{delivery_id}"
 
     @staticmethod
+    def _parse_monitor_cursor(cursor: str) -> tuple[str, str]:
+        value = str(cursor or "")
+        if not value:
+            return "", ""
+        parts = value.split("|", 1)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise SeatBillingError("cursor is invalid", "invalid_cursor")
+        return parts[0], parts[1]
+
+    @staticmethod
+    def _monitor_cursor(created_at: str, contribution_id: str) -> str:
+        return f"{created_at}|{contribution_id}"
+
+    @staticmethod
     def _billed_units(duration_seconds: int, unit_seconds: int) -> int:
         if duration_seconds <= 0 or unit_seconds <= 0:
             raise SeatBillingError("interval duration and unit must be positive", "invalid_interval")
@@ -503,6 +688,32 @@ class SeatBillingRepository:
         if not isinstance(ack_evidence, dict):
             ack_evidence = {}
         return {"delivery_id": str(row["delivery_id"]), "charge_event_id": str(row["charge_event_id"]), "revision": int(row["revision"]), "grant_id": str(row["grant_id"]), "account_id": str(row["account_id"]), "key_id": str(row["key_id"]), "connection_id": str(row["connection_id"]), "client_version": str(row.get("client_version") or ""), "started_at": str(row["started_at"]), "ended_at": str(row["ended_at"]), "duration_seconds": int(row["duration_seconds"]), "billed_units": int(row["billed_units"]), "ack_deadline_at": str(row["ack_deadline_at"]), "status": str(row["status"]), "consumption_state": str(row.get("consumption_state") or ""), "sent_at": str(row["sent_at"]), "ack_at": str(row.get("ack_at") or ""), "ack_idempotency_key": str(row.get("ack_idempotency_key") or ""), "ack_evidence": ack_evidence, "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"])}
+
+    @staticmethod
+    def _monitor_contribution(row: dict[str, Any]) -> dict[str, Any]:
+        try:
+            evidence = json.loads(row.get("evidence_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            evidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+        return {
+            "contribution_id": str(row["contribution_id"]),
+            "account_id": str(row.get("account_id") or ""),
+            "key_id": str(row.get("key_id") or ""),
+            "client_id": str(row["client_id"]),
+            "system_id": row.get("system_id"),
+            "system_name": str(row["system_name"]),
+            "primary_generation": int(row["primary_generation"]),
+            "started_at": str(row["started_at"]),
+            "ended_at": str(row["ended_at"]),
+            "duration_seconds": int(row["duration_seconds"]),
+            "rule_version": str(row.get("rule_version") or "primary-presence.v1"),
+            "eligibility": str(row.get("eligibility") or "eligible"),
+            "evidence": evidence,
+            "created_at": str(row["created_at"]),
+            "protocol_version": SEAT_BILLING_PROTOCOL_VERSION,
+        }
 
     @staticmethod
     def _consumption(row: dict[str, Any], **overrides: Any) -> dict[str, Any]:

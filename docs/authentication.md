@@ -77,3 +77,7 @@ loopback 例外，必须带 `X-EVE-SENTRY-Embedded-Bot: 1`，不携带 Bearer �
 投递后再发送 ACK；普通人工告警确认、bootstrap、重放、清空和旧客户端请求不会形成收费凭据。
 `--allow-alert-consumption` 默认关闭，生产开启前需与 Seat exchange 的有限额度预留和退款
 契约完成联调。
+
+主节点监控奖励不由客户端自行申报。服务端按 `source_join_order` 为每个星系选择唯一主节点，
+仅把该节点连续 Presence 的服务端确认区间写入 `seat_monitor_contributions`；Seat 通过集成令牌
+读取后按 `sentry_monitor` 规则结算。备用节点、历史重放、客户端累计秒数和未归因旧密钥不产生奖励。

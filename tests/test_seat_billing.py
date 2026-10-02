@@ -4,6 +4,7 @@ import hashlib
 import json
 import uuid
 from urllib.error import HTTPError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from app.server.auth import AuthService
@@ -330,6 +331,54 @@ def test_delivery_without_ack_capability_does_not_reserve_seconds(tmp_path):
             "SELECT remaining_seconds FROM seat_alert_grants WHERE grant_id = ?",
             (grant_id,),
         ).fetchone()[0] == 60
+    finally:
+        server.stop()
+        store.close()
+
+
+def test_primary_monitor_contribution_export_is_idempotent(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    token = "seat-service-token-" + "x" * 40
+    server = IntelHTTPServer(store, port=0, seat_integration_token=token)
+    repository = SeatBillingRepository(store._connect)
+    record = {
+        "account_id": "seat-account",
+        "key_id": "seat-key",
+        "client_id": "detector-1",
+        "system_id": 30004759,
+        "system_name": "S-KSWL",
+        "primary_generation": 7,
+        "started_at": "2026-10-02T00:00:00+00:00",
+        "ended_at": "2026-10-02T00:00:10+00:00",
+        "duration_seconds": 10,
+        "created_at": "2026-10-02T00:00:10+00:00",
+    }
+    try:
+        first = repository.record_monitor_contribution(record)
+        replay = repository.record_monitor_contribution(record)
+        assert first["created"] is True
+        assert replay["created"] is False
+        server.start()
+        status, unauthorized = _request(
+            f"{server.url}/api/v1/integrations/seat/monitor-contributions",
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        assert status == 401
+        assert unauthorized["code"] == "seat_integration_unauthorized"
+        status, payload = _request(
+            f"{server.url}/api/v1/integrations/seat/monitor-contributions?limit=10",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert status == 200
+        assert payload["rule_version"] == "primary-presence.v1"
+        assert payload["contributions"][0]["contribution_id"] == first["contribution"]["contribution_id"]
+        assert payload["contributions"][0]["duration_seconds"] == 10
+        status, empty = _request(
+            f"{server.url}/api/v1/integrations/seat/monitor-contributions?after={quote(payload['next_cursor'])}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert status == 200
+        assert empty["contributions"] == []
     finally:
         server.stop()
         store.close()

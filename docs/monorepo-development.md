@@ -32,9 +32,10 @@ ESI Gateway 已按目录导入并保留历史。功能分支和 Pull Request 可
    检查，失败时使用已记录的回滚流程。
 6. 工作树中已有的用户修改必须保留，不得用重置或强制覆盖方式清理。
 
-Seat 预警收费联调保持两端事实源分离：Sentry 保存事件资格、修订、授权投递、客户端 ACK
-和对账游标；GloryNavy_Seat 保存账号归属、价格政策、币预留、消费、释放和退款。任何跨项目
-字段变更都要同时更新 `docs/api-reference.md` 与 Seat 侧 OpenAPI/模块文档，并明确协议版本、
+Seat 联调保持两端事实源分离：Sentry 保存主节点监控贡献区间、预警事件资格、修订、授权投递、客户端 ACK
+和对账游标；GloryNavy_Seat 保存账号归属、奖励/价格政策、币预留、消费、释放和退款。主节点贡献通过
+`GET /api/v1/integrations/seat/monitor-contributions` 只读导出，当前只支持 `sentry_monitor` 覆盖基础奖，
+不导出独立事件奖。任何跨项目字段变更都要同时更新 `docs/api-reference.md` 与 Seat 侧 OpenAPI/模块文档，并明确协议版本、
 幂等键、重放结果和不可恢复游标缺口。收费开关默认关闭，不能以本地服务端测试代替 exchange
 生产费率或结算验收。
 

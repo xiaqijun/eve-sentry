@@ -202,8 +202,9 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 | `DELETE` | `/api/v1/integrations/seat/keys/{key_id}` | 幂等吊销 Seat 密钥；未知 ID 返回 `404`、`seat_key_not_found` |
 
 创建/吊销分别写入 `auth_audit_log`；审计只记录调用方 IP、请求 ID、密钥 ID、权限/原因和
-时间。相同 `operation_id` 配不同请求返回 `409`、`operation_conflict`。该最小切片只管理密钥生命周期，
-尚未启用监控奖励、预警扣费或跨项目对账，完整契约见[Seat 接入计划](seat-integration-plan.md)。
+时间。相同 `operation_id` 配不同请求返回 `409`、`operation_conflict`。监控贡献事实已支持主节点
+区间记录和 Seat 只读对账；服务端不计算果壳币金额，监控奖励发放仍由 Seat 灰度开关控制。
+预警扣费和跨项目自动结算仍默认关闭，完整契约见[Seat 接入计划](seat-integration-plan.md)。
 
 ### SeAT 预警收费协议（v1，默认关闭）
 
@@ -224,6 +225,7 @@ ACK 都返回 `503 alert_consumption_disabled`。打开前必须先完成 GloryN
 | `POST` | `/api/v1/integrations/seat/alert-deliveries` | 记录已发送投递并按账号/授权原子预留有效预警区间秒数；字段为 `delivery_id/charge_event_id/revision/grant_id/account_id/key_id/connection_id/client_version/ack_capability/started_at/ended_at/duration_seconds/ack_deadline_at/sent_at`；`ack_capability` 必须为 `alert-ack.v1` |
 | `GET` | `/api/v1/integrations/seat/alert-deliveries?after={cursor}&limit={n}` | Seat 对账读取投递与消费状态；返回 `consumption_state`、区间字段、ACK 状态和游标水位 |
 | `GET` | `/api/v1/integrations/seat/alert-events?after={cursor}&limit={n}` | 只读对账页，返回 `next_cursor/committed_watermark/earliest_available_watermark/has_more/protocol_version` |
+| `GET` | `/api/v1/integrations/seat/monitor-contributions?after={cursor}&limit={n}` | 只读读取服务端确认的主节点监控区间；返回 `contribution_id/key_id/client_id/system_id/system_name/primary_generation/started_at/ended_at/duration_seconds/eligibility/evidence` 及游标水位 |
 | `POST` | `/api/v1/alert-deliveries/{delivery_id}/ack` | Seat alert key 在客户端完成去重并投递 UI 后确认；请求必须带 `charge_event_id/revision/connection_id/started_at/ended_at/duration_seconds` 和 `Idempotency-Key`（或 `ack_idempotency_key`），可附 `evidence` 使用证据快照 |
 
 投递预留只占一次 `grant_id + charge_event_id + revision + started_at + ended_at`，多设备重收同一区间不会再扣秒数；ACK 只接受服务端
@@ -327,6 +329,15 @@ ACK 都返回 `503 alert_consumption_disabled`。打开前必须先完成 GloryN
 | `GET` | `/api/v1/ocr/query/{query_id}` | 查询独立 OCR 请求的聚合结果 |
 | `POST` | `/api/v1/clients/heartbeats` | 上传客户端状态、窗口目标和最近异常 |
 | `POST` | `/api/v1/client/identity-check`、`/api/v1/client/identity-checks` | 旧客户端兼容空操作；返回已确认，不读取 EVE 身份或创建任务 |
+
+### Seat 监控贡献（`primary-presence.v1`）
+
+哨兵为每个星系选择一个连续驻留时间最早的主节点（`primary_generation`）。只有主节点相邻、
+由服务端接收的 Presence 帧形成监控贡献区间；敌对数量为 0 仍然有效。主节点交接从新节点
+首次被服务端确认后开始，备用节点重叠期间不重复计时；服务端确认间隔超过 45 秒时不生成区间。
+客户端不能上传累计秒数或修改 `primary_generation`。Seat 通过
+`GET /api/v1/integrations/seat/monitor-contributions?after={cursor}&limit={n}` 读取事实，并
+自行按 `sentry_monitor` 规则、费率快照、每日上限和账号归属结算；Sentry 不接收余额，也不直接写币账。
 | `GET` | `/api/v1/clients` | 在线客户端和聚合状态 |
 | `GET` | `/api/v1/active-intel` | 当前实时情报 |
 | `GET` | `/api/v1/alert-history` | 按时间分页读取报表告警历史；生产 PostgreSQL 使用独立历史路径 |

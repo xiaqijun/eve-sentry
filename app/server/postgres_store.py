@@ -34,7 +34,7 @@ from app.server.source_authority import authoritative_items, primary_sources
 from app.server.state_maintenance import StateMaintenance
 from app.server.capture_state import capture_is_current, capture_payload, record_roster_quality, reconcile_zero_events
 from app.server.state_repair import StateRepair, mark_failed_write
-from app.server.seat_billing import migrate_seat_billing_schema
+from app.server.seat_billing import SeatBillingRepository, migrate_seat_billing_schema
 
 POSTGRES_POOL_MIN_SIZE = 2
 POSTGRES_POOL_MAX_SIZE = 8
@@ -660,12 +660,45 @@ class PostgreSQLIntelStore(IntelStore):
         """Record and persist the latest detector visual-count state."""
         with self._lock:
             active_before = self._active_rows_snapshot()
+            primary_before = {
+                key: {
+                    "client_id": str(item.metadata.get("client_id") or ""),
+                    "generation": int(item.metadata.get("source_join_order") or 0),
+                    "last_seen_at": str(
+                        item.metadata.get("server_received_at") or item.last_seen_at or ""
+                    ),
+                    "system_id": item.system_id,
+                    "system_name": item.system_name,
+                    "account_id": str(item.metadata.get("seat_account_id") or ""),
+                    "key_id": str(item.metadata.get("seat_key_id") or ""),
+                }
+                for key, item in primary_sources(self._active_intel.values()).items()
+            }
             hostile_before = self._hostile_system_state()
             previous_zeros = [item for item in primary_sources(self._active_intel.values()).values()
                               if item.metadata.get("hostile_icon_count") == 0]
             result = super().record_hostile_presence(payload)
             if not result.get("accepted", True) and not result.get("scope_expired"):
                 return result
+            server_received_at = str(payload.get("server_received_at") or "").strip()
+            if server_received_at:
+                client_id = str(payload.get("client_id") or "").strip()
+                system_key = str(
+                    payload.get("system_name") or payload.get("system") or ""
+                ).strip().casefold()
+                for item in self._active_intel.values():
+                    if (
+                        item.source == "eve-sentry-detector"
+                        and str(item.metadata.get("client_id") or "").strip() == client_id
+                        and item.system_name.casefold() == system_key
+                        and item.metadata.get("presence_only")
+                    ):
+                        item.metadata["server_received_at"] = server_received_at
+                        for field in ("seat_account_id", "seat_key_id"):
+                            value = str(payload.get(field) or "").strip()
+                            if value:
+                                item.metadata[field] = value
+                        break
             active_rows = self._changed_active_rows(active_before)
             hostile_waves = self._hostile_wave_changes(
                 hostile_before,
@@ -684,16 +717,68 @@ class PostgreSQLIntelStore(IntelStore):
                 previous_zeros=previous_zeros,
                 positive_systems=self._hostile_system_state(),
             )
+            monitor_contribution = None
+            current_system_key = str(
+                payload.get("system_name") or payload.get("system") or ""
+            ).strip().casefold()
+            current_client_id = str(payload.get("client_id") or "").strip()
+            if server_received_at:
+                primary_after = primary_sources(self._active_intel.values())
+                for system_key, item in primary_after.items():
+                    if system_key != current_system_key:
+                        continue
+                    after_client_id = str(item.metadata.get("client_id") or "").strip()
+                    if after_client_id != current_client_id:
+                        continue
+                    before = primary_before.get(system_key)
+                    if not before or not after_client_id or before["client_id"] != after_client_id:
+                        continue
+                    generation = int(item.metadata.get("source_join_order") or 0)
+                    if generation <= 0 or generation != int(before.get("generation") or 0):
+                        continue
+                    started_at = str(before.get("last_seen_at") or "").strip()
+                    if not started_at or started_at == server_received_at:
+                        continue
+                    elapsed = self._seconds_between_iso(started_at, server_received_at)
+                    if elapsed is None or elapsed <= 0 or elapsed > 45:
+                        continue
+                    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+                    monitor_contribution = {
+                        "account_id": str(metadata.get("seat_account_id") or before.get("account_id") or ""),
+                        "key_id": str(metadata.get("seat_key_id") or before.get("key_id") or ""),
+                        "client_id": after_client_id,
+                        "system_id": item.system_id,
+                        "system_name": item.system_name,
+                        "primary_generation": generation,
+                        "started_at": started_at,
+                        "ended_at": server_received_at,
+                        "duration_seconds": int(elapsed),
+                        "eligibility": "eligible" if metadata.get("seat_key_id") else "unattributed",
+                        "evidence": {
+                            "primary_client_id": after_client_id,
+                            "primary_generation": generation,
+                            "server_confirmed": True,
+                            "hostile_icon_count": max(0, int(metadata.get("hostile_icon_count") or 0)),
+                        },
+                    }
+                    break
             db_write_ticket = (
-                self._reserve_db_write() if active_rows or hostile_waves or state_events else None
+                self._reserve_db_write()
+                if active_rows or hostile_waves or state_events or monitor_contribution
+                else None
             )
-        if active_rows or hostile_waves or state_events:
+        if active_rows or hostile_waves or state_events or monitor_contribution:
             self._wait_for_db_write(db_write_ticket)
             try:
                 with self._connect() as connection:
                     self._upsert_active_intel_rows(connection, active_rows)
                     self._persist_hostile_wave_changes(connection, hostile_waves)
                     self._persist_intel_events(connection, state_events)
+                    if monitor_contribution:
+                        SeatBillingRepository(self._connect).record_monitor_contribution(
+                            monitor_contribution,
+                            connection=connection,
+                        )
             except Exception:
                 mark_failed_write(self)
                 raise

@@ -547,6 +547,9 @@ def _presence_payloads_from_heartbeat(payload: dict[str, Any]) -> list[dict[str,
                 "presence_state_id": presence_state_id,
                 "captured_at": captured_at,
                 "seen_at": captured_at,
+                "server_received_at": str(payload.get("server_received_at") or "").strip(),
+                "seat_account_id": str(payload.get("seat_account_id") or "").strip(),
+                "seat_key_id": str(payload.get("seat_key_id") or "").strip(),
             }
         )
     return reconciliations
@@ -1639,6 +1642,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         if path == f"{API_V1_PREFIX}/integrations/seat/alert-deliveries":
             self._handle_seat_alert_deliveries_get(parsed.query)
             return
+        if path == f"{API_V1_PREFIX}/integrations/seat/monitor-contributions":
+            self._handle_seat_monitor_contributions_get(parsed.query)
+            return
         if path == f"{API_V1_PREFIX}/admin/map-settings":
             handle_settings(self)
             return
@@ -1970,7 +1976,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         if path == f"{API_V1_PREFIX}/hostile-presence":
             try:
                 store = self._store()
-                payload = self._read_json()
+                payload = self._attributed_presence_payload(self._read_json())
                 result = store.record_hostile_presence(payload)
                 store.refresh_detector_heartbeat(payload.get("client_id"))
             except (ValueError, json.JSONDecodeError) as exc:
@@ -2364,6 +2370,30 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         self._send_json(result)
 
+    def _handle_seat_monitor_contributions_get(self, query_string: str) -> None:
+        """Export server-confirmed primary monitoring intervals to Seat."""
+        try:
+            query = parse_qs(query_string)
+            limit = self._parse_optional_int(query.get("limit", [""])[0]) or 100
+            result = self._seat_billing_repository().list_monitor_contributions(
+                after=str(query.get("after", [""])[0] or "").strip(),
+                limit=limit,
+            )
+        except SeatBillingError as exc:
+            self._send_json({"error": str(exc), "code": exc.code}, exc.status)
+            return
+        except Exception:
+            logger.exception("Seat monitor contribution page failed")
+            self._send_json(
+                {
+                    "error": "Seat billing storage is unavailable",
+                    "code": "billing_storage_error",
+                },
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self._send_json(result)
+
     def _handle_seat_alert_event_upsert(self) -> None:
         if not self._seat_consumption_enabled():
             return
@@ -2691,6 +2721,27 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         )
         attributed["remote_ip"] = self._login_client_ip()
         attributed["seen_at"] = utc_now_iso()
+        attributed["server_received_at"] = attributed["seen_at"]
+        attributed["seat_account_id"] = (
+            principal.account_id if principal is not None and principal.is_seat else ""
+        )
+        attributed["seat_key_id"] = (
+            principal.api_key_id if principal is not None and principal.is_seat else ""
+        )
+        return attributed
+
+    def _attributed_presence_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Attach server-owned identity and receipt time to direct Presence uploads."""
+        attributed = dict(payload)
+        principal = self._auth_principal
+        received_at = utc_now_iso()
+        attributed["server_received_at"] = received_at
+        attributed["seat_account_id"] = (
+            principal.account_id if principal is not None and principal.is_seat else ""
+        )
+        attributed["seat_key_id"] = (
+            principal.api_key_id if principal is not None and principal.is_seat else ""
+        )
         return attributed
 
     def _handle_v1_put(self, path: str) -> None:

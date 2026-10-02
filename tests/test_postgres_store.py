@@ -1,7 +1,9 @@
 import json
+import sqlite3
 import sys
 import threading
 import types
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +26,7 @@ from app.server.postgres_store import (
     _PostgresConnection,
     _redact_dsn,
 )
+from app.server.seat_billing import SeatBillingRepository, migrate_seat_billing_schema
 
 
 def test_postgres_store_requires_dsn():
@@ -2107,6 +2110,47 @@ def test_postgres_hostile_presence_persists_active_rows_and_wave_changes(tmp_pat
     assert persisted_waves[0][0]["system_name"] == "S-KSWL"
     assert persisted_waves[1][0]["action"] == "clear"
     assert persisted_waves[1][0]["cleared_at"] == "2026-08-07T10:00:10+00:00"
+
+
+def test_primary_monitor_contribution_ignores_standby_uploads(tmp_path):
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection.row_factory = sqlite3.Row
+    migrate_seat_billing_schema(connection)
+
+    @contextmanager
+    def connect():
+        yield connection
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._load_reports = lambda: []
+    IntelStore.__init__(store, tmp_path / "intel.json", systems={}, links=[])
+    store._connect = connect
+    store._upsert_active_intel_rows = lambda _connection, _rows: None
+    store._persist_hostile_wave_changes = lambda _connection, _changes: None
+    store._persist_intel_events = lambda _connection, _events: None
+
+    def presence(client_id, received_at):
+        return {
+            "client_id": client_id,
+            "system_name": "S-KSWL",
+            "hostile_icon_count": 0,
+            "seen_at": received_at,
+            "server_received_at": received_at,
+        }
+
+    try:
+        store.record_hostile_presence(presence("primary", "2026-10-02T00:00:00+00:00"))
+        store.record_hostile_presence(presence("primary", "2026-10-02T00:00:10+00:00"))
+        store.record_hostile_presence(presence("standby", "2026-10-02T00:00:20+00:00"))
+        store.record_hostile_presence(presence("primary", "2026-10-02T00:00:30+00:00"))
+        rows = SeatBillingRepository(connect).list_monitor_contributions()["contributions"]
+    finally:
+        IntelStore.close(store)
+        connection.close()
+
+    assert len(rows) == 2
+    assert {row["client_id"] for row in rows} == {"primary"}
+    assert sorted(row["duration_seconds"] for row in rows) == [10, 20]
 
 
 def test_postgres_retention_deletes_in_database_without_loading_history():

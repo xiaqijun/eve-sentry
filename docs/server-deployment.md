@@ -180,6 +180,10 @@ EVE_SENTRY_SERVER_POSTGRES_DSN=postgresql://eve_sentry:CHANGE_ME@127.0.0.1:5432/
 sudo -u postgres pg_dump -Fc eve_sentry > /var/lib/eve-sentry/eve_sentry.dump
 ```
 
+当前版本还会自动创建 `seat_monitor_contributions`。它只保存服务端确认的每个星系主节点
+监控区间和幂等证据，不保存果壳币余额或金额；Seat 通过集成令牌只读拉取，生产发奖开关仍由
+Seat 侧控制。迁移失败时服务不会把区间伪装成已结算，应先修复数据库再重试启动。
+
 升级到包含视觉波次峰值和波次人员快照的版本后，启动迁移会为 `hostile_waves` 自动增加
 `peak_hostile_count`、`personnel_json`。当前仍活跃的波次会在启动协调时用 active intel 回填峰值
 和已解析人员；已经关闭
