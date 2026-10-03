@@ -795,7 +795,11 @@ class EveSentryAlertRelay:
             separators=(",", ":"),
         ).encode("utf-8")
         change_version = hashlib.sha256(change_payload).hexdigest()[:12]
-        event_id = f"node-snapshot:{version}:{change_version}:{occurred_at}"
+        # The snapshot and change fingerprints define the logical event.  The
+        # generated timestamp is presentation metadata; including it here
+        # would turn every heartbeat/refresh of an unchanged snapshot into a
+        # new QQ message and defeat the seven-day delivery de-duplication.
+        event_id = f"node-snapshot:{version}:{change_version}"
 
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
         groups = sorted(_decode(value) for value in raw_groups if _decode(value))
