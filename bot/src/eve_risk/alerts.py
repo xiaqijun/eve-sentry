@@ -788,18 +788,27 @@ class EveSentryAlertRelay:
             version = hashlib.sha256(version_payload).hexdigest()[:16]
         if cache_snapshot:
             await self._cache_monitoring_node_snapshot(normalized_nodes, version)
-        change_payload = json.dumps(
-            changes or [],
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        change_version = hashlib.sha256(change_payload).hexdigest()[:12]
-        # The snapshot and change fingerprints define the logical event.  The
-        # generated timestamp is presentation metadata; including it here
-        # would turn every heartbeat/refresh of an unchanged snapshot into a
-        # new QQ message and defeat the seven-day delivery de-duplication.
-        event_id = f"node-snapshot:{version}:{change_version}"
+        # De-duplicate an unchanged current state, but allow a state to be
+        # delivered again after a real transition away and back.  Using only
+        # the current version as the seven-day event key permanently suppresses
+        # recurring online -> offline -> online cycles.
+        previous_version = _decode(
+            await self.redis.get(MONITORING_NODE_SNAPSHOT_STATE_KEY)
+        ).strip()
+        if previous_version == version:
+            logger.info(
+                "EVE Sentry monitoring node snapshot unchanged version=%s nodes=%d",
+                version,
+                len(normalized_nodes),
+            )
+            return True
+        occurrence_token = hashlib.sha256(
+            str(occurred_at or "").strip().encode("utf-8")
+        ).hexdigest()[:12]
+        event_id = (
+            f"node-snapshot:{previous_version or 'initial'}:{version}:"
+            f"{occurrence_token}"
+        )
 
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
         groups = sorted(_decode(value) for value in raw_groups if _decode(value))

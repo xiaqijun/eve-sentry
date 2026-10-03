@@ -96,33 +96,12 @@ class EmbeddedBotBridge:
                 await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
                 continue
 
-            # Fetch pages until the snapshot watermark is covered.  Marker
-            # coalescing is safe because the next read starts at this cursor.
-            while cursor < state_seq:
-                page = await asyncio.to_thread(source.snapshot, cursor)
-                page_events = page.get("events")
-                if not isinstance(page_events, list) or not page_events:
-                    cursor = state_seq
-                    break
-                progressed = False
-                for event in page_events:
-                    if not isinstance(event, dict):
-                        continue
-                    event_seq = max(0, int(event.get("seq") or 0))
-                    if event_seq <= cursor:
-                        continue
-                    processed = await self._process_event(relay, event)
-                    if not processed:
-                        raise RuntimeError(
-                            "embedded bot event processing failed; retry from cursor"
-                        )
-                    cursor = event_seq
-                    progressed = True
-                    await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
-                if not progressed:
-                    cursor = state_seq
-                    break
-
+            # The current bootstrap is authoritative.  Do not replay every
+            # durable transition accumulated while the bot was busy or
+            # disconnected: an alert that has already cleared must not become
+            # a late QQ notification.  This mirrors the warning client, which
+            # replaces its realtime view from the newest snapshot and then
+            # continues from the snapshot watermark.
             if not await relay.process_bootstrap(bootstrap):
                 raise RuntimeError("embedded bot bootstrap delivery failed")
             cursor = max(cursor, state_seq)

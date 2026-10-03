@@ -107,3 +107,59 @@ def test_embedded_bridge_maps_durable_state_events():
     assert relay.payloads[0]["id"] == "state:12"
     assert relay.payloads[0]["system_name"] == "s-kswl"
     assert relay.payloads[0]["presence_only"] is True
+
+
+def test_embedded_bridge_uses_latest_bootstrap_without_replaying_old_events():
+    class Redis:
+        async def get(self, _key):
+            return None
+
+        async def set(self, key, value):
+            self.last = (key, value)
+
+    class Source:
+        _STOP = EmbeddedEventSource._STOP
+
+        def __init__(self):
+            self.markers = iter([True, True, self._STOP])
+
+        async def wait(self):
+            return next(self.markers)
+
+        def snapshot(self, _after_seq):
+            return {
+                "ready": True,
+                "state_event_seq": 42,
+                "bootstrap": {"active_intel": [], "alerts": []},
+                "events": [
+                    {
+                        "seq": 41,
+                        "event_type": "alert.entered",
+                        "entity_key": "s-kswl",
+                        "payload": {"hostile_count": 1},
+                    }
+                ],
+            }
+
+    class Relay:
+        def __init__(self):
+            self.redis = Redis()
+            self.bootstraps = []
+            self.events = []
+
+        async def process_bootstrap(self, payload):
+            self.bootstraps.append(payload)
+            return True
+
+        async def process_alert_event(self, payload):
+            self.events.append(payload)
+            return True
+
+    async def run():
+        relay = Relay()
+        await EmbeddedBotBridge().run(Source(), relay)
+        return relay
+
+    relay = asyncio.run(run())
+    assert len(relay.bootstraps) == 2
+    assert relay.events == []

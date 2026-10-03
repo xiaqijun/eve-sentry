@@ -1230,6 +1230,45 @@ async def test_same_monitoring_snapshot_with_new_timestamp_is_deduplicated() -> 
 
 
 @pytest.mark.asyncio
+async def test_monitoring_snapshot_repeats_after_a_real_state_cycle() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "snapshot"}),
+        send_proactive_text=AsyncMock(),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+
+        online = [{"client_id": "client:alpha", "system_name": "Jita"}]
+        offline: list[dict[str, Any]] = []
+        assert await relay.deliver_monitoring_node_snapshot(
+            online,
+            "2026-08-10T01:00:00+00:00",
+            nodes_version="v1",
+        )
+        assert await relay.deliver_monitoring_node_snapshot(
+            offline,
+            "2026-08-10T01:00:01+00:00",
+            nodes_version="v2",
+        )
+        assert await relay.deliver_monitoring_node_snapshot(
+            online,
+            "2026-08-10T01:00:02+00:00",
+            nodes_version="v1",
+        )
+        assert await relay.deliver_monitoring_node_snapshot(
+            offline,
+            "2026-08-10T01:00:03+00:00",
+            nodes_version="v2",
+        )
+
+    assert qq.send_proactive_markdown.await_count == 4
+    qq.send_proactive_text.assert_not_awaited()
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
 async def test_subscribe_pushes_latest_cached_monitoring_snapshot() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     qq = SimpleNamespace(
