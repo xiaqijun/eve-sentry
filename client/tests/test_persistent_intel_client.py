@@ -60,7 +60,15 @@ def test_persistent_client_uses_same_transport_for_sse_events():
         transport=httpx.MockTransport(handler),
     )
     try:
-        events = list(client.iter_events(timeout=0, last_event_id="evt-0"))
+        events = list(
+            client.iter_events(
+                timeout=0,
+                last_event_id="evt-0",
+                ack_capability="alert-ack.v1",
+                connection_id="alert-client:connection-1",
+                client_id="alert-client",
+            )
+        )
     finally:
         client.close()
 
@@ -74,6 +82,11 @@ def test_persistent_client_uses_same_transport_for_sse_events():
     assert requests[0].headers["accept"] == "text/event-stream"
     assert requests[0].headers["authorization"] == "Bearer eve_secret"
     assert requests[0].headers["last-event-id"] == "evt-0"
+    assert requests[0].headers["x-eve-sentry-alert-ack"] == "alert-ack.v1"
+    assert requests[0].headers["x-eve-sentry-connection-id"] == (
+        "alert-client:connection-1"
+    )
+    assert requests[0].headers["x-eve-sentry-client-id"] == "alert-client"
 
 
 def test_persistent_client_keeps_reading_after_sse_event_separator():

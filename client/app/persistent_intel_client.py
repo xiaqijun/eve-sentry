@@ -80,6 +80,9 @@ class PersistentIntelApiClient(IntelApiClient):
         include_bootstrap: bool = False,
         min_score: int | None = None,
         min_level: str = "",
+        ack_capability: str = "",
+        connection_id: str = "",
+        client_id: str = "",
     ):
         """Yield SSE events over the same pooled HTTP transport as JSON calls."""
         params = {"limit": str(limit), "timeout": str(timeout)}
@@ -97,6 +100,12 @@ class PersistentIntelApiClient(IntelApiClient):
             "Accept": "text/event-stream",
             **self._authorization_headers(),
         }
+        if ack_capability:
+            headers["X-EVE-SENTRY-Alert-ACK"] = str(ack_capability)
+        if connection_id:
+            headers["X-EVE-SENTRY-Connection-ID"] = str(connection_id)
+        if client_id:
+            headers["X-EVE-SENTRY-Client-ID"] = str(client_id)
         if last_event_id:
             headers["Last-Event-ID"] = last_event_id
         if should_stop is not None and should_stop():
