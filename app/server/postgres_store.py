@@ -8,7 +8,7 @@ import logging
 import re
 import threading
 import time
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -3486,11 +3486,50 @@ class PostgreSQLIntelStore(IntelStore):
 
     def record_heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Persist heartbeats while keeping the base in-memory cache."""
+        client_id = str(payload.get("client_id") or "").strip()
+        with self._lock:
+            previous = dict(self._heartbeats.get(client_id) or {})
+            previous["details"] = dict(previous.get("details") or {})
         heartbeat = super().record_heartbeat(payload)
         with self._lock:
             raw = dict(self._heartbeats[heartbeat["client_id"]])
             raw["details"] = dict(raw.get("details") or {})
         self._write_heartbeat(raw)
+        previous_details = previous.get("details") if isinstance(previous.get("details"), dict) else {}
+        current_details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+        client_type = str(raw.get("client_type") or "").strip().casefold()
+        previous_account_id = str(previous_details.get("_server_seat_account_id") or "").strip()
+        previous_key_id = str(previous_details.get("_server_seat_key_id") or "").strip()
+        account_id = str(current_details.get("_server_seat_account_id") or "").strip()
+        key_id = str(current_details.get("_server_seat_key_id") or "").strip()
+        previous_seen = str(previous.get("seen_at") or "").strip()
+        current_seen = str(raw.get("seen_at") or "").strip()
+        if (
+            client_type == "alert_client"
+            and account_id
+            and key_id
+            and previous_seen
+            and current_seen
+            and previous_seen != current_seen
+            and account_id == previous_account_id
+            and key_id == previous_key_id
+        ):
+            try:
+                started = datetime.fromisoformat(previous_seen.replace("Z", "+00:00"))
+                ended = datetime.fromisoformat(current_seen.replace("Z", "+00:00"))
+                duration = int((ended - started).total_seconds())
+            except (TypeError, ValueError):
+                duration = 0
+            interval_cap = max(30, int(float(raw.get("heartbeat_interval_seconds") or 10) * 3))
+            if 0 < duration <= interval_cap:
+                SeatBillingRepository(self._connect).record_client_usage({
+                    "account_id": account_id,
+                    "key_id": key_id,
+                    "client_id": heartbeat["client_id"],
+                    "started_at": previous_seen,
+                    "ended_at": current_seen,
+                    "duration_seconds": duration,
+                })
         return heartbeat
 
     def refresh_detector_heartbeat(

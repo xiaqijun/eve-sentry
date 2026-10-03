@@ -161,6 +161,20 @@ def migrate_seat_billing_schema(connection: Any) -> None:
         "CREATE INDEX IF NOT EXISTS idx_seat_monitor_contributions_created ON seat_monitor_contributions(created_at, contribution_id)",
         "CREATE INDEX IF NOT EXISTS idx_seat_monitor_contributions_system ON seat_monitor_contributions(system_name, started_at, ended_at)",
         """
+        CREATE TABLE IF NOT EXISTS seat_client_usage (
+            usage_id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL,
+            key_id TEXT NOT NULL,
+            client_id TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT NOT NULL,
+            duration_seconds INTEGER NOT NULL CHECK (duration_seconds > 0),
+            created_at TEXT NOT NULL,
+            UNIQUE (client_id, started_at, ended_at)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_seat_client_usage_created ON seat_client_usage(created_at, usage_id)",
+        """
         CREATE TABLE IF NOT EXISTS seat_integration_settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             alert_consumption_enabled BOOLEAN NOT NULL DEFAULT FALSE,
@@ -665,6 +679,95 @@ class SeatBillingRepository:
             "rule_version": "primary-presence.v1",
         }
 
+    def record_client_usage(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Persist one authenticated client heartbeat interval for time billing."""
+        account_id = str(record.get("account_id") or "").strip()
+        key_id = str(record.get("key_id") or "").strip()
+        client_id = str(record.get("client_id") or "").strip()
+        started_at = str(record.get("started_at") or "").strip()
+        ended_at = str(record.get("ended_at") or "").strip()
+        try:
+            duration_seconds = int(record.get("duration_seconds") or 0)
+        except (TypeError, ValueError) as exc:
+            raise SeatBillingError("client usage duration is invalid", "invalid_client_usage") from exc
+        if not account_id or not key_id or not client_id or not started_at or not ended_at or duration_seconds <= 0:
+            raise SeatBillingError("client usage interval is invalid", "invalid_client_usage")
+        try:
+            started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+            ended = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise SeatBillingError("client usage interval is invalid", "invalid_client_usage") from exc
+        if ended <= started or int((ended - started).total_seconds()) != duration_seconds:
+            raise SeatBillingError("client usage interval is invalid", "invalid_client_usage")
+        usage_id = str(record.get("usage_id") or "").strip()
+        if not usage_id:
+            usage_id = hashlib.sha256(f"{client_id}|{started_at}|{ended_at}".encode()).hexdigest()
+        created_at = str(record.get("created_at") or utc_now_iso())
+        normalized = {
+            "usage_id": usage_id,
+            "account_id": account_id,
+            "key_id": key_id,
+            "client_id": client_id,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_seconds": duration_seconds,
+            "created_at": created_at,
+        }
+        with self._connect() as connection:
+            inserted = connection.execute(
+                """
+                INSERT INTO seat_client_usage (
+                    usage_id, account_id, key_id, client_id, started_at,
+                    ended_at, duration_seconds, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (client_id, started_at, ended_at) DO NOTHING
+                """,
+                tuple(normalized.values()),
+            )
+            created = int(getattr(inserted, "rowcount", 0)) == 1
+            row = connection.execute("SELECT * FROM seat_client_usage WHERE usage_id = ?", (usage_id,)).fetchone()
+            if row is None:
+                # A replay with a different caller-supplied usage id must
+                # still return the canonical interval selected by the unique
+                # client/start/end key.
+                row = connection.execute(
+                    "SELECT * FROM seat_client_usage WHERE client_id = ? AND started_at = ? AND ended_at = ?",
+                    (client_id, started_at, ended_at),
+                ).fetchone()
+        return {
+            "usage": self._client_usage(dict(row)) if row is not None else normalized,
+            "created": created,
+        }
+
+    def list_client_usage(self, *, after: str = "", limit: int = 100) -> dict[str, Any]:
+        """Return authenticated client online intervals in stable cursor order."""
+        page_limit = max(1, min(500, int(limit)))
+        created_at, usage_id = self._parse_monitor_cursor(after)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM seat_client_usage
+                WHERE (? = '' OR (created_at, usage_id) > (?, ?))
+                ORDER BY created_at ASC, usage_id ASC
+                LIMIT ?
+                """,
+                ("" if not after else after, created_at, usage_id, page_limit),
+            ).fetchall()
+            earliest = connection.execute("SELECT MIN(created_at) AS created_at FROM seat_client_usage").fetchone()
+            latest = connection.execute("SELECT created_at, usage_id FROM seat_client_usage ORDER BY created_at DESC, usage_id DESC LIMIT 1").fetchone()
+        usage = [self._client_usage(dict(row)) for row in rows]
+        next_cursor = self._monitor_cursor(usage[-1]["created_at"], usage[-1]["usage_id"]) if usage else ""
+        watermark = self._monitor_cursor(str(latest["created_at"]), str(latest["usage_id"])) if latest is not None else ""
+        return {
+            "usage": usage,
+            "next_cursor": next_cursor,
+            "committed_watermark": watermark,
+            "earliest_available_watermark": str(earliest["created_at"] or "") if earliest is not None else "",
+            "has_more": len(usage) >= page_limit,
+            "protocol_version": SEAT_BILLING_PROTOCOL_VERSION,
+            "rule_version": "client-heartbeat.v1",
+        }
+
     def _cursor_params(self, cursor: str, limit: int) -> tuple[Any, ...]:
         created, event_id, revision = self._parse_cursor(cursor)
         return ("" if not cursor else cursor, created, event_id, revision, limit)
@@ -769,6 +872,21 @@ class SeatBillingRepository:
             "evidence": evidence,
             "created_at": str(row["created_at"]),
             "protocol_version": SEAT_BILLING_PROTOCOL_VERSION,
+        }
+
+    @staticmethod
+    def _client_usage(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "usage_id": str(row["usage_id"]),
+            "account_id": str(row["account_id"]),
+            "key_id": str(row["key_id"]),
+            "client_id": str(row["client_id"]),
+            "started_at": str(row["started_at"]),
+            "ended_at": str(row["ended_at"]),
+            "duration_seconds": int(row["duration_seconds"]),
+            "created_at": str(row["created_at"]),
+            "protocol_version": SEAT_BILLING_PROTOCOL_VERSION,
+            "rule_version": "client-heartbeat.v1",
         }
 
     @staticmethod

@@ -451,6 +451,7 @@ class AuthHttpMixin:
             ("GET", "/api/v1/integrations/seat/alert-events"),
             ("GET", "/api/v1/integrations/seat/alert-deliveries"),
             ("GET", "/api/v1/integrations/seat/monitor-contributions"),
+            ("GET", "/api/v1/integrations/seat/client-usage"),
         }
         if (method, path) in service_paths:
             return True

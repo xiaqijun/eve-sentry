@@ -336,6 +336,65 @@ def test_delivery_without_ack_capability_does_not_reserve_seconds(tmp_path):
         store.close()
 
 
+def test_authenticated_client_heartbeat_usage_is_idempotent(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    repository = SeatBillingRepository(store._connect)
+    account_id = str(uuid.uuid4())
+    record = {
+        "account_id": account_id,
+        "key_id": "key-online",
+        "client_id": "client-online",
+        "started_at": "2026-10-01T00:00:00+00:00",
+        "ended_at": "2026-10-01T00:00:30+00:00",
+        "duration_seconds": 30,
+    }
+    try:
+        first = repository.record_client_usage(record)
+        replay = repository.record_client_usage(record)
+        page = repository.list_client_usage(limit=10)
+        assert first["created"] is True
+        assert replay["created"] is False
+        assert page["usage"][0]["usage_id"] == first["usage"]["usage_id"]
+        assert page["usage"][0]["duration_seconds"] == 30
+    finally:
+        store.close()
+
+
+def test_client_usage_export_is_service_token_protected(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    token = "seat-service-token-" + "x" * 40
+    server = IntelHTTPServer(store, port=0, seat_integration_token=token)
+    repository = SeatBillingRepository(store._connect)
+    record = {
+        "account_id": "seat-account",
+        "key_id": "seat-key",
+        "client_id": "client-1",
+        "started_at": "2026-10-02T00:00:00+00:00",
+        "ended_at": "2026-10-02T00:00:30+00:00",
+        "duration_seconds": 30,
+    }
+    try:
+        saved = repository.record_client_usage(record)
+        server.start()
+        status, unauthorized = _request(
+            f"{server.url}/api/v1/integrations/seat/client-usage",
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        assert status == 401
+        assert unauthorized["code"] == "seat_integration_unauthorized"
+        status, payload = _request(
+            f"{server.url}/api/v1/integrations/seat/client-usage?limit=10",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert status == 200
+        assert payload["rule_version"] == "client-heartbeat.v1"
+        assert payload["usage"][0]["usage_id"] == saved["usage"]["usage_id"]
+        assert payload["usage"][0]["duration_seconds"] == 30
+    finally:
+        server.stop()
+        store.close()
+
+
 def test_alert_consumption_gate_is_persisted_and_service_token_controlled(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     token = "seat-service-token-" + "x" * 40

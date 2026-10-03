@@ -1660,6 +1660,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         if path == f"{API_V1_PREFIX}/integrations/seat/monitor-contributions":
             self._handle_seat_monitor_contributions_get(parsed.query)
             return
+        if path == f"{API_V1_PREFIX}/integrations/seat/client-usage":
+            self._handle_seat_client_usage_get(parsed.query)
+            return
         if path == f"{API_V1_PREFIX}/admin/map-settings":
             handle_settings(self)
             return
@@ -2494,6 +2497,27 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                     "error": "Seat billing storage is unavailable",
                     "code": "billing_storage_error",
                 },
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self._send_json(result)
+
+    def _handle_seat_client_usage_get(self, query_string: str) -> None:
+        """Export authenticated client online intervals to Seat."""
+        try:
+            query = parse_qs(query_string)
+            limit = self._parse_optional_int(query.get("limit", [""])[0]) or 100
+            result = self._seat_billing_repository().list_client_usage(
+                after=str(query.get("after", [""])[0] or "").strip(),
+                limit=limit,
+            )
+        except SeatBillingError as exc:
+            self._send_json({"error": str(exc), "code": exc.code}, exc.status)
+            return
+        except Exception:
+            logger.exception("Seat client usage page failed")
+            self._send_json(
+                {"error": "Seat billing storage is unavailable", "code": "billing_storage_error"},
                 HTTPStatus.SERVICE_UNAVAILABLE,
             )
             return

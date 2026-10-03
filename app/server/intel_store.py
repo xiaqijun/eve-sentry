@@ -61,10 +61,14 @@ STALE_HEARTBEAT_STARTUP_GRACE_SECONDS = 45.0
 _DETECTOR_MONITOR_STOPPED_AT_KEY = "_server_monitor_stopped_at"
 _DETECTOR_MONITOR_TARGET_IDS_KEY = "_server_monitor_target_ids"
 _DETECTOR_MISSING_TARGETS_KEY = "_server_missing_targets"
+_SEAT_ACCOUNT_ID_KEY = "_server_seat_account_id"
+_SEAT_KEY_ID_KEY = "_server_seat_key_id"
 _DETECTOR_PRIVATE_DETAIL_KEYS = (
     _DETECTOR_MONITOR_STOPPED_AT_KEY,
     _DETECTOR_MONITOR_TARGET_IDS_KEY,
     _DETECTOR_MISSING_TARGETS_KEY,
+    _SEAT_ACCOUNT_ID_KEY,
+    _SEAT_KEY_ID_KEY,
 )
 _STREAM_POSITION_LOCK = threading.Lock()
 _LAST_STREAM_POSITION = 0
@@ -2650,6 +2654,12 @@ class IntelStore(PersonnelRoutingMixin):
         heartbeat_details = dict(details or {})
         for private_key in _DETECTOR_PRIVATE_DETAIL_KEYS:
             heartbeat_details.pop(private_key, None)
+        seat_account_id = str(payload.get("seat_account_id") or "").strip()
+        seat_key_id = str(payload.get("seat_key_id") or "").strip()
+        if seat_account_id:
+            heartbeat_details[_SEAT_ACCOUNT_ID_KEY] = seat_account_id
+        if seat_key_id:
+            heartbeat_details[_SEAT_KEY_ID_KEY] = seat_key_id
         heartbeat = {
             "client_id": client_id,
             "client_type": client_type,

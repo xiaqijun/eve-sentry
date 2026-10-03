@@ -206,18 +206,18 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 区间记录和 Seat 只读对账；服务端不计算果壳币金额，监控奖励发放仍由 Seat 灰度开关控制。
 预警扣费和跨项目自动结算仍默认关闭，完整契约见[Seat 接入计划](seat-integration-plan.md)。
 
-### SeAT 预警时间上报协议（授权 v2，默认关闭）
+### SeAT 预警时间上报协议（认证心跳在线时长，默认关闭）
 
 服务端启动参数 `--allow-alert-consumption` 只作为首次启动时的默认值；运行中的门禁保存在
-`seat_integration_settings`，由 Seat 管理员收费开关通过服务令牌同步。门禁关闭时 grant、收费投递和客户端
-ACK 都返回 `503 alert_consumption_disabled`。打开前必须先完成 GloryNavy_Seat exchange
-的预留/确认/释放/退款联调；Sentry 不接收余额、不计算币额，也不直接写平台账本。
+`seat_integration_settings`，由 Seat 管理员收费开关通过服务令牌同步。Sentry 不接收余额、不计算币额，
+也不直接写平台账本。新收费只依据服务端接收的相邻认证客户端心跳在线区间，Seat 按小时价格结算。
 
 下面的集成服务端接口使用同一个 Seat 集成 Bearer Token。授权 v2 是当前新调用方使用的协议；
 事件/投递分页仍使用既有 v1 事实格式，v1 授权仅用于读取和重放历史记录。`operation_id`、`grant_id`、`delivery_id` 和
 `charge_event_id + revision` 都是幂等边界；重放必须提交相同规范化请求，否则返回 `409` 冲突。
 v2 的授权只包含秒数，不接受也不返回费率、价格版本或币额；单价、计价单位、余额预留、
-结算、释放和退款全部由 Seat 的 exchange 负责。
+结算、释放和退款全部由 Seat 的 exchange 负责。授权、事件、投递和 ACK 接口仍可维护
+事实记录，但不再由 Seat worker 触发新收费；新的收费来源只有 `client-usage` 在线区间。
 若 v2 请求带 `price_version`、`unit_seconds` 或 `unit_price_minor`，服务端返回
 `400 pricing_not_allowed`，防止两端出现第二套费率来源。
 
@@ -232,9 +232,10 @@ v2 的授权只包含秒数，不接受也不返回费率、价格版本或币�
 | `GET` | `/api/v1/integrations/seat/alert-deliveries?after={cursor}&limit={n}` | Seat 对账读取投递与消费状态；返回 `consumption_state`、区间字段、ACK 状态和游标水位 |
 | `GET` | `/api/v1/integrations/seat/alert-events?after={cursor}&limit={n}` | 只读对账页，返回 `next_cursor/committed_watermark/earliest_available_watermark/has_more/protocol_version` |
 | `GET` | `/api/v1/integrations/seat/monitor-contributions?after={cursor}&limit={n}` | 只读读取服务端确认的主节点监控区间；返回 `contribution_id/key_id/client_id/system_id/system_name/primary_generation/started_at/ended_at/duration_seconds/eligibility/evidence` 及游标水位 |
+| `GET` | `/api/v1/integrations/seat/client-usage?after={cursor}&limit={n}` | 只读读取认证客户端相邻有效心跳在线区间；返回 `usage_id/account_id/key_id/client_id/started_at/ended_at/duration_seconds`、`rule_version=client-heartbeat.v1` 和游标水位 |
 | `POST` | `/api/v1/alert-deliveries/{delivery_id}/ack` | Seat alert key 在客户端完成去重并投递 UI 后确认；请求必须带 `charge_event_id/revision/connection_id/started_at/ended_at/duration_seconds` 和 `Idempotency-Key`（或 `ack_idempotency_key`），可附 `evidence` 使用证据快照 |
 
-投递预留只占一次 `grant_id + charge_event_id + revision + started_at + ended_at`，多设备重收同一区间不会再扣秒数；ACK 只接受服务端
+历史投递预留只占一次 `grant_id + charge_event_id + revision + started_at + ended_at`，多设备重收同一区间不会再扣秒数；ACK 只接受服务端
 已记录且与 `account_id/key_id/connection_id/revision` 完全匹配的投递。ACK 将预留从
 `reserved` 变为 `consumed`；v2 秒数授权只返回 `reserved_seconds/remaining_seconds`，
 Seat 根据自己保存的价格版本和计价单位计算金额。未确认由超时任务

@@ -180,9 +180,10 @@ EVE_SENTRY_SERVER_POSTGRES_DSN=postgresql://eve_sentry:CHANGE_ME@127.0.0.1:5432/
 sudo -u postgres pg_dump -Fc eve_sentry > /var/lib/eve-sentry/eve_sentry.dump
 ```
 
-当前版本还会自动创建 `seat_monitor_contributions`。它只保存服务端确认的每个星系主节点
-监控区间和幂等证据，不保存果壳币余额或金额；Seat 通过集成令牌只读拉取，生产发奖开关仍由
-Seat 侧控制。迁移失败时服务不会把区间伪装成已结算，应先修复数据库再重试启动。
+当前版本还会自动创建 `seat_monitor_contributions` 和 `seat_client_usage`。前者保存服务端
+确认的每个星系主节点监控区间，后者保存同一认证客户端相邻有效心跳的在线区间；两者都不保存
+果壳币余额或金额，Seat 通过集成令牌只读拉取。预警事件/投递/ACK 事实保留用于审计，但不再
+触发新收费。迁移失败时服务不会把区间伪装成已结算，应先修复数据库再重试启动。
 
 升级到包含视觉波次峰值和波次人员快照的版本后，启动迁移会为 `hostile_waves` 自动增加
 `peak_hostile_count`、`personnel_json`。当前仍活跃的波次会在启动协调时用 active intel 回填峰值
@@ -262,8 +263,9 @@ SSE 在下一次授权代数检查时结束。普通 desktop/service key 仅保�
 `EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION` 仅作为新库首次启动的默认值。初始化后，
 Seat 管理员保存前端收费开关时会通过 `PUT /api/v1/integrations/seat/alert-consumption`
 同步 `seat_integration_settings`，服务重启仍读取该持久化状态。旧库或未同步时继续保持关闭。
-当前客户端已提供 `alert-ack.v1` 收件确认；旧客户端或未声明 ACK 能力的投递会被拒绝，
-不会预留或扣除果壳币。未完成生产价格和平台真实隔离账本验收前，不要在 Seat 前端开启收费。
+当前客户端心跳会由服务端按接收时间生成在线区间；客户端不能提交计费时间戳。旧客户端或未声明
+ACK 能力的历史投递不会再触发新收费。未完成生产价格和平台真实隔离账本验收前，不要在 Seat
+前端开启收费。
 
 ### 公共 ESI Gateway
 
