@@ -423,6 +423,17 @@ def _notify_event_streams() -> None:
         _EVENT_STREAM_CONDITION.notify_all()
 
 
+def _notify_state_consumers(store: Any) -> None:
+    """Wake SSE and same-process consumers after an HTTP state mutation."""
+    notifier = getattr(store, "_change_notifier", None)
+    if callable(notifier):
+        notifier()
+    else:
+        # Lightweight stores used by compatibility callers may not install the
+        # server notifier; keep their SSE behavior unchanged.
+        _notify_event_streams()
+
+
 def _event_stream_generation() -> int:
     with _EVENT_STREAM_CONDITION:
         return _EVENT_STREAM_GENERATION
@@ -1987,7 +1998,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
             if result.get("accepted", True) or result.get("scope_expired"):
-                _notify_event_streams()
+                _notify_state_consumers(store)
             status = HTTPStatus.CREATED if result.get("created") else HTTPStatus.OK
             self._send_json(result, status)
             return
@@ -2002,7 +2013,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
-            _notify_event_streams()
+            _notify_state_consumers(store)
             self._send_json(
                 {"ok": True, "heartbeat": heartbeat, "commands": commands,
                  "monitoring_scope": current_scope(store).to_dict()},

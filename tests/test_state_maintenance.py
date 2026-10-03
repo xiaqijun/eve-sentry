@@ -36,3 +36,33 @@ def test_idle_maintenance_does_not_invalidate_snapshot_cache():
     finally:
         maintenance.close()
     assert wakes == []
+
+
+def test_maintenance_wakes_when_detector_heartbeat_becomes_offline():
+    wake = threading.Event()
+    state = {
+        "heartbeats": [
+            {
+                "client_id": "detector:test",
+                "client_type": "detector_client",
+                "health_status": "online",
+                "details": {
+                    "monitoring": True,
+                    "system_name": "S-KSWL",
+                },
+            }
+        ]
+    }
+    store = SimpleNamespace(
+        heartbeat_snapshot=lambda: state,
+        expire_active_intel=lambda: 0,
+        _change_notifier=wake.set,
+    )
+    maintenance = StateMaintenance(store, interval=0.01)
+    try:
+        # Let the initial fingerprint be sampled before changing health.
+        threading.Event().wait(0.03)
+        state["heartbeats"][0]["health_status"] = "offline"
+        assert wake.wait(1)
+    finally:
+        maintenance.close()

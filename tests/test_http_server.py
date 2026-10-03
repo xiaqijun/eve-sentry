@@ -3426,6 +3426,56 @@ def test_v1_events_push_monitoring_node_online_immediately(tmp_path):
         server.stop()
 
 
+def test_monitoring_heartbeat_wakes_embedded_consumers_for_online_and_offline(
+    tmp_path,
+):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    wakeups = []
+    online = threading.Event()
+    offline = threading.Event()
+
+    def on_state_change():
+        wakeups.append(True)
+        if len(wakeups) == 1:
+            online.set()
+        else:
+            offline.set()
+
+    unregister = server.register_embedded_listener(on_state_change)
+    try:
+        status, _ = request_json(
+            f"{server.url}/api/v1/clients/heartbeats",
+            method="POST",
+            payload={
+                "client_id": "detector-client:embedded-test",
+                "client_type": "detector_client",
+                "heartbeat_interval_seconds": 15,
+                "details": {"monitoring": True, "system_name": "S-KSWL"},
+            },
+        )
+        assert status == 201
+        assert online.wait(timeout=0.75)
+
+        status, _ = request_json(
+            f"{server.url}/api/v1/clients/heartbeats",
+            method="POST",
+            payload={
+                "client_id": "detector-client:embedded-test",
+                "client_type": "detector_client",
+                "status": "idle",
+                "heartbeat_interval_seconds": 15,
+                "details": {"monitoring": False, "system_name": "S-KSWL"},
+            },
+        )
+        assert status == 201
+        assert offline.wait(timeout=0.75)
+        assert len(wakeups) >= 2
+    finally:
+        unregister()
+        server.stop()
+
+
 def test_v1_events_push_hostile_presence_immediately(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
