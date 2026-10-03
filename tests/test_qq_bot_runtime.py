@@ -109,7 +109,11 @@ def test_embedded_bridge_maps_durable_state_events():
     assert relay.payloads[0]["presence_only"] is True
 
 
-def test_embedded_bridge_uses_latest_bootstrap_without_replaying_old_events():
+def test_embedded_bridge_uses_latest_bootstrap_without_replaying_old_events(
+    monkeypatch,
+):
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "bot" / "src"))
+
     class Redis:
         async def get(self, _key):
             return None
