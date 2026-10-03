@@ -336,6 +336,49 @@ def test_delivery_without_ack_capability_does_not_reserve_seconds(tmp_path):
         store.close()
 
 
+def test_alert_consumption_gate_is_persisted_and_service_token_controlled(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    token = "seat-service-token-" + "x" * 40
+    server = IntelHTTPServer(store, port=0, seat_integration_token=token)
+    server.start()
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        status, payload = _request(
+            f"{server.url}/api/v1/integrations/seat/alert-consumption",
+            headers=headers,
+        )
+        assert status == 200
+        assert payload["enabled"] is False
+
+        status, payload = _request(
+            f"{server.url}/api/v1/integrations/seat/alert-consumption",
+            method="PUT",
+            headers=headers,
+            payload={"enabled": True},
+        )
+        assert status == 200
+        assert payload["enabled"] is True
+
+        status, payload = _request(
+            f"{server.url}/api/v1/integrations/seat/alert-consumption",
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        assert status == 401
+        assert payload["code"] == "seat_integration_unauthorized"
+
+        status, payload = _request(
+            f"{server.url}/api/v1/integrations/seat/alert-consumption",
+            method="PUT",
+            headers=headers,
+            payload={"enabled": False},
+        )
+        assert status == 200
+        assert payload["enabled"] is False
+    finally:
+        server.stop()
+        store.close()
+
+
 def test_seconds_only_grant_v2_does_not_accept_or_return_pricing(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     token = "seat-service-token-" + "x" * 40

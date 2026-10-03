@@ -1637,6 +1637,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
 
     def _handle_v1_get(self, parsed) -> None:
         path = parsed.path
+        if path == f"{API_V1_PREFIX}/integrations/seat/alert-consumption":
+            self._handle_seat_alert_consumption_get()
+            return
         if path == f"{API_V1_PREFIX}/integrations/seat/alert-events":
             self._handle_seat_alert_events_get(parsed.query)
             return
@@ -2285,7 +2288,20 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         )
 
     def _seat_consumption_enabled(self) -> bool:
-        if bool(getattr(type(self), "allow_alert_consumption", False)):
+        default = bool(getattr(type(self), "allow_alert_consumption", False))
+        try:
+            enabled = self._seat_billing_repository().alert_consumption_enabled(default)
+        except Exception:
+            logger.exception("Seat alert consumption setting read failed")
+            self._send_json(
+                {
+                    "error": "Seat billing storage is unavailable",
+                    "code": "billing_storage_error",
+                },
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return False
+        if enabled:
             return True
         self._send_json(
             {
@@ -2296,6 +2312,62 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             HTTPStatus.SERVICE_UNAVAILABLE,
         )
         return False
+
+    def _handle_seat_alert_consumption_get(self) -> None:
+        try:
+            enabled = self._seat_billing_repository().alert_consumption_enabled(
+                bool(getattr(type(self), "allow_alert_consumption", False))
+            )
+        except Exception:
+            logger.exception("Seat alert consumption setting read failed")
+            self._send_json(
+                {
+                    "error": "Seat billing storage is unavailable",
+                    "code": "billing_storage_error",
+                },
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self._send_json(
+            {
+                "enabled": enabled,
+                "protocol_version": SEAT_BILLING_PROTOCOL_VERSION,
+            }
+        )
+
+    def _handle_seat_alert_consumption_put(self) -> None:
+        try:
+            payload = self._read_json()
+            enabled = payload.get("enabled")
+            if not isinstance(enabled, bool):
+                raise SeatIntegrationError("enabled must be a boolean", "invalid_enabled")
+            result = self._seat_billing_repository().set_alert_consumption_enabled(
+                enabled,
+                updated_by="seat-integration",
+            )
+        except SeatIntegrationError as exc:
+            self._send_json({"error": str(exc), "code": exc.code}, exc.status)
+            return
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._send_json({"error": str(exc), "code": "invalid_request"}, _request_error_status(exc))
+            return
+        except Exception:
+            logger.exception("Seat alert consumption setting update failed")
+            self._send_json(
+                {
+                    "error": "Seat billing storage is unavailable",
+                    "code": "billing_storage_error",
+                },
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self._send_json(
+            {
+                "enabled": bool(result["enabled"]),
+                "updated_at": result["updated_at"],
+                "protocol_version": SEAT_BILLING_PROTOCOL_VERSION,
+            }
+        )
 
     def _handle_seat_alert_grant_create(self) -> None:
         if not self._seat_consumption_enabled():
@@ -2767,6 +2839,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         return attributed
 
     def _handle_v1_put(self, path: str) -> None:
+        if path == f"{API_V1_PREFIX}/integrations/seat/alert-consumption":
+            self._handle_seat_alert_consumption_put()
+            return
         if path == f"{API_V1_PREFIX}/admin/map-settings":
             handle_settings(self, save=True)
             return

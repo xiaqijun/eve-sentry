@@ -443,6 +443,8 @@ class AuthHttpMixin:
         create_path = "/api/v1/integrations/seat/keys"
         service_paths = {
             ("POST", create_path),
+            ("PUT", "/api/v1/integrations/seat/alert-consumption"),
+            ("GET", "/api/v1/integrations/seat/alert-consumption"),
             ("POST", "/api/v1/integrations/seat/alert-grants"),
             ("POST", "/api/v1/integrations/seat/alert-events"),
             ("POST", "/api/v1/integrations/seat/alert-deliveries"),

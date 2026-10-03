@@ -208,7 +208,8 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 
 ### SeAT 预警时间上报协议（授权 v2，默认关闭）
 
-服务端启动参数 `--allow-alert-consumption` 默认关闭；关闭时 grant、收费投递和客户端
+服务端启动参数 `--allow-alert-consumption` 只作为首次启动时的默认值；运行中的门禁保存在
+`seat_integration_settings`，由 Seat 管理员收费开关通过服务令牌同步。门禁关闭时 grant、收费投递和客户端
 ACK 都返回 `503 alert_consumption_disabled`。打开前必须先完成 GloryNavy_Seat exchange
 的预留/确认/释放/退款联调；Sentry 不接收余额、不计算币额，也不直接写平台账本。
 
@@ -222,6 +223,8 @@ v2 的授权只包含秒数，不接受也不返回费率、价格版本或币�
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| `GET` | `/api/v1/integrations/seat/alert-consumption` | 读取当前持久化预警消费门禁；仅接受 Seat 集成 Bearer Token |
+| `PUT` | `/api/v1/integrations/seat/alert-consumption` | Seat 同步收费开关，JSON 为 `{"enabled":true|false}`；幂等返回当前状态 |
 | `POST` | `/api/v1/integrations/seat/alert-grants` | 创建有限期限秒数授权；v2 字段为 `operation_id/grant_id/account_id/key_id/reserved_seconds/expires_at/protocol_version=2`，v1 的价格字段仅兼容历史调用 |
 | `DELETE` | `/api/v1/integrations/seat/alert-grants/{grant_id}` | 幂等撤销授权，停止新增投递 |
 | `POST` | `/api/v1/integrations/seat/alert-events` | 写入收费事件或追加修订；字段为 `charge_event_id/wave_id/revision/event_type/system_id/system_name/rule_version/eligibility/evidence/lifecycle/revocation_reason` |
@@ -239,8 +242,9 @@ Seat 根据自己保存的价格版本和计价单位计算金额。未确认由
 尚未连接生产 exchange。事件的 `eligibility` 应保留来源有效、识别可信、事件有效、软件
 收到四关及其规则版本；`acknowledged_at` 仍是人工处置字段，不能替代客户端 ACK。
 
-旧 Windows 客户端或未声明能力的投递会被拒绝，不会预留或扣费。生产环境仍必须保持
-`EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION=0`，直到服务端投递绑定、生产价格和平台真实币账现场验收完成。
+旧 Windows 客户端或未声明能力的投递会被拒绝，不会预留或扣费。生产环境的
+`EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION` 仅用于初始化新库的默认值；初始化后以 Seat 的
+`PUT .../alert-consumption` 为准。Seat 保存价格和收费开关失败时不会提交本地开关，远端门禁写入失败也会阻止本地价格变更。
 
 当前客户端已声明 `ack_capability=alert-ack.v1`，仅当 SSE 告警携带完整的
 `delivery_id/charge_event_id/revision/connection_id/started_at/ended_at/duration_seconds` 投递绑定时才会

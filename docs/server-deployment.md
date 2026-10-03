@@ -257,11 +257,13 @@ SeAT 认证单独由 `EVE_SENTRY_SERVER_SEAT_AUTH_MODE=off|enforce` 控制，默
 SSE 在下一次授权代数检查时结束。普通 desktop/service key 仅保留管理/迁移用途，不能访问
 客户端接口。
 
-预警消费默认关闭。只有 PostgreSQL、有效的 `EVE_SENTRY_SERVER_SEAT_INTEGRATION_TOKEN`、
-`EVE_SENTRY_SERVER_SEAT_AUTH_MODE=enforce` 且显式设置
-`EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION=1` 时，服务才接受收费授权、投递和 ACK。
+预警消费默认关闭。只有 PostgreSQL、有效的 `EVE_SENTRY_SERVER_SEAT_INTEGRATION_TOKEN` 和
+`EVE_SENTRY_SERVER_SEAT_AUTH_MODE=enforce` 才能完成完整联调；
+`EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION` 仅作为新库首次启动的默认值。初始化后，
+Seat 管理员保存前端收费开关时会通过 `PUT /api/v1/integrations/seat/alert-consumption`
+同步 `seat_integration_settings`，服务重启仍读取该持久化状态。旧库或未同步时继续保持关闭。
 当前客户端已提供 `alert-ack.v1` 收件确认；旧客户端或未声明 ACK 能力的投递会被拒绝，
-不会预留或扣除果壳币。完成生产价格和平台真实隔离账本验收前，生产值必须保持 `0`。
+不会预留或扣除果壳币。未完成生产价格和平台真实隔离账本验收前，不要在 Seat 前端开启收费。
 
 ### 公共 ESI Gateway
 

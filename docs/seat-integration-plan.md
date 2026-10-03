@@ -1,6 +1,6 @@
 # EVE Sentry 接入 GloryNavy_Seat（设计草案）
 
-状态：2026-10-02。Sentry 端已落地密钥投影/吊销、M1 业务认证、主节点监控贡献事实表和 Seat 只读导出；果壳币结算、预警扣费和双端自动对账仍由 Seat 联调后启用，收费默认关闭。
+状态：2026-10-03。Sentry 端已落地密钥投影/吊销、M1 业务认证、主节点监控贡献事实表、Seat 只读导出和 Seat 收费门禁同步；果壳币结算、预警扣费和双端自动对账仍按现场验收后启用，收费默认关闭。
 
 ## 已确认的目标与现状
 
@@ -113,7 +113,9 @@ Presence/OCR 上传仍携带客户端窗口标识，但监控贡献由服务端�
 
 当前客户端已实现 `alert-ack.v1` 收件确认协议；旧客户端或未声明该能力的客户端不能创建收费投递，
 因此不会预留或扣除果壳币。即使后续配置了 Seat 服务令牌，也必须同时满足 PostgreSQL、
-`EVE_SENTRY_SERVER_SEAT_AUTH_MODE=enforce` 和显式 `EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION=1`；
+`EVE_SENTRY_SERVER_SEAT_AUTH_MODE=enforce`。`EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION` 只作为新库初始默认值；
+Seat 管理员保存前端收费开关时通过 `PUT /api/v1/integrations/seat/alert-consumption` 同步预警端持久化门禁，
+同步失败时 Seat 不提交本地开关；
 生产环境目前保持 `0`。客户端 ACK 已接通；完成生产价格冻结和平台真实隔离账本验收后，才允许进入灰度。
 
 当前 `intel_events` 有 `state:<seq>` 可恢复状态游标，`hostile_waves` 有内部 `wave_id`；但 SSE 的 `alert.entered`、`alert.updated`、兼容报告告警、`bootstrap` 可能描述同一次来敌，`state:<seq>` 是变更序号而非收费事件 ID。新协议须定义不可变的 `charge_event_id`（建议绑定持续稳定的波次/事件，不因名单修订、重连或多端接收而变化）、修订版本、生命周期、服务端过滤/抑制结果和撤销原因。默认仅“新进入且符合已启用规则的来敌事件”具备收费资格；人员补全、名单更正、状态更新、清空、历史重放和 bootstrap 不另收费。若希望同波次后续新敌人单独收费，须先另行明确业务规则。

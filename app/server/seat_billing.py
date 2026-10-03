@@ -160,6 +160,14 @@ def migrate_seat_billing_schema(connection: Any) -> None:
         """,
         "CREATE INDEX IF NOT EXISTS idx_seat_monitor_contributions_created ON seat_monitor_contributions(created_at, contribution_id)",
         "CREATE INDEX IF NOT EXISTS idx_seat_monitor_contributions_system ON seat_monitor_contributions(system_name, started_at, ended_at)",
+        """
+        CREATE TABLE IF NOT EXISTS seat_integration_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            alert_consumption_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL DEFAULT ''
+        )
+        """,
     )
     for statement in statements:
         connection.execute(statement)
@@ -187,6 +195,48 @@ class SeatBillingRepository:
 
     def __init__(self, connect: Callable[[], Any]) -> None:
         self._connect = connect
+
+    def alert_consumption_enabled(self, default: bool = False) -> bool:
+        """Read the durable warning gate, seeding it from the deployment default once."""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO seat_integration_settings
+                    (id, alert_consumption_enabled, updated_at, updated_by)
+                VALUES (1, ?, ?, 'environment')
+                ON CONFLICT (id) DO NOTHING
+                """,
+                (bool(default), utc_now_iso()),
+            )
+            row = connection.execute(
+                "SELECT alert_consumption_enabled FROM seat_integration_settings WHERE id = 1"
+            ).fetchone()
+        return bool(row["alert_consumption_enabled"]) if row is not None else bool(default)
+
+    def set_alert_consumption_enabled(self, enabled: bool, *, updated_by: str = "seat") -> dict[str, Any]:
+        """Persist the warning gate changed by the trusted Seat integration."""
+        now = utc_now_iso()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO seat_integration_settings
+                    (id, alert_consumption_enabled, updated_at, updated_by)
+                VALUES (1, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    alert_consumption_enabled = EXCLUDED.alert_consumption_enabled,
+                    updated_at = EXCLUDED.updated_at,
+                    updated_by = EXCLUDED.updated_by
+                """,
+                (bool(enabled), now, str(updated_by or "seat")),
+            )
+            row = connection.execute(
+                "SELECT alert_consumption_enabled, updated_at, updated_by FROM seat_integration_settings WHERE id = 1"
+            ).fetchone()
+        return {
+            "enabled": bool(row["alert_consumption_enabled"]) if row is not None else bool(enabled),
+            "updated_at": str(row["updated_at"]) if row is not None else now,
+            "updated_by": str(row["updated_by"] or "") if row is not None else str(updated_by or "seat"),
+        }
 
     def create_grant(self, record: dict[str, Any], operation_id: str, request_hash: str) -> dict[str, Any]:
         operation_id = str(operation_id or "").strip()
