@@ -809,6 +809,60 @@ def _monitoring_nodes_version(nodes: list[dict[str, Any]]) -> str:
     return hashlib.sha256(encoded).hexdigest()[:16]
 
 
+def _monitoring_snapshot_version(store: Any) -> str:
+    """Return the node lifecycle version without heartbeat timestamps."""
+    heartbeat_snapshot = getattr(store, "heartbeat_snapshot", None)
+    if not callable(heartbeat_snapshot):
+        return ""
+    try:
+        snapshot = heartbeat_snapshot()
+    except Exception:
+        return ""
+    return _monitoring_nodes_version(_monitoring_target_state(snapshot))
+
+
+def _presence_state_fingerprint(store: Any, payload: dict[str, Any]) -> tuple:
+    """Return stable active presence fields, excluding upload timestamps."""
+    list_active = getattr(store, "list_active_intel", None)
+    if not callable(list_active):
+        return ()
+    client_id = str(payload.get("client_id") or "").strip()
+    system_name = str(
+        payload.get("system_name") or payload.get("system") or ""
+    ).strip()
+    if not client_id or not system_name:
+        return ()
+    try:
+        rows = list_active(
+            source="eve-sentry-detector",
+            system=system_name,
+            active=True,
+        )
+    except Exception:
+        return ()
+    fingerprint = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        metadata = row.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        if str(metadata.get("client_id") or "").strip() != client_id:
+            continue
+        try:
+            hostile_count = max(0, int(metadata.get("hostile_icon_count") or 0))
+        except (TypeError, ValueError):
+            hostile_count = 0
+        fingerprint.append(
+            (
+                str(row.get("id") or "").strip(),
+                str(row.get("system_name") or system_name).strip().casefold(),
+                hostile_count,
+            )
+        )
+    return tuple(sorted(fingerprint))
+
+
 def _monitoring_node_key(node: dict[str, Any]) -> str:
     """Return a stable identity for one monitored account/window target."""
     client_id = str(node.get("client_id") or "").strip()
@@ -1995,12 +2049,19 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             try:
                 store = self._store()
                 payload = self._attributed_presence_payload(self._read_json())
+                presence_before = _presence_state_fingerprint(store, payload)
                 result = store.record_hostile_presence(payload)
                 store.refresh_detector_heartbeat(payload.get("client_id"))
+                presence_after = _presence_state_fingerprint(store, payload)
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
-            if result.get("accepted", True) or result.get("scope_expired"):
+            presence_changed = (
+                presence_before != presence_after
+                or bool(result.get("expired"))
+                or bool(result.get("scope_expired"))
+            )
+            if (result.get("accepted", True) or result.get("scope_expired")) and presence_changed:
                 _notify_state_consumers(store)
             status = HTTPStatus.CREATED if result.get("created") else HTTPStatus.OK
             self._send_json(result, status)
@@ -2009,14 +2070,25 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             try:
                 payload = self._attributed_heartbeat_payload(self._read_json())
                 store = self._store()
+                nodes_before = _monitoring_snapshot_version(store)
+                presence_changed = False
                 for presence_payload in _presence_payloads_from_heartbeat(payload):
-                    store.record_hostile_presence(presence_payload)
+                    presence_before = _presence_state_fingerprint(store, presence_payload)
+                    presence_result = store.record_hostile_presence(presence_payload)
+                    presence_after = _presence_state_fingerprint(store, presence_payload)
+                    presence_changed = presence_changed or (
+                        presence_before != presence_after
+                        or bool(presence_result.get("expired"))
+                        or bool(presence_result.get("scope_expired"))
+                    )
                 heartbeat = store.record_heartbeat(payload)
+                nodes_after = _monitoring_snapshot_version(store)
                 commands = _claim_ocr_query_commands(payload.get("client_id"))
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
-            _notify_state_consumers(store)
+            if presence_changed or nodes_before != nodes_after:
+                _notify_state_consumers(store)
             self._send_json(
                 {"ok": True, "heartbeat": heartbeat, "commands": commands,
                  "monitoring_scope": current_scope(store).to_dict()},

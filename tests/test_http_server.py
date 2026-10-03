@@ -3476,6 +3476,61 @@ def test_monitoring_heartbeat_wakes_embedded_consumers_for_online_and_offline(
         server.stop()
 
 
+def test_repeated_presence_without_state_change_does_not_wake_embedded_consumers(
+    tmp_path,
+):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    wakeups = []
+    state_changed = threading.Event()
+
+    def on_state_change():
+        wakeups.append(True)
+        state_changed.set()
+
+    unregister = server.register_embedded_listener(on_state_change)
+    base_payload = {
+        "client_id": "detector-client:presence-test",
+        "system_name": "S-KSWL",
+        "hostile_icon_count": 1,
+    }
+    try:
+        status, _ = request_json(
+            f"{server.url}/api/v1/hostile-presence",
+            method="POST",
+            payload={**base_payload, "seen_at": "2026-10-04T00:00:00+00:00"},
+        )
+        assert status == 201
+        assert state_changed.wait(timeout=0.75)
+        assert len(wakeups) == 1
+
+        state_changed.clear()
+        status, _ = request_json(
+            f"{server.url}/api/v1/hostile-presence",
+            method="POST",
+            payload={**base_payload, "seen_at": "2026-10-04T00:00:01+00:00"},
+        )
+        assert status == 200
+        assert state_changed.wait(timeout=0.1) is False
+        assert len(wakeups) == 1
+
+        status, _ = request_json(
+            f"{server.url}/api/v1/hostile-presence",
+            method="POST",
+            payload={
+                **base_payload,
+                "hostile_icon_count": 0,
+                "seen_at": "2026-10-04T00:00:02+00:00",
+            },
+        )
+        assert status == 200
+        assert state_changed.wait(timeout=0.75)
+        assert len(wakeups) == 2
+    finally:
+        unregister()
+        server.stop()
+
+
 def test_v1_events_push_hostile_presence_immediately(tmp_path):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
