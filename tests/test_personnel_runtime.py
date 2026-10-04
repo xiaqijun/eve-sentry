@@ -39,7 +39,8 @@ def test_batch_resolution_reuses_archive_without_network_on_reads(archive_factor
     runtime = PersonnelRuntime(archive, client, now=lambda: 1000)
     resolver = PersonnelResolver(EsiResolver(client=client, cache=EsiCache(tmp_path / "legacy.json")), runtime)
     for cid in range(1, 101):
-        assert resolver.cached_name(f"Pilot {cid}")[0] is None
+        assert runtime.lookup(f"Pilot {cid}") is None
+        runtime.request(f"Pilot {cid}")
     runtime.set_active([(None, f"Pilot {cid}", 1000) for cid in range(1, 101)])
     assert client.calls == []
     runtime.drain_requests()
@@ -56,6 +57,59 @@ def test_batch_resolution_reuses_archive_without_network_on_reads(archive_factor
     reopened.drain_requests()
     assert reopened.lookup("Pilot 1")["character_id"] == 1
     assert reopened.client.calls == []
+
+
+def test_read_through_uses_persistent_archive_before_esi(archive_factory, tmp_path):
+    archive = archive_factory()
+    archive.save_identity(IdentityUpdate(7, "Pilot Seven", 1000, 1000))
+    client = Client()
+    runtime = PersonnelRuntime(archive, client, now=lambda: 1000)
+    resolver = PersonnelResolver(EsiResolver(client=client, cache=EsiCache(tmp_path / "legacy.json")), runtime)
+
+    resolved, status = resolver.cached_name("Pilot Seven")
+    assert status == "cached"
+    assert resolved is not None and resolved.entity_id == 7
+    cold_runtime = PersonnelRuntime(archive, client, now=lambda: 1000)
+    profile = cold_runtime.profile(7)
+    assert profile is not None and profile["name"] == "Pilot Seven"
+    assert client.calls == []
+    assert runtime.snapshot()["archive_hits"] >= 1
+    assert cold_runtime.snapshot()["archive_profile_hits"] >= 1
+
+
+def test_archive_miss_uses_synchronous_esi_fallback(archive_factory, tmp_path):
+    archive, client = archive_factory(), Client()
+    runtime = PersonnelRuntime(archive, client, now=lambda: 1000)
+    resolver = PersonnelResolver(EsiResolver(client=client, cache=EsiCache(tmp_path / "legacy.json")), runtime)
+
+    resolved, status = resolver.cached_name("Pilot 7")
+    assert status == "esi"
+    assert resolved is not None and resolved.entity_id == 7
+    assert archive.get_profiles([7])[7]["name"] == "Pilot 7"
+    assert runtime.snapshot()["pending_names"] == 0
+    assert client.calls == [("names", ["Pilot 7"])]
+
+
+def test_synchronous_miss_uses_short_negative_cache(archive_factory, tmp_path):
+    archive, client = archive_factory(), Client()
+    client.resolve_ids = lambda names: {"characters": []}
+    runtime = PersonnelRuntime(archive, client, now=lambda: 1000)
+    resolver = PersonnelResolver(EsiResolver(client=client, cache=EsiCache(tmp_path / "legacy.json")), runtime)
+
+    assert resolver.cached_name("OCR noise") == (None, "miss")
+    assert resolver.cached_name("OCR noise") == (None, "negative")
+    assert client.calls == []
+
+
+def test_cold_profile_uses_synchronous_identity_and_affiliation(archive_factory, tmp_path):
+    archive, client = archive_factory(), Client()
+    runtime = PersonnelRuntime(archive, client, now=lambda: 1000)
+    resolver = PersonnelResolver(EsiResolver(client=client, cache=EsiCache(tmp_path / "legacy.json")), runtime)
+
+    profile = resolver.character_profile(7)
+    assert profile["name"] == "Renamed 7"
+    assert profile["corporation_id"] == 10
+    assert client.calls == [("identity", [7]), ("affiliations", [7])]
 
 
 def test_partial_affiliation_does_not_clear_successful_data(archive_factory):
@@ -166,8 +220,6 @@ def test_hot_profile_lookup_by_id_queues_cold_database_load(archive_factory):
     archive = archive_factory()
     archive.save_identity(IdentityUpdate(1, "Pilot 1", 100, 100))
     runtime = PersonnelRuntime(archive, Client(), now=lambda: 1000)
-    assert runtime.profile(1) is None
-    runtime.drain_requests()
     assert runtime.profile(1)["name"] == "Pilot 1"
     assert runtime.client.calls == []
 

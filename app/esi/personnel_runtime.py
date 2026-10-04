@@ -14,6 +14,8 @@ from typing import Any
 
 from app.esi.diagnostics import failure_summary
 from app.esi.personnel_archive import (
+    AffiliationUpdate,
+    IdentityUpdate,
     PersonnelArchive,
 )
 from app.esi.personnel_batches import commit_refresh_batch, schedule_profiles
@@ -29,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class PersonnelRuntime:
-    """No SQL or network on hot reads; all persistence happens off the store lock."""
+    """Read memory and the local archive before optional synchronous ESI fallback."""
 
     def __init__(self, archive: PersonnelArchive, client: Any, *, max_hot: int = 20000, now=time.time):
         self.archive, self.client, self.now = archive, client, now
@@ -86,18 +88,73 @@ class PersonnelRuntime:
         key = name_key(name)
         with self._lock:
             row = self._profiles.get(self._names.get(key))
-            self._counts["hot_hits" if row else "hot_misses"] += 1
-            return dict(row) if row else None
+            if row:
+                self._counts["hot_hits"] += 1
+                return dict(row)
+            self._counts["hot_misses"] += 1
+
+        # The persistent archive is the second cache layer.  It is deliberately
+        # read outside the runtime lock so a slow database cannot block OCR or
+        # the scheduler.  A miss is returned to the resolver, which performs
+        # one synchronous ESI lookup for this request.
+        try:
+            found = self.archive.find_names([name])
+        except Exception:  # noqa: BLE001 -- archive read failures fall through to ESI.
+            self._counts["archive_errors"] += 1
+            return None
+        row = found.get(key)
+        if row is None:
+            self._counts["archive_misses"] += 1
+            return None
+
+        self._counts["archive_hits"] += 1
+        self._remember([row])
+        # A stale local row is still useful for identity/display, but promote
+        # its refresh without making the caller wait for ESI.
+        fetched = float(row.get("affiliation_fetched_at") or 0)
+        expires = row.get("affiliation_expires_at")
+        deadline = min(fetched + AFFILIATION_TTL, float(expires)) if expires is not None else fetched + AFFILIATION_TTL
+        if not fetched or self.now() >= deadline:
+            self._schedule(row)
+        return dict(row)
 
     def profile(self, character_id: int) -> dict[str, Any] | None:
+        character_id = int(character_id)
+        result: dict[str, Any] | None = None
+        loaded_from_archive = False
         with self._lock:
             value = self._profiles.get(character_id)
-            if not value:
-                if len(self._pending_ids) < self.max_hot and character_id > 0:
-                    self._pending_ids.add(character_id)
-                    self._wake.set()
+            if value:
+                self._counts["hot_profile_hits"] += 1
+                result = dict(value)
+            else:
+                self._counts["hot_profile_misses"] += 1
+                if character_id in self._pending_ids:
+                    self._counts["pending_profile_hits"] += 1
+                    return None
+
+        if not result:
+            # Read-through to the durable archive before the resolver performs
+            # its synchronous cold-profile ESI lookup.
+            try:
+                found = self.archive.get_profiles([character_id]) if character_id > 0 else {}
+            except Exception:  # noqa: BLE001 -- archive read failures fall through to ESI.
+                self._counts["archive_profile_errors"] += 1
+                found = {}
+            value = found.get(character_id)
+            if value:
+                self._counts["archive_profile_hits"] += 1
+                self._remember([value])
+                result = dict(value)
+                loaded_from_archive = True
+            else:
+                self._counts["archive_profile_misses"] += 1
+                with self._lock:
+                    if len(self._pending_ids) < self.max_hot and character_id > 0:
+                        self._pending_ids.add(character_id)
+                        self._wake.set()
                 return None
-            result = dict(value)
+
         fetched = float(result.get("affiliation_fetched_at") or 0)
         expires = result.get("affiliation_expires_at")
         deadline = min(fetched + AFFILIATION_TTL, float(expires)) if expires is not None else fetched + AFFILIATION_TTL
@@ -107,6 +164,8 @@ class PersonnelRuntime:
             fetched_at=fetched, affiliation_trusted=trusted,
             zkill_url=f"https://zkillboard.com/character/{character_id}/",
         )
+        if loaded_from_archive and not trusted:
+            self._schedule(result)
         return result
 
     def request(self, name: str, *, seen_at: float | None = None) -> None:
@@ -397,7 +456,7 @@ class PersonnelRuntime:
 
 
 class PersonnelResolver(EsiResolver):
-    """Archive reads are nonblocking; missing data is filled by the runtime."""
+    """Read-through resolver with synchronous ESI fallback on cold misses."""
 
     def __init__(self, original: EsiResolver, runtime: PersonnelRuntime):
         super().__init__(client=original.client, cache=original.cache)
@@ -406,9 +465,39 @@ class PersonnelResolver(EsiResolver):
         self.original = original
 
     def cached_name(self, name: str, *, allow_stale: bool = False):
-        self.runtime.request(name, seen_at=0)
         row = self.runtime.lookup(name)
-        return (ResolvedName(row["name"], "character", row["character_id"]), "cached") if row else (None, "miss")
+        if row:
+            return ResolvedName(row["name"], "character", row["character_id"]), "cached"
+
+        key = name_key(name)
+        with self.runtime._lock:
+            if self.runtime._negative.get(key, 0) > self.runtime.now():
+                self.runtime._counts["negative_hits"] += 1
+                return None, "negative"
+
+        # The first two layers missed. Resolve this one name synchronously so
+        # the caller receives an identity immediately; the full archive still
+        # refreshes asynchronously in the runtime scheduler.
+        try:
+            payload = self.original.client.resolve_ids([name])
+            candidates = payload.get("characters", []) if isinstance(payload, dict) else []
+            candidate = next((item for item in candidates if isinstance(item, dict)), None)
+            if candidate is not None:
+                character_id = int(candidate["id"])
+                canonical_name = str(candidate.get("name") or name).strip() or name.strip()
+                fetched_at = self.runtime.now()
+                self.runtime.archive.save_identity(
+                    IdentityUpdate(character_id, canonical_name, fetched_at, fetched_at)
+                )
+                stored = self.runtime.archive.get_profiles([character_id]).get(character_id)
+                if stored:
+                    self.runtime._remember([stored])
+                    return ResolvedName(stored["name"], "character", character_id), "esi"
+            with self.runtime._lock:
+                self.runtime._negative[name_key(name)] = self.runtime.now() + 60
+        except Exception:  # noqa: BLE001 -- failed sync lookup falls back to retry queue.
+            self.runtime.request(name, seen_at=0)
+        return None, "miss"
 
     def resolve_names(self, names: list[str]) -> list[ResolvedName]:
         """Preserve synchronous public/admin lookup semantics outside OCR ingestion."""
@@ -435,7 +524,65 @@ class PersonnelResolver(EsiResolver):
         return self.runtime.profile(character_id)
 
     def character_profile(self, character_id: int):
-        return self.runtime.profile(character_id) or {"character_id": character_id}
+        profile = self.runtime.profile(character_id)
+        if profile:
+            return profile
+
+        # Resolve a cold character synchronously after the local archive miss.
+        # Affiliation remains best-effort; the confirmed identity is retained
+        # even if the second ESI request is unavailable.
+        try:
+            character_id = int(character_id)
+            rows = self.original.client.resolve_names([character_id])
+            candidate = next(
+                (
+                    item for item in rows
+                    if isinstance(item, dict)
+                    and int(item.get("id", 0)) == character_id
+                    and str(item.get("category") or "character") == "character"
+                ),
+                None,
+            )
+            if candidate is not None:
+                fetched_at = self.runtime.now()
+                self.runtime.archive.save_identity(
+                    IdentityUpdate(character_id, str(candidate["name"]), fetched_at, fetched_at)
+                )
+                try:
+                    affiliations = self.original.client.get_character_affiliations([character_id])
+                    affiliation = next(
+                        (
+                            item for item in affiliations
+                            if isinstance(item, dict)
+                            and int(item.get("character_id", 0)) == character_id
+                            and item.get("corporation_id")
+                        ),
+                        None,
+                    )
+                    if affiliation is not None:
+                        try:
+                            fetched, expires = self.runtime._freshness(str(character_id))
+                        except Exception:  # noqa: BLE001 -- missing freshness keeps the local value usable.
+                            fetched, expires = fetched_at, 0.0
+                        self.runtime.archive.save_affiliation(
+                            AffiliationUpdate(
+                                character_id,
+                                int(affiliation["corporation_id"]),
+                                fetched,
+                                affiliation.get("alliance_id"),
+                                affiliation.get("faction_id"),
+                                expires or None,
+                            )
+                        )
+                except Exception:  # noqa: BLE001, S110 -- identity survives affiliation failure.
+                    pass
+                stored = self.runtime.archive.get_profiles([character_id]).get(character_id)
+                if stored:
+                    self.runtime._remember([stored])
+                    return self.runtime.profile(character_id) or stored
+        except Exception:  # noqa: BLE001, S110 -- unresolved identity remains pending for retry.
+            pass
+        return {"character_id": character_id}
 
     def cache_snapshot(self):
         return {**super().cache_snapshot(), "archive": self.runtime.snapshot()}
