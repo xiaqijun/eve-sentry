@@ -283,17 +283,40 @@ class IntelApiClient:
         return clients
 
     def esi_status(self) -> dict[str, Any]:
-        """Return public ESI status; authenticated ESI is permanently disabled."""
+        """Return public and optional authenticated ESI status."""
         return self._request("GET", self._v1_path("/esi/status"))
+
+    def start_esi_login(self) -> dict[str, Any]:
+        """Start the server-side EVE OAuth2 PKCE login flow."""
+        payload = self._request("POST", self._v1_path("/esi/login"))
+        login = payload.get("login")
+        if not isinstance(login, dict):
+            raise IntelApiError("server returned an invalid ESI login payload")
+        return login
+
+    def esi_login_status(self) -> dict[str, Any]:
+        """Return the current server-side EVE OAuth2 login flow status."""
+        payload = self._request("GET", self._v1_path("/esi/login"))
+        login = payload.get("login")
+        if not isinstance(login, dict):
+            raise IntelApiError("server returned an invalid ESI login payload")
+        return login
 
     def esi_session(
         self,
         include_location: bool = True,
         include_contacts: bool = True,
     ) -> dict[str, Any]:
-        """Reject the retired authenticated ESI session endpoint."""
-        del include_location, include_contacts
-        raise IntelApiError("authenticated ESI is disabled")
+        """Fetch the authenticated ESI snapshot used by reputation refresh."""
+        query = {
+            "location": "1" if include_location else "0",
+            "contacts": "1" if include_contacts else "0",
+        }
+        return self._request(
+            "GET",
+            self._v1_path("/esi/session"),
+            params=query,
+        )
 
     def system_profile(self, system_id: int) -> dict[str, Any]:
         """Fetch one solar-system profile by ESI id."""
@@ -408,8 +431,13 @@ class IntelApiClient:
         return system
 
     def current_esi_system(self) -> dict[str, Any] | None:
-        """Return no location because authenticated ESI is disabled."""
-        return None
+        """Return the authenticated character's current ESI system, if available."""
+        try:
+            payload = self.esi_session(include_location=True, include_contacts=False)
+        except IntelApiError:
+            return None
+        location = payload.get("snapshot", {}).get("location")
+        return location if isinstance(location, dict) else None
 
     def list_reports(
         self,

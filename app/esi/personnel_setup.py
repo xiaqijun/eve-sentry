@@ -15,17 +15,45 @@ class PersonnelEnricher(ThreatEnricher):
         super().__init__(resolver=resolver, esi_session=session, now=now)
         self.relations = relations
         from app.esi.relation_shadow import ShadowComparisons
+        from app.esi.organization_relations import RelationView
+
         self.shadow_comparisons = ShadowComparisons()
+        # EVE SSO is no longer part of the server authentication flow.  Keep
+        # organization classification deterministic when an old deployment
+        # still has organization_mode enabled but no authenticated session:
+        # an unknown organization is neutral, and neutral is hostile by policy.
+        # This view contains no persisted or cross-account relation data.
+        self._neutral_relation_view = RelationView(
+            "local-neutral-fallback",
+            None,
+            None,
+            True,
+            (),
+            (),
+        )
 
     def contact_standings(self):
         mode = getattr(self, "organization_mode", "on")
         if self.relations is not None and mode == "on":
             return self.relations.view()
         from app.esi.contact_refresh import cached_contacts
+
         contacts = cached_contacts(self)
         if self.relations is not None and mode == "shadow":
             from app.esi.relation_shadow import ShadowContacts
+
             return ShadowContacts(contacts, self.relations.view(), self.shadow_comparisons)
+        if self.esi_session is None and self.relations is None and mode in {"shadow", "on"}:
+            from app.esi.relation_shadow import ShadowContacts
+
+            # Preserve the shadow comparison shape while making the fallback
+            # visible to the classifier.  ``ShadowContacts`` is deliberately
+            # truthy even when the legacy personal-contact cache is empty.
+            return ShadowContacts(
+                contacts,
+                self._neutral_relation_view,
+                self.shadow_comparisons,
+            ) if mode == "shadow" else self._neutral_relation_view
         return contacts
 
     def refresh_contacts(self) -> bool:

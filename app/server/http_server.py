@@ -29,12 +29,9 @@ from app.server.system_state import realtime_event_payload
 from app.server.monitoring_scope import current_scope, in_scope
 from app.server.map_settings import handle_settings, install_scope
 from app.server.seat_billing import (
-    ALERT_ACK_PROTOCOL,
     SEAT_BILLING_PROTOCOL_VERSION,
-    SEAT_TIME_GRANT_PROTOCOL_VERSION,
     SeatBillingError,
     SeatBillingRepository,
-    canonical_hash,
 )
 
 logger = logging.getLogger(__name__)
@@ -948,8 +945,10 @@ class IntelHTTPServer:
         host: str = "127.0.0.1",
         port: int = 8765,
         config_store: Any | None = None,
+        esi_session: Any | None = None,
         esi_config: dict[str, Any] | None = None,
         map_config_store: Any | None = None,
+        esi_login: Any | None = None,
         auth_service: Any | None = None,
         seat_integration_token: str = "",
         allow_alert_consumption: bool = False,
@@ -958,7 +957,9 @@ class IntelHTTPServer:
         self.host = host
         self.port = port
         self.config_store = config_store
+        self.esi_session = esi_session
         self.esi_config = dict(esi_config or {})
+        self.esi_login = esi_login
         self.auth_service = auth_service
         # Keep this token in process memory only; never include it in logs or
         # response payloads. Empty means the integration is deliberately off.
@@ -1001,7 +1002,9 @@ class IntelHTTPServer:
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
         self._httpd.store = self.store  # type: ignore[attr-defined]
         self._httpd.config_store = self.config_store  # type: ignore[attr-defined]
+        self._httpd.esi_session = self.esi_session  # type: ignore[attr-defined]
         self._httpd.esi_config = self.esi_config  # type: ignore[attr-defined]
+        self._httpd.esi_login = self.esi_login  # type: ignore[attr-defined]
         self._httpd.map_config_store = self.map_config_store  # type: ignore[attr-defined]
         self.host, self.port = self._httpd.server_address[:2]
         self._thread = threading.Thread(
@@ -1185,6 +1188,12 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+        if path in {
+            f"{API_V1_PREFIX}/esi/callback",
+            f"{API_V1_PREFIX}/auth/esi/callback",
+        }:
+            self._handle_esi_callback()
+            return
         if not self._authorize_request("GET", path):
             return
         if self._handle_auth_get(path):
@@ -1661,9 +1670,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             # ``_auth_principal`` and would otherwise raise a 401/502.
             self._handle_seat_integration_key_revoke(path)
             return
-        if path.startswith(f"{API_V1_PREFIX}/integrations/seat/alert-grants/"):
-            self._handle_seat_alert_grant_revoke(path)
-            return
         if self._handle_auth_delete(path):
             return
         if path.startswith(f"{API_V1_PREFIX}/reports/"):
@@ -1704,12 +1710,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         path = parsed.path
         if path == f"{API_V1_PREFIX}/integrations/seat/alert-consumption":
             self._handle_seat_alert_consumption_get()
-            return
-        if path == f"{API_V1_PREFIX}/integrations/seat/alert-events":
-            self._handle_seat_alert_events_get(parsed.query)
-            return
-        if path == f"{API_V1_PREFIX}/integrations/seat/alert-deliveries":
-            self._handle_seat_alert_deliveries_get(parsed.query)
             return
         if path == f"{API_V1_PREFIX}/integrations/seat/monitor-contributions":
             self._handle_seat_monitor_contributions_get(parsed.query)
@@ -1780,6 +1780,27 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         if path == f"{API_V1_PREFIX}/esi/status":
             self._send_json(self._esi_status_payload())
+            return
+        if path == f"{API_V1_PREFIX}/esi/login":
+            esi_login = self._esi_login()
+            if esi_login is None or not hasattr(esi_login, "snapshot"):
+                self._send_json({"error": "ESI login not configured"}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"login": esi_login.snapshot()})
+            return
+        if path == f"{API_V1_PREFIX}/esi/session":
+            query = parse_qs(parsed.query)
+            try:
+                include_location = self._parse_optional_bool_default(
+                    query.get("location", [""])[0], True, "location"
+                )
+                include_contacts = self._parse_optional_bool_default(
+                    query.get("contacts", [""])[0], True, "contacts"
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._send_esi_snapshot(include_location, include_contacts)
             return
         if path.startswith(f"{API_V1_PREFIX}/characters/by-name/"):
             name = unquote(path[len(f"{API_V1_PREFIX}/characters/by-name/"):]).strip()
@@ -1972,20 +1993,20 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def _handle_v1_post(self, path: str) -> None:
+        if path == f"{API_V1_PREFIX}/esi/login":
+            esi_login = self._esi_login()
+            if esi_login is None or not hasattr(esi_login, "start"):
+                self._send_json({"error": "ESI login not configured"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                login = esi_login.start()
+            except Exception as exc:
+                self._send_json({"error": f"ESI login unavailable: {exc}"}, HTTPStatus.BAD_GATEWAY)
+                return
+            self._send_json({"ok": True, "login": login})
+            return
         if path == f"{API_V1_PREFIX}/integrations/seat/keys":
             self._handle_seat_integration_key_create()
-            return
-        if path == f"{API_V1_PREFIX}/integrations/seat/alert-grants":
-            self._handle_seat_alert_grant_create()
-            return
-        if path == f"{API_V1_PREFIX}/integrations/seat/alert-events":
-            self._handle_seat_alert_event_upsert()
-            return
-        if path == f"{API_V1_PREFIX}/integrations/seat/alert-deliveries":
-            self._handle_seat_alert_delivery_create()
-            return
-        if path.startswith(f"{API_V1_PREFIX}/alert-deliveries/") and path.endswith("/ack"):
-            self._handle_seat_alert_delivery_ack(path)
             return
         if path == f"{API_V1_PREFIX}/channel-lines":
             try:
@@ -2455,101 +2476,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             }
         )
 
-    def _handle_seat_alert_grant_create(self) -> None:
-        if not self._seat_consumption_enabled():
-            return
-        try:
-            payload = self._read_json()
-            operation_id = self._required_uuid(payload, "operation_id", "invalid_operation_id")
-            grant_id = self._required_uuid(payload, "grant_id", "invalid_grant_id")
-            account_id = self._required_uuid(payload, "account_id", "invalid_account_id")
-            protocol_version = payload.get("protocol_version", SEAT_BILLING_PROTOCOL_VERSION)
-            if isinstance(protocol_version, bool) or protocol_version not in {
-                SEAT_BILLING_PROTOCOL_VERSION,
-                SEAT_TIME_GRANT_PROTOCOL_VERSION,
-            }:
-                raise SeatIntegrationError("protocol_version is unsupported", "invalid_protocol_version")
-            if protocol_version == SEAT_TIME_GRANT_PROTOCOL_VERSION:
-                # v2 is intentionally a seconds-only contract. The price and
-                # unit policy stay in Seat's exchange ledger and never cross
-                # into Sentry.
-                if any(field in payload for field in ("price_version", "unit_seconds", "unit_price_minor")):
-                    raise SeatIntegrationError(
-                        "protocol v2 does not accept pricing fields",
-                        "pricing_not_allowed",
-                    )
-                price_version = "seat-managed-v2"
-                unit_seconds = 1
-                unit_price_minor = 0
-            else:
-                price_version = str(payload.get("price_version") or "").strip()
-                if not price_version or len(price_version) > 80:
-                    raise SeatIntegrationError("price_version is required", "invalid_price_version")
-                unit_seconds = self._positive_int(payload.get("unit_seconds"), "unit_seconds")
-                unit_price_minor = self._positive_or_zero_int(payload.get("unit_price_minor"), "unit_price_minor")
-            reserved_seconds = self._positive_int(payload.get("reserved_seconds"), "reserved_seconds")
-            expires_at = str(payload.get("expires_at") or "").strip()
-            if not expires_at or self._parse_iso_timestamp(expires_at) is None:
-                raise SeatIntegrationError("expires_at must be an ISO timestamp", "invalid_expires_at")
-            normalized = {
-                "operation_id": operation_id,
-                "grant_id": grant_id,
-                "account_id": account_id,
-                "key_id": str(payload.get("key_id") or "").strip(),
-                "price_version": price_version,
-                "unit_price_minor": unit_price_minor,
-                "unit_seconds": unit_seconds,
-                "reserved_seconds": reserved_seconds,
-                "expires_at": expires_at,
-                "protocol_version": int(protocol_version),
-            }
-            result = self._seat_billing_repository().create_grant(
-                {**normalized, "created_at": utc_now_iso()},
-                operation_id,
-                canonical_hash(normalized),
-            )
-            if result["idempotency_conflict"]:
-                raise SeatIntegrationError("operation_id was already used for a different request", "operation_conflict", HTTPStatus.CONFLICT)
-        except (SeatIntegrationError, SeatBillingError) as exc:
-            self._send_json({"error": str(exc), "code": exc.code}, exc.status)
-            return
-        except (ValueError, json.JSONDecodeError) as exc:
-            self._send_json({"error": str(exc), "code": "invalid_request"}, _request_error_status(exc))
-            return
-        except Exception:
-            logger.exception("Seat alert grant creation failed")
-            self._send_json({"error": "Seat billing storage is unavailable", "code": "billing_storage_error"}, HTTPStatus.SERVICE_UNAVAILABLE)
-            return
-        response = dict(result["grant"])
-        if int(response.get("protocol_version") or 0) == SEAT_TIME_GRANT_PROTOCOL_VERSION:
-            # Do not leak the compatibility columns that exist solely for
-            # historical v1 rows. Seat remains the only pricing authority.
-            for field in ("price_version", "unit_seconds", "unit_price_minor"):
-                response.pop(field, None)
-        response["idempotent_replay"] = not bool(result["created"])
-        self._send_json(response, HTTPStatus.CREATED if result["created"] else HTTPStatus.OK)
-
-    def _handle_seat_alert_grant_revoke(self, path: str) -> None:
-        if not self._seat_consumption_enabled():
-            return
-        prefix = f"{API_V1_PREFIX}/integrations/seat/alert-grants/"
-        grant_id = unquote(path[len(prefix):]).strip("/")
-        if not grant_id or "/" in grant_id:
-            self._send_json({"error": "alert grant not found", "code": "grant_not_found"}, HTTPStatus.NOT_FOUND)
-            return
-        try:
-            result = self._seat_billing_repository().revoke_grant(
-                grant_id, "revoked by Seat integration", utc_now_iso()
-            )
-        except Exception:
-            logger.exception("Seat alert grant revoke failed")
-            self._send_json({"error": "Seat billing storage is unavailable", "code": "billing_storage_error"}, HTTPStatus.SERVICE_UNAVAILABLE)
-            return
-        if result is None:
-            self._send_json({"error": "alert grant not found", "code": "grant_not_found"}, HTTPStatus.NOT_FOUND)
-            return
-        self._send_json(result)
-
     def _handle_seat_monitor_contributions_get(self, query_string: str) -> None:
         """Export server-confirmed primary monitoring intervals to Seat."""
         try:
@@ -2595,227 +2521,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return
         self._send_json(result)
 
-    def _handle_seat_alert_event_upsert(self) -> None:
-        if not self._seat_consumption_enabled():
-            return
-        try:
-            payload = self._read_json()
-            event_id = str(payload.get("charge_event_id") or "").strip()
-            if not event_id or len(event_id) > 160:
-                raise SeatIntegrationError("charge_event_id is required", "invalid_charge_event_id")
-            revision = self._positive_int(payload.get("revision"), "revision")
-            event_type = str(payload.get("event_type") or "").strip()
-            rule_version = str(payload.get("rule_version") or "").strip()
-            lifecycle = str(payload.get("lifecycle") or "eligible").strip()
-            if not event_type or len(event_type) > 80:
-                raise SeatIntegrationError("event_type is required", "invalid_event_type")
-            if not rule_version or len(rule_version) > 80:
-                raise SeatIntegrationError("rule_version is required", "invalid_rule_version")
-            if lifecycle not in {"candidate", "pending_review", "eligible", "delivered", "confirmed", "revoked"}:
-                raise SeatIntegrationError("lifecycle is invalid", "invalid_lifecycle")
-            eligibility = payload.get("eligibility") or {}
-            evidence = payload.get("evidence") or {}
-            if not isinstance(eligibility, dict) or not isinstance(evidence, dict):
-                raise SeatIntegrationError("eligibility and evidence must be objects", "invalid_evidence")
-            normalized = {
-                "charge_event_id": event_id,
-                "revision": revision,
-                "wave_id": str(payload.get("wave_id") or "").strip(),
-                "event_type": event_type,
-                "system_id": payload.get("system_id"),
-                "system_name": str(payload.get("system_name") or "").strip(),
-                "rule_version": rule_version,
-                "eligibility": eligibility,
-                "evidence": evidence,
-                "lifecycle": lifecycle,
-                "revocation_reason": str(payload.get("revocation_reason") or "").strip(),
-            }
-            result = self._seat_billing_repository().upsert_event(normalized, canonical_hash(normalized))
-            if result["idempotency_conflict"]:
-                raise SeatIntegrationError("charge event revision was already used for a different request", "event_revision_conflict", HTTPStatus.CONFLICT)
-        except (SeatIntegrationError, SeatBillingError) as exc:
-            self._send_json({"error": str(exc), "code": exc.code}, exc.status)
-            return
-        except (ValueError, json.JSONDecodeError) as exc:
-            self._send_json({"error": str(exc), "code": "invalid_request"}, _request_error_status(exc))
-            return
-        except Exception:
-            logger.exception("Seat alert event upsert failed")
-            self._send_json({"error": "Seat billing storage is unavailable", "code": "billing_storage_error"}, HTTPStatus.SERVICE_UNAVAILABLE)
-            return
-        response = dict(result["event"])
-        response["idempotent_replay"] = not bool(result["created"])
-        self._send_json(response, HTTPStatus.CREATED if result["created"] else HTTPStatus.OK)
-
-    def _handle_seat_alert_delivery_create(self) -> None:
-        if not self._seat_consumption_enabled():
-            return
-        try:
-            payload = self._read_json()
-            normalized = {
-                "delivery_id": self._required_uuid(payload, "delivery_id", "invalid_delivery_id"),
-                "charge_event_id": str(payload.get("charge_event_id") or "").strip(),
-                "revision": self._positive_int(payload.get("revision"), "revision"),
-                "grant_id": self._required_uuid(payload, "grant_id", "invalid_grant_id"),
-                "account_id": self._required_uuid(payload, "account_id", "invalid_account_id"),
-                "key_id": str(payload.get("key_id") or "").strip(),
-                "connection_id": str(payload.get("connection_id") or "").strip(),
-                "client_version": str(payload.get("client_version") or "").strip(),
-                "ack_capability": str(payload.get("ack_capability") or "").strip(),
-                "sent_at": str(payload.get("sent_at") or utc_now_iso()).strip(),
-            }
-            interval = self._normalise_alert_interval(payload)
-            normalized.update(interval)
-            ack_deadline_at = str(payload.get("ack_deadline_at") or "").strip()
-            if ack_deadline_at:
-                if self._parse_iso_timestamp(ack_deadline_at) is None:
-                    raise SeatIntegrationError("ack_deadline_at must be an ISO timestamp", "invalid_ack_deadline_at")
-            else:
-                deadline = self._parse_iso_timestamp(normalized["sent_at"])
-                if deadline is None:
-                    deadline = self._parse_iso_timestamp(utc_now_iso())
-                assert deadline is not None
-                ack_deadline_at = (deadline + timedelta(seconds=300)).isoformat()
-            normalized["ack_deadline_at"] = ack_deadline_at
-            if not normalized["charge_event_id"] or not normalized["key_id"] or not normalized["connection_id"]:
-                raise SeatIntegrationError("charge_event_id, key_id and connection_id are required", "invalid_delivery")
-            if normalized["ack_capability"] != ALERT_ACK_PROTOCOL:
-                raise SeatIntegrationError(
-                    "client must advertise the alert ACK protocol",
-                    "client_ack_required",
-                    HTTPStatus.CONFLICT,
-                )
-            result = self._seat_billing_repository().register_delivery(
-                normalized, canonical_hash(normalized), utc_now_iso()
-            )
-            if result["idempotency_conflict"]:
-                raise SeatIntegrationError("delivery_id was already used for a different request", "delivery_conflict", HTTPStatus.CONFLICT)
-        except (SeatIntegrationError, SeatBillingError) as exc:
-            self._send_json({"error": str(exc), "code": exc.code}, exc.status)
-            return
-        except (ValueError, json.JSONDecodeError) as exc:
-            self._send_json({"error": str(exc), "code": "invalid_request"}, _request_error_status(exc))
-            return
-        except Exception:
-            logger.exception("Seat alert delivery creation failed")
-            self._send_json({"error": "Seat billing storage is unavailable", "code": "billing_storage_error"}, HTTPStatus.SERVICE_UNAVAILABLE)
-            return
-        response = dict(result["delivery"])
-        response["idempotent_replay"] = not bool(result["created"])
-        self._send_json(response, HTTPStatus.CREATED if result["created"] else HTTPStatus.OK)
-
-    def _handle_seat_alert_delivery_ack(self, path: str) -> None:
-        if not self._seat_consumption_enabled():
-            return
-        prefix = f"{API_V1_PREFIX}/alert-deliveries/"
-        delivery_id = unquote(path[len(prefix):-len("/ack")]).strip("/")
-        principal = self._auth_principal
-        if principal is None:
-            self._send_json({"error": "authentication is required", "code": "authentication_required"}, HTTPStatus.UNAUTHORIZED)
-            return
-        if not principal.is_seat or "alert" not in principal.permissions:
-            self._send_json({"error": "Seat alert permission is required", "code": "seat_permission_denied"}, HTTPStatus.FORBIDDEN)
-            return
-        try:
-            payload = self._read_optional_json() or {}
-            if not isinstance(payload, dict):
-                raise SeatIntegrationError("ack payload must be an object", "invalid_ack")
-            evidence = payload.get("evidence") or {}
-            if not isinstance(evidence, dict):
-                raise SeatIntegrationError("ack evidence must be an object", "invalid_ack_evidence")
-            revision = self._positive_int(payload.get("revision"), "revision")
-            interval = self._normalise_alert_interval(payload)
-            result = self._seat_billing_repository().acknowledge_delivery(
-                delivery_id,
-                account_id=str(principal.account_id or ""),
-                key_id=str(principal.api_key_id or ""),
-                charge_event_id=str(payload.get("charge_event_id") or "").strip(),
-                revision=revision,
-                started_at=interval["started_at"],
-                ended_at=interval["ended_at"],
-                duration_seconds=interval["duration_seconds"],
-                connection_id=str(payload.get("connection_id") or "").strip(),
-                ack_idempotency_key=str(self.headers.get("Idempotency-Key") or payload.get("ack_idempotency_key") or "").strip(),
-                evidence=evidence,
-                now=utc_now_iso(),
-            )
-        except (SeatIntegrationError, SeatBillingError) as exc:
-            self._send_json({"error": str(exc), "code": exc.code}, exc.status)
-            return
-        except (ValueError, json.JSONDecodeError) as exc:
-            self._send_json({"error": str(exc), "code": "invalid_request"}, _request_error_status(exc))
-            return
-        except Exception:
-            logger.exception("Seat alert delivery acknowledgement failed")
-            self._send_json({"error": "Seat billing storage is unavailable", "code": "billing_storage_error"}, HTTPStatus.SERVICE_UNAVAILABLE)
-            return
-        self._send_json({**result["delivery"], "idempotent_replay": bool(result["idempotent_replay"])})
-
-    def _handle_seat_alert_events_get(self, query_string: str) -> None:
-        try:
-            query = parse_qs(query_string)
-            limit = self._parse_optional_int(query.get("limit", [""])[0]) or 100
-            result = self._seat_billing_repository().list_events(
-                after=str(query.get("after", [""])[0] or "").strip(), limit=limit
-            )
-        except SeatBillingError as exc:
-            self._send_json({"error": str(exc), "code": exc.code}, exc.status)
-            return
-        except Exception:
-            logger.exception("Seat alert event page failed")
-            self._send_json({"error": "Seat billing storage is unavailable", "code": "billing_storage_error"}, HTTPStatus.SERVICE_UNAVAILABLE)
-            return
-        self._send_json(result)
-
-    def _handle_seat_alert_deliveries_get(self, query_string: str) -> None:
-        try:
-            query = parse_qs(query_string)
-            limit = self._parse_optional_int(query.get("limit", [""])[0]) or 100
-            result = self._seat_billing_repository().list_deliveries(
-                after=str(query.get("after", [""])[0] or "").strip(), limit=limit
-            )
-        except SeatBillingError as exc:
-            self._send_json({"error": str(exc), "code": exc.code}, exc.status)
-            return
-        except Exception:
-            logger.exception("Seat alert delivery page failed")
-            self._send_json({"error": "Seat billing storage is unavailable", "code": "billing_storage_error"}, HTTPStatus.SERVICE_UNAVAILABLE)
-            return
-        self._send_json(result)
-
-    def _normalise_alert_interval(self, payload: dict[str, Any]) -> dict[str, Any]:
-        started = self._parse_iso_timestamp(str(payload.get("started_at") or ""))
-        if started is None:
-            raise SeatIntegrationError("started_at must be an ISO timestamp", "invalid_started_at")
-        ended_value = str(payload.get("ended_at") or "").strip()
-        ended = self._parse_iso_timestamp(ended_value) if ended_value else None
-        duration_value = payload.get("duration_seconds")
-        duration = None if duration_value in (None, "") else self._positive_int(duration_value, "duration_seconds")
-        if ended is None and duration is None:
-            raise SeatIntegrationError("ended_at or duration_seconds is required", "invalid_interval")
-        if ended is not None:
-            if ended <= started:
-                raise SeatIntegrationError("ended_at must be after started_at", "invalid_interval")
-            computed = int((ended - started).total_seconds())
-            if computed <= 0:
-                raise SeatIntegrationError("warning interval must contain whole seconds", "invalid_interval")
-            if duration is not None and duration != computed:
-                raise SeatIntegrationError("duration_seconds does not match the interval", "invalid_interval")
-            duration = computed
-        assert duration is not None
-        if ended is None:
-            ended = started + timedelta(seconds=duration)
-        to_utc = lambda value: value.astimezone(timezone.utc).replace(microsecond=0).isoformat()
-        return {"started_at": to_utc(started), "ended_at": to_utc(ended), "duration_seconds": int(duration)}
-
-    def _required_uuid(self, payload: dict[str, Any], field: str, code: str) -> str:
-        value = str(payload.get(field) or "").strip()
-        try:
-            uuid.UUID(value)
-        except (ValueError, AttributeError):
-            raise SeatIntegrationError(f"{field} must be a valid UUID", code) from None
-        return value
-
     @staticmethod
     def _positive_int(value: Any, field: str) -> int:
         if isinstance(value, bool):
@@ -2826,18 +2531,6 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             raise SeatIntegrationError(f"{field} must be a positive integer", f"invalid_{field}") from None
         if number <= 0:
             raise SeatIntegrationError(f"{field} must be a positive integer", f"invalid_{field}")
-        return number
-
-    @staticmethod
-    def _positive_or_zero_int(value: Any, field: str) -> int:
-        if isinstance(value, bool):
-            raise SeatIntegrationError(f"{field} must be a non-negative integer", f"invalid_{field}")
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
-            raise SeatIntegrationError(f"{field} must be a non-negative integer", f"invalid_{field}") from None
-        if number < 0:
-            raise SeatIntegrationError(f"{field} must be a non-negative integer", f"invalid_{field}")
         return number
 
     @staticmethod
@@ -4289,6 +3982,12 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
     def _config_store(self) -> Any | None:
         return self.server.config_store  # type: ignore[attr-defined,no-any-return]
 
+    def _esi_session(self) -> Any | None:
+        return getattr(self.server, "esi_session", None)
+
+    def _esi_login(self) -> Any | None:
+        return getattr(self.server, "esi_login", None)
+
     def _invalidate_identity_cache(self) -> None:
         """Drop identity profiles after watchlist/standing rules change."""
         resolver = getattr(self._store(), "_resolver", None)
@@ -4305,9 +4004,23 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             return {"authenticated_esi_enabled": False}
         return {
             key: config[key]
-            for key in ("backend", "gateway_url", "local_fallback")
+            for key in (
+                "backend",
+                "gateway_url",
+                "local_fallback",
+                "client_id_configured",
+                "redirect_uri",
+                "token_file",
+                "token_file_present",
+                "token_storage",
+                "scopes",
+            )
             if key in config
-        } | {"authenticated_esi_enabled": False}
+        } | {
+            "authenticated_esi_enabled": bool(
+                config.get("authenticated_esi_enabled")
+            )
+        }
 
     def _esi_public_resolver(self) -> Any | None:
         resolver = getattr(self._store(), "_resolver", None)
@@ -4324,6 +4037,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         return self.server.map_config_store  # type: ignore[attr-defined,no-any-return]
 
     def _esi_status_payload(self) -> dict[str, Any]:
+        session = self._esi_session()
         public_enabled = self._esi_public_resolver() is not None
         config = self._esi_config()
         resolver = self._esi_public_resolver()
@@ -4331,14 +4045,78 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         if connections is not None and hasattr(connections, "telemetry"):
             config["transport"] = {"mode": "relay" if connections.relay_host else "direct",
                                    **connections.telemetry.snapshot()}
+        if session is None:
+            return {
+                "enabled": public_enabled,
+                "public": public_enabled,
+                "authenticated": False,
+                "session": False,
+                "refreshable": False,
+                "config": config,
+            }
+        try:
+            tokens = session.load_tokens(refresh_if_needed=False)
+        except Exception as exc:
+            return {
+                "enabled": True,
+                "public": public_enabled,
+                "authenticated": False,
+                "session": True,
+                "refreshable": False,
+                "config": config,
+                "error": str(exc),
+            }
         return {
-            "enabled": public_enabled,
+            "enabled": True,
             "public": public_enabled,
-            "authenticated": False,
-            "session": False,
-            "refreshable": False,
-            "config": {**config, "authenticated_esi_enabled": False},
+            "authenticated": True,
+            "session": True,
+            "refreshable": bool(getattr(tokens, "refresh_token", "")),
+            "config": config,
+            "character_id": getattr(tokens, "character_id", None),
+            "character_owner_hash": getattr(tokens, "character_owner_hash", ""),
+            "scopes": list(getattr(tokens, "scopes", []) or []),
+            "expires_at": getattr(tokens, "expires_at", 0.0),
+            "expired": bool(tokens.is_expired()),
         }
+
+    def _handle_esi_callback(self) -> None:
+        login = self._esi_login()
+        owns_callback = getattr(login, "owns_callback", None)
+        complete_callback = getattr(login, "complete_callback", None)
+        if login is None or not callable(owns_callback) or not callable(complete_callback):
+            self._send_json({"error": "ESI login not configured"}, HTTPStatus.NOT_FOUND)
+            return
+        if not owns_callback(self.path):
+            self._send_json({"error": "ESI callback state is invalid"}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            result = complete_callback(self.path)
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
+        self._send_json({"ok": True, "login": result})
+
+    def _send_esi_snapshot(self, include_location: bool, include_contacts: bool) -> None:
+        session = self._esi_session()
+        if session is None or not hasattr(session, "snapshot"):
+            self._send_json({"error": "ESI session not enabled"}, HTTPStatus.NOT_FOUND)
+            return
+        try:
+            snapshot = session.snapshot(
+                include_location=include_location,
+                include_contacts=include_contacts,
+            )
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
+        self._send_json(
+            {
+                "enabled": True,
+                "authenticated": True,
+                "snapshot": snapshot.to_dict(),
+            }
+        )
 
     def _health_payload(self) -> dict[str, Any]:
         store = self._store()

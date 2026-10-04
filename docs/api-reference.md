@@ -212,51 +212,17 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 `seat_integration_settings`，由 Seat 管理员收费开关通过服务令牌同步。Sentry 不接收余额、不计算币额，
 也不直接写平台账本。新收费只依据服务端接收的相邻认证客户端心跳在线区间，Seat 按小时价格结算。
 
-下面的集成服务端接口使用同一个 Seat 集成 Bearer Token。授权 v2 是当前新调用方使用的协议；
-事件/投递分页仍使用既有 v1 事实格式，v1 授权仅用于读取和重放历史记录。`operation_id`、`grant_id`、`delivery_id` 和
-`charge_event_id + revision` 都是幂等边界；重放必须提交相同规范化请求，否则返回 `409` 冲突。
-v2 的授权只包含秒数，不接受也不返回费率、价格版本或币额；单价、计价单位、余额预留、
-结算、释放和退款全部由 Seat 的 exchange 负责。授权、事件、投递和 ACK 接口仍可维护
-事实记录，但不再由 Seat worker 触发新收费；新的收费来源只有 `client-usage` 在线区间。
-若 v2 请求带 `price_version`、`unit_seconds` 或 `unit_price_minor`，服务端返回
-`400 pricing_not_allowed`，防止两端出现第二套费率来源。
+当前合同只有收费门禁、监控贡献和认证客户端在线区间；事件、投递、ACK、授权和释放/退款接口已移除。
+新的收费来源只有 `client-usage` 在线区间，Seat 在本地完成果壳币结算。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/v1/integrations/seat/alert-consumption` | 读取当前持久化预警消费门禁；仅接受 Seat 集成 Bearer Token |
 | `PUT` | `/api/v1/integrations/seat/alert-consumption` | Seat 同步收费开关，JSON 为 `{"enabled":true|false}`；幂等返回当前状态 |
-| `POST` | `/api/v1/integrations/seat/alert-grants` | 创建有限期限秒数授权；v2 字段为 `operation_id/grant_id/account_id/key_id/reserved_seconds/expires_at/protocol_version=2`，v1 的价格字段仅兼容历史调用 |
-| `DELETE` | `/api/v1/integrations/seat/alert-grants/{grant_id}` | 幂等撤销授权，停止新增投递 |
-| `POST` | `/api/v1/integrations/seat/alert-events` | 写入收费事件或追加修订；字段为 `charge_event_id/wave_id/revision/event_type/system_id/system_name/rule_version/eligibility/evidence/lifecycle/revocation_reason` |
-| `POST` | `/api/v1/integrations/seat/alert-deliveries` | 记录已发送投递并按账号/授权原子预留有效预警区间秒数；字段为 `delivery_id/charge_event_id/revision/grant_id/account_id/key_id/connection_id/client_version/ack_capability/started_at/ended_at/duration_seconds/ack_deadline_at/sent_at`；`ack_capability` 必须为 `alert-ack.v1` |
-| `GET` | `/api/v1/integrations/seat/alert-deliveries?after={cursor}&limit={n}` | Seat 对账读取投递与消费状态；返回 `consumption_state`、区间字段、ACK 状态和游标水位 |
-| `GET` | `/api/v1/integrations/seat/alert-events?after={cursor}&limit={n}` | 只读对账页，返回 `next_cursor/committed_watermark/earliest_available_watermark/has_more/protocol_version` |
-| `GET` | `/api/v1/integrations/seat/monitor-contributions?after={cursor}&limit={n}` | 只读读取服务端确认的主节点监控区间；返回 `contribution_id/key_id/client_id/system_id/system_name/primary_generation/started_at/ended_at/duration_seconds/eligibility/evidence` 及游标水位 |
-| `GET` | `/api/v1/integrations/seat/client-usage?after={cursor}&limit={n}` | 只读读取认证客户端相邻有效心跳在线区间；返回 `usage_id/account_id/key_id/client_id/started_at/ended_at/duration_seconds`、`rule_version=client-heartbeat.v1` 和游标水位 |
-| `POST` | `/api/v1/alert-deliveries/{delivery_id}/ack` | Seat alert key 在客户端完成去重并投递 UI 后确认；请求必须带 `charge_event_id/revision/connection_id/started_at/ended_at/duration_seconds` 和 `Idempotency-Key`（或 `ack_idempotency_key`），可附 `evidence` 使用证据快照 |
+| `GET` | `/api/v1/integrations/seat/monitor-contributions?after={cursor}&limit={n}` | 读取服务端确认的主节点监控区间及游标水位 |
+| `GET` | `/api/v1/integrations/seat/client-usage?after={cursor}&limit={n}` | 读取认证客户端相邻有效心跳在线区间及游标水位 |
 
-历史投递预留只占一次 `grant_id + charge_event_id + revision + started_at + ended_at`，多设备重收同一区间不会再扣秒数；ACK 只接受服务端
-已记录且与 `account_id/key_id/connection_id/revision` 完全匹配的投递。ACK 将预留从
-`reserved` 变为 `consumed`；v2 秒数授权只返回 `reserved_seconds/remaining_seconds`，
-Seat 根据自己保存的价格版本和计价单位计算金额。未确认由超时任务
-释放并返还秒数，已确认区间可按原复合键标记 `refunded`；平台账本结算仍由后续对账任务负责，当前仓库
-尚未连接生产 exchange。事件的 `eligibility` 应保留来源有效、识别可信、事件有效、软件
-收到四关及其规则版本；`acknowledged_at` 仍是人工处置字段，不能替代客户端 ACK。
-
-旧 Windows 客户端或未声明能力的投递会被拒绝，不会预留或扣费。生产环境的
-`EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION` 仅用于初始化新库的默认值；初始化后以 Seat 的
-`PUT .../alert-consumption` 为准。Seat 保存价格和收费开关失败时不会提交本地开关，远端门禁写入失败也会阻止本地价格变更。
-
-当前客户端已声明 `ack_capability=alert-ack.v1`，仅当 SSE 告警携带完整的
-`delivery_id/charge_event_id/revision/connection_id/started_at/ended_at/duration_seconds` 投递绑定时才会
-在 UI 处理后发送 ACK。ACK 的 `evidence` 以 `alert-use-evidence.v1` 保存客户端 ID、版本、主机、连接、
-去重结果、处理时间和原始告警证据；服务端只有在该快照字段完整时才把预留转为已消费，缺少绑定字段的普通告警不会被猜测为收费事件。服务端只把这份证据作为
-可审计快照，收费仍以服务端已登记的 delivery、授权、区间和修订绑定为准。
-
-客户端在 `/api/v1/events` 请求上同时发送 `X-EVE-SENTRY-Alert-ACK`、
-`X-EVE-SENTRY-Connection-ID` 和 `X-EVE-SENTRY-Client-ID`，供 Seat 投递器绑定本次连接；服务端不会把缺少
-投递绑定的普通 SSE 告警自动转换成收费投递。
-
+同一客户端、账号和星系的重复区间由 Seat 幂等处理；监控奖励也只使用服务端确认的主节点贡献区间。
 ### SeAT 业务认证（M1）
 
 `EVE_SENTRY_SERVER_SEAT_AUTH_MODE=off|enforce` 与上面的生命周期服务令牌相互独立，默认关闭。
@@ -607,10 +573,15 @@ Authorization: Bearer eve_xxx
 | `GET` | `/api/v1/characters/by-name/{name}` | 按准确名称解析角色 |
 | `GET` | `/api/v1/systems/{system_id}` | 星系资料 |
 | `GET` | `/api/v1/systems/by-name/{name}` | 按名称解析星系 |
-| `GET` | `/api/v1/esi/status` | 公共 ESI 配置和连接状态；`authenticated` 固定为 `false` |
+| `GET` | `/api/v1/esi/status` | 公共 ESI 与声望用 OAuth2 会话状态 |
+| `GET/POST` | `/api/v1/esi/login` | 查询或启动 EVE OAuth2 PKCE 登录 |
+| `GET` | `/api/v1/esi/callback` | EVE OAuth2 回调（兼容 `/api/v1/auth/esi/callback`） |
+| `GET` | `/api/v1/esi/session` | 读取当前授权角色的联系人/位置快照 |
 
-项目不保存 EVE OAuth2 token，也不提供 ESI 登录、回调或授权账号快照。角色、军团、联盟
-和星系资料只通过无用户令牌的公共 ESI 解析和缓存获取。
+服务端只为组织声望识别保存一份受保护的 EVE OAuth2 token，不将 token 下发给客户端、SeAT
+或 Gateway。首次登录可在服务端执行 `scripts/run_server.py --esi-login-only`，也可通过
+`/api/v1/esi/login` 启动 PKCE 流程；登录成功后组织关系后台按官方 freshness 刷新。
+授权失效时采用中立=敌对的安全降级，不丢弃 OCR 已解析人员名单。
 
 `/api/v1/kill-activity/*` 仅保留兼容行为；实时人员解析不再抓取 zKillboard 统计，
 `verified_characters[].zkill` 仅可能来自旧历史数据，不提供同步补查接口。

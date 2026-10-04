@@ -89,7 +89,6 @@ _SEAT_PERMISSION_ROUTES: dict[str, tuple[tuple[str, str], ...]] = {
         ("GET", "/api/v1/alerts"),
         ("GET", "/api/v1/alerts/*"),
         ("GET", "/api/v1/clients"),
-        ("POST", "/api/v1/alert-deliveries/*/ack"),
     ),
 }
 
@@ -445,11 +444,6 @@ class AuthHttpMixin:
             ("POST", create_path),
             ("PUT", "/api/v1/integrations/seat/alert-consumption"),
             ("GET", "/api/v1/integrations/seat/alert-consumption"),
-            ("POST", "/api/v1/integrations/seat/alert-grants"),
-            ("POST", "/api/v1/integrations/seat/alert-events"),
-            ("POST", "/api/v1/integrations/seat/alert-deliveries"),
-            ("GET", "/api/v1/integrations/seat/alert-events"),
-            ("GET", "/api/v1/integrations/seat/alert-deliveries"),
             ("GET", "/api/v1/integrations/seat/monitor-contributions"),
             ("GET", "/api/v1/integrations/seat/client-usage"),
         }
@@ -457,7 +451,6 @@ class AuthHttpMixin:
             return True
         revoke_prefixes = (
             f"{create_path}/",
-            "/api/v1/integrations/seat/alert-grants/",
         )
         if method != "DELETE":
             return False

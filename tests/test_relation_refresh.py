@@ -78,7 +78,7 @@ def test_source_failure_does_not_prevent_other_source_success(setup):
     corp, alliance = manager.view().sources
     assert corp.successful_at == 1000 and corp.failures == 1
     assert alliance.successful_at == 1127 and alliance.entries[("corporation", 30)] == 0
-    assert manager.view().annotate({"corporation_id": 30})["contact_standing"] == 5
+    assert manager.view().annotate({"corporation_id": 30})["standing_source"] == PENDING_SOURCE
 
 
 def test_first_source_unknown_blocks_lower_source_friendly(setup):
@@ -164,6 +164,15 @@ def test_new_corporation_isolated_before_failed_relation_fetch(setup):
     manager.refresh()
     assert manager.view().context != old.context
     assert manager.view().corporation_id == 11
+    assert manager.view().annotate({"corporation_id": 30})["standing_source"] == PENDING_SOURCE
+
+
+def test_source_expires_at_fences_early_official_expiry(setup):
+    clock, client, _, manager = setup
+    manager.refresh()
+    clock[0] = 1127
+
+    assert manager.view().sources[0].expires_at == 1126
     assert manager.view().annotate({"corporation_id": 30})["standing_source"] == PENDING_SOURCE
 
 

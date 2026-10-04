@@ -159,6 +159,26 @@ def test_shadow_mode_keeps_neutral_fallback_when_legacy_contacts_are_empty():
     assert profile["standing_contact_type"] == "neutral"
 
 
+def test_personnel_enricher_uses_neutral_hostile_fallback_without_sso():
+    from app.esi.organization_relations import STANDING_SOURCE
+    from app.esi.personnel_setup import PersonnelEnricher
+
+    enricher = PersonnelEnricher(FakeResolver(), None)
+    enricher.organization_mode = "on"
+    observation = Observation(
+        source="eve-sentry-detector",
+        system_name="S-KSWL",
+        names=["Alice"],
+        character_ids=[123],
+    )
+
+    profile = enricher.enrich(observation).character_profiles[0]
+
+    assert profile["contact_standing"] == 0.0
+    assert profile["standing_source"] == STANDING_SOURCE
+    assert profile["standing_contact_type"] == "neutral"
+
+
 def test_threat_enricher_keeps_last_contact_snapshot_when_esi_fails():
     class FlakySession:
         def __init__(self):

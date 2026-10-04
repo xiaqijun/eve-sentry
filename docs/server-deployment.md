@@ -182,8 +182,8 @@ sudo -u postgres pg_dump -Fc eve_sentry > /var/lib/eve-sentry/eve_sentry.dump
 
 当前版本还会自动创建 `seat_monitor_contributions` 和 `seat_client_usage`。前者保存服务端
 确认的每个星系主节点监控区间，后者保存同一认证客户端相邻有效心跳的在线区间；两者都不保存
-果壳币余额或金额，Seat 通过集成令牌只读拉取。预警事件/投递/ACK 事实保留用于审计，但不再
-触发新收费。迁移失败时服务不会把区间伪装成已结算，应先修复数据库再重试启动。
+果壳币余额或金额，Seat 通过集成令牌只读拉取。旧的预警事件/投递/ACK 及授权表在迁移时删除，
+不再创建或读取。迁移失败时服务不会把区间伪装成已结算，应先修复数据库再重试启动。
 
 升级到包含视觉波次峰值和波次人员快照的版本后，启动迁移会为 `hostile_waves` 自动增加
 `peak_hostile_count`、`personnel_json`。当前仍活跃的波次会在启动协调时用 active intel 回填峰值
@@ -263,9 +263,8 @@ SSE 在下一次授权代数检查时结束。普通 desktop/service key 仅保�
 `EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION` 仅作为新库首次启动的默认值。初始化后，
 Seat 管理员保存前端收费开关时会通过 `PUT /api/v1/integrations/seat/alert-consumption`
 同步 `seat_integration_settings`，服务重启仍读取该持久化状态。旧库或未同步时继续保持关闭。
-当前客户端心跳会由服务端按接收时间生成在线区间；客户端不能提交计费时间戳。旧客户端或未声明
-ACK 能力的历史投递不会再触发新收费。未完成生产价格和平台真实隔离账本验收前，不要在 Seat
-前端开启收费。
+当前客户端心跳会由服务端按接收时间生成在线区间；客户端不能提交计费时间戳。收费只按这些有效
+在线区间结算，监控奖励只按主节点贡献区间入账。收费开关由 Seat 前端同步，关闭时不产生新的扣款。
 
 ### 公共 ESI Gateway
 
@@ -347,11 +346,28 @@ sudo -u eve-sentry .venv-server/bin/python scripts/sync_sde.py \
 `EVE_SENTRY_SERVER_MAP_SDE_PATH` 指向解压后的 SDE 根目录。Tenal 的 region ID 为
 `10000045`。配置区域外的情报仍会存储，但不会自动扩展当前星图拓扑。
 
-## EVE OAuth2
+## EVE OAuth2（仅用于组织声望）
 
-EVE Online OAuth2/SSO 已从项目中停用。平台用户使用本地账号密码登录，公共 ESI
-解析继续通过无用户令牌的 ESI 接口或 Gateway 完成。历史 `esi_tokens.json` 文件不再
-读取；部署迁移时可将其移出运行目录并按内部保留策略处理。
+平台账号仍由本地/SeAT 认证管理；EVE OAuth2 只用于服务端读取组织联系人声望，token
+不下发客户端、SeAT 或 Gateway。配置示例：
+
+```dotenv
+EVE_SENTRY_SERVER_ESI_CLIENT_ID=your-eve-client-id
+EVE_SENTRY_SERVER_ESI_REDIRECT_URI=https://your-host/api/v1/esi/callback
+EVE_SENTRY_SERVER_ESI_TOKEN_FILE=/var/lib/eve-sentry/esi_tokens.json
+EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain
+EVE_SENTRY_SERVER_ESI_SCOPES=esi-characters.read_contacts.v1,esi-corporations.read_contacts.v1,esi-alliances.read_contacts.v1
+```
+
+首次授权在受控终端执行：
+
+```bash
+sudo -u eve-sentry .venv-server/bin/python scripts/run_server.py --esi-login-only
+```
+
+服务启动后 `/api/v1/esi/status` 会显示授权角色、scope、过期时间和是否可刷新；
+`/api/v1/esi/login` 可启动 PKCE 流程。组织声望只在服务端刷新，官方快照过期时不继续使用；
+授权失效期间使用中立=敌对降级，保证已解析敌对人员仍可进入预警名单。
 
 ## systemd
 

@@ -29,10 +29,20 @@ def test_server_cli_defaults_to_postgres_storage():
     assert args.qq_bot_source == ""
 
 
-@pytest.mark.parametrize("option", ["--esi-login", "--esi-login-only", "--esi-client-id"])
-def test_server_cli_rejects_retired_eve_oauth_options(option):
-    with pytest.raises(SystemExit):
-        build_arg_parser().parse_args([option, "value"] if option == "--esi-client-id" else [option])
+def test_server_cli_accepts_eve_oauth_options():
+    args = build_arg_parser().parse_args(
+        [
+            "--enable-esi",
+            "--esi-client-id",
+            "client-id",
+            "--esi-token-file",
+            "tokens.json",
+            "--esi-login",
+        ]
+    )
+    assert args.esi_client_id == "client-id"
+    assert args.esi_token_file == "tokens.json"
+    assert args.esi_login is True
 
 
 def test_server_cli_can_select_json_storage():
@@ -401,12 +411,12 @@ def test_server_cli_builds_public_esi_config_summary():
         ["--enable-esi", "--esi-backend", "remote", "--esi-gateway-url", "http://gateway.test", "--esi-gateway-token", "x" * 32]
     )
 
-    assert server_main._build_esi_config(args) == {
-        "backend": "remote",
-        "gateway_url": "http://gateway.test",
-        "local_fallback": True,
-        "authenticated_esi_enabled": False,
-    }
+    config = server_main._build_esi_config(args)
+    assert config["backend"] == "remote"
+    assert config["gateway_url"] == "http://gateway.test"
+    assert config["local_fallback"] is True
+    assert config["authenticated_esi_enabled"] is False
+    assert config["token_file_present"] is False
 
 
 @pytest.mark.skip(reason="key risk control option was retired")

@@ -1,9 +1,13 @@
 """Prepare, publish and retire personnel runtimes without restarting the server."""
 
 import threading
+import logging
 from dataclasses import dataclass
 
 from app.server.auth import AuthError
+
+
+LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -60,6 +64,11 @@ class PersonnelController:
             replacement = PersonnelResolver(self.original_resolver, runtime)
             session = getattr(self.original_enricher, "esi_session", None)
             relations = OrganizationRelations(session, relation_archive) if session is not None else None
+            if session is None and values.get("organization_mode") in {"shadow", "on"}:
+                LOG.warning(
+                    "organization standings unavailable: EVE SSO is disabled; "
+                    "using neutral-hostile fallback until a relation source is configured"
+                )
             enricher = PersonnelEnricher(replacement, session, relations=relations)
             # Prove thread creation works before saving. No SQL/ESI tasks run
             # until publication activates this gate after the DB commit.

@@ -30,7 +30,9 @@ class RelationSource:
 
     def usable(self, now: float) -> bool:
         return (self.authorized and self.successful_at is not None
-                and self.successful_at <= now < self.successful_at + 3600)
+                and self.successful_at <= now
+                and self.successful_at + 3600 > now
+                and self.expires_at > now)
 
 
 def organization_entries(rows: list[dict]) -> Mapping:
