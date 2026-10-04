@@ -9,6 +9,8 @@ import type {
   ClientsSnapshot,
   ClientHeartbeatRecord,
   EsiGatewaySnapshot,
+  EsiAuthStatus,
+  EsiLoginSnapshot,
 } from "./types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "";
@@ -194,4 +196,20 @@ export async function listAdminClients(): Promise<AdminClientsSnapshot> {
 
 export async function fetchEsiGateway(): Promise<EsiGatewaySnapshot> {
   return apiRequest<EsiGatewaySnapshot>("/api/v1/admin/esi-gateway");
+}
+
+export async function fetchEsiStatus(): Promise<EsiAuthStatus> {
+  return apiRequest<EsiAuthStatus>("/api/v1/esi/status");
+}
+
+export async function startEsiLogin(): Promise<EsiLoginSnapshot> {
+  const payload = await apiRequest<{ login?: EsiLoginSnapshot }>("/api/v1/esi/login", {
+    method: "POST",
+  });
+  return payload.login || { status: "error", error: "服务器没有返回登录状态" };
+}
+
+export async function fetchEsiLoginStatus(): Promise<EsiLoginSnapshot> {
+  const payload = await apiRequest<{ login?: EsiLoginSnapshot }>("/api/v1/esi/login");
+  return payload.login || { status: "error", error: "服务器没有返回登录状态" };
 }

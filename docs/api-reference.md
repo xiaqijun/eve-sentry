@@ -18,17 +18,18 @@
 
 范围、存储、兼容及回滚要求见[星图监控范围](monitoring-regions.md)。
 
-[人员缓存方案](personnel-cache-plan.md)已支持可选档案读取和异步刷新，使用平台设备密钥和公共 ESI。
+[人员缓存方案](personnel-cache-plan.md)已支持可选档案读取和异步刷新，使用平台设备密钥、公共 ESI
+以及服务端专用的 EVE OAuth2 组织联系人会话。
 `alert.updated.hostile_personnel=[]` 是有效的当前名单更正，不等于视觉清空；消费者必须接受
-空数组，并优先按角色 ID 去重。公共档案不保存授权主体的联系人声望，项目不提供 EVE OAuth2 登录。
+空数组，并优先按角色 ID 去重。OAuth2 token 仅服务端保存，不下发客户端、SeAT 或 Gateway。
 
-2026-09-12 本地开发兼容说明（未发布）：公共 ESI 解析继续使用统一 Gateway envelope；
-不再提供 ESI 登录、授权账号快照或私有联系人读取 API。后续 Presence/OCR 与事件可选扩展见下节。
-组织 `on` 模式只消费服务端维护的军团/联盟关系快照，不读取个人联系人或角色 standings。
+2026-09-12 本地开发兼容说明：公共 ESI 解析继续使用统一 Gateway envelope；
+组织声望登录和授权账号快照仅由服务端提供，后续 Presence/OCR 与事件可选扩展见下节。
+组织 `on` 模式只消费服务端维护的军团/联盟关系快照，不以个人联系人或角色 standings 作为分类依据。
 既有 `standing_source` 字符串新增两个值：`esi_organization` 表示按组织规则确定（>0 友好，<=0 敌对）；
 `esi_organization_pending` 表示当前必要关系/归属不可用，没有可信 `contact_standing`，
 消费者不得继承旧 `standing/contact_standing` 或当成默认 0。独立黑白名单和视觉 Presence 规则不变。
-没有新增私有联系人查询 API。2026-09-13 起由独立 `organization_mode` 控制组织规则：
+管理端的私有会话快照仅通过受保护的 `/api/v1/esi/session` 提供，2026-09-13 起由独立 `organization_mode` 控制组织规则：
 默认 off、shadow 比较但不改变分类、on 生效；仅档案 mode=on 时执行，旧档案配置不会自动切换分类。
 
 私有 ESI Gateway 的公共查询 envelope 在普通内存缓存和可选 ID 缓存两种模式下均返回

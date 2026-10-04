@@ -1,8 +1,8 @@
 # 认证与账号管理
 
-EVE Sentry 使用本地账号会话和 API 密钥保护管理端、客户端和服务间接口。EVE
-Online OAuth2、Listener 身份扫描、角色/军团白名单以及自动密钥风控均已移除，
-不会再因为 EVE 角色、军团或联盟信息拒绝账号或密钥。
+EVE Sentry 使用本地账号会话和 API 密钥保护管理端、客户端和服务间接口。EVE Online
+OAuth2 只作为服务端组织声望数据源，不承担平台登录、客户端认证或密钥风控，也不会把
+OAuth2 token 下发给客户端、SeAT 或 Gateway。
 
 ## 认证方式
 

@@ -360,7 +360,7 @@ EVE_SENTRY_SERVER_ESI_CLIENT_ID=your-eve-client-id
 EVE_SENTRY_SERVER_ESI_REDIRECT_URI=https://your-host/api/v1/esi/callback
 EVE_SENTRY_SERVER_ESI_TOKEN_FILE=/var/lib/eve-sentry/esi_tokens.json
 EVE_SENTRY_SERVER_ESI_TOKEN_STORAGE=plain
-EVE_SENTRY_SERVER_ESI_SCOPES=esi-characters.read_contacts.v1,esi-corporations.read_contacts.v1,esi-alliances.read_contacts.v1
+EVE_SENTRY_SERVER_ESI_SCOPES=esi-characters.read_contacts.v1,esi-characters.read_standings.v1,esi-corporations.read_contacts.v1,esi-alliances.read_contacts.v1
 ```
 
 首次授权在受控终端执行：

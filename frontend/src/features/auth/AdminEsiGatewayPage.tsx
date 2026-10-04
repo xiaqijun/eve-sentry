@@ -21,6 +21,7 @@ import {
 import { fetchEsiGateway } from "./api";
 import type { EsiGatewayHealth, EsiGatewaySnapshot } from "./types";
 import { PersonnelSettingsPanel } from "./PersonnelSettingsPanel";
+import { EsiAuthPanel } from "./EsiAuthPanel";
 
 const EMPTY_SNAPSHOT: EsiGatewaySnapshot = {
   gateway: { configured: false, reachable: false },
@@ -179,6 +180,8 @@ export function AdminEsiGatewayPage() {
         onRefresh={() => void load()}
       />
       <ManagementError error={error} />
+
+      <EsiAuthPanel />
 
       <ManagementSummary ariaLabel="ESI 网关摘要" items={[
         { label: "114 名单查询", value: nameLookups },

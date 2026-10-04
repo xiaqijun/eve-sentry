@@ -7,8 +7,16 @@ import { AdminEsiGatewayPage } from "./AdminEsiGatewayPage";
 import type { EsiGatewaySnapshot } from "./types";
 
 const fetchEsiGatewayMock = vi.hoisted(() => vi.fn());
+const fetchEsiStatusMock = vi.hoisted(() => vi.fn());
+const fetchEsiLoginStatusMock = vi.hoisted(() => vi.fn());
+const startEsiLoginMock = vi.hoisted(() => vi.fn());
 
-vi.mock("./api", () => ({ fetchEsiGateway: fetchEsiGatewayMock }));
+vi.mock("./api", () => ({
+  fetchEsiGateway: fetchEsiGatewayMock,
+  fetchEsiStatus: fetchEsiStatusMock,
+  fetchEsiLoginStatus: fetchEsiLoginStatusMock,
+  startEsiLogin: startEsiLoginMock,
+}));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
   .IS_REACT_ACT_ENVIRONMENT = true;
@@ -61,6 +69,14 @@ describe("AdminEsiGatewayPage", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     fetchEsiGatewayMock.mockReset();
+    fetchEsiStatusMock.mockReset();
+    fetchEsiLoginStatusMock.mockReset();
+    startEsiLoginMock.mockReset();
+    fetchEsiStatusMock.mockResolvedValue({
+      enabled: false,
+      authenticated: false,
+      config: { client_id_configured: false },
+    });
   });
 
   afterEach(async () => {

@@ -225,3 +225,32 @@ export interface EsiGatewaySnapshot {
   };
   esi?: Record<string, unknown>;
 }
+
+export interface EsiAuthStatus {
+  enabled: boolean;
+  public?: boolean;
+  authenticated: boolean;
+  session?: boolean;
+  refreshable?: boolean;
+  character_id?: number | null;
+  expires_at?: number;
+  expired?: boolean;
+  error?: string;
+  config?: {
+    client_id_configured?: boolean;
+    redirect_uri?: string;
+    token_file_present?: boolean;
+    token_storage?: string;
+    scopes?: string[];
+  };
+}
+
+export interface EsiLoginSnapshot {
+  status: "idle" | "pending" | "authenticated" | "error";
+  authorization_url?: string;
+  started_at?: number;
+  expires_at?: number;
+  timeout_seconds?: number;
+  character_id?: number | null;
+  error?: string;
+}

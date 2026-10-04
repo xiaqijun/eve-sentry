@@ -177,7 +177,7 @@ PostgreSQL 连接由 `psycopg_pool` 复用，默认最小 2、最大 8 个连接
 图标数量重新上报到新星系；即使前后数量相同，也不会把旧星系的红色状态遗留在星图上。
 
 公共 ESI 的角色、军团、联盟和星系资料可经 `esi-gateway/` 独立进程访问；Gateway 只处理无用户令牌的
-公共接口，服务端保留本地回退。缓存和部署参数以
+公共接口，服务端的 EVE OAuth2 私有联系人请求直达官方 ESI，绝不经过 Gateway。缓存和部署参数以
 [服务端部署](server-deployment.md#公共-esi-gateway) 和 [Gateway 运维文档](../esi-gateway/docs/operations.md) 为准。
 
 机器人执行指定星系、人员、军团、联盟或所有节点名单查询时，会创建一次性 OCR 任务，
