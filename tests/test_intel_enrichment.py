@@ -126,6 +126,39 @@ def test_threat_enricher_marks_unmatched_authenticated_contact_as_neutral():
     assert profile["standing_contact_type"] == "neutral"
 
 
+def test_shadow_mode_keeps_neutral_fallback_when_legacy_contacts_are_empty():
+    from app.esi.organization_relations import RelationSource, RelationView
+    from app.esi.relation_shadow import ShadowComparisons, ShadowContacts
+
+    class ShadowEnricher(ThreatEnricher):
+        def __init__(self):
+            super().__init__(resolver=FakeResolver())
+            view = RelationView(
+                "context",
+                10,
+                None,
+                True,
+                (RelationSource("corporation", 10, 1, 1000, 1300, entries={}),),
+                (True,),
+            )
+            self._shadow_contacts = ShadowContacts([], view, ShadowComparisons())
+
+        def contact_standings(self):
+            return self._shadow_contacts
+
+    observation = Observation(
+        source="eve-sentry-detector",
+        system_name="S-KSWL",
+        names=["Alice"],
+        character_ids=[123],
+    )
+    profile = ShadowEnricher().enrich(observation).character_profiles[0]
+
+    assert profile["contact_standing"] == 0.0
+    assert profile["standing_source"] == "esi_contacts"
+    assert profile["standing_contact_type"] == "neutral"
+
+
 def test_threat_enricher_keeps_last_contact_snapshot_when_esi_fails():
     class FlakySession:
         def __init__(self):

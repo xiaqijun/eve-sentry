@@ -67,9 +67,16 @@ class ThreatEnricher:
         corporation_ids: set[int] = set()
         alliance_ids: set[int] = set()
         contacts = self.contact_standings()
+        # Shadow mode must preserve the legacy contact decision even when the
+        # legacy snapshot is currently empty.  ``ShadowContacts`` is a list
+        # subclass, so a plain truthiness check would skip its neutral (0.0)
+        # fallback and leave resolved OCR identities unclassified.
+        from app.esi.relation_shadow import ShadowContacts
+
+        apply_contacts = bool(contacts) or isinstance(contacts, ShadowContacts)
         for character_id in _unique_positive_ints(observation.character_ids):
             profile = self._public_character_profile(character_id)
-            if contacts:
+            if apply_contacts:
                 base_profile = profile or {"character_id": character_id}
                 annotated = _apply_contact_or_neutral_standing(base_profile, contacts)
                 if profile is not None or "contact_standing" in annotated:
@@ -90,7 +97,9 @@ class ThreatEnricher:
         if profile is None:
             return None
         contacts = self.contact_standings()
-        if contacts:
+        from app.esi.relation_shadow import ShadowContacts
+
+        if bool(contacts) or isinstance(contacts, ShadowContacts):
             profile = _apply_contact_or_neutral_standing(profile, contacts)
         return profile
 
