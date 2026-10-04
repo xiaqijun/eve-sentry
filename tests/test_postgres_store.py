@@ -889,6 +889,94 @@ def test_postgres_ocr_esi_result_persists_causal_state_in_one_transaction():
     assert calls[-1] == ("finish", 7)
 
 
+def test_postgres_ocr_esi_result_does_not_publish_stale_personnel_context():
+    connection = object()
+    calls = []
+    database_states = iter(
+        [
+            {
+                "s-kswl": {
+                    "system_name": "S-KSWL",
+                    "hostile_count": 1,
+                    "personnel": [
+                        {
+                            "name": "wonhyeong kim",
+                            "character_id": 2115926231,
+                            "identity_status": "resolved",
+                        }
+                    ],
+                }
+            },
+            {
+                "s-kswl": {
+                    "system_name": "S-KSWL",
+                    "hostile_count": 1,
+                    "personnel": [
+                        {
+                            "name": "wonhyeong kim",
+                            "character_id": 2115926231,
+                            "identity_status": "resolved",
+                        }
+                    ],
+                }
+            },
+        ]
+    )
+
+    class FakePoolContext:
+        def __enter__(self):
+            return connection
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._connect = lambda: FakePoolContext()
+    store._wait_for_db_write = lambda ticket: calls.append(("wait", ticket))
+    store._finish_db_write = lambda ticket: calls.append(("finish", ticket))
+    store._upsert_report_with_connection = lambda current, report: None
+    store._database_hostile_system_state = lambda current, system: next(database_states)
+    store._upsert_active_intel_rows = lambda current, rows: None
+    store._hostile_wave_changes = lambda before, observed_at, *, after=None: calls.append(
+        ("wave-state", after)
+    ) or []
+    store._hostile_state_events = lambda before, after, observed_at: calls.append(
+        ("event-state", after)
+    ) or []
+    store._persist_hostile_wave_changes = lambda current, changes: None
+    store._persist_intel_events = lambda current, events: None
+
+    report = IntelReport(
+        report_id="report-stale-context",
+        system="S-KSWL",
+        names=["wonhyeong kim"],
+    )
+    item = ActiveIntelItem(
+        active_id="ocr:wonhyeong-kim",
+        source="eve-sentry-detector",
+        source_instance="EVE - Pilot",
+        system_name="S-KSWL",
+        target_type="character",
+        name="wonhyeong kim",
+        first_seen_at="2026-10-04T11:51:15+00:00",
+        last_seen_at="2026-10-04T11:51:15+00:00",
+        source_observation_ids=[report.report_id],
+    )
+
+    store._persist_ocr_esi_result(
+        report,
+        item,
+        previous_active_id=item.active_id,
+        persistence_ticket=9,
+        # This is the stale context that previously cleared the roster.
+        persistence_context={"s-kswl": {"hostile_count": 1, "personnel": []}},
+    )
+
+    states = [payload for kind, payload in calls if kind in {"wave-state", "event-state"}]
+    assert states
+    assert all(payload["s-kswl"]["personnel"][0]["character_id"] == 2115926231 for payload in states)
+
+
 def test_postgres_persisted_alert_scoring_uses_cache_only_profile_fallback():
     class Cache:
         def get(self, key):

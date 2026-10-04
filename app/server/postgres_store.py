@@ -833,16 +833,20 @@ class PostgreSQLIntelStore(IntelStore):
                         connection,
                         [self._active_row(item)],
                     )
-                hostile_after_snapshot = (
-                    persistence_context
-                    if isinstance(persistence_context, dict)
-                    else {}
+                # Re-read the authoritative active rows after applying this
+                # enrichment.  ``persistence_context`` is captured before the
+                # worker releases the mutation lock and can therefore be older
+                # than another ESI task that has already been persisted.  A
+                # stale context used here can publish an empty personnel list
+                # over a newer hostile roster, causing the bot to flap between
+                # one identified hostile and zero identified hostiles.
+                #
+                # The ordered persistence ticket already serializes writes, so
+                # the database snapshot is the causal state for this event.
+                hostile_after = self._database_hostile_system_state(
+                    connection,
+                    system_key,
                 )
-                hostile_after = {
-                    key: value
-                    for key, value in hostile_after_snapshot.items()
-                    if key == system_key
-                }
                 occurred_at = str(
                     (item.last_seen_at if item is not None else report.seen_at)
                     or utc_now_iso()
