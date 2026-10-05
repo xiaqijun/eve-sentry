@@ -190,6 +190,10 @@ sudo -u postgres pg_dump -Fc eve_sentry > /var/lib/eve-sentry/eve_sentry.dump
 果壳币余额或金额，Seat 通过集成令牌只读拉取。旧的预警事件/投递/ACK 及授权表在迁移时删除，
 不再创建或读取。迁移失败时服务不会把区间伪装成已结算，应先修复数据库再重试启动。
 
+`seat_client_usage.system_id` 是可加字段。已有旧表在服务启动迁移时会自动补列并保留历史在线
+区间；重复启动不会重复修改表结构。若该列缺失，客户端心跳无法写入，Seat 将无法继续结算，
+应优先检查启动日志中的迁移错误。
+
 升级到包含视觉波次峰值和波次人员快照的版本后，启动迁移会为 `hostile_waves` 自动增加
 `peak_hostile_count`、`personnel_json`。当前仍活跃的波次会在启动协调时用 active intel 回填峰值
 和已解析人员；已经关闭

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import sqlite3
 import uuid
 from urllib.error import HTTPError
 from urllib.parse import quote
@@ -10,7 +11,7 @@ from urllib.request import Request, urlopen
 from app.server.auth import AuthService
 from app.server.auth_store import AuthRepository
 from app.server.http_server import IntelHTTPServer
-from app.server.seat_billing import SeatBillingRepository
+from app.server.seat_billing import SeatBillingRepository, migrate_seat_billing_schema
 from tests.auth_test_store import AuthTestStore
 
 
@@ -77,6 +78,46 @@ def test_authenticated_client_heartbeat_usage_is_idempotent(tmp_path):
         assert page["usage"][0]["system_id"] == "30000142"
     finally:
         store.close()
+
+
+def test_legacy_client_usage_table_gets_system_attribution_column():
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE seat_client_usage (
+            usage_id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL,
+            key_id TEXT NOT NULL,
+            client_id TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT NOT NULL,
+            duration_seconds INTEGER NOT NULL CHECK (duration_seconds > 0),
+            created_at TEXT NOT NULL,
+            UNIQUE (client_id, started_at, ended_at)
+        )
+        """
+    )
+    try:
+        migrate_seat_billing_schema(connection)
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(seat_client_usage)")}
+        assert "system_id" in columns
+
+        repository = SeatBillingRepository(lambda: connection)
+        result = repository.record_client_usage(
+            {
+                "account_id": "account-legacy",
+                "key_id": "key-legacy",
+                "client_id": "client-legacy",
+                "system_id": "30000142",
+                "started_at": "2026-10-01T00:00:00+00:00",
+                "ended_at": "2026-10-01T00:00:30+00:00",
+                "duration_seconds": 30,
+            }
+        )
+        assert result["usage"]["system_id"] == "30000142"
+    finally:
+        connection.close()
 
 
 def test_client_usage_export_is_service_token_protected(tmp_path):

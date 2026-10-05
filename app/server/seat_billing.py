@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import datetime, timezone
@@ -80,6 +81,14 @@ def migrate_seat_billing_schema(connection: Any) -> None:
             UNIQUE (client_id, started_at, ended_at)
         )
         """,
+        # Older production installs created this table before system
+        # attribution was added. Keep startup migration additive so existing
+        # usage rows remain readable while new heartbeats can be persisted.
+        (
+            "ALTER TABLE seat_client_usage ADD COLUMN system_id TEXT NOT NULL DEFAULT ''"
+            if isinstance(connection, sqlite3.Connection)
+            else "ALTER TABLE seat_client_usage ADD COLUMN IF NOT EXISTS system_id TEXT NOT NULL DEFAULT ''"
+        ),
         "CREATE INDEX IF NOT EXISTS idx_seat_client_usage_created ON seat_client_usage(created_at, usage_id)",
         """
         CREATE TABLE IF NOT EXISTS seat_integration_settings (
@@ -91,7 +100,14 @@ def migrate_seat_billing_schema(connection: Any) -> None:
         """,
     )
     for statement in statements:
-        connection.execute(statement)
+        try:
+            connection.execute(statement)
+        except sqlite3.OperationalError as exc:
+            # SQLite has no ADD COLUMN IF NOT EXISTS; an already-upgraded
+            # local database is the one expected idempotent exception.
+            if isinstance(connection, sqlite3.Connection) and "duplicate column" in str(exc).lower():
+                continue
+            raise
 
 class SeatBillingRepository:
     """SQL operations for online-time billing and primary-monitor evidence."""
