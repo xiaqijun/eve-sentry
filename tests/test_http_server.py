@@ -3476,6 +3476,31 @@ def test_monitoring_heartbeat_wakes_embedded_consumers_for_online_and_offline(
         server.stop()
 
 
+def test_ocr_snapshot_wakes_embedded_consumers(tmp_path):
+    server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
+    server.start()
+    wakeup = threading.Event()
+    unregister = server.register_embedded_listener(wakeup.set)
+    try:
+        status, _ = request_json(
+            f"{server.url}/api/v1/ocr/snapshot",
+            method="POST",
+            payload={
+                "client_id": "detector-client:ocr-wakeup",
+                "source_instance": "EVE - Hajimi6",
+                "system_name": "S-KSWL",
+                "seen_at": "2026-10-04T00:00:00+00:00",
+                "names": ["Alice"],
+                "hostile_icon_count": 1,
+            },
+        )
+        assert status in {200, 201}
+        assert wakeup.wait(timeout=0.75)
+    finally:
+        unregister()
+        server.stop()
+
+
 def test_repeated_presence_without_state_change_does_not_wake_embedded_consumers(
     tmp_path,
 ):

@@ -2062,7 +2062,11 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
-            _notify_event_streams()
+            # OCR snapshots can create or clear authoritative hostile state.
+            # Wake same-process consumers (including the embedded QQ bot) as
+            # well as SSE clients so transient alert.entered/alert.cleared
+            # transitions are not left waiting for the next heartbeat.
+            _notify_state_consumers(store)
             status = HTTPStatus.CREATED if result.get("created") else HTTPStatus.OK
             self._send_json(result, status)
             return
