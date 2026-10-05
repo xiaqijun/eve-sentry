@@ -78,7 +78,7 @@ def migrate_seat_billing_schema(connection: Any) -> None:
             ended_at TEXT NOT NULL,
             duration_seconds INTEGER NOT NULL CHECK (duration_seconds > 0),
             created_at TEXT NOT NULL,
-            UNIQUE (client_id, started_at, ended_at)
+            UNIQUE (client_id, system_id, started_at, ended_at)
         )
         """,
         # Older production installs created this table before system
@@ -108,6 +108,63 @@ def migrate_seat_billing_schema(connection: Any) -> None:
             if isinstance(connection, sqlite3.Connection) and "duplicate column" in str(exc).lower():
                 continue
             raise
+
+    # The original time-only table keyed a row by client and interval.  A
+    # warning client can cover more than one monitored system during the same
+    # heartbeat interval, so the system attribution is part of the identity.
+    # PostgreSQL can replace the old generated UNIQUE constraint in place;
+    # SQLite installs created before this change are rebuilt below because it
+    # cannot drop an auto-index backing a table constraint.
+    if isinstance(connection, sqlite3.Connection):
+        indexes = connection.execute("PRAGMA index_list(seat_client_usage)").fetchall()
+        legacy_index = False
+        for index in indexes:
+            if not int(index[2]):
+                continue
+            columns = [
+                row[2]
+                for row in connection.execute(f"PRAGMA index_info({index[1]!r})").fetchall()
+            ]
+            if columns == ["client_id", "started_at", "ended_at"]:
+                legacy_index = True
+                break
+        if legacy_index:
+            connection.execute("ALTER TABLE seat_client_usage RENAME TO seat_client_usage_legacy")
+            connection.execute(
+                """
+                CREATE TABLE seat_client_usage (
+                    usage_id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    key_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    system_id TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    duration_seconds INTEGER NOT NULL CHECK (duration_seconds > 0),
+                    created_at TEXT NOT NULL,
+                    UNIQUE (client_id, system_id, started_at, ended_at)
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO seat_client_usage
+                    (usage_id, account_id, key_id, client_id, system_id,
+                     started_at, ended_at, duration_seconds, created_at)
+                SELECT usage_id, account_id, key_id, client_id,
+                       coalesce(system_id, ''), started_at, ended_at,
+                       duration_seconds, created_at
+                FROM seat_client_usage_legacy
+                """
+            )
+            connection.execute("DROP TABLE seat_client_usage_legacy")
+    else:
+        connection.execute(
+            "ALTER TABLE seat_client_usage DROP CONSTRAINT IF EXISTS seat_client_usage_client_id_started_at_ended_at_key"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_seat_client_usage_identity ON seat_client_usage(client_id, system_id, started_at, ended_at)"
+        )
 
 class SeatBillingRepository:
     """SQL operations for online-time billing and primary-monitor evidence."""
@@ -342,28 +399,69 @@ class SeatBillingRepository:
             "created_at": created_at,
         }
         with self._connect() as connection:
-            inserted = connection.execute(
-                """
-                INSERT INTO seat_client_usage (
-                    usage_id, account_id, key_id, client_id, system_id,
-                    started_at, ended_at, duration_seconds, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (client_id, started_at, ended_at) DO NOTHING
-                """,
-                tuple(normalized.values()),
-            )
-            created = int(getattr(inserted, "rowcount", 0)) == 1
-            row = connection.execute("SELECT * FROM seat_client_usage WHERE usage_id = ?", (usage_id,)).fetchone()
-            if row is None:
-                # A replay with a different caller-supplied usage id must
-                # still return the canonical interval selected by the unique
-                # client/start/end key.
-                row = connection.execute(
-                    "SELECT * FROM seat_client_usage WHERE client_id = ? AND started_at = ? AND ended_at = ?",
-                    (client_id, started_at, ended_at),
-                ).fetchone()
+            system_ids = []
+            supplied_system_ids = record.get("system_ids")
+            if isinstance(supplied_system_ids, (list, tuple, set)):
+                system_ids = [str(value or "").strip() for value in supplied_system_ids]
+            if not system_ids and normalized["system_id"]:
+                system_ids = [normalized["system_id"]]
+            if not system_ids:
+                # A client heartbeat is not tied to one warning galaxy.  Use
+                # the server-confirmed primary monitoring intervals that
+                # overlap this heartbeat to expand one online interval into
+                # one billable row per monitored system.
+                rows = connection.execute(
+                    """
+                    SELECT DISTINCT system_id
+                    FROM seat_monitor_contributions
+                    WHERE account_id = ?
+                      AND system_id IS NOT NULL
+                      AND started_at < ?
+                      AND ended_at > ?
+                    ORDER BY system_id
+                    """,
+                    (account_id, ended_at, started_at),
+                ).fetchall()
+                system_ids = [str(row[0]).strip() for row in rows if str(row[0] or "").strip()]
+            if not system_ids:
+                # Preserve the old evidence row when no monitored-system
+                # evidence exists; the next reconciled interval can still be
+                # attributed once the server has a primary snapshot.
+                system_ids = [""]
+            system_ids = list(dict.fromkeys(system_ids))
+            saved: list[dict[str, Any]] = []
+            created = False
+            for system_id in system_ids:
+                row_usage_id = usage_id if len(system_ids) == 1 else f"{usage_id}:{system_id}"
+                row_data = dict(normalized)
+                row_data["usage_id"] = row_usage_id
+                row_data["system_id"] = system_id
+                inserted = connection.execute(
+                    """
+                    INSERT INTO seat_client_usage (
+                        usage_id, account_id, key_id, client_id, system_id,
+                        started_at, ended_at, duration_seconds, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (client_id, system_id, started_at, ended_at) DO NOTHING
+                    """,
+                    tuple(row_data.values()),
+                )
+                created = created or int(getattr(inserted, "rowcount", 0)) == 1
+                row = connection.execute("SELECT * FROM seat_client_usage WHERE usage_id = ?", (row_usage_id,)).fetchone()
+                if row is None:
+                    row = connection.execute(
+                        """
+                        SELECT * FROM seat_client_usage
+                        WHERE client_id = ? AND system_id = ? AND started_at = ? AND ended_at = ?
+                        """,
+                        (client_id, system_id, started_at, ended_at),
+                    ).fetchone()
+                if row is not None:
+                    saved.append(self._client_usage(dict(row)))
+            first = saved[0] if saved else normalized
         return {
-            "usage": self._client_usage(dict(row)) if row is not None else normalized,
+            "usage": first,
+            "usages": saved,
             "created": created,
         }
 

@@ -215,14 +215,14 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 也不直接写平台账本。新收费只依据服务端接收的相邻认证客户端心跳在线区间，Seat 按小时价格结算。
 
 当前合同只有收费门禁、监控贡献和认证客户端在线区间；事件、投递、ACK、授权和释放/退款接口已移除。
-新的收费来源只有 `client-usage` 在线区间，Seat 在本地完成果壳币结算。
+新的收费来源只有 `client-usage` 在线区间，Seat 在本地完成果壳币结算。Sentry 会依据同一账号、同一时间窗内的服务端主节点监控证据，将一个认证客户端心跳区间展开为每个 `system_id` 一条记录；没有重叠星系证据的旧区间保留空归因，以便历史数据可读，不进行猜测回填。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/v1/integrations/seat/alert-consumption` | 读取当前持久化预警消费门禁；仅接受 Seat 集成 Bearer Token |
 | `PUT` | `/api/v1/integrations/seat/alert-consumption` | Seat 同步收费开关，JSON 为 `{"enabled":true|false}`；幂等返回当前状态 |
 | `GET` | `/api/v1/integrations/seat/monitor-contributions?after={cursor}&limit={n}` | 读取服务端确认的主节点监控区间及游标水位 |
-| `GET` | `/api/v1/integrations/seat/client-usage?after={cursor}&limit={n}` | 读取认证客户端相邻有效心跳在线区间及游标水位 |
+| `GET` | `/api/v1/integrations/seat/client-usage?after={cursor}&limit={n}` | 读取认证客户端相邻有效心跳在线区间及游标水位；一个时间窗覆盖多个监控星系时按 `system_id` 拆成多条幂等记录 |
 
 同一客户端、账号和星系的重复区间由 Seat 幂等处理；监控奖励也只使用服务端确认的主节点贡献区间。
 ### SeAT 业务认证（M1）

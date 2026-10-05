@@ -80,6 +80,43 @@ def test_authenticated_client_heartbeat_usage_is_idempotent(tmp_path):
         store.close()
 
 
+def test_client_usage_expands_to_overlapping_monitored_systems(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    repository = SeatBillingRepository(store._connect)
+    account_id = str(uuid.uuid4())
+    base = {
+        "account_id": account_id,
+        "key_id": "key-online",
+        "client_id": "client-online",
+        "started_at": "2026-10-01T00:00:00+00:00",
+        "ended_at": "2026-10-01T00:00:30+00:00",
+        "duration_seconds": 30,
+    }
+    try:
+        for system_id, name in ((30000142, "Tama"), (30002813, "S-KSWL")):
+            repository.record_monitor_contribution(
+                {
+                    "account_id": account_id,
+                    "key_id": "key-monitor",
+                    "client_id": f"monitor-{system_id}",
+                    "system_id": system_id,
+                    "system_name": name,
+                    "primary_generation": 1,
+                    **{key: base[key] for key in ("started_at", "ended_at", "duration_seconds")},
+                }
+            )
+        first = repository.record_client_usage(base)
+        replay = repository.record_client_usage(base)
+        page = repository.list_client_usage(limit=10)
+        assert first["created"] is True
+        assert replay["created"] is False
+        assert len(first["usages"]) == 2
+        assert len(page["usage"]) == 2
+        assert {item["system_id"] for item in page["usage"]} == {"30000142", "30002813"}
+    finally:
+        store.close()
+
+
 def test_legacy_client_usage_table_gets_system_attribution_column():
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row

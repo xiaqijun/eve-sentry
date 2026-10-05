@@ -4,7 +4,7 @@
 
 ## 当前数据流
 
-- Sentry 保存密钥状态、主节点监控贡献区间和客户端认证心跳在线区间。
+- Sentry 保存密钥状态、主节点监控贡献区间和客户端认证心跳在线区间。一个在线心跳区间会按其时间窗内服务端确认的主节点监控星系展开为多条 `client-usage` 证据；每条证据只对应一个星系，便于 Seat 按星系扣费。
 - Seat 保存账号归属、星系归因、按小时的预警价格与监控奖励价格，并在 exchange 内完成果壳币入账/扣款。
 - 每个星系单独计量；同一星系只有主节点产生监控奖励。预警选择 N 个星系时，在线时长费用按 N 个星系分别计算。
 - 相邻有效心跳形成一个在线区间，重复提交按客户端和时间边界幂等；断线、失败、授权代次变化或军团变化会切断区间。
@@ -15,7 +15,7 @@
 
 - `GET/PUT /api/v1/integrations/seat/alert-consumption`：读取或同步收费开关。
 - `GET /api/v1/integrations/seat/monitor-contributions`：分页导出主节点监控贡献。
-- `GET /api/v1/integrations/seat/client-usage`：分页导出认证客户端在线区间。
+- `GET /api/v1/integrations/seat/client-usage`：分页导出认证客户端在线区间；当同一时段覆盖多个服务端确认的监控星系时，每个 `system_id` 返回一条记录，`usage_id` 以星系归因为幂等边界。
 
 事件、投递、ACK、alert-grants 及其对账接口已删除。接口不接收价格和币额，Sentry 不写 Seat 币账。
 
