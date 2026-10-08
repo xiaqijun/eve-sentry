@@ -1044,6 +1044,8 @@ async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event()
         assert "在线监控节点｜2" in message
         assert "| 监控节点 1 | 🟢 正常 | Jita | 0 |" in message
         assert "| 监控节点 2 | 🟢 正常 | Tama | 0 |" in message
+        assert "🔵 监控节点移动" in message
+        assert "去向｜Amarr → Jita" in message
         assert "监控节点状态更新" not in message
         assert "变化｜" not in message
         assert "Pilot Alpha" not in message
