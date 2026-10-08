@@ -28,7 +28,9 @@ Bootstrap 可带 `monitoring_scope`；区域外客户端保留诊断连接但不
 若以独立进程运行还需遵守[机器人 SSE 重连约束](../bot/docs/sse-reconnect-guardrails.md)。
 生产内嵌机器人由进程内事件桥读取持久化状态事件和当前 Bootstrap，不建立事件 SSE；
 唤醒或重启时从 Redis 保存的 `state:<sequence>` 游标逐条补齐未确认事件，再用最新 Bootstrap
-对账。首次启动或状态游标丢失时只建立当前基线，不回放历史。
+对账。Bootstrap 之间的监控节点变化也会由服务端保留上一份节点投影并补上
+`monitoring_node_changes`，因此机器人仍会发送上线、离线和迁移消息。首次启动或状态游标丢失时
+只建立当前基线，不回放历史。
 
 ## 接口选择
 

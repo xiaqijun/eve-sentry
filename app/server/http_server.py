@@ -974,6 +974,10 @@ class IntelHTTPServer:
         self._thread: threading.Thread | None = None
         self._embedded_listener_lock = threading.Lock()
         self._embedded_listeners: set[Callable[[], None]] = set()
+        # Embedded QQ delivery does not traverse the SSE loop, so retain the
+        # last node projection here to recreate the monitoring_node transition
+        # that SSE consumers receive between Bootstrap events.
+        self._embedded_monitoring_nodes: list[dict[str, Any]] | None = None
         set_change_notifier = getattr(self.store, "set_change_notifier", None)
         if callable(set_change_notifier):
             # Keep the existing SSE wake-up and fan out a lightweight marker
@@ -1088,6 +1092,23 @@ class IntelHTTPServer:
             active_items,
             [*alerts, *presence_alerts],
         )
+        monitoring_nodes = bootstrap.get("monitoring_nodes")
+        if not isinstance(monitoring_nodes, list):
+            monitoring_nodes = []
+        current_monitoring_nodes = [
+            dict(node) for node in monitoring_nodes if isinstance(node, dict)
+        ]
+        previous_monitoring_nodes = self._embedded_monitoring_nodes
+        monitoring_node_changes = (
+            _monitoring_node_changes(
+                previous_monitoring_nodes,
+                current_monitoring_nodes,
+            )
+            if previous_monitoring_nodes is not None
+            else []
+        )
+        self._embedded_monitoring_nodes = current_monitoring_nodes
+        bootstrap["monitoring_node_changes"] = monitoring_node_changes
         list_events = getattr(self.store, "list_intel_event_page", None)
         events: list[dict[str, Any]] = []
         if callable(list_events):

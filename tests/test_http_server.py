@@ -5309,6 +5309,86 @@ def test_events_stream_prefers_last_event_id_over_stale_since(tmp_path):
         server.stop()
 
 
+def test_embedded_snapshot_preserves_monitoring_node_transitions(tmp_path):
+    class MonitoringNodeStore(IntelStore):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._heartbeat_snapshots = [
+                {
+                    "heartbeats": [
+                        {
+                            "client_id": "detector-1",
+                            "client_type": "detector_client",
+                            "health_status": "online",
+                            "details": {
+                                "monitoring": True,
+                                "targets": [
+                                    {
+                                        "client_id": "target-1",
+                                        "monitoring": True,
+                                        "system_name": "S-KSWL",
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                },
+                {
+                    "heartbeats": [
+                        {
+                            "client_id": "detector-1",
+                            "client_type": "detector_client",
+                            "health_status": "online",
+                            "details": {
+                                "monitoring": True,
+                                "targets": [
+                                    {
+                                        "client_id": "target-1",
+                                        "monitoring": True,
+                                        "system_name": "S-KSWL",
+                                        "capture_online": False,
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                },
+            ]
+
+        def heartbeat_snapshot(self):
+            return self._heartbeat_snapshots.pop(0)
+
+        def read_active_event_snapshot(self):
+            return [], [], 1
+
+    server = IntelHTTPServer(
+        MonitoringNodeStore(tmp_path / "intel.json", systems={}, links=[]),
+        port=0,
+    )
+    first = server.build_embedded_event_snapshot()
+    second = server.build_embedded_event_snapshot()
+
+    assert first["bootstrap"]["monitoring_node_changes"] == []
+    assert second["bootstrap"]["monitoring_node_changes"] == [
+        {
+            "captured_at": "",
+            "change": "offline",
+            "character_name": "",
+            "client_id": "target-1",
+            "health_status": "offline",
+            "heartbeat_client_id": "detector-1",
+            "hostile_count": 0,
+            "node_id": "client:target-1",
+            "previous_health_status": "online",
+            "presence_state_id": "",
+            "presence_version": 0,
+            "source_instance": "",
+            "system_id": None,
+            "system_name": "S-KSWL",
+        }
+    ]
+
+
 def test_v1_events_prefers_state_event_id_over_stale_since(tmp_path):
     class DurableSequenceStore(IntelStore):
         def list_intel_event_page(self, *, after_seq=0, since="", limit=50):
