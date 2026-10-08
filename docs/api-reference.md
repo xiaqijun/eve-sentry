@@ -21,7 +21,7 @@
 [人员缓存方案](personnel-cache-plan.md)已支持内存/持久档案读-through；仅在两级缓存都未命中时同步调用公共 ESI，
 已知档案的过期刷新和全量巡检仍由后台队列异步执行。系统使用平台设备密钥、公共 ESI
 以及服务端专用的 EVE OAuth2 组织联系人会话。
-`alert.updated.hostile_personnel=[]` 是有效的当前名单更正，不等于视觉清空；消费者必须接受
+`alert.updated.hostile_personnel=[]` 是有效的当前名单变化，不等于视觉清空；消费者必须接受
 空数组，并优先按角色 ID 去重。OAuth2 token 仅服务端保存，不下发客户端、SeAT 或 Gateway。
 
 当前兼容说明：公共 ESI 解析继续使用统一 Gateway envelope；
