@@ -1,6 +1,6 @@
 # API 参考
 
-## 星图监控范围（本地开发，未发布）
+## 星图监控范围
 
 - `GET /api/v1/admin/map-settings` 返回 `{settings}`：`enabled`、`version`、`region_ids`、
   `system_ids`、`excluded_system_ids`，以及选择器 `regions:[{id,name}]`、`systems:[{id,name,region_id}]`。
@@ -24,7 +24,7 @@
 `alert.updated.hostile_personnel=[]` 是有效的当前名单更正，不等于视觉清空；消费者必须接受
 空数组，并优先按角色 ID 去重。OAuth2 token 仅服务端保存，不下发客户端、SeAT 或 Gateway。
 
-2026-09-12 本地开发兼容说明：公共 ESI 解析继续使用统一 Gateway envelope；
+当前兼容说明：公共 ESI 解析继续使用统一 Gateway envelope；
 组织声望登录和授权账号快照仅由服务端提供，后续 Presence/OCR 与事件可选扩展见下节。
 组织 `on` 模式只消费服务端维护的军团/联盟关系快照，不以个人联系人或角色 standings 作为分类依据。
 既有 `standing_source` 字符串新增两个值：`esi_organization` 表示按组织规则确定（>0 友好，<=0 敌对）；
@@ -41,7 +41,7 @@
 归属查询的 `expires_at - fetched_at` 为官方当前的 3600 秒（两种缓存模式一致），读取旧记录不改变
 其年龄；这不是名单推送等待时间。不可信归属先刷新再分类，视觉来敌/清空不等待该查询。
 
-114 直连/relay 路线不使用上述 Gateway JSON envelope。2026-09-13 本地修复（未部署）：
+114 直连/relay 路线不使用上述 Gateway JSON envelope。当前服务端对缺少缓存头的归属响应：
 仅 `POST /latest/characters/affiliation/` 或 `/characters/affiliation` 同时缺少 `Cache-Control`、
 `Expires` 时，采用[官方 OpenAPI](https://esi.evetech.net/meta/openapi.json) 的 3600 秒 TTL。
 仍须有合法 `Date`，扣除响应年龄、`Age` 和传输耗时的保守估计，故实际剩余期限可以不足一小时。
@@ -56,7 +56,7 @@
 批次耗时/每条数据库处理耗时，不是 P95。计数器进程内累计，未出现的计数项可缺省。
 功能关闭时不返回 archive，不能解释为档案数为零；没有新增公开人员枚举接口。
 
-2026-09-13 本地观测补丁（未部署）：管理员 `/api/v1/admin/esi-gateway` 的 `gateway`
+管理员 `/api/v1/admin/esi-gateway` 的 `gateway`
 新增可选 `transport_mode=direct|relay`。Relay 使用固定私网地址 `/health` 检查服务，
 `configured=true` 表示已配置 relay，`reachable=true` 仅表示健康检查成功，不保证 ESI 上游成功。
 直连返回 `configured=false, reachable=false, transport_mode=direct`，不是网关故障；旧 Gateway 返回保持兼容。
@@ -88,7 +88,7 @@ Presence 先上传，OCR 再引用同一会话/画面；旧会话、过时帧返
 备用必须仍在同星系采集且计数大于 0，常规 OCR 名单非空、质量 complete、指纹匹配当前
 会话画面，采集及名单接收时间均不超过 45 秒。无合格备用时保留原图标预警，不推断清空。
 旧主和排在合格备用之前的不合格来源重新排队，恢复后不抢回；不拼接两台节点的名单。
-尚未发布的客户端改动将空 OCR 通过现有 `/ocr/snapshot` 的 `names:[]` 和 capture 上报，不新增质量枚举。
+客户端 1.0.77+ 将空 OCR 通过现有 `/ocr/snapshot` 的 `names:[]` 和 capture 上报，不新增质量枚举。
 空名单只表示识别未成功，不能覆盖 Presence 的敌对数量或生成清空。保留启动快速重试，
 之后每 5 秒重试不变画面；关闭 OCR 的客户端不强制启用 OCR。旧客户端不报空名单也能
 通过有效 Presence 帧的服务端计时触发接管；query_id 手动查询不作为接管资格。
@@ -98,12 +98,12 @@ Presence 可选 `source_status=active|stopped|departed`，默认 active；停止
 新格式会话一旦建立，同窗口无 capture 的旧上报不再接受。字段结构错误返回 400。
 同机已存在 `parent:user-<window>` Presence 时，裸 `parent` 旧监控身份不再参选主来源；
 停止窗口和重启不会恢复该旧身份。父心跳仍管理子窗口，不代表父身份本身仍在监控。
-本项为 2026-09-13 本地兼容修复，未改变不同机器的先到先服务顺序，未部署。
+本项为 2026-09-13 的兼容修复，不改变不同机器的先到先服务顺序；生产状态以部署台账为准。
 
 Bootstrap 新增 `state_source=system_current_state|legacy`；PostgreSQL 当前快照的合成 active-intel
 携带 `state_version`，metadata 增加 `system_state`、`primary_client_id`、`primary_generation`、`freshness`。
 事件仍为 `alert.entered/updated/cleared`，载荷增加上述主来源与 `freshness=fresh|unknown`；事件版本仍取 `state:N` 的 N。
-2026-09-13 本地实时视图补丁（未部署）：未知结果只保存在持久历史中，不返回到实时 Bootstrap/地图敌情。
+实时视图只返回当前有效结果；未知结果只保存在持久历史中，不返回到实时 Bootstrap/地图敌情。
 SSE `alert.updated` 的 `freshness=unknown` 表示撤销实时显示，wire 人数为 0、名单为空，
 不携带上次敌情；事件名、游标和持久化历史不变。消费者必须先判断 freshness，
 移除该星系实时敌情及待发名单，不能把这里的 0 当成安全、不能发送来敌/清空或播放声音。
@@ -507,7 +507,7 @@ SSE 常用查询参数：
 只有显式 `state:0` 才要求从保留日志起点完整重放；任何显式 `state:*` 均禁用 `since`
 时间过滤。
 
-Windows 预警端的待发布修复（2026-09-13）：启动、网络错误重连及正常 EOF 轮换均不携带
+Windows 预警端（客户端 1.0.77+）：启动、网络错误重连及正常 EOF 轮换均不携带
 旧连接或磁盘游标，也不传 `since`，使用现有无游标 Bootstrap 契约同步当前状态。
 同一 SSE 连接取得原子快照及 `state:W` 后，服务端继续发送 `seq > W`；客户端整体替换实时
 列表、星图和活动告警状态，不逐条播放断线期间已结束的来敌/清空，也不由对账伪造清空通知。

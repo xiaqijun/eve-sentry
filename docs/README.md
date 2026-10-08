@@ -22,6 +22,7 @@
 - [CI/CD 与仓库边界](ci-cd.md)：各组件职责、`main` 推送触发、发布门禁、Secrets/Variables、验证和回滚。
 - [认证与账号管理](authentication.md)：认证模式、管理员初始化、设备密钥和人工账号管理。
 - [Web 管理系统](web-console.md)：页面职责、实时工作台、来袭分析和管理页面约束。
+- [星图监控范围](monitoring-regions.md)：星域/星系范围配置、区域外本地预警和兼容边界。
 - [ESI 与缓存现状](server-deployment.md#公共-esi-gateway)：公共 ESI Gateway 的现行边界、缓存 TTL 和回退配置。
 - [全量人员档案与分级刷新](personnel-cache-plan.md)：缓存、组织关系、47 转发及单主状态实现与分阶段发布验收。
 - [星系当前状态与单主监控](system-current-state.md)：来源选择、截断接管、当前状态事务、失联/清空边界及三端消费。

@@ -14,7 +14,7 @@ Windows 用户可直接[下载最新版客户端](https://evesentrydownload.kise
 缓存优先返回，按活跃度批量刷新归属，按军团/联盟 ID 判断关系，不使用个人声望例外。
 管理员可分别设置档案与组织规则的 off/shadow/on；保存后在线生效。
 [星系当前状态](docs/system-current-state.md)由服务端选择一个主监控窗口计算，星图、预警和 QQ 消费同一结果；
-失联显示上次状态，不冒充清空。新版采集会话及防闪动功能需要更新客户端；生产切换按受保护工作流验收。
+失联移除实时敌情，不冒充清空；采集会话、防闪动和监控范围同步需要客户端 1.0.77 或更高版本。
 
 | 目录 | 内容 | 主要入口 |
 | --- | --- | --- |
@@ -60,7 +60,7 @@ flowchart LR
 
     esi["EVE ESI"] --> intel
     sde["EVE SDE"] --> intel
-    monitor -->|"可选设备密钥 · 快照"| api
+    monitor -->|"Seat 设备密钥（可选） · 快照"| api
     stream --> overlay
     stream --> web
     stream --> bot

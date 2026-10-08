@@ -1,15 +1,17 @@
 # 可靠推送与按需 OCR 实施计划
 
-本文是服务端、监控客户端、预警客户端和 QQ 机器人共用的推送方案。后续涉及
-Presence、OCR、Heartbeat、SSE、告警、清空、节点或按需 OCR 的修改，都必须先对照本文。
-文中标为“现行”或列为已勾选的内容表示截至 v1.0.71 已实现；标为“目标”或未勾选的内容
-仍是后续设计，不能当作生产现状。
+本文是服务端、监控客户端、预警客户端和 QQ 机器人共用的推送实施台账。后续涉及
+Presence、OCR、Heartbeat、SSE、告警、清空、节点或按需 OCR 的修改，都必须先对照本文，
+再以[星系当前状态](system-current-state.md)和[API 参考](api-reference.md)核对当前契约。
+文中按版本和日期标注的“现行/目标/未勾选”只描述当时的实施阶段，不能单独当作当前生产状态；
+当前发布状态以受保护工作流、发布记录和运行验收为准。
 
 > 认证边界说明：推送链路只依赖平台账号、设备/服务密钥和公共 ESI；服务端的独立 EVE
 > OAuth2 会话仅供组织声望刷新，不参与消息鉴权，也不会进入客户端或 Gateway。
 
-2026-09-12 补充：下一阶段“每个星系单主监控来源、统一星系当前状态、114 缓存/关系计算与 47 转发”
-的设计集中维护在[人员缓存修订方案](personnel-cache-plan.md)。该修订分阶段开发中，已在本地实现联系人读取基础保护及人员档案 `on` 模式的组织关系快照，尚未发布；不改变本文现行
+2026-09-12 历史补充：下一阶段“每个星系单主监控来源、统一星系当前状态、114 缓存/关系计算与 47 转发”
+的设计集中维护在[人员缓存修订方案](personnel-cache-plan.md)。其中“尚未发布”等文字只代表当时状态，
+后续实现和发布以当前 API、架构及部署台账为准；不改变本文现行
 Presence/OCR/SSE 契约；涉及主来源任期、采集质量和旧结果隔离的接口字段须在实施前完成兼容设计。
 
 ## 1. 结论
@@ -31,7 +33,7 @@ Presence/OCR/SSE 契约；涉及主来源任期、采集质量和旧结果隔离
 - 节点离线导致的情报移除不播报为敌对清空，也不发送人员清空消息；
 - WebSocket 不是当前必需，继续使用 HTTP 上传 + SSE 下行。
 
-截至 v1.0.65，现行实现已经包含 PostgreSQL `intel_events` 事件表、进入/更新/清空事件的
+历史基线（截至 v1.0.65）已经包含 PostgreSQL `intel_events` 事件表、进入/更新/清空事件的
 事务内追加、SSE 首字节立即返回及事件游标重放、星图客户端持久化 `Last-Event-ID`、事件型
 Heartbeat 限流、有界后台地图加载和节点健康状态刷新；默认视觉扫描间隔为 2 秒。
 `cursor_reset`、Redis Stream Dispatcher 和底层上传连接的完全拆分仍属于后续目标，不能按
@@ -149,12 +151,12 @@ QQ 查询的完整菜单、指定星系目标选择、所有节点名单、预�
 | `alert.entered` | 系统从 0 变为大于 0 | P0 | 立即发送，不等待 OCR |
 | `alert.cleared` | 系统从大于 0 变为 0 | P0 | 必须持久化，不能由 SSE 推导 |
 | `alert.updated` | 数量、身份或确认名单变化 | P1 | 允许短窗口合并 |
-| `node.updated` | 节点上线、下线、换星系 | P1 | 目标持久事件，现行服务端尚未生成 |
+| `node.updated` | 节点上线、下线、换星系 | P1 | 设计层分类；当前通过 `monitoring_node` + 最新 Bootstrap 快照通知，不单独持久化节点移动事件 |
 
 现行状态与节点变化 SSE wire 事件名为 `alert`、`safe` 和 `monitoring_node`。前三种持久状态事件仍在
 `data.event_type` 中保留内部名称；`alert.entered`、`alert.updated` 映射到 wire `alert`，
 `alert.cleared` 映射到 wire `safe`。节点变化当前由连接内生成的 `monitoring_node` 通知，
-随后以权威 `bootstrap` 快照对账。
+随后以权威 `bootstrap` 快照对账；换星系不再另发一条“节点移动”消息。
 
 `alert.cleared` 必须包含 `clear_reason`。只有 `clear_reason=visual_confirmed`，即客户端连续
 两帧确认零值时，机器人才能发送正常的“星系清空”消息。节点离线引起的状态移除使用
@@ -302,7 +304,7 @@ comment，并把连续 15 秒无字节作为失活连接的重连边界；服务
 其余要求：
 
 - 断线重连从最后完整处理的游标继续；
-- 目标能力（尚未实现）：游标过期时发送 `cursor_reset` 和最新 Bootstrap；
+- 游标过期时应发送 `cursor_reset` 和最新 Bootstrap；具体实现以 API 参考为准；
 - PostgreSQL 模式下无论 `active_only` 是否启用，都必须读取持久化 `intel_events`；
 - `active_only` 只能限制历史报告，不能过滤 `alert.cleared` 等状态事件；目标持久
   `node.updated` 落地后也必须遵守此规则；
@@ -323,8 +325,8 @@ alert.updated → alert
 alert.cleared → safe
 ```
 
-现行 `monitoring_node` 由连接内节点快照差异生成；`node.updated → monitoring_node` 是目标
-持久节点事件的兼容映射，不表示当前服务端已经生成 `node.updated`。
+现行 `monitoring_node` 由连接内节点快照差异生成；`node.updated` 仅作为历史设计名称，
+不表示当前服务端生成独立的持久节点移动事件。
 
 ## 8. 星图预警客户端
 
@@ -367,7 +369,7 @@ P0 事件不能等待 Bootstrap、OCR、ESI 或 zKill。星图在 SSE 连接和�
 机器人在连接和重连时请求 Bootstrap，并消费服务端状态指纹变化产生的后续 Bootstrap，
 没有独立 30 秒轮询。
 
-目标持久投递架构（尚未落地）拆为三个组件：
+以下 Redis Stream 拆分是曾评估过但未采用的目标架构，当前不作为开发要求；生产仍使用进程内事件桥：
 
 ```text
 SSE Reader → Redis Stream Writer → QQ Dispatcher
@@ -551,7 +553,7 @@ sse_cursor_lag
 
 - 验证进入、清空、移动、断线、重启和高负载；
 - 观察 p50/p95 时延；
-- 删除旧的独立移动消息；
+- [x] 删除旧的独立移动消息；
 - 删除每连接全量扫描和临时 `safe` 推导；
 - 修复 PostgreSQL `active_only` SSE 路径，确保读取持久化 `intel_events`；
 - 验证黄色、灰色、移除和恢复四类节点状态；

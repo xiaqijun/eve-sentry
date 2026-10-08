@@ -2,7 +2,7 @@
 
 [人员缓存改造](../docs/personnel-cache-plan.md)由服务端统一实现，客户端不承担全量资料
 缓存或 ESI 刷新。新版客户端增加逐窗口采集会话、帧序号与质量信息，配合服务端单主来源；
-使用统一 SSE/Bootstrap 当前状态，修复预警启动历史重放闪动，失联显示“上次”而不是假清空。
+使用统一 SSE/Bootstrap 当前状态，修复预警启动历史重放闪动；失联移除实时敌情，不把旧数据显示为“上次”。
 资料过期不会阻塞视觉来敌/清空。唯一操作指南为[客户端指南](docs/client.md)，设计见[当前状态](../docs/system-current-state.md)。
 
 `client/` 是 EVE Sentry 单体仓库中的 Windows 客户端组件，负责选择 EVE 窗口、截图、
@@ -79,11 +79,11 @@ flowchart LR
     admin["管理员"] --> admin_password["密码登录"]
     admin_password --> session
 
-    session --> key["可选：创建桌面设备密钥"]
+    session --> seat["GloryNavy_Seat 签发/绑定/吊销设备密钥"]
     client["桌面客户端"] --> configured{"已填写设备密钥？"}
     configured -->|"否"| anonymous["按服务端模式访问"]
     configured -->|"是"| keycheck["验证密钥状态"]
-    key --> configured
+    seat --> configured
     keycheck --> access["开启经过认证的客户端访问"]
     anonymous -.-> policy["enforce 模式仍会拒绝未认证的受保护请求"]
 ```
@@ -98,12 +98,13 @@ flowchart LR
 - 客户端可同时开启预警浮窗，通过 SSE 接收当前可见监控节点（online、degraded、offline）
   和敌对人数变化。
 - Web 管理系统提供星图态势、实时处置工作台、历史来袭分析、设备密钥、用户和审计日志。
-- 已验证敌对角色可补充 zKillboard 危险度和战斗统计；外部统计只用于研判，不参与敌我分类和告警生成。
+- 实时解析不请求 zKillboard 战绩；确认角色后只按角色 ID 提供外部 zKillboard 链接，
+  不参与敌我分类和告警生成。
 - Web 管理系统直接使用 `@arco-design/web-react` 统一标准业务控件，并支持全局明暗主题
   切换；个人账号、系统管理、星图 Canvas、ECharts 和 Arco 组件会同步更新，选择会保存
   在浏览器中。项目未使用 Arco Design Pro 脚手架，星图和图表保留专用实现。
-- 管理员和普通用户均使用平台账号密码登录；桌面客户端可选使用设备密钥。有效密钥创建后
-  立即可用，不需要 EVE SSO、Listener 扫描或角色白名单；服务端 `enforce` 模式仍会拒绝
+- 管理员和普通用户均使用平台账号密码登录；桌面客户端可选使用由 GloryNavy_Seat 签发的设备密钥。
+  有效密钥创建后立即可用，不需要 EVE SSO、Listener 扫描或角色白名单；服务端 `enforce` 模式仍会拒绝
   未认证的受保护请求。
 
 ## 本地启动
