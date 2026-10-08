@@ -71,10 +71,14 @@ class EmbeddedBotBridge:
     """Consume durable alert transitions without loopback HTTP/SSE."""
 
     async def run(self, source: EmbeddedEventSource, relay: Any) -> None:
-        from eve_risk.alerts import ALERT_EVENT_ID_KEY
+        from eve_risk.alerts import ALERT_EVENT_ID_KEY, SYSTEM_ALERT_STATE_READY_KEY
 
         cursor = self._read_state_sequence(
             await relay.redis.get(ALERT_EVENT_ID_KEY)
+        )
+        state_ready = (
+            cursor > 0
+            and await self._redis_key_exists(relay, SYSTEM_ALERT_STATE_READY_KEY)
         )
         initialized = False
         while True:
@@ -88,24 +92,91 @@ class EmbeddedBotBridge:
             if not isinstance(bootstrap, dict):
                 continue
             state_seq = max(0, int(snapshot.get("state_event_seq") or 0))
-            if not initialized:
+            if not initialized and not state_ready:
                 if not await relay.process_bootstrap(bootstrap):
                     raise RuntimeError("embedded bot bootstrap delivery failed")
                 initialized = True
+                state_ready = True
                 cursor = max(cursor, state_seq)
                 await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
                 continue
 
-            # The current bootstrap is authoritative.  Do not replay every
-            # durable transition accumulated while the bot was busy or
-            # disconnected: an alert that has already cleared must not become
-            # a late QQ notification.  This mirrors the warning client, which
-            # replaces its realtime view from the newest snapshot and then
-            # continues from the snapshot watermark.
-            if not await relay.process_bootstrap(bootstrap):
+            initialized = True
+            state_ready = True
+            cursor, snapshot = await self._replay_to_watermark(
+                source,
+                relay,
+                cursor,
+                snapshot,
+            )
+            latest_bootstrap = snapshot.get("bootstrap")
+            if not isinstance(latest_bootstrap, dict):
+                latest_bootstrap = bootstrap
+            if not await relay.process_bootstrap(latest_bootstrap):
                 raise RuntimeError("embedded bot bootstrap delivery failed")
-            cursor = max(cursor, state_seq)
+            cursor = max(
+                cursor,
+                int(snapshot.get("state_event_seq") or 0),
+                state_seq,
+            )
             await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
+
+    async def _replay_to_watermark(
+        self,
+        source: EmbeddedEventSource,
+        relay: Any,
+        cursor: int,
+        snapshot: dict[str, Any],
+    ) -> tuple[int, dict[str, Any]]:
+        """Drain every durable event up to the newest same-process watermark.
+
+        Store notifications are intentionally coalesced, so a single wake-up
+        can cover an enter, clear, and re-enter sequence.  The event page is
+        the lossless part of that contract; the final bootstrap only repairs
+        the state after all acknowledged events have been applied.
+        """
+        from eve_risk.alerts import ALERT_EVENT_ID_KEY
+
+        while True:
+            page_events = snapshot.get("events")
+            if not isinstance(page_events, list):
+                page_events = []
+            progressed = False
+            for event in page_events:
+                if not isinstance(event, dict):
+                    continue
+                event_seq = max(0, int(event.get("seq") or 0))
+                if event_seq <= cursor:
+                    continue
+                processed = await self._process_event(relay, event)
+                if not processed:
+                    raise RuntimeError(
+                        "embedded bot event processing failed; retry from cursor"
+                    )
+                cursor = event_seq
+                progressed = True
+                await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
+
+            state_seq = max(0, int(snapshot.get("state_event_seq") or 0))
+            if not progressed:
+                if state_seq > cursor:
+                    # The durable page can legitimately contain only events
+                    # that are outside the current event projection. Advance
+                    # to the observed state watermark before reconciliation.
+                    cursor = state_seq
+                    await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
+                return cursor, snapshot
+
+            snapshot = await asyncio.to_thread(source.snapshot, cursor)
+            if not snapshot.get("ready"):
+                return cursor, snapshot
+
+    @staticmethod
+    async def _redis_key_exists(relay: Any, key: str) -> bool:
+        exists = getattr(relay.redis, "exists", None)
+        if not callable(exists):
+            return False
+        return bool(await exists(key))
 
     async def _process_event(self, relay: Any, event: dict[str, Any]) -> bool:
         event_type = str(event.get("event_type") or "").strip()

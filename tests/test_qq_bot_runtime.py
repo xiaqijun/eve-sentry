@@ -109,7 +109,7 @@ def test_embedded_bridge_maps_durable_state_events():
     assert relay.payloads[0]["presence_only"] is True
 
 
-def test_embedded_bridge_uses_latest_bootstrap_without_replaying_old_events(
+def test_embedded_bridge_uses_latest_bootstrap_without_replaying_history(
     monkeypatch,
 ):
     monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "bot" / "src"))
@@ -117,6 +117,9 @@ def test_embedded_bridge_uses_latest_bootstrap_without_replaying_old_events(
     class Redis:
         async def get(self, _key):
             return None
+
+        async def exists(self, _key):
+            return 0
 
         async def set(self, key, value):
             self.last = (key, value)
@@ -167,3 +170,94 @@ def test_embedded_bridge_uses_latest_bootstrap_without_replaying_old_events(
     relay = asyncio.run(run())
     assert len(relay.bootstraps) == 2
     assert relay.events == []
+
+
+def test_embedded_bridge_replays_enter_clear_reenter_sequence():
+    class Redis:
+        async def get(self, _key):
+            return "state:40"
+
+        async def exists(self, _key):
+            return 1
+
+        async def set(self, key, value):
+            self.last = (key, value)
+
+    class Source:
+        _STOP = EmbeddedEventSource._STOP
+
+        def __init__(self):
+            self.markers = iter([True, self._STOP])
+            self.snapshots = [
+                {
+                    "ready": True,
+                    "state_event_seq": 43,
+                    "bootstrap": {"active_intel": [], "alerts": []},
+                    "events": [
+                        {
+                            "seq": 41,
+                            "event_type": "alert.entered",
+                            "entity_key": "kw-1mv",
+                            "occurred_at": "2026-10-08T13:36:00+00:00",
+                            "payload": {"system_name": "KW-1MV", "hostile_count": 1},
+                        },
+                        {
+                            "seq": 42,
+                            "event_type": "alert.cleared",
+                            "entity_key": "kw-1mv",
+                            "occurred_at": "2026-10-08T13:37:00+00:00",
+                            "payload": {"system_name": "KW-1MV", "hostile_count": 0},
+                        },
+                        {
+                            "seq": 43,
+                            "event_type": "alert.entered",
+                            "entity_key": "kw-1mv",
+                            "occurred_at": "2026-10-08T13:38:00+00:00",
+                            "payload": {"system_name": "KW-1MV", "hostile_count": 1},
+                        },
+                    ],
+                },
+                {
+                    "ready": True,
+                    "state_event_seq": 43,
+                    "bootstrap": {"active_intel": [], "alerts": []},
+                    "events": [],
+                },
+            ]
+
+        async def wait(self):
+            return next(self.markers)
+
+        def snapshot(self, _after_seq):
+            return self.snapshots.pop(0)
+
+    class Relay:
+        def __init__(self):
+            self.redis = Redis()
+            self.events = []
+            self.bootstraps = []
+
+        async def process_bootstrap(self, payload):
+            self.bootstraps.append(payload)
+            return True
+
+        async def process_alert_event(self, payload):
+            self.events.append((payload["event_type"], payload["system_name"]))
+            return True
+
+        async def process_safe_event(self, payload):
+            self.events.append((payload["event_type"], payload["system_name"]))
+            return True
+
+    async def run():
+        relay = Relay()
+        await EmbeddedBotBridge().run(Source(), relay)
+        return relay
+
+    relay = asyncio.run(run())
+    assert relay.events == [
+        ("alert.entered", "KW-1MV"),
+        ("alert.cleared", "KW-1MV"),
+        ("alert.entered", "KW-1MV"),
+    ]
+    assert len(relay.bootstraps) == 1

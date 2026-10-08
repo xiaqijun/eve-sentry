@@ -26,8 +26,9 @@ Bootstrap 可带 `monitoring_scope`；区域外客户端保留诊断连接但不
 服务端事件字段和兼容路由的完整定义见[完整 API 参考](api-reference.md)。SSE 首字节、
 快照复用和心跳约束见[SSE 性能与重连约束](sse-performance-guardrails.md)；机器人消费端
 若以独立进程运行还需遵守[机器人 SSE 重连约束](../bot/docs/sse-reconnect-guardrails.md)。
-生产内嵌机器人由进程内事件桥读取当前快照，不建立事件 SSE；唤醒或重启时按最新 Bootstrap
-对账，不补发已经结束的历史状态。
+生产内嵌机器人由进程内事件桥读取持久化状态事件和当前 Bootstrap，不建立事件 SSE；
+唤醒或重启时从 Redis 保存的 `state:<sequence>` 游标逐条补齐未确认事件，再用最新 Bootstrap
+对账。首次启动或状态游标丢失时只建立当前基线，不回放历史。
 
 ## 接口选择
 
@@ -101,8 +102,9 @@ curl -N --fail-with-body \
 | `min_level` | 空 | 最低等级：`low`、`medium`、`high` 或 `critical` |
 
 独立部署、需要可靠补发的消费者重连时，应把最后处理成功的可靠 SSE 游标持久化并放入 `Last-Event-ID` 请求头。
-生产内嵌 QQ 机器人与 Windows 预警端一样，重连或唤醒时只消费当前 Bootstrap 和对应水位，
-不逐条重放断线期间已经结束的历史状态。
+生产内嵌 QQ 机器人使用同样的 `state:<sequence>` 语义：每个事件成功投递后立即推进游标，
+最后再用当前 Bootstrap 对账。这样同一唤醒期间的“来敌→清空→再次来敌”不会被快照合并；
+没有可靠游标或 Redis 状态基线时才跳过历史并从当前 Bootstrap 建立基线。
 `state:<sequence>` 直接恢复状态事件序列；一旦取得该游标，只能由更高状态序号替换，后续
 alert/report、`presence_*` 或 `monitoring_node` ID 不得把它降级覆盖。已存储的 alert/report ID
 可解析到报告流游标，ISO 8601 ID 可按时间恢复；没有状态序号时，合成 ID 由 `bootstrap`
@@ -112,7 +114,7 @@ alert/report、`presence_*` 或 `monitoring_node` ID 不得把它降级覆盖。
 Windows 实时预警端采用不同策略（2026-09-13 本地补丁，待发布）：启动、网络重连和正常
 连接轮换均请求 `bootstrap=1`，不发送 `Last-Event-ID` 或 `since`。以当前原子快照及水位
 整体替换显示，再在同一流消费水位之后的新变化；不补播断线期间已结束的敌情。
-独立部署的持久消费契约仍然有效；生产内嵌机器人遵循上面的最新快照策略。
+独立部署的持久消费契约仍然有效；生产内嵌 QQ 机器人遵循上面的持久化游标策略。
 
 ### `bootstrap` 事件
 
