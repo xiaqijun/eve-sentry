@@ -182,9 +182,8 @@ def format_monitoring_nodes_message(
 ) -> str:
     """Format the current anonymous online-node list for group delivery.
 
-    The current list remains authoritative, while a move transition is also
-    rendered in the same message so it is not lost when bootstrap delivery
-    coalesces a node change into a snapshot.
+    ``changes`` remains accepted for event compatibility, but the message is
+    intentionally a snapshot only so a group always sees the current list.
     """
     unique: dict[str, dict[str, Any]] = {}
     for node in nodes:
@@ -229,41 +228,32 @@ def format_monitoring_nodes_message(
     ]
     if not ordered:
         lines.append("| 暂无在线监控节点 | — | — | — |")
-    else:
-        for index, node in enumerate(ordered, start=1):
-            system_name = str(
-                node.get("system_name") or node.get("system") or "Unknown"
-            ).strip() or "Unknown"
-            health_status = str(node.get("health_status") or "online").strip().casefold()
-            status_label = {
-                "online": "🟢 正常",
-                "degraded": "🟡 连接异常",
-                "offline": "⚪ 节点离线",
-            }.get(health_status, "⚪ 节点离线")
-            if health_status == "offline":
-                hostile_label = "—"
-            else:
-                try:
-                    hostile_count = max(0, int(node.get("hostile_count") or 0))
-                except (TypeError, ValueError):
-                    hostile_count = 0
-                hostile_label = (
-                    f"{hostile_count}（上次）"
-                    if health_status == "degraded"
-                    else str(hostile_count)
-                )
-            lines.append(
-                f"| 监控节点 {index} | {status_label} | {system_name} | {hostile_label} |"
+        return "\n".join(lines)
+    for index, node in enumerate(ordered, start=1):
+        system_name = str(
+            node.get("system_name") or node.get("system") or "Unknown"
+        ).strip() or "Unknown"
+        health_status = str(node.get("health_status") or "online").strip().casefold()
+        status_label = {
+            "online": "🟢 正常",
+            "degraded": "🟡 连接异常",
+            "offline": "⚪ 节点离线",
+        }.get(health_status, "⚪ 节点离线")
+        if health_status == "offline":
+            hostile_label = "—"
+        else:
+            try:
+                hostile_count = max(0, int(node.get("hostile_count") or 0))
+            except (TypeError, ValueError):
+                hostile_count = 0
+            hostile_label = (
+                f"{hostile_count}（上次）"
+                if health_status == "degraded"
+                else str(hostile_count)
             )
-
-    moved_messages = [
-        format_monitoring_node_message(change)
-        for change in (changes or [])
-        if isinstance(change, dict)
-        and str(change.get("change") or "").strip().casefold() == "moved"
-    ]
-    if moved_messages:
-        lines.extend(["", *moved_messages])
+        lines.append(
+            f"| 监控节点 {index} | {status_label} | {system_name} | {hostile_label} |"
+        )
     return "\n".join(lines)
 
 
