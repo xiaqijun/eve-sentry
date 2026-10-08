@@ -39,15 +39,11 @@ class ThreatEnricher:
     def __init__(
         self,
         resolver: Any | None = None,
-        killboard: Any | None = None,
         esi_session: Any | None = None,
         standing_ttl_seconds: float = 300.0,
         now: Callable[[], float] | None = None,
     ) -> None:
         self.resolver = resolver
-        # Accept the retired argument for callers upgrading independently.
-        # Combat statistics must never delay personnel identity resolution.
-        del killboard
         self.esi_session = esi_session
         self.standing_ttl_seconds = max(0.0, float(standing_ttl_seconds))
         self._now = now or time

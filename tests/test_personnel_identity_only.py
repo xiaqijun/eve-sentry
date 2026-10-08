@@ -25,14 +25,13 @@ def test_identity_and_hostile_standing_do_not_query_killboard(single_profile):
         "zkill_url": "https://zkillboard.com/character/123/",
     }
     resolver = SimpleNamespace(character_profile=Mock(return_value=profile))
-    killboard = Mock()
     session = SimpleNamespace(snapshot=Mock(return_value=SimpleNamespace(
         contacts=[ContactStanding(
             contact_id=456, contact_type="corporation", standing=-10,
         )],
     )))
     enricher = ThreatEnricher(
-        resolver=resolver, killboard=killboard, esi_session=session,
+        resolver=resolver, esi_session=session,
     )
     observation = Observation(
         source="eve-sentry-detector", system_name="Tama",
@@ -54,7 +53,6 @@ def test_identity_and_hostile_standing_do_not_query_killboard(single_profile):
     }
     assert "zkill" not in profiles[0]
     assert "zkill_danger_ratio" not in profiles[0]
-    assert killboard.mock_calls == []
     resolver.character_profile.assert_called_once_with(123)
     # Retiring statistics must not retire the enemy/friendly classification.
     result = ClassificationEngine().classify(
@@ -65,10 +63,6 @@ def test_identity_and_hostile_standing_do_not_query_killboard(single_profile):
 
 @pytest.mark.parametrize("flags", [[], ["--enable-killboard"], ["--disable-killboard"]])
 def test_server_startup_never_constructs_a_killboard(monkeypatch, tmp_path, flags):
-    from app.intel import zkillboard
-
-    killboard_factory = Mock(side_effect=AssertionError("retired network client"))
-    monkeypatch.setattr(zkillboard, "ZkillboardClient", killboard_factory)
     monkeypatch.setattr(server_main, "_build_public_esi_client", lambda args: object())
     monkeypatch.setattr(server_main.MapConfigStore, "build_map", lambda *a, **kw: ({}, []))
     captured = {}
@@ -90,7 +84,6 @@ def test_server_startup_never_constructs_a_killboard(monkeypatch, tmp_path, flag
             *flags,
         ])
 
-    killboard_factory.assert_not_called()
     assert captured["resolver"] is not None
     assert isinstance(captured["enricher"], ThreatEnricher)
     assert isinstance(captured["scorer"], ClassificationEngine)

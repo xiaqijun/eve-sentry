@@ -29,7 +29,6 @@ def test_threat_enricher_collects_profiles_without_killboard_activity():
     resolver = FakeResolver()
     enricher = ThreatEnricher(
         resolver=resolver,
-        killboard=object(),
     )
     observation = Observation(
         source="intel_channel",
@@ -277,7 +276,6 @@ def test_threat_enricher_returns_empty_data_without_sources():
 def test_threat_enricher_exposes_system_profile_without_activity_lookup():
     enricher = ThreatEnricher(
         resolver=FakeResolver(),
-        killboard=object(),
     )
 
     profile = enricher.system_profile(30002813)
