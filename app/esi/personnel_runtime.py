@@ -464,7 +464,13 @@ class PersonnelResolver(EsiResolver):
         self.personnel_enabled = True
         self.original = original
 
-    def cached_name(self, name: str, *, allow_stale: bool = False):
+    def cached_name(
+        self,
+        name: str,
+        *,
+        allow_stale: bool = False,
+        allow_network: bool = True,
+    ):
         row = self.runtime.lookup(name)
         if row:
             return ResolvedName(row["name"], "character", row["character_id"]), "cached"
@@ -474,6 +480,13 @@ class PersonnelResolver(EsiResolver):
             if self.runtime._negative.get(key, 0) > self.runtime.now():
                 self.runtime._counts["negative_hits"] += 1
                 return None, "negative"
+
+        if not allow_network:
+            # OCR ingestion runs while the store state lock is held.  Queue a
+            # background refresh instead of allowing a cold ESI lookup to
+            # block heartbeats, presence uploads, or SSE state publication.
+            self.runtime.request(name, seen_at=0)
+            return None, "miss"
 
         # The first two layers missed. Resolve this one name synchronously so
         # the caller receives an identity immediately; the full archive still

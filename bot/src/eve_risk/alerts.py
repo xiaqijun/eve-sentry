@@ -31,6 +31,8 @@ STARTUP_SUBSCRIBERS_PREFIX = "qq:eve-sentry:startup-subscribers"
 ALERT_DEDUPE_SECONDS = 7 * 24 * 60 * 60
 SSE_HEARTBEAT_SECONDS = 1.0
 SSE_IDLE_TIMEOUT_SECONDS = 15.0
+GROUP_DELIVERY_CONCURRENCY = 4
+GROUP_DELIVERY_TIMEOUT_SECONDS = 5.0
 RECONNECT_BACKOFF_SECONDS = (0.2, 1.0, 3.0, 5.0)
 
 
@@ -355,6 +357,45 @@ class EveSentryAlertRelay:
     def enabled(self) -> bool:
         return bool(self.events_url)
 
+    async def _fanout_groups(
+        self,
+        groups: list[str],
+        event_id: str,
+        deliver_group: Callable[[str], Awaitable[None]],
+        *,
+        label: str,
+    ) -> tuple[int, int]:
+        """Deliver one event to groups concurrently without unbounded fan-out."""
+        if not groups:
+            return 0, 0
+        semaphore = asyncio.Semaphore(min(GROUP_DELIVERY_CONCURRENCY, len(groups)))
+
+        async def bounded_delivery(group_openid: str) -> tuple[int, int]:
+            async with semaphore:
+                delivered_key = _delivered_key(event_id, group_openid)
+                if await self.redis.exists(delivered_key):
+                    return 0, 0
+                try:
+                    async with asyncio.timeout(GROUP_DELIVERY_TIMEOUT_SECONDS):
+                        await deliver_group(group_openid)
+                    await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
+                except TimeoutError:
+                    logger.warning(
+                        "QQ %s delivery timed out after %.1fs",
+                        label,
+                        GROUP_DELIVERY_TIMEOUT_SECONDS,
+                    )
+                    return 0, 1
+                except Exception:
+                    logger.exception("QQ %s delivery failed", label)
+                    return 0, 1
+                return 1, 0
+
+        results = await asyncio.gather(
+            *(bounded_delivery(group_openid) for group_openid in groups)
+        )
+        return sum(item[0] for item in results), sum(item[1] for item in results)
+
     async def subscribe(self, group_openid: str) -> None:
         await self.redis.sadd(ALERT_GROUPS_KEY, group_openid)
         await self._deliver_latest_monitoring_snapshot(group_openid)
@@ -499,34 +540,29 @@ class EveSentryAlertRelay:
             self.public_url,
         )
         event_id = f"{transition}:{active_id}:{occurred_at}"
-        delivered = 0
-        failed = 0
-        for group_openid in groups:
-            delivered_key = _delivered_key(event_id, group_openid)
-            if await self.redis.exists(delivered_key):
-                continue
-            try:
-                send_markdown = getattr(self.qq, "send_proactive_markdown", None)
-                if send_markdown is None:
+        async def deliver_group(group_openid: str) -> None:
+            send_markdown = getattr(self.qq, "send_proactive_markdown", None)
+            if send_markdown is None:
+                await self.qq.send_proactive_text(
+                    group_openid, _markdown_to_plain_text(message)
+                )
+            else:
+                try:
+                    await send_markdown(group_openid, message)
+                except Exception:
+                    logger.warning(
+                        "QQ proactive markdown delivery failed; falling back to text"
+                    )
                     await self.qq.send_proactive_text(
                         group_openid, _markdown_to_plain_text(message)
                     )
-                else:
-                    try:
-                        await send_markdown(group_openid, message)
-                    except Exception:
-                        logger.warning(
-                            "QQ proactive markdown delivery failed; falling back to text"
-                        )
-                        await self.qq.send_proactive_text(
-                            group_openid, _markdown_to_plain_text(message)
-                        )
-            except Exception:
-                failed += 1
-                logger.exception("QQ proactive alert delivery failed")
-                continue
-            await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
-            delivered += 1
+
+        delivered, failed = await self._fanout_groups(
+            groups,
+            event_id,
+            deliver_group,
+            label="proactive alert",
+        )
 
         logger.info(
             "EVE Sentry active intel transition processed event_key=%s transition=%s deliveries=%d failures=%d",
@@ -558,20 +594,15 @@ class EveSentryAlertRelay:
             state.get("hostile_count") if transition == "alert" else None,
         )
         event_id = f"system:{transition}:{system_name.casefold()}:{episode_id}"
-        delivered = 0
-        failed = 0
-        for group_openid in groups:
-            delivered_key = _delivered_key(event_id, group_openid)
-            if await self.redis.exists(delivered_key):
-                continue
-            try:
-                await self.qq.send_proactive_text(group_openid, message)
-            except Exception:
-                failed += 1
-                logger.exception("QQ proactive system alert delivery failed")
-                continue
-            await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
-            delivered += 1
+        async def deliver_group(group_openid: str) -> None:
+            await self.qq.send_proactive_text(group_openid, message)
+
+        delivered, failed = await self._fanout_groups(
+            groups,
+            event_id,
+            deliver_group,
+            label="proactive system alert",
+        )
 
         logger.info(
             "EVE Sentry system transition processed event_key=%s transition=%s deliveries=%d failures=%d",
@@ -605,34 +636,29 @@ class EveSentryAlertRelay:
             f"personnel:{system_name.casefold()}:{episode_id}:"
             f"revision:{revision}:{fingerprint}"
         )
-        delivered = 0
-        failed = 0
-        for group_openid in groups:
-            delivered_key = _delivered_key(event_id, group_openid)
-            if await self.redis.exists(delivered_key):
-                continue
-            try:
-                send_markdown = getattr(self.qq, "send_proactive_markdown", None)
-                if send_markdown is None:
+        async def deliver_group(group_openid: str) -> None:
+            send_markdown = getattr(self.qq, "send_proactive_markdown", None)
+            if send_markdown is None:
+                await self.qq.send_proactive_text(
+                    group_openid, _markdown_to_plain_text(message)
+                )
+            else:
+                try:
+                    await send_markdown(group_openid, message)
+                except Exception:
+                    logger.warning(
+                        "QQ proactive personnel markdown delivery failed; falling back to text"
+                    )
                     await self.qq.send_proactive_text(
                         group_openid, _markdown_to_plain_text(message)
                     )
-                else:
-                    try:
-                        await send_markdown(group_openid, message)
-                    except Exception:
-                        logger.warning(
-                            "QQ proactive personnel markdown delivery failed; falling back to text"
-                        )
-                        await self.qq.send_proactive_text(
-                            group_openid, _markdown_to_plain_text(message)
-                        )
-            except Exception:
-                failed += 1
-                logger.exception("QQ proactive personnel delivery failed")
-                continue
-            await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
-            delivered += 1
+
+        delivered, failed = await self._fanout_groups(
+            groups,
+            event_id,
+            deliver_group,
+            label="proactive personnel",
+        )
 
         logger.info(
             "EVE Sentry personnel update processed event_key=%s system=%s deliveries=%d failures=%d",
@@ -742,20 +768,15 @@ class EveSentryAlertRelay:
                 occurred_at,
             )
         )
-        delivered = 0
-        failed = 0
-        for group_openid in groups:
-            delivered_key = _delivered_key(event_id, group_openid)
-            if await self.redis.exists(delivered_key):
-                continue
-            try:
-                await self.qq.send_proactive_text(group_openid, message)
-            except Exception:
-                failed += 1
-                logger.exception("QQ monitoring node delivery failed")
-                continue
-            await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
-            delivered += 1
+        async def deliver_group(group_openid: str) -> None:
+            await self.qq.send_proactive_text(group_openid, message)
+
+        delivered, failed = await self._fanout_groups(
+            groups,
+            event_id,
+            deliver_group,
+            label="monitoring node",
+        )
 
         logger.info(
             "EVE Sentry monitoring node change processed event_key=%s change=%s deliveries=%d failures=%d",
@@ -813,12 +834,10 @@ class EveSentryAlertRelay:
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
         groups = sorted(_decode(value) for value in raw_groups if _decode(value))
         message = format_monitoring_nodes_message(normalized_nodes, changes)
-        delivered = 0
-        failed = False
-        for group_openid in groups:
+        async def deliver_group(group_openid: str) -> tuple[int, bool]:
             delivered_key = _delivered_key(event_id, group_openid)
             if await self.redis.exists(delivered_key):
-                continue
+                return 0, False
             try:
                 async with asyncio.timeout(
                     self.monitoring_node_delivery_timeout_seconds
@@ -840,19 +859,34 @@ class EveSentryAlertRelay:
                                 group_openid, _markdown_to_plain_text(message)
                             )
             except TimeoutError:
-                failed = True
                 logger.warning(
                     "EVE Sentry monitoring node snapshot delivery timed out "
                     "after %.1fs",
                     self.monitoring_node_delivery_timeout_seconds,
                 )
-                continue
+                return 0, True
             except Exception:
-                failed = True
                 logger.exception("EVE Sentry monitoring node snapshot delivery failed")
-                continue
+                return 0, True
             await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
-            delivered += 1
+            return 1, False
+
+        if groups:
+            semaphore = asyncio.Semaphore(
+                min(GROUP_DELIVERY_CONCURRENCY, len(groups))
+            )
+
+            async def bounded_delivery(group_openid: str) -> tuple[int, bool]:
+                async with semaphore:
+                    return await deliver_group(group_openid)
+
+            results = await asyncio.gather(
+                *(bounded_delivery(group_openid) for group_openid in groups)
+            )
+        else:
+            results = []
+        delivered = sum(item[0] for item in results)
+        failed = any(item[1] for item in results)
         if not failed:
             await self.redis.set(
                 MONITORING_NODE_SNAPSHOT_STATE_KEY,

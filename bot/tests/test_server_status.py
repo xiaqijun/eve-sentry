@@ -37,6 +37,41 @@ async def test_online_startup_only_establishes_baseline() -> None:
 
 
 @pytest.mark.asyncio
+async def test_online_poll_interval_is_slower_than_failure_poll_interval() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    monitor = EveServerStartupMonitor(
+        AsyncMock(),
+        redis,
+        AsyncMock(),
+        "https://esi.evetech.net/status",
+        poll_interval_seconds=5,
+        online_poll_interval_seconds=30,
+    )
+    try:
+        assert monitor.poll_interval_seconds == 5
+        assert monitor.online_poll_interval_seconds == 30
+    finally:
+        await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_online_poll_interval_cannot_be_faster_than_failure_poll_interval() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    monitor = EveServerStartupMonitor(
+        AsyncMock(),
+        redis,
+        AsyncMock(),
+        "https://esi.evetech.net/status",
+        poll_interval_seconds=10,
+        online_poll_interval_seconds=2,
+    )
+    try:
+        assert monitor.online_poll_interval_seconds == 10
+    finally:
+        await redis.aclose()
+
+
+@pytest.mark.asyncio
 async def test_confirmed_downtime_then_startup_notifies_subscribed_groups_once() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     await redis.sadd(ALERT_GROUPS_KEY, "group-1")

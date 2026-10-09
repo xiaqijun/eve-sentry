@@ -48,6 +48,7 @@ class EveServerStartupMonitor:
         status_url: str,
         *,
         poll_interval_seconds: float = 5.0,
+        online_poll_interval_seconds: float = 10.0,
         offline_threshold: int = 6,
     ) -> None:
         self.http = http
@@ -55,6 +56,10 @@ class EveServerStartupMonitor:
         self.qq = qq
         self.status_url = status_url.strip()
         self.poll_interval_seconds = max(1.0, float(poll_interval_seconds))
+        self.online_poll_interval_seconds = max(
+            self.poll_interval_seconds,
+            float(online_poll_interval_seconds),
+        )
         self.offline_threshold = max(1, int(offline_threshold))
 
     @property
@@ -66,12 +71,17 @@ class EveServerStartupMonitor:
             return
         while True:
             try:
-                await self.check_once()
+                online = await self.check_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("EVE server status check failed")
-            await asyncio.sleep(self.poll_interval_seconds)
+                online = False
+            await asyncio.sleep(
+                self.online_poll_interval_seconds
+                if online
+                else self.poll_interval_seconds
+            )
 
     async def check_once(self) -> bool:
         try:

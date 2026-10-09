@@ -1067,6 +1067,50 @@ async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event()
 
 
 @pytest.mark.asyncio
+async def test_slow_group_does_not_block_other_node_snapshot_deliveries() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    slow_started = asyncio.Event()
+    release_slow = asyncio.Event()
+    delivered_groups: list[str] = []
+
+    async def send_markdown(group_openid: str, _message: str) -> dict[str, str]:
+        delivered_groups.append(group_openid)
+        if group_openid == "group-1":
+            slow_started.set()
+            await release_slow.wait()
+        return {"id": group_openid}
+
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(side_effect=send_markdown),
+        send_proactive_text=AsyncMock(),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+        await relay.subscribe("group-2")
+
+        delivery = asyncio.create_task(
+            relay.deliver_monitoring_node_snapshot(
+                [{"client_id": "client:alpha", "system_name": "Jita"}],
+                "2026-09-09T03:00:00+00:00",
+                nodes_version="v1",
+            )
+        )
+        try:
+            await slow_started.wait()
+            for _ in range(10):
+                if "group-2" in delivered_groups:
+                    break
+                await asyncio.sleep(0)
+            assert "group-2" in delivered_groups
+        finally:
+            release_slow.set()
+        assert await delivery is True
+
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
 async def test_relay_coalesces_rapid_node_snapshots_while_qq_is_slow() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     first_delivery_started = asyncio.Event()

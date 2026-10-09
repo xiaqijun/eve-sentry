@@ -15,6 +15,7 @@ import os
 import queue
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -328,8 +329,15 @@ class QQBotRuntime:
         self._started.wait(timeout=2.0)
         return self.running
 
-    def stop(self, timeout: float = 15.0) -> None:
-        """Close the bot client and join its asyncio thread."""
+    def stop(self, timeout: float = 5.0) -> None:
+        """Close the bot client within one bounded shutdown budget.
+
+        The embedded bot runs on a daemon thread.  A remote QQ websocket or
+        SSE read must not hold the server shutdown path for two independent
+        15-second waits; after the budget is exhausted the process supervisor
+        can finish stopping the service without waiting on that thread.
+        """
+        deadline = time.monotonic() + max(1.0, float(timeout))
         if self.event_source is not None:
             self.event_source.close()
         client = self._client
@@ -337,16 +345,27 @@ class QQBotRuntime:
         if client is not None and loop is not None and not loop.is_closed():
             close = getattr(client, "close", None)
             if callable(close):
+                future = None
                 try:
                     future = asyncio.run_coroutine_threadsafe(close(), loop)
-                    future.result(timeout=max(1.0, float(timeout)))
+                    future.result(timeout=max(0.1, deadline - time.monotonic()))
+                except TimeoutError:
+                    if future is not None:
+                        future.cancel()
+                    logger.warning(
+                        "Embedded QQ bot close exceeded %.1fs; continuing shutdown",
+                        max(1.0, float(timeout)),
+                    )
                 except Exception:
                     logger.warning("Embedded QQ bot close failed", exc_info=True)
         thread = self._thread
         if thread is not None and thread.is_alive():
-            thread.join(timeout=max(1.0, float(timeout)))
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
             if thread.is_alive():
-                logger.error("Embedded QQ bot did not stop within %.1fs", timeout)
+                logger.error(
+                    "Embedded QQ bot did not stop within %.1fs",
+                    max(1.0, float(timeout)),
+                )
         self._thread = None
 
     def status(self) -> dict[str, object]:

@@ -679,7 +679,14 @@ class IntelStore(PersonnelRoutingMixin):
 
         original_name = observation.names[0]
         try:
-            resolved, cache_status = cached_name(original_name, allow_stale=True)
+            if getattr(resolver, "personnel_enabled", False):
+                resolved, cache_status = cached_name(
+                    original_name,
+                    allow_stale=True,
+                    allow_network=False,
+                )
+            else:
+                resolved, cache_status = cached_name(original_name, allow_stale=True)
         except Exception:
             return observation, [], False, True
         cache_status = str(cache_status or "miss")

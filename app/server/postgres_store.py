@@ -47,6 +47,7 @@ REPORT_STREAM_POSITION_KEY = "_stream_position"
 REPORT_STREAM_ADVISORY_LOCK_ID = 1163285842
 INTEL_EVENT_ADVISORY_LOCK_ID = 1163285843
 INTEL_EVENT_RETENTION_DAYS = 14
+DB_WRITE_WAIT_LOG_SECONDS = 0.25
 
 
 
@@ -131,9 +132,25 @@ class PostgreSQLIntelStore(IntelStore):
         if ticket is None:
             return
         condition = self._db_write_condition
+        started = time.monotonic()
+        queue_depth = 0
         with condition:
             while int(self._db_write_serving_ticket) != int(ticket):
                 condition.wait()
+            queue_depth = max(
+                0,
+                int(self._db_write_next_ticket)
+                - int(self._db_write_serving_ticket)
+                - 1,
+            )
+        waited = time.monotonic() - started
+        if waited >= DB_WRITE_WAIT_LOG_SECONDS:
+            logger.warning(
+                "PostgreSQL write queue waited ticket=%s wait_ms=%.1f remaining=%s",
+                ticket,
+                waited * 1000,
+                queue_depth,
+            )
 
     def _finish_db_write(self, ticket: int | None) -> None:
         if ticket is None:
@@ -595,13 +612,22 @@ class PostgreSQLIntelStore(IntelStore):
             state_events = self._hostile_state_events(hostile_before, self._hostile_system_state(), seen_at)
             state_events = reconcile_zero_events(state_events, self._active_intel.values(), seen_at,
                                                   positive_systems=self._hostile_system_state())
-            db_write_ticket = self._reserve_db_write()
+            # Do not enqueue a no-op snapshot behind slow background ESI
+            # persistence.  A fresh OCR frame can legitimately leave the
+            # durable state unchanged (for example, a duplicate frame after
+            # a stale capture was rejected); reserving a FIFO ticket in that
+            # case only adds avoidable contention to realtime uploads.
+            should_persist = bool(
+                new_reports or active_rows or hostile_waves or state_events
+            )
+            db_write_ticket = self._reserve_db_write() if should_persist else None
         self._wait_for_db_write(db_write_ticket)
-        try:
-            with self._connect() as connection:
-                if new_reports:
-                    self._assign_report_stream_positions(connection, new_reports)
-                    connection.executemany(
+        if db_write_ticket is not None:
+            try:
+                with self._connect() as connection:
+                    if new_reports:
+                        self._assign_report_stream_positions(connection, new_reports)
+                        connection.executemany(
                         """
                         INSERT INTO intel_reports (
                             report_id, stream_position, system, names_json, source,
@@ -641,17 +667,17 @@ class PostgreSQLIntelStore(IntelStore):
                             acknowledged_by = excluded.acknowledged_by,
                             acknowledgement_note = excluded.acknowledgement_note
                         """,
-                        [self._row_from_report(report) for report in new_reports],
-                    )
-                    self._refresh_report_stream_positions(connection, new_reports)
-                self._upsert_active_intel_rows(connection, active_rows)
-                self._persist_hostile_wave_changes(connection, hostile_waves)
-                self._persist_intel_events(connection, state_events)
-        except Exception:
-            mark_failed_write(self)
-            raise
-        finally:
-            self._finish_db_write(db_write_ticket)
+                            [self._row_from_report(report) for report in new_reports],
+                        )
+                        self._refresh_report_stream_positions(connection, new_reports)
+                    self._upsert_active_intel_rows(connection, active_rows)
+                    self._persist_hostile_wave_changes(connection, hostile_waves)
+                    self._persist_intel_events(connection, state_events)
+            except Exception:
+                mark_failed_write(self)
+                raise
+            finally:
+                self._finish_db_write(db_write_ticket)
         for task in esi_tasks:
             self._esi_worker.submit(task.active_id, task)
         return result.to_dict(include_active=False)

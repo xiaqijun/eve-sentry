@@ -212,7 +212,7 @@ PostgreSQL；多个到期规则合并使用一次全节点 OCR，只在目标从
 向所有已开启主动预警的群推送一次开服通知，包括在线人数、服务器版本和启动时间。
 机器人启动时若服务器已经在线只建立状态基线，不会重复群发；状态和投递去重记录保存在
 Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和停服确认次数可分别用
-`EVE_SERVER_STATUS_POLL_SECONDS`、`EVE_SERVER_OFFLINE_THRESHOLD` 调整。
+`EVE_SERVER_STATUS_POLL_SECONDS`、`EVE_SERVER_STATUS_ONLINE_POLL_SECONDS`、`EVE_SERVER_OFFLINE_THRESHOLD` 调整。
 
 ## 部署
 

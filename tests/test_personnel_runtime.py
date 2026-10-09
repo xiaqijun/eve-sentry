@@ -90,6 +90,22 @@ def test_archive_miss_uses_synchronous_esi_fallback(archive_factory, tmp_path):
     assert client.calls == [("names", ["Pilot 7"])]
 
 
+def test_ocr_cache_lookup_can_defer_cold_esi_resolution(archive_factory, tmp_path):
+    archive, client = archive_factory(), Client()
+    runtime = PersonnelRuntime(archive, client, now=lambda: 1000)
+    resolver = PersonnelResolver(
+        EsiResolver(client=client, cache=EsiCache(tmp_path / "legacy.json")),
+        runtime,
+    )
+
+    resolved, status = resolver.cached_name("Pilot 7", allow_network=False)
+
+    assert resolved is None
+    assert status == "miss"
+    assert client.calls == []
+    assert runtime.snapshot()["pending_names"] == 1
+
+
 def test_synchronous_miss_uses_short_negative_cache(archive_factory, tmp_path):
     archive, client = archive_factory(), Client()
     client.resolve_ids = lambda names: {"characters": []}

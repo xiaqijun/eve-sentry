@@ -202,6 +202,7 @@ class RiskBotClient(botpy.Client):
             self.qq,
             status_url,
             poll_interval_seconds=settings.eve_server_status_poll_seconds,
+            online_poll_interval_seconds=settings.eve_server_status_online_poll_seconds,
             offline_threshold=settings.eve_server_offline_threshold,
         )
         self.server_status_task: asyncio.Task[None] | None = None
