@@ -3,6 +3,30 @@
 from typing import Any
 
 
+def source_identity_from_metadata(metadata: Any, client_id: str = "") -> str:
+    """Build the internal source scope from a row's server-owned metadata."""
+    metadata = metadata if isinstance(metadata, dict) else {}
+    account_id = str(metadata.get("_server_seat_account_id") or "").strip()
+    key_id = str(metadata.get("_server_seat_key_id") or "").strip()
+    client_id = str(metadata.get("client_id") or client_id or "").strip()
+    if account_id or key_id:
+        return f"seat:{account_id}:{key_id}:{client_id}"
+    return client_id
+
+
+def source_identity(item: Any) -> str:
+    """Return the authenticated identity of a detector source.
+
+    ``client_id`` is a local runtime identifier and can be reused after a
+    reinstall.  Once the server has attributed a presence to a Seat account
+    and key, include that attribution in the source identity so two clients
+    with the same local id cannot overwrite one another's authority rows.
+    Legacy, unattributed rows continue to use their client id unchanged.
+    """
+    metadata = item.metadata if isinstance(getattr(item, "metadata", None), dict) else {}
+    return source_identity_from_metadata(metadata)
+
+
 def is_resident_presence(item: Any) -> bool:
     """A valid zero frame retains residency; departure/expiry does not."""
     return bool(
@@ -52,7 +76,7 @@ def primary_sources(items: Any) -> dict[str, Any]:
         return (
             order,
             str(item.first_seen_at if not order else ""),
-            str(item.metadata.get("client_id") or ""),
+            source_identity(item),
         )
 
     for item in items:
@@ -85,6 +109,6 @@ def authoritative_items(items: Any) -> tuple[list[Any], dict[str, Any]]:
         primary = primaries.get(key)
         if primary is None or not primary.active:
             continue
-        if item.metadata.get("client_id") == primary.metadata.get("client_id"):
+        if source_identity(item) == source_identity(primary):
             selected.append(item)
     return selected, primaries

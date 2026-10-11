@@ -550,6 +550,39 @@ def test_active_hostile_counts_include_latest_presence_without_double_counting()
     assert counts == {"S-KSWL": 1}
 
 
+def test_active_hostile_counts_use_only_the_primary_detector_source():
+    active = [
+        {
+            "active": True,
+            "source": "eve-sentry-detector",
+            "source_instance": "primary",
+            "system_name": "S-KSWL",
+            "first_seen_at": "2026-10-11T00:00:00+00:00",
+            "metadata": {
+                "client_id": "primary",
+                "presence_only": True,
+                "hostile_icon_count": 1,
+                "source_join_order": 1,
+            },
+        },
+        {
+            "active": True,
+            "source": "eve-sentry-detector",
+            "source_instance": "standby",
+            "system_name": "S-KSWL",
+            "first_seen_at": "2026-10-11T00:00:01+00:00",
+            "metadata": {
+                "client_id": "standby",
+                "presence_only": True,
+                "hostile_icon_count": 9,
+                "source_join_order": 2,
+            },
+        },
+    ]
+
+    assert _active_hostile_counts([], active) == {"S-KSWL": 1}
+
+
 def test_integration_hostile_systems_returns_only_active_hostile_systems(tmp_path):
     store = IntelStore(
         tmp_path / "intel.json",

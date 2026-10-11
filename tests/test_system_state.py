@@ -16,6 +16,11 @@ def state(count=1):
                 "system_name": "S-KSWL",
                 "hostile_count": count,
                 "hostile_personnel": [{"character_id": 123, "name": "Pilot"}],
+                "primary_client_id": "detector:pilot",
+                "primary_account_id": "seat-account",
+                "primary_key_id": "seat-key",
+                "primary_character_id": 987,
+                "primary_generation": 4,
             }
         ),
     }
@@ -37,3 +42,12 @@ def test_map_uses_exact_projected_count_and_confirmed_roster():
     data = store._aggregate_active_by_system(project_active_items([], [state(3)]))
     assert data["S-KSWL"]["hostile_count"] == 3
     assert data["S-KSWL"]["hostiles"] == ["Pilot"]
+
+
+def test_projection_retains_primary_source_identity():
+    item = project_active_items([], [state()])[0]
+    assert item["metadata"]["primary_client_id"] == "detector:pilot"
+    assert item["metadata"]["primary_account_id"] == "seat-account"
+    assert item["metadata"]["primary_key_id"] == "seat-key"
+    assert item["metadata"]["primary_character_id"] == 987
+    assert item["metadata"]["primary_generation"] == 4

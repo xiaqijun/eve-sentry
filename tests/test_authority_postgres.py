@@ -54,6 +54,21 @@ def test_primary_clear_is_identical_in_event_and_bootstrap_and_survives_restart(
         reopened.close()
 
 
+def test_primary_event_includes_authenticated_source_scope(store):
+    presence(
+        store,
+        "detector:pilot",
+        1,
+        seat_account_id="seat-account",
+        seat_key_id="seat-key",
+    )
+    payload = store.list_intel_event_page()[-1]["payload"]
+    assert payload["primary_client_id"] == "detector:pilot"
+    assert payload["primary_account_id"] == "seat-account"
+    assert payload["primary_key_id"] == "seat-key"
+    assert payload["primary_character_id"] is None
+
+
 def test_capture_loss_retains_unknown_until_valid_clear_and_does_not_repeat_clear(
     store,
 ):

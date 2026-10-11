@@ -118,6 +118,9 @@ def project_active_items(
             "hostile_icon_seen_at": timestamp,
             "freshness": str(payload.get("freshness") or "fresh"),
             "primary_client_id": str(payload.get("primary_client_id") or ""),
+            "primary_account_id": str(payload.get("primary_account_id") or ""),
+            "primary_key_id": str(payload.get("primary_key_id") or ""),
+            "primary_character_id": payload.get("primary_character_id"),
             "primary_generation": int(payload.get("primary_generation") or 0),
         }
         items.append(

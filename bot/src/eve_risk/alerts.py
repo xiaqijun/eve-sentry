@@ -1781,10 +1781,61 @@ def _detector_item_is_hostile(item: dict[str, Any]) -> bool:
     return False
 
 
+def _detector_source_identity(item: dict[str, Any]) -> str:
+    metadata = _metadata(item)
+    account_id = str(metadata.get("_server_seat_account_id") or "").strip()
+    key_id = str(metadata.get("_server_seat_key_id") or "").strip()
+    client_id = str(metadata.get("client_id") or item.get("source_instance") or "").strip()
+    if account_id or key_id:
+        return f"seat:{account_id}:{key_id}:{client_id}"
+    return client_id
+
+
+def _authoritative_detector_items(
+    items: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Apply the server's one-primary-per-system rule to fallback snapshots."""
+    rows = [item for item in items if isinstance(item, dict)]
+    candidates: dict[str, list[dict[str, Any]]] = {}
+    for item in rows:
+        if str(item.get("source") or "").strip().casefold() != "eve-sentry-detector":
+            continue
+        metadata = _metadata(item)
+        if not metadata.get("presence_only") or metadata.get("left_reason"):
+            continue
+        if not bool(item.get("active", True)) and metadata.get("hostile_icon_count") != 0:
+            continue
+        candidates.setdefault(_system_label(item).casefold(), []).append(item)
+
+    primaries: dict[str, str] = {}
+    for system_key, entries in candidates.items():
+        def rank(item: dict[str, Any]) -> tuple[int, str, str]:
+            metadata = _metadata(item)
+            try:
+                order = int(metadata.get("source_join_order") or 0)
+            except (TypeError, ValueError):
+                order = 0
+            first_seen = str(item.get("first_seen_at") or item.get("last_seen_at") or "")
+            return (order, first_seen if not order else "", _detector_source_identity(item))
+
+        primaries[system_key] = _detector_source_identity(min(entries, key=rank))
+
+    selected: list[dict[str, Any]] = []
+    for item in rows:
+        if str(item.get("source") or "").strip().casefold() != "eve-sentry-detector":
+            selected.append(item)
+            continue
+        primary = primaries.get(_system_label(item).casefold())
+        if primary is None or _detector_source_identity(item) == primary:
+            selected.append(item)
+    return selected
+
+
 def _active_system_state(
     items: Iterable[dict[str, Any]], fallback_episode_id: str
 ) -> dict[str, dict[str, Any]]:
     systems: dict[str, dict[str, Any]] = {}
+    items = _authoritative_detector_items(items)
     for item in items:
         system_name = _system_label(item)
         system_key = system_name.casefold()

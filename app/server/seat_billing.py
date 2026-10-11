@@ -37,6 +37,21 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _sqlite_unique_index_columns(connection: sqlite3.Connection, table: str) -> list[list[str]]:
+    """Return columns for every unique SQLite index on a table."""
+    result: list[list[str]] = []
+    for index in connection.execute(f"PRAGMA index_list({table!r})").fetchall():
+        if not int(index[2]):
+            continue
+        result.append(
+            [
+                row[2]
+                for row in connection.execute(f"PRAGMA index_info({index[1]!r})").fetchall()
+            ]
+        )
+    return result
+
+
 def migrate_seat_billing_schema(connection: Any) -> None:
     """Create the Seat-side online-time evidence and monitor export tables."""
     statements = (
@@ -62,7 +77,8 @@ def migrate_seat_billing_schema(connection: Any) -> None:
             eligibility TEXT NOT NULL DEFAULT 'eligible',
             evidence_json TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL,
-            UNIQUE (client_id, system_name, primary_generation, started_at, ended_at)
+            UNIQUE (account_id, key_id, client_id, system_name,
+                    primary_generation, started_at, ended_at)
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_seat_monitor_contributions_created ON seat_monitor_contributions(created_at, contribution_id)",
@@ -78,7 +94,7 @@ def migrate_seat_billing_schema(connection: Any) -> None:
             ended_at TEXT NOT NULL,
             duration_seconds INTEGER NOT NULL CHECK (duration_seconds > 0),
             created_at TEXT NOT NULL,
-            UNIQUE (client_id, system_id, started_at, ended_at)
+            UNIQUE (account_id, key_id, client_id, system_id, started_at, ended_at)
         )
         """,
         # Older production installs created this table before system
@@ -116,18 +132,19 @@ def migrate_seat_billing_schema(connection: Any) -> None:
     # SQLite installs created before this change are rebuilt below because it
     # cannot drop an auto-index backing a table constraint.
     if isinstance(connection, sqlite3.Connection):
-        indexes = connection.execute("PRAGMA index_list(seat_client_usage)").fetchall()
-        legacy_index = False
-        for index in indexes:
-            if not int(index[2]):
-                continue
-            columns = [
-                row[2]
-                for row in connection.execute(f"PRAGMA index_info({index[1]!r})").fetchall()
-            ]
-            if columns == ["client_id", "started_at", "ended_at"]:
-                legacy_index = True
-                break
+        legacy_index = any(
+            columns
+            in {
+                ("client_id", "started_at", "ended_at"),
+                ("client_id", "system_id", "started_at", "ended_at"),
+            }
+            for columns in (
+                tuple(index_columns)
+                for index_columns in _sqlite_unique_index_columns(
+                    connection, "seat_client_usage"
+                )
+            )
+        )
         if legacy_index:
             connection.execute("ALTER TABLE seat_client_usage RENAME TO seat_client_usage_legacy")
             connection.execute(
@@ -142,7 +159,7 @@ def migrate_seat_billing_schema(connection: Any) -> None:
                     ended_at TEXT NOT NULL,
                     duration_seconds INTEGER NOT NULL CHECK (duration_seconds > 0),
                     created_at TEXT NOT NULL,
-                    UNIQUE (client_id, system_id, started_at, ended_at)
+                    UNIQUE (account_id, key_id, client_id, system_id, started_at, ended_at)
                 )
                 """
             )
@@ -158,12 +175,79 @@ def migrate_seat_billing_schema(connection: Any) -> None:
                 """
             )
             connection.execute("DROP TABLE seat_client_usage_legacy")
+
+        monitor_legacy = any(
+            columns
+            == (
+                "client_id",
+                "system_name",
+                "primary_generation",
+                "started_at",
+                "ended_at",
+            )
+            for columns in (
+                tuple(index_columns)
+                for index_columns in _sqlite_unique_index_columns(
+                    connection, "seat_monitor_contributions"
+                )
+            )
+        )
+        if monitor_legacy:
+            connection.execute(
+                "ALTER TABLE seat_monitor_contributions RENAME TO seat_monitor_contributions_legacy"
+            )
+            connection.execute(
+                """
+                CREATE TABLE seat_monitor_contributions (
+                    contribution_id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL DEFAULT '',
+                    key_id TEXT NOT NULL DEFAULT '',
+                    client_id TEXT NOT NULL,
+                    system_id BIGINT,
+                    system_name TEXT NOT NULL,
+                    primary_generation INTEGER NOT NULL CHECK (primary_generation > 0),
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    duration_seconds INTEGER NOT NULL CHECK (duration_seconds > 0),
+                    rule_version TEXT NOT NULL DEFAULT 'primary-presence.v1',
+                    eligibility TEXT NOT NULL DEFAULT 'eligible',
+                    evidence_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    UNIQUE (account_id, key_id, client_id, system_name,
+                            primary_generation, started_at, ended_at)
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO seat_monitor_contributions
+                    (contribution_id, account_id, key_id, client_id, system_id,
+                     system_name, primary_generation, started_at, ended_at,
+                     duration_seconds, rule_version, eligibility, evidence_json,
+                     created_at)
+                SELECT contribution_id, account_id, key_id, client_id, system_id,
+                       system_name, primary_generation, started_at, ended_at,
+                       duration_seconds, rule_version, eligibility, evidence_json,
+                       created_at
+                FROM seat_monitor_contributions_legacy
+                """
+            )
+            connection.execute("DROP TABLE seat_monitor_contributions_legacy")
     else:
         connection.execute(
             "ALTER TABLE seat_client_usage DROP CONSTRAINT IF EXISTS seat_client_usage_client_id_started_at_ended_at_key"
         )
         connection.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_seat_client_usage_identity ON seat_client_usage(client_id, system_id, started_at, ended_at)"
+            "ALTER TABLE seat_client_usage DROP CONSTRAINT IF EXISTS seat_client_usage_client_id_system_id_started_at_ended_at_key"
+        )
+        connection.execute(
+            "ALTER TABLE seat_monitor_contributions DROP CONSTRAINT IF EXISTS seat_monitor_contributions_client_id_system_name_primary_generation_started_at_ended_at_key"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_seat_client_usage_identity ON seat_client_usage(account_id, key_id, client_id, system_id, started_at, ended_at)"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_seat_monitor_contributions_identity ON seat_monitor_contributions(account_id, key_id, client_id, system_name, primary_generation, started_at, ended_at)"
         )
 
 class SeatBillingRepository:
@@ -250,6 +334,8 @@ class SeatBillingRepository:
             contribution_id = hashlib.sha256(
                 "|".join(
                     (
+                        str(record.get("account_id") or ""),
+                        str(record.get("key_id") or ""),
                         client_id,
                         system_name.casefold(),
                         str(generation),
@@ -297,7 +383,8 @@ class SeatBillingRepository:
                     duration_seconds, rule_version, eligibility, evidence_json,
                     created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (client_id, system_name, primary_generation, started_at, ended_at)
+                ON CONFLICT (account_id, key_id, client_id, system_name,
+                             primary_generation, started_at, ended_at)
                 DO NOTHING
                 """,
                 tuple(normalized.values()),
@@ -310,10 +397,19 @@ class SeatBillingRepository:
                 row = connection.execute(
                     """
                     SELECT * FROM seat_monitor_contributions
-                    WHERE client_id = ? AND system_name = ? AND primary_generation = ?
+                    WHERE account_id = ? AND key_id = ? AND client_id = ?
+                      AND system_name = ? AND primary_generation = ?
                       AND started_at = ? AND ended_at = ?
                     """,
-                    (client_id, system_name, generation, started_at, ended_at),
+                    (
+                        normalized["account_id"],
+                        normalized["key_id"],
+                        client_id,
+                        system_name,
+                        generation,
+                        started_at,
+                        ended_at,
+                    ),
                 ).fetchone()
         return {
             "contribution": self._monitor_contribution(dict(row)) if row is not None else normalized,
@@ -385,7 +481,9 @@ class SeatBillingRepository:
             raise SeatBillingError("client usage interval is invalid", "invalid_client_usage")
         usage_id = str(record.get("usage_id") or "").strip()
         if not usage_id:
-            usage_id = hashlib.sha256(f"{client_id}|{started_at}|{ended_at}".encode()).hexdigest()
+            usage_id = hashlib.sha256(
+                f"{account_id}|{key_id}|{client_id}|{started_at}|{ended_at}".encode()
+            ).hexdigest()
         created_at = str(record.get("created_at") or utc_now_iso())
         normalized = {
             "usage_id": usage_id,
@@ -442,7 +540,8 @@ class SeatBillingRepository:
                         usage_id, account_id, key_id, client_id, system_id,
                         started_at, ended_at, duration_seconds, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (client_id, system_id, started_at, ended_at) DO NOTHING
+                    ON CONFLICT (account_id, key_id, client_id, system_id,
+                                 started_at, ended_at) DO NOTHING
                     """,
                     tuple(row_data.values()),
                 )
@@ -452,9 +551,17 @@ class SeatBillingRepository:
                     row = connection.execute(
                         """
                         SELECT * FROM seat_client_usage
-                        WHERE client_id = ? AND system_id = ? AND started_at = ? AND ended_at = ?
+                        WHERE account_id = ? AND key_id = ? AND client_id = ?
+                          AND system_id = ? AND started_at = ? AND ended_at = ?
                         """,
-                        (client_id, system_id, started_at, ended_at),
+                        (
+                            account_id,
+                            key_id,
+                            client_id,
+                            system_id,
+                            started_at,
+                            ended_at,
+                        ),
                     ).fetchone()
                 if row is not None:
                     saved.append(self._client_usage(dict(row)))

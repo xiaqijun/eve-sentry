@@ -25,6 +25,10 @@ from app.server.auth_http import AuthHttpMixin
 from app.server.client_status import monitored_system_names
 from app.server.event_cache import ActiveEventSnapshot
 from app.server.intel_store import IntelStore, utc_now_iso
+from app.server.source_authority import (
+    source_identity_from_metadata,
+    superseded_parent_clients,
+)
 from app.server.system_state import realtime_event_payload
 from app.server.monitoring_scope import current_scope, in_scope
 from app.server.map_settings import handle_settings, install_scope
@@ -564,13 +568,91 @@ def _presence_payloads_from_heartbeat(payload: dict[str, Any]) -> list[dict[str,
     return reconciliations
 
 
+def _authoritative_detector_items(
+    active_items: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Keep only the selected detector source for each monitored system."""
+    rows = [item for item in (active_items or []) if isinstance(item, dict)]
+    candidates: dict[str, list[dict[str, Any]]] = {}
+    retired = superseded_parent_clients(
+        [
+            SimpleNamespace(
+                source=item.get("source"),
+                metadata=item.get("metadata") if isinstance(item.get("metadata"), dict) else {},
+            )
+            for item in rows
+        ]
+    )
+    for item in rows:
+        if str(item.get("source") or "").strip().casefold() != "eve-sentry-detector":
+            continue
+        metadata = item.get("metadata")
+        if not isinstance(metadata, dict) or not metadata.get("presence_only"):
+            continue
+        if metadata.get("left_reason") or str(metadata.get("client_id") or "") in retired:
+            continue
+        if not bool(item.get("active", True)) and metadata.get("hostile_icon_count") != 0:
+            continue
+        system_key = str(item.get("system_name") or item.get("system") or "").strip().casefold()
+        if system_key:
+            candidates.setdefault(system_key, []).append(item)
+
+    primaries: dict[str, str] = {}
+    for system_key, entries in candidates.items():
+        def rank(item: dict[str, Any]) -> tuple[int, str, str]:
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            try:
+                order = int(metadata.get("source_join_order") or 0)
+            except (TypeError, ValueError):
+                order = 0
+            first_seen = str(item.get("first_seen_at") or item.get("last_seen_at") or "")
+            return (
+                order,
+                first_seen if not order else "",
+                source_identity_from_metadata(
+                    metadata,
+                    str(item.get("source_instance") or ""),
+                ),
+            )
+
+        primary = min(entries, key=rank)
+        metadata = primary.get("metadata") if isinstance(primary.get("metadata"), dict) else {}
+        primaries[system_key] = source_identity_from_metadata(
+            metadata,
+            str(primary.get("source_instance") or ""),
+        )
+
+    selected: list[dict[str, Any]] = []
+    for item in rows:
+        if str(item.get("source") or "").strip().casefold() != "eve-sentry-detector":
+            selected.append(item)
+            continue
+        metadata = item.get("metadata")
+        if not isinstance(metadata, dict):
+            selected.append(item)
+            continue
+        system_key = str(item.get("system_name") or item.get("system") or "").strip().casefold()
+        primary_identity = primaries.get(system_key)
+        if primary_identity is None:
+            selected.append(item)
+            continue
+        if source_identity_from_metadata(
+            metadata,
+            str(item.get("source_instance") or ""),
+        ) == primary_identity:
+            selected.append(item)
+    return selected
+
+
 def _active_hostile_counts(
     alerts: list[dict[str, Any]],
     active_items: list[dict[str, Any]] | None = None,
 ) -> dict[str, int]:
     """Count active hostile alerts and detector presence by solar system."""
+    active_items = _authoritative_detector_items(active_items)
     counts: dict[str, int] = {}
     detector_counts: dict[str, dict[str, tuple[str, int]]] = {}
+    primary_counts: dict[str, tuple[str, int]] = {}
     display_names: dict[str, str] = {}
 
     def remember_detector(
@@ -584,6 +666,28 @@ def _active_hostile_counts(
         if current is None or seen_at >= current[0]:
             detector_counts[system_key][client_id] = (seen_at, hostile_count)
 
+    for item in active_items:
+        if not isinstance(item, dict) or not bool(item.get("active", True)):
+            continue
+        source = str(item.get("source") or "").strip().casefold()
+        metadata = item.get("metadata")
+        if source != "eve-sentry-detector" or not isinstance(metadata, dict):
+            continue
+        if not metadata.get("presence_only") or "hostile_icon_count" not in metadata:
+            continue
+        system_name = str(item.get("system_name") or item.get("system") or "Unknown").strip() or "Unknown"
+        system_key = system_name.casefold()
+        display_names.setdefault(system_key, system_name)
+        try:
+            hostile_count = max(0, int(metadata.get("hostile_icon_count") or 0))
+        except (TypeError, ValueError):
+            hostile_count = 0
+        source_key = source_identity_from_metadata(
+            metadata,
+            str(item.get("source_instance") or "unknown"),
+        )
+        primary_counts[system_key] = (source_key, hostile_count)
+
     for alert in alerts:
         system_name = str(
             alert.get("system_name") or alert.get("system") or "Unknown"
@@ -592,24 +696,25 @@ def _active_hostile_counts(
         display_names.setdefault(system_key, system_name)
         detector_client_id = str(alert.get("detector_client_id") or "").strip()
         if detector_client_id:
-            try:
-                hostile_count = max(0, int(alert.get("hostile_count") or 0))
-            except (TypeError, ValueError):
-                hostile_count = 0
-            remember_detector(
-                system_name,
-                detector_client_id,
-                hostile_count,
-                str(
-                    alert.get("hostile_icon_seen_at")
-                    or alert.get("created_at")
-                    or ""
-                ),
-            )
+            if system_key not in primary_counts:
+                try:
+                    hostile_count = max(0, int(alert.get("hostile_count") or 0))
+                except (TypeError, ValueError):
+                    hostile_count = 0
+                remember_detector(
+                    system_name,
+                    detector_client_id,
+                    hostile_count,
+                    str(
+                        alert.get("hostile_icon_seen_at")
+                        or alert.get("created_at")
+                        or ""
+                    ),
+                )
             continue
         counts[system_key] = counts.get(system_key, 0) + 1
 
-    for item in active_items or []:
+    for item in active_items:
         if not isinstance(item, dict) or not bool(item.get("active", True)):
             continue
         source = str(item.get("source") or "").strip().casefold()
@@ -642,7 +747,11 @@ def _active_hostile_counts(
             ),
         )
 
+    for system_key, (_source_key, count) in primary_counts.items():
+        counts[system_key] = counts.get(system_key, 0) + count
     for system_key, node_counts in detector_counts.items():
+        if system_key in primary_counts:
+            continue
         if node_counts:
             counts[system_key] = counts.get(system_key, 0) + max(
                 count for _, count in node_counts.values()
@@ -2070,7 +2179,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         if path == f"{API_V1_PREFIX}/ocr/snapshot":
             try:
                 store = self._store()
-                payload = self._read_json()
+                payload = self._attributed_ocr_payload(self._read_json())
                 result = store.record_ocr_snapshot(payload)
                 store.refresh_detector_heartbeat(payload.get("client_id"))
                 _complete_ocr_query(
@@ -2663,6 +2772,15 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         )
         return attributed
 
+    def _attributed_ocr_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Attach the authenticated source scope to detector OCR uploads."""
+        attributed = dict(payload)
+        principal = self._auth_principal
+        if principal is not None and principal.is_seat:
+            attributed["seat_account_id"] = principal.account_id
+            attributed["seat_key_id"] = principal.api_key_id
+        return attributed
+
     def _handle_v1_put(self, path: str) -> None:
         if path == f"{API_V1_PREFIX}/integrations/seat/alert-consumption":
             self._handle_seat_alert_consumption_put()
@@ -2869,6 +2987,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
     ) -> list[dict[str, Any]]:
         """Return the current hostile roster using the map's server-side rules."""
         store = self._store()
+        active_items = _authoritative_detector_items(active_items)
         system_intel = store._aggregate_active_by_system(active_items)
         rosters: dict[str, dict[str, Any]] = {}
         for item in active_items:
@@ -3177,6 +3296,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         *,
         prefer_persisted_alerts: bool = False,
     ) -> list[dict[str, Any]]:
+        active_items = _authoritative_detector_items(active_items)
         active_by_source_id: dict[str, dict[str, Any]] = {}
         for item in active_items:
             for source_id in self._active_item_source_ids(item):

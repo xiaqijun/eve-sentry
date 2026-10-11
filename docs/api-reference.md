@@ -311,7 +311,9 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 哨兵为每个星系选择一个连续驻留时间最早的主节点（`primary_generation`）。只有主节点相邻、
 由服务端接收的 Presence 帧形成监控贡献区间；敌对数量为 0 仍然有效。主节点交接从新节点
 首次被服务端确认后开始，备用节点重叠期间不重复计时；服务端确认间隔超过 45 秒时不生成区间。
-客户端不能上传累计秒数或修改 `primary_generation`。Seat 通过
+每条状态事件同时携带 `primary_client_id`、`primary_account_id`、`primary_key_id` 和可选的
+`primary_character_id`（仅可信服务端角色映射可填充），供星图、预警端和机器人追踪同一权威来源。客户端不能上传累计秒数或修改
+`primary_generation`。Seat 通过
 `GET /api/v1/integrations/seat/monitor-contributions?after={cursor}&limit={n}` 读取事实，并
 自行按 `sentry_monitor` 规则、费率快照、每日上限和账号归属结算；Sentry 不接收余额，也不直接写币账。
 | `GET` | `/api/v1/clients` | 在线客户端和聚合状态 |
@@ -328,6 +330,11 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 | `POST` | `/api/v1/channel-lines` | 独立频道客户端上传日志行 |
 
 ### 客户端心跳与采集状态
+
+`client_id` 是客户端本地生成的运行时实例标识，不是账号或计费主键。服务端会把认证
+Seat principal 的 `account_id`、`key_id` 与 `client_id` 组合成来源范围；同一账号可以同时
+运行多个客户端，各实例按自己的 `client_id` 上报。若旧心跳已停止或超过失活阈值，新的
+认证实例可以接管同名运行时 ID；活跃期间则仍拒绝不同账号抢占，避免两个进程互相覆盖。
 
 检测客户端心跳的 `details.targets` 会在窗口采集状态已确定时包含
 `capture_online` 和 `capture_failure_count`；`capture_online=false` 表示该 EVE 窗口已
@@ -415,8 +422,8 @@ GET /api/v1/observations?cursor=eyJ...&limit=100&source=intel_channel
 进行中的波次；每个星系从敌对总数由 0 变为大于 0 时创建波次，回到 0 时写入
 `cleared_at`，之后再次出现会创建新的 `id`。该接口使用独立 PostgreSQL 生命周期表，
 不会恢复启动时的全量 active-intel 历史加载。每条波次的 `peak_hostile_count` 是该波次
-期间客户端上报的红色图标数量峰值；同一客户端的视觉状态与 OCR 人员行会去重，同星系
-多客户端取当前最大值。人员识别失败不会移除已有视觉证据波次。
+期间主节点上报的红色图标数量峰值；同一主节点的视觉状态与 OCR 人员行会去重，备用节点
+不会叠加或抬高当前星系数量。人员识别失败不会移除已有视觉证据波次。
 
 示例响应：
 

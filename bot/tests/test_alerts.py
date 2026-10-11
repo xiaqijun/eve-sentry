@@ -263,6 +263,39 @@ def test_detector_count_uses_server_snapshot_when_active_roster_is_partial() -> 
     assert state["s-kswl"]["hostile_count"] == 4
 
 
+def test_detector_state_uses_only_the_primary_source_per_system() -> None:
+    items = [
+        {
+            "id": "presence:primary",
+            "active": True,
+            "system_name": "S-KSWL",
+            "source": "eve-sentry-detector",
+            "metadata": {
+                "client_id": "primary",
+                "presence_only": True,
+                "hostile_icon_count": 1,
+                "source_join_order": 1,
+            },
+        },
+        {
+            "id": "presence:standby",
+            "active": True,
+            "system_name": "S-KSWL",
+            "source": "eve-sentry-detector",
+            "metadata": {
+                "client_id": "standby",
+                "presence_only": True,
+                "hostile_icon_count": 9,
+                "source_join_order": 2,
+            },
+        },
+    ]
+
+    state = _active_system_state(items, "snapshot-1")
+
+    assert state["s-kswl"]["hostile_count"] == 1
+
+
 def test_detector_personnel_uses_server_active_roster_and_deduplicates() -> None:
     raw_items = [
         {

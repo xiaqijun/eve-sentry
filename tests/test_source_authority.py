@@ -1,8 +1,10 @@
 """First-resident authority, standby isolation and clear lifecycle regression."""
 
+from types import SimpleNamespace
+
 from app.server.intel_store import IntelStore
 from app.server.postgres_store import PostgreSQLIntelStore
-from app.server.source_authority import primary_sources
+from app.server.source_authority import authoritative_items, primary_sources
 
 
 def presence(store, client, count, system="S-KSWL", **extra):
@@ -62,3 +64,28 @@ def test_duplicate_or_out_of_order_presence_does_not_change_authority(tmp_path):
     ]
     assert projected(store)["s-kswl"]["hostile_count"] == 1
     store.close()
+
+
+def test_primary_authority_scopes_reused_client_id_by_authenticated_source():
+    def node(account_id, key_id, order, count):
+        return SimpleNamespace(
+            source="eve-sentry-detector",
+            system_name="S-KSWL",
+            active=True,
+            first_seen_at=f"2026-10-11T00:00:0{order}+00:00",
+            metadata={
+                "presence_only": True,
+                "client_id": "detector:shared",
+                "_server_seat_account_id": account_id,
+                "_server_seat_key_id": key_id,
+                "source_join_order": order,
+                "hostile_icon_count": count,
+            },
+        )
+
+    first = node("account-a", "key-a", 1, 1)
+    second = node("account-b", "key-b", 2, 4)
+    selected, primaries = authoritative_items([first, second])
+
+    assert primaries["s-kswl"] is first
+    assert selected == [first]

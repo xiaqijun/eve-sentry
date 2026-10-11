@@ -1600,6 +1600,15 @@ class IntelStore(PersonnelRoutingMixin):
             resolve=not defer_esi,
         )
         snapshot_metadata = {"query_only": True} if query_only else {}
+        source_metadata: dict[str, Any] = {}
+        if not query_only:
+            for field, private_field in (
+                ("seat_account_id", _SEAT_ACCOUNT_ID_KEY),
+                ("seat_key_id", _SEAT_KEY_ID_KEY),
+            ):
+                value = str(payload.get(field) or "").strip()
+                if value:
+                    source_metadata[private_field] = value
         capture = capture_payload(payload)
         if capture:
             snapshot_metadata["capture"] = capture
@@ -1740,6 +1749,7 @@ class IntelStore(PersonnelRoutingMixin):
                             observation.metadata.get("identity_status") or "unresolved"
                         )
                     item_metadata.update(snapshot_metadata)
+                    item_metadata.update(source_metadata)
                     self._active_intel[active_id] = ActiveIntelItem(
                         active_id=active_id,
                         source=source,
@@ -1785,6 +1795,8 @@ class IntelStore(PersonnelRoutingMixin):
                 item.left_at = ""
                 if self._apply_hostile_icon_metadata(item, snapshot_metadata):
                     changed_reports = True
+                if source_metadata:
+                    item.metadata.update(source_metadata)
                 self._ocr_missing_counts.pop(item.active_id, None)
                 result.refreshed += 1
 
@@ -1965,6 +1977,16 @@ class IntelStore(PersonnelRoutingMixin):
                 "presence_state_id": presence_state_id,
                 "captured_at": str(payload.get("captured_at") or seen_at),
             }
+            # Seat attribution is attached by the authenticated HTTP layer.
+            # Keep it server-private so authority and billing can distinguish
+            # reused local runtime IDs without trusting client-supplied IDs.
+            for field, private_field in (
+                ("seat_account_id", _SEAT_ACCOUNT_ID_KEY),
+                ("seat_key_id", _SEAT_KEY_ID_KEY),
+            ):
+                value = str(payload.get(field) or "").strip()
+                if value:
+                    metadata[private_field] = value
             if source_status != "active":
                 metadata["left_reason"] = "monitor_stopped" if source_status == "stopped" else "system_changed"
             from app.server.source_authority import is_resident_presence, next_join_order
@@ -2686,9 +2708,30 @@ class IntelStore(PersonnelRoutingMixin):
             ).strip()
             new_user_id = str(heartbeat.get("user_id") or "").strip()
             if existing_user_id and existing_user_id != new_user_id:
-                raise HeartbeatOwnershipConflict(
-                    "client_id is already owned by another user"
+                existing_status = str((existing or {}).get("status") or "").strip().casefold()
+                existing_seen_at = str((existing or {}).get("seen_at") or "").strip()
+                existing_interval = max(
+                    1.0,
+                    self._clean_non_negative_float(
+                        (existing or {}).get("heartbeat_interval_seconds", 0),
+                        "heartbeat_interval_seconds",
+                    )
+                    or 10.0,
                 )
+                existing_age = self._heartbeat_age_seconds(existing_seen_at)
+                reclaim_after = max(30.0, existing_interval * 3.0 + min(5.0, existing_interval * 0.5))
+                if existing_status not in {"stopped", "offline", "error"} and (
+                    existing_age is None or existing_age <= reclaim_after
+                ):
+                    raise HeartbeatOwnershipConflict(
+                        "client_id is already owned by another active user"
+                    )
+                # A persisted heartbeat can outlive the process that created
+                # it. Reclaim stale ownership for the new authenticated
+                # client instead of forcing a user to change a local ID after
+                # a crash, reinstall, or key rotation.
+                self._heartbeats.pop(client_id, None)
+                existing = None
             if client_type == "detector_client":
                 existing_details = (
                     (existing or {}).get("details")

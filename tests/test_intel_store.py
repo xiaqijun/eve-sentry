@@ -415,6 +415,37 @@ def test_heartbeat_client_id_cannot_move_between_users(tmp_path):
     assert managed["api_key_id"] == "key-3"
 
 
+def test_stale_heartbeat_client_id_can_be_reclaimed_after_key_rotation(tmp_path):
+    store = IntelStore(tmp_path / "intel_reports.json", systems={}, links=[])
+    client_id = "detector:reinstalled"
+    stale_seen_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+
+    store.record_heartbeat(
+        {
+            "client_id": client_id,
+            "user_id": "old-user",
+            "api_key_id": "old-key",
+            "heartbeat_interval_seconds": 10,
+            "seen_at": stale_seen_at,
+        }
+    )
+
+    heartbeat = store.record_heartbeat(
+        {
+            "client_id": client_id,
+            "user_id": "new-user",
+            "api_key_id": "new-key",
+            "heartbeat_interval_seconds": 10,
+        }
+    )
+
+    assert heartbeat["client_id"] == client_id
+    managed = store.management_heartbeat_snapshot()["heartbeats"]
+    assert len(managed) == 1
+    assert managed[0]["user_id"] == "new-user"
+    assert managed[0]["api_key_id"] == "new-key"
+
+
 @pytest.mark.parametrize(
     "upload_client_id",
     ["detector:parent", "detector:window-a"],

@@ -80,6 +80,48 @@ def test_authenticated_client_heartbeat_usage_is_idempotent(tmp_path):
         store.close()
 
 
+def test_billing_interval_identity_includes_account_and_key():
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    migrate_seat_billing_schema(connection)
+    repository = SeatBillingRepository(lambda: connection)
+    base = {
+        "client_id": "reused-client",
+        "system_id": "30000142",
+        "system_name": "Tama",
+        "primary_generation": 1,
+        "started_at": "2026-10-01T00:00:00+00:00",
+        "ended_at": "2026-10-01T00:00:30+00:00",
+        "duration_seconds": 30,
+    }
+    try:
+        first = repository.record_monitor_contribution(
+            {**base, "account_id": "account-a", "key_id": "key-a"}
+        )
+        second = repository.record_monitor_contribution(
+            {**base, "account_id": "account-b", "key_id": "key-b"}
+        )
+        assert first["created"] is True
+        assert second["created"] is True
+        assert len(repository.list_monitor_contributions(limit=10)["contributions"]) == 2
+
+        usage = {
+            key: base[key]
+            for key in ("client_id", "system_id", "started_at", "ended_at", "duration_seconds")
+        }
+        first_usage = repository.record_client_usage(
+            {**usage, "account_id": "account-a", "key_id": "key-a"}
+        )
+        second_usage = repository.record_client_usage(
+            {**usage, "account_id": "account-b", "key_id": "key-b"}
+        )
+        assert first_usage["created"] is True
+        assert second_usage["created"] is True
+        assert len(repository.list_client_usage(limit=10)["usage"]) == 2
+    finally:
+        connection.close()
+
+
 def test_client_usage_expands_to_overlapping_monitored_systems(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     repository = SeatBillingRepository(store._connect)
@@ -153,6 +195,61 @@ def test_legacy_client_usage_table_gets_system_attribution_column():
             }
         )
         assert result["usage"]["system_id"] == "30000142"
+    finally:
+        connection.close()
+
+
+def test_legacy_monitor_contribution_identity_is_migrated():
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE seat_monitor_contributions (
+            contribution_id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL DEFAULT '',
+            key_id TEXT NOT NULL DEFAULT '',
+            client_id TEXT NOT NULL,
+            system_id BIGINT,
+            system_name TEXT NOT NULL,
+            primary_generation INTEGER NOT NULL CHECK (primary_generation > 0),
+            started_at TEXT NOT NULL,
+            ended_at TEXT NOT NULL,
+            duration_seconds INTEGER NOT NULL CHECK (duration_seconds > 0),
+            rule_version TEXT NOT NULL DEFAULT 'primary-presence.v1',
+            eligibility TEXT NOT NULL DEFAULT 'eligible',
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            UNIQUE (client_id, system_name, primary_generation, started_at, ended_at)
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO seat_monitor_contributions
+            (contribution_id, account_id, key_id, client_id, system_name,
+             primary_generation, started_at, ended_at, duration_seconds, created_at)
+        VALUES ('legacy', 'account-a', 'key-a', 'reused-client', 'Tama', 1,
+                '2026-10-01T00:00:00+00:00', '2026-10-01T00:00:30+00:00', 30,
+                '2026-10-01T00:00:30+00:00')
+        """
+    )
+    migrate_seat_billing_schema(connection)
+    repository = SeatBillingRepository(lambda: connection)
+    try:
+        created = repository.record_monitor_contribution(
+            {
+                "account_id": "account-b",
+                "key_id": "key-b",
+                "client_id": "reused-client",
+                "system_name": "Tama",
+                "primary_generation": 1,
+                "started_at": "2026-10-01T00:00:00+00:00",
+                "ended_at": "2026-10-01T00:00:30+00:00",
+                "duration_seconds": 30,
+            }
+        )
+        assert created["created"] is True
+        assert len(repository.list_monitor_contributions(limit=10)["contributions"]) == 2
     finally:
         connection.close()
 

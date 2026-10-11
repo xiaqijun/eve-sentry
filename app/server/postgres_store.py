@@ -30,7 +30,7 @@ from app.server.intel_store import (
     utc_now_iso,
 )
 from app.server.system_state import APPEND_EVENT, migrate_system_state, project_active_items
-from app.server.source_authority import authoritative_items, primary_sources
+from app.server.source_authority import authoritative_items, primary_sources, source_identity
 from app.server.state_maintenance import StateMaintenance
 from app.server.capture_state import capture_is_current, capture_payload, record_roster_quality, reconcile_zero_events
 from app.server.state_repair import StateRepair, mark_failed_write
@@ -689,14 +689,15 @@ class PostgreSQLIntelStore(IntelStore):
             primary_before = {
                 key: {
                     "client_id": str(item.metadata.get("client_id") or ""),
+                    "source_identity": source_identity(item),
                     "generation": int(item.metadata.get("source_join_order") or 0),
                     "last_seen_at": str(
                         item.metadata.get("server_received_at") or item.last_seen_at or ""
                     ),
                     "system_id": item.system_id,
                     "system_name": item.system_name,
-                    "account_id": str(item.metadata.get("seat_account_id") or ""),
-                    "key_id": str(item.metadata.get("seat_key_id") or ""),
+                    "account_id": str(item.metadata.get("_server_seat_account_id") or ""),
+                    "key_id": str(item.metadata.get("_server_seat_key_id") or ""),
                 }
                 for key, item in primary_sources(self._active_intel.values()).items()
             }
@@ -718,12 +719,25 @@ class PostgreSQLIntelStore(IntelStore):
                         and str(item.metadata.get("client_id") or "").strip() == client_id
                         and item.system_name.casefold() == system_key
                         and item.metadata.get("presence_only")
+                        and (
+                            not str(payload.get("seat_account_id") or "").strip()
+                            or str(item.metadata.get("_server_seat_account_id") or "").strip()
+                            == str(payload.get("seat_account_id") or "").strip()
+                        )
+                        and (
+                            not str(payload.get("seat_key_id") or "").strip()
+                            or str(item.metadata.get("_server_seat_key_id") or "").strip()
+                            == str(payload.get("seat_key_id") or "").strip()
+                        )
                     ):
                         item.metadata["server_received_at"] = server_received_at
-                        for field in ("seat_account_id", "seat_key_id"):
+                        for field, private_field in (
+                            ("seat_account_id", "_server_seat_account_id"),
+                            ("seat_key_id", "_server_seat_key_id"),
+                        ):
                             value = str(payload.get(field) or "").strip()
                             if value:
-                                item.metadata[field] = value
+                                item.metadata[private_field] = value
                         break
             active_rows = self._changed_active_rows(active_before)
             hostile_waves = self._hostile_wave_changes(
@@ -757,7 +771,7 @@ class PostgreSQLIntelStore(IntelStore):
                     if after_client_id != current_client_id:
                         continue
                     before = primary_before.get(system_key)
-                    if not before or not after_client_id or before["client_id"] != after_client_id:
+                    if not before or not after_client_id or before["source_identity"] != source_identity(item):
                         continue
                     generation = int(item.metadata.get("source_join_order") or 0)
                     if generation <= 0 or generation != int(before.get("generation") or 0):
@@ -770,8 +784,8 @@ class PostgreSQLIntelStore(IntelStore):
                         continue
                     metadata = item.metadata if isinstance(item.metadata, dict) else {}
                     monitor_contribution = {
-                        "account_id": str(metadata.get("seat_account_id") or before.get("account_id") or ""),
-                        "key_id": str(metadata.get("seat_key_id") or before.get("key_id") or ""),
+                        "account_id": str(metadata.get("_server_seat_account_id") or before.get("account_id") or ""),
+                        "key_id": str(metadata.get("_server_seat_key_id") or before.get("key_id") or ""),
                         "client_id": after_client_id,
                         "system_id": item.system_id,
                         "system_name": item.system_name,
@@ -1093,9 +1107,10 @@ class PostgreSQLIntelStore(IntelStore):
                     metadata.get("hostile_icon_seen_at") or last_seen_at
                 ).strip()
                 client_counts = detector_counts.setdefault(system_key, {})
-                previous = client_counts.get(client_id)
+                source_key = source_identity(item)
+                previous = client_counts.get(source_key)
                 if previous is None or snapshot_seen_at >= previous[0]:
-                    client_counts[client_id] = (snapshot_seen_at, detector_count)
+                    client_counts[source_key] = (snapshot_seen_at, detector_count)
                 continue
 
             if source == "eve-sentry-detector":
@@ -1115,6 +1130,16 @@ class PostgreSQLIntelStore(IntelStore):
 
         for system_key, client_counts in detector_counts.items():
             if client_counts:
+                primary = primaries.get(system_key)
+                if primary is not None:
+                    primary_snapshot = client_counts.get(source_identity(primary))
+                    if primary_snapshot is None:
+                        continue
+                    systems[system_key]["hostile_count"] += primary_snapshot[1]
+                    continue
+                # Legacy rows without a resident Presence do not have enough
+                # evidence to elect a primary. Preserve their historical
+                # max-count behavior until a real Presence frame arrives.
                 systems[system_key]["hostile_count"] += max(
                     count for _, count in client_counts.values()
                 )
@@ -1125,6 +1150,18 @@ class PostgreSQLIntelStore(IntelStore):
                 "primary_client_id": (
                     str(primaries[system_key].metadata.get("client_id") or "")
                     if system_key in primaries else ""
+                ),
+                "primary_account_id": (
+                    str(primaries[system_key].metadata.get("_server_seat_account_id") or "")
+                    if system_key in primaries else ""
+                ),
+                "primary_key_id": (
+                    str(primaries[system_key].metadata.get("_server_seat_key_id") or "")
+                    if system_key in primaries else ""
+                ),
+                "primary_character_id": (
+                    primaries[system_key].metadata.get("character_id")
+                    if system_key in primaries else None
                 ),
                 "primary_generation": (
                     int(primaries[system_key].metadata.get("source_join_order") or 0)
@@ -1361,13 +1398,21 @@ class PostgreSQLIntelStore(IntelStore):
                 previous_fingerprint = (
                     int(previous.get("hostile_count") or 0),
                     json.dumps(previous.get("personnel") or [], sort_keys=True, ensure_ascii=False),
-                    previous.get("primary_client_id"), previous.get("primary_generation"),
+                    previous.get("primary_client_id"),
+                    previous.get("primary_account_id"),
+                    previous.get("primary_key_id"),
+                    previous.get("primary_character_id"),
+                    previous.get("primary_generation"),
                     previous.get("freshness", "fresh"),
                 )
                 current_fingerprint = (
                     int(current.get("hostile_count") or 0),
                     json.dumps(current.get("personnel") or [], sort_keys=True, ensure_ascii=False),
-                    current.get("primary_client_id"), current.get("primary_generation"),
+                    current.get("primary_client_id"),
+                    current.get("primary_account_id"),
+                    current.get("primary_key_id"),
+                    current.get("primary_character_id"),
+                    current.get("primary_generation"),
                     current.get("freshness", "fresh"),
                 )
                 if previous_fingerprint == current_fingerprint:
@@ -1388,6 +1433,9 @@ class PostgreSQLIntelStore(IntelStore):
                 "active": event_type != "alert.cleared",
                 "hostile_personnel": list(state.get("personnel") or []),
                 "primary_client_id": str(state.get("primary_client_id") or ""),
+                "primary_account_id": str(state.get("primary_account_id") or ""),
+                "primary_key_id": str(state.get("primary_key_id") or ""),
+                "primary_character_id": state.get("primary_character_id"),
                 "primary_generation": int(state.get("primary_generation") or 0),
                 "freshness": str(state.get("freshness") or "fresh"),
             }
