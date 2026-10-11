@@ -208,8 +208,8 @@ PostgreSQL；多个到期规则合并使用一次全节点 OCR，只在目标从
 权威 Bootstrap，再从持久化游标补齐失活窗口内的状态变化。查询、OCR 等交互功能仍可使用
 同机 loopback API；这不影响主动预警不经过网络层。
 
-机器人会轮询 CCP 官方 ESI 服务器状态。连续 6 次检查不可用后才确认停服，服务器恢复时
-向所有已开启主动预警的群推送一次开服通知，包括在线人数、服务器版本和启动时间。
+机器人会轮询 CCP 官方 ESI 服务器状态。在线和故障检查默认每 5 秒执行一次，连续 6 次检查不可用后才确认停服，服务器恢复时
+向所有已开启主动预警的群并发推送一次开服通知，包括在线人数、服务器版本和启动时间。
 机器人启动时若服务器已经在线只建立状态基线，不会重复群发；状态和投递去重记录保存在
 Redis 中。可通过 `EVE_SERVER_STATUS_ENABLED=false` 关闭，轮询间隔和停服确认次数可分别用
 `EVE_SERVER_STATUS_POLL_SECONDS`、`EVE_SERVER_STATUS_ONLINE_POLL_SECONDS`、`EVE_SERVER_OFFLINE_THRESHOLD` 调整。

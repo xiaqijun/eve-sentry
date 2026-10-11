@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -71,6 +72,17 @@ async def test_online_poll_interval_cannot_be_faster_than_failure_poll_interval(
         await redis.aclose()
 
 
+def test_default_online_poll_interval_prioritizes_startup_latency() -> None:
+    monitor = EveServerStartupMonitor(
+        AsyncMock(),
+        AsyncMock(),
+        AsyncMock(),
+        "https://esi.evetech.net/status",
+    )
+    assert monitor.poll_interval_seconds == 5
+    assert monitor.online_poll_interval_seconds == 5
+
+
 @pytest.mark.asyncio
 async def test_confirmed_downtime_then_startup_notifies_subscribed_groups_once() -> None:
     redis = fakeredis.aioredis.FakeRedis()
@@ -101,6 +113,43 @@ async def test_confirmed_downtime_then_startup_notifies_subscribed_groups_once()
         assert "EVE 服务器已开服" in message
         assert "在线人数｜12345" in message
         assert "服务器版本｜3050123" in message
+    finally:
+        await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_startup_delivery_fans_out_groups_concurrently() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    await redis.sadd(ALERT_GROUPS_KEY, "group-1", "group-2")
+    qq = AsyncMock()
+    active = 0
+    peak = 0
+
+    async def send(group: str, message: str) -> None:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+
+    qq.send_proactive_text.side_effect = send
+    monitor = EveServerStartupMonitor(
+        AsyncMock(),
+        redis,
+        qq,
+        "https://esi.evetech.net/status",
+    )
+    try:
+        await monitor._deliver_startup(
+            EveServerStatus(
+                players=1,
+                server_version="test",
+                start_time=datetime(2026, 8, 27, 11, tzinfo=UTC),
+                vip=False,
+            )
+        )
+        assert peak == 2
+        assert qq.send_proactive_text.await_count == 2
     finally:
         await redis.aclose()
 

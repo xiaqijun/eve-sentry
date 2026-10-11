@@ -50,7 +50,11 @@ class Settings(BaseSettings):
     eve_server_status_url: str = "https://esi.evetech.net/status"
     eve_server_status_enabled: bool = True
     eve_server_status_poll_seconds: float = 5.0
-    eve_server_status_online_poll_seconds: float = 10.0
+    # Keep the online poll at the same cadence as the failure poll so a
+    # confirmed server recovery is announced without an extra ten-second
+    # wait.  Deployments can still raise this value when API traffic matters
+    # more than notification latency.
+    eve_server_status_online_poll_seconds: float = 5.0
     eve_server_offline_threshold: int = 6
     eve_image_base_url: str = "https://images.evetech.net"
     sde_url: str = (

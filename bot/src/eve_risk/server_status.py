@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -25,6 +26,8 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 SERVER_STATUS_STATE_KEY = "qq:eve-server:status-state"
 SERVER_STATUS_FAILURES_KEY = "qq:eve-server:status-failures"
 SERVER_STARTUP_DELIVERED_PREFIX = "qq:eve-server:startup-delivered"
+STARTUP_DELIVERY_CONCURRENCY = 4
+STARTUP_DELIVERY_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +51,7 @@ class EveServerStartupMonitor:
         status_url: str,
         *,
         poll_interval_seconds: float = 5.0,
-        online_poll_interval_seconds: float = 10.0,
+        online_poll_interval_seconds: float = 5.0,
         offline_threshold: int = 6,
     ) -> None:
         self.http = http
@@ -149,17 +152,50 @@ class EveServerStartupMonitor:
             f"启动时间｜{started_at}"
         )
         event_id = status.start_time.astimezone(UTC).isoformat()
-        for group_openid in groups:
-            delivered_key = _delivered_key(event_id, group_openid)
-            if await self.redis.exists(delivered_key):
-                continue
-            try:
-                await self.qq.send_proactive_text(group_openid, message_body)
-            except Exception:
-                logger.exception("QQ EVE server startup delivery failed")
-                continue
-            await self.redis.set(delivered_key, "1", ex=ALERT_DEDUPE_SECONDS)
-        logger.info("EVE server startup processed groups=%d", len(groups))
+
+        if not groups:
+            logger.info("EVE server startup processed groups=0")
+            return
+
+        semaphore = asyncio.Semaphore(
+            min(STARTUP_DELIVERY_CONCURRENCY, len(groups))
+        )
+        started = time.monotonic()
+
+        async def deliver_group(group_openid: str) -> tuple[int, int]:
+            async with semaphore:
+                delivered_key = _delivered_key(event_id, group_openid)
+                if await self.redis.exists(delivered_key):
+                    return 0, 0
+                try:
+                    async with asyncio.timeout(STARTUP_DELIVERY_TIMEOUT_SECONDS):
+                        await self.qq.send_proactive_text(group_openid, message_body)
+                        await self.redis.set(
+                            delivered_key,
+                            "1",
+                            ex=ALERT_DEDUPE_SECONDS,
+                        )
+                except TimeoutError:
+                    logger.warning(
+                        "QQ EVE server startup delivery timed out after %.1fs",
+                        STARTUP_DELIVERY_TIMEOUT_SECONDS,
+                    )
+                    return 0, 1
+                except Exception:
+                    logger.exception("QQ EVE server startup delivery failed")
+                    return 0, 1
+                return 1, 0
+
+        results = await asyncio.gather(*(deliver_group(group) for group in groups))
+        delivered = sum(item[0] for item in results)
+        failed = sum(item[1] for item in results)
+        logger.info(
+            "EVE server startup processed groups=%d delivered=%d failed=%d elapsed=%.3fs",
+            len(groups),
+            delivered,
+            failed,
+            time.monotonic() - started,
+        )
 
     async def _load_state(self) -> dict[str, Any]:
         raw = await self.redis.get(SERVER_STATUS_STATE_KEY)
