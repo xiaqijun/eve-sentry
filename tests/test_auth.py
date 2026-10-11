@@ -109,35 +109,23 @@ def test_desktop_key_works_without_esi_identity(tmp_path):
         store.close()
 
 
-def test_seat_binding_authenticates_and_enforces_one_to_one_mapping(tmp_path):
+def test_seat_key_authenticates_without_local_account_binding(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     repository = AuthRepository(store._connect)
     service = AuthService(repository, resolver=None, seat_auth_mode="enforce")
     try:
-        first = service.create_user("pilot", "a-strong-password", role="member")
-        second = service.create_user("pilot-two", "a-strong-password", role="member")
         secret, key_id = _seat_key(service)
 
-        with pytest.raises(AuthError) as unbound:
-            service.authenticate_api_key(secret)
-        assert unbound.value.code == "seat_account_unmapped"
-
-        bound = service.bind_seat_account("seat-account-1", first["user_id"], "admin")
-        assert bound["bound"] is True
         principal = service.authenticate_api_key(secret)
-        assert principal.user_id == first["user_id"]
+        assert principal.user_id == "seat:seat-account-1"
         assert principal.integration == "seat"
         assert principal.account_id == "seat-account-1"
         assert principal.permissions == ("monitor",)
         assert principal.api_key_id == key_id
         assert service.is_principal_active(principal) is True
-
-        with pytest.raises(AuthError) as conflict:
-            service.bind_seat_account("seat-account-1", second["user_id"], "admin")
-        assert conflict.value.code == "seat_account_conflict"
-        with pytest.raises(AuthError) as user_conflict:
-            service.bind_seat_account("seat-account-2", first["user_id"], "admin")
-        assert user_conflict.value.code == "seat_account_conflict"
+        managed = service.list_users_with_api_keys()
+        assert managed[0]["user_id"] == "seat:seat-account-1"
+        assert managed[0]["keys"][0]["key_id"] == key_id
     finally:
         service.close()
         store.close()
@@ -147,9 +135,6 @@ def test_seat_auth_modes_and_revocation_disable_active_principal(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     repository = AuthRepository(store._connect)
     try:
-        user = AuthService(repository, resolver=None).create_user(
-            "pilot", "a-strong-password", role="member"
-        )
         off = AuthService(repository, resolver=None, seat_auth_mode="off")
         secret, key_id = _seat_key(off, account_id="seat-account-2", permissions=("alert",))
         with pytest.raises(AuthError) as off_error:
@@ -161,21 +146,10 @@ def test_seat_auth_modes_and_revocation_disable_active_principal(tmp_path):
             AuthService(repository, resolver=None, seat_auth_mode="shadow")
 
         enforce = AuthService(repository, resolver=None, seat_auth_mode="enforce")
-        enforce.bind_seat_account("seat-account-2", user["user_id"], "admin")
         principal = enforce.authenticate_api_key(secret)
+        assert principal.user_id == "seat:seat-account-2"
         assert principal.permissions == ("alert",)
-        enforce.set_seat_account_status("seat-account-2", False, "admin")
-        assert enforce.is_principal_active(principal) is False
-        with pytest.raises(AuthError) as disabled:
-            enforce.authenticate_api_key(secret)
-        assert disabled.value.code == "seat_account_disabled"
-        enforce.set_seat_account_status("seat-account-2", True, "admin")
-        principal = enforce.authenticate_api_key(secret)
-        enforce.set_user_status(user["user_id"], False, "admin")
-        assert enforce.is_principal_active(principal) is False
-        with pytest.raises(AuthError) as user_disabled:
-            enforce.authenticate_api_key(secret)
-        assert user_disabled.value.code == "user_disabled"
+        assert enforce.is_principal_active(principal) is True
         repository.revoke_seat_integration_key(
             key_id,
             "2026-09-29T00:01:00+00:00",
@@ -183,6 +157,9 @@ def test_seat_auth_modes_and_revocation_disable_active_principal(tmp_path):
             enforce._audit_record("admin", key_id, "seat_key.revoked", {}),
         )
         assert enforce.is_principal_active(principal) is False
+        with pytest.raises(AuthError) as disabled:
+            enforce.authenticate_api_key(secret)
+        assert disabled.value.code == "invalid_api_key"
         enforce.close()
     finally:
         store.close()

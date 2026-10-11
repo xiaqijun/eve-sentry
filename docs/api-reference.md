@@ -229,9 +229,9 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 
 `EVE_SENTRY_SERVER_SEAT_AUTH_MODE=off|enforce` 与上面的生命周期服务令牌相互独立，默认关闭。
 `off` 仅表示 Seat 集成未启用，不能把旧客户端 key 当成客户端凭据。SeAT 生成的明文密钥只在平台侧保存；Sentry 通过哈希匹配
-`seat_integration_keys`，再检查 `auth_external_accounts` 的 provider=`seat` 绑定、revision、
-状态和本地用户状态。未绑定返回 `403 seat_account_unmapped`，禁用绑定返回
-`403 seat_account_disabled`。旧 desktop/service key 仅用于管理或迁移，访问客户端白名单返回
+`seat_integration_keys`，再检查密钥状态、Seat `account_id` 和接口权限。Sentry 为请求建立
+稳定的 `seat:{account_id}` principal，不要求 `auth_users` 或 `auth_external_accounts` 绑定。
+旧 desktop/service key 仅用于管理或迁移，访问客户端白名单返回
 `403 seat_client_key_required`。
 
 启用 `enforce` 后，SeAT principal 的路径白名单如下：
@@ -242,7 +242,7 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 | `alert` | `GET /api/v1/bootstrap`、`/map`、`/map/neighborhood`、`/active-intel`、`/alert-history`、`/hostile-waves`、`/integrations/hostile-systems`、`/events` |
 
 未列路径（包括认证、个人、管理员和未知路径）稳定返回 `403 seat_permission_denied`。
-普通 `desktop`/`service_readonly` key 不经过 Seat 绑定表，仅保留认证、吊销和迁移管理用途，
+普通 `desktop`/`service_readonly` key 不经过 Seat 账号校验，仅保留认证、吊销和迁移管理用途，
 访问客户端白名单时返回 `403 seat_client_key_required`。
 
 同机 QQ 机器人是受限例外：从 `127.0.0.1` 或 `::1` 访问
@@ -288,8 +288,8 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 | `GET` | `/api/v1/admin/audit` | 审计日志 |
 
 客户端不再提交 EVE 角色身份或 Listener 文件信息；只有由 GloryNavy_Seat 签发并投影、
-且已绑定的 Seat key 才能访问监控/预警客户端接口。旧客户端使用的 `/api/v1/auth/me`
-仅作为只读验钥兼容接口，返回已绑定 principal。服务端不提供身份校验、角色白名单
+且有效的 Seat key 才能访问监控/预警客户端接口。旧客户端使用的 `/api/v1/auth/me`
+仅作为只读验钥兼容接口，返回 Seat principal。服务端不提供身份校验、角色白名单
 或允许军团管理接口。
 
 ## 监控与事件

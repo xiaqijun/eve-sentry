@@ -304,27 +304,20 @@ class AuthService:
             raise AuthError("API key is invalid or revoked", 401, "invalid_api_key")
         key_id = str(key.get("key_id") or "")
         account_id = str(key.get("account_id") or "")
-        binding = self.repository.external_account_by_id("seat", account_id)
-        error: AuthError | None = None
         if str(key.get("status") or "") != "active":
-            error = AuthError("Seat API key is revoked", 401, "invalid_api_key")
-        elif binding is None:
-            error = AuthError("Seat account is not bound", 403, "seat_account_unmapped")
-        elif str(binding.get("status") or "") != "active":
-            error = AuthError("Seat account binding is disabled", 403, "seat_account_disabled")
-        else:
-            user = self.repository.user_by_id(str(binding.get("user_id") or ""))
-            if user is None or str(user.get("status") or "") != "active":
-                error = AuthError("user is disabled", 403, "user_disabled")
-        if error is not None:
-            raise error
-        user = self.repository.user_by_id(str(binding["user_id"]))
-        assert user is not None
+            raise AuthError("Seat API key is revoked", 401, "invalid_api_key")
+        if not account_id:
+            raise AuthError("Seat API key is malformed", 401, "invalid_api_key")
+
+        # Seat owns the client identity. The warning platform has no separate
+        # end-user account for a Seat client, so local user/binding rows must
+        # not gate authentication. Keep a stable namespaced ID for attribution.
+        principal_id = f"seat:{account_id}"
         principal = AuthPrincipal(
-            user_id=str(user["user_id"]),
-            username=str(user["username"]),
-            display_name=str(user["display_name"]),
-            role=str(user["role"]),
+            user_id=principal_id,
+            username=principal_id,
+            display_name=principal_id,
+            role="client",
             auth_type="api_key",
             api_key_id=key_id,
             api_key_type="seat",
@@ -344,19 +337,16 @@ class AuthService:
 
     def is_principal_active(self, principal: AuthPrincipal) -> bool:
         """Return whether an already-authenticated SSE principal remains valid."""
+        if principal.is_seat:
+            key = self.repository.seat_integration_key_by_id(principal.api_key_id)
+            return bool(
+                key
+                and str(key.get("status") or "") == "active"
+                and str(key.get("account_id") or "") == principal.account_id
+            )
         user = self.repository.user_by_id(principal.user_id)
         if user is None or str(user.get("status")) != "active":
             return False
-        if principal.is_seat:
-            key = self.repository.seat_integration_key_by_id(principal.api_key_id)
-            if not key or str(key.get("status") or "") != "active":
-                return False
-            binding = self.repository.external_account_by_id("seat", principal.account_id)
-            return bool(
-                binding
-                and str(binding.get("status") or "") == "active"
-                and str(binding.get("user_id") or "") == principal.user_id
-            )
         if principal.auth_type == "api_key":
             key = self.repository.api_key_by_id(principal.api_key_id)
             return bool(key and str(key.get("status")) == "active")
@@ -372,7 +362,7 @@ class AuthService:
         actor_user_id: str,
         revision: int = 1,
     ) -> dict[str, Any]:
-        """Bind one Seat account to one local user, without implicit merging."""
+        """Record a legacy Seat-to-local-user association for migration only."""
         account_id = str(account_id or "").strip()
         user_id = str(user_id or "").strip()
         if not account_id:
@@ -415,7 +405,7 @@ class AuthService:
         actor_user_id: str,
         reason: str = "",
     ) -> dict[str, Any]:
-        """Disable or enable a Seat binding and invalidate active streams."""
+        """Disable or enable a legacy Seat binding record."""
         binding = self.repository.external_account_by_id("seat", str(account_id))
         if binding is None:
             raise AuthError("Seat account binding not found", 404, "seat_account_not_found")
@@ -606,17 +596,36 @@ class AuthService:
             keys_by_user.setdefault(user_id, []).append(
                 self._public_api_key_record(item)
             )
-        for item in self.repository.list_seat_integration_keys_with_users():
-            user_id = str(item.get("user_id") or "")
-            if user_id:
-                keys_by_user.setdefault(user_id, []).append(
-                    self._public_seat_api_key_record(item)
-                )
+        for item in self.repository.list_seat_integration_keys():
+            user_id = str(item.get("user_id") or "").strip()
+            if not user_id:
+                continue
+            keys_by_user.setdefault(user_id, []).append(
+                self._public_seat_api_key_record(item)
+            )
         users = []
         for item in user_rows:
             user = _public_user(item)
             user["keys"] = keys_by_user.get(str(item.get("user_id") or ""), [])
             users.append(user)
+        local_user_ids = {str(item.get("user_id") or "") for item in user_rows}
+        for user_id, key_rows_for_user in keys_by_user.items():
+            if user_id in local_user_ids or not user_id.startswith("seat:"):
+                continue
+            users.append(
+                {
+                    "user_id": user_id,
+                    "username": user_id,
+                    "display_name": user_id,
+                    "role": "client",
+                    "status": "active",
+                    "must_change_password": False,
+                    "disabled_reason": "",
+                    "created_at": "",
+                    "updated_at": "",
+                    "keys": key_rows_for_user,
+                }
+            )
         return users
 
     def _public_api_key_record(self, key: dict[str, Any]) -> dict[str, Any]:

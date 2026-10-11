@@ -263,15 +263,15 @@ EVE_SENTRY_SERVER_ESI_NO_LOCAL_FALLBACK=0
 列表延迟。
 
 设备密钥不再经过 EVE Listener、公共 ESI、允许军团或角色白名单校验。Seat 客户端 key
-由 GloryNavy_Seat 签发并投影到 Sentry，只有有效绑定、密钥状态、所属用户状态和接口
-权限全部满足时才可用。账号禁用和 Seat 吊销会阻止后续请求；普通旧 key 仅用于管理/迁移，
+由 GloryNavy_Seat 签发并投影到 Sentry，只有密钥状态、Seat `account_id` 和接口权限
+全部满足时才可用。Seat 吊销会阻止后续请求；普通旧 key 仅用于管理/迁移，
 不能访问客户端接口。旧数据库中的风控配置和身份任务表仅作为历史兼容数据，
 服务端不会再读取或创建新任务。
 
 SeAT 认证单独由 `EVE_SENTRY_SERVER_SEAT_AUTH_MODE=off|enforce` 控制，默认 `off`；`off`
-表示 Seat 集成未启用，不能作为旧客户端 key 的绕过入口。确认白名单和绑定后再切 `enforce`。启用前须
-先为每个 Seat `account_id` 创建唯一的 `auth_external_accounts` 绑定；它与本地用户 ID
-不是同一命名空间。SeAT key 仅能访问认证文档列出的 monitor/alert 接口，吊销或禁用会让
+表示 Seat 集成未启用，不能作为旧客户端 key 的绕过入口。确认 Seat 密钥投影和权限后即可切
+`enforce`，不需要创建本地用户或 `auth_external_accounts` 绑定。SeAT key 仅能访问认证文档
+列出的 monitor/alert 接口，吊销会让
 SSE 在下一次授权代数检查时结束。普通 desktop/service key 仅保留管理/迁移用途，不能访问
 客户端接口。
 

@@ -70,8 +70,9 @@ def _create_seat_http_key(
         f"request-{key_id}",
         auth._audit_record("seat-integration", key_id, "seat_key.created", {}),
     )
-    if auth.repository.external_account_by_id("seat", account_id) is None:
-        auth.bind_seat_account(account_id, user_id, "seat-test")
+    # ``user_id`` stays in the helper signature for call-site compatibility;
+    # Seat principals are intentionally independent from local users.
+    _ = user_id
     return {"secret": secret, "key_id": key_id, "account_id": account_id}
 
 
@@ -4022,7 +4023,6 @@ def test_seat_principal_permission_whitelist_isolated_from_regular_auth(tmp_path
         "seat-http-request-alert",
         auth._audit_record("seat-integration", alert_key_id, "seat_key.created", {}),
     )
-    auth.bind_seat_account("seat-alert-account", user["user_id"], "admin")
     server = IntelHTTPServer(store, port=0, auth_service=auth)
     server.start()
     headers = {"Authorization": f"Bearer {alert_secret}"}
@@ -4078,7 +4078,7 @@ def test_retired_identity_check_is_a_monitor_compatibility_noop(tmp_path):
             headers=headers,
         )
         assert status == 200
-        assert payload["user"]["user_id"] == user["user_id"]
+        assert payload["user"]["user_id"] == f"seat:{key['account_id']}"
 
         for path in ("/api/v1/client/identity-check", "/api/v1/client/identity-checks"):
             status, _, payload = authenticated_request(
@@ -4342,7 +4342,7 @@ def test_heartbeat_credential_binding_is_server_owned_and_private(tmp_path):
         assert "remote_ip" not in payload["heartbeat"]
 
         managed = store.management_heartbeat_snapshot()["heartbeats"][0]
-        assert managed["user_id"] == member["user_id"]
+        assert managed["user_id"] == f"seat:{key['account_id']}"
         assert managed["api_key_id"] == key["key_id"]
         assert managed["remote_ip"] == "203.0.113.18"
 
@@ -4397,7 +4397,7 @@ def test_heartbeat_routes_replace_client_time_and_attribution(tmp_path, path):
         seen_at = datetime.fromisoformat(managed["seen_at"])
         assert before <= seen_at <= datetime.now(timezone.utc) + timedelta(seconds=1)
         assert managed["seen_at"] != "2999-01-01T00:00:00+00:00"
-        assert managed["user_id"] == member["user_id"]
+        assert managed["user_id"] == f"seat:{key['account_id']}"
         assert managed["api_key_id"] == key["key_id"]
         assert managed["remote_ip"] == "203.0.113.30"
     finally:
@@ -4436,7 +4436,7 @@ def test_heartbeat_rejects_cross_user_takeover_and_allows_same_user_new_key(
             assert status == expected_status
 
         managed = store.management_heartbeat_snapshot()["heartbeats"][0]
-        assert managed["user_id"] == first["user_id"]
+        assert managed["user_id"] == f"seat:{first_key['account_id']}"
         assert managed["api_key_id"] == replacement_key["key_id"]
     finally:
         server.stop()
@@ -4538,9 +4538,9 @@ def test_admin_clients_aggregates_all_key_usage_and_rejects_members(tmp_path):
             "detector-client:one",
         }
         for client in clients_by_id.values():
-            assert client["user_id"] == member["user_id"]
+            assert client["user_id"] == f"seat:{member_key['account_id']}"
             assert client["api_key_id"] == member_key["key_id"]
-            assert client["owner"]["username"] == "pilot"
+            assert client["owner"]["username"] == f"seat:{member_key['account_id']}"
             assert client["key"]["name"] == "Seat test key"
         assert clients_by_id["alert-client:one"]["remote_ip"] == "203.0.113.22"
         assert clients_by_id["detector-client:one"]["remote_ip"] == "203.0.113.21"
@@ -4552,7 +4552,7 @@ def test_admin_clients_aggregates_all_key_usage_and_rejects_members(tmp_path):
             unused_key["key_id"],
         }
         usage = usage_by_key[member_key["key_id"]]
-        assert usage["owner"]["username"] == "pilot"
+        assert usage["owner"]["username"] == f"seat:{member_key['account_id']}"
         assert usage["client_count"] == 2
         assert usage["online_count"] == 2
         assert {item["client_id"] for item in usage["linked_clients"]} == {
@@ -4798,7 +4798,7 @@ def test_seat_alert_key_can_read_integration_hostile_systems(tmp_path):
         server.stop()
 
 
-def test_sse_disconnects_after_service_key_owner_is_disabled(tmp_path):
+def test_sse_disconnects_after_seat_key_is_revoked(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(
         AuthRepository(store._connect), AuthTestResolver(), seat_auth_mode="enforce"
@@ -4816,9 +4816,18 @@ def test_sse_disconnects_after_service_key_owner_is_disabled(tmp_path):
             while response.readline() not in {b"\n", b"\r\n", b""}:
                 pass
             started = time.monotonic()
-            auth.set_user_status(
-                admin["user_id"], False, admin["user_id"], "test revocation"
+            auth.repository.revoke_seat_integration_key(
+                service_key["key_id"],
+                "2026-09-29T00:01:00+00:00",
+                "test revocation",
+                auth._audit_record(
+                    "seat-integration",
+                    service_key["key_id"],
+                    "seat_key.revoked",
+                    {},
+                ),
             )
+            auth.notify_external_authorization_changed()
             assert response.read() == b""
             assert time.monotonic() - started < 2.5
     finally:

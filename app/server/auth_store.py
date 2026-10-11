@@ -551,21 +551,30 @@ class AuthRepository:
         )
 
     def list_seat_integration_keys(self, user_id: str = "") -> list[dict[str, Any]]:
-        """Return Seat-issued key projections joined to explicit bindings."""
-        query = """
-            SELECT keys.*, accounts.user_id AS bound_user_id
-            FROM seat_integration_keys AS keys
-            JOIN auth_external_accounts AS accounts
-              ON accounts.provider = 'seat'
-             AND accounts.account_id = keys.account_id
-            WHERE accounts.user_id = ?
-            ORDER BY keys.created_at DESC
-        """
-        rows = self._all(query, (str(user_id),))
+        """Return Seat-issued key projections, optionally filtered by legacy owner."""
+        normalized_user_id = str(user_id or "").strip()
+        if normalized_user_id:
+            query = """
+                SELECT keys.*, accounts.user_id AS bound_user_id
+                FROM seat_integration_keys AS keys
+                JOIN auth_external_accounts AS accounts
+                  ON accounts.provider = 'seat'
+                 AND accounts.account_id = keys.account_id
+                WHERE accounts.user_id = ?
+                ORDER BY keys.created_at DESC
+            """
+            rows = self._all(query, (normalized_user_id,))
+        else:
+            rows = self._all(
+                "SELECT * FROM seat_integration_keys ORDER BY created_at DESC"
+            )
         result: list[dict[str, Any]] = []
         for row in rows:
             item = self._seat_integration_key_from_row(row) or {}
-            item["user_id"] = str(row.get("bound_user_id") or "")
+            account_id = str(item.get("account_id") or "").strip()
+            item["user_id"] = str(
+                row.get("bound_user_id") or f"seat:{account_id}"
+            ).strip()
             item["key_type"] = "seat"
             item["last_used_at"] = ""
             result.append(item)

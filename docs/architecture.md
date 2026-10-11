@@ -98,14 +98,14 @@ zKill 角色链接直接由 `character_id` 生成。服务端收到数量后立�
 
 ```text
 平台账号密码登录
-  -> GloryNavy_Seat 签发并绑定 monitor/alert 客户端密钥
-  -> Sentry 接收 Seat 密钥投影并校验绑定、状态和权限
+  -> GloryNavy_Seat 签发 monitor/alert 客户端密钥
+  -> Sentry 接收 Seat 密钥投影并校验密钥状态、account_id 和权限
   -> 客户端使用 Seat 密钥开始监控、预警和心跳
 ```
 
 管理会话与客户端凭据分离。客户端只校验 Seat 密钥是否可用，不扫描 EVE Chatlogs、
-不上传 Listener 或角色身份，也不依赖 ESI、角色白名单或允许军团规则。Seat 吊销、
-绑定禁用和本地用户禁用会立即阻止后续客户端请求。
+不上传 Listener 或角色身份，也不依赖 ESI、角色白名单或允许军团规则。Seat 客户端主体
+与本地管理账号分离；Seat 吊销会立即阻止后续客户端请求。
 
 ## 预警客户端、SSE 与局部星图
 

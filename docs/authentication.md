@@ -9,7 +9,7 @@ OAuth2 token 下发给客户端、SeAT 或 Gateway。
 | 方式 | 用途 | 生命周期 |
 | --- | --- | --- |
 | 管理端账号会话 | Web 控制台登录 | 服务端签发，默认 12 小时过期 |
-| Seat 客户端密钥 | Windows 监控/预警客户端调用客户端接口 | 仅由 GloryNavy_Seat 签发、绑定和吊销 |
+| Seat 客户端密钥 | Windows 监控/预警客户端调用客户端接口 | 仅由 GloryNavy_Seat 签发和吊销 |
 | 历史 desktop/service key | 迁移和管理兼容 | 不得访问监控/预警客户端接口 |
 
 启用 `--auth-mode setup` 或 `enforce` 后，客户端使用：
@@ -18,7 +18,7 @@ OAuth2 token 下发给客户端、SeAT 或 Gateway。
 Authorization: Bearer eve_...
 ```
 
-有效密钥只受密钥状态、所属用户状态和接口权限约束。新建密钥直接处于可用
+有效密钥只受密钥状态、Seat `account_id` 和接口权限约束。新建密钥直接处于可用
 状态，不需要 ESI、游戏客户端、Chatlogs 或额外的身份上报。
 
 ## 账号管理
@@ -26,7 +26,7 @@ Authorization: Bearer eve_...
 管理员可以在 Web 控制台中创建用户、重置密码、启用/禁用用户，并查看密钥状态、
 客户端心跳和审计日志。客户端密钥统一由 GloryNavy_Seat 签发和管理，Sentry 不再
 提供 desktop/service_readonly 创建、恢复或删除入口；Seat 密钥的生命周期操作必须
-回到 GloryNavy_Seat 完成。禁用本地用户会同时使其 Seat principal 失效。
+回到 GloryNavy_Seat 完成。本地管理账号只用于 Web 控制台，不参与 Seat 客户端认证。
 
 旧数据库中可能仍保留 `auth_settings`、`auth_identity_jobs`、角色白名单和
 允许军团表，用于平滑升级和历史审计。服务端不再读取这些表来做授权，也不会
@@ -54,16 +54,17 @@ SeAT 密钥管理使用独立的服务端 Bearer Token；业务密钥认证由
 | 模式 | 行为 |
 | --- | --- |
 | `off` | Seat 集成未启用；不把任何旧客户端 key 当作 Seat key 或客户端绕过入口 |
-| `enforce` | 仅有效的 SeAT 密钥、有效绑定和启用用户可以建立 SeAT principal |
+| `enforce` | 仅有效的 SeAT 密钥和接口权限可以建立 SeAT principal；不要求本地账号 |
 
-SeAT `account_id` 不等同于本地 `auth_users.user_id`。`auth_external_accounts` 维护
-provider=`seat` 下的一对一显式绑定（账号 ID、本地用户 ID、active/disabled、revision）。
-冲突绑定返回 `409 seat_account_conflict`；吊销、绑定禁用或本地用户禁用会使已有 SeAT
-SSE/请求失效。普通 API key 不读取这张绑定表。
+SeAT `account_id` 是客户端认证主体，不等同于本地 `auth_users.user_id`。服务端为每个
+Seat principal 使用稳定的 `seat:{account_id}` 内部归属 ID；不会查询本地用户或
+`auth_external_accounts` 来放行或拒绝客户端请求。旧的绑定表和绑定管理接口仅作为迁移
+兼容数据保留，不再是认证前置条件。吊销 Seat 密钥会使已有 SSE/请求失效；本地 Web
+账号状态不会影响 Seat 客户端。
 
 SeAT principal 只能访问最小白名单：`monitor` 用于 bootstrap/map、心跳、Presence、OCR
 和监控上报；`alert` 用于 bootstrap/map、active-intel、alert-history、hostile-waves、
-hostile-systems 和 events。旧客户端的 `GET /api/v1/auth/me` 只用于只读验钥，返回已绑定
+hostile-systems 和 events。旧客户端的 `GET /api/v1/auth/me` 只用于只读验钥，返回 Seat
 principal；其他 `/auth/*`、`/me/*`、`/admin/*` 统一返回 `403 seat_permission_denied`，不包含
 结算或管理员能力。
 
