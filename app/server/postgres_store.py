@@ -793,7 +793,17 @@ class PostgreSQLIntelStore(IntelStore):
                         "started_at": started_at,
                         "ended_at": server_received_at,
                         "duration_seconds": int(elapsed),
-                        "eligibility": "eligible" if metadata.get("seat_key_id") else "unattributed",
+                        # Seat attribution is deliberately kept in private
+                        # metadata fields.  The public ``seat_key_id`` field
+                        # is never populated by the server, so checking it
+                        # silently marked every authenticated interval as
+                        # unattributed and prevented Seat settlement.
+                        "eligibility": (
+                            "eligible"
+                            if metadata.get("_server_seat_account_id")
+                            and metadata.get("_server_seat_key_id")
+                            else "unattributed"
+                        ),
                         "evidence": {
                             "primary_client_id": after_client_id,
                             "primary_generation": generation,

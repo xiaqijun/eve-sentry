@@ -2274,6 +2274,50 @@ def test_primary_monitor_contribution_ignores_standby_uploads(tmp_path):
     assert sorted(row["duration_seconds"] for row in rows) == [10, 20]
 
 
+def test_primary_monitor_contribution_marks_authenticated_interval_eligible(tmp_path):
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    connection.row_factory = sqlite3.Row
+    migrate_seat_billing_schema(connection)
+
+    @contextmanager
+    def connect():
+        yield connection
+
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._load_reports = lambda: []
+    IntelStore.__init__(store, tmp_path / "intel.json", systems={}, links=[])
+    store._connect = connect
+    store._upsert_active_intel_rows = lambda _connection, _rows: None
+    store._persist_hostile_wave_changes = lambda _connection, _changes: None
+    store._persist_intel_events = lambda _connection, _events: None
+
+    def presence(received_at):
+        return {
+            "client_id": "primary",
+            "system_name": "S-KSWL",
+            "hostile_icon_count": 0,
+            "seen_at": received_at,
+            "server_received_at": received_at,
+            "seat_account_id": "seat-account-1",
+            "seat_key_id": "seat-key-1",
+        }
+
+    try:
+        store.record_hostile_presence(presence("2026-10-02T00:00:00+00:00"))
+        store.record_hostile_presence(presence("2026-10-02T00:00:10+00:00"))
+        rows = SeatBillingRepository(connect).list_monitor_contributions()[
+            "contributions"
+        ]
+    finally:
+        IntelStore.close(store)
+        connection.close()
+
+    assert len(rows) == 1
+    assert rows[0]["account_id"] == "seat-account-1"
+    assert rows[0]["key_id"] == "seat-key-1"
+    assert rows[0]["eligibility"] == "eligible"
+
+
 def test_postgres_retention_deletes_in_database_without_loading_history():
     calls = []
 

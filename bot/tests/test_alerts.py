@@ -2208,6 +2208,79 @@ async def test_durable_clear_is_not_repeated_after_bootstrap_already_cleared() -
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_delivers_system_clear_before_monitoring_node_snapshot() -> None:
+    redis = fakeredis.aioredis.FakeRedis()
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    async with httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(
+            http,
+            redis,
+            qq,
+            "http://sentry.test/events",
+        )
+        await relay.subscribe("group-1")
+        order: list[str] = []
+
+        async def deliver_transition(_state, transition, *_args):
+            order.append(transition)
+            return True
+
+        async def deliver_nodes(_payload):
+            order.append("nodes")
+            return True
+
+        relay.deliver_system_transition = deliver_transition
+        relay.process_monitoring_node = deliver_nodes
+        await relay.process_bootstrap(
+            {
+                "generated_at": "2026-10-12T00:00:00+00:00",
+                "active_intel": [
+                    {
+                        "id": "presence:client-1:S-KSWL",
+                        "active": True,
+                        "source": "eve-sentry-detector",
+                        "system_name": "S-KSWL",
+                        "metadata": {
+                            "presence_only": True,
+                            "hostile_icon_count": 1,
+                            "client_id": "client-1",
+                        },
+                    }
+                ],
+                "alerts": [],
+            }
+        )
+        await relay.process_bootstrap(
+            {
+                "generated_at": "2026-10-12T00:00:01+00:00",
+                "active_intel": [],
+                "alerts": [],
+                "monitoring_nodes": [
+                    {
+                        "client_id": "client-2",
+                        "system_name": "Jita",
+                        "health_status": "online",
+                    }
+                ],
+                "monitoring_nodes_version": "nodes-2",
+                "monitoring_node_changes": [
+                    {
+                        "change": "online",
+                        "node_id": "client:client-2",
+                        "system_name": "Jita",
+                    }
+                ],
+            }
+        )
+
+    assert order == ["safe", "nodes"]
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
 async def test_alert_event_in_active_bootstrap_is_not_delivered_twice() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     qq = SimpleNamespace(

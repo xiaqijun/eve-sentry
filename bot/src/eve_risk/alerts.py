@@ -1019,6 +1019,10 @@ class EveSentryAlertRelay:
         node_changes = payload.get("monitoring_node_changes")
         monitoring_nodes = payload.get("monitoring_nodes")
         nodes_version = str(payload.get("monitoring_nodes_version") or "").strip()
+        # Keep monitoring-node delivery behind alert transitions.  Node
+        # snapshots are informational and can involve several QQ requests;
+        # they must not hold a durable enemy-clear event behind a slow group.
+        node_delivery_payload: dict[str, Any] | None = None
         node_offline_systems = {
             str(change.get("system_name") or change.get("from_system") or "")
             .strip()
@@ -1033,36 +1037,47 @@ class EveSentryAlertRelay:
         if isinstance(node_changes, list) and node_changes and isinstance(
             monitoring_nodes, list
         ):
-            node_delivery_succeeded = await self.process_monitoring_node(
-                {
-                    "generated_at": payload.get("generated_at"),
-                    "changes": node_changes,
-                    "nodes": monitoring_nodes,
-                    "nodes_version": nodes_version,
-                }
-            )
+            node_delivery_payload = {
+                "generated_at": payload.get("generated_at"),
+                "changes": node_changes,
+                "nodes": monitoring_nodes,
+                "nodes_version": nodes_version,
+            }
         elif isinstance(node_changes, list) and node_changes:
-            node_delivery_succeeded = await self.process_monitoring_node(
-                {
-                    "generated_at": payload.get("generated_at"),
-                    "changes": node_changes,
-                }
-            )
+            node_delivery_payload = {
+                "generated_at": payload.get("generated_at"),
+                "changes": node_changes,
+            }
         elif isinstance(monitoring_nodes, list) and nodes_version:
             last_version = _decode(
                 await self.redis.get(MONITORING_NODE_SNAPSHOT_STATE_KEY)
             )
             if last_version != nodes_version:
-                node_delivery_succeeded = await self.queue_monitoring_node_snapshot(
-                    monitoring_nodes,
-                    str(payload.get("generated_at") or datetime.now(UTC).isoformat()),
-                    nodes_version=nodes_version,
-                )
-        if not node_delivery_succeeded:
-            logger.warning("EVE Sentry monitoring node update deferred after delivery failure")
-            return False
+                node_delivery_payload = {
+                    "generated_at": payload.get("generated_at")
+                    or datetime.now(UTC).isoformat(),
+                    "nodes": monitoring_nodes,
+                    "nodes_version": nodes_version,
+                }
+
+        async def deliver_deferred_node_update() -> bool:
+            if node_delivery_payload is None:
+                return True
+            if "changes" in node_delivery_payload:
+                return await self.process_monitoring_node(node_delivery_payload)
+            return await self.queue_monitoring_node_snapshot(
+                node_delivery_payload["nodes"],
+                str(node_delivery_payload["generated_at"]),
+                nodes_version=str(node_delivery_payload["nodes_version"]),
+            )
+
         active_intel = payload.get("active_intel")
         if not isinstance(active_intel, list):
+            if not await deliver_deferred_node_update():
+                logger.warning(
+                    "EVE Sentry monitoring node update deferred after delivery failure"
+                )
+                return False
             logger.warning("Ignored EVE Sentry bootstrap without active_intel list")
             return True
 
@@ -1235,6 +1250,14 @@ class EveSentryAlertRelay:
                 "EVE Sentry personnel state update deferred after delivery failure"
             )
             return False
+
+        if node_delivery_payload is not None:
+            node_delivery_succeeded = await deliver_deferred_node_update()
+            if not node_delivery_succeeded:
+                logger.warning(
+                    "EVE Sentry monitoring node update deferred after delivery failure"
+                )
+                return False
 
         await self._save_system_alert_state(current)
         active_ids = set(active_items)
@@ -1631,6 +1654,10 @@ class EveSentryAlertRelay:
             self._active_alert_ids.add(event_key)
             await self._advance_alert_cursor(occurred_at)
             return True
+        # A pending personnel flush belongs to the old hostile episode.  Drop
+        # it before sending the clear so stale roster traffic cannot compete
+        # with, or follow, the safety transition.
+        self._discard_pending_personnel_update(system_key)
         if str(payload.get("clear_reason") or "").strip().casefold() == "node_offline":
             current.pop(system_key, None)
             await self._save_system_alert_state(current)
