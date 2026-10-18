@@ -487,6 +487,33 @@ GitHub Actions 配置：
 日常部署不需要人工操作。只有工作流失败时，才使用 `workflow_dispatch` 重跑或查看远端
 备份和服务日志。
 
+### QQ 机器人 Redis 账号恢复
+
+机器人使用的 Redis ACL 账号必须持久化。旧机器人部署只执行 `ACL SETUSER eve_risk`，
+账号只存在于内存中；Redis 容器重启后，即使预警群和开服状态仍在，机器人也会因认证失败
+停止处理通知。服务端部署现在会在重启前验证机器人的 Redis 登录、订阅群和开服状态读取，
+失败时终止部署并走原有回滚流程。
+
+在 GitHub Actions 选择 **Repair QQ Redis account**，仅从 `main` 执行 `workflow_dispatch`。
+该任务使用 `production` Environment 和服务器部署密钥，并先运行隔离 Redis 的重启测试。
+生产脚本读取现有服务器 Redis URL，精确匹配本机 Docker 容器，并执行以下步骤：
+
+1. 确认 Redis 管理连接和预警服务健康；默认预检不修改配置。
+2. 在 Redis 配置目录创建权限为 `0600` 的 `.qq-bot-backup-*` 备份。
+3. 将 `eve_risk` 账号规则写入持久化的 `redis.conf` 或已配置的绝对路径 ACL 文件，
+   密码只写 SHA-256 哈希。已有账号保持原有权限；已有账号无法用当前密码登录时停止操作。
+4. 恢复缺失的账号，验证订阅数据读取，重启 `eve-sentry` 以重建失败退出的机器人后台任务，
+   并检查 `/api/readyz`。不重启共享 Redis，不修改其他 Redis 账号或订阅数据。
+
+配置写入、认证或健康检查失败时，脚本恢复原配置，并只删除本次新建的账号。备份保留在
+原目录供故障复查。带 `include` 的 Redis 配置、非持久化或只读挂载、非预期容器地址会被
+拒绝，需先核实实际部署结构。不要用临时 `ACL SETUSER` 代替该流程，也不要将管理员密码
+改写到机器人的连接 URL。
+
+完成后检查 `eve-sentry` 日志不再出现 Redis `AuthenticationError`，确认
+`qq:eve-server:status-state` 已更新。恢复时若开服时间发生变化，现有监控逻辑可能补发一次
+开服通知；验证无需向群里额外发送测试消息。Redis 重启持久性通过隔离实例测试验证。
+
 ## 验证
 
 ```bash
