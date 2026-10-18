@@ -1,0 +1,80 @@
+name: Repair QQ Redis account
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "deploy/ci/configure_qq_redis.py"
+      - "deploy/ci/check_qq_redis.py"
+      - "tests/test_configure_qq_redis.py"
+      - ".github/workflows/repair-qq-redis.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qq-redis-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'production' }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: |
+          python -m pip install pytest 'redis>=5,<6' python-dotenv
+          sudo apt-get update -qq
+          sudo apt-get install -y redis-server
+      - name: Verify rollback and persistence across an isolated Redis restart
+        env:
+          EVE_SENTRY_REDIS_INTEGRATION: "1"
+        run: python -m pytest -q tests/test_configure_qq_redis.py
+
+  repair:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      SERVER_HOST: ${{ vars.EVE_SENTRY_DEPLOY_HOST }}
+      SERVER_USER: ${{ vars.EVE_SENTRY_DEPLOY_USER }}
+      SERVER_PORT: ${{ vars.EVE_SENTRY_DEPLOY_PORT }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate deployment target
+        run: |
+          set -euo pipefail
+          [[ "$SERVER_HOST" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$SERVER_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
+          [[ "$SERVER_PORT" =~ ^[0-9]+$ ]] && (( SERVER_PORT >= 1 && SERVER_PORT <= 65535 ))
+      - name: Configure protected deployment identity
+        env:
+          SERVER_KEY: ${{ secrets.EVE_SENTRY_DEPLOY_SSH_KEY }}
+          SERVER_HOSTS: ${{ secrets.EVE_SENTRY_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$SERVER_KEY" && test -n "$SERVER_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SERVER_KEY" > ~/.ssh/qq-redis
+          printf '%s\n' "$SERVER_HOSTS" > ~/.ssh/qq-redis-known-hosts
+          chmod 600 ~/.ssh/qq-redis ~/.ssh/qq-redis-known-hosts
+      - name: Preflight, restore persistent account and verify server readiness
+        run: |
+          set -euo pipefail
+          common=(-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/qq-redis-known-hosts" -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=6)
+          target="$SERVER_USER@$SERVER_HOST"
+          script="/tmp/eve-sentry-qq-redis-${GITHUB_SHA}.py"
+          scp -i ~/.ssh/qq-redis -P "$SERVER_PORT" "${common[@]}" deploy/ci/configure_qq_redis.py "$target:$script"
+          ssh -i ~/.ssh/qq-redis -p "$SERVER_PORT" "${common[@]}" "$target" "/opt/eve-sentry/.venv-server/bin/python '$script'"
+          ssh -i ~/.ssh/qq-redis -p "$SERVER_PORT" "${common[@]}" "$target" "/opt/eve-sentry/.venv-server/bin/python '$script' --apply"
+          printf '### QQ Redis restored\n- Revision: `%s`\n- Existing credentials retained; bot ACL persisted; server readiness verified.\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove runner identity
+        if: always()
+        run: rm -f ~/.ssh/qq-redis ~/.ssh/qq-redis-known-hosts

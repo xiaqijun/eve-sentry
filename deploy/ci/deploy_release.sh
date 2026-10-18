@@ -192,6 +192,8 @@ chown -R eve-sentry:eve-sentry "$backend_root/app" "$backend_root/scripts" \
 runuser -u eve-sentry -- "$backend_root/.venv-server/bin/python" -m pip install \
     --disable-pip-version-check -r "$backend_root/requirements-server.txt"
 
+"$backend_root/.venv-server/bin/python" "$backend_root/deploy/ci/check_qq_redis.py"
+
 systemctl daemon-reload
 systemctl restart "$service_name"
 
