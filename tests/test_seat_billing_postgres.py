@@ -7,6 +7,8 @@ import uuid
 import pytest
 
 from app.server.postgres_store import _PostgresConnection
+from app.server.postgres_store import PostgreSQLIntelStore
+from app.server.intel_store import IntelStore, StarSystem
 from app.server.seat_billing import SeatBillingRepository, migrate_seat_billing_schema
 
 
@@ -48,6 +50,34 @@ def interval(**overrides):
         "ended_at": "2026-10-24T12:00:10+00:00", "duration_seconds": 10,
         **overrides,
     }
+
+
+def test_name_only_detector_evidence_attributes_postgres_usage(database, tmp_path):
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._load_reports = lambda: []
+    IntelStore.__init__(store, tmp_path / "unused.json", systems={
+        "R-YWID": StarSystem("R-YWID", 0, 0, system_id=30003631),
+        "S-KSWL": StarSystem("S-KSWL", 1, 1, system_id=30003629),
+    }, links=[])
+    store._connect = database
+    store._upsert_active_intel_rows = lambda _connection, _rows: None
+    store._persist_hostile_wave_changes = lambda _connection, _changes: None
+    store._persist_intel_events = lambda _connection, _events: None
+    try:
+        for system_name in ("R-YWID", "S-KSWL"):
+            for seen_at in ("2026-10-24T12:00:00+00:00", "2026-10-24T12:00:10+00:00"):
+                store.record_hostile_presence({
+                    "client_id": "detector-" + system_name, "system_name": system_name,
+                    "hostile_icon_count": 0, "seen_at": seen_at, "server_received_at": seen_at,
+                    "seat_account_id": "account-a", "seat_key_id": "monitor-key",
+                })
+        repository = SeatBillingRepository(database)
+        result = repository.record_client_usage(interval(system_id=""))
+        assert {row["system_id"] for row in result["usages"]} == {"30003631", "30003629"}
+        assert repository.record_client_usage(interval(system_id=""))["created"] is False
+        assert len(repository.list_client_usage()["usage"]) == 2
+    finally:
+        IntelStore.close(store)
 
 
 @pytest.mark.parametrize("legacy_columns", [

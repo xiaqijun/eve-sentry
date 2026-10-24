@@ -783,11 +783,23 @@ class PostgreSQLIntelStore(IntelStore):
                     if elapsed is None or elapsed <= 0 or elapsed > 45:
                         continue
                     metadata = item.metadata if isinstance(item.metadata, dict) else {}
+                    system_id = item.system_id
+                    if system_id is None:
+                        # Name-only detector heartbeats must use the server's
+                        # configured map, without network lookups or guessed IDs.
+                        system_id = next(
+                            (
+                                system.system_id
+                                for system in self._systems.values()
+                                if system.name.casefold() == item.system_name.casefold()
+                            ),
+                            None,
+                        )
                     monitor_contribution = {
                         "account_id": str(metadata.get("_server_seat_account_id") or before.get("account_id") or ""),
                         "key_id": str(metadata.get("_server_seat_key_id") or before.get("key_id") or ""),
                         "client_id": after_client_id,
-                        "system_id": item.system_id,
+                        "system_id": system_id,
                         "system_name": item.system_name,
                         "primary_generation": generation,
                         "started_at": started_at,
