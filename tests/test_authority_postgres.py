@@ -260,7 +260,8 @@ def test_authenticated_ocr_roster_persists_events_snapshot_and_restart(postgres_
         assert event["event_type"] == "alert.updated"
         assert [row["character_id"] for row in event["payload"]["hostile_personnel"]] == [123]
         snapshot, _, version = store.read_active_event_snapshot()
-        assert snapshot[0]["metadata"]["hostile_personnel"] == event["payload"]["hostile_personnel"]
+        assert [row["character_id"] for row in snapshot if row["target_type"] == "character"] == [123]
+        assert next(row for row in snapshot if row["target_type"] == "character")["name"] == "Enemy Pilot"
         assert version == event["seq"]
     finally:
         store.close()
