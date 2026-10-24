@@ -555,36 +555,20 @@ class SeatBillingRepository:
             "created_at": created_at,
         }
         with self._connect() as connection:
+            # Monitoring contributions describe producers, not the alert
+            # client's selection. Missing/empty scope must never bill them.
+            supplied = record.get("system_ids", [normalized["system_id"]] if normalized["system_id"] else [])
+            if not isinstance(supplied, (list, tuple, set)):
+                raise SeatBillingError("client usage systems are invalid", "invalid_client_usage")
+            if not supplied:
+                return {"usage": None, "usages": [], "created": False}
             system_ids = []
-            supplied_system_ids = record.get("system_ids")
-            if isinstance(supplied_system_ids, (list, tuple, set)):
-                system_ids = [str(value or "").strip() for value in supplied_system_ids]
-            if not system_ids and normalized["system_id"]:
-                system_ids = [normalized["system_id"]]
-            if not system_ids:
-                # A client heartbeat is not tied to one warning galaxy.  Use
-                # the server-confirmed primary monitoring intervals that
-                # overlap this heartbeat to expand one online interval into
-                # one billable row per monitored system.
-                rows = connection.execute(
-                    """
-                    SELECT DISTINCT system_id
-                    FROM seat_monitor_contributions
-                    WHERE account_id = ?
-                      AND system_id IS NOT NULL
-                      AND started_at < ?
-                      AND ended_at > ?
-                    ORDER BY system_id
-                    """,
-                    (account_id, ended_at, started_at),
-                ).fetchall()
-                system_ids = [str(row["system_id"]).strip() for row in rows if str(row["system_id"] or "").strip()]
-            if not system_ids:
-                # Preserve the old evidence row when no monitored-system
-                # evidence exists; the next reconciled interval can still be
-                # attributed once the server has a primary snapshot.
-                system_ids = [""]
-            system_ids = list(dict.fromkeys(system_ids))
+            for value in supplied:
+                text_id = str(value).strip()
+                if type(value) not in (str, int) or len(text_id) > 10 or not text_id.isascii() or not text_id.isdecimal() or int(text_id) <= 0:
+                    raise SeatBillingError("client usage systems are invalid", "invalid_client_usage")
+                system_ids.append(str(int(text_id)))
+            system_ids = sorted(set(system_ids))
             saved: list[dict[str, Any]] = []
             created = False
             for system_id in system_ids:

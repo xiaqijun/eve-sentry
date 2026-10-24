@@ -215,7 +215,17 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 也不直接写平台账本。新收费只依据服务端接收的相邻认证客户端心跳在线区间，Seat 按小时价格结算。
 
 当前合同只有收费门禁、监控贡献和认证客户端在线区间；事件、投递、ACK、授权和释放/退款接口已移除。
-新的收费来源只有 `client-usage` 在线区间，Seat 在本地完成果壳币结算。Sentry 会依据同一账号、同一时间窗内的服务端主节点监控证据，将一个认证客户端心跳区间展开为每个 `system_id` 一条记录；没有重叠星系证据的旧区间保留空归因，以便历史数据可读，不进行猜测回填。
+新的收费来源只有 `client-usage` 在线区间，Seat 在本地完成果壳币结算。Sentry 只按认证客户端明确选择的中心星系生成每个 `system_id` 一条记录；同账号的其他监控源和地图邻居不能成为收费依据。旧区间保持原样，不进行猜测回填。
+
+客户端 1.0.78 起在 `POST /api/v1/clients/heartbeats` 的 `details` 中携带：
+
+```json
+{"connection_id":"client-session-id","alert_scope":{"version":1,"revision":"unique-selection-id","systems":[{"name":"R-YWID","id":30003631}]}}
+```
+
+`systems` 仅包含所勾选账号所在的中心星系，最多 128 项；同一星系的多个账号去重。`name`、`id` 至少提供一个，名称按完整字符串忽略大小写匹配配置地图，ID 必须属于配置地图；同时提供时必须一致。任一项未知或非法使整个范围不可计费。服务端不调用外部解析或使用监控贡献猜测选择。`revision` 是 1–128 字符的非空字符串，每次中心集合变化、账号跳星系或新建连接都应更换，包括 A→B→A。
+
+只有相邻心跳的认证账号/密钥、非空 `connection_id`、范围 revision 和规范星系集合均相同时才生成用量。跨选择或连接切换的区间不计费。缺失范围、空选择或旧版本客户端继续可用，但不产生新收费证据，也不回退到全部监控星系；升级后从新的稳定心跳边界开始计量，不追补此前时长。导出字段、游标、`client-heartbeat.v1` 和已有幂等键不变，Seat 无需变更消费字段。
 
 监控节点只上报星系名时，新监控贡献的 `system_id` 由服务端配置地图按完整名称（忽略大小写）解析；不会调用外部接口或猜测未知名称，也不会改写历史贡献。消费方不能将缺少有效星系 ID 的新证据当成一个已知星系收费；应保留证据并停止该区间的新结算，已结算记录仍按原幂等键重放。
 
@@ -224,7 +234,7 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 | `GET` | `/api/v1/integrations/seat/alert-consumption` | 读取当前持久化预警消费门禁；仅接受 Seat 集成 Bearer Token |
 | `PUT` | `/api/v1/integrations/seat/alert-consumption` | Seat 同步收费开关，JSON 为 `{"enabled":true|false}`；幂等返回当前状态 |
 | `GET` | `/api/v1/integrations/seat/monitor-contributions?after={cursor}&limit={n}` | 读取服务端确认的主节点监控区间及游标水位 |
-| `GET` | `/api/v1/integrations/seat/client-usage?after={cursor}&limit={n}` | 读取认证客户端相邻有效心跳在线区间及游标水位；一个时间窗覆盖多个监控星系时按 `system_id` 拆成多条幂等记录 |
+| `GET` | `/api/v1/integrations/seat/client-usage?after={cursor}&limit={n}` | 读取认证客户端相邻有效心跳在线区间及游标水位；同一稳定范围选择多个中心星系时按 `system_id` 拆成多条幂等记录 |
 
 同一客户端、账号和星系的重复区间由 Seat 幂等处理；监控奖励也只使用服务端确认的主节点贡献区间。
 ### SeAT 业务认证（M1）

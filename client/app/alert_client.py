@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import math
 import os
 import queue
 import sys
+import threading
 import time
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -1208,6 +1210,7 @@ def build_heartbeat_details(
     host: str = "",
     last_success_at: str = "",
     connection_id: str = "",
+    alert_scope: dict[str, Any] | None = None,
 ) -> dict[str, object]:
     """Return the alert-client heartbeat details for status views."""
     details: dict[str, object] = {
@@ -1232,6 +1235,8 @@ def build_heartbeat_details(
         details["last_success_at"] = last_success_at
     if connection_id:
         details["connection_id"] = connection_id
+    if alert_scope is not None:
+        details["alert_scope"] = copy.deepcopy(alert_scope)
     return details
 
 
@@ -2342,6 +2347,10 @@ class AlertEventWorker(QThread):
         self.consumer = AlertEventConsumer(state)
         self._stop_requested = False
         self._last_heartbeat_at = 0.0
+        self._last_heartbeat_scope_revision = ""
+        self._alert_scope_lock = threading.Lock()
+        self._alert_scope_signature: tuple[str, ...] = ()
+        self._alert_scope = {"version": 1, "revision": str(uuid4()), "systems": []}
         self._last_success_at = ""
         self._runtime = resolve_runtime_identity()
         # A delivery is acknowledged only after the controller confirms that
@@ -2349,6 +2358,30 @@ class AlertEventWorker(QThread):
         # while allowing the Qt UI thread to report that it handled an alert.
         self.connection_id = f"{self.client_id}:{uuid4().hex}"
         self._ack_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+
+    def set_alert_scope(self, system_names: list[str]) -> None:
+        """Publish selected account centers from the UI without doing network I/O."""
+        names: dict[str, str] = {}
+        for value in system_names:
+            name = str(value or "").strip()
+            if name and name.casefold() != "unknown":
+                names.setdefault(name.casefold(), name)
+        signature = tuple(sorted(names))
+        with self._alert_scope_lock:
+            if signature == self._alert_scope_signature:
+                return
+            self._alert_scope_signature = signature
+            # A->B->A must not reuse A's revision: the intervening selection
+            # may happen before the worker sends its next heartbeat.
+            self._alert_scope = {
+                "version": 1,
+                "revision": str(uuid4()),
+                "systems": [{"name": names[key]} for key in signature],
+            }
+
+    def _alert_scope_snapshot(self) -> dict[str, Any]:
+        with self._alert_scope_lock:
+            return copy.deepcopy(self._alert_scope)
 
     def stop(self) -> None:
         """Request the worker to stop after the current network call returns."""
@@ -2549,7 +2582,9 @@ class AlertEventWorker(QThread):
         force: bool = False,
     ) -> None:
         now = time.monotonic()
-        if not force and now < self._last_heartbeat_at + self.heartbeat_interval:
+        alert_scope = self._alert_scope_snapshot()
+        scope_changed = alert_scope["revision"] != self._last_heartbeat_scope_revision
+        if not force and not scope_changed and now < self._last_heartbeat_at + self.heartbeat_interval:
             return
         try:
             api.post_heartbeat(
@@ -2564,9 +2599,13 @@ class AlertEventWorker(QThread):
                     host=self._runtime["host"],
                     last_success_at=self._last_success_at,
                     connection_id=self.connection_id,
+                    alert_scope=alert_scope,
                 ),
             )
             self._last_heartbeat_at = now
+            # Record the sent snapshot only. A selection made during HTTP I/O
+            # remains pending and bypasses throttling on the next SSE keepalive.
+            self._last_heartbeat_scope_revision = alert_scope["revision"]
         except IntelApiError as exc:
             logger.warning("Heartbeat update failed: %s", exc)
 
@@ -3007,6 +3046,11 @@ class AlertTrayController:
             for item in getattr(self, "_map_accounts", [])
             if str(item.get("key") or "") in selected_set
         ]
+        set_scope = getattr(getattr(self, "_worker", None), "set_alert_scope", None)
+        if callable(set_scope):
+            # Local chatlogs know names without IDs. The server resolves these
+            # exact centers; map neighbors and monitoring rewards are unrelated.
+            set_scope([str(item.get("system_name") or "") for item in accounts])
         if not accounts:
             self._pending_map_request = None
             setter = getattr(self.overlay, "set_map_payload", None)
@@ -3195,6 +3239,8 @@ class AlertTrayController:
         self._worker.safe_received.connect(self._on_safe)
         self._worker.bootstrap_received.connect(self._on_bootstrap)
         self._worker.status_changed.connect(self._on_status)
+        if callable(getattr(getattr(self, "overlay", None), "map_selection", None)):
+            self._refresh_local_map()
         self._worker.start()
         self._worker_restart_pending = False
 

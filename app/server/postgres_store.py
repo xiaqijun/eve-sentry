@@ -21,6 +21,7 @@ from app.core.active_intel import (
 )
 from app.core.models import Evidence, Observation, ThreatEvent
 from app.server.auth_store import migrate_auth_schema
+from app.server.alert_scope import stable_alert_system_ids
 from app.server.intel_store import (
     STALE_HEARTBEAT_STARTUP_GRACE_SECONDS,
     IntelReport,
@@ -3614,6 +3615,8 @@ class PostgreSQLIntelStore(IntelStore):
         key_id = str(current_details.get("_server_seat_key_id") or "").strip()
         previous_seen = str(previous.get("seen_at") or "").strip()
         current_seen = str(raw.get("seen_at") or "").strip()
+        with self._lock:
+            system_ids = stable_alert_system_ids(previous_details, current_details, self._systems)
         if (
             client_type == "alert_client"
             and account_id
@@ -3623,6 +3626,7 @@ class PostgreSQLIntelStore(IntelStore):
             and previous_seen != current_seen
             and account_id == previous_account_id
             and key_id == previous_key_id
+            and system_ids
         ):
             try:
                 started = datetime.fromisoformat(previous_seen.replace("Z", "+00:00"))
@@ -3639,6 +3643,7 @@ class PostgreSQLIntelStore(IntelStore):
                     "started_at": previous_seen,
                     "ended_at": current_seen,
                     "duration_seconds": duration,
+                    "system_ids": system_ids,
                 })
         return heartbeat
 
