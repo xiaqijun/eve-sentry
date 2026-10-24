@@ -133,6 +133,9 @@ def test_embedded_bridge_uses_latest_bootstrap_without_replaying_history(
         async def wait(self):
             return next(self.markers)
 
+        def events(self, _after_seq):
+            return []
+
         def snapshot(self, _after_seq):
             return {
                 "ready": True,
@@ -224,9 +227,13 @@ def test_embedded_bridge_replays_enter_clear_reenter_sequence():
                     "events": [],
                 },
             ]
+            self.rows = self.snapshots[0]["events"]
 
         async def wait(self):
             return next(self.markers)
+
+        def events(self, after_seq):
+            return [event for event in self.rows if event["seq"] > after_seq]
 
         def snapshot(self, _after_seq):
             return self.snapshots.pop(0)
