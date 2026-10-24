@@ -27,6 +27,8 @@ class EmbeddedEventSource:
     """Coalesced same-process wake-ups backed by durable server state."""
 
     _STOP = object()
+    POLL_SECONDS = 1.0
+    PAGE_SIZE = 100
 
     def __init__(self, server: Any) -> None:
         self.server = server
@@ -51,7 +53,22 @@ class EmbeddedEventSource:
             pass
 
     async def wait(self) -> object:
-        return await asyncio.to_thread(self._wakeups.get)
+        if self._closed:
+            return self._STOP
+        try:
+            return await asyncio.to_thread(
+                self._wakeups.get, True, self.POLL_SECONDS,
+            )
+        except queue.Empty:
+            # Notifications only reduce latency. The durable log must still
+            # be checked if a marker was lost or a prior view was not ready.
+            return True
+
+    def events(self, after_seq: int) -> list[dict[str, Any]]:
+        reader = getattr(self.server.store, "list_intel_event_page", None)
+        if not callable(reader):
+            return []
+        return reader(after_seq=after_seq, since="", limit=self.PAGE_SIZE)
 
     def snapshot(self, after_seq: int) -> dict[str, Any]:
         return self.server.build_embedded_event_snapshot(after_seq)
@@ -81,46 +98,70 @@ class EmbeddedBotBridge:
             cursor > 0
             and await self._redis_key_exists(relay, SYSTEM_ALERT_STATE_READY_KEY)
         )
-        initialized = False
-        while True:
-            marker = await source.wait()
-            if marker is EmbeddedEventSource._STOP:
-                return
-            snapshot = await asyncio.to_thread(source.snapshot, cursor)
-            if not snapshot.get("ready"):
-                continue
-            bootstrap = snapshot.get("bootstrap")
-            if not isinstance(bootstrap, dict):
-                continue
-            state_seq = max(0, int(snapshot.get("state_event_seq") or 0))
-            if not initialized and not state_ready:
-                if not await relay.process_bootstrap(bootstrap):
-                    raise RuntimeError("embedded bot bootstrap delivery failed")
-                initialized = True
-                state_ready = True
-                cursor = max(cursor, state_seq)
-                await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
-                continue
+        initialized = state_ready
+        snapshot_task: asyncio.Task[dict[str, Any]] | None = None
+        snapshot_started = 0.0
+        warned = False
+        try:
+            while True:
+                marker = await source.wait()
+                if marker is EmbeddedEventSource._STOP:
+                    return
+                if snapshot_task is None:
+                    snapshot_task = asyncio.create_task(
+                        asyncio.to_thread(source.snapshot, cursor),
+                        name="eve-sentry-bot-snapshot",
+                    )
+                    snapshot_started = asyncio.get_running_loop().time()
+                    warned = False
+                # Keep one refresh in flight. Cancelling and resubmitting a
+                # blocked to_thread call would accumulate live worker threads.
+                done, _ = await asyncio.wait({snapshot_task}, timeout=0.05)
+                snapshot: dict[str, Any] = {}
+                if done:
+                    try:
+                        snapshot = snapshot_task.result()
+                    except Exception:
+                        logger.exception("Embedded QQ bot snapshot refresh failed")
+                    snapshot_task = None
+                elif not warned and asyncio.get_running_loop().time() - snapshot_started >= 5:
+                    logger.warning(
+                        "Embedded QQ bot snapshot refresh pending; durable replay continues"
+                    )
+                    warned = True
 
-            initialized = True
-            state_ready = True
-            cursor, snapshot = await self._replay_to_watermark(
-                source,
-                relay,
-                cursor,
-                snapshot,
-            )
-            latest_bootstrap = snapshot.get("bootstrap")
-            if not isinstance(latest_bootstrap, dict):
-                latest_bootstrap = bootstrap
-            if not await relay.process_bootstrap(latest_bootstrap):
-                raise RuntimeError("embedded bot bootstrap delivery failed")
-            cursor = max(
-                cursor,
-                int(snapshot.get("state_event_seq") or 0),
-                state_seq,
-            )
-            await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
+                bootstrap = snapshot.get("bootstrap")
+                ready = bool(snapshot.get("ready")) and isinstance(bootstrap, dict)
+                state_seq = max(0, int(snapshot.get("state_event_seq") or 0))
+                if not initialized:
+                    if not ready:
+                        continue
+                    if not await relay.process_bootstrap(bootstrap):
+                        raise RuntimeError("embedded bot bootstrap delivery failed")
+                    initialized = True
+                    cursor = max(cursor, state_seq)
+                    await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
+                    continue
+
+                if ready and state_seq >= cursor:
+                    # Replay through this exact snapshot before reconciling it.
+                    # An older completed refresh must not clear newer ACKs.
+                    cursor, _ = await self._replay_to_watermark(
+                        source, relay, cursor, snapshot,
+                    )
+                    if not await relay.process_bootstrap(bootstrap):
+                        raise RuntimeError("embedded bot bootstrap delivery failed")
+                    cursor = max(cursor, state_seq)
+                    await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
+                # Durable transitions are independent of a missing, stale or
+                # still-running Bootstrap refresh once a baseline exists.
+                cursor, _ = await self._replay_to_watermark(
+                    source, relay, cursor, {},
+                )
+        finally:
+            if snapshot_task is not None:
+                snapshot_task.cancel()
+                await asyncio.gather(snapshot_task, return_exceptions=True)
 
     async def _replay_to_watermark(
         self,
@@ -129,19 +170,15 @@ class EmbeddedBotBridge:
         cursor: int,
         snapshot: dict[str, Any],
     ) -> tuple[int, dict[str, Any]]:
-        """Drain every durable event up to the newest same-process watermark.
-
-        Store notifications are intentionally coalesced, so a single wake-up
-        can cover an enter, clear, and re-enter sequence.  The event page is
-        the lossless part of that contract; the final bootstrap only repairs
-        the state after all acknowledged events have been applied.
-        """
+        """Replay directly from storage, optionally stopping at a snapshot."""
         from eve_risk.alerts import ALERT_EVENT_ID_KEY
 
+        watermark = (
+            max(0, int(snapshot.get("state_event_seq") or 0))
+            if snapshot.get("ready") else None
+        )
         while True:
-            page_events = snapshot.get("events")
-            if not isinstance(page_events, list):
-                page_events = []
+            page_events = await asyncio.to_thread(source.events, cursor)
             progressed = False
             for event in page_events:
                 if not isinstance(event, dict):
@@ -149,6 +186,8 @@ class EmbeddedBotBridge:
                 event_seq = max(0, int(event.get("seq") or 0))
                 if event_seq <= cursor:
                     continue
+                if watermark is not None and event_seq > watermark:
+                    return cursor, snapshot
                 processed = await self._process_event(relay, event)
                 if not processed:
                     raise RuntimeError(
@@ -158,18 +197,9 @@ class EmbeddedBotBridge:
                 progressed = True
                 await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
 
-            state_seq = max(0, int(snapshot.get("state_event_seq") or 0))
-            if not progressed:
-                if state_seq > cursor:
-                    # The durable page can legitimately contain only events
-                    # that are outside the current event projection. Advance
-                    # to the observed state watermark before reconciliation.
-                    cursor = state_seq
-                    await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
+            if not progressed or len(page_events) < EmbeddedEventSource.PAGE_SIZE:
                 return cursor, snapshot
-
-            snapshot = await asyncio.to_thread(source.snapshot, cursor)
-            if not snapshot.get("ready"):
+            if watermark is not None and cursor >= watermark:
                 return cursor, snapshot
 
     @staticmethod
