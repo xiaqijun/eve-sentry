@@ -72,9 +72,11 @@ def test_name_only_detector_evidence_attributes_postgres_usage(database, tmp_pat
                     "seat_account_id": "account-a", "seat_key_id": "monitor-key",
                 })
         repository = SeatBillingRepository(database)
-        result = repository.record_client_usage(interval(system_id=""))
+        assert {row["system_id"] for row in repository.list_monitor_contributions()["contributions"]} == {30003631, 30003629}
+        selected = interval(system_ids=[30003631, 30003629])
+        result = repository.record_client_usage(selected)
         assert {row["system_id"] for row in result["usages"]} == {"30003631", "30003629"}
-        assert repository.record_client_usage(interval(system_id=""))["created"] is False
+        assert repository.record_client_usage(selected)["created"] is False
         assert len(repository.list_client_usage()["usage"]) == 2
     finally:
         IntelStore.close(store)
@@ -140,6 +142,7 @@ def test_postgres_usage_attributes_monitored_systems(database):
     repository.record_monitor_contribution(interval(system_id="30004759", system_name="S-KSWL"))
     evidence = interval()
     evidence.pop("system_id")
+    evidence["system_ids"] = [30000142, 30004759]
     result = repository.record_client_usage(evidence)
     assert {row["system_id"] for row in result["usages"]} == {"30000142", "30004759"}
     assert sum(row["duration_seconds"] for row in result["usages"]) == 20
@@ -182,3 +185,50 @@ def test_duplicate_evidence_aborts_upgrade_without_deleting_rows(database):
         with database() as connection:
             migrate_seat_billing_schema(connection)
     assert repository.list_client_usage()["usage"] == before
+
+
+def test_selected_scope_survives_postgres_heartbeat_reload_without_other_system_charges(database, tmp_path):
+    from tests.test_alert_billing_scope import heartbeat, selection
+
+    with database() as connection:
+        connection.execute("""
+            CREATE TABLE client_heartbeats (
+                client_id TEXT PRIMARY KEY, client_type TEXT, label TEXT, status TEXT,
+                seen_at TEXT, heartbeat_interval_seconds DOUBLE PRECISION,
+                details_json TEXT, user_id TEXT, api_key_id TEXT, remote_ip TEXT
+            )
+        """)
+    store = PostgreSQLIntelStore.__new__(PostgreSQLIntelStore)
+    store._load_reports = lambda: []
+    IntelStore.__init__(store, tmp_path / "unused.json", systems={
+        "R-YWID": StarSystem("R-YWID", 0, 0, system_id=30003631),
+        "S-KSWL": StarSystem("S-KSWL", 1, 1, system_id=30003629),
+    }, links=[])
+    store._connect = database
+    repository = SeatBillingRepository(database)
+    try:
+        for sid, name in ((30003631, "R-YWID"), (30003629, "S-KSWL")):
+            repository.record_monitor_contribution(interval(
+                system_id=sid, system_name=name,
+                started_at="2026-10-25T00:00:00+00:00",
+                ended_at="2026-10-25T00:01:00+00:00", duration_seconds=60,
+            ))
+        heartbeat(store, 0)  # old client cannot infer scope from contributions
+        heartbeat(store, 10)
+        assert repository.list_client_usage()["usage"] == []
+        heartbeat(store, 20, selection("R-YWID"))
+        store._heartbeats = store._read_heartbeats()
+        heartbeat(store, 30, selection("R-YWID"))
+        heartbeat(store, 30, selection("R-YWID"))
+        heartbeat(store, 40, selection("S-KSWL", revision="selection-b"))
+        store._heartbeats = store._read_heartbeats()
+        heartbeat(store, 50, selection("S-KSWL", revision="selection-b"))
+        rows = repository.list_client_usage()["usage"]
+        assert [(row["system_id"], row["duration_seconds"]) for row in rows] == [
+            ("30003631", 10), ("30003629", 10),
+        ]
+        assert [row["started_at"] for row in rows] == [
+            "2026-10-25T00:00:20+00:00", "2026-10-25T00:00:40+00:00",
+        ]
+    finally:
+        IntelStore.close(store)

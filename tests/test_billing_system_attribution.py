@@ -59,6 +59,7 @@ def test_name_only_presence_produces_two_attributed_usage_intervals(billing_stor
     assert {row["system_id"] for row in contributions} == {30003631, 30003629}
     result = repository.record_client_usage({
         "account_id": "account-a", "key_id": "alert-key", "client_id": "alert-client",
+        "system_ids": [30003631, 30003629],
         "started_at": "2026-10-24T14:00:00+00:00",
         "ended_at": "2026-10-24T14:00:10+00:00", "duration_seconds": 10,
     })

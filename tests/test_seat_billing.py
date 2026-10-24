@@ -147,8 +147,9 @@ def test_client_usage_expands_to_overlapping_monitored_systems(tmp_path):
                     **{key: base[key] for key in ("started_at", "ended_at", "duration_seconds")},
                 }
             )
-        first = repository.record_client_usage(base)
-        replay = repository.record_client_usage(base)
+        selected = {**base, "system_ids": [30000142, 30002813]}
+        first = repository.record_client_usage(selected)
+        replay = repository.record_client_usage(selected)
         page = repository.list_client_usage(limit=10)
         assert first["created"] is True
         assert replay["created"] is False
@@ -263,6 +264,7 @@ def test_client_usage_export_is_service_token_protected(tmp_path):
         "account_id": "seat-account",
         "key_id": "seat-key",
         "client_id": "client-1",
+        "system_id": "30003631",
         "started_at": "2026-10-02T00:00:00+00:00",
         "ended_at": "2026-10-02T00:00:30+00:00",
         "duration_seconds": 30,
