@@ -52,6 +52,66 @@ def _sqlite_unique_index_columns(connection: sqlite3.Connection, table: str) -> 
     return result
 
 
+def _migrate_postgres_interval_identity(
+    connection: Any,
+    table: str,
+    index_name: str,
+    columns: tuple[str, ...],
+    legacy_columns: set[tuple[str, ...]],
+) -> None:
+    """Replace known legacy identities using catalog columns, in one transaction."""
+    indexes = connection.execute(
+        """
+        SELECT index_class.relname AS index_name, namespace.nspname AS schema_name,
+               constraint_row.conname AS constraint_name,
+               index_row.indisunique AS is_unique, index_row.indisvalid AS is_valid,
+               index_row.indpred IS NULL AND index_row.indexprs IS NULL AS is_full,
+               ARRAY(
+                   SELECT attribute.attname::text
+                   FROM unnest(index_row.indkey) WITH ORDINALITY AS key(attnum, position)
+                   LEFT JOIN pg_attribute AS attribute
+                     ON attribute.attrelid = index_row.indrelid
+                    AND attribute.attnum = key.attnum
+                   WHERE key.position <= index_row.indnkeyatts
+                   ORDER BY key.position
+               ) AS columns
+        FROM pg_index AS index_row
+        JOIN pg_class AS index_class ON index_class.oid = index_row.indexrelid
+        JOIN pg_namespace AS namespace ON namespace.oid = index_class.relnamespace
+        LEFT JOIN pg_constraint AS constraint_row
+          ON constraint_row.conindid = index_row.indexrelid
+         AND constraint_row.conrelid = index_row.indrelid
+         AND constraint_row.contype = 'u'
+        WHERE index_row.indrelid = CAST(? AS regclass)
+          AND NOT index_row.indisprimary
+        """,
+        (table,),
+    ).fetchall()
+    expected_exists = False
+    for index in indexes:
+        actual_columns = tuple(index["columns"])
+        legacy = index["is_unique"] and index["is_full"] and actual_columns in legacy_columns
+        expected = (
+            index["is_unique"] and index["is_full"] and index["is_valid"]
+            and actual_columns == columns
+        )
+        if index["index_name"] == index_name and not (legacy or expected):
+            raise RuntimeError(f"Unexpected billing index definition: {index_name}")
+        if legacy:
+            # Catalog names can be truncated or administrator-assigned. Quote
+            # them and remove only the known obsolete column combinations.
+            name = str(index["constraint_name"] or index["index_name"]).replace('"', '""')
+            if index["constraint_name"]:
+                connection.execute(f'ALTER TABLE {table} DROP CONSTRAINT "{name}"')
+            else:
+                schema = str(index["schema_name"]).replace('"', '""')
+                connection.execute(f'DROP INDEX "{schema}"."{name}"')
+        elif expected:
+            expected_exists = True
+    if not expected_exists:
+        connection.execute(f"CREATE UNIQUE INDEX {index_name} ON {table} ({', '.join(columns)})")
+
+
 def migrate_seat_billing_schema(connection: Any) -> None:
     """Create the Seat-side online-time evidence and monitor export tables."""
     statements = (
@@ -234,20 +294,18 @@ def migrate_seat_billing_schema(connection: Any) -> None:
             )
             connection.execute("DROP TABLE seat_monitor_contributions_legacy")
     else:
-        connection.execute(
-            "ALTER TABLE seat_client_usage DROP CONSTRAINT IF EXISTS seat_client_usage_client_id_started_at_ended_at_key"
+        _migrate_postgres_interval_identity(
+            connection, "seat_client_usage", "idx_seat_client_usage_identity",
+            ("account_id", "key_id", "client_id", "system_id", "started_at", "ended_at"),
+            {
+                ("client_id", "started_at", "ended_at"),
+                ("client_id", "system_id", "started_at", "ended_at"),
+            },
         )
-        connection.execute(
-            "ALTER TABLE seat_client_usage DROP CONSTRAINT IF EXISTS seat_client_usage_client_id_system_id_started_at_ended_at_key"
-        )
-        connection.execute(
-            "ALTER TABLE seat_monitor_contributions DROP CONSTRAINT IF EXISTS seat_monitor_contributions_client_id_system_name_primary_generation_started_at_ended_at_key"
-        )
-        connection.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_seat_client_usage_identity ON seat_client_usage(account_id, key_id, client_id, system_id, started_at, ended_at)"
-        )
-        connection.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_seat_monitor_contributions_identity ON seat_monitor_contributions(account_id, key_id, client_id, system_name, primary_generation, started_at, ended_at)"
+        _migrate_postgres_interval_identity(
+            connection, "seat_monitor_contributions", "idx_seat_monitor_contributions_identity",
+            ("account_id", "key_id", "client_id", "system_name", "primary_generation", "started_at", "ended_at"),
+            {("client_id", "system_name", "primary_generation", "started_at", "ended_at")},
         )
 
 class SeatBillingRepository:
@@ -520,7 +578,7 @@ class SeatBillingRepository:
                     """,
                     (account_id, ended_at, started_at),
                 ).fetchall()
-                system_ids = [str(row[0]).strip() for row in rows if str(row[0] or "").strip()]
+                system_ids = [str(row["system_id"]).strip() for row in rows if str(row["system_id"] or "").strip()]
             if not system_ids:
                 # Preserve the old evidence row when no monitored-system
                 # evidence exists; the next reconciled interval can still be

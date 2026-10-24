@@ -145,6 +145,9 @@ def test_postgres_migration_adds_heartbeat_attribution_columns():
         def fetchone(self):
             return None
 
+        def fetchall(self):
+            return []
+
     class FakeConnection:
         def execute(self, query, params=None):
             queries.append((" ".join(query.split()), params))
