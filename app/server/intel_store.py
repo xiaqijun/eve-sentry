@@ -967,6 +967,12 @@ class IntelStore(PersonnelRoutingMixin):
                     )
                 ):
                     enriched_metadata.update(current_icon_metadata)
+                # Identity enrichment owns profile fields, not the current
+                # observation's authenticated source or query/capture scope.
+                # Read under this lock so an intervening OCR refresh wins.
+                for key in (_SEAT_ACCOUNT_ID_KEY, _SEAT_KEY_ID_KEY, "query_only", "capture"):
+                    if key in item.metadata:
+                        enriched_metadata[key] = copy.deepcopy(item.metadata[key])
                 item.metadata = enriched_metadata
                 item.metadata["identity_status"] = observation.metadata[
                     "identity_status"

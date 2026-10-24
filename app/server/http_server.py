@@ -2776,9 +2776,12 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         """Attach the authenticated source scope to detector OCR uploads."""
         attributed = dict(payload)
         principal = self._auth_principal
-        if principal is not None and principal.is_seat:
-            attributed["seat_account_id"] = principal.account_id
-            attributed["seat_key_id"] = principal.api_key_id
+        attributed["seat_account_id"] = (
+            principal.account_id if principal is not None and principal.is_seat else ""
+        )
+        attributed["seat_key_id"] = (
+            principal.api_key_id if principal is not None and principal.is_seat else ""
+        )
         return attributed
 
     def _handle_v1_put(self, path: str) -> None:

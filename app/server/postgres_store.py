@@ -27,6 +27,8 @@ from app.server.intel_store import (
     IntelStore,
     StarSystem,
     _OcrEsiTask,
+    _SEAT_ACCOUNT_ID_KEY,
+    _SEAT_KEY_ID_KEY,
     utc_now_iso,
 )
 from app.server.system_state import APPEND_EVENT, migrate_system_state, project_active_items
@@ -372,6 +374,12 @@ class PostgreSQLIntelStore(IntelStore):
             resolve=not defer_esi,
         )
         snapshot_metadata = {"query_only": True} if query_only else {}
+        # Source scope comes from HTTP authentication, never OCR evidence.
+        # Empty values also replace any previous attribution on a reused row.
+        source_metadata = {} if query_only else {
+            _SEAT_ACCOUNT_ID_KEY: str(payload.get("seat_account_id") or "").strip(),
+            _SEAT_KEY_ID_KEY: str(payload.get("seat_key_id") or "").strip(),
+        }
         capture = capture_payload(payload)
         if capture:
             snapshot_metadata["capture"] = capture
@@ -516,6 +524,7 @@ class PostgreSQLIntelStore(IntelStore):
                             observation.metadata.get("identity_status") or "unresolved"
                         )
                     item_metadata.update(snapshot_metadata)
+                    item_metadata.update(source_metadata)
                     self._active_intel[active_id] = ActiveIntelItem(
                         active_id=active_id,
                         source=source,
@@ -557,6 +566,7 @@ class PostgreSQLIntelStore(IntelStore):
                     item.raw_text = raw_text
                 item.active = True
                 item.left_at = ""
+                item.metadata.update(source_metadata)
                 for report in self._apply_hostile_icon_metadata(
                     item,
                     snapshot_metadata,

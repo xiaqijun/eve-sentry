@@ -244,3 +244,49 @@ def test_valid_detector_zero_does_not_clear_independent_channel_intel(store):
     assert (
         store.read_active_event_snapshot()[0][0]["metadata"]["hostile_icon_count"] == 4
     )
+
+
+@pytest.mark.parametrize("cached", [True, False])
+def test_authenticated_ocr_roster_persists_events_snapshot_and_restart(postgres_dsn, cached):
+    from tests.test_ocr_source_attribution import RosterResolver, ocr_payload
+
+    store = PostgreSQLIntelStore(postgres_dsn, systems={}, links=[], resolver=RosterResolver(cached=cached))
+    try:
+        store.record_hostile_presence({**ocr_payload(), "hostile_icon_count": 1})
+        assert store.list_intel_event_page()[-1]["payload"]["hostile_personnel"] == []
+        store.record_ocr_snapshot(ocr_payload())
+        assert store.wait_for_esi_idle(timeout=5)
+        event = store.list_intel_event_page()[-1]
+        assert event["event_type"] == "alert.updated"
+        assert [row["character_id"] for row in event["payload"]["hostile_personnel"]] == [123]
+        snapshot, _, version = store.read_active_event_snapshot()
+        assert snapshot[0]["metadata"]["hostile_personnel"] == event["payload"]["hostile_personnel"]
+        assert version == event["seq"]
+    finally:
+        store.close()
+
+    reopened = PostgreSQLIntelStore(postgres_dsn, systems={}, links=[])
+    try:
+        assert reopened.read_active_event_snapshot()[0] == snapshot
+        assert reopened.list_intel_event_page()[-1] == event
+        character = next(row for row in reopened.list_active_intel() if row["target_type"] == "character")
+        assert character["metadata"]["_server_seat_key_id"] == "key-a"
+    finally:
+        reopened.close()
+
+
+def test_async_query_roster_never_publishes_automatic_event(postgres_dsn):
+    from tests.test_ocr_source_attribution import RosterResolver, ocr_payload
+
+    store = PostgreSQLIntelStore(postgres_dsn, systems={}, links=[], resolver=RosterResolver(cached=False))
+    try:
+        store.record_hostile_presence({**ocr_payload(), "hostile_icon_count": 1})
+        before = store.list_intel_event_page()
+        store.record_ocr_snapshot(ocr_payload(query_id="query-only", system_name="Jita"))
+        assert store.wait_for_esi_idle(timeout=5)
+        assert store.list_intel_event_page() == before
+        row = next(row for row in store.list_active_intel() if row["target_type"] == "character")
+        assert row["metadata"]["query_only"] is True
+        assert row["metadata"]["identity_status"] == "resolved"
+    finally:
+        store.close()
