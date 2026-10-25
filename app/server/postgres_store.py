@@ -20,6 +20,7 @@ from app.core.active_intel import (
     ActiveIntelSnapshotResult,
 )
 from app.core.models import Evidence, Observation, ThreatEvent
+from app.esi.organization_relations import PENDING_SOURCE
 from app.server.auth_store import migrate_auth_schema
 from app.server.alert_scope import stable_alert_system_ids
 from app.server.intel_store import (
@@ -1108,6 +1109,7 @@ class PostgreSQLIntelStore(IntelStore):
                     "last_seen_at": last_seen_at,
                     "hostile_count": 0,
                     "personnel": {},
+                    "personnel_complete": True,
                 }
                 state = systems[system_key]
             else:
@@ -1121,6 +1123,26 @@ class PostgreSQLIntelStore(IntelStore):
                 )
                 if state.get("system_id") is None and item.system_id is not None:
                     state["system_id"] = item.system_id
+
+            profiles = metadata.get("character_profiles")
+            if (
+                source == "eve-sentry-detector"
+                and item.target_type.casefold() == "character"
+                and metadata.get("identity_status") == "resolved"
+                and self._optional_positive_int(item.character_id) is not None
+                and not is_hostile
+                and (
+                    metadata.get("standing_source") == PENDING_SOURCE
+                    or any(
+                        isinstance(profile, dict) and (
+                            profile.get("standing_source") == PENDING_SOURCE
+                            or profile.get("affiliation_trusted") is False
+                        )
+                        for profile in (profiles if isinstance(profiles, list) else [])
+                    )
+                )
+            ):
+                state["personnel_complete"] = False
 
             personnel = self._hostile_personnel_entry(item, metadata, is_hostile)
             if personnel is not None:
@@ -1430,6 +1452,7 @@ class PostgreSQLIntelStore(IntelStore):
             elif previous is not None and current is not None:
                 previous_fingerprint = (
                     int(previous.get("hostile_count") or 0),
+                    previous.get("personnel_complete", True),
                     json.dumps(previous.get("personnel") or [], sort_keys=True, ensure_ascii=False),
                     previous.get("primary_client_id"),
                     previous.get("primary_account_id"),
@@ -1440,6 +1463,7 @@ class PostgreSQLIntelStore(IntelStore):
                 )
                 current_fingerprint = (
                     int(current.get("hostile_count") or 0),
+                    current.get("personnel_complete", True),
                     json.dumps(current.get("personnel") or [], sort_keys=True, ensure_ascii=False),
                     current.get("primary_client_id"),
                     current.get("primary_account_id"),
@@ -1465,6 +1489,7 @@ class PostgreSQLIntelStore(IntelStore):
                 "hostile_count": max(0, int(state.get("hostile_count") or 0)),
                 "active": event_type != "alert.cleared",
                 "hostile_personnel": list(state.get("personnel") or []),
+                "personnel_complete": state.get("personnel_complete", True),
                 "primary_client_id": str(state.get("primary_client_id") or ""),
                 "primary_account_id": str(state.get("primary_account_id") or ""),
                 "primary_key_id": str(state.get("primary_key_id") or ""),

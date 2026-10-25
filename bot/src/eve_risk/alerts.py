@@ -715,6 +715,15 @@ class EveSentryAlertRelay:
         try:
             await asyncio.sleep(delay)
             while system_key in self._personnel_pending:
+                try:
+                    current, _ = await self._load_system_alert_state()
+                except Exception:
+                    logger.warning("EVE Sentry personnel state unavailable; retrying queued update")
+                    await asyncio.sleep(self.personnel_push_interval_seconds)
+                    continue
+                if (current.get(system_key) or {}).get("personnel_complete", True) is False:
+                    await asyncio.sleep(self.personnel_push_interval_seconds)
+                    continue
                 state, occurred_at = self._personnel_pending[system_key]
                 delivered = await self.deliver_system_personnel_update(
                     state, occurred_at
@@ -1124,6 +1133,7 @@ class EveSentryAlertRelay:
                 for item in personnel:
                     item.setdefault("system_name", state["system_name"])
                 state["personnel"] = personnel
+                state["personnel_complete"] = roster.get("personnel_complete", True)
                 try:
                     state["hostile_count"] = max(
                         0, int(roster.get("hostile_count") or 0)
@@ -1150,6 +1160,7 @@ class EveSentryAlertRelay:
                     "hostile_count": hostile_count,
                     "episode_id": generated_at,
                     "personnel": personnel,
+                    "personnel_complete": roster.get("personnel_complete", True),
                     "personnel_fingerprint": _personnel_fingerprint(personnel),
                 }
         previous, initialized = await self._load_system_alert_state()
@@ -1170,7 +1181,15 @@ class EveSentryAlertRelay:
             self._discard_pending_personnel_update(system_key)
 
         for system_key, current_state in current.items():
-            previous_state = previous.get(system_key)
+            previous_state = _personnel_notification_state(previous.get(system_key))
+            if current_state.get("personnel_complete", True) is False:
+                # Remember only the notification baseline. Current personnel
+                # remains authoritative, so commands cannot reuse old identities.
+                current_state["personnel_notification_baseline"] = list(
+                    (previous_state or {}).get("personnel") or []
+                )
+                current_state["personnel_revision"] = _personnel_revision(previous_state)
+                continue
             if previous_state is None:
                 current_state["personnel_revision"] = 1 if current_state.get(
                     "personnel_fingerprint"
@@ -1220,7 +1239,9 @@ class EveSentryAlertRelay:
             }
             for system_key in sorted(current.keys()):
                 current_state = current[system_key]
-                previous_state = previous.get(system_key)
+                if current_state.get("personnel_complete", True) is False:
+                    continue
+                previous_state = _personnel_notification_state(previous.get(system_key))
                 if not current_state.get("personnel") and not (previous_state or {}).get("personnel"):
                     # Presence-only and pending-ESI states have no safe names
                     # to publish. Persist the empty baseline so a later
@@ -1571,6 +1592,7 @@ class EveSentryAlertRelay:
                 personnel = payload.get("hostile_personnel")
                 if isinstance(personnel, list):
                     previous = current[system_key]
+                    notification_previous = _personnel_notification_state(previous)
                     updated_personnel = [
                         dict(item) for item in personnel if isinstance(item, dict)
                     ]
@@ -1583,13 +1605,22 @@ class EveSentryAlertRelay:
                             int(payload.get("hostile_count") or 0),
                         ),
                         "personnel": updated_personnel,
-                        "personnel_correction": _personnel_removed(previous.get("personnel"), updated_personnel),
+                        "personnel_complete": payload.get("personnel_complete", True),
+                        "personnel_correction": _personnel_removed(notification_previous.get("personnel"), updated_personnel),
                     }
                     state["personnel_fingerprint"] = _personnel_fingerprint(
                         state["personnel"]
                     )
+                    if state["personnel_complete"] is False:
+                        state["personnel_notification_baseline"] = list(
+                            notification_previous.get("personnel") or []
+                        )
+                        current[system_key] = state
+                        await self._save_system_alert_state(current)
+                        return True
+                    state.pop("personnel_notification_baseline", None)
                     if state["personnel_fingerprint"] != _personnel_fingerprint(
-                        previous.get("personnel")
+                        notification_previous.get("personnel")
                     ):
                         state["personnel_revision"] = (
                             _personnel_revision(previous) + 1
@@ -1600,7 +1631,8 @@ class EveSentryAlertRelay:
                             return False
                         current[system_key] = state
                         await self._save_system_alert_state(current)
-                    elif state["hostile_count"] != previous.get("hostile_count"):
+                    elif (state["hostile_count"] != previous.get("hostile_count")
+                          or "personnel_notification_baseline" in previous):
                         current[system_key] = state
                         await self._save_system_alert_state(current)
             self._active_alert_ids.update(event_ids)
@@ -2010,6 +2042,14 @@ def _personnel_fingerprint(value: object) -> str:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()[:20]
+
+
+def _personnel_notification_state(state: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Read the last complete notification baseline without projecting it live."""
+    if state is None:
+        return None
+    baseline = state.get("personnel_notification_baseline")
+    return {**state, "personnel": baseline} if isinstance(baseline, list) else state
 
 
 def _personnel_removed(previous: object, current: object) -> bool:

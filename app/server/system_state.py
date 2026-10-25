@@ -122,6 +122,7 @@ def project_active_items(
             "primary_key_id": str(payload.get("primary_key_id") or ""),
             "primary_character_id": payload.get("primary_character_id"),
             "primary_generation": int(payload.get("primary_generation") or 0),
+            "personnel_complete": payload.get("personnel_complete", True),
         }
         items.append(
             {

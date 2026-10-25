@@ -2994,6 +2994,16 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         system_intel = store._aggregate_active_by_system(active_items)
         rosters: dict[str, dict[str, Any]] = {}
         for item in active_items:
+            metadata = item.get("metadata")
+            metadata = metadata if isinstance(metadata, dict) else {}
+            if metadata.get("personnel_complete", True) is False:
+                system_name = str(item.get("system_name") or item.get("system") or "").strip()
+                if system_name and item.get("active", True):
+                    rosters[system_name.casefold()] = {
+                        "system_name": system_name, "system_id": item.get("system_id"),
+                        "hostile_count": 0, "personnel": {}, "personnel_complete": False,
+                    }
+        for item in active_items:
             if not isinstance(item, dict) or not bool(item.get("active", True)):
                 continue
             name = str(item.get("name") or "").strip()
