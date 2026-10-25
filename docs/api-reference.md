@@ -30,6 +30,10 @@
 既有 `standing_source` 字符串新增两个值：`esi_organization` 表示按组织规则确定（>0 友好，<=0 敌对）；
 `esi_organization_pending` 表示当前必要关系/归属不可用，没有可信 `contact_standing`，
 消费者不得继承旧 `standing/contact_standing` 或当成默认 0。独立黑白名单和视觉 Presence 规则不变。
+组织联系人成功刷新后，在上游有效期结束前 30 秒安排下一次刷新，给正常请求留出时间，
+避免每次缓存到期都短暂移除、随后恢复同一批人员。相同过期时间的回复最多每 5 秒再试；
+不延长上游有效期。刷新失败继续遵守退避和 Retry-After，授权撤销立即隔离对应来源，
+真正到期后仍为 pending。本项只改变后台刷新时机，事件字段与空名单语义不变。
 管理端的私有会话快照仅通过受保护的 `/api/v1/esi/session` 提供，2026-09-13 起由独立 `organization_mode` 控制组织规则：
 默认 off、shadow 比较但不改变分类、on 生效；仅档案 mode=on 时执行，旧档案配置不会自动切换分类。
 

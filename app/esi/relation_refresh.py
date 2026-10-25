@@ -22,6 +22,7 @@ from app.esi.organization_relations import (
 from app.esi.personnel_policy import positive_id, timestamp
 
 LOG = logging.getLogger(__name__)
+CONTACT_REFRESH_LEAD_SECONDS = 30.0
 
 
 class OrganizationRelations:
@@ -123,8 +124,14 @@ class OrganizationRelations:
             expires = timestamp(getattr(rows, "expires_at", 0.0))
             if expires <= self.now() or getattr(rows, "degraded", False):
                 raise ContactReadError("organization_contacts_expiry_unavailable")
-            result = replace(source, successful_at=self.now(), expires_at=expires,
-                             retry_at=max(self.now() + 5, min(expires, self.now() + 300)),
+            # Refresh while the previous complete snapshot is still usable.
+            # Waiting until its deadline makes every healthy network request
+            # temporarily classify known pilots as pending, then hostile again.
+            # Keep the upstream deadline intact and bound repeated aged replies.
+            refreshed_at = self.now()
+            result = replace(source, successful_at=refreshed_at, expires_at=expires,
+                             retry_at=max(refreshed_at + 5, min(
+                                 expires - CONTACT_REFRESH_LEAD_SECONDS, refreshed_at + 300)),
                              authorized=True, failures=0, entries=entries)
         except Exception as exc:  # noqa: BLE001 -- One source failure must not erase the other source.
             status, retry_after = failure_details(exc, self.now())
