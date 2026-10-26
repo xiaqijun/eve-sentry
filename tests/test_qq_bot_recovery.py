@@ -212,7 +212,8 @@ def test_close_interrupts_a_long_rate_limit_backoff():
     asyncio.run(run())
 
 
-def test_real_qq_rate_error_recovers_through_latest_state_then_delivers_a_new_alert():
+@pytest.mark.parametrize("decode_responses", [False, True])
+def test_real_qq_rate_error_recovers_through_latest_state_then_delivers_a_new_alert(decode_responses):
     fakeredis = pytest.importorskip("fakeredis.aioredis")
     import httpx
 
@@ -223,7 +224,7 @@ def test_real_qq_rate_error_recovers_through_latest_state_then_delivers_a_new_al
     from eve_risk.clients.qq import QQOpenAPIClient
 
     async def run():
-        redis = fakeredis.FakeRedis(decode_responses=True)
+        redis = fakeredis.FakeRedis(decode_responses=decode_responses)
         await redis.set("qq:access-token:app", "test-token")
         await redis.set(ALERT_EVENT_ID_KEY, "state:40")
         await redis.set(SYSTEM_ALERT_STATE_READY_KEY, "1")
@@ -253,14 +254,14 @@ def test_real_qq_rate_error_recovers_through_latest_state_then_delivers_a_new_al
                 relay = EveSentryAlertRelay(http, redis, qq, "https://sentry.test/events")
                 task = asyncio.create_task(EmbeddedBotBridge().run(source, relay))
                 async with asyncio.timeout(2):
-                    while await redis.get(ALERT_EVENT_ID_KEY) != "state:41":
+                    while await redis.get(ALERT_EVENT_ID_KEY) != ("state:41" if decode_responses else b"state:41"):
                         await asyncio.sleep(0.005)
                 assert not task.done() and len(requests) == 2
                 assert "清空" in json.loads(requests[-1].content)["content"]
                 source.view = {"ready": False}
                 source.rows.append(transition(42))
                 async with asyncio.timeout(2):
-                    while await redis.get(ALERT_EVENT_ID_KEY) != "state:42":
+                    while await redis.get(ALERT_EVENT_ID_KEY) != ("state:42" if decode_responses else b"state:42"):
                         await asyncio.sleep(0.005)
                 assert not task.done() and len(requests) == 3
                 assert "来敌" in json.loads(requests[-1].content)["content"]
@@ -268,5 +269,40 @@ def test_real_qq_rate_error_recovers_through_latest_state_then_delivers_a_new_al
             if task is not None:
                 await stop(source, task)
             await redis.aclose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("value,expected", [(b"state:41", 41), ("state:41", 41),
+                                           (None, 0), (b"state:bad", 0), (b"\xff", 0)])
+def test_persisted_cursor_accepts_default_redis_byte_responses(value, expected):
+    assert EmbeddedBotBridge._read_state_sequence(value) == expected
+
+
+def test_partial_delivery_recovery_reads_a_byte_cursor_without_reinitializing():
+    async def run():
+        source, relay = Source(), Relay()
+        source.rows = [transition(41), transition(42)]
+        original_get = relay.redis.get
+
+        async def byte_get(key):
+            return (await original_get(key)).encode()
+
+        relay.redis.get = byte_get
+        attempts = []
+
+        async def deliver(payload):
+            attempts.append(payload["id"])
+            return len(attempts) != 2
+
+        relay.process_alert_event = deliver
+        task = asyncio.create_task(EmbeddedBotBridge().run(source, relay))
+        try:
+            await eventually(lambda: relay.redis.cursor == "state:42")
+            assert not task.done()
+            assert attempts == ["state:41", "state:42", "state:42"]
+            assert relay.redis.saved == [41, 42]
+        finally:
+            await stop(source, task)
 
     asyncio.run(run())
