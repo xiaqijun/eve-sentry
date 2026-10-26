@@ -320,6 +320,8 @@ class EmbeddedBotBridge:
 
     @staticmethod
     def _read_state_sequence(value: object) -> int:
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="replace")
         text = str(value or "").strip()
         if not text.startswith("state:"):
             return 0
