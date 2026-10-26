@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -85,20 +86,27 @@ class EmbeddedEventSource:
             pass
 
 
+class _ExpiredReplay(RuntimeError):
+    """Old QQ notifications must be reconciled against current state."""
+
+
 class EmbeddedBotBridge:
     """Consume durable alert transitions without loopback HTTP/SSE."""
+
+    MAX_REPLAY_AGE_SECONDS = 60.0
+    RETRY_SECONDS = 1.0
+    MAX_RETRY_SECONDS = 30.0
 
     async def run(self, source: EmbeddedEventSource, relay: Any) -> None:
         from eve_risk.alerts import ALERT_EVENT_ID_KEY, SYSTEM_ALERT_STATE_READY_KEY
 
-        cursor = self._read_state_sequence(
-            await relay.redis.get(ALERT_EVENT_ID_KEY)
-        )
-        state_ready = (
-            cursor > 0
-            and await self._redis_key_exists(relay, SYSTEM_ALERT_STATE_READY_KEY)
-        )
-        initialized = state_ready
+        cursor = 0
+        initialized = False
+        loaded = False
+        reconcile = False
+        reconcile_after = 0.0
+        seen_rate_limit = 0
+        retry_seconds = self.RETRY_SECONDS
         snapshot_task: asyncio.Task[dict[str, Any]] | None = None
         snapshot_started = 0.0
         warned = False
@@ -107,61 +115,120 @@ class EmbeddedBotBridge:
                 marker = await source.wait()
                 if marker is EmbeddedEventSource._STOP:
                     return
-                if snapshot_task is None:
-                    snapshot_task = asyncio.create_task(
-                        asyncio.to_thread(source.snapshot, cursor),
-                        name="eve-sentry-bot-snapshot",
-                    )
-                    snapshot_started = asyncio.get_running_loop().time()
-                    warned = False
-                # Keep one refresh in flight. Cancelling and resubmitting a
-                # blocked to_thread call would accumulate live worker threads.
-                done, _ = await asyncio.wait({snapshot_task}, timeout=0.05)
-                snapshot: dict[str, Any] = {}
-                if done:
-                    try:
-                        snapshot = snapshot_task.result()
-                    except Exception:
-                        logger.exception("Embedded QQ bot snapshot refresh failed")
-                    snapshot_task = None
-                elif not warned and asyncio.get_running_loop().time() - snapshot_started >= 5:
-                    logger.warning(
-                        "Embedded QQ bot snapshot refresh pending; durable replay continues"
-                    )
-                    warned = True
+                try:
+                    if not loaded:
+                        cursor = self._read_state_sequence(await relay.redis.get(ALERT_EVENT_ID_KEY))
+                        initialized = cursor > 0 and await self._redis_key_exists(
+                            relay, SYSTEM_ALERT_STATE_READY_KEY,
+                        )
+                        loaded = True
+                    qq = getattr(relay, "qq", None)
+                    generation = getattr(qq, "rate_limit_generation", 0)
+                    if generation != seen_rate_limit:
+                        seen_rate_limit = generation
+                        reconcile = True
+                        await self._wait_before_retry(source, getattr(qq, "retry_after_seconds", 0.0))
+                        reconcile_after = asyncio.get_running_loop().time()
+                    if snapshot_task is None:
+                        snapshot_task = asyncio.create_task(
+                            asyncio.to_thread(source.snapshot, cursor),
+                            name="eve-sentry-bot-snapshot",
+                        )
+                        snapshot_started = asyncio.get_running_loop().time()
+                        warned = False
+                    # Keep one refresh in flight. Cancelling and resubmitting a
+                    # blocked to_thread call would accumulate live worker threads.
+                    done, _ = await asyncio.wait({snapshot_task}, timeout=0.05)
+                    snapshot: dict[str, Any] = {}
+                    if done:
+                        try:
+                            snapshot = snapshot_task.result()
+                        except Exception:
+                            logger.exception("Embedded QQ bot snapshot refresh failed")
+                        snapshot_task = None
+                    elif not warned and asyncio.get_running_loop().time() - snapshot_started >= 5:
+                        logger.warning(
+                            "Embedded QQ bot snapshot refresh pending; durable replay continues"
+                        )
+                        warned = True
 
-                bootstrap = snapshot.get("bootstrap")
-                ready = bool(snapshot.get("ready")) and isinstance(bootstrap, dict)
-                state_seq = max(0, int(snapshot.get("state_event_seq") or 0))
-                if not initialized:
-                    if not ready:
+                    bootstrap = snapshot.get("bootstrap")
+                    ready = bool(snapshot.get("ready")) and isinstance(bootstrap, dict)
+                    state_seq = max(0, int(snapshot.get("state_event_seq") or 0))
+                    if reconcile and (
+                        not ready or state_seq < cursor or snapshot_started < reconcile_after
+                        or self._age_seconds(bootstrap.get("generated_at")) is None
+                        or self._age_seconds(bootstrap.get("generated_at")) > self.MAX_REPLAY_AGE_SECONDS
+                    ):
                         continue
-                    if not await relay.process_bootstrap(bootstrap):
-                        raise RuntimeError("embedded bot bootstrap delivery failed")
-                    initialized = True
-                    cursor = max(cursor, state_seq)
-                    await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
-                    continue
+                    if not initialized or reconcile:
+                        if not ready:
+                            continue
+                        if not await relay.process_bootstrap(bootstrap):
+                            raise RuntimeError("embedded bot bootstrap delivery failed")
+                        if reconcile:
+                            logger.warning(
+                                "Embedded QQ bot reconciled current state: cursor=%s watermark=%s",
+                                cursor, state_seq,
+                            )
+                        reconcile = False
+                        initialized = True
+                        cursor = max(cursor, state_seq)
+                        await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
+                        continue
 
-                if ready and state_seq >= cursor:
-                    # Replay through this exact snapshot before reconciling it.
-                    # An older completed refresh must not clear newer ACKs.
+                    if ready and state_seq >= cursor:
+                        # Replay through this exact snapshot before reconciling it.
+                        # An older completed refresh must not clear newer ACKs.
+                        cursor, _ = await self._replay_to_watermark(
+                            source, relay, cursor, snapshot,
+                        )
+                        if not await relay.process_bootstrap(bootstrap):
+                            raise RuntimeError("embedded bot bootstrap delivery failed")
+                        cursor = max(cursor, state_seq)
+                        await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
+                    # Durable transitions are independent of a missing, stale or
+                    # still-running Bootstrap refresh once a baseline exists.
                     cursor, _ = await self._replay_to_watermark(
-                        source, relay, cursor, snapshot,
+                        source, relay, cursor, {},
                     )
-                    if not await relay.process_bootstrap(bootstrap):
-                        raise RuntimeError("embedded bot bootstrap delivery failed")
-                    cursor = max(cursor, state_seq)
-                    await self._save_cursor(relay, ALERT_EVENT_ID_KEY, cursor)
-                # Durable transitions are independent of a missing, stale or
-                # still-running Bootstrap refresh once a baseline exists.
-                cursor, _ = await self._replay_to_watermark(
-                    source, relay, cursor, {},
-                )
+                    retry_seconds = self.RETRY_SECONDS
+                except _ExpiredReplay:
+                    loaded = False
+                    reconcile = True
+                    reconcile_after = asyncio.get_running_loop().time()
+                    logger.warning("Embedded QQ bot backlog expired; waiting for current-state reconciliation")
+                except Exception:
+                    # Reload the last persisted ACK after a partially delivered
+                    # page. Successful groups retain their delivery dedupe keys.
+                    loaded = False
+                    delay = max(retry_seconds, getattr(getattr(relay, "qq", None), "retry_after_seconds", 0.0))
+                    logger.exception("Embedded QQ bot consumer failed; retry in %.2fs", delay)
+                    await self._wait_before_retry(source, delay)
+                    retry_seconds = min(self.MAX_RETRY_SECONDS, retry_seconds * 2)
         finally:
             if snapshot_task is not None:
                 snapshot_task.cancel()
                 await asyncio.gather(snapshot_task, return_exceptions=True)
+
+    @staticmethod
+    async def _wait_before_retry(source: EmbeddedEventSource, seconds: float) -> None:
+        deadline = asyncio.get_running_loop().time() + seconds
+        while not getattr(source, "_closed", False):
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(0.25, remaining))
+
+    @staticmethod
+    def _age_seconds(value: object) -> float | None:
+        try:
+            timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=UTC)
+            return (datetime.now(UTC) - timestamp).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
 
     async def _replay_to_watermark(
         self,
@@ -188,6 +255,11 @@ class EmbeddedBotBridge:
                     continue
                 if watermark is not None and event_seq > watermark:
                     return cursor, snapshot
+                # The server commit time is authoritative; client occurred_at
+                # can be skewed and must not expire a fresh warning.
+                age = self._age_seconds(event.get("created_at"))
+                if age is not None and age > self.MAX_REPLAY_AGE_SECONDS:
+                    raise _ExpiredReplay
                 processed = await self._process_event(relay, event)
                 if not processed:
                     raise RuntimeError(
