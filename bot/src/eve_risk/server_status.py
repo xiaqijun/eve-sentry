@@ -17,7 +17,7 @@ from eve_risk.alerts import (
     ALERT_DEDUPE_SECONDS,
     ALERT_GROUPS_KEY,
 )
-from eve_risk.clients.qq import QQOpenAPIClient
+from eve_risk.clients.qq import QQAPIError, QQOpenAPIClient
 
 logger = logging.getLogger(__name__)
 
@@ -103,10 +103,15 @@ class EveServerStartupMonitor:
         should_announce = bool(previous) and (
             previous.get("status") == "offline"
             or str(previous.get("start_time") or "") != start_time
+            or previous.get("pending_start_time") == start_time
         )
-        await self._save_state({"status": "online", "start_time": start_time})
+        state = {"status": "online", "start_time": start_time}
         if should_announce:
-            await self._deliver_startup(status)
+            state["pending_start_time"] = start_time
+        await self._save_state(state)
+        if should_announce:
+            if await self._deliver_startup(status):
+                await self._save_state({"status": "online", "start_time": start_time})
         return True
 
     async def _fetch_status(self) -> EveServerStatus:
@@ -141,7 +146,7 @@ class EveServerStartupMonitor:
         if failures == self.offline_threshold:
             logger.info("EVE server downtime confirmed after %d checks", failures)
 
-    async def _deliver_startup(self, status: EveServerStatus) -> None:
+    async def _deliver_startup(self, status: EveServerStatus) -> bool:
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
         groups = sorted(_decode(value) for value in raw_groups if _decode(value))
         started_at = status.start_time.astimezone(SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
@@ -155,7 +160,7 @@ class EveServerStartupMonitor:
 
         if not groups:
             logger.info("EVE server startup processed groups=0")
-            return
+            return True
 
         semaphore = asyncio.Semaphore(
             min(STARTUP_DELIVERY_CONCURRENCY, len(groups))
@@ -169,7 +174,22 @@ class EveServerStartupMonitor:
                     return 0, 0
                 try:
                     async with asyncio.timeout(STARTUP_DELIVERY_TIMEOUT_SECONDS):
-                        await self.qq.send_proactive_text(group_openid, message_body)
+                        try:
+                            await self.qq.send_proactive_text(
+                                group_openid, f"<qqbot-at-everyone />\n{message_body}"
+                            )
+                        except QQAPIError as exc:
+                            # An explicit rejection can mean missing group admin
+                            # rights or the daily mention quota has been used.
+                            # Do not retry immediately on rate or network errors.
+                            rejected = getattr(exc, "http_status", None) in (400, 403) or (
+                                getattr(exc, "http_status", None) == 200
+                                and getattr(exc, "code", None) not in (None, 0)
+                            )
+                            if not rejected or getattr(exc, "is_rate_limited", False):
+                                raise
+                            logger.warning("QQ startup mention rejected; sending without mention")
+                            await self.qq.send_proactive_text(group_openid, message_body)
                         await self.redis.set(
                             delivered_key,
                             "1",
@@ -196,6 +216,7 @@ class EveServerStartupMonitor:
             failed,
             time.monotonic() - started,
         )
+        return failed == 0
 
     async def _load_state(self) -> dict[str, Any]:
         raw = await self.redis.get(SERVER_STATUS_STATE_KEY)
