@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import threading
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import botpy
 import httpx
 import uvicorn
+from botpy.message import GroupMessage
 from redis.asyncio import Redis
 
 from eve_risk.admission import AdmissionController, AdmissionResult
@@ -144,6 +147,8 @@ class RiskBotClient(botpy.Client):
         super().__init__(*args, **kwargs)
         settings = get_settings()
         self.settings = settings
+        self._group_bot_members: dict[str, tuple[str, float]] = {}
+        self._group_bot_member_lock = asyncio.Lock()
         self.redis = Redis.from_url(settings.redis_url)
         self.http_client = httpx.AsyncClient(headers={"Accept": "application/json"})
         self.qq = QQOpenAPIClient(
@@ -206,6 +211,54 @@ class RiskBotClient(botpy.Client):
             offline_threshold=settings.eve_server_offline_threshold,
         )
         self.server_status_task: asyncio.Task[None] | None = None
+
+    async def _bot_login(self, token: object) -> None:
+        await super()._bot_login(token)
+        state = self._connection.state
+
+        def parse_full_group_message(payload: dict[str, object]) -> None:
+            data = payload.get("d")
+            if isinstance(data, dict):
+                state._dispatch("group_full_message_create", data)
+
+        # botpy 1.2 does not register the full-group message event. Keep the
+        # raw payload because the SDK drops group-scoped mention identities.
+        state.parsers["group_message_create"] = parse_full_group_message
+
+    async def _group_bot_member_openid(self, group_openid: str) -> str:
+        async with self._group_bot_member_lock:
+            cached = self._group_bot_members.get(group_openid)
+            if cached and cached[1] > time.monotonic():
+                return cached[0]
+            token = await self.qq._access_token()
+            response = await self.http_client.get(
+                f"{self.qq.api_base_url}/v2/groups/{group_openid}/bot_state",
+                headers=self.qq._headers(token),
+                timeout=5.0,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            member = payload.get("member_openid") if isinstance(payload, dict) else None
+            if not isinstance(member, str) or not member.strip():
+                raise ValueError("QQ group bot state has no member identity")
+            member = member.strip()
+            self._group_bot_members[group_openid] = (member, time.monotonic() + 300)
+            return member
+
+    async def on_group_full_message_create(self, data: dict[str, object]) -> None:
+        group_openid = str(data.get("group_openid") or "").strip()
+        content = str(data.get("content") or "")
+        mention = re.match(r"^\s*<@!?([^>\s]+)>", content)
+        if not group_openid or mention is None or mention.group(1).lower() == "all":
+            return
+        try:
+            bot_member = await self._group_bot_member_openid(group_openid)
+        except Exception:
+            logger.warning("QQ full group message bot identity lookup failed")
+            return
+        if mention.group(1) != bot_member:
+            return
+        await self.on_group_at_message_create(GroupMessage(self.api, None, data))
 
     async def on_ready(self) -> None:
         if not self.alert_relay.enabled:
