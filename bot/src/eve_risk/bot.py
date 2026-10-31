@@ -726,6 +726,8 @@ class RiskBotClient(botpy.Client):
                 created,
                 timeout_seconds=self.settings.eve_sentry_query_soft_timeout_seconds,
             )
+            if query.get("mode") != "system_roster":
+                payload = await self.sentry_status.wait_ocr_query_enrichment(created, payload)
             delivered_key = f"qq:ocr-query:delivered:{query_id}"
             first_delivery = await self.redis.set(
                 delivered_key,

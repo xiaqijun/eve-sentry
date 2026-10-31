@@ -228,7 +228,85 @@ class EveSentryStatusClient:
     async def _query_ocr(self, query: dict[str, str]) -> str:
         created = await self.create_ocr_query(query)
         status = await self.wait_ocr_query_payload(created)
+        if query.get("mode") != "system_roster":
+            status = await self.wait_ocr_query_enrichment(created, status)
         return format_ocr_query(status, query)
+
+    async def wait_ocr_query_enrichment(
+        self,
+        created: dict[str, Any],
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float = 20.0,
+    ) -> dict[str, Any]:
+        """Wait briefly for asynchronous identity enrichment of this snapshot."""
+        latest = dict(payload)
+        if not _ocr_enrichment_pending(latest):
+            return latest
+        query_id = str(created.get("query_id") or "").strip()
+        if not query_id:
+            latest["enrichment_incomplete"] = True
+            return latest
+        status_url = f"{_ocr_query_url(self.bootstrap_url)}/{query_id}"
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout_seconds)
+        while _ocr_enrichment_pending(latest) and loop.time() < deadline:
+            await asyncio.sleep(min(0.5, max(0.0, deadline - loop.time())))
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                async with asyncio.timeout(remaining):
+                    response = await self.http.get(
+                        status_url,
+                        headers=_sentry_headers(self.api_key),
+                        timeout=min(5.0, remaining),
+                    )
+                response.raise_for_status()
+                updated = response.json()
+                if not isinstance(updated, dict) or not isinstance(updated.get("results"), list):
+                    raise ValueError("Invalid OCR query status")
+            except (httpx.HTTPError, TimeoutError, ValueError, TypeError):
+                logger.warning("OCR query affiliation refresh failed")
+                break
+            if latest.get("soft_timed_out") and updated.get("status") != "completed":
+                updated["soft_timed_out"] = True
+            latest = updated
+        if _ocr_enrichment_pending(latest):
+            latest["enrichment_incomplete"] = True
+        return latest
+
+
+def _ocr_enrichment_pending(payload: dict[str, Any]) -> bool:
+    results = payload.get("results")
+    for result in results if isinstance(results, list) else []:
+        if not isinstance(result, dict):
+            continue
+        rows = result.get("recognized")
+        recognized = {
+            str(item.get("name") or "").strip().casefold(): item
+            for item in rows if isinstance(item, dict)
+        } if isinstance(rows, list) else {}
+        names = result.get("names")
+        for name in names if isinstance(names, list) else []:
+            key = str(name or "").strip().casefold()
+            if not key:
+                continue
+            row = recognized.get(key)
+            if row is None:
+                return True
+            metadata = row.get("metadata")
+            metadata = metadata if isinstance(metadata, dict) else {}
+            status = str(metadata.get("identity_status") or "").strip().casefold()
+            missing_corporation = not _affiliation(metadata, "corporation")
+            missing_known_alliance = bool(metadata.get("alliance_id")) and not _affiliation(
+                metadata, "alliance"
+            )
+            if status == "pending" or (
+                status == "resolved" and (missing_corporation or missing_known_alliance)
+            ):
+                return True
+    return False
 
 
 def is_sentry_status_command(content: str) -> bool:
@@ -331,6 +409,8 @@ def format_ocr_query(payload: dict[str, Any], query: dict[str, str] | None = Non
     ]
     if payload.get("soft_timed_out"):
         lines.append("**状态**｜部分节点未在 15 秒内返回")
+    if payload.get("enrichment_incomplete"):
+        lines.append("**资料**｜部分人员资料未能及时补全，可稍后再查")
     rendered_systems = 0
     for result_index, result in enumerate(results, start=1):
         system = str(result.get("system_name") or "未知星系").strip()
@@ -381,6 +461,8 @@ def format_ocr_query(payload: dict[str, Any], query: dict[str, str] | None = Non
             lines.append("| 暂无人员 | — | — | — |")
         rendered_systems += 1
     if not rendered_systems:
+        if payload.get("enrichment_incomplete"):
+            return "OCR 查询｜部分人员资料未能及时补全，无法确认筛选结果，请稍后再查。"
         return "OCR 查询｜没有收到符合条件的人员名单。"
     return "\n".join(lines)
 
