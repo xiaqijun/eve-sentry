@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "relay: 47 dual → 114 relay → 47 relay-only; legacy: reverse safely"
+        description: "Switch ESI transport or manage the temporary ESI source route"
         type: choice
-        options: [relay, legacy]
+        options: [relay, legacy, prefer-old-source, restore-route]
         required: true
 
 permissions:
@@ -35,13 +35,14 @@ jobs:
       - name: Validate selected configuration
         run: |
           set -euo pipefail
-          [[ "$MODE" == relay || "$MODE" == legacy ]]
+          [[ "$MODE" == relay || "$MODE" == legacy || "$MODE" == prefer-old-source || "$MODE" == restore-route ]]
           for value in "$SERVER_HOST" "$GATEWAY_HOST"; do [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]; done
           for value in "$SERVER_USER" "$GATEWAY_USER"; do [[ "$value" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; done
           for value in "$SERVER_PORT" "$GATEWAY_PORT"; do
             [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 65535 ))
           done
           python -m compileall -q deploy/ci/configure_esi_transport.py
+          bash -n .github/scripts/configure_esi_recovery_route.sh
       - name: Configure protected deployment identities
         env:
           SERVER_KEY: ${{ secrets.EVE_SENTRY_DEPLOY_SSH_KEY }}
@@ -57,6 +58,7 @@ jobs:
           printf '%s\n%s\n' "$SERVER_HOSTS" "$GATEWAY_HOSTS" > ~/.ssh/transport-known-hosts
           chmod 600 ~/.ssh/transport-server ~/.ssh/transport-gateway ~/.ssh/transport-known-hosts
       - name: Switch with preflight, ordered phases and local rollback
+        if: inputs.mode == 'relay' || inputs.mode == 'legacy'
         run: |
           set -euo pipefail
           common=(-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/transport-known-hosts" -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
@@ -73,6 +75,14 @@ jobs:
           ssh "${server[@]}" "/opt/eve-sentry/.venv-server/bin/python '$script' server '$MODE' --apply"
           ssh "${gateway[@]}" "/opt/eve-sentry-esi-gateway/.venv/bin/python '$script' gateway '$MODE' --apply"
           printf '### ESI transport verified\n- Mode: `%s`\n- Revision: `%s`\n- Existing caches and tokens preserved.\n' "$MODE" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Manage temporary ESI source route
+        if: inputs.mode == 'prefer-old-source' || inputs.mode == 'restore-route'
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/transport-server -p "$SERVER_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/transport-known-hosts" \
+            -o ConnectTimeout=15 "$SERVER_USER@$SERVER_HOST" "/bin/bash -s -- '$MODE'" \
+            < .github/scripts/configure_esi_recovery_route.sh
       - name: Remove runner identities
         if: always()
         run: rm -f ~/.ssh/transport-server ~/.ssh/transport-gateway ~/.ssh/transport-known-hosts

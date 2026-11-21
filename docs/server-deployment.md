@@ -31,6 +31,12 @@ gh workflow run configure-esi-transport.yml --ref main -f mode=relay
 
 固定生产文件为 `/etc/eve-sentry/eve-sentry.env`、`/etc/eve-sentry-esi/gateway.env`；仅写 transport mode，
 不更换 SSH/SSO/Gateway 凭据。部署布局若偏离仓库默认值，先调整受保护脚本及验证，不临时改成公网监听。
+
+旧 ZeroTier 网不可达且备用路由使 ESI Gateway 拒绝来源时，可在同一受保护工作流
+运行 `-f mode=prefer-old-source`。此操作仅让本机发往 Gateway TCP 8787 的连接
+从已有的 `10.233.53.204` 发起，仍使用加密的备用链路。仅在备用路由符合预期时
+添加规则，真实 ESI 查询失败则移除规则。规则不跨主机重启；旧网验证恢复后运行
+`-f mode=restore-route` 移除临时规则，再验证 ESI 后停用备用网。
 114 已有长期档案继续使用，缺失记录正常入队补齐；47 临时成功缓存不冒充持久档案，不导入缺失期限的数据并标为新鲜。
 关闭 47 缓存/队列后仍保留原存储用于回滚，不执行删除。
 
