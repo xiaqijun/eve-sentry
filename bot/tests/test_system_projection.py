@@ -1,7 +1,7 @@
 """Canonical counts may decrease; unavailable capture is not an arrival."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -18,7 +18,6 @@ async def test_unknown_event_is_acknowledged_without_delivery():
         _load_system_alert_state=AsyncMock(return_value=(state, True)),
         _save_system_alert_state=AsyncMock(),
         _discard_pending_personnel_update=discarded.append,
-        _discard_system_count_update=AsyncMock(),
     )
     assert await EveSentryAlertRelay.process_alert_event(relay, {
         "id": "state:2", "created_at": "2026-09-13T00:00:00Z", "system_name": "S-KSWL",
@@ -26,7 +25,6 @@ async def test_unknown_event_is_acknowledged_without_delivery():
     })
     assert state == {}
     assert discarded == ['s-kswl']
-    relay._discard_system_count_update.assert_awaited_once_with('s-kswl')
     relay._save_system_alert_state.assert_awaited_once_with({})
     relay._advance_alert_cursor.assert_awaited_once()
 
@@ -38,7 +36,6 @@ async def test_count_only_update_can_decrease_without_roster_spam():
         _active_alert_ids=set(), _load_system_alert_state=AsyncMock(return_value=(state, True)),
         _save_system_alert_state=AsyncMock(), queue_system_personnel_update=AsyncMock(),
         _allows_transition=lambda _: True,
-        _queue_system_count_update=Mock(),
     )
     assert await EveSentryAlertRelay.process_alert_event(relay, {
         "id": "state:3", "created_at": "2026-09-13T00:00:00Z", "system_name": "S-KSWL",
@@ -47,6 +44,3 @@ async def test_count_only_update_can_decrease_without_roster_spam():
     assert state["s-kswl"]["hostile_count"] == 1
     relay._save_system_alert_state.assert_awaited_once()
     relay.queue_system_personnel_update.assert_not_awaited()
-    relay._queue_system_count_update.assert_called_once()
-    previous, current = relay._queue_system_count_update.call_args.args
-    assert (previous["hostile_count"], current["hostile_count"]) == (7, 1)
