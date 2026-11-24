@@ -76,9 +76,10 @@ async def test_pending_then_same_roster_does_not_send_a_correction_or_repeat(lan
 
 
 @pytest.mark.asyncio
-async def test_pending_classification_defers_but_does_not_lose_an_already_queued_roster():
+async def test_pending_classification_defers_but_does_not_lose_an_already_queued_roster(monkeypatch):
     redis = fakeredis.aioredis.FakeRedis()
     sent = asyncio.Event()
+    allow_flush = asyncio.Event()
 
     async def delivered(*_):
         sent.set()
@@ -88,6 +89,13 @@ async def test_pending_classification_defers_but_does_not_lose_an_already_queued
     async with httpx.AsyncClient() as http:
         relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events",
                                     personnel_push_interval_seconds=0.03)
+        flush = relay._flush_personnel_update
+
+        async def flush_after_classification_update(system_key, _delay):
+            await allow_flush.wait()
+            await flush(system_key, 0)
+
+        monkeypatch.setattr(relay, "_flush_personnel_update", flush_after_classification_update)
         await relay.subscribe("test-group")
         person = {"character_id": 1, "name": "Pilot"}
         await relay.process_bootstrap(bootstrap([]))
@@ -96,6 +104,7 @@ async def test_pending_classification_defers_but_does_not_lose_an_already_queued
         assert "tama" in relay._personnel_pending
         await update(relay, "event", [], False, seq=3)
         assert "tama" in relay._personnel_pending
+        allow_flush.set()
         await asyncio.sleep(0.07)
         assert not sent.is_set()
         await update(relay, "event", [person], True, seq=4)

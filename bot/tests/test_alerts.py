@@ -1628,6 +1628,127 @@ async def test_relay_embeds_personnel_move_in_event_message() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("clear_source", ["event", "snapshot"])
+@pytest.mark.parametrize("roster_source", ["event", "snapshot"])
+async def test_relay_keeps_personnel_move_after_original_system_clears(
+    clear_source: str, roster_source: str,
+) -> None:
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    time = "2026-11-24T01:20:00Z"
+    pilot = {"name": "Alice", "character_id": 12345}
+
+    async with fakeredis.aioredis.FakeRedis() as redis, httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        await relay.subscribe("group-1")
+        assert await relay.process_bootstrap({
+            "generated_at": time,
+            "active_intel": [],
+            "hostile_personnel": [{
+                "system_name": "Jita", "hostile_count": 1, "personnel": [pilot],
+            }],
+        })
+        if clear_source == "event":
+            assert await relay.process_safe_event({
+                "id": "state:1", "created_at": time, "system_name": "Jita",
+            })
+        else:
+            assert await relay.process_bootstrap({
+                "generated_at": time, "active_intel": [], "hostile_personnel": [],
+            })
+        relay = EveSentryAlertRelay(http, redis, qq, "http://sentry.test/events")
+        assert await relay.process_alert_event({
+            "id": "state:2", "created_at": time, "system_name": "Tama",
+            "event_type": "alert.entered", "hostile_count": 2,
+        })
+        qq.send_proactive_markdown.assert_not_awaited()
+        if roster_source == "event":
+            assert await relay.process_alert_event({
+                "id": "state:3", "created_at": time, "system_name": "Tama",
+                "event_type": "alert.updated", "hostile_count": 2,
+                "hostile_personnel": [pilot],
+            })
+        else:
+            assert await relay.process_bootstrap({
+                "generated_at": time,
+                "active_intel": [],
+                "hostile_personnel": [{
+                    "system_name": "Tama", "hostile_count": 2, "personnel": [pilot],
+                }],
+            })
+
+        assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
+            "✅ Jita 清空", "❗ Tama 来敌",
+        ]
+        qq.send_proactive_markdown.assert_awaited_once()
+        incident = qq.send_proactive_markdown.await_args.args[1]
+        assert "敌对事件" in incident
+        assert "**敌对**｜2 人" in incident
+        assert "| Alice | Jita → Tama |" in incident
+
+        assert await relay.process_alert_event({
+            "id": "state:4", "created_at": time, "system_name": "Tama",
+            "event_type": "alert.updated", "hostile_count": 2,
+            "hostile_personnel": [pilot, {"name": "Bob", "character_id": 45678}],
+        })
+        assert qq.send_proactive_markdown.await_count == 2
+        assert "| Alice | Tama |" in qq.send_proactive_markdown.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_relay_keeps_queued_personnel_move_when_roster_changes_again() -> None:
+    rosters: asyncio.Queue[str] = asyncio.Queue()
+
+    async def send_roster(_group: str, message: str) -> None:
+        rosters.put_nowait(message)
+
+    qq = SimpleNamespace(
+        send_proactive_markdown=AsyncMock(side_effect=send_roster),
+        send_proactive_text=AsyncMock(return_value={"id": "text"}),
+    )
+    time = "2026-11-24T01:20:00Z"
+    alice = {"name": "Alice", "character_id": 12345}
+    bob = {"name": "Bob", "character_id": 45678}
+    carol = {"name": "Carol", "character_id": 67890}
+
+    async with fakeredis.aioredis.FakeRedis() as redis, httpx.AsyncClient() as http:
+        relay = EveSentryAlertRelay(
+            http, redis, qq, "http://sentry.test/events", personnel_push_interval_seconds=1.0,
+        )
+        await relay.subscribe("group-1")
+        assert await relay.process_bootstrap({
+            "generated_at": time,
+            "active_intel": [],
+            "hostile_personnel": [
+                {"system_name": "Jita", "hostile_count": 1, "personnel": [alice]},
+                {"system_name": "Tama", "hostile_count": 1, "personnel": [bob]},
+            ],
+        })
+
+        def roster_update(sequence: int, *personnel: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "id": f"state:{sequence}", "created_at": time, "system_name": "Tama",
+                "event_type": "alert.updated", "hostile_count": len(personnel),
+                "hostile_personnel": list(personnel),
+            }
+
+        assert await relay.process_alert_event(roster_update(1, bob, carol))
+        rosters.get_nowait()
+        assert await relay.process_safe_event({
+            "id": "state:2", "created_at": time, "system_name": "Jita",
+        })
+        assert await relay.process_alert_event(roster_update(3, alice, bob, carol))
+        assert await relay.process_alert_event(roster_update(4, alice, bob))
+        assert rosters.empty()
+        incident = await asyncio.wait_for(rosters.get(), 3)
+        assert "| Alice | Jita → Tama |" in incident
+        assert "| Carol |" not in incident
+        qq.send_proactive_text.assert_awaited_once_with("group-1", "✅ Jita 清空")
+
+
+@pytest.mark.asyncio
 async def test_relay_does_not_enqueue_analysis_after_system_message_without_skipping_personnel(
 ) -> None:
     redis = fakeredis.aioredis.FakeRedis()

@@ -23,6 +23,8 @@ ALERT_DELIVERED_PREFIX = "qq:eve-sentry:alert-delivered"
 ACTIVE_INTEL_STATE_KEY = "qq:eve-sentry:active-intel-state"
 SYSTEM_ALERT_STATE_KEY = "qq:eve-sentry:system-alert-state"
 SYSTEM_ALERT_STATE_READY_KEY = "qq:eve-sentry:system-alert-state-ready"
+RECENT_PERSONNEL_SYSTEM_PREFIX = "qq:eve-sentry:recent-personnel-system"
+RECENT_PERSONNEL_SYSTEM_SECONDS = 120
 MONITORING_NODE_SNAPSHOT_STATE_KEY = "qq:eve-sentry:monitoring-node-snapshot-state"
 MONITORING_NODE_SNAPSHOT_DATA_KEY = "qq:eve-sentry:monitoring-node-snapshot-data"
 MONITORING_NODE_SUBSCRIPTION_PREFIX = "monitoring-node-subscription"
@@ -656,6 +658,23 @@ class EveSentryAlertRelay:
             return await self.deliver_system_personnel_update(state, occurred_at)
 
         system_key = _system_label(state).casefold()
+        pending = self._personnel_pending.get(system_key)
+        if pending and pending[0].get("episode_id") == state.get("episode_id"):
+            pending_moves = {
+                _personnel_identity(item): item["system_display"]
+                for item in pending[0].get("personnel", [])
+                if isinstance(item, dict) and item.get("system_display")
+            }
+            if pending_moves:
+                rows = []
+                for item in state.get("personnel", []):
+                    if not isinstance(item, dict):
+                        continue
+                    movement = pending_moves.get(_personnel_identity(item))
+                    if movement and not item.get("system_display"):
+                        item = {**item, "system_display": movement}
+                    rows.append(item)
+                state = {**state, "personnel": rows}
         loop = asyncio.get_running_loop()
         last_sent_at = self._personnel_last_sent_at.get(system_key)
         if (
@@ -1187,10 +1206,12 @@ class EveSentryAlertRelay:
             ) + int(current_fingerprint != previous_fingerprint)
 
         transitions_succeeded = True
+        cleared_systems = []
         if initialized:
             for system_key in sorted(previous.keys() - current.keys()):
                 if system_key in node_offline_systems:
                     continue
+                cleared_systems.append(previous[system_key])
                 transitions_succeeded = (
                     await self.deliver_system_transition(previous[system_key], "safe")
                     and transitions_succeeded
@@ -1209,14 +1230,6 @@ class EveSentryAlertRelay:
 
         personnel_updates_succeeded = True
         if initialized:
-            previous_personnel = {
-                "personnel": [
-                    item
-                    for previous_state in previous.values()
-                    for item in previous_state.get("personnel", [])
-                    if isinstance(item, dict)
-                ]
-            }
             for system_key in sorted(current.keys()):
                 current_state = current[system_key]
                 if current_state.get("personnel_complete", True) is False:
@@ -1235,9 +1248,8 @@ class EveSentryAlertRelay:
                     == _personnel_fingerprint(previous_state.get("personnel"))
                 ):
                     continue
-                update_state = _personnel_display_state(
-                    current_state,
-                    previous_personnel,
+                update_state = await self._personnel_update_display(
+                    current_state, previous.values(),
                 )
                 personnel_updates_succeeded = (
                     await self.queue_system_personnel_update(
@@ -1260,7 +1272,16 @@ class EveSentryAlertRelay:
                 )
                 return False
 
-        await self._save_system_alert_state(current)
+        await self._save_system_alert_state(
+            current,
+            cleared_systems=cleared_systems,
+            confirmed_personnel=(
+                item
+                for state in current.values()
+                if state.get("personnel_complete", True) is not False
+                for item in state.get("personnel", [])
+            ),
+        )
         active_ids = set(active_items)
         raw_alerts = payload.get("alerts")
         if isinstance(raw_alerts, list):
@@ -1351,8 +1372,37 @@ class EveSentryAlertRelay:
                     return names
         return names
 
+    async def _personnel_update_display(
+        self, state: dict[str, Any], previous_systems: Iterable[dict[str, Any]],
+    ) -> dict[str, Any]:
+        previous = [
+            item
+            for system in previous_systems
+            for item in system.get("personnel", [])
+            if isinstance(item, dict)
+        ]
+        live_identities = {alias for item in previous for alias in _personnel_aliases(item)}
+        candidates = [
+            item for item in state.get("personnel", [])
+            if not live_identities.intersection(_personnel_aliases(item))
+        ]
+        recent: list[dict[str, Any]] = []
+        if candidates:
+            keys = [_recent_personnel_system_key(item) for item in candidates]
+            systems = await self.redis.mget(keys)
+            recent = [
+                {**item, "system_name": _decode(system)}
+                for item, system in zip(candidates, systems, strict=True)
+                if system
+            ]
+        return _personnel_display_state(state, {"personnel": [*recent, *previous]})
+
     async def _save_system_alert_state(
-        self, items: dict[str, dict[str, Any]]
+        self,
+        items: dict[str, dict[str, Any]],
+        *,
+        cleared_systems: Iterable[dict[str, Any]] = (),
+        confirmed_personnel: Iterable[dict[str, Any]] = (),
     ) -> None:
         pipeline = self.redis.pipeline()
         pipeline.delete(SYSTEM_ALERT_STATE_KEY)
@@ -1367,6 +1417,22 @@ class EveSentryAlertRelay:
                 },
             )
         pipeline.set(SYSTEM_ALERT_STATE_READY_KEY, "1")
+        # Keep attribution across a clear and the following roster refresh.
+        # The cache never contributes to the current hostile roster.
+        for system in cleared_systems:
+            baseline = _personnel_notification_state(system) or {}
+            for item in baseline.get("personnel", []):
+                if isinstance(item, dict):
+                    pipeline.set(
+                        _recent_personnel_system_key(item),
+                        _system_label(system),
+                        ex=RECENT_PERSONNEL_SYSTEM_SECONDS,
+                    )
+        confirmed_keys = {
+            _recent_personnel_system_key(item) for item in confirmed_personnel
+        }
+        if confirmed_keys:
+            pipeline.delete(*confirmed_keys)
         await pipeline.execute()
 
     async def _load_active_intel_state(self) -> dict[str, dict[str, Any]]:
@@ -1606,12 +1672,17 @@ class EveSentryAlertRelay:
                         state["personnel_revision"] = (
                             _personnel_revision(previous) + 1
                         )
+                        display_state = await self._personnel_update_display(
+                            state, current.values(),
+                        )
                         if not await self.queue_system_personnel_update(
-                            state, occurred_at
+                            display_state, occurred_at,
                         ):
                             return False
                         current[system_key] = state
-                        await self._save_system_alert_state(current)
+                        await self._save_system_alert_state(
+                            current, confirmed_personnel=updated_personnel,
+                        )
                     elif (state["hostile_count"] != previous.get("hostile_count")
                           or "personnel_notification_baseline" in previous):
                         current[system_key] = state
@@ -1689,8 +1760,8 @@ class EveSentryAlertRelay:
             "safe",
         ):
             return False
-        current.pop(system_key, None)
-        await self._save_system_alert_state(current)
+        cleared = current.pop(system_key)
+        await self._save_system_alert_state(current, cleared_systems=[cleared])
         self._active_alert_ids.add(event_key)
         await self._advance_alert_cursor(occurred_at)
         return True
@@ -2142,6 +2213,10 @@ def _personnel_aliases(item: dict[str, Any]) -> list[str]:
     if item_id:
         aliases.append(f"id:{item_id}")
     return aliases or [_personnel_identity(item)]
+
+
+def _recent_personnel_system_key(item: dict[str, Any]) -> str:
+    return f"{RECENT_PERSONNEL_SYSTEM_PREFIX}:{_personnel_identity(item)}"
 
 
 def _personnel_table_row(
