@@ -268,11 +268,9 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 普通 `desktop`/`service_readonly` key 不经过 Seat 账号校验，仅保留认证、吊销和迁移管理用途，
 访问客户端白名单时返回 `403 seat_client_key_required`。
 
-同机 QQ 机器人是受限例外：从 `127.0.0.1` 或 `::1` 访问
-`GET /api/v1/bootstrap`、`GET /api/v1/events` 和 OCR 查询路径时，必须同时带
-`X-EVE-SENTRY-Embedded-Bot: 1`，不需要 Bearer 密钥。该例外只对服务端看到的 loopback
-对端地址和专用标记头生效；其他主机、反向代理公网请求仍必须使用 Seat principal。星图和
-客户端的公网/内网认证规则不因该机器人例外改变。
+内嵌 QQ 机器人通过进程内接口读取预警事件和状态，创建及读取按需 OCR 查询。
+生产启用鉴权时，HTTP 上的 bootstrap、SSE 和 OCR 接口统一按现有会话或密钥权限鉴权，
+包括本机和经反向代理的请求。
 
 ## 公共接口
 

@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -82,20 +81,33 @@ class AlertNode:
         return self.system_name.casefold(), self.source_instance.casefold()
 
 
+class EmbeddedSentryStatusSource(Protocol):
+    """Status and OCR commands supplied by the hosting Sentry process."""
+
+    def build_embedded_status(self) -> dict[str, Any]: ...
+
+    def create_embedded_ocr_query(self, payload: dict[str, str]) -> dict[str, Any]: ...
+
+    def read_embedded_ocr_query(self, query_id: str) -> dict[str, Any] | None: ...
+
+
 class EveSentryStatusClient:
     def __init__(
         self,
         http: httpx.AsyncClient,
         events_url: str,
         api_key: str = "",
+        *,
+        embedded_source: EmbeddedSentryStatusSource | None = None,
     ) -> None:
         self.http = http
         self.bootstrap_url = _bootstrap_url(events_url)
         self.api_key = api_key.strip()
+        self.embedded_source = embedded_source
 
     @property
     def enabled(self) -> bool:
-        return bool(self.bootstrap_url)
+        return self.embedded_source is not None or bool(self.bootstrap_url)
 
     async def query(
         self,
@@ -119,6 +131,8 @@ class EveSentryStatusClient:
 
     async def bootstrap(self) -> dict[str, Any]:
         try:
+            if self.embedded_source is not None:
+                return await asyncio.to_thread(self.embedded_source.build_embedded_status)
             response = await self.http.get(
                 self.bootstrap_url,
                 headers=_sentry_headers(self.api_key),
@@ -149,21 +163,28 @@ class EveSentryStatusClient:
 
     async def create_ocr_query(self, query: dict[str, str]) -> dict[str, Any]:
         self._validate_ocr_query(query)
-        query_url = _ocr_query_url(self.bootstrap_url)
         payload = {
             key: str(query.get(key) or "").strip()
             for key in ("name", "corporation", "alliance", "system_name")
             if str(query.get(key) or "").strip()
         }
         try:
-            response = await self.http.post(
-                query_url,
-                headers=_sentry_headers(self.api_key),
-                json=payload,
-                timeout=10.0,
-            )
-            response.raise_for_status()
-            created = response.json()
+            if self.embedded_source is not None:
+                try:
+                    created = await asyncio.to_thread(
+                        self.embedded_source.create_embedded_ocr_query, payload,
+                    )
+                except ValueError as exc:
+                    raise SentryStatusError(str(exc)) from None
+            else:
+                response = await self.http.post(
+                    _ocr_query_url(self.bootstrap_url),
+                    headers=_sentry_headers(self.api_key),
+                    json=payload,
+                    timeout=10.0,
+                )
+                response.raise_for_status()
+                created = response.json()
             query_id = str(created.get("query_id") or "").strip()
             if not query_id:
                 raise SentryStatusError("预警服务未返回 OCR 查询编号。")
@@ -201,19 +222,11 @@ class EveSentryStatusClient:
         query_id = str(created.get("query_id") or "").strip()
         if not query_id:
             raise SentryStatusError("预警服务未返回 OCR 查询编号。")
-        status_url = f"{_ocr_query_url(self.bootstrap_url)}/{query_id}"
         deadline = asyncio.get_running_loop().time() + max(1.0, timeout_seconds)
         latest: dict[str, Any] = {}
         try:
             while asyncio.get_running_loop().time() < deadline:
-                response = await self.http.get(
-                    status_url,
-                    headers=_sentry_headers(self.api_key),
-                    timeout=10.0,
-                )
-                response.raise_for_status()
-                payload = response.json()
-                latest = payload if isinstance(payload, dict) else {}
+                latest = await self._fetch_ocr_query_status(query_id, timeout_seconds=10.0)
                 if str(latest.get("status") or "") in {"completed", "timed_out"}:
                     return latest
                 await asyncio.sleep(0.5)
@@ -224,6 +237,26 @@ class EveSentryStatusClient:
             latest["soft_timed_out"] = True
             return latest
         raise SentryStatusError("OCR 查询超时，当前没有收到客户端回传。")
+
+    async def _fetch_ocr_query_status(
+        self, query_id: str, *, timeout_seconds: float,
+    ) -> dict[str, Any]:
+        if self.embedded_source is not None:
+            async with asyncio.timeout(timeout_seconds):
+                payload = await asyncio.to_thread(
+                    self.embedded_source.read_embedded_ocr_query, query_id,
+                )
+        else:
+            response = await self.http.get(
+                f"{_ocr_query_url(self.bootstrap_url)}/{query_id}",
+                headers=_sentry_headers(self.api_key),
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid OCR query status")
+        return payload
 
     async def _query_ocr(self, query: dict[str, str]) -> str:
         created = await self.create_ocr_query(query)
@@ -247,7 +280,6 @@ class EveSentryStatusClient:
         if not query_id:
             latest["enrichment_incomplete"] = True
             return latest
-        status_url = f"{_ocr_query_url(self.bootstrap_url)}/{query_id}"
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(0.0, timeout_seconds)
         while _ocr_enrichment_pending(latest) and loop.time() < deadline:
@@ -257,14 +289,10 @@ class EveSentryStatusClient:
                 break
             try:
                 async with asyncio.timeout(remaining):
-                    response = await self.http.get(
-                        status_url,
-                        headers=_sentry_headers(self.api_key),
-                        timeout=min(5.0, remaining),
+                    updated = await self._fetch_ocr_query_status(
+                        query_id, timeout_seconds=min(5.0, remaining),
                     )
-                response.raise_for_status()
-                updated = response.json()
-                if not isinstance(updated, dict) or not isinstance(updated.get("results"), list):
+                if not isinstance(updated.get("results"), list):
                     raise ValueError("Invalid OCR query status")
             except (httpx.HTTPError, TimeoutError, ValueError, TypeError):
                 logger.warning("OCR query affiliation refresh failed")
@@ -884,6 +912,4 @@ def _sentry_headers(api_key: str, accept: str = "application/json") -> dict[str,
     headers = {"Accept": accept}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    if os.environ.get("EVE_SENTRY_EMBEDDED_BOT") == "1":
-        headers["X-EVE-SENTRY-Embedded-Bot"] = "1"
     return headers

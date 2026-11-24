@@ -495,7 +495,11 @@ class QQBotRuntime:
             from eve_risk.bot import RiskBotClient
 
             intents = botpy.Intents(public_messages=True, interaction=True)
-            client = RiskBotClient(intents=intents, bot_log=False)
+            client = RiskBotClient(
+                intents=intents,
+                bot_log=False,
+                sentry_status_source=self.event_source.server if self.event_source else None,
+            )
             if self.event_source is not None:
                 client.embedded_event_bridge = EmbeddedBotBridge()
                 client.embedded_event_bridge_source = self.event_source
@@ -531,10 +535,9 @@ class QQBotRuntime:
         for name, value in mappings.items():
             if value:
                 os.environ[name] = value
-        # An embedded bot is same-host by construction.  Never reuse a stale
-        # revoked Bearer key from an old standalone bot environment.
+        # The embedded bot uses the in-process server interface. Do not reuse a
+        # Bearer key from a retired standalone bot environment.
         os.environ["EVE_SENTRY_API_KEY"] = ""
-        os.environ["EVE_SENTRY_EMBEDDED_BOT"] = "1"
         os.environ["EVE_SENTRY_EMBEDDED_DIRECT"] = (
             "1" if self.event_source is not None else "0"
         )

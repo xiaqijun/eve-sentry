@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import os
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
@@ -1566,8 +1565,6 @@ class EveSentryAlertRelay:
         headers = {"Accept": "text/event-stream"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        if os.environ.get("EVE_SENTRY_EMBEDDED_BOT") == "1":
-            headers["X-EVE-SENTRY-Embedded-Bot"] = "1"
         # Persisted state events are ordered by sequence even when their source
         # timestamps arrive out of order. Keep the timestamp cursor as a
         # bootstrap/liveness fallback, but prefer the durable sequence for

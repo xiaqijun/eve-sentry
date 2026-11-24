@@ -348,3 +348,34 @@ async def test_targeted_query_requires_a_target(
         client = EveSentryStatusClient(http, "http://sentry.test/api/v1/events")
         with pytest.raises(SentryStatusError, match=message):
             await client.query(filters, refresh=True)
+
+
+@pytest.mark.asyncio
+async def test_status_and_ocr_commands_use_embedded_source_without_http():
+    class EmbeddedSource:
+        def build_embedded_status(self):
+            return {"monitoring_nodes": []}
+
+        def create_embedded_ocr_query(self, payload):
+            assert payload == {"system_name": "S-KSWL"}
+            return {"query_id": "embedded-query", "status": "pending"}
+
+        def read_embedded_ocr_query(self, query_id):
+            assert query_id == "embedded-query"
+            return {"status": "completed", "results": []}
+
+    def reject_http(_request):
+        pytest.fail("Embedded status commands must stay in process")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reject_http)) as http:
+        client = EveSentryStatusClient(http, "", embedded_source=EmbeddedSource())
+        assert client.enabled
+        assert await client.bootstrap() == {"monitoring_nodes": []}
+        created = await client.create_ocr_query(
+            {"mode": "system_roster", "system_name": "S-KSWL"},
+        )
+        assert created["query_id"] == "embedded-query"
+        assert await client.wait_ocr_query_payload(created) == {
+            "status": "completed",
+            "results": [],
+        }

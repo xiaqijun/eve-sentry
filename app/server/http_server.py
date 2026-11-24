@@ -225,6 +225,21 @@ def _create_ocr_query(
     }
 
 
+def _create_ocr_query_from_payload(store: Any, payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise RequestBodyError("OCR query payload must be an object")
+    filters = {
+        key: str(payload.get(key) or "").strip()
+        for key in ("name", "corporation", "alliance")
+        if str(payload.get(key) or "").strip()
+    }
+    system_name = str(payload.get("system_name") or "").strip()
+    timeout_seconds = float(payload.get("timeout_seconds") or 30.0)
+    if timeout_seconds <= 0:
+        raise RequestBodyError("timeout_seconds must be positive")
+    return _create_ocr_query(store.heartbeat_snapshot(), filters, timeout_seconds, system_name)
+
+
 def _claim_ocr_query_commands(client_id: str) -> list[dict[str, Any]]:
     normalized = str(client_id or "").strip()
     if not normalized:
@@ -1168,6 +1183,28 @@ class IntelHTTPServer:
             except Exception:
                 logger.exception("Embedded event listener failed")
 
+    def _embedded_request_handler(self) -> IntelRequestHandler:
+        handler = object.__new__(self._make_handler())
+        handler.server = SimpleNamespace(
+            store=self.store,
+            config_store=self.config_store,
+            esi_config=self.esi_config,
+            esi_session=self.esi_session,
+            map_config_store=self.map_config_store,
+        )
+        return handler
+
+    def build_embedded_status(self) -> dict[str, Any]:
+        """Build the status command view for the in-process bot."""
+        return self._embedded_request_handler()._bootstrap_payload()
+
+    def create_embedded_ocr_query(self, payload: dict[str, str]) -> dict[str, Any]:
+        """Queue the same bounded OCR command for a trusted in-process caller."""
+        return _create_ocr_query_from_payload(self.store, payload)
+
+    def read_embedded_ocr_query(self, query_id: str) -> dict[str, Any] | None:
+        return _ocr_query_status(query_id, self.store)
+
     def build_embedded_event_snapshot(self, after_seq: int = 0) -> dict[str, Any]:
         """Build the bot's event input without making an HTTP request.
 
@@ -1175,14 +1212,7 @@ class IntelHTTPServer:
         bootstrap builder so the map, hostile roster, monitoring-node state,
         and visibility rules stay identical to SSE/Web consumers.
         """
-        handler_cls = self._make_handler()
-        handler = object.__new__(handler_cls)
-        handler.server = SimpleNamespace(
-            store=self.store,
-            config_store=self.config_store,
-            esi_config=self.esi_config,
-            map_config_store=self.map_config_store,
-        )
+        handler = self._embedded_request_handler()
         (
             active_items,
             alerts,
@@ -2154,23 +2184,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         if path == f"{API_V1_PREFIX}/ocr/query":
             try:
                 payload = self._read_optional_json() or {}
-                if not isinstance(payload, dict):
-                    raise RequestBodyError("OCR query payload must be an object")
-                filters = {
-                    key: str(payload.get(key) or "").strip()
-                    for key in ("name", "corporation", "alliance")
-                    if str(payload.get(key) or "").strip()
-                }
-                system_name = str(payload.get("system_name") or "").strip()
-                timeout_seconds = float(payload.get("timeout_seconds") or 30.0)
-                if timeout_seconds <= 0:
-                    raise RequestBodyError("timeout_seconds must be positive")
-                result = _create_ocr_query(
-                    self._store().heartbeat_snapshot(),
-                    filters,
-                    timeout_seconds,
-                    system_name,
-                )
+                result = _create_ocr_query_from_payload(self._store(), payload)
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
