@@ -42,4 +42,5 @@ def test_node_snapshot_does_not_show_last_known_enemy_count():
     ])
     assert 'Old' not in message
     assert '上次' not in message
-    assert 'Live' in message
+    assert '| 监控节点 1 | 🟢 正常 | Live |' in message
+    assert '敌对人数' not in message

@@ -39,9 +39,9 @@ def test_formats_empty_monitoring_node_snapshot_as_table() -> None:
 
     assert message == (
         "### 🛰️ 在线监控节点｜0\n"
-        "| 节点 | 状态 | 星系 | 敌对人数 |\n"
-        "| --- | --- | --- | --- |\n"
-        "| 暂无在线监控节点 | — | — | — |"
+        "| 节点 | 状态 | 星系 |\n"
+        "| --- | --- | --- |\n"
+        "| 暂无在线监控节点 | — | — |"
     )
 
 
@@ -456,7 +456,6 @@ def test_alert_subscription_commands_and_message_format() -> None:
     assert "态势图" not in left
     assert "敌对进入" in format_alert_message(item)
     assert format_system_alert_message("S-KSWL", "alert") == "❗ S-KSWL 来敌"
-    assert format_system_alert_message("S-KSWL", "alert", 3) == "❗ S-KSWL 来敌 3 人"
     assert format_system_alert_message("S-KSWL", "safe") == "✅ S-KSWL 清空"
     personnel = format_personnel_alert_message(
         {
@@ -781,7 +780,7 @@ async def test_relay_delivers_presence_only_system_alert_without_empty_personnel
         )
 
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
-            "❗ S-KSWL 来敌 2 人"
+            "❗ S-KSWL 来敌"
         ]
         qq.send_proactive_markdown.assert_not_awaited()
 
@@ -1075,8 +1074,8 @@ async def test_relay_pushes_full_node_snapshot_and_recovers_after_missed_event()
         message = qq.send_proactive_markdown.await_args.args[1]
         assert message.startswith("### 🛰️ 在线监控节点｜2")
         assert "在线监控节点｜2" in message
-        assert "| 监控节点 1 | 🟢 正常 | Jita | 0 |" in message
-        assert "| 监控节点 2 | 🟢 正常 | Tama | 0 |" in message
+        assert "| 监控节点 1 | 🟢 正常 | Jita |" in message
+        assert "| 监控节点 2 | 🟢 正常 | Tama |" in message
         assert "监控节点状态更新" not in message
         assert "变化｜" not in message
         assert "Pilot Alpha" not in message
@@ -1366,9 +1365,9 @@ async def test_subscribe_pushes_latest_cached_monitoring_snapshot() -> None:
         qq.send_proactive_text.assert_awaited_once_with(
             "group-1",
             "🛰️ 在线监控节点｜1\n"
-            "| 节点 | 状态 | 星系 | 敌对人数 |\n"
-            "| --- | --- | --- | --- |\n"
-            "| 监控节点 1 | 🟢 正常 | Jita | 0 |",
+            "| 节点 | 状态 | 星系 |\n"
+            "| --- | --- | --- |\n"
+            "| 监控节点 1 | 🟢 正常 | Jita |",
         )
         qq.send_proactive_markdown.assert_awaited_once()
         await relay.subscribe("group-1")
@@ -1541,7 +1540,7 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
 
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
             "✅ S-KSWL 清空",
-                "❗ S-KSWL 来敌 1 人",
+                "❗ S-KSWL 来敌",
             "✅ S-KSWL 清空",
         ]
         assert qq.send_proactive_markdown.await_count == 3
@@ -1620,7 +1619,7 @@ async def test_relay_embeds_personnel_move_in_event_message() -> None:
         assert qq.send_proactive_text.await_count == 2
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
             "✅ Jita 清空",
-            "❗ Tama 来敌 1 人",
+            "❗ Tama 来敌",
         ]
         assert qq.send_proactive_markdown.await_count == 1
         assert "Jita → Tama" in qq.send_proactive_markdown.await_args.args[1]
@@ -2069,7 +2068,7 @@ async def test_alert_event_delivers_system_alert_without_legacy_template() -> No
 
         qq.send_proactive_markdown.assert_not_awaited()
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
-            "❗ S-KSWL 来敌 2 人"
+            "❗ S-KSWL 来敌"
         ]
         assert await redis.get(ALERT_CURSOR_KEY) == b"2026-08-10T01:00:03+00:00"
 
@@ -2138,7 +2137,7 @@ async def test_presence_alert_event_is_not_repeated_by_later_bootstrap() -> None
         )
 
     assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
-        "❗ S-KSWL 来敌 1 人"
+        "❗ S-KSWL 来敌"
     ]
     qq.send_proactive_markdown.assert_not_awaited()
     await redis.aclose()
@@ -2205,7 +2204,7 @@ async def test_durable_clear_is_not_repeated_after_bootstrap_already_cleared() -
         )
 
     assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
-        "❗ HB-FSO 来敌 1 人",
+        "❗ HB-FSO 来敌",
         "✅ HB-FSO 清空",
     ]
     assert await redis.get(ALERT_CURSOR_KEY) == b"2026-09-08T13:45:54+00:00"
