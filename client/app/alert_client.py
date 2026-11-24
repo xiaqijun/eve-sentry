@@ -1632,12 +1632,6 @@ class AlertOverlay(QWidget):
                 self._resize_start_position = global_position
                 self._drag_position = None
                 self._user_positioned = True
-                self._title.setAlignment(
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
-                )
-                self._status.setAlignment(
-                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
-                )
                 event.accept()
                 return True
             self._drag_position = (

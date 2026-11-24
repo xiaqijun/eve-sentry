@@ -1597,30 +1597,56 @@ def test_local_star_map_visually_distinguishes_online_and_warning_nodes(monkeypa
 
 def test_alert_overlay_resizes_from_bottom_right_corner(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtCore import QPoint, QRect
+    from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PyQt6.QtGui import QMouseEvent
     from PyQt6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
     overlay = AlertOverlay()
+    saved_geometries = []
+    overlay.geometry_changed.connect(saved_geometries.append)
+
+    def pointer_event(event_type, position, button, buttons):
+        event = QMouseEvent(
+            event_type,
+            QPointF(overlay.mapFromGlobal(position)),
+            QPointF(position),
+            button,
+            buttons,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        assert overlay.eventFilter(overlay, event)
+
     try:
         overlay.show()
         overlay.move(100, 100)
-        overlay.resize(220, 120)
         app.processEvents()
-        start_geometry = QRect(overlay.geometry())
+        start_geometry = overlay.geometry()
         start_position = overlay.frameGeometry().bottomRight()
-        edges = overlay._resize_edges_at(start_position)
+        end_position = start_position + QPoint(40, 30)
+        toolbar_alignment = overlay._status.alignment()
 
-        assert edges == RESIZE_RIGHT | RESIZE_BOTTOM
-
-        overlay._resize_edges = edges
-        overlay._resize_start_geometry = start_geometry
-        overlay._resize_start_position = start_position
-        overlay._resize_from_pointer(start_position + QPoint(40, 30))
+        assert overlay._resize_edges_at(start_position) == RESIZE_RIGHT | RESIZE_BOTTOM
+        pointer_event(
+            QEvent.Type.MouseButtonPress, start_position,
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+        )
+        pointer_event(
+            QEvent.Type.MouseMove, end_position,
+            Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
+        )
         app.processEvents()
 
         assert overlay.width() == start_geometry.width() + 40
         assert overlay.height() == start_geometry.height() + 30
+        assert overlay._status.alignment() == toolbar_alignment
+        assert saved_geometries == []
+
+        pointer_event(
+            QEvent.Type.MouseButtonRelease, end_position,
+            Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+        )
+        assert saved_geometries == [overlay.geometry_state()]
     finally:
         overlay.close()
 
