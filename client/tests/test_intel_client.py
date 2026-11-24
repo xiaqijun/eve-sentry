@@ -1651,6 +1651,46 @@ def test_alert_overlay_resizes_from_bottom_right_corner(monkeypatch):
         overlay.close()
 
 
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize("width_delta", [48, -48])
+def test_alert_overlay_resizes_from_visible_side_border(monkeypatch, side, width_delta):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtCore import QPoint, Qt
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    overlay = AlertOverlay()
+    saved_geometries = []
+    overlay.geometry_changed.connect(saved_geometries.append)
+    try:
+        overlay.setGeometry(140, 100, 500, 250)
+        overlay.show()
+        app.processEvents()
+        initial = overlay.geometry()
+        x = 10 if side == "left" else overlay.width() - 11
+        start = QPoint(x, overlay.height() // 2)
+        delta = QPoint(-width_delta if side == "left" else width_delta, 0)
+        end = overlay.mapToGlobal(start) + delta
+        window = overlay.windowHandle()
+
+        QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(window, start + delta)
+        QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=overlay.mapFromGlobal(end))
+        app.processEvents()
+
+        updated = overlay.geometry()
+        assert updated.width() == initial.width() + width_delta
+        assert (updated.top(), updated.height()) == (initial.top(), initial.height())
+        if side == "left":
+            assert updated.right() == initial.right()
+        else:
+            assert updated.left() == initial.left()
+        assert saved_geometries == [overlay.geometry_state()]
+    finally:
+        overlay.close()
+
+
 def test_alert_overlay_stays_on_a_left_hand_monitor(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtCore import QRect
