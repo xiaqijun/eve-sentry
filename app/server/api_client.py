@@ -407,7 +407,7 @@ class IntelApiClient:
         params = {
             "systems": ",".join(names),
             "system_ids": ",".join(str(item) for item in ids),
-            "hops": str(max(0, min(5, int(hops)))),
+            "hops": str(max(0, min(10, int(hops)))),
         }
         payload = self._request(
             "GET",

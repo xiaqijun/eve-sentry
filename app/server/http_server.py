@@ -3092,7 +3092,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         links = [
             item for item in snapshot.get("links", []) if isinstance(item, dict)
         ]
-        max_hops = max(0, min(5, int(hops)))
+        max_hops = max(0, min(10, int(hops)))
         by_name = {
             str(item.get("name") or "").strip().casefold(): item
             for item in systems

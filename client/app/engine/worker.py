@@ -213,6 +213,7 @@ class MonitorWorker(QThread):
         ocr_ready = False  # track whether OCR has been lazy-initialised
         previous_hostile_count: int | None = None
         published_hostile_count: int | None = None
+        published_count_started_ns = 0
         zero_frame_count = 0
         last_health_status_at = time.monotonic()
         previous_hostile_rows_fingerprint: bytes | None = None
@@ -253,6 +254,7 @@ class MonitorWorker(QThread):
                         self.status_update.emit(
                             f"截图区域: ({r['x']},{r['y']}) {r['w']}×{r['h']}"
                         )
+                    frame_started_ns = time.monotonic_ns()
                     img = capturer.screenshot(r["x"], r["y"], r["w"], r["h"])
                     self._mark_capture_success()
                     if self._stop_requested():
@@ -297,7 +299,13 @@ class MonitorWorker(QThread):
                         self._burst_scans_remaining = 2 if hostile_count > 0 else 0
                     previous_hostile_count = hostile_count
                     if published_hostile_count is not None:
-                        self.visual_evidence.emit(published_hostile_count, dict(capture))
+                        # A pending clear can still carry the preceding frame's count.
+                        if hostile_count == published_hostile_count:
+                            published_count_started_ns = frame_started_ns
+                        self.visual_evidence.emit(
+                            published_hostile_count,
+                            {**capture, "_frame_started_ns": published_count_started_ns},
+                        )
 
                     # OCR receives the full member list. The fingerprint uses
                     # the name-column view so friendly roster changes are
@@ -392,7 +400,11 @@ class MonitorWorker(QThread):
                     if should_run_regular_ocr:
                         if ocr_results:
                             self.ocr_snapshot.emit(snapshot_names, hostile_count)
-                        self.ocr_evidence_snapshot.emit(snapshot_names, hostile_count, {"capture": dict(capture)})
+                        self.ocr_evidence_snapshot.emit(
+                            snapshot_names,
+                            hostile_count,
+                            {"capture": dict(capture), "_frame_started_ns": frame_started_ns},
+                        )
                         if snapshot_names:
                             ocr_retry_remaining = 2 if capture.get("roster_quality") == "truncated" else 0
                         empty_ocr_retry_at = time.monotonic() + 5.0 if not snapshot_names else 0.0

@@ -1234,6 +1234,29 @@ def test_v1_bootstrap_and_map_routes_expose_workbench_payload(tmp_path):
         server.stop()
 
 
+def test_map_neighborhood_includes_systems_up_to_ten_jumps(tmp_path):
+    names = [f"System-{index}" for index in range(12)]
+    store = IntelStore(
+        tmp_path / "intel.json",
+        systems={name: StarSystem(name=name, x=index, y=0) for index, name in enumerate(names)},
+        links=list(zip(names, names[1:])),
+    )
+    server = IntelHTTPServer(store, port=0)
+    server.start()
+    try:
+        for query, expected_hops in (("", 3), ("&hops=10", 10), ("&hops=11", 10)):
+            status, payload = request_json(
+                f"{server.url}/api/v1/map/neighborhood?systems={names[0]}{query}"
+            )
+            assert status == 200
+            assert payload["map"]["hops"] == expected_hops
+            assert {item["name"] for item in payload["map"]["systems"]} == set(
+                names[:expected_hops + 1]
+            )
+    finally:
+        server.stop()
+
+
 def test_map_snapshot_skips_unused_hostile_personnel_work():
     handler = IntelRequestHandler.__new__(IntelRequestHandler)
     captured = {}
