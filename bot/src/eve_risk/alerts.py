@@ -6,8 +6,10 @@ import json
 import logging
 import os
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from redis.asyncio import Redis
@@ -33,6 +35,7 @@ SSE_HEARTBEAT_SECONDS = 1.0
 SSE_IDLE_TIMEOUT_SECONDS = 15.0
 GROUP_DELIVERY_CONCURRENCY = 4
 GROUP_DELIVERY_TIMEOUT_SECONDS = 5.0
+SYSTEM_COUNT_PUSH_INTERVAL_SECONDS = 3.0
 RECONNECT_BACKOFF_SECONDS = (0.2, 1.0, 3.0, 5.0)
 
 
@@ -135,7 +138,8 @@ def format_system_alert_message(
     system_name = str(system_name or "").strip() or "未知星系"
     if transition == "safe":
         return f"✅ {system_name} 清空"
-    return f"❗ {system_name} 来敌"
+    count = f" {hostile_count} 人" if isinstance(hostile_count, int) and hostile_count > 0 else ""
+    return f"❗ {system_name} 来敌{count}"
 
 
 def format_personnel_alert_message(
@@ -304,6 +308,15 @@ async def _iter_lines_with_idle_timeout(
         yield line
 
 
+@dataclass
+class _SystemCountQueue:
+    last_delivered: int | None
+    pending: tuple[int, str] | None = None
+    timer: asyncio.TimerHandle | None = None
+    task: asyncio.Task[None] | None = None
+    sending: bool = False
+
+
 class EveSentryAlertRelay:
     def __init__(
         self,
@@ -342,6 +355,7 @@ class EveSentryAlertRelay:
             0.1, float(monitoring_node_delivery_timeout_seconds)
         )
         self._active_alert_ids: set[str] = set()
+        self._system_count_updates: dict[str, _SystemCountQueue] = {}
         self._personnel_last_sent_at: dict[str, float] = {}
         self._personnel_pending: dict[str, tuple[dict[str, Any], str]] = {}
         self._personnel_flush_tasks: dict[str, asyncio.Task[None]] = {}
@@ -613,6 +627,97 @@ class EveSentryAlertRelay:
         )
         return failed == 0
 
+    def _queue_system_count_update(
+        self, previous: dict[str, Any], current: dict[str, Any]
+    ) -> None:
+        old_count = previous.get("hostile_count")
+        count = current.get("hostile_count")
+        if not isinstance(count, int) or count <= 0 or count == old_count:
+            return
+
+        system_name = _system_label(current)
+        key = system_name.casefold()
+        queue = self._system_count_updates.setdefault(
+            key, _SystemCountQueue(last_delivered=old_count)
+        )
+        if queue.pending is None or queue.pending[0] != count:
+            queue.pending = (count, uuid4().hex)
+        if queue.task is None and queue.timer is None:
+            self._schedule_system_count_update(system_name, queue, SYSTEM_COUNT_PUSH_INTERVAL_SECONDS)
+
+    def _schedule_system_count_update(
+        self, system_name: str, queue: _SystemCountQueue, delay: float
+    ) -> None:
+        def start_delivery() -> None:
+            queue.timer = None
+            queue.task = asyncio.create_task(
+                self._flush_system_count_updates(system_name, queue),
+                name=f"eve-sentry-system-count:{system_name.casefold()}",
+            )
+
+        queue.timer = asyncio.get_running_loop().call_later(delay, start_delivery)
+
+    async def _discard_system_count_update(self, system_key: str) -> None:
+        queue = self._system_count_updates.pop(system_key, None)
+        if queue is None:
+            return
+        queue.pending = None
+        if queue.timer is not None:
+            queue.timer.cancel()
+        if queue.task is not None:
+            # Finish any send that already started before allowing a clear
+            # for the same system to overtake it.
+            if not queue.sending:
+                queue.task.cancel()
+            await asyncio.gather(queue.task, return_exceptions=True)
+
+    async def _flush_system_count_updates(
+        self, system_name: str, queue: _SystemCountQueue
+    ) -> None:
+        try:
+            raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
+            pending = queue.pending
+            if pending is None:
+                return
+            count, notification_id = pending
+            if count == queue.last_delivered:
+                queue.pending = None
+                return
+
+            event_id = f"system:count:{system_name.casefold()}:{notification_id}"
+            message = f"⚠️ {system_name} 敌对人数更新｜{count} 人"
+
+            async def deliver_group(group_openid: str) -> None:
+                await self.qq.send_proactive_text(group_openid, message)
+
+            groups = sorted(_decode(value) for value in raw_groups if _decode(value))
+            queue.sending = True
+            delivered, failed = await self._fanout_groups(
+                groups, event_id, deliver_group, label="system count update"
+            )
+        except Exception:
+            logger.exception("EVE Sentry system count update will retry")
+            queue.last_delivered = None
+        else:
+            logger.info(
+                "EVE Sentry system count processed event_key=%s count=%d deliveries=%d failures=%d",
+                event_id, count, delivered, failed,
+            )
+            # After partial delivery, groups may be showing different counts.
+            queue.last_delivered = count if failed == 0 else None
+            if failed == 0 and queue.pending is pending:
+                queue.pending = None
+        finally:
+            queue.sending = False
+            queue.task = None
+
+        if queue.pending is not None:
+            delay = max(
+                SYSTEM_COUNT_PUSH_INTERVAL_SECONDS,
+                getattr(self.qq, "retry_after_seconds", 0.0),
+            )
+            self._schedule_system_count_update(system_name, queue, delay)
+
     async def deliver_system_personnel_update(
         self,
         state: dict[str, Any],
@@ -628,6 +733,7 @@ class EveSentryAlertRelay:
             logger.warning("Ignored malformed EVE Sentry personnel update")
             return True
         revision = _personnel_revision(state)
+        count_queue = self._system_count_updates.get(system_name.casefold())
 
         raw_groups = await self.redis.smembers(ALERT_GROUPS_KEY)
         groups = sorted(_decode(value) for value in raw_groups if _decode(value))
@@ -667,6 +773,9 @@ class EveSentryAlertRelay:
             delivered,
             failed,
         )
+        count = state.get("hostile_count")
+        if failed == 0 and count_queue is not None and isinstance(count, int):
+            count_queue.last_delivered = count
         return failed == 0
 
     async def queue_system_personnel_update(
@@ -721,12 +830,16 @@ class EveSentryAlertRelay:
                     logger.warning("EVE Sentry personnel state unavailable; retrying queued update")
                     await asyncio.sleep(self.personnel_push_interval_seconds)
                     continue
-                if (current.get(system_key) or {}).get("personnel_complete", True) is False:
+                current_state = current.get(system_key) or {}
+                if current_state.get("personnel_complete", True) is False:
                     await asyncio.sleep(self.personnel_push_interval_seconds)
                     continue
                 state, occurred_at = self._personnel_pending[system_key]
+                # The roster may have waited behind the merge window while
+                # the group already received a newer visual count.
+                count = current_state.get("hostile_count", state.get("hostile_count"))
                 delivered = await self.deliver_system_personnel_update(
-                    state, occurred_at
+                    {**state, "hostile_count": count}, occurred_at
                 )
                 if not delivered:
                     await asyncio.sleep(self.personnel_push_interval_seconds)
@@ -1179,9 +1292,14 @@ class EveSentryAlertRelay:
         active_personnel_systems = set(current)
         for system_key in set(self._personnel_pending) - active_personnel_systems:
             self._discard_pending_personnel_update(system_key)
+        live_count_systems = set(current) - unavailable_systems
+        for system_key in self._system_count_updates.keys() - live_count_systems:
+            await self._discard_system_count_update(system_key)
 
         for system_key, current_state in current.items():
             previous_state = _personnel_notification_state(previous.get(system_key))
+            if initialized and previous_state is not None and system_key in live_count_systems:
+                self._queue_system_count_update(previous_state, current_state)
             if current_state.get("personnel_complete", True) is False:
                 # Remember only the notification baseline. Current personnel
                 # remains authoritative, so commands cannot reuse old identities.
@@ -1543,6 +1661,7 @@ class EveSentryAlertRelay:
         """
         if payload.get("freshness") == "unknown":
             system_key = _system_label(payload).casefold()
+            await self._discard_system_count_update(system_key)
             current, initialized = await self._load_system_alert_state()
             if initialized:
                 current.pop(system_key, None)
@@ -1589,25 +1708,29 @@ class EveSentryAlertRelay:
         system_key = system_name.casefold()
         if system_key in current:
             if str(payload.get("event_type") or "").strip() == "alert.updated":
+                previous = current[system_key]
+                previous_count = previous.get("hostile_count")
+                try:
+                    count = max(0, int(payload.get("hostile_count", previous_count)))
+                except (TypeError, ValueError):
+                    count = previous_count
+                state = {**previous, "hostile_count": count}
+                self._queue_system_count_update(previous, state)
                 personnel = payload.get("hostile_personnel")
                 if isinstance(personnel, list):
-                    previous = current[system_key]
                     notification_previous = _personnel_notification_state(previous)
                     updated_personnel = [
                         dict(item) for item in personnel if isinstance(item, dict)
                     ]
                     for item in updated_personnel:
                         item.setdefault("system_name", system_name)
-                    state = {
-                        **previous,
-                        "hostile_count": max(
-                            0,
-                            int(payload.get("hostile_count") or 0),
+                    state.update(
+                        personnel=updated_personnel,
+                        personnel_complete=payload.get("personnel_complete", True),
+                        personnel_correction=_personnel_removed(
+                            notification_previous.get("personnel"), updated_personnel
                         ),
-                        "personnel": updated_personnel,
-                        "personnel_complete": payload.get("personnel_complete", True),
-                        "personnel_correction": _personnel_removed(notification_previous.get("personnel"), updated_personnel),
-                    }
+                    )
                     state["personnel_fingerprint"] = _personnel_fingerprint(
                         state["personnel"]
                     )
@@ -1635,6 +1758,9 @@ class EveSentryAlertRelay:
                           or "personnel_notification_baseline" in previous):
                         current[system_key] = state
                         await self._save_system_alert_state(current)
+                elif count != previous_count:
+                    current[system_key] = state
+                    await self._save_system_alert_state(current)
             self._active_alert_ids.update(event_ids)
             return True
 
@@ -1675,10 +1801,11 @@ class EveSentryAlertRelay:
         if not system_name or not event_key:
             logger.warning("Ignored malformed EVE Sentry clear event")
             return True
+        system_key = system_name.casefold()
+        await self._discard_system_count_update(system_key)
         current, initialized = await self._load_system_alert_state()
         if not initialized:
             return True
-        system_key = system_name.casefold()
         if system_key not in current:
             # A fresh Bootstrap may already have applied this clear before the
             # durable event reaches the consumer. Acknowledge the event without

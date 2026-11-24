@@ -456,7 +456,7 @@ def test_alert_subscription_commands_and_message_format() -> None:
     assert "态势图" not in left
     assert "敌对进入" in format_alert_message(item)
     assert format_system_alert_message("S-KSWL", "alert") == "❗ S-KSWL 来敌"
-    assert format_system_alert_message("S-KSWL", "alert", 3) == "❗ S-KSWL 来敌"
+    assert format_system_alert_message("S-KSWL", "alert", 3) == "❗ S-KSWL 来敌 3 人"
     assert format_system_alert_message("S-KSWL", "safe") == "✅ S-KSWL 清空"
     personnel = format_personnel_alert_message(
         {
@@ -781,7 +781,7 @@ async def test_relay_delivers_presence_only_system_alert_without_empty_personnel
         )
 
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
-            "❗ S-KSWL 来敌"
+            "❗ S-KSWL 来敌 2 人"
         ]
         qq.send_proactive_markdown.assert_not_awaited()
 
@@ -1541,7 +1541,7 @@ async def test_relay_pushes_only_system_entry_and_clear_transitions() -> None:
 
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
             "✅ S-KSWL 清空",
-                "❗ S-KSWL 来敌",
+                "❗ S-KSWL 来敌 1 人",
             "✅ S-KSWL 清空",
         ]
         assert qq.send_proactive_markdown.await_count == 3
@@ -1620,7 +1620,7 @@ async def test_relay_embeds_personnel_move_in_event_message() -> None:
         assert qq.send_proactive_text.await_count == 2
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
             "✅ Jita 清空",
-            "❗ Tama 来敌",
+            "❗ Tama 来敌 1 人",
         ]
         assert qq.send_proactive_markdown.await_count == 1
         assert "Jita → Tama" in qq.send_proactive_markdown.await_args.args[1]
@@ -1862,8 +1862,13 @@ async def test_personnel_roster_can_return_to_prior_state_in_same_episode() -> N
 @pytest.mark.asyncio
 async def test_personnel_push_interval_coalesces_to_latest_roster() -> None:
     redis = fakeredis.aioredis.FakeRedis()
+    rosters: asyncio.Queue[str] = asyncio.Queue()
+
+    async def send_roster(group: str, message: str) -> None:
+        rosters.put_nowait(message)
+
     qq = SimpleNamespace(
-        send_proactive_markdown=AsyncMock(return_value={"id": "markdown"}),
+        send_proactive_markdown=AsyncMock(side_effect=send_roster),
         send_proactive_text=AsyncMock(return_value={"id": "text"}),
     )
     async with httpx.AsyncClient() as http:
@@ -1872,7 +1877,7 @@ async def test_personnel_push_interval_coalesces_to_latest_roster() -> None:
             redis,
             qq,
             "http://sentry.test/events",
-            personnel_push_interval_seconds=0.05,
+            personnel_push_interval_seconds=1.0,
         )
         await relay.subscribe("group-1")
         await relay.process_bootstrap(
@@ -1899,15 +1904,15 @@ async def test_personnel_push_interval_coalesces_to_latest_roster() -> None:
             }
 
         await relay.process_bootstrap(bootstrap("Alice", generated_at="t1"))
+        rosters.get_nowait()
         await relay.process_bootstrap(bootstrap("Alice", "Bob", generated_at="t2"))
         await relay.process_bootstrap(
             bootstrap("Alice", "Bob", "Charlie", generated_at="t3")
         )
 
         assert qq.send_proactive_markdown.await_count == 1
-        await asyncio.sleep(0.08)
+        latest_message = await asyncio.wait_for(rosters.get(), 3)
         assert qq.send_proactive_markdown.await_count == 2
-        latest_message = qq.send_proactive_markdown.await_args_list[-1].args[1]
         assert "Alice" in latest_message
         assert "Bob" in latest_message
         assert "Charlie" in latest_message
@@ -2064,7 +2069,7 @@ async def test_alert_event_delivers_system_alert_without_legacy_template() -> No
 
         qq.send_proactive_markdown.assert_not_awaited()
         assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
-            "❗ S-KSWL 来敌"
+            "❗ S-KSWL 来敌 2 人"
         ]
         assert await redis.get(ALERT_CURSOR_KEY) == b"2026-08-10T01:00:03+00:00"
 
@@ -2133,7 +2138,7 @@ async def test_presence_alert_event_is_not_repeated_by_later_bootstrap() -> None
         )
 
     assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
-        "❗ S-KSWL 来敌"
+        "❗ S-KSWL 来敌 1 人"
     ]
     qq.send_proactive_markdown.assert_not_awaited()
     await redis.aclose()
@@ -2200,7 +2205,7 @@ async def test_durable_clear_is_not_repeated_after_bootstrap_already_cleared() -
         )
 
     assert [call.args[1] for call in qq.send_proactive_text.await_args_list] == [
-        "❗ HB-FSO 来敌",
+        "❗ HB-FSO 来敌 1 人",
         "✅ HB-FSO 清空",
     ]
     assert await redis.get(ALERT_CURSOR_KEY) == b"2026-09-08T13:45:54+00:00"
