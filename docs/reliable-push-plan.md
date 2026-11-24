@@ -341,7 +341,7 @@ P0 事件不能等待 Bootstrap、OCR、ESI 或 zKill。星图在 SSE 连接和�
 轮询。每条事件完整处理后只推进可靠状态序号，重连时发送 `Last-Event-ID`；全新客户端没有
 游标时直接初始化到当前快照水位，不从 `state:0` 回放整个保留期。
 
-局部星图由后台 `AlertMapWorker` 请求 `/api/v1/map/neighborhood`，超时 5 秒、跳数最大 5，
+局部星图由后台 `AlertMapWorker` 请求 `/api/v1/map/neighborhood`，超时 5 秒，预警范围默认 5 跳、最大 10 跳，
 不会阻塞 SSE 或 UI；请求运行期间的多次变化只保留最后一个待处理请求。
 
 监控节点采用以下星图状态：

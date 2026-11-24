@@ -618,8 +618,9 @@ Authorization: Bearer eve_xxx
 `/api/v1/kill-activity/*` 仅保留兼容行为；实时人员解析不再抓取 zKillboard 统计，
 `verified_characters[].zkill` 仅可能来自旧历史数据，不提供同步补查接口。
 `/api/v1/map/neighborhood` 接受逗号分隔的 `systems`、`system_ids` 和 `hops` 参数，
-`hops` 默认 `3` 且最大为 `5`。响应只包含任一中心星系指定跳数内的节点和节点间连线；
-预警浮窗使用该接口，避免传输完整地图。Windows 预警客户端在后台 `AlertMapWorker` 中
+`hops` 的有效范围为 `0`–`10`，省略时默认为 `3`。响应只包含任一中心星系指定跳数内的节点和节点间连线；
+预警浮窗使用该接口，避免传输完整地图。Windows 预警客户端默认选中 `5` 跳，并沿用已保存的范围。
+超过 `5` 跳的范围需要服务端支持 `10` 跳上限。后台 `AlertMapWorker`
 使用 5 秒请求超时；同一时刻只运行一个拓扑请求，请求期间的多次变化只保留最后一个待处理
 请求，界面线程不会被网络请求阻塞。
 

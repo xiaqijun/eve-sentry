@@ -67,29 +67,19 @@ def test_repeated_visible_state_does_not_rebuild_overlay(monkeypatch):
         overlay.show_summaries([{"system_name": "S-KSWL", "hostile_count": 1}])
         app.processEvents()
         calls = []
-        monkeypatch.setattr(
-            overlay, "_layout_rows_for_size", lambda: calls.append("layout")
+        setter = overlay.set_map_alerts
+        def record(alerts):
+            calls.append(alerts)
+            setter(alerts)
+
+        monkeypatch.setattr(overlay, "set_map_alerts", record)
+        overlay.show_summaries(
+            [{"system_name": "S-KSWL", "hostile_count": 1, "created_at": "new timestamp"}]
         )
-        monkeypatch.setattr(
-            overlay, "_resize_to_content", lambda: calls.append("resize")
-        )
-        for index in range(100):
-            overlay.show_summaries(
-                [
-                    {
-                        "system_name": "S-KSWL",
-                        "hostile_count": 1,
-                        "created_at": str(index),
-                    }
-                ]
-            )
         assert calls == []
-        # Real changes remain synchronous, including the final clear.
         overlay.show_summaries([{"system_name": "S-KSWL", "hostile_count": 0}])
-        frame, _, count, status = overlay._rows[0]
-        assert count.text() == "敌 0"
-        assert status.text() == "安全"
-        assert frame.property("hostile") == "false"
-        assert calls == []
+        assert len(calls) == 1
+        assert overlay._map_widget._alerts[0]["hostile_count"] == 0
+        assert overlay._map_widget._alerts[0]["active"] is False
     finally:
         overlay.close()

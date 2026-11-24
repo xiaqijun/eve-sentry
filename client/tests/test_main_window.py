@@ -1161,7 +1161,8 @@ def test_upload_confirmation_logs_visual_count_and_ocr_names():
     ]
 
 
-def test_system_change_clears_old_presence_and_refreshes_current_frame():
+@pytest.mark.parametrize("another_monitor_has_hostiles", [False, True])
+def test_system_change_clears_old_presence_and_refreshes_current_frame(another_monitor_has_hostiles):
     class UploadManager:
         def __init__(self):
             self.calls = []
@@ -1171,10 +1172,10 @@ def test_system_change_clears_old_presence_and_refreshes_current_frame():
 
     class AlertController:
         def __init__(self):
-            self.counts = []
+            self.departures = []
 
-        def update_local_hostile_count(self, system_name, count):
-            self.counts.append((system_name, count))
+        def forget_local_monitoring_systems(self, systems):
+            self.departures.extend(systems)
 
     class Worker:
         def __init__(self):
@@ -1202,6 +1203,12 @@ def test_system_change_clears_old_presence_and_refreshes_current_frame():
     window._upload_manager = manager
     window._alert_controller = controller
     window._workers = {"eve-pilot-a": worker}
+    if another_monitor_has_hostiles:
+        window._worker_contexts = {
+            "eve-pilot-b": {
+                "key": "eve-pilot-b", "system_name": "Tama", "_hostile_icon_count": 2,
+            }
+        }
     window._window_combo = None
     window._intel_system = "Unknown"
     window._intel_system_source = "default"
@@ -1212,8 +1219,22 @@ def test_system_change_clears_old_presence_and_refreshes_current_frame():
     assert context["system_name"] == "Nourvukaiken"
     assert context["system_id"] is None
     assert context["_hostile_icon_count"] == 0
-    assert controller.counts == [("Tama", 0)]
+    assert controller.departures == ([] if another_monitor_has_hostiles else ["Tama"])
     assert worker.refresh_calls == 1
+    window._refresh_intel_location = lambda **_kwargs: None
+    handled = []
+    window._on_hostile_icon_detected = lambda count, ctx, **_kwargs: handled.append(
+        (count, ctx["system_name"], ctx["_capture"])
+    )
+    changed_at = context["_system_changed_ns"]
+    MainWindow._on_visual_evidence(
+        window, 1, {"_frame_started_ns": changed_at - 1, "sequence": 10}, context, worker
+    )
+    assert handled == []
+    MainWindow._on_visual_evidence(
+        window, 2, {"_frame_started_ns": changed_at + 1, "sequence": 11}, context, worker
+    )
+    assert handled == [(2, "Nourvukaiken", {"sequence": 11})]
     assert len(manager.calls) == 1
     key, payload, metadata = manager.calls[0]
     assert key == "detector:device:pilot-a"

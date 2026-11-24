@@ -150,6 +150,7 @@ def test_merge_map_accounts_enriches_local_window_without_duplicate():
             {"hwnd": 11, "title": "EVE - Alice"},
             {"hwnd": 12, "title": "EVE - Alice"},
         ],
+        {"alice": "Tama"},
     )
     remote = [
         {
@@ -321,12 +322,13 @@ def test_controller_persists_explicit_map_account_selection(tmp_path):
     refreshes = []
     controller._refresh_local_map = lambda **kwargs: refreshes.append(kwargs)
 
-    controller._on_map_options_changed(["local-account:alice"], 3)
+    controller._on_map_options_changed(["local-account:alice"], 0)
 
     reloaded = AlertClientState(state_path)
     reloaded.load_seen_ids()
     assert reloaded.map_selected_account_keys() == ["local-account:alice"]
-    assert refreshes == [{"selected_keys": ["local-account:alice"], "hops": 3}]
+    assert reloaded.alert_range_hops() == 0
+    assert refreshes == [{"selected_keys": ["local-account:alice"], "hops": 0}]
 
 
 def test_alert_client_state_persists_overlay_geometry(tmp_path):
@@ -702,6 +704,7 @@ def test_unknown_local_account_does_not_request_empty_map():
     ]
     controller._map_request_signature = ("old",)
     controller._map_worker = None
+    controller._set_alert_range = lambda *_args, **_kwargs: None
 
     controller._refresh_local_map(
         selected_keys=["local-account:alice"],
@@ -734,6 +737,111 @@ def test_stale_map_result_is_ignored_after_selection_changes():
     controller._on_map_received({"systems": [{"name": "Tama"}]})
 
     assert controller.overlay.payloads == []
+
+
+def test_range_follows_the_latest_jump_and_combines_selected_characters(tmp_path, monkeypatch):
+    from threading import Event
+
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QApplication
+    from app.alert_client import parse_args
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    app = QApplication.instance() or QApplication([])
+    old_request = Event()
+    release_old = Event()
+    new_request = Event()
+    release_new = Event()
+    requested = []
+
+    class MapApi:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def map_neighborhood(self, *, system_names, system_ids, hops):
+            requested.append((system_names, hops))
+            assert not system_ids
+            if "Old" in system_names:
+                old_request.set()
+                assert release_old.wait(5)
+                names = ["Old", "Old-Neighbor", "Bob-Sys", "Shared"]
+            else:
+                new_request.set()
+                assert release_new.wait(5)
+                names = ["New", "Bob-Sys"] if hops == 0 else [
+                    "New", "New-Neighbor", "Bob-Sys", "Shared",
+                ]
+                if hops == 10:
+                    names.append("Far-Neighbor")
+            return {"systems": [{"name": name} for name in names], "links": []}
+
+    def wait_until(predicate):
+        for _ in range(150):
+            if predicate():
+                return
+            QTest.qWait(20)
+        assert predicate()
+
+    positions = {"Alice": "Old", "Bob": "Bob-Sys"}
+    notices = []
+    controller = AlertTrayController(
+        app,
+        parse_args(["--server", "https://test.invalid", "--state", str(tmp_path / "state.json")]),
+        api_factory=MapApi,
+        tray_enabled=False,
+        window_provider=lambda: [{"title": f"EVE - {name}"} for name in positions],
+        system_resolver=positions.get,
+        notification_callback=lambda title, message: notices.append((title, message)),
+    )
+    controller._alert_muted = True
+    try:
+        wait_until(old_request.is_set)
+        positions["Alice"] = "Middle"
+        controller.show_monitoring_systems([])
+        positions["Alice"] = "New"
+        controller.show_monitoring_systems([])
+        controller._on_alert({"system": "Old", "hostile_count": 2})
+        controller._on_safe({"system": "Old"})
+        controller._on_alert({"system": "New-Neighbor", "hostile_count": 3})
+        controller._on_alert({"system": "Shared", "hostile_count": 1})
+        assert notices == []
+
+        release_old.set()
+        wait_until(new_request.is_set)
+        assert controller.overlay._map_widget._payload["systems"] == []
+        release_new.set()
+        wait_until(lambda: controller._map_worker is None)
+        assert requested == [(["Bob-Sys", "Old"], 5), (["Bob-Sys", "New"], 5)]
+        assert notices == [
+            ("敌对告警", "❗ New-Neighbor 来敌 3 人"),
+            ("敌对告警", "❗ Shared 来敌 1 人"),
+        ]
+        controller._on_alert({"system": "Bob-Sys", "hostile_count": 1})
+        assert controller._active_alert_systems == {"new-neighbor", "shared", "bob-sys"}
+        assert not any("Old" in message for _, message in notices)
+
+        controller._on_alert({"system": "Far-Neighbor", "hostile_count": 2})
+        assert len(notices) == 3
+        controller.overlay._hops_spinbox.setValue(10)
+        wait_until(lambda: controller._map_worker is None)
+        assert requested[-1] == (["Bob-Sys", "New"], 10)
+        assert notices[-1] == ("敌对告警", "❗ Far-Neighbor 来敌 2 人")
+        reloaded = AlertClientState(controller.state.path)
+        reloaded.load_seen_ids()
+        assert reloaded.alert_range_hops() == 10
+
+        controller.overlay._hops_spinbox.setValue(0)
+        controller._on_safe({"system": "New-Neighbor"})
+        wait_until(lambda: controller._map_worker is None)
+        assert requested[-1] == (["Bob-Sys", "New"], 0)
+        assert controller._active_alert_systems == {"bob-sys"}
+        assert len(notices) == 4
+    finally:
+        release_old.set()
+        release_new.set()
+        controller.stop()
+        controller.overlay.close()
 
 
 def test_alert_controller_is_running_while_map_worker_unwinds():
@@ -1163,6 +1271,7 @@ def test_local_visual_count_overrides_lower_server_bootstrap(monkeypatch):
     controller._recent_summaries = []
     controller._local_hostile_counts = {}
     controller.overlay = FakeOverlay()
+    controller._sync_map_accounts = lambda: None
     controller._notification_callback = None
     controller._tray = None
     monkeypatch.setattr("app.alert_client.play_alert_sound", lambda: None)

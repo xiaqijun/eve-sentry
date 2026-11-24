@@ -37,6 +37,7 @@ def controller_for(worker, accounts):
     controller._map_accounts = accounts
     controller.overlay = SimpleNamespace()
     controller._map_worker = None
+    controller._set_alert_range = lambda *_args, **_kwargs: None
     controller.requests = []
     controller._start_map_worker = controller.requests.append
     return controller

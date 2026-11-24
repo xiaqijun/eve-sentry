@@ -15,6 +15,7 @@ class IntelApiError(RuntimeError):
 
 
 INVALID_API_KEY_MESSAGE = "设备密钥格式无效，请重新复制完整密钥"
+MAX_MAP_NEIGHBORHOOD_HOPS = 10
 _API_KEY_PATTERN = re.compile(r"eve_[A-Za-z0-9_-]+\Z", re.ASCII)
 _MAX_API_KEY_LENGTH = 128
 
@@ -439,7 +440,7 @@ class IntelApiClient:
         params = {
             "systems": ",".join(names),
             "system_ids": ",".join(str(item) for item in ids),
-            "hops": str(max(0, min(5, int(hops)))),
+            "hops": str(max(0, min(MAX_MAP_NEIGHBORHOOD_HOPS, int(hops)))),
         }
         payload = self._request(
             "GET",

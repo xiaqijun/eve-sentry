@@ -19,26 +19,20 @@ from typing import Any, Callable
 from uuid import uuid4
 from app.monitoring_scope import allows_remote
 
-from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, Qt, QThread, QUrl, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QColor, QFont, QPainter, QPainterPath, QPen
+from PyQt6.QtCore import QEvent, QPoint, QRect, QTimer, Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtGui import QAction, QBrush, QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import (
-    QAbstractSpinBox,
     QApplication,
-    QButtonGroup,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMenu,
     QPushButton,
-    QScrollArea,
     QSpinBox,
-    QStackedWidget,
     QStyle,
     QSystemTrayIcon,
     QToolTip,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -53,7 +47,7 @@ from app.core.client_identity import persistent_client_id
 from app.channels.local_system import find_latest_local_system
 from app.channels.log_watcher import DEFAULT_CHATLOG_DIR
 from app.engine.capturer import Capturer
-from app.intel_client import IntelApiClient, IntelApiError
+from app.intel_client import MAX_MAP_NEIGHBORHOOD_HOPS, IntelApiClient, IntelApiError
 
 logger = logging.getLogger(__name__)
 
@@ -62,34 +56,15 @@ ALERT_CLIENT_LABEL = "Alert Client"
 DEFAULT_EVENT_TIMEOUT = 30.0
 DEFAULT_HEARTBEAT_INTERVAL = 10.0
 DEFAULT_RECONNECT_MAX_DELAY = 30.0
+DEFAULT_ALERT_RANGE_HOPS = 5
 ALERT_ACK_PROTOCOL = "alert-ack.v1"
-MAX_OVERLAY_ROWS = 4
-OVERLAY_TILE_COLUMNS = 2
-OVERLAY_MIN_WIDTH = 140
-OVERLAY_MIN_HEIGHT = 52
-OVERLAY_TILE_WIDTH = 92
-OVERLAY_TILE_HEIGHT = 62
-OVERLAY_TILE_MIN_WIDTH = 88
-OVERLAY_TILE_MAX_WIDTH = 120
-OVERLAY_TILE_MIN_HEIGHT = 58
-OVERLAY_TILE_MAX_HEIGHT = 74
-OVERLAY_HOSTILE_COUNT_WIDTH = 38
-OVERLAY_GRID_SPACING = 6
+OVERLAY_MIN_WIDTH = 320
+OVERLAY_MIN_HEIGHT = 160
 OVERLAY_RESIZE_MARGIN = 6
 RESIZE_LEFT = 1
 RESIZE_RIGHT = 2
 RESIZE_TOP = 4
 RESIZE_BOTTOM = 8
-
-
-def overlay_tile_dimensions(screen_width: int, screen_height: int) -> tuple[int, int]:
-    """Return compact tile dimensions for one screen's logical geometry."""
-    width = int(round(max(1, screen_width) * OVERLAY_TILE_WIDTH / 1920))
-    height = int(round(max(1, screen_height) * OVERLAY_TILE_HEIGHT / 1080))
-    return (
-        max(OVERLAY_TILE_MIN_WIDTH, min(OVERLAY_TILE_MAX_WIDTH, width)),
-        max(OVERLAY_TILE_MIN_HEIGHT, min(OVERLAY_TILE_MAX_HEIGHT, height)),
-    )
 
 
 def default_state_path() -> str:
@@ -126,9 +101,11 @@ class AlertClientState:
         self._last_event_id = ""
         self._map_selected_account_keys: list[str] | None = None
         self._overlay_geometry: dict[str, int] | None = None
+        self._alert_range_hops = DEFAULT_ALERT_RANGE_HOPS
 
     def load_seen_ids(self) -> list[str]:
         """Load remembered alert ids from disk."""
+        self._alert_range_hops = DEFAULT_ALERT_RANGE_HOPS
         self.loaded = self.path.exists()
         if not self.loaded:
             self._set_ids([])
@@ -157,6 +134,9 @@ class AlertClientState:
         self._overlay_geometry = self._clean_overlay_geometry(
             payload.get("overlay_geometry")
         )
+        hops = payload.get("alert_range_hops")
+        if type(hops) is int and 0 <= hops <= MAX_MAP_NEIGHBORHOOD_HOPS:
+            self._alert_range_hops = hops
         return list(self._seen_ids)
 
     def has_seen(self, alert_id: str) -> bool:
@@ -188,6 +168,14 @@ class AlertClientState:
         """Persist an explicit local-map account selection."""
         self._set_map_selected_account_keys(account_keys)
         self._write_state()
+
+    def alert_range_hops(self) -> int:
+        return self._alert_range_hops
+
+    def save_alert_range_hops(self, hops: int) -> None:
+        if self._alert_range_hops != hops:
+            self._alert_range_hops = hops
+            self._write_state()
 
     def last_event_id(self) -> str:
         """Return the last fully handled SSE event cursor."""
@@ -230,6 +218,7 @@ class AlertClientState:
             payload["map_selected_account_keys"] = self._map_selected_account_keys
         if self._overlay_geometry is not None:
             payload["overlay_geometry"] = self._overlay_geometry
+        payload["alert_range_hops"] = self._alert_range_hops
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(
@@ -809,13 +798,12 @@ def merge_map_accounts(
             consumed_remote.add(index)
             local_system = str(item.get("system_name") or "").strip()
             remote_system = str(remote.get("system_name") or "").strip()
-            if not local_system or local_system.casefold() == "unknown":
-                item["system_name"] = remote_system or "Unknown"
+            if local_system.casefold() == remote_system.casefold():
                 item["system_id"] = remote.get("system_id")
-            item["client_id"] = remote.get("client_id")
-            item["monitoring"] = _account_is_monitoring(remote)
-            item["health_status"] = _account_health_status(remote)
-            item["hostile_count"] = remote.get("hostile_count", 0)
+                item["client_id"] = remote.get("client_id")
+                item["monitoring"] = _account_is_monitoring(remote)
+                item["health_status"] = _account_health_status(remote)
+                item["hostile_count"] = remote.get("hostile_count", 0)
         merged.append(item)
 
     merged.extend(
@@ -1060,7 +1048,8 @@ class LocalStarMapWidget(QWidget):
             except (TypeError, ValueError):
                 count = 0
             hostile_counts[name] = max(hostile_counts.get(name, 0), count)
-        for name in names:
+        labels: list[tuple[bool, float, float, str]] = []
+        for name in sorted(names):
             x, y = point(name)
             key = name.casefold()
             hostile = hostile_counts.get(key, 0) > 0
@@ -1145,7 +1134,11 @@ class LocalStarMapWidget(QWidget):
             if key in unknown_systems:
                 painter.setPen(QColor("#f6c760"))
                 painter.drawText(int(x + 13), int(y + 4), "上次")
-            if not monitoring and not degraded and not offline and not hostile and key not in unknown_systems:
+            if hostile:
+                labels.append((True, x, y, f"{name} · 敌 {hostile_counts[key]}"))
+            elif local_focused:
+                labels.append((False, x, y, name))
+            if not (local_focused or monitoring or degraded or offline or hostile or key in unknown_systems):
                 continue
 
             _label, tooltip = self._node_annotation(
@@ -1163,6 +1156,27 @@ class LocalStarMapWidget(QWidget):
                 hit_radius * 2,
             )
             self._node_tooltips.append((node_rect, tooltip))
+
+        # Keep the former list's essential details visible on the map.
+        font = painter.font()
+        font.setPixelSize(11)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        occupied = [rect for rect, _ in self._node_tooltips]
+        for hostile, x, y, label in sorted(labels, key=lambda item: not item[0]):
+            width = metrics.horizontalAdvance(label) + 8
+            height = metrics.height() + 4
+            for left in (int(x) + 13, int(x) - width - 13):
+                rect = QRect(left, int(y) - height // 2, width, height)
+                if not self.rect().contains(rect) or any(rect.intersects(item) for item in occupied):
+                    continue
+                occupied.append(rect)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(12, 26, 37, 240))
+                painter.drawRoundedRect(rect, 3, 3)
+                painter.setPen(QColor("#ffb3b8" if hostile else "#ffe3a0"))
+                painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+                break
 
     def mouseMoveEvent(self, event) -> None:
         tooltip = next(
@@ -1185,22 +1199,6 @@ class LocalStarMapWidget(QWidget):
         self._active_tooltip = ""
         QToolTip.hideText()
         super().leaveEvent(event)
-
-
-class CurrentPageStack(QStackedWidget):
-    """Let the compact overlay size itself from only the visible view."""
-
-    def sizeHint(self) -> QSize:
-        widget = self.currentWidget()
-        return widget.sizeHint() if widget is not None else super().sizeHint()
-
-    def minimumSizeHint(self) -> QSize:
-        widget = self.currentWidget()
-        return (
-            widget.minimumSizeHint()
-            if widget is not None
-            else super().minimumSizeHint()
-        )
 
 
 def build_heartbeat_details(
@@ -1284,34 +1282,23 @@ class AlertOverlay(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._rows: list[tuple[QFrame, QLabel, QLabel, QLabel]] = []
         self._status = QLabel("连接中")
         self._status.setObjectName("statusLabel")
-        self._title = QLabel("EVE SENTRY")
-        self._title.setObjectName("titleLabel")
-        self._content_layout: QVBoxLayout | None = None
-        self._row_layout: QGridLayout | None = None
-        self._scroll: QScrollArea | None = None
-        self._view_stack: QStackedWidget | None = None
         self._map_widget: LocalStarMapWidget | None = None
         self._account_button: QPushButton | None = None
         self._account_menu: QMenu | None = None
         self._account_actions: list[QAction] = []
-        self._view_buttons: list[QPushButton] = []
         self._sound_stop_button: QPushButton | None = None
         self._hops_spinbox: QSpinBox | None = None
         self._map_accounts: list[dict[str, Any]] = []
         self._map_alerts: list[dict[str, Any]] = []
         self._map_selected_account_keys: set[str] | None = None
         self._anchor_rect: dict[str, Any] | None = None
-        self._tile_width = OVERLAY_TILE_WIDTH
-        self._tile_height = OVERLAY_TILE_HEIGHT
         self._drag_position: QPoint | None = None
         self._resize_edges = 0
         self._resize_start_geometry: QRect | None = None
         self._resize_start_position: QPoint | None = None
         self._user_positioned = False
-        self._user_resized = False
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -1336,194 +1323,59 @@ class AlertOverlay(QWidget):
         root.addWidget(frame)
 
         layout = QVBoxLayout(frame)
-        self._content_layout = layout
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 5, 8, 6)
+        layout.setSpacing(4)
 
         header = QHBoxLayout()
-        self._title.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-        self._title.setFixedHeight(26)
-        self._title.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-        )
-        self._status.setFixedHeight(26)
-        self._status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._title.setMouseTracking(True)
-        self._status.setMouseTracking(True)
-        self._title.installEventFilter(self)
-        self._status.installEventFilter(self)
-        header.addWidget(self._title, 0, Qt.AlignmentFlag.AlignTop)
-        header.addStretch(1)
-        view_selector = QFrame()
-        view_selector.setObjectName("overlayViewSelector")
-        view_selector.setFixedSize(86, 26)
-        view_layout = QHBoxLayout(view_selector)
-        view_layout.setContentsMargins(2, 2, 2, 2)
-        view_layout.setSpacing(0)
-        view_group = QButtonGroup(self)
-        view_group.setExclusive(True)
-        view_buttons: list[QPushButton] = []
-        for index, text in enumerate(("列表", "星图")):
-            button = QPushButton(text)
-            button.setObjectName("overlayViewButton")
-            button.setCheckable(True)
-            button.setFixedSize(42, 22)
-            button.setToolTip(f"切换到{text}视图")
-            button.clicked.connect(
-                lambda _checked, target=index: self._set_view(target)
-            )
-            view_group.addButton(button, index)
-            view_layout.addWidget(button)
-            view_buttons.append(button)
-        view_buttons[0].setChecked(True)
-        header.addWidget(view_selector, 0, Qt.AlignmentFlag.AlignTop)
-        header.addWidget(self._status, 0, Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(header)
+        header.setSpacing(5)
 
-        sound_control = QHBoxLayout()
-        sound_control.setContentsMargins(0, 0, 0, 0)
-        sound_control.addStretch(1)
-        sound_stop_button = QPushButton("停止本轮")
-        sound_stop_button.setObjectName("alertSoundStopButton")
-        sound_stop_button.setFixedHeight(24)
-        sound_stop_button.setToolTip("停止当前持续告警声音，本轮敌对清空前不再响")
-        sound_stop_button.clicked.connect(self.sound_stop_requested.emit)
-        sound_stop_button.setVisible(False)
-        sound_control.addWidget(sound_stop_button)
-        layout.addLayout(sound_control)
-        self._sound_stop_button = sound_stop_button
-
-        row_container = QWidget()
-        row_container.setObjectName("rowContainer")
-        row_container.setMouseTracking(True)
-        row_container.installEventFilter(self)
-        self._row_layout = QGridLayout(row_container)
-        self._row_layout.setContentsMargins(0, 0, 0, 0)
-        self._row_layout.setHorizontalSpacing(OVERLAY_GRID_SPACING)
-        self._row_layout.setVerticalSpacing(OVERLAY_GRID_SPACING)
-        self._row_layout.setAlignment(
-            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
-        )
-
-        scroll = QScrollArea()
-        scroll.setObjectName("alertScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setWidget(row_container)
-        scroll.setVisible(False)
-        scroll.setMouseTracking(True)
-        visible_tile_rows = max(1, MAX_OVERLAY_ROWS // OVERLAY_TILE_COLUMNS)
-        scroll.setMaximumHeight(
-            self._tile_height * visible_tile_rows
-            + OVERLAY_GRID_SPACING * max(0, visible_tile_rows - 1)
-        )
-        scroll.viewport().setMouseTracking(True)
-        scroll.viewport().installEventFilter(self)
-        self._scroll = scroll
-
-        view_stack = CurrentPageStack()
-        view_stack.addWidget(scroll)
-        map_page = QWidget()
-        map_layout = QVBoxLayout(map_page)
-        map_layout.setContentsMargins(0, 0, 0, 0)
-        map_layout.setSpacing(6)
-        map_toolbar = QFrame()
-        map_toolbar.setObjectName("mapToolbar")
-        toolbar_layout = QVBoxLayout(map_toolbar)
-        toolbar_layout.setContentsMargins(6, 4, 6, 4)
-        toolbar_layout.setSpacing(2)
-        options = QHBoxLayout()
-        options.setContentsMargins(0, 0, 0, 0)
-        options.setSpacing(4)
         account_button = QPushButton("账号 0/0")
         account_button.setObjectName("mapAccountButton")
-        account_button.setFixedHeight(24)
-        account_button.setMinimumWidth(78)
+        account_button.setMinimumHeight(25)
         account_button.setEnabled(False)
         account_menu = MultiSelectMenu(account_button)
         account_menu.setObjectName("mapAccountMenu")
         account_button.setMenu(account_menu)
-        options.addWidget(account_button)
-        options.addStretch(1)
+        header.addWidget(account_button)
+
+        range_label = QLabel("预警范围")
+        range_label.setObjectName("mapToolbarLabel")
+        for label in (range_label, self._status):
+            label.setMouseTracking(True)
+            label.installEventFilter(self)
         hops_spinbox = QSpinBox()
         hops_spinbox.setObjectName("mapHopsSpinBox")
-        hops_spinbox.setRange(1, 5)
-        hops_spinbox.setValue(3)
+        hops_spinbox.setRange(0, MAX_MAP_NEIGHBORHOOD_HOPS)
+        hops_spinbox.setValue(DEFAULT_ALERT_RANGE_HOPS)
         hops_spinbox.setSuffix(" 跳")
-        hops_spinbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hops_spinbox.setAccelerated(True)
-        hops_spinbox.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        hops_spinbox.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        hops_spinbox.setFixedSize(52, 24)
-        hops_spinbox.setToolTip("调整所选角色周围显示的跳数")
-        hops_spinbox.lineEdit().setReadOnly(True)
-        hops_spinbox.lineEdit().setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        hops_spinbox.lineEdit().setAttribute(
-            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
-            True,
-        )
+        hops_spinbox.setMinimumHeight(25)
+        hops_spinbox.setAccessibleName("预警范围")
+        hops_spinbox.setToolTip("只提醒所选角色指定跳数内的星系，0 跳仅提醒角色所在星系")
         hops_spinbox.valueChanged.connect(lambda _value: self._emit_map_options())
-        hops_control = QFrame()
-        hops_control.setObjectName("mapHopsControl")
-        hops_control.setFixedSize(74, 26)
-        hops_layout = QHBoxLayout(hops_control)
-        hops_layout.setContentsMargins(1, 1, 1, 1)
-        hops_layout.setSpacing(0)
-        hops_layout.addWidget(hops_spinbox)
-        step_layout = QVBoxLayout()
-        step_layout.setContentsMargins(0, 0, 0, 0)
-        step_layout.setSpacing(0)
-        for arrow_type, action, tooltip in (
-            (Qt.ArrowType.UpArrow, hops_spinbox.stepUp, "增加一跳"),
-            (Qt.ArrowType.DownArrow, hops_spinbox.stepDown, "减少一跳"),
-        ):
-            step_button = QToolButton()
-            step_button.setObjectName("mapHopsStepButton")
-            step_button.setArrowType(arrow_type)
-            step_button.setProperty(
-                "stepDirection",
-                "up" if arrow_type == Qt.ArrowType.UpArrow else "down",
-            )
-            step_button.setFixedSize(20, 12)
-            step_button.setAutoRepeat(True)
-            step_button.setToolTip(tooltip)
-            step_button.clicked.connect(action)
-            step_layout.addWidget(step_button)
-        hops_layout.addLayout(step_layout)
-        options.addWidget(hops_control)
-        toolbar_layout.addLayout(options)
+        range_label.setBuddy(hops_spinbox)
+        header.addWidget(range_label)
+        header.addWidget(hops_spinbox)
+        header.addStretch(1)
 
-        legend_layout = QHBoxLayout()
-        legend_layout.setContentsMargins(0, 0, 0, 0)
-        legend_layout.setSpacing(8)
-        online_legend = QLabel("● 监控")
-        online_legend.setObjectName("mapOnlineLegend")
-        online_legend.setToolTip("青色节点：监控节点在线")
-        warning_legend = QLabel("★ 本地")
-        warning_legend.setObjectName("mapWarningLegend")
-        warning_legend.setToolTip("金色星形：所选本地账号所在星系")
-        hostile_legend = QLabel("◆ 来敌")
-        hostile_legend.setObjectName("mapHostileLegend")
-        hostile_legend.setToolTip("红色节点：当前存在敌对预警")
-        legend_layout.addWidget(online_legend)
-        legend_layout.addWidget(warning_legend)
-        legend_layout.addWidget(hostile_legend)
-        legend_layout.addStretch(1)
-        toolbar_layout.addLayout(legend_layout)
-        map_layout.addWidget(map_toolbar)
+        sound_stop_button = QPushButton("停止本轮")
+        sound_stop_button.setObjectName("alertSoundStopButton")
+        sound_stop_button.setMinimumHeight(25)
+        sound_stop_button.setToolTip("停止本轮持续告警声音，直到范围内不再有活动预警")
+        sound_stop_button.clicked.connect(self.sound_stop_requested.emit)
+        sound_stop_button.hide()
+        header.addWidget(sound_stop_button)
+        self._status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        header.addWidget(self._status)
+        layout.addLayout(header)
+
         map_widget = LocalStarMapWidget()
-        map_layout.addWidget(map_widget, 1)
-        view_stack.addWidget(map_page)
-        view_stack.setFixedHeight(0)
-        layout.addWidget(view_stack)
-        self._view_stack = view_stack
+        layout.addWidget(map_widget, 1)
         self._map_widget = map_widget
         self._account_button = account_button
         self._account_menu = account_menu
-        self._view_buttons = view_buttons
+        self._sound_stop_button = sound_stop_button
         self._hops_spinbox = hops_spinbox
+        self.resize(340, 230)
 
         self.setStyleSheet(
             """
@@ -1532,69 +1384,11 @@ class AlertOverlay(QWidget):
                 border: 1px solid rgba(91, 190, 211, 165);
                 border-radius: 8px;
             }
-            QLabel#titleLabel {
-                color: #b8edf7;
-                letter-spacing: 0;
-            }
             QLabel#statusLabel {
                 color: #9fb7c3;
                 font-size: 11px;
                 font-weight: 600;
                 padding-left: 4px;
-            }
-            QFrame#overlayViewSelector {
-                background: rgba(12, 29, 39, 175);
-                border: 1px solid rgba(93, 150, 168, 100);
-                border-radius: 4px;
-            }
-            QPushButton#overlayViewButton {
-                color: #8fa7b4;
-                background: transparent;
-                border: 0;
-                border-radius: 2px;
-                padding: 0;
-                font-size: 11px;
-                font-weight: 600;
-            }
-            QPushButton#overlayViewButton:hover {
-                color: #d9f4fa;
-                background: rgba(37, 76, 91, 170);
-            }
-            QPushButton#overlayViewButton:checked {
-                color: #f2fcff;
-                background: #21778c;
-            }
-            QFrame#alertRow {
-                background: rgba(91, 25, 27, 220);
-                border: 1px solid #ef746d;
-                border-radius: 4px;
-            }
-            QFrame#alertRow QLabel {
-                color: #fff7ea;
-                background: transparent;
-                border: 0;
-            }
-            QFrame#alertRow[hostile="false"] {
-                background: rgba(14, 70, 55, 220);
-                border: 1px solid #55c795;
-            }
-            QFrame#alertRow[hostile="false"] QLabel {
-                color: #d9fff0;
-            }
-            QLabel#systemCell {
-                font-size: 15px;
-                font-weight: 700;
-            }
-            QLabel#hostileCell, QLabel#stateCell {
-                font-size: 12px;
-                font-weight: 600;
-            }
-            QScrollArea#alertScroll {
-                background: transparent;
-                border: 0;
-            }
-            QScrollArea#alertScroll QWidget#rowContainer {
-                background: transparent;
             }
             QPushButton {
                 color: #b9d1dd;
@@ -1615,30 +1409,10 @@ class AlertOverlay(QWidget):
             QPushButton#alertSoundStopButton:hover {
                 background: rgba(139, 49, 48, 235);
             }
-            QFrame#mapToolbar {
-                background: rgba(10, 25, 34, 175);
-                border: 1px solid rgba(78, 135, 153, 85);
-                border-radius: 4px;
-            }
             QLabel#mapToolbarLabel {
                 color: #91a9b6;
                 font-size: 11px;
                 font-weight: 600;
-            }
-            QLabel#mapOnlineLegend {
-                color: #6fe8d2;
-                font-size: 10px;
-                font-weight: 700;
-            }
-            QLabel#mapWarningLegend {
-                color: #ffd166;
-                font-size: 10px;
-                font-weight: 700;
-            }
-            QLabel#mapHostileLegend {
-                color: #ff7d86;
-                font-size: 10px;
-                font-weight: 700;
             }
             QPushButton#mapAccountButton {
                 color: #d8edf3;
@@ -1652,36 +1426,12 @@ class AlertOverlay(QWidget):
             QPushButton#mapAccountButton:hover {
                 background: rgba(29, 66, 81, 235);
             }
-            QFrame#mapHopsControl {
+            QSpinBox#mapHopsSpinBox {
+                color: #f1fbfd;
                 background: rgba(17, 40, 51, 185);
                 border: 1px solid rgba(91, 181, 202, 120);
                 border-radius: 3px;
-            }
-            QFrame#mapHopsControl:hover {
-                border-color: #71d4e8;
-            }
-            QSpinBox#mapHopsSpinBox {
-                color: #f1fbfd;
-                background: transparent;
-                border: 0;
                 padding: 0 3px;
-                font-family: "Segoe UI";
-                font-size: 13px;
-                font-weight: 700;
-            }
-            QToolButton#mapHopsStepButton {
-                color: #dff8fd;
-                background: rgba(39, 91, 108, 225);
-                border: 0;
-                border-left: 1px solid rgba(113, 212, 232, 100);
-                border-radius: 0;
-                padding: 0;
-            }
-            QToolButton#mapHopsStepButton[stepDirection="up"] {
-                border-bottom: 1px solid rgba(113, 212, 232, 70);
-            }
-            QToolButton#mapHopsStepButton:hover {
-                background: #287f94;
             }
             QMenu#mapAccountMenu {
                 color: #dce8ef;
@@ -1698,25 +1448,10 @@ class AlertOverlay(QWidget):
             """
         )
 
-    def _set_view(self, index: int) -> None:
-        if self._view_stack is not None:
-            target = max(0, min(1, int(index)))
-            self._view_stack.setCurrentIndex(target)
-            for button_index, button in enumerate(self._view_buttons):
-                button.setChecked(button_index == target)
-            if target == 0:
-                self._layout_rows_for_size()
-            else:
-                if self._content_layout is not None:
-                    self._content_layout.setSpacing(8)
-                self._view_stack.setMinimumHeight(196)
-                self._view_stack.setMaximumHeight(16777215)
-            self._resize_to_content()
-
     def _emit_map_options(self) -> None:
         selected = self._selected_map_account_keys()
         self._update_map_account_button()
-        hops = self._hops_spinbox.value() if self._hops_spinbox is not None else 3
+        hops = self._hops_spinbox.value() if self._hops_spinbox is not None else DEFAULT_ALERT_RANGE_HOPS
         if self._map_widget is not None:
             selected_keys = set(selected)
             self._map_widget.set_accounts(
@@ -1764,8 +1499,14 @@ class AlertOverlay(QWidget):
 
     def map_selection(self) -> tuple[list[str], int]:
         selected = self._selected_map_account_keys()
-        hops = self._hops_spinbox.value() if self._hops_spinbox is not None else 3
+        hops = self._hops_spinbox.value() if self._hops_spinbox is not None else DEFAULT_ALERT_RANGE_HOPS
         return selected, hops
+
+    def set_alert_range_hops(self, hops: int) -> None:
+        if self._hops_spinbox is not None:
+            self._hops_spinbox.blockSignals(True)
+            self._hops_spinbox.setValue(hops)
+            self._hops_spinbox.blockSignals(False)
 
     def map_selection_memory(self) -> list[str] | None:
         """Return explicit selection memory, retaining currently offline accounts."""
@@ -1785,12 +1526,7 @@ class AlertOverlay(QWidget):
         }
 
     def set_map_accounts(self, accounts: list[dict[str, Any]]) -> None:
-        self._map_accounts = [
-            dict(item)
-            for item in accounts
-            if str(item.get("system_name") or "").strip().casefold()
-            not in {"", "unknown"}
-        ]
+        self._map_accounts = [dict(item) for item in accounts]
         if self._account_menu is None:
             return
         selectable_accounts = [
@@ -1804,7 +1540,8 @@ class AlertOverlay(QWidget):
             key = str(account.get("key") or "")
             label = str(account.get("label") or account.get("system_name") or key)
             system = str(account.get("system_name") or "")
-            text = f"{label} · {system}" if system else label
+            location = system if system and system.casefold() != "unknown" else "定位中"
+            text = f"{label} · {location}"
             action = self._account_menu.addAction(text)
             action.setData(key)
             action.setCheckable(True)
@@ -1894,7 +1631,6 @@ class AlertOverlay(QWidget):
                 self._resize_start_geometry = QRect(self.geometry())
                 self._resize_start_position = global_position
                 self._drag_position = None
-                self._user_resized = True
                 self._user_positioned = True
                 self._title.setAlignment(
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
@@ -2013,11 +1749,6 @@ class AlertOverlay(QWidget):
             )
         self.setGeometry(geometry)
 
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        if self._user_resized:
-            self._layout_rows_for_size()
-
     def geometry_state(self) -> dict[str, int]:
         """Return a JSON-safe overlay rectangle."""
         geometry = self.geometry()
@@ -2057,212 +1788,21 @@ class AlertOverlay(QWidget):
         y = max(available.top(), min(saved.y(), available.bottom() - height + 1))
         self.setGeometry(x, y, width, height)
         self._user_positioned = True
-        self._user_resized = True
-        self._layout_rows_for_size()
         return True
 
     def show_summaries(self, summaries: list[dict[str, Any]]) -> None:
-        screen = self._screen_for_anchor()
-        if screen is not None:
-            self._apply_screen_metrics(screen)
-        rows = aggregate_alert_summaries(
-            [
-                item
-                for item in summaries
-                if str(item.get("system_name") or "").strip().casefold()
-                not in {"", "unknown"}
-            ]
-        )
-        self.set_map_alerts(rows)
-        render_key = tuple(
-            (item["system_name"], item["hostile_count"], item["active"], item.get("freshness"))
-            for item in rows
-        )
-        layout_key = (len(rows), self._tile_width, self._tile_height)
-        layout_changed = layout_key != getattr(self, "_summary_layout_key", None)
-        if render_key == getattr(self, "_summary_render_key", None) and not layout_changed:
-            return
-        self._ensure_row_count(len(rows))
-        for index, (frame, system_label, hostile_label, state_label) in enumerate(
-            self._rows
-        ):
-            if index >= len(rows):
-                frame.setVisible(False)
-                system_label.setText("")
-                hostile_label.setText("")
-                state_label.setText("")
-                continue
-            item = rows[index]
-            active = bool(item.get("active", True))
-            active_count = item.get("active_hostile_count")
-            if active_count in {None, ""}:
-                active_count = item.get("hostile_count", 0)
-            hostile_count = max(
-                0,
-                int(active_count or 0) if active else 0,
-            )
-            system_label.setText(str(item["system_name"]))
-            hostile_label.setText(f"敌 {hostile_count}")
-            unknown = item.get("freshness") == "unknown"
-            state_label.setText("上次" if unknown else ("来敌" if hostile_count > 0 else "安全"))
-            frame.setToolTip("采集状态未知，显示上次确认敌情" if unknown else "")
-            hostile_property = "true" if hostile_count > 0 else "false"
-            if frame.property("hostile") != hostile_property:
-                frame.setProperty("hostile", hostile_property)
-                frame.style().unpolish(frame)
-                frame.style().polish(frame)
-                for label in (system_label, hostile_label, state_label):
-                    label.style().unpolish(label)
-                    label.style().polish(label)
-            frame.setVisible(True)
-        self._summary_render_key = render_key
-        self._summary_layout_key = layout_key
-        if layout_changed:
-            self._layout_rows_for_size()
-            self._resize_to_content()
-            if not self._user_positioned:
-                self.move_to_default_position()
-
-    def _resize_to_content(self) -> None:
-        """Resize both larger and smaller when the visible tile count changes."""
-        if self._user_resized:
-            return
-        if self._content_layout is not None:
-            self._content_layout.invalidate()
-            self._content_layout.activate()
-        if self.layout() is not None:
-            self.layout().invalidate()
-            self.layout().activate()
-        hint = self.sizeHint()
-        self.resize(
-            max(self.minimumWidth(), hint.width()),
-            max(self.minimumHeight(), hint.height()),
-        )
-
-    def _ensure_row_count(self, count: int) -> None:
-        if self._row_layout is None:
-            return
-        while len(self._rows) < count:
-            frame = QFrame()
-            frame.setObjectName("alertRow")
-            frame.setVisible(False)
-            frame.setFixedSize(self._tile_width, self._tile_height)
-            frame.setProperty("hostile", "true")
-            frame.setMouseTracking(True)
-            frame.installEventFilter(self)
-
-            tile_layout = QVBoxLayout(frame)
-            tile_layout.setContentsMargins(9, 7, 9, 7)
-            tile_layout.setSpacing(2)
-            system_label = QLabel("")
-            system_label.setObjectName("systemCell")
-            system_label.setFixedWidth(self._tile_width - 18)
-            system_label.setAlignment(
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-            )
-            system_label.setMouseTracking(True)
-            system_label.installEventFilter(self)
-            tile_layout.addWidget(system_label)
-
-            detail_layout = QHBoxLayout()
-            detail_layout.setContentsMargins(0, 0, 0, 0)
-            detail_layout.setSpacing(4)
-            hostile_label = QLabel("")
-            hostile_label.setObjectName("hostileCell")
-            hostile_label.setFixedWidth(OVERLAY_HOSTILE_COUNT_WIDTH)
-            hostile_label.setAlignment(
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-            )
-            hostile_label.setMouseTracking(True)
-            hostile_label.installEventFilter(self)
-            state_label = QLabel("")
-            state_label.setObjectName("stateCell")
-            state_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-            state_label.setMouseTracking(True)
-            state_label.installEventFilter(self)
-            detail_layout.addWidget(hostile_label)
-            detail_layout.addWidget(state_label)
-            detail_layout.addStretch(1)
-            tile_layout.addLayout(detail_layout)
-
-            tile_index = len(self._rows)
-            self._row_layout.addWidget(
-                frame,
-                tile_index // OVERLAY_TILE_COLUMNS,
-                tile_index % OVERLAY_TILE_COLUMNS,
-            )
-            self._rows.append(
-                (frame, system_label, hostile_label, state_label)
-            )
-
-    def _layout_rows_for_size(self) -> None:
-        if self._row_layout is None or self._scroll is None:
-            return
-        visible_rows = [row for row in self._rows if not row[0].isHidden()]
-        for frame, *_labels in self._rows:
-            self._row_layout.removeWidget(frame)
-        if not visible_rows:
-            if self._content_layout is not None:
-                self._content_layout.setSpacing(0)
-            self._scroll.setVisible(False)
-            self._scroll.setMinimumHeight(0)
-            self._scroll.setMaximumHeight(16777215)
-            if self._view_stack is not None and self._view_stack.currentIndex() == 0:
-                self._view_stack.setFixedHeight(0)
-            return
-
-        if self._content_layout is not None:
-            self._content_layout.setSpacing(8)
-
-        if self._user_resized:
-            available_width = max(1, self.width() - 28)
-            columns = max(
-                1,
-                min(
-                    len(visible_rows),
-                    (available_width + OVERLAY_GRID_SPACING)
-                    // (self._tile_width + OVERLAY_GRID_SPACING),
-                ),
-            )
-        else:
-            columns = max(1, min(OVERLAY_TILE_COLUMNS, len(visible_rows)))
-
-        for index, (frame, *_labels) in enumerate(visible_rows):
-            self._row_layout.addWidget(
-                frame,
-                index // columns,
-                index % columns,
-            )
-        row_count = max(1, (len(visible_rows) + columns - 1) // columns)
-        list_view_active = (
-            self._view_stack is None
-            or self._view_stack.currentWidget() is self._scroll
-        )
-        self._scroll.setVisible(list_view_active)
-        if self._user_resized:
-            self._scroll.setMinimumHeight(0)
-            self._scroll.setMaximumHeight(16777215)
-            if self._view_stack is not None and self._view_stack.currentIndex() == 0:
-                self._view_stack.setMinimumHeight(0)
-                self._view_stack.setMaximumHeight(16777215)
-        else:
-            visible_row_limit = max(1, (MAX_OVERLAY_ROWS + columns - 1) // columns)
-            visible_row_count = min(row_count, visible_row_limit)
-            content_height = (
-                self._tile_height * visible_row_count
-                + OVERLAY_GRID_SPACING * max(0, visible_row_count - 1)
-            )
-            self._scroll.setFixedHeight(content_height)
-            if self._view_stack is not None and self._view_stack.currentIndex() == 0:
-                self._view_stack.setFixedHeight(content_height)
-        self._row_layout.invalidate()
+        alerts = aggregate_alert_summaries([
+            item for item in summaries
+            if str(item.get("system_name") or "").strip().casefold() not in {"", "unknown"}
+        ])
+        for alert in alerts:
+            del alert["created_at"]
+        if alerts != self._map_alerts:
+            self.set_map_alerts(alerts)
 
     def set_anchor_rect(self, rect: dict[str, Any] | None) -> None:
         """Anchor automatic placement to the display hosting an EVE window."""
         self._anchor_rect = dict(rect) if rect else None
-        screen = self._screen_for_anchor()
-        if screen is not None:
-            self._apply_screen_metrics(screen)
         if not self._user_positioned:
             self.move_to_default_position()
 
@@ -2283,28 +1823,11 @@ class AlertOverlay(QWidget):
                 return screen
         return QApplication.primaryScreen()
 
-    def _apply_screen_metrics(self, screen) -> None:
-        geometry = screen.availableGeometry()
-        dimensions = overlay_tile_dimensions(
-            geometry.width(),
-            geometry.height(),
-        )
-        if dimensions == (self._tile_width, self._tile_height):
-            return
-        self._tile_width, self._tile_height = dimensions
-        self.setMinimumSize(OVERLAY_MIN_WIDTH, OVERLAY_MIN_HEIGHT)
-        for frame, system_label, _hostile_label, _state_label in self._rows:
-            frame.setFixedSize(self._tile_width, self._tile_height)
-            system_label.setFixedWidth(self._tile_width - 18)
-        self._layout_rows_for_size()
-
     def move_to_default_position(self) -> None:
         screen = self._screen_for_anchor()
         if screen is None:
             return
-        self._apply_screen_metrics(screen)
         geometry = screen.availableGeometry()
-        self._resize_to_content()
         x = geometry.right() - self.width() - 28
         y = geometry.top() + 88
         max_x = geometry.right() - self.width() + 1
@@ -2630,7 +2153,7 @@ class AlertMapWorker(QThread):
         self.server = server
         self.system_names = list(system_names)
         self.system_ids = list(system_ids)
-        self.hops = max(0, min(5, int(hops)))
+        self.hops = max(0, min(MAX_MAP_NEIGHBORHOOD_HOPS, int(hops)))
         self.api_key = str(api_key or "").strip()
         self.api_factory = api_factory
 
@@ -2674,6 +2197,7 @@ class AlertTrayController:
         self._notification_callback = notification_callback
         self.overlay = AlertOverlay()
         self.overlay.set_map_selection_memory(self.state.map_selected_account_keys())
+        self.overlay.set_alert_range_hops(self.state.alert_range_hops())
         self.overlay.map_options_changed.connect(self._on_map_options_changed)
         self.overlay.sound_stop_requested.connect(self._stop_current_alert_sound)
         self.overlay.geometry_changed.connect(self.state.save_overlay_geometry)
@@ -2694,6 +2218,7 @@ class AlertTrayController:
                 "EVE -"
             )
         self._window_provider = window_provider
+        self._location_cache_seconds = 0.0 if system_resolver is not None else 5.0
         self._system_resolver = system_resolver or (
             lambda character_name: find_latest_local_system(
                 DEFAULT_CHATLOG_DIR,
@@ -2704,6 +2229,11 @@ class AlertTrayController:
         self._active_map_request_signature: tuple[Any, ...] | None = None
         self._pending_map_request: dict[str, Any] | None = None
         self._map_request_signature: tuple[Any, ...] | None = None
+        self._alert_range_systems: set[str] = set()
+        self._confirmed_alert_range: set[str] | None = None
+        self._alert_range_pending = False
+        self._range_live_announced: set[str] = set()
+        self._deferred_alerts: dict[str, dict[str, Any]] = {}
         self._stopped = False
         self._alert_volume = max(0.0, min(1.0, float(getattr(args, "alert_volume", 1.0))))
         self._alert_muted = bool(getattr(args, "alert_muted", False))
@@ -2726,6 +2256,7 @@ class AlertTrayController:
             min(10, int(getattr(args, "alert_repeat_count", 3))),
         )
         self._remaining_sound_plays = 0
+        self._repeating_alert_system: str | None = None
         self._continuous_sound: QSoundEffect | None = None
         self._active_alert_systems: set[str] = set()
         self._continuous_sound_snoozed = False
@@ -2832,7 +2363,7 @@ class AlertTrayController:
         if local_capturer is not None:
             local_capturer.close()
 
-    def _refresh_local_accounts(self) -> None:
+    def _refresh_local_accounts(self, *, refresh_location: bool = False) -> None:
         """Refresh local account choices independently from monitor workers."""
         provider = getattr(self, "_window_provider", None)
         if not callable(provider):
@@ -2860,7 +2391,7 @@ class AlertTrayController:
             if not character_key:
                 continue
             expires_at, cached_system = cache.get(character_key, (0.0, "Unknown"))
-            if now >= expires_at and callable(resolver):
+            if (refresh_location or now >= expires_at) and callable(resolver):
                 try:
                     resolved = resolver(character_name)
                     cached_system = str(
@@ -2868,7 +2399,7 @@ class AlertTrayController:
                     ).strip() or "Unknown"
                 except Exception as exc:
                     logger.debug("Local system lookup unavailable for %s: %s", character_name, exc)
-                cache[character_key] = (now + 5.0, cached_system)
+                cache[character_key] = (now + self._location_cache_seconds, cached_system)
             systems[character_key] = cached_system
         self._local_system_cache = {
             key: value for key, value in cache.items() if key in systems
@@ -2909,7 +2440,6 @@ class AlertTrayController:
             if callable(set_accounts):
                 set_accounts(accounts)
         if changed or getattr(self, "_map_request_signature", None) is None:
-            self._map_request_signature = None
             self._refresh_local_map()
 
     def is_running(self) -> bool:
@@ -2921,6 +2451,7 @@ class AlertTrayController:
 
     def show_monitoring_systems(self, system_names: list[str]) -> None:
         """Ensure monitored systems are visible before the first SSE refresh."""
+        self._refresh_local_accounts(refresh_location=True)
         known_systems = {
             str(item.get("system_name") or "Unknown").casefold()
             for item in self._recent_summaries
@@ -2940,7 +2471,7 @@ class AlertTrayController:
                     "active": False,
                 }
             )
-        self.overlay.show_summaries(self._recent_summaries)
+        self._sync_alert_display()
 
     def forget_local_monitoring_systems(self, system_names: list[str]) -> None:
         """Remove local node state without emitting a hostile-safe notification."""
@@ -2952,15 +2483,17 @@ class AlertTrayController:
         if not system_keys:
             return
         local_counts = getattr(self, "_local_hostile_counts", {})
+        locally_tracked = system_keys.intersection(local_counts)
         for key in system_keys:
             local_counts.pop(key, None)
         self._recent_summaries = [
             item
             for item in self._recent_summaries
             if str(item.get("system_name") or "Unknown").casefold()
-            not in system_keys
+            not in locally_tracked
+            or not item.get("active", True)
         ]
-        self.overlay.show_summaries(self._recent_summaries)
+        self._sync_alert_display()
 
     def set_anchor_window(self, window: dict[str, Any] | None) -> None:
         """Place the embedded overlay on the EVE window's display."""
@@ -3029,6 +2562,7 @@ class AlertTrayController:
         memory = self.overlay.map_selection_memory()
         if memory is not None:
             self.state.save_map_selected_account_keys(memory)
+        self.state.save_alert_range_hops(hops)
         self._refresh_local_map(selected_keys=selected_keys, hops=hops)
 
     def _refresh_local_map(
@@ -3039,7 +2573,7 @@ class AlertTrayController:
     ) -> None:
         if selected_keys is None or hops is None:
             selection = getattr(self.overlay, "map_selection", None)
-            selected_keys, hops = selection() if callable(selection) else ([], 3)
+            selected_keys, hops = selection() if callable(selection) else ([], DEFAULT_ALERT_RANGE_HOPS)
         selected_set = {str(item) for item in selected_keys or [] if str(item)}
         accounts = [
             item
@@ -3053,13 +2587,14 @@ class AlertTrayController:
             set_scope([str(item.get("system_name") or "") for item in accounts])
         if not accounts:
             self._pending_map_request = None
+            self._map_request_signature = None
+            self._set_alert_range(set(), confirmed=True)
             setter = getattr(self.overlay, "set_map_payload", None)
             if callable(setter):
                 setter({"systems": [], "links": [], "centers": []})
             message = getattr(self.overlay, "set_map_message", None)
             if callable(message):
                 message("请选择至少一个运行中的账号")
-            self._map_request_signature = None
             return
 
         system_names = list(
@@ -3081,25 +2616,35 @@ class AlertTrayController:
                 system_ids.append(system_id)
         if not system_names and not system_ids:
             self._pending_map_request = None
+            self._map_request_signature = None
+            self._set_alert_range(set(), confirmed=True)
             setter = getattr(self.overlay, "set_map_payload", None)
             if callable(setter):
                 setter({"systems": [], "links": [], "centers": []})
             message = getattr(self.overlay, "set_map_message", None)
             if callable(message):
                 message("所选账号尚未识别当前星系")
-            self._map_request_signature = None
             return
         request = {
             "system_names": system_names,
             "system_ids": system_ids,
-            "hops": max(1, min(5, int(hops or 3))),
+            "hops": max(0, min(MAX_MAP_NEIGHBORHOOD_HOPS, int(hops))),
         }
-        signature = (tuple(system_names), tuple(system_ids), request["hops"])
+        request["system_names"].sort(key=str.casefold)
+        request["system_ids"].sort()
+        signature = (tuple(request["system_names"]), tuple(request["system_ids"]), request["hops"])
         if signature == getattr(self, "_map_request_signature", None):
             return
         self._map_request_signature = signature
+        self._set_alert_range({name.casefold() for name in system_names})
+        setter = getattr(self.overlay, "set_map_payload", None)
+        if callable(setter):
+            setter({"systems": [], "links": [], "centers": []})
+        message = getattr(self.overlay, "set_map_message", None)
+        if callable(message):
+            message("正在更新预警范围…")
         worker = getattr(self, "_map_worker", None)
-        if worker is not None and worker.isRunning():
+        if worker is not None:
             self._pending_map_request = request
             return
         self._start_map_worker(request)
@@ -3107,9 +2652,6 @@ class AlertTrayController:
     def _start_map_worker(self, request: dict[str, Any]) -> None:
         if bool(getattr(self, "_stopped", False)):
             return
-        message = getattr(self.overlay, "set_map_message", None)
-        if callable(message):
-            message("正在加载局部星图...")
         worker = AlertMapWorker(
             self.args.server,
             system_names=request["system_names"],
@@ -3130,13 +2672,24 @@ class AlertTrayController:
         worker.start()
 
     def _on_map_received(self, payload: dict[str, Any]) -> None:
-        if bool(getattr(self, "_stopped", False)) or getattr(
-            self, "_active_map_request_signature", None
-        ) != getattr(self, "_map_request_signature", None):
+        active_request = self._active_map_request_signature
+        if (
+            self._stopped
+            or active_request is None
+            or active_request != self._map_request_signature
+        ):
             return
+        self._pending_map_request = None
         setter = getattr(self.overlay, "set_map_payload", None)
         if callable(setter):
             setter(payload)
+        systems = {
+            str(item.get("name") or "").strip().casefold()
+            for item in payload.get("systems", [])
+            if isinstance(item, dict) and item.get("name")
+        }
+        systems.update(name.casefold() for name in active_request[0])
+        self._set_alert_range(systems, confirmed=True)
 
     def _on_map_failed(self, message: str) -> None:
         if bool(getattr(self, "_stopped", False)) or getattr(
@@ -3145,7 +2698,9 @@ class AlertTrayController:
             return
         setter = getattr(self.overlay, "set_map_message", None)
         if callable(setter):
-            setter(message or "局部星图加载失败")
+            setter("预警范围加载失败，正在重试")
+        logger.warning("Alert range load failed: %s", message)
+        self._map_request_signature = None
 
     def _on_map_worker_finished(self) -> None:
         self._map_worker = None
@@ -3247,16 +2802,14 @@ class AlertTrayController:
     def _on_status(self, status: str, message: str) -> None:
         if status in {"reconnecting", "error"}:
             self._discard_realtime_state()
-        if status == "connected":
-            self.overlay.set_status("SSE 在线", "ok")
-        elif status == "reconnecting":
-            self.overlay.set_status("重连中", "warn")
-        elif status == "error":
-            self.overlay.set_status("连接异常", "danger")
-            if message:
-                self._notify("EVE Sentry Alert", message)
-        else:
-            self.overlay.set_status(status, "idle")
+        self._connection_display = {
+            "connected": ("SSE 在线", "ok"),
+            "reconnecting": ("重连中", "warn"),
+            "error": ("连接异常", "danger"),
+        }.get(status, (status, "idle"))
+        self.overlay.set_status(*self._connection_display)
+        if status == "error" and message:
+            self._notify("EVE Sentry Alert", message)
 
     def _remote_alerts_allowed(self) -> bool:
         """A detector whose windows are all outside the map only warns locally."""
@@ -3269,6 +2822,64 @@ class AlertTrayController:
         ]
         return not systems or any(allows_remote(scope, name) for name in systems)
 
+    def _system_in_alert_range(self, system_key: str) -> bool:
+        systems = getattr(self, "_alert_range_systems", None)
+        return systems is None or system_key in systems
+
+    def _sync_alert_display(self) -> list[dict[str, Any]]:
+        scoped = [
+            item for item in self._recent_summaries
+            if self._system_in_alert_range(alert_system_name(item).casefold())
+        ]
+        active = [
+            item for item in scoped
+            if item.get("active", True) and int(item.get("hostile_count") or 0) > 0
+        ]
+        self._active_alert_systems = {alert_system_name(item).casefold() for item in active}
+        repeating_system = getattr(self, "_repeating_alert_system", None)
+        if not active or (repeating_system and repeating_system not in self._active_alert_systems):
+            self._remaining_sound_plays = 0
+            self._repeating_alert_system = None
+            timer = getattr(self, "_sound_repeat_timer", None)
+            if timer is not None:
+                timer.stop()
+        if not active:
+            self._stop_continuous_alert_sound()
+            if not getattr(self, "_alert_range_pending", False):
+                self._continuous_sound_snoozed = False
+        self.overlay.show_summaries(scoped)
+        return active
+
+    def _set_alert_range(self, systems: set[str], *, confirmed: bool = False) -> None:
+        self._alert_range_systems = systems
+        self._alert_range_pending = not confirmed
+        active = self._sync_alert_display()
+        if not active and hasattr(self, "_connection_display"):
+            self.overlay.set_status(*self._connection_display)
+        if not confirmed:
+            return
+        previous = self._confirmed_alert_range
+        self._confirmed_alert_range = systems
+        deferred, self._deferred_alerts = self._deferred_alerts, {}
+        announced, self._range_live_announced = self._range_live_announced, set()
+        if not self._active_alert_systems.intersection((previous or set()) | announced):
+            self._continuous_sound_snoozed = False
+        for summary in active:
+            key = alert_system_name(summary).casefold()
+            alert = deferred.get(key)
+            if key not in announced and (
+                alert is not None or (previous is not None and key not in previous)
+            ):
+                self._announce_alert(summary, alert)
+        if (
+            active
+            and not self._alert_muted
+            and self._alert_sound_mode == "continuous"
+            and not self._continuous_sound_snoozed
+            and self._active_alert_systems.intersection(self._last_notified)
+        ):
+            self._start_continuous_alert_sound()
+
     def _on_alert(self, alert: dict[str, Any]) -> None:
         if not alert.get("_local_visual") and not self._remote_alerts_allowed():
             return
@@ -3278,7 +2889,8 @@ class AlertTrayController:
         system_key = system.casefold()
         if summary.get("freshness") == "unknown":
             self._discard_realtime_state(system_key)
-            self.overlay.set_status("采集异常", "warn")
+            if self._system_in_alert_range(system_key):
+                self.overlay.set_status("采集异常", "warn")
             return  # Removing unavailable data must never announce safety or arrival.
         existing = next(
             (
@@ -3291,24 +2903,33 @@ class AlertTrayController:
         )
         if existing is None:
             self._recent_summaries.append(summary)
-            self._recent_summaries = self._recent_summaries[-50:]
         else:
             existing.pop("freshness", None)
             existing.update(summary)
         self._apply_local_hostile_counts()
-        self.overlay.show_summaries(self._recent_summaries)
+        if not self._system_in_alert_range(system_key):
+            if self._alert_range_pending:
+                self._deferred_alerts[system_key] = alert
+            return
+        if not getattr(self, "_active_alert_systems", set()):
+            self._continuous_sound_snoozed = False
+        self._sync_alert_display()
+        if not summary["active"]:
+            return
+        if getattr(self, "_alert_range_pending", False):
+            self._range_live_announced.add(system_key)
+            self._deferred_alerts.pop(system_key, None)
+        self._announce_alert(summary, alert)
+
+    def _announce_alert(
+        self, summary: dict[str, Any], alert: dict[str, Any] | None = None
+    ) -> None:
         self.overlay.set_status("新告警", "danger")
         queue_ack = getattr(getattr(self, "_worker", None), "queue_alert_ack", None)
-        if callable(queue_ack):
+        if alert is not None and callable(queue_ack):
             queue_ack(alert)
         hostile_count = int(summary.get("hostile_count") or 0)
-        if hostile_count > 0:
-            active_systems = getattr(self, "_active_alert_systems", set())
-            if not active_systems:
-                self._continuous_sound_snoozed = False
-            active_systems.add(system_key)
-            self._active_alert_systems = active_systems
-        notification_key = system.casefold()
+        notification_key = alert_system_name(summary).casefold()
         last_notified = getattr(self, "_last_notified", {})
         self._last_notified = last_notified
         previous_notification = last_notified.get(notification_key)
@@ -3320,12 +2941,11 @@ class AlertTrayController:
         )
         muted = bool(getattr(self, "_alert_muted", False))
         if not muted:
-            if (
-                getattr(self, "_alert_sound_mode", "interval") == "continuous"
-                and not getattr(self, "_continuous_sound_snoozed", False)
-            ):
-                self._start_continuous_alert_sound()
+            if getattr(self, "_alert_sound_mode", "interval") == "continuous":
+                if not self._continuous_sound_snoozed:
+                    self._start_continuous_alert_sound()
             elif not in_cooldown:
+                self._repeating_alert_system = notification_key
                 self._play_alert_sound_sequence()
         if in_cooldown:
             return
@@ -3344,17 +2964,14 @@ class AlertTrayController:
         self._remote_map_accounts = [item for item in getattr(self, "_remote_map_accounts", []) if keep(item)]
         counts = getattr(self, "_local_hostile_counts", {})
         self._local_hostile_counts = {key: value for key, value in counts.items() if system_key is not None and key != system_key}
-        self._active_alert_systems = {
-            str(item.get("system_name") or "").casefold() for item in self._recent_summaries
-            if item.get("active", True) and int(item.get("hostile_count") or 0) > 0
-        }
-        if not self._active_alert_systems:
-            self._remaining_sound_plays = 0
-            timer = getattr(self, "_sound_repeat_timer", None)
-            if timer is not None:
-                timer.stop()
-            self._stop_continuous_alert_sound()
-        self.overlay.show_summaries(self._recent_summaries)
+        deferred = getattr(self, "_deferred_alerts", {})
+        if system_key is None:
+            deferred.clear()
+            getattr(self, "_range_live_announced", set()).clear()
+        else:
+            deferred.pop(system_key, None)
+            getattr(self, "_range_live_announced", set()).discard(system_key)
+        self._sync_alert_display()
         self._sync_map_accounts()
 
     def _play_alert_sound_sequence(self) -> None:
@@ -3449,15 +3066,13 @@ class AlertTrayController:
         system_name = str(
             event.get("system_name") or event.get("system") or "Unknown"
         ).strip() or "Unknown"
+        system_key = system_name.casefold()
         if (not getattr(self, "_server_authority", False)
                 and system_name.casefold() in getattr(self, "_local_hostile_counts", {})):
             return
-        active_systems = getattr(self, "_active_alert_systems", set())
-        active_systems.discard(system_name.casefold())
-        self._active_alert_systems = active_systems
-        if not active_systems:
-            self._continuous_sound_snoozed = False
-            self._stop_continuous_alert_sound()
+        getattr(self, "_deferred_alerts", {}).pop(system_key, None)
+        getattr(self, "_range_live_announced", set()).discard(system_key)
+        getattr(self, "_last_notified", {}).pop(system_key, None)
         for item in self._recent_summaries:
             if str(item.get("system_name") or "Unknown").casefold() != (
                 system_name.casefold()
@@ -3467,8 +3082,10 @@ class AlertTrayController:
             item["hostile_count"] = 0
             item["active_hostile_count"] = 0
             item.pop("freshness", None)
-        self.overlay.show_summaries(self._recent_summaries)
-        self.overlay.set_status("星系安全", "ok")
+        if not self._system_in_alert_range(system_key):
+            return
+        if not self._sync_alert_display():
+            self.overlay.set_status("星系安全", "ok")
         message = str(event.get("message") or "").strip()
         if not message:
             message = f"✅ {system_name} 清空"
@@ -3493,17 +3110,7 @@ class AlertTrayController:
             bootstrap,
         )
         self._apply_local_hostile_counts()
-        self._active_alert_systems = {
-            str(item.get("system_name") or "").casefold() for item in self._recent_summaries
-            if item.get("active", True) and int(item.get("hostile_count") or 0) > 0
-        }
-        if not self._active_alert_systems:
-            self._remaining_sound_plays = 0
-            timer = getattr(self, "_sound_repeat_timer", None)
-            if timer is not None:
-                timer.stop()
-            self._stop_continuous_alert_sound()
-        self.overlay.show_summaries(self._recent_summaries)
+        self._sync_alert_display()
         accounts = monitored_accounts_from_bootstrap(bootstrap)
         unknown = unavailable_systems_from_bootstrap(bootstrap)
         accounts = [item for item in accounts if item["system_name"].casefold() not in unknown]

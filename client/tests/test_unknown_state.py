@@ -7,22 +7,20 @@ from PyQt6.QtWidgets import QApplication
 from app.alert_client import AlertOverlay, AlertTrayController, summarize_alert, sync_alert_summaries_from_bootstrap
 
 
-def test_unknown_updates_overlay_without_resize_or_losing_count(monkeypatch):
+def test_unknown_removes_map_warning_until_new_evidence(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
     overlay = AlertOverlay()
     try:
         overlay.show_summaries([{"system_name": "S-KSWL", "hostile_count": 2}])
         app.processEvents()
+        size = overlay.size()
+        assert overlay._map_widget._alerts[0]["hostile_count"] == 2
         overlay.show_summaries([{"system_name": "S-KSWL", "hostile_count": 2, "freshness": "unknown"}])
-        frame, _, count, status = overlay._rows[0]
-        assert frame.isHidden()
-        assert count.text() == ""
-        assert status.text() == ""
         assert overlay._map_widget._alerts == []
+        assert overlay.size() == size
         overlay.show_summaries([{"system_name": "S-KSWL", "hostile_count": 2}])
-        assert status.text() == "来敌"
-        assert frame.toolTip() == ""
+        assert overlay._map_widget._alerts[0]["hostile_count"] == 2
     finally:
         overlay.close()
 

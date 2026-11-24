@@ -2502,7 +2502,8 @@ class MainWindow(QMainWindow):
             return
         if isinstance(target, dict):
             previous = str(target.get("system_name") or "Unknown")
-            if previous.casefold() != system_name.casefold():
+            moved = previous.casefold() != system_name.casefold()
+            if moved:
                 previous_context = dict(target)
                 previous_context["system_name"] = previous
                 previous_context["system_id"] = target.get("system_id")
@@ -2513,18 +2514,27 @@ class MainWindow(QMainWindow):
                         refresh_location=False,
                         **({"source_status": "departed"} if previous_context.get("_capture") else {}),
                     )
-                    controller = _instance_attr(self, "_alert_controller")
-                    if controller is not None:
-                        controller.update_local_hostile_count(previous, 0)
                 target["_hostile_icon_count"] = 0
+                target["_system_changed_ns"] = time.monotonic_ns()
+                target.pop("_capture", None)
+            target["system_name"] = system_name
+            target["system_id"] = None
+            target["system_source"] = "chatlog"
+            if moved:
                 worker_key = str(target.get("key") or "")
                 worker = _instance_attr(self, "_workers", {}).get(worker_key)
                 request_refresh = getattr(worker, "request_presence_refresh", None)
                 if callable(request_refresh):
                     request_refresh()
-            target["system_name"] = system_name
-            target["system_id"] = None
-            target["system_source"] = "chatlog"
+            if previous.casefold() not in {"unknown", system_name.casefold()}:
+                controller = _instance_attr(self, "_alert_controller")
+                if controller is not None and not any(
+                    candidate.get("key") != target.get("key")
+                    and str(candidate.get("system_name") or "").casefold() == previous.casefold()
+                    and candidate.get("_hostile_icon_count")
+                    for candidate in _instance_attr(self, "_worker_contexts", {}).values()
+                ):
+                    controller.forget_local_monitoring_systems([previous])
             window_combo = _instance_attr(self, "_window_combo")
             current_hwnd = (
                 window_combo.currentData()
@@ -3000,12 +3010,17 @@ class MainWindow(QMainWindow):
             return
         self._clear_hostile_presence(context)
 
-    def _on_hostile_icon_detected(self, count: int, context: dict) -> None:
+    def _on_hostile_icon_detected(
+        self, count: int, context: dict, *, refresh_location: bool = True
+    ) -> None:
         """Update the local system alert as soon as its red-icon count changes."""
         hostile_count = max(0, int(count))
         previous_count = context.get("_hostile_icon_count")
         context["_hostile_icon_count"] = hostile_count
-        self._publish_hostile_presence(hostile_count, context)
+        if refresh_location:
+            self._publish_hostile_presence(hostile_count, context)
+        else:
+            self._publish_hostile_presence(hostile_count, context, refresh_location=False)
         window_title = str(context.get("window_title") or "EVE").strip() or "EVE"
         system_name = str(context.get("system_name") or "Unknown").strip()
         can_upload = bool(
@@ -3047,9 +3062,19 @@ class MainWindow(QMainWindow):
         """Publish frame liveness without re-rendering unchanged local warnings."""
         if _instance_attr(self, "_workers", {}).get(context.get("key")) is not worker:
             return
-        context["_capture"] = dict(capture)
+        capture = dict(capture)
+        frame_started_ns = capture.pop("_frame_started_ns", None)
+        if (
+            context.get("_hostile_icon_count") != count
+            and _instance_attr(self, "_intel_client") is not None
+            and _instance_attr(self, "_uploads_enabled", True)
+        ):
+            self._refresh_intel_location(context=context)
+        if frame_started_ns is not None and frame_started_ns < context.get("_system_changed_ns", 0):
+            return
+        context["_capture"] = capture
         if context.get("_hostile_icon_count") != count:
-            self._on_hostile_icon_detected(count, context)
+            self._on_hostile_icon_detected(count, context, refresh_location=False)
         else:
             self._publish_hostile_presence(count, context, refresh_location=False)
 
@@ -3410,6 +3435,10 @@ class MainWindow(QMainWindow):
             self._refresh_intel_location()
         else:
             self._refresh_intel_location(context=context)
+            if isinstance(ocr_evidence, dict):
+                frame_started_ns = ocr_evidence.get("_frame_started_ns")
+                if frame_started_ns is not None and frame_started_ns < context.get("_system_changed_ns", 0):
+                    return
         if context is None:
             system_name = self._intel_system
             system_id = self._intel_system_id
