@@ -42,6 +42,7 @@ from eve_risk.query_presets import (
 )
 from eve_risk.queueing import AnalysisQueue
 from eve_risk.sentry_status import (
+    EmbeddedSentryStatusSource,
     EveSentryStatusClient,
     SentryStatusError,
     format_ocr_query,
@@ -143,7 +144,12 @@ def query_keyboard_content(presets: list[QueryPreset] | None = None) -> dict[str
 
 
 class RiskBotClient(botpy.Client):
-    def __init__(self, *args: object, **kwargs: object) -> None:
+    def __init__(
+        self,
+        *args: object,
+        sentry_status_source: EmbeddedSentryStatusSource | None = None,
+        **kwargs: object,
+    ) -> None:
         super().__init__(*args, **kwargs)
         settings = get_settings()
         self.settings = settings
@@ -171,6 +177,7 @@ class RiskBotClient(botpy.Client):
             self.http_client,
             settings.eve_sentry_events_url,
             settings.eve_sentry_api_key,
+            embedded_source=sentry_status_source,
         )
         self.watch_engine, watch_sessions = create_session_factory(settings.database_url)
         self.watch_repository = SentryWatchRepository(watch_sessions)

@@ -68,10 +68,9 @@ hostile-systems 和 events。旧客户端的 `GET /api/v1/auth/me` 只用于只�
 principal；其他 `/auth/*`、`/me/*`、`/admin/*` 统一返回 `403 seat_permission_denied`，不包含
 结算或管理员能力。
 
-同机 QQ 机器人使用现有 `/api/v1/bootstrap`、`/api/v1/events` 和按需 OCR 路径的
-loopback 例外，必须带 `X-EVE-SENTRY-Embedded-Bot: 1`，不携带 Bearer 密钥；服务端只接受
-来源为 `127.0.0.1` 或 `::1` 的请求。未带标记头的普通本机管理员/服务密钥请求仍按原策略
-鉴权。该例外不适用于公网、内网其他主机或星图公开访问，不会改变 Seat 客户端认证规则。
+内嵌 QQ 机器人的预警事件、状态查询及按需 OCR 通过进程内接口调用。
+启用鉴权时，所有 HTTP 请求均按原有身份和接口权限校验，本机和反向代理连接也适用。
+单独运行的机器人使用配置的 Bearer 密钥，并受对应密钥的接口权限约束。
 
 收费预警 ACK 使用同一 `alert` 权限，但只绑定服务端已经记录的
 `delivery_id + charge_event_id + revision + connection_id`。客户端必须在本地去重并完成 UI

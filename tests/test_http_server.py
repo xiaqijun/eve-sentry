@@ -687,7 +687,8 @@ def authenticated_request(url, method="GET", payload=None, headers=None):
         return response.status, response.headers, json.loads(body) if body else {}
 
 
-def test_ocr_query_round_trip_claims_command_and_collects_snapshot(tmp_path):
+@pytest.mark.parametrize("embedded", [False, True], ids=["http", "embedded"])
+def test_ocr_query_round_trip_claims_command_and_collects_snapshot(tmp_path, embedded):
     server = IntelHTTPServer(IntelStore(tmp_path / "intel.json"), port=0)
     server.start()
     try:
@@ -707,12 +708,17 @@ def test_ocr_query_round_trip_claims_command_and_collects_snapshot(tmp_path):
             system_name="S-KSWL",
             names=["Old Pilot"],
         )
-        status, created = request_json(
-            f"{server.url}/api/v1/ocr/query",
-            method="POST",
-            payload={"name": "Alice"},
-        )
-        assert status == 202
+        if embedded:
+            status_view = server.build_embedded_status()
+            assert status_view["clients"]["heartbeats"][0]["client_id"] == "detector-client:query"
+            created = server.create_embedded_ocr_query({"name": "Alice"})
+        else:
+            status, created = request_json(
+                f"{server.url}/api/v1/ocr/query",
+                method="POST",
+                payload={"name": "Alice"},
+            )
+            assert status == 202
         query_id = created["query_id"]
 
         heartbeat = api.post_heartbeat(
@@ -740,12 +746,38 @@ def test_ocr_query_round_trip_claims_command_and_collects_snapshot(tmp_path):
             names=["Alice"],
             query_id=query_id,
         )
-        _, result = request_json(f"{server.url}/api/v1/ocr/query/{query_id}")
+        if embedded:
+            result = server.read_embedded_ocr_query(query_id)
+        else:
+            _, result = request_json(f"{server.url}/api/v1/ocr/query/{query_id}")
+        assert result is not None
         assert result["status"] == "completed"
         assert result["results"][0]["names"] == ["Alice"]
         assert [
             item["name"] for item in result["results"][0]["recognized"]
         ] == ["Alice"]
+    finally:
+        server.stop()
+
+
+def test_intel_and_ocr_http_routes_require_authentication_on_loopback(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    auth = AuthService(AuthRepository(store._connect), AuthTestResolver())
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    try:
+        routes = (
+            ("GET", "/api/v1/bootstrap", None),
+            ("GET", "/api/v1/events", None),
+            ("GET", "/api/v1/ocr/query/test-query", None),
+            ("POST", "/api/v1/ocr/query", {"system_name": "Test System"}),
+        )
+        for method, path, payload in routes:
+            status, _, result = authenticated_request(
+                server.url + path, method=method, payload=payload,
+            )
+            assert status == 401
+            assert result["code"] == "authentication_required"
     finally:
         server.stop()
 
