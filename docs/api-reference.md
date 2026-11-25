@@ -183,8 +183,7 @@ Gateway 新传输模式另见[部署说明](server-deployment.md#esi-固定目�
 relay 模式旧 JSON 路由返回 410；`/health` 保留并增加 transport_mode。默认 legacy 行为不变。
 
 默认地址为 `http://127.0.0.1:8765`。桌面客户端和工作台主要使用 `/api/v1`；旧
-`/api/*` 兼容路由仍存在；来袭分析读取专用的 `/api/v1/alert-history`，新接入应优先使用
-v1。
+`/api/*` 兼容路由仍存在，新接入应优先使用 v1。历史告警可通过 `/api/v1/alert-history` 读取。
 
 第三方实时接入的最小示例和断线处理见[预警消息 API 接入指南](alert-api.md)。客户端
 按需 OCR 查询的命令下发与 `query_id` 约定见[客户端对接文档](../client/docs/on-demand-ocr-query.md)。

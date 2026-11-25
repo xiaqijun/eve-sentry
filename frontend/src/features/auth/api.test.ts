@@ -7,7 +7,6 @@ import {
   fetchEsiGateway,
   listAdminClients,
   listAdminUsers,
-  listAudit,
   listMyKeys,
   login,
   setCsrfToken,
@@ -124,7 +123,6 @@ describe("authenticated API client", () => {
       new Response(JSON.stringify({}), { status: 200 }),
     );
     await expect(listMyKeys()).resolves.toEqual([]);
-    await expect(listAudit()).resolves.toEqual([]);
   });
 
   it("normalizes a partial client inventory", async () => {

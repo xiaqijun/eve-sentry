@@ -4,10 +4,7 @@ import type {
   AdminClientKeyUsage,
   AdminClientsSnapshot,
   ApiKeyRecord,
-  AuditRecord,
   AuthUser,
-  ClientsSnapshot,
-  ClientHeartbeatRecord,
   EsiGatewaySnapshot,
   EsiAuthStatus,
   EsiLoginSnapshot,
@@ -164,20 +161,6 @@ export async function resetUserPassword(userId: string, password: string): Promi
     method: "POST",
     body: JSON.stringify({ password }),
   });
-}
-
-export async function listAudit(): Promise<AuditRecord[]> {
-  const payload = await apiRequest<{ audit?: unknown }>("/api/v1/admin/audit");
-  return arrayOrEmpty<AuditRecord>(payload.audit);
-}
-
-export async function fetchClients(): Promise<ClientsSnapshot> {
-  const payload = await apiRequest<{ clients?: Partial<ClientsSnapshot> }>("/api/v1/clients");
-  return {
-    count: Number(payload.clients?.count ?? 0),
-    heartbeats: arrayOrEmpty<ClientHeartbeatRecord>(payload.clients?.heartbeats),
-    summary: payload.clients?.summary || {},
-  };
 }
 
 export async function listAdminClients(): Promise<AdminClientsSnapshot> {

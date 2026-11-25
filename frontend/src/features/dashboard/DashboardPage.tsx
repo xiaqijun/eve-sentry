@@ -262,7 +262,6 @@ export function DashboardPage() {
         <div className="dashboard-header-actions">
           <nav aria-label="工作台快捷入口" className="dashboard-shortcuts">
             <a href="/">打开星图</a>
-            <a href="/reports/history">来袭历史</a>
           </nav>
           <Button icon={<IconRefresh />} loading={refreshing} type="outline" onClick={() => void bootstrapQuery.refetch()}>刷新实时数据</Button>
         </div>
@@ -301,7 +300,7 @@ export function DashboardPage() {
         <Grid.Col xs={24} className="dashboard-alert-summary">
           <Card className="dashboard-card">
               <details className="dashboard-alert-details"><summary><ShieldAlert size={16} aria-hidden="true" />最新告警事件 · 展开当前告警明细（{liveAlerts.length} 条）</summary>
-                <p>这里只展示当前快照中的告警，过往记录请查看<a className="console-data-link" href="/reports/history">来袭历史</a>。</p>
+                <p>展示当前快照中的告警。</p>
                 {liveAlerts.length > 0 ? (
                 <Table<AlertItem> border={false} columns={alertColumns} data={liveAlerts} pagination={liveAlerts.length > 8 ? { pageSize: 8, size: "mini" } : false} rowKey="id" scroll={{ x: 520 }} />
                 ) : <Empty description="没有实时敌对告警" />}

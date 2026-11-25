@@ -32,15 +32,6 @@ export interface AdminUser extends AuthUser {
   keys: ApiKeyRecord[];
 }
 
-export interface AuditRecord {
-  audit_id: string;
-  actor_user_id?: string;
-  target_user_id?: string;
-  action: string;
-  details?: Record<string, unknown> | string;
-  created_at: string;
-}
-
 export interface ClientHeartbeatDetails {
   client_version?: string;
   host?: string;

@@ -46,10 +46,10 @@ describe("ManagementShell", () => {
 
     await act(async () => {
       root.render(
-        <MemoryRouter initialEntries={["/reports"]}>
+        <MemoryRouter initialEntries={["/dashboard"]}>
           <Routes>
             <Route element={<ManagementShell />} path="/">
-              <Route element={<div>报表内容</div>} path="reports" />
+              <Route element={<div>工作台内容</div>} path="dashboard" />
             </Route>
           </Routes>
         </MemoryRouter>,
@@ -59,17 +59,15 @@ describe("ManagementShell", () => {
     expect(container).toHaveTextContent("EVE Sentry");
     expect(container).toHaveTextContent("工作台");
     expect(container).toHaveTextContent("星图态势");
-    expect(container).toHaveTextContent("来袭分析");
-    expect(container).toHaveTextContent("来袭历史");
+    expect(container).not.toHaveTextContent("来袭分析");
+    expect(container).not.toHaveTextContent("来袭历史");
     expect(container).toHaveTextContent("设备密钥");
     expect(container).not.toHaveTextContent("账号安全");
     expect(container).toHaveTextContent("用户管理");
     expect(container).toHaveTextContent("客户端管理");
-    expect(container).toHaveTextContent("审计日志");
-    expect(container).toHaveTextContent("报表内容");
-    expect(container.querySelector('a[href="/reports"]')).toHaveClass("active");
-    expect(container.querySelector('a[href="/reports/history"]')).toBeInTheDocument();
-    expect(container.querySelector('a[href="/dashboard"]')).toBeInTheDocument();
+    expect(container).not.toHaveTextContent("审计日志");
+    expect(container).toHaveTextContent("工作台内容");
+    expect(container.querySelector('a[href="/dashboard"]')).toHaveClass("active");
     expect(container.querySelector('a[href="/admin/clients"]')).toBeInTheDocument();
     expect(container.querySelector('a[href="/account/security"]')).not.toBeInTheDocument();
 
@@ -103,25 +101,6 @@ describe("ManagementShell", () => {
     expect(container).not.toHaveTextContent("客户端管理");
     expect(container).not.toHaveTextContent("审计日志");
     expect(container.querySelector('[aria-label="账号设置"]')).not.toBeInTheDocument();
-  });
-
-  it("selects only hostile history for the nested history route", async () => {
-    useAuthMock.mockReturnValue({ authEnabled: false, logout: vi.fn(), refresh: vi.fn(), user: null });
-
-    await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/reports/history"]}>
-          <Routes>
-            <Route element={<ManagementShell />} path="/">
-              <Route element={<div>历史内容</div>} path="reports/history" />
-            </Route>
-          </Routes>
-        </MemoryRouter>,
-      );
-    });
-
-    expect(container.querySelector('a[href="/reports/history"]')).toHaveClass("active");
-    expect(container.querySelector('a[href="/reports"]')).not.toHaveClass("active");
   });
 
   it("shows local account details for member accounts", async () => {
