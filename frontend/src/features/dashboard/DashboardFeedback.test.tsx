@@ -88,6 +88,6 @@ describe("dashboard data feedback", () => {
     expect(container).toHaveTextContent("最近成功获取");
     expect(container).not.toHaveTextContent("实时态势数据加载失败");
     expect(container.querySelector('.dashboard-shortcuts a[href="/"]')).toHaveTextContent("打开星图");
-    expect(container.querySelector('.dashboard-shortcuts a[href="/reports/history"]')).toHaveTextContent("来袭历史");
+    expect(container.querySelectorAll('a[href="/reports/history"]')).toHaveLength(0);
   });
 });

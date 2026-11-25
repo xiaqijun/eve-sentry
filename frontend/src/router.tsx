@@ -1,12 +1,9 @@
 import { Button, Card, Space, Typography } from "@arco-design/web-react";
 import { createBrowserRouter, isRouteErrorResponse, Navigate, useRouteError } from "react-router-dom";
 
-import { HostileReportPage } from "./features/reports/HostileReportPage";
-import { HostileHistoryPage } from "./features/reports/HostileHistoryPage";
 import { DashboardPage } from "./features/dashboard/DashboardPage";
 import { WorkbenchPage } from "./features/workbench/WorkbenchPage";
 import { AccountKeysPage } from "./features/auth/AccountKeysPage";
-import { AdminAuditPage } from "./features/auth/AdminAuditPage";
 import { AdminEsiGatewayPage } from "./features/auth/AdminEsiGatewayPage";
 import { AdminClientsPage } from "./features/auth/AdminClientsPage";
 import { AdminUsersPage } from "./features/auth/AdminUsersPage";
@@ -43,15 +40,12 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <WorkbenchPage /> },
       { path: "dashboard", element: <DashboardPage /> },
-      { path: "reports", element: <HostileReportPage /> },
-      { path: "reports/history", element: <HostileHistoryPage /> },
       { path: "account", element: <Navigate replace to="/account/keys" /> },
       { path: "account/keys", element: <ProtectedRoute><AccountKeysPage /></ProtectedRoute> },
       { path: "account/security", element: <Navigate replace to="/account/keys" /> },
       { path: "admin", element: <Navigate replace to="/admin/users" /> },
       { path: "admin/users", element: <ProtectedRoute admin><AdminUsersPage /></ProtectedRoute> },
       { path: "admin/clients", element: <ProtectedRoute admin><AdminClientsPage /></ProtectedRoute> },
-      { path: "admin/audit", element: <ProtectedRoute admin><AdminAuditPage /></ProtectedRoute> },
       { path: "admin/esi-gateway", element: <ProtectedRoute admin><AdminEsiGatewayPage /></ProtectedRoute> },
     ],
   },

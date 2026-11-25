@@ -24,7 +24,8 @@ Authorization: Bearer eve_...
 ## 账号管理
 
 管理员可以在 Web 控制台中创建用户、重置密码、启用/禁用用户，并查看密钥状态、
-客户端心跳和审计日志。客户端密钥统一由 GloryNavy_Seat 签发和管理，Sentry 不再
+客户端心跳。审计记录通过管理员接口 `GET /api/v1/admin/audit` 查询。客户端密钥统一由
+GloryNavy_Seat 签发和管理，Sentry 不再
 提供 desktop/service_readonly 创建、恢复或删除入口；Seat 密钥的生命周期操作必须
 回到 GloryNavy_Seat 完成。本地管理账号只用于 Web 控制台，不参与 Seat 客户端认证。
 
@@ -43,7 +44,7 @@ Authorization: Bearer eve_...
 ## 安全边界
 
 移除 EVE 身份风控不等于移除基础认证：生产环境仍应使用 HTTPS/内网、最小权限
-服务密钥、定期人工轮换密钥，并通过 Web 审计日志检查异常登录、客户端心跳和
+服务密钥、定期人工轮换密钥，并通过管理员审计接口检查异常登录、客户端心跳和
 密钥吊销记录。
 
 ## SeAT 业务认证

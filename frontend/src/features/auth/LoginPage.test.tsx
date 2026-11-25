@@ -39,7 +39,7 @@ describe("login page", () => {
   it("shows local account credentials without an EVE login link", async () => {
     await act(async () => {
       root.render(
-        <MemoryRouter initialEntries={[{ pathname: "/login", state: { from: { pathname: "/reports" } } }]}>
+        <MemoryRouter initialEntries={[{ pathname: "/login", state: { from: { pathname: "/dashboard" } } }]}>
           <LoginPage />
         </MemoryRouter>,
       );

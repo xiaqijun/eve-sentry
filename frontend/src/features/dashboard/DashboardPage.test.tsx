@@ -12,19 +12,10 @@ import type { BootstrapPayload } from "../workbench/types";
 
 const apiMocks = vi.hoisted(() => ({
   fetchBootstrap: vi.fn(),
-  fetchHostileAlertHistory: vi.fn(),
 }));
 
 vi.mock("../workbench/api", () => ({
   fetchBootstrap: apiMocks.fetchBootstrap,
-}));
-vi.mock("../reports/api", () => ({
-  fetchHostileAlertHistory: apiMocks.fetchHostileAlertHistory,
-}));
-vi.mock("../../components/EveChart", () => ({
-  EveChart: ({ className }: { className?: string }) => (
-    <div className={className} data-testid="eve-chart" />
-  ),
 }));
 
 describe("DashboardPage", () => {
@@ -144,8 +135,6 @@ describe("DashboardPage", () => {
     expect(container).toHaveTextContent("Eve Long Name");
     expect(container).toHaveTextContent("监控客户端 · 不应被省略的完整名称 · 1.0.19");
     expect(container).not.toHaveTextContent("预警端不属于监控覆盖");
-    expect(container.querySelectorAll('[data-testid="eve-chart"]')).toHaveLength(0);
-    expect(apiMocks.fetchHostileAlertHistory).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
   });

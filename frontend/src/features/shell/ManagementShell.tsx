@@ -2,12 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { Breadcrumb, Button, Drawer, Layout, Menu, Tag } from "@arco-design/web-react";
 import {
   IconApps,
-  IconBook,
   IconDashboard,
   IconDesktop,
   IconCloud,
-  IconFile,
-  IconHistory,
   IconLock,
   IconUserGroup,
   IconMenu,
@@ -23,12 +20,9 @@ import { useTheme } from "./ThemeContext";
 const PAGE_META: Record<string, { title: string }> = {
   "/": { title: "星图态势" },
   "/dashboard": { title: "工作台" },
-  "/reports": { title: "来袭分析" },
-  "/reports/history": { title: "来袭历史" },
   "/account/keys": { title: "设备密钥" },
   "/admin/users": { title: "用户管理" },
   "/admin/clients": { title: "客户端管理" },
-  "/admin/audit": { title: "审计日志" },
   "/admin/esi-gateway": { title: "ESI 网关观测" },
 };
 
@@ -77,12 +71,6 @@ export function ManagementShell() {
             <MenuItem key="/">
               <NavLink className={navigationClass} end to="/"><IconApps /><span>星图态势</span></NavLink>
             </MenuItem>
-            <MenuItem key="/reports">
-              <NavLink className={navigationClass} end to="/reports"><IconBook /><span>来袭分析</span></NavLink>
-            </MenuItem>
-            <MenuItem key="/reports/history">
-              <NavLink className={navigationClass} to="/reports/history"><IconHistory /><span>来袭历史</span></NavLink>
-            </MenuItem>
           </MenuItemGroup>
           {user ? (
             <MenuItemGroup key="account" title="个人账号">
@@ -98,9 +86,6 @@ export function ManagementShell() {
               </MenuItem>
               <MenuItem key="/admin/clients">
                 <NavLink className={navigationClass} to="/admin/clients"><IconDesktop /><span>客户端管理</span></NavLink>
-              </MenuItem>
-              <MenuItem key="/admin/audit">
-                <NavLink className={navigationClass} to="/admin/audit"><IconFile /><span>审计日志</span></NavLink>
               </MenuItem>
               <MenuItem key="/admin/esi-gateway">
                 <NavLink className={navigationClass} to="/admin/esi-gateway"><IconCloud /><span>ESI 网关观测</span></NavLink>

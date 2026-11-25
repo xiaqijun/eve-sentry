@@ -61,13 +61,13 @@ describe("ProtectedRoute", () => {
 
     await act(async () => {
       root.render(
-        <MemoryRouter initialEntries={["/reports"]}>
+        <MemoryRouter initialEntries={["/dashboard"]}>
           <Routes>
             <Route
-              path="/reports"
+              path="/dashboard"
               element={
                 <ProtectedRoute allowWhenAuthDisabled>
-                  <div>report</div>
+                  <div>dashboard</div>
                 </ProtectedRoute>
               }
             />
@@ -77,7 +77,7 @@ describe("ProtectedRoute", () => {
       );
     });
 
-    expect(container.textContent).not.toContain("report");
+    expect(container.textContent).not.toContain("dashboard");
     expect(container.textContent).toContain("login");
   });
 });
