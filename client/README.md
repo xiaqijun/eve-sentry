@@ -79,11 +79,13 @@ flowchart LR
     admin["管理员"] --> admin_password["密码登录"]
     admin_password --> session
 
-    session --> seat["GloryNavy_Seat 签发/绑定/吊销设备密钥"]
+    session --> standalone["独立版：在设备密钥页创建"]
+    seat["SeAT 版：由 GloryNavy_Seat 签发"]
     client["桌面客户端"] --> configured{"已填写设备密钥？"}
     configured -->|"否"| anonymous["按服务端模式访问"]
     configured -->|"是"| keycheck["验证密钥状态"]
     seat --> configured
+    standalone --> configured
     keycheck --> access["开启经过认证的客户端访问"]
     anonymous -.-> policy["enforce 模式仍会拒绝未认证的受保护请求"]
 ```
@@ -103,9 +105,8 @@ flowchart LR
 - Web 管理系统直接使用 `@arco-design/web-react` 统一标准业务控件，并支持全局明暗主题
   切换；个人账号、系统管理、星图 Canvas、ECharts 和 Arco 组件会同步更新，选择会保存
   在浏览器中。项目未使用 Arco Design Pro 脚手架，星图和图表保留专用实现。
-- 管理员和普通用户均使用平台账号密码登录；桌面客户端可选使用由 GloryNavy_Seat 签发的设备密钥。
-  有效密钥创建后立即可用，不需要 EVE SSO、Listener 扫描或角色白名单；服务端 `enforce` 模式仍会拒绝
-  未认证的受保护请求。
+- Web 管理台使用本地平台账号密码。桌面客户端在 SeAT 版填写 GloryNavy_Seat 签发的密钥，
+  在独立版填写 Sentry「设备密钥」创建的密钥。两种版本都使用相同的客户端设置入口。
 
 ## 本地启动
 

@@ -10,7 +10,13 @@ from ipaddress import ip_address
 from typing import Any
 from urllib.parse import unquote
 
-from app.server.auth import AuthError, AuthPrincipal, AuthService, SESSION_COOKIE_NAME
+from app.server.auth import (
+    LOCAL_CLIENT_KEY_TYPE,
+    SESSION_COOKIE_NAME,
+    AuthError,
+    AuthPrincipal,
+    AuthService,
+)
 
 
 _PUBLIC_USER_FIELDS = (
@@ -300,7 +306,8 @@ class AuthHttpMixin:
             return True
         if path == "/api/v1/auth/login" and method == "POST":
             return True
-        client_route = bool(_seat_permissions_for_request(method, path))
+        client_permissions = _seat_permissions_for_request(method, path)
+        client_route = bool(client_permissions)
         legacy_client_route = _is_legacy_client_route(method, path)
         if not service.enforce_requests and not self._is_auth_management_path(path):
             # Keep the historical auth=off behavior for anonymous and ordinary
@@ -329,37 +336,33 @@ class AuthHttpMixin:
                     raise AuthError("authentication is required", 401, "authentication_required")
                 principal = service.authenticate_session(session_token)
 
-            if client_route and principal.auth_type == "api_key" and not principal.is_seat:
-                raise AuthError(
-                    "Client key must be issued by SeAT",
-                    403,
-                    "seat_client_key_required",
-                )
+            local_client = principal.api_key_type == LOCAL_CLIENT_KEY_TYPE
             if (
-                legacy_client_route
+                (client_route or legacy_client_route)
                 and principal.auth_type == "api_key"
                 and not principal.is_seat
+                and not local_client
             ):
                 raise AuthError(
                     "Client key must be issued by SeAT",
                     403,
                     "seat_client_key_required",
                 )
-            if principal.is_seat:
-                required = _seat_permissions_for_request(method, path)
+            if principal.is_seat or local_client:
+                required = client_permissions
                 # Older clients use auth/me as their key-validation probe.
-                # Keep this read-only compatibility exception out of the
-                # monitor/alert route tables so other management paths remain
-                # denied for Seat keys.
                 if method == "GET" and path == "/api/v1/auth/me":
                     required = {"monitor", "alert"}
+                if local_client and method == "POST" and path == "/api/v1/ocr/query":
+                    required = set()
                 if not required or not any(
                     permission in principal.permissions for permission in required
                 ):
                     raise AuthError(
-                        "Seat key does not have permission for this endpoint",
+                        "Seat key does not have permission for this endpoint"
+                        if principal.is_seat else "Local client key does not have permission for this endpoint",
                         403,
-                        "seat_permission_denied",
+                        "seat_permission_denied" if principal.is_seat else "local_client_permission_denied",
                     )
 
             # The OCR query endpoint is a command request for connected
@@ -428,29 +431,18 @@ class AuthHttpMixin:
         configured = str(
             getattr(type(self), "seat_integration_token", "") or ""
         ).strip()
-        if not configured:
-            self._send_json(
-                {
-                    "error": "Seat integration is disabled",
-                    "code": "seat_integration_disabled",
-                },
-                HTTPStatus.SERVICE_UNAVAILABLE,
-            )
-            return False
         authorization = str(self.headers.get("Authorization") or "").strip()
-        provided = (
-            authorization[7:].strip()
-            if authorization.casefold().startswith("bearer ")
-            else ""
-        )
-        if not provided or not hmac.compare_digest(provided, configured):
-            self._send_json(
-                {
-                    "error": "Seat integration service token is invalid",
-                    "code": "seat_integration_unauthorized",
-                },
-                HTTPStatus.UNAUTHORIZED,
-            )
+        provided = authorization[7:].strip() if authorization.casefold().startswith("bearer ") else ""
+        try:
+            service = self._auth_service()
+            if service is not None:
+                service.authenticate_seat_service_token(provided, configured)
+            elif not configured:
+                raise AuthError("Seat integration is disabled", 503, "seat_integration_disabled")
+            elif not provided or not hmac.compare_digest(provided.encode(), configured.encode()):
+                raise AuthError("Seat integration service token is invalid", 401, "seat_integration_unauthorized")
+        except AuthError as exc:
+            self._send_auth_error(exc)
             return False
         self._seat_integration_authenticated = True
         return True
@@ -469,6 +461,25 @@ class AuthHttpMixin:
             return True
         return service.is_principal_active(principal)
 
+    def _handle_seat_admin_settings(self, *, write: bool) -> None:
+        try:
+            principal = self._require_principal()
+            if not principal.is_admin or principal.auth_type != "session":
+                raise AuthError("请使用管理员会话", 403, "admin_session_required")
+            service = self._auth_service()
+            startup_token = str(getattr(type(self), "seat_integration_token", "") or "").strip()
+            response: dict[str, Any] = {}
+            if write:
+                settings, generated = service.apply_seat_integration_settings(self._read_optional_json(), startup_token)
+                if generated:
+                    response["service_token"] = generated
+            else:
+                settings = service.seat_integration_status(startup_token)
+            response["settings"] = settings
+            self._send_auth_json(response)
+        except (AuthError, ValueError, json.JSONDecodeError) as exc:
+            self._send_auth_exception(exc)
+
     def _handle_auth_get(self, path: str) -> bool:
         service = self._auth_service()
         if service is None:
@@ -481,9 +492,13 @@ class AuthHttpMixin:
             "/api/v1/admin/audit",
             "/api/v1/admin/esi-gateway",
             "/api/v1/admin/personnel-settings",
+            "/api/v1/admin/seat-integration",
         }
         if path not in auth_paths:
             return False
+        if path == "/api/v1/admin/seat-integration":
+            self._handle_seat_admin_settings(write=False)
+            return True
         principal = self._require_principal()
         if path == "/api/v1/auth/me":
             user = service.repository.user_by_id(principal.user_id)
@@ -493,7 +508,10 @@ class AuthHttpMixin:
             self._send_json({"user": payload})
             return True
         if path == "/api/v1/me/keys":
-            self._send_json({"keys": service.list_api_keys(principal.user_id)})
+            self._send_json({
+                "keys": service.list_api_keys(principal.user_id),
+                "local_issuance": service.local_client_keys_enabled and principal.auth_type == "session",
+            })
             return True
         if path == "/api/v1/admin/users":
             self._send_json({"users": service.list_users()})
@@ -532,11 +550,15 @@ class AuthHttpMixin:
             "/api/v1/me/keys",
             "/api/v1/admin/users",
             "/api/v1/admin/personnel-settings",
+            "/api/v1/admin/seat-integration",
         }
         user_action = self._admin_user_action(path)
         key_action = self._api_key_action(path)
         if path not in auth_paths and user_action is None and key_action is None:
             return False
+        if path == "/api/v1/admin/seat-integration":
+            self._handle_seat_admin_settings(write=True)
+            return True
         try:
             if path == "/api/v1/auth/login":
                 payload = self._read_json()
@@ -556,6 +578,21 @@ class AuthHttpMixin:
                 user_action is not None
                 and user_action[1] in {"keys", "service-keys"}
             ):
+                if service.local_client_keys_enabled and (
+                    user_action is None or user_action[1] == "keys"
+                ):
+                    if principal.auth_type != "session":
+                        raise AuthError("a browser session is required", 403, "session_required")
+                    payload = self._read_optional_json()
+                    if payload.get("key_type", LOCAL_CLIENT_KEY_TYPE) != LOCAL_CLIENT_KEY_TYPE:
+                        raise AuthError("invalid API key type", 400, "invalid_key_type")
+                    user_id = user_action[0] if user_action is not None else principal.user_id
+                    key = service.create_api_key(
+                        user_id, str(payload.get("name") or ""), principal.user_id,
+                        key_type=LOCAL_CLIENT_KEY_TYPE,
+                    )
+                    self._send_auth_json({"key": key}, HTTPStatus.CREATED)
+                    return True
                 self._send_json(
                     {
                         "error": "Client keys are issued and managed by GloryNavy_Seat",

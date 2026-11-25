@@ -22,6 +22,7 @@ def build_server_argv(env: Mapping[str, str] | None = None) -> list[str]:
     _append_option(argv, "--host", values.get("EVE_SENTRY_SERVER_HOST", ""))
     _append_option(argv, "--port", values.get("EVE_SENTRY_SERVER_PORT", ""))
     _append_option(argv, "--storage", values.get("EVE_SENTRY_SERVER_STORAGE", ""))
+    _append_option(argv, "--edition", values.get("EVE_SENTRY_SERVER_EDITION", ""))
     _append_option(argv, "--data", values.get("EVE_SENTRY_SERVER_DATA", ""))
     _append_option(
         argv,

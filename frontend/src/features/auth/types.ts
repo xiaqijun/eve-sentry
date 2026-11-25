@@ -17,7 +17,7 @@ export interface ApiKeyRecord {
   user_id: string;
   name: string;
   key_prefix: string;
-  key_type: "desktop" | "service_readonly" | "seat";
+  key_type: "desktop" | "service_readonly" | "seat" | "local_client";
   status: "active" | "revoked";
   created_at: string;
   last_used_at?: string;
@@ -245,3 +245,12 @@ export interface EsiLoginSnapshot {
   character_id?: number | null;
   error?: string;
 }
+
+export type SeatIntegrationSettings = {
+  enabled: boolean;
+  local_issuance: boolean;
+  revision: number;
+  token_configured: boolean;
+  editable: boolean;
+  last_authenticated_at: string | null;
+};

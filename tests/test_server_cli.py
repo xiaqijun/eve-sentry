@@ -93,6 +93,47 @@ def test_server_cli_requires_token_for_enforced_seat_auth():
         server_main._validate_args(parser, args)
 
 
+@pytest.mark.parametrize("edition", ["standalone", "seat"])
+def test_server_edition_resolves_production_settings(edition):
+    env = {
+        "EVE_SENTRY_SERVER_POSTGRES_DSN": "postgresql://localhost/eve_sentry",
+        "EVE_SENTRY_SERVER_EDITION": edition,
+    }
+    env["EVE_SENTRY_SERVER_SEAT_INTEGRATION_TOKEN"] = "s" * 32
+    parser = build_arg_parser()
+    args = parser.parse_args(build_server_argv(env))
+    server_main._validate_args(parser, args)
+
+    assert args.edition == edition
+    assert args.auth_mode == "enforce"
+    assert args.seat_auth_mode == ("enforce" if edition == "seat" else "off")
+    assert not args.allow_alert_consumption
+
+
+def test_seat_edition_allows_web_token_provisioning():
+    parser = build_arg_parser()
+    args = parser.parse_args(["--edition", "seat", "--postgres-dsn", "postgresql://localhost/eve_sentry"])
+    server_main._validate_args(parser, args)
+    assert args.auth_mode == "enforce"
+    assert args.seat_auth_mode == "enforce"
+    assert not args.seat_integration_token
+
+
+@pytest.mark.parametrize(("edition", "options", "message"), [
+    ("standalone", ["--seat-auth-mode", "enforce"], "cannot be combined"),
+    ("standalone", ["--seat-integration-token", "s" * 16], "at least 32"),
+    ("standalone", ["--allow-alert-consumption"], "cannot be combined"),
+    ("standalone", ["--storage", "json"], "requires PostgreSQL"),
+    ("standalone", ["--auth-mode", "setup"], "requires enforced authentication"),
+])
+def test_server_edition_rejects_incompatible_options(edition, options, message, capsys):
+    parser = build_arg_parser()
+    args = parser.parse_args(["--edition", edition, "--postgres-dsn", "postgresql://localhost/eve_sentry", *options])
+    with pytest.raises(SystemExit):
+        server_main._validate_args(parser, args)
+    assert message in capsys.readouterr().err
+
+
 def test_server_cli_requires_secure_storage_for_alert_consumption():
     parser = build_arg_parser()
     valid = parser.parse_args(

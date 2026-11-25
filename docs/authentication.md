@@ -10,6 +10,7 @@ OAuth2 token 下发给客户端、SeAT 或 Gateway。
 | --- | --- | --- |
 | 管理端账号会话 | Web 控制台登录 | 服务端签发，默认 12 小时过期 |
 | Seat 客户端密钥 | Windows 监控/预警客户端调用客户端接口 | 仅由 GloryNavy_Seat 签发和吊销 |
+| 本地设备密钥 | 独立版 Windows 监控/预警客户端调用客户端接口 | 由本地账号签发，随密钥吊销或账号停用失效 |
 | 历史 desktop/service key | 迁移和管理兼容 | 不得访问监控/预警客户端接口 |
 
 启用 `--auth-mode setup` 或 `enforce` 后，客户端使用：
@@ -18,16 +19,16 @@ OAuth2 token 下发给客户端、SeAT 或 Gateway。
 Authorization: Bearer eve_...
 ```
 
-有效密钥只受密钥状态、Seat `account_id` 和接口权限约束。新建密钥直接处于可用
-状态，不需要 ESI、游戏客户端、Chatlogs 或额外的身份上报。
+SeAT 客户端按密钥状态、Seat `account_id` 和接口权限认证。独立版按本地账号、密钥状态和
+客户端接口权限认证。新签发的有效密钥可以直接连接，客户端无需上传角色身份证明。
 
 ## 账号管理
 
 管理员可以在 Web 控制台中创建用户、重置密码、启用/禁用用户，并查看密钥状态、
-客户端心跳。审计记录通过管理员接口 `GET /api/v1/admin/audit` 查询。客户端密钥统一由
-GloryNavy_Seat 签发和管理，Sentry 不再
-提供 desktop/service_readonly 创建、恢复或删除入口；Seat 密钥的生命周期操作必须
-回到 GloryNavy_Seat 完成。本地管理账号只用于 Web 控制台，不参与 Seat 客户端认证。
+客户端心跳。审计记录通过管理员接口 `GET /api/v1/admin/audit` 查询。
+SeAT 版客户端密钥由 GloryNavy_Seat 签发和管理，本地 Web 账号独立于 Seat 客户端认证。
+独立版用户在「设备密钥」创建本人密钥，管理员也可以通过管理员接口为指定用户签发。完整密钥只在创建成功时
+返回一次。设备密钥可以吊销、重新启用和删除。HTTP 调用这些入口使用登录会话及 CSRF token。
 
 旧数据库中可能仍保留 `auth_settings`、`auth_identity_jobs`、角色白名单和
 允许军团表，用于平滑升级和历史审计。服务端不再读取这些表来做授权，也不会
@@ -49,13 +50,31 @@ GloryNavy_Seat 签发和管理，Sentry 不再
 
 ## SeAT 业务认证
 
-SeAT 密钥管理使用独立的服务端 Bearer Token；业务密钥认证由
-`EVE_SENTRY_SERVER_SEAT_AUTH_MODE`（启动参数 `--seat-auth-mode`）单独控制，默认 `off`：
+SeAT 密钥管理使用独立的服务端 Bearer Token。`--edition seat` 自动启用 SeAT 认证。
+未指定版本时，`EVE_SENTRY_SERVER_SEAT_AUTH_MODE`（`--seat-auth-mode`）沿用原有配置，默认 `off`：
 
 | 模式 | 行为 |
 | --- | --- |
 | `off` | Seat 集成未启用；不把任何旧客户端 key 当作 Seat key 或客户端绕过入口 |
 | `enforce` | 仅有效的 SeAT 密钥和接口权限可以建立 SeAT principal；不要求本地账号 |
+
+## Web 管理台的 SeAT 开关
+
+启用强制认证的实例支持本地管理员从「系统管理 → SeAT 接入」切换模式。
+开启后使用 SeAT 设备密钥，关闭后从 Sentry 签发并使用本地设备密钥。
+切换会重新校验活跃的设备 SSE 连接，保留两边的密钥记录及其吊销状态。重新启用
+SeAT 时，监控贡献和预警用量从本次启用后的新观测开始，不跨停用区间计量。
+两端管理员可在网页配置令牌，已有环境变量作为启动默认值。详见[部署步骤](server-deployment.md#从-web-管理台接入-seat)。
+
+## 独立版客户端认证
+
+`--edition standalone` 强制 HTTP 鉴权，并允许签发 `local_client` 密钥。监控端和预警端
+继续使用相同的 Bearer 头和只读验钥接口 `GET /api/v1/auth/me`。设备密钥拥有监控上报和预警
+读取权限。Web 管理、密钥签发和发起按需 OCR 查询由平台会话或现有内嵌机器人负责。
+本地客户端来源按账号隔离，同名客户端可以并行上报。独立版拒绝 SeAT 和历史设备密钥，
+SeAT 集成、消费和奖励结算接口关闭。
+
+## SeAT 客户端权限与结算
 
 SeAT `account_id` 是客户端认证主体，不等同于本地 `auth_users.user_id`。服务端为每个
 Seat principal 使用稳定的 `seat:{account_id}` 内部归属 ID；不会查询本地用户或

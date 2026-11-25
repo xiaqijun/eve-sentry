@@ -8,6 +8,7 @@ import type {
   EsiGatewaySnapshot,
   EsiAuthStatus,
   EsiLoginSnapshot,
+  SeatIntegrationSettings,
 } from "./types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "";
@@ -73,6 +74,32 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   return payload;
 }
 
+export async function fetchSeatIntegration(): Promise<SeatIntegrationSettings> {
+  const payload = await apiRequest<{ settings: SeatIntegrationSettings }>("/api/v1/admin/seat-integration");
+  return payload.settings;
+}
+
+type SeatIntegrationEdit = { revision: number } & (
+  { enabled: boolean } | { service_token: string } | { generate_service_token: true }
+);
+
+function writeSeatIntegration(edit: SeatIntegrationEdit) {
+  return apiRequest<{ settings: SeatIntegrationSettings; service_token?: string }>("/api/v1/admin/seat-integration", {
+    method: "POST",
+    body: JSON.stringify(edit),
+  });
+}
+
+export async function updateSeatIntegration(enabled: boolean, revision: number): Promise<SeatIntegrationSettings> {
+  return (await writeSeatIntegration({ enabled, revision })).settings;
+}
+
+export function saveSeatServiceToken(revision: number, token?: string) {
+  return writeSeatIntegration(token === undefined
+    ? { revision, generate_service_token: true }
+    : { revision, service_token: token });
+}
+
 export async function fetchMe(): Promise<AuthUser> {
   const payload = await apiRequest<{ user: AuthUser & { csrf_token?: string } }>(
     "/api/v1/auth/me",
@@ -108,9 +135,20 @@ export async function changePassword(
   });
 }
 
-export async function listMyKeys(): Promise<ApiKeyRecord[]> {
-  const payload = await apiRequest<{ keys?: unknown }>("/api/v1/me/keys");
-  return arrayOrEmpty<ApiKeyRecord>(payload.keys);
+export async function listMyKeys(): Promise<{ keys: ApiKeyRecord[]; localIssuance: boolean }> {
+  const payload = await apiRequest<{ keys?: unknown; local_issuance?: boolean }>("/api/v1/me/keys");
+  return {
+    keys: arrayOrEmpty<ApiKeyRecord>(payload.keys),
+    localIssuance: payload.local_issuance === true,
+  };
+}
+
+export async function createMyKey(name: string): Promise<ApiKeyRecord & { secret: string }> {
+  const payload = await apiRequest<{ key: ApiKeyRecord & { secret: string } }>("/api/v1/me/keys", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+  return payload.key;
 }
 
 export async function revokeKey(keyId: string): Promise<void> {

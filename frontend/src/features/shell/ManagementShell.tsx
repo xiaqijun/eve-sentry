@@ -6,6 +6,7 @@ import {
   IconDesktop,
   IconCloud,
   IconLock,
+  IconLink,
   IconUserGroup,
   IconMenu,
 } from "@arco-design/web-react/icon";
@@ -23,6 +24,7 @@ const PAGE_META: Record<string, { title: string }> = {
   "/account/keys": { title: "设备密钥" },
   "/admin/users": { title: "用户管理" },
   "/admin/clients": { title: "客户端管理" },
+  "/admin/seat-integration": { title: "SeAT 接入" },
   "/admin/esi-gateway": { title: "ESI 网关观测" },
 };
 
@@ -86,6 +88,9 @@ export function ManagementShell() {
               </MenuItem>
               <MenuItem key="/admin/clients">
                 <NavLink className={navigationClass} to="/admin/clients"><IconDesktop /><span>客户端管理</span></NavLink>
+              </MenuItem>
+              <MenuItem key="/admin/seat-integration">
+                <NavLink className={navigationClass} to="/admin/seat-integration"><IconLink /><span>SeAT 接入</span></NavLink>
               </MenuItem>
               <MenuItem key="/admin/esi-gateway">
                 <NavLink className={navigationClass} to="/admin/esi-gateway"><IconCloud /><span>ESI 网关观测</span></NavLink>

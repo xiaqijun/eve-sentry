@@ -122,7 +122,7 @@ describe("authenticated API client", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({}), { status: 200 }),
     );
-    await expect(listMyKeys()).resolves.toEqual([]);
+    await expect(listMyKeys()).resolves.toEqual({ keys: [], localIssuance: false });
   });
 
   it("normalizes a partial client inventory", async () => {

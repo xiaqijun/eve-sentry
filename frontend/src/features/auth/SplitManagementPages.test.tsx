@@ -7,6 +7,7 @@ import { AccountKeysPage } from "./AccountKeysPage";
 import { AdminUsersPage } from "./AdminUsersPage";
 
 const apiMocks = vi.hoisted(() => ({
+  createMyKey: vi.fn(),
   createUser: vi.fn(),
   deleteKey: vi.fn(),
   deleteUser: vi.fn(),
@@ -55,7 +56,7 @@ describe("split management pages", () => {
     root = createRoot(container);
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
     apiMocks.listAdminUsers.mockResolvedValue([user]);
-    apiMocks.listMyKeys.mockResolvedValue([]);
+    apiMocks.listMyKeys.mockResolvedValue({ keys: [], localIssuance: false });
   });
 
   afterEach(async () => {
@@ -146,11 +147,10 @@ describe("split management pages", () => {
     await act(async () => actionButton?.click());
     expect(container.querySelector('[role="menuitem"]'))
       .not.toHaveTextContent("创建设备密钥");
-    expect(container).toHaveTextContent("客户端密钥统一由 GloryNavy_Seat 签发");
   });
 
   it("keeps device credentials separate from password settings", async () => {
-    apiMocks.listMyKeys.mockResolvedValue([{
+    apiMocks.listMyKeys.mockResolvedValue({ localIssuance: false, keys: [{
       identity_verified: true,
       key_id: "key-1",
       key_prefix: "eve_example",
@@ -159,7 +159,7 @@ describe("split management pages", () => {
       name: "主监控端",
       status: "active",
       user_id: "user-1",
-    }]);
+    }] });
     await render(<AccountKeysPage />);
     expect(container).toHaveTextContent("客户端访问凭据");
     expect(container).toHaveTextContent("设备名称");
@@ -175,8 +175,38 @@ describe("split management pages", () => {
     expect(container).not.toHaveTextContent("创建设备密钥");
   });
 
+  it("creates a standalone device key and lets the user dismiss its secret", async () => {
+    apiMocks.listMyKeys.mockResolvedValue({ keys: [], localIssuance: true });
+    apiMocks.createMyKey.mockResolvedValue({
+      key_id: "local-1",
+      key_prefix: "eve_example",
+      key_type: "local_client",
+      name: "本地监控端",
+      status: "active",
+      secret: "test-only-secret",
+      user_id: "user-1",
+    });
+    await render(<AccountKeysPage />);
+
+    const input = container.querySelector<HTMLInputElement>("#new-device-name")!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setValue.call(input, "本地监控端");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(apiMocks.createMyKey).toHaveBeenCalledTimes(1);
+    expect(apiMocks.createMyKey).toHaveBeenCalledWith("本地监控端");
+    expect(container.querySelector("#created-device-key")).toHaveValue("test-only-secret");
+    expect(container).toHaveTextContent("独立版客户端");
+    const done = [...container.querySelectorAll("button")].find((button) => button.textContent === "完成");
+    await act(async () => done!.click());
+    expect(container.querySelector("#created-device-key")).toBeNull();
+    expect(container).toHaveTextContent("本地监控端");
+  });
+
   it("allows manually revoked keys to be enabled or deleted", async () => {
-    apiMocks.listMyKeys.mockResolvedValue([{
+    apiMocks.listMyKeys.mockResolvedValue({ localIssuance: false, keys: [{
       identity_verified: true,
       key_id: "key-2",
       key_prefix: "eve_revoked",
@@ -186,7 +216,7 @@ describe("split management pages", () => {
       revoked_reason: "revoked by user",
       status: "revoked",
       user_id: "user-1",
-    }]);
+    }] });
     await render(<AccountKeysPage />);
 
     expect(container.querySelector('[aria-label="重新启用 备用监控端"]')).toBeInTheDocument();

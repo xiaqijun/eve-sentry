@@ -362,7 +362,9 @@ class AuthRepository:
             connection.execute("DELETE FROM auth_users WHERE user_id = ?", (user_id,))
             self._insert_audit(connection, audit)
 
-    def create_api_key(self, record: dict[str, Any]) -> dict[str, Any]:
+    def create_api_key(
+        self, record: dict[str, Any], audit: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         with self._connect() as connection:
             connection.execute(
                 """
@@ -380,6 +382,8 @@ class AuthRepository:
                     record["revoked_at"], record["revoked_reason"],
                 ),
             )
+            if audit is not None:
+                self._insert_audit(connection, audit)
         return self.api_key_by_id(record["key_id"]) or {}
 
     def api_key_by_hash(self, key_hash: str) -> dict[str, Any] | None:
