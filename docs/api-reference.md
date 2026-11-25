@@ -293,29 +293,52 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 | `GET` | `/api/v1/auth/me` | 当前用户和 CSRF token |
 | `POST` | `/api/v1/auth/logout` | 退出登录 |
 | `POST` | `/api/v1/auth/password` | 修改管理员密码 |
-| `GET` | `/api/v1/me/keys` | 列出本人已有密钥；客户端密钥由 GloryNavy_Seat 签发 |
-| `DELETE` | `/api/v1/me/keys/{id}` | 仅历史管理/迁移 key 可由兼容接口处理；Seat key 返回 `410 seat_key_management_required` |
-| `POST` | `/api/v1/me/keys/{id}/enable` | 仅历史管理/迁移 key 的兼容操作；Seat key 返回 `410 seat_key_management_required` |
-| `DELETE` | `/api/v1/me/keys/{id}/record` | 仅历史管理/迁移 key 的兼容操作；Seat key 返回 `410 seat_key_management_required` |
+| `GET` | `/api/v1/me/keys` | 列出本人密钥。独立版登录会话的 `local_issuance` 为 `true` |
+| `POST` | `/api/v1/me/keys` | 独立版签发本人设备密钥 |
+| `DELETE` | `/api/v1/me/keys/{id}` | 吊销本地设备密钥或历史管理密钥。Seat key 返回 `410 seat_key_management_required` |
+| `POST` | `/api/v1/me/keys/{id}/enable` | 重新启用手动吊销的本地或历史密钥。Seat key 返回 `410 seat_key_management_required` |
+| `DELETE` | `/api/v1/me/keys/{id}/record` | 删除已吊销的本地或历史密钥记录。Seat key 返回 `410 seat_key_management_required` |
 | `GET/POST` | `/api/v1/admin/users` | 用户列表和创建用户 |
 | `GET` | `/api/v1/admin/clients` | 管理员读取包含归属信息的完整客户端心跳和状态 |
 | `GET` | `/api/v1/admin/esi-gateway` | ESI Gateway 健康和客户端指标（管理员） |
 | `POST` | `/api/v1/admin/users/{id}/status` | 启用或禁用用户 |
 | `POST` | `/api/v1/admin/users/{id}/reset-password` | 重置管理员密码 |
 | `DELETE` | `/api/v1/admin/users/{id}` | 删除用户 |
-| `POST` | `/api/v1/admin/users/{id}/keys` | 已下线，返回 `410 seat_key_management_required` |
+| `POST` | `/api/v1/admin/users/{id}/keys` | 独立版管理员为指定用户签发设备密钥 |
 | `POST` | `/api/v1/admin/users/{id}/service-keys` | 已下线，返回 `410 seat_key_management_required` |
 | `GET` | `/api/v1/admin/audit` | 审计日志 |
 
-客户端不再提交 EVE 角色身份或 Listener 文件信息；只有由 GloryNavy_Seat 签发并投影、
-且有效的 Seat key 才能访问监控/预警客户端接口。旧客户端使用的 `/api/v1/auth/me`
-仅作为只读验钥兼容接口，返回 Seat principal。服务端不提供身份校验、角色白名单
-或允许军团管理接口。
+### Web 管理员切换 SeAT 接入
+
+`GET /api/v1/admin/seat-integration` 和 `POST /api/v1/admin/seat-integration`
+仅接受本地管理员登录会话。POST 需要 `X-CSRF-Token`，提交
+`{"enabled":true,"revision":0}`。返回 `settings` 对象，包含 `enabled`、
+`local_issuance`、`revision`、`token_configured`、`editable`
+及 `last_authenticated_at`。最后一个字段为当前进程最近一次成功验证 SeAT 服务令牌的
+UTC 时间，没有记录时为 `null`。设置读接口只提供令牌的配置状态。
+
+POST 可提交 `{"generate_service_token":true,"revision":0}` 生成并保存新令牌，或提交
+`{"service_token":"…","revision":0}` 保存已有令牌。服务端只保存哈希。生成请求的响应在
+`settings` 同级一次性返回 `service_token`，手工输入的令牌不回显。保存后的令牌优先于启动环境变量。
+
+成功切换后保存的模式覆盖启动默认值。版本冲突返回 `409 seat_settings_conflict`，
+缺少启用所需的服务令牌时返回 `409 seat_token_required`。关闭后 SeAT 服务接口返回
+`503 seat_integration_disabled`，SeAT 客户端密钥无法重新鉴权，既有连接随授权检查退出。
+
+### 独立版设备密钥
+
+独立版创建设备密钥使用登录会话和 `X-CSRF-Token`。提交 `{"name":"监控机"}`，
+成功返回 HTTP 201 和 `{"key": {..., "key_type":"local_client", "secret":"eve_..."}}`。
+后续列表只返回密钥前缀及状态。SeAT 版的签发请求仍返回 `410 seat_key_management_required`。
+
+客户端使用对应版本签发的 Bearer 密钥访问监控和预警接口。`GET /api/v1/auth/me`
+用于只读验钥，返回客户端身份。独立版服务端按本地账号区分客户端运行时 ID，按需 OCR
+任务仍向客户端返回其原始目标 ID。设备密钥不能访问 Web 管理、签发和 SeAT 结算接口。
 
 ## 监控与事件
 
-第三方程序接收预警时，优先阅读[预警消息 API 接入指南](alert-api.md)。该指南包含只读
-服务密钥权限、SSE 事件类型、断线续传、轮询接口和可运行示例。
+第三方程序接收预警时，优先阅读[预警消息 API 接入指南](alert-api.md)。该指南包含客户端
+密钥要求、SSE 事件类型、断线续传、轮询接口和可运行示例。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |

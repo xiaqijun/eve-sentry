@@ -791,6 +791,11 @@ class PostgreSQLIntelStore(IntelStore):
                     started_at = str(before.get("last_seen_at") or "").strip()
                     if not started_at or started_at == server_received_at:
                         continue
+                    enabled_at = str(payload.get("_server_seat_enabled_at") or "")
+                    if enabled_at:
+                        since_enabled = self._seconds_between_iso(enabled_at, started_at)
+                        if since_enabled is None or since_enabled < 0:
+                            continue
                     elapsed = self._seconds_between_iso(started_at, server_received_at)
                     if elapsed is None or elapsed <= 0 or elapsed > 45:
                         continue
@@ -3656,7 +3661,11 @@ class PostgreSQLIntelStore(IntelStore):
             try:
                 started = datetime.fromisoformat(previous_seen.replace("Z", "+00:00"))
                 ended = datetime.fromisoformat(current_seen.replace("Z", "+00:00"))
-                duration = int((ended - started).total_seconds())
+                enabled_at = payload.get("_server_seat_enabled_at")
+                if not enabled_at or started >= datetime.fromisoformat(enabled_at):
+                    duration = int((ended - started).total_seconds())
+                else:
+                    duration = 0
             except (TypeError, ValueError):
                 duration = 0
             interval_cap = max(30, int(float(raw.get("heartbeat_interval_seconds") or 10) * 3))

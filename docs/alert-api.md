@@ -20,7 +20,7 @@ Bootstrap 可带 `monitoring_scope`；区域外客户端保留诊断连接但不
 事件中的空人员数组是有效更正，不能跳过，也不能直接当作视觉清空；视觉来敌/清空仍由 Presence 决定。
 机器人按角色 ID 集合及名单修订去重，人员新增、移除及空名单变化统一显示“⚠️ 敌对事件”；同 ID 改名不重复告警。
 
-自动 OCR 人员行使用 HTTP 认证得到的 SeAT 账号、密钥 ID 与监控来源匹配，
+自动 OCR 人员行按 HTTP 认证后的监控来源匹配。SeAT 版使用账号和密钥归因，独立版按本地账号区分来源，
 不接受请求体自行声明的身份。身份解析保留当前观察的来源、采集帧和按需查询标记；
 按需查询不会发布自动敌情。旧版本遗漏归属的人员在下一次真实 OCR 重新观测后恢复名单，
 通过现有 `alert.updated` 更新机器人；不回填历史报告或重置消费游标。
@@ -39,38 +39,23 @@ Bootstrap 可带 `monitoring_scope`；区域外客户端保留诊断连接但不
 
 ## 接口选择
 
-| 需求 | 推荐接口 | 返回方式 | 只读服务密钥 |
-| --- | --- | --- | --- |
-| 实时接收预警、清空和状态同步 | `GET /api/v1/events` | SSE 长连接 | 支持 |
-| 只获取当前存在敌对的星系名称 | `GET /api/v1/integrations/hostile-systems` | JSON 轮询 | 支持 |
-| 查询当前完整活动告警 | `GET /api/v1/alerts` | JSON 轮询 | 不支持 |
-
-第三方集成优先使用只读服务密钥。只有确实需要完整活动告警列表时，才使用桌面设备密钥
-或网页登录会话访问 `/api/v1/alerts`。
+| 需求 | 推荐接口 | 返回方式 |
+| --- | --- | --- |
+| 实时接收预警、清空和状态同步 | `GET /api/v1/events` | SSE 长连接 |
+| 只获取当前存在敌对的星系名称 | `GET /api/v1/integrations/hostile-systems` | JSON 轮询 |
+| 查询当前完整活动告警 | `GET /api/v1/alerts` | JSON 轮询 |
 
 ## 认证
 
-管理员在系统管理中为目标账号创建只读服务密钥。完整密钥只在创建时显示一次，请通过
-HTTP 请求头传递：
+SeAT 版使用 GloryNavy_Seat 签发且具有 `alert` 权限的密钥。独立版使用 Sentry「设备密钥」
+签发的本地客户端密钥。请通过 HTTP 请求头传递：
 
 ```http
 Authorization: Bearer eve_xxx
 ```
 
-只读服务密钥只能读取以下接口：
-
-- `/api/v1/events`
-- `/api/v1/bootstrap`
-- `/api/v1/alert-history`
-- `/api/v1/hostile-waves`
-- `/api/v1/integrations/hostile-systems`
-- `/api/v1/ocr/query` 和 `/api/v1/ocr/query/{query_id}`
-
 不要把密钥放入 URL、日志或前端源码。公网调用必须使用 HTTPS。密钥被吊销、所属账号被
 禁用或删除后，已有 SSE 连接也会被服务端主动断开。
-
-其中 `POST /api/v1/ocr/query` 是只读服务密钥唯一允许的命令写入例外；它只创建有界的
-一次性客户端查询，不直接修改持久化情报。
 
 ## 实时预警事件流
 

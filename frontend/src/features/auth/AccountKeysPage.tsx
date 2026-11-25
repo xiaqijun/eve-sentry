@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Card, Pagination, Space, Table, Typography } from "@arco-design/web-react";
+import { Button, Card, Input, Pagination, Space, Table, Typography } from "@arco-design/web-react";
 import { Ban, KeyRound, RotateCcw, Trash2 } from "lucide-react";
 
 import {
@@ -8,7 +8,7 @@ import {
   ManagementPageHeader,
   ManagementSummary,
 } from "../../components/ManagementPage";
-import { deleteKey, enableKey, listMyKeys, revokeKey } from "./api";
+import { createMyKey, deleteKey, enableKey, listMyKeys, revokeKey } from "./api";
 import type { ApiKeyRecord } from "./types";
 
 function formatTime(value?: string): string {
@@ -16,12 +16,22 @@ function formatTime(value?: string): string {
 }
 
 const ACCOUNT_KEY_PAGE_SIZE = 20;
+const KEY_TYPE_LABELS: Record<ApiKeyRecord["key_type"], string> = {
+  local_client: "独立版客户端",
+  seat: "Seat 客户端",
+  service_readonly: "只读服务",
+  desktop: "历史监控客户端",
+};
 
 export function AccountKeysPage() {
   const [keys, setKeys] = useState<ApiKeyRecord[]>([]);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [localIssuance, setLocalIssuance] = useState(false);
+  const [deviceName, setDeviceName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createdSecret, setCreatedSecret] = useState("");
   const activeKeys = keys.filter((key) => key.status === "active");
   const canEnable = (key: ApiKeyRecord) => [
     "revoked by user",
@@ -31,7 +41,9 @@ export function AccountKeysPage() {
   const loadKeys = async () => {
     setLoading(true);
     try {
-      setKeys(await listMyKeys());
+      const snapshot = await listMyKeys();
+      setKeys(snapshot.keys);
+      setLocalIssuance(snapshot.localIssuance);
     } finally {
       setLoading(false);
     }
@@ -52,6 +64,24 @@ export function AccountKeysPage() {
     }
   };
 
+  const createKey = async () => {
+    const name = deviceName.trim();
+    if (!name || creating) return;
+    setError("");
+    setCreating(true);
+    try {
+      const { secret, ...key } = await createMyKey(name);
+      setCreatedSecret(secret);
+      setKeys((current) => [key, ...current]);
+      setPage(1);
+      setDeviceName("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "创建设备密钥失败");
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const columns = [
     {
       title: "设备名称",
@@ -59,7 +89,7 @@ export function AccountKeysPage() {
       render: (_: unknown, key: ApiKeyRecord) => (
         <Space>
           <span className="arco-key-icon"><KeyRound size={14} /></span>
-          <span className="arco-key-name"><strong>{key.name}</strong><small>{key.key_type === "seat" ? "Seat 客户端" : key.key_type === "service_readonly" ? "只读服务" : "历史监控客户端"}</small></span>
+          <span className="arco-key-name"><strong>{key.name}</strong><small>{KEY_TYPE_LABELS[key.key_type]}</small></span>
         </Space>
       ),
     },
@@ -89,8 +119,25 @@ export function AccountKeysPage() {
 
       <section className="account-grid account-grid-single">
         <Card className="account-key-card arco-management-card" title={<Space><KeyRound size={17} />客户端访问凭据</Space>}>
-          <p className="management-hint">客户端密钥统一由 GloryNavy_Seat 签发、绑定和吊销；此处仅查看状态，密钥管理请在 GloryNavy_Seat 完成。</p>
-          <Table<ApiKeyRecord> border={false} columns={columns} data={pagedKeys} loading={loading} noDataElement="暂无已接入的 Seat 密钥" pagination={false} rowKey="key_id" />
+          {localIssuance ? (
+            createdSecret ? (
+              <Space direction="vertical" style={{ width: "100%" }}>
+                <label htmlFor="created-device-key">设备密钥（仅显示一次）</label>
+                <Input id="created-device-key" value={createdSecret} readOnly />
+                <Button onClick={() => setCreatedSecret("")}>完成</Button>
+              </Space>
+            ) : (
+              <form className="account-key-form" onSubmit={(event) => {
+                event.preventDefault();
+                void createKey();
+              }}>
+                <label htmlFor="new-device-name">设备名称</label>
+                <Input id="new-device-name" value={deviceName} onChange={setDeviceName} maxLength={80} disabled={creating} />
+                <Button htmlType="submit" type="primary" loading={creating} disabled={!deviceName.trim()}>创建设备密钥</Button>
+              </form>
+            )
+          ) : !loading ? <p className="management-hint">客户端密钥统一由 GloryNavy_Seat 签发、绑定和吊销。</p> : null}
+          <Table<ApiKeyRecord> border={false} columns={columns} data={pagedKeys} loading={loading} noDataElement={localIssuance ? "暂无设备密钥" : "暂无已接入的 Seat 密钥"} pagination={false} rowKey="key_id" />
           {keys.length > ACCOUNT_KEY_PAGE_SIZE ? <Pagination current={page} pageSize={ACCOUNT_KEY_PAGE_SIZE} showTotal total={keys.length} onChange={setPage} /> : null}
         </Card>
       </section>

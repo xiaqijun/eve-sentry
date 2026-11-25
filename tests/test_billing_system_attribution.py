@@ -79,3 +79,44 @@ def test_explicit_system_id_remains_compatible(billing_store):
     record_presence(store, "outside-map", system_id=30000142)
     row, = repository.list_monitor_contributions()["contributions"]
     assert row["system_id"] == 30000142
+
+
+def test_seat_reactivation_skips_intervals_started_before_enable(billing_store):
+    store, repository = billing_store
+    store._write_heartbeat = lambda heartbeat: None
+    activation = "2026-10-24T14:00:05+00:00"
+    times = (
+        "2026-10-24T14:00:00+00:00",
+        "2026-10-24T14:00:10+00:00",
+        "2026-10-24T14:00:20+00:00",
+    )
+
+    for index, seen_at in enumerate(times):
+        cutoff = activation if index else ""
+        store.record_hostile_presence({
+            "client_id": "detector",
+            "system_name": "R-YWID",
+            "hostile_icon_count": 0,
+            "seen_at": seen_at,
+            "server_received_at": seen_at,
+            "seat_account_id": "account-a",
+            "seat_key_id": "detector-key",
+            "_server_seat_enabled_at": cutoff,
+        })
+        store.record_heartbeat({
+            "client_id": "alert",
+            "client_type": "alert_client",
+            "seen_at": seen_at,
+            "seat_account_id": "account-a",
+            "seat_key_id": "alert-key",
+            "_server_seat_enabled_at": cutoff,
+            "details": {
+                "connection_id": "connection",
+                "alert_scope": {"version": 1, "revision": "scope", "systems": [{"name": "R-YWID"}]},
+            },
+        })
+
+    contribution, = repository.list_monitor_contributions()["contributions"]
+    usage, = repository.list_client_usage()["usage"]
+    assert contribution["started_at"] == usage["started_at"] == times[1]
+    assert contribution["ended_at"] == usage["ended_at"] == times[2]

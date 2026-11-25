@@ -21,6 +21,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
 from app.channels.parser import parse_chat_line
+from app.server.auth import LOCAL_CLIENT_KEY_TYPE
 from app.server.auth_http import AuthHttpMixin
 from app.server.client_status import monitored_system_names
 from app.server.event_cache import ActiveEventSnapshot
@@ -578,6 +579,7 @@ def _presence_payloads_from_heartbeat(payload: dict[str, Any]) -> list[dict[str,
                 "server_received_at": str(payload.get("server_received_at") or "").strip(),
                 "seat_account_id": str(payload.get("seat_account_id") or "").strip(),
                 "seat_key_id": str(payload.get("seat_key_id") or "").strip(),
+                "_server_seat_enabled_at": str(payload.get("_server_seat_enabled_at") or ""),
             }
         )
     return reconciliations
@@ -2253,6 +2255,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 heartbeat = store.record_heartbeat(payload)
                 nodes_after = _monitoring_snapshot_version(store)
                 commands = _claim_ocr_query_commands(payload.get("client_id"))
+                if prefix := self._local_client_source_prefix():
+                    for command in commands:
+                        command["target_client_id"] = command["target_client_id"].removeprefix(prefix)
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send_json({"error": str(exc)}, _request_error_status(exc))
                 return
@@ -2747,7 +2752,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
             principal is not None
             and principal.auth_type == "api_key"
             and (
-                principal.api_key_type == "desktop"
+                principal.api_key_type in {"desktop", LOCAL_CLIENT_KEY_TYPE}
                 or (principal.is_seat and "monitor" in principal.permissions)
             )
         )
@@ -2756,7 +2761,7 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
                 "desktop API key is required",
                 HTTPStatus.FORBIDDEN,
             )
-        attributed = dict(payload)
+        attributed = self._scoped_local_client_payload(payload)
         attributed["user_id"] = principal.user_id if principal is not None else ""
         attributed["api_key_id"] = (
             principal.api_key_id if principal is not None else ""
@@ -2770,11 +2775,12 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         attributed["seat_key_id"] = (
             principal.api_key_id if principal is not None and principal.is_seat else ""
         )
+        attributed["_server_seat_enabled_at"] = principal.seat_enabled_at if principal else ""
         return attributed
 
     def _attributed_presence_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Attach server-owned identity and receipt time to direct Presence uploads."""
-        attributed = dict(payload)
+        attributed = self._scoped_local_client_payload(payload)
         principal = self._auth_principal
         received_at = utc_now_iso()
         attributed["server_received_at"] = received_at
@@ -2784,11 +2790,12 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         attributed["seat_key_id"] = (
             principal.api_key_id if principal is not None and principal.is_seat else ""
         )
+        attributed["_server_seat_enabled_at"] = principal.seat_enabled_at if principal else ""
         return attributed
 
     def _attributed_ocr_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Attach the authenticated source scope to detector OCR uploads."""
-        attributed = dict(payload)
+        attributed = self._scoped_local_client_payload(payload)
         principal = self._auth_principal
         attributed["seat_account_id"] = (
             principal.account_id if principal is not None and principal.is_seat else ""
@@ -2796,6 +2803,34 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         attributed["seat_key_id"] = (
             principal.api_key_id if principal is not None and principal.is_seat else ""
         )
+        return attributed
+
+    def _local_client_source_prefix(self) -> str:
+        principal = self._auth_principal
+        if getattr(principal, "api_key_type", "") != LOCAL_CLIENT_KEY_TYPE:
+            return ""
+        owner_scope = hashlib.sha256(principal.user_id.encode("utf-8")).hexdigest()
+        return f"local:{owner_scope}:"
+
+    def _scoped_local_client_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Keep raw client IDs reusable between independent local accounts."""
+        attributed = dict(payload)
+        prefix = self._local_client_source_prefix()
+        if not prefix:
+            return attributed
+        client_id = str(payload.get("client_id") or "").strip()
+        if client_id:
+            attributed["client_id"] = prefix + client_id
+        details = payload.get("details")
+        if isinstance(details, dict) and isinstance(details.get("targets"), list):
+            targets = []
+            for target in details["targets"]:
+                if isinstance(target, dict):
+                    target_id = str(target.get("client_id") or "").strip()
+                    if target_id:
+                        target = {**target, "client_id": prefix + target_id}
+                targets.append(target)
+            attributed["details"] = {**details, "targets": targets}
         return attributed
 
     def _handle_v1_put(self, path: str) -> None:

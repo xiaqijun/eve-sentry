@@ -3895,6 +3895,160 @@ def test_auth_enforcement_accepts_valid_key_before_listener_is_discovered(tmp_pa
         server.stop()
 
 
+def test_standalone_keys_drive_windows_traffic_without_seat(tmp_path):
+    from app.server.__main__ import (
+        _build_auth_service,
+        _validate_args,
+        build_arg_parser,
+    )
+    from app.server.auth import AuthError
+
+    store = AuthTestStore(tmp_path / "intel.json")
+    password = "test-admin-password"
+    password_file = tmp_path / "admin-password"
+    password_file.write_text(password, encoding="utf-8")
+    parser = build_arg_parser()
+    args = parser.parse_args([
+        "--edition", "standalone", "--postgres-dsn", "postgresql://localhost/eve_sentry",
+        "--auth-bootstrap-admin", "operator", "--auth-bootstrap-password-file", str(password_file),
+    ])
+    _validate_args(parser, args)
+    auth = _build_auth_service(args, store, None)
+    seat_args = parser.parse_args([
+        "--edition", "seat", "--postgres-dsn", "postgresql://localhost/eve_sentry",
+        "--seat-integration-token", "s" * 32,
+    ])
+    _validate_args(parser, seat_args)
+    seat_auth = _build_auth_service(seat_args, store, None)
+    user = auth.repository.user_by_username("operator")
+    seat = _create_seat_http_key(seat_auth, user["user_id"])
+    legacy = seat_auth.create_api_key(user["user_id"], "旧设备", user["user_id"])
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    url = f"{server.url}/api/v1"
+    try:
+        status, headers, login = authenticated_request(f"{url}/auth/login", "POST", {
+            "username": "operator", "password": password,
+        })
+        assert status == 200
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        session = {"Cookie": cookie, "X-CSRF-Token": login["csrf_token"]}
+        status, _, response = authenticated_request(f"{url}/me/keys", headers=session)
+        assert status == 200 and response["local_issuance"] is True
+        status, _, _ = authenticated_request(
+            f"{url}/me/keys", "POST", {"name": "监控机"}, {"Cookie": cookie},
+        )
+        assert status == 403
+        status, headers, response = authenticated_request(
+            f"{url}/me/keys", "POST", {"name": "监控机"}, session,
+        )
+        assert status == 201 and headers["Cache-Control"] == "no-store"
+        key = response["key"]
+        assert key["key_type"] == "local_client"
+        with pytest.raises(AuthError, match="invalid for this server edition"):
+            seat_auth.authenticate_api_key(key["secret"])
+        credential = {"Authorization": f"Bearer {key['secret']}"}
+        status, _, listed = authenticated_request(f"{url}/me/keys", headers=session)
+        assert status == 200 and key["secret"] not in json.dumps(listed)
+        status, _, identity = authenticated_request(f"{url}/auth/me", headers=credential)
+        assert status == 200 and identity["user"]["role"] == "client"
+        principal = auth.authenticate_api_key(key["secret"])
+        assert not principal.is_seat and auth.is_principal_active(principal)
+
+        for rejected in (seat["secret"], legacy["secret"]):
+            status, _, _ = authenticated_request(
+                f"{url}/bootstrap", headers={"Authorization": f"Bearer {rejected}"},
+            )
+            assert status == 401
+        assert authenticated_request(f"{url}/bootstrap", headers=credential)[0] == 200
+        status, _, stream = request_text(f"{url}/events?timeout=0.05&bootstrap=true", headers=credential)
+        assert status == 200 and "event: bootstrap" in stream
+        status, _, _ = authenticated_request(f"{url}/clients/heartbeats", "POST", {
+            "client_id": "machine",
+            "client_type": "detector_client",
+            "details": {"monitoring": True, "targets": [{"client_id": "machine:user-1"}]},
+        }, credential)
+        assert status == 201
+        heartbeat = store.management_heartbeat_snapshot()["heartbeats"][0]
+        assert heartbeat["user_id"] == user["user_id"]
+        assert heartbeat["client_id"].startswith("local:")
+        assert heartbeat["client_id"].endswith(":machine")
+        assert heartbeat["details"]["targets"][0]["client_id"] == heartbeat["client_id"] + ":user-1"
+
+        status, _, presence = authenticated_request(f"{url}/hostile-presence", "POST", {
+            "client_id": "machine:user-1",
+            "system_name": "Jita",
+            "hostile_icon_count": 1,
+        }, credential)
+        assert status == 201 and presence["ok"]
+        status, _, snapshot = authenticated_request(f"{url}/ocr/snapshot", "POST", {
+            "client_id": "machine:user-1",
+            "system_name": "Jita",
+            "names": ["Unknown pilot"],
+        }, credential)
+        assert status == 201 and snapshot["ok"]
+        scoped_id = heartbeat["client_id"] + ":user-1"
+        rows = [
+            row for row in store._active_intel.values()
+            if row.metadata.get("client_id") == scoped_id
+        ]
+        assert rows and all(not row.metadata.get("_server_seat_account_id") for row in rows)
+
+        query = server.create_embedded_ocr_query({"name": "Test pilot"})
+        status, _, receipt = authenticated_request(f"{url}/clients/heartbeats", "POST", {
+            "client_id": "machine",
+            "client_type": "detector_client",
+            "details": {"monitoring": True},
+        }, credential)
+        assert status == 201
+        command = next(command for command in receipt["commands"] if command["query_id"] == query["query_id"])
+        assert command["target_client_id"] == "machine:user-1"
+        assert authenticated_request(f"{url}/ocr/snapshot", "POST", {
+            "client_id": command["target_client_id"],
+            "system_name": "Jita",
+            "names": ["Test pilot"],
+            "query_id": query["query_id"],
+        }, credential)[0] == 201
+        assert server.read_embedded_ocr_query(query["query_id"])["status"] == "completed"
+
+        for path in ("admin/users", "me/keys"):
+            assert authenticated_request(f"{url}/{path}", headers=credential)[0] == 403
+        status, _, integration = authenticated_request(
+            f"{url}/integrations/seat/alert-consumption", headers=credential,
+        )
+        assert status == 503 and integration["code"] == "seat_integration_disabled"
+
+        assert authenticated_request(f"{url}/me/keys/{key['key_id']}", "DELETE", headers=session)[0] == 200
+        assert not auth.is_principal_active(principal)
+        assert authenticated_request(f"{url}/bootstrap", headers=credential)[0] == 401
+    finally:
+        server.stop()
+
+
+def test_standalone_users_can_reuse_the_same_machine_id(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    auth = AuthService(AuthRepository(store._connect), None, local_client_keys_enabled=True)
+    first = auth.create_user("first", "first-password")
+    second = auth.create_user("second", "second-password")
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    try:
+        for owner in (first, second):
+            key = auth.create_api_key(owner["user_id"], "监控机", owner["user_id"], key_type="local_client")
+            status, _, _ = authenticated_request(
+                f"{server.url}/api/v1/clients/heartbeats",
+                "POST",
+                {"client_id": "same-client", "client_type": "detector_client"},
+                {"Authorization": f"Bearer {key['secret']}"},
+            )
+            assert status == 201
+        heartbeats = store.management_heartbeat_snapshot()["heartbeats"]
+        assert {heartbeat["user_id"] for heartbeat in heartbeats} == {first["user_id"], second["user_id"]}
+        assert len({heartbeat["client_id"] for heartbeat in heartbeats}) == 2
+    finally:
+        server.stop()
+
+
 def test_admin_cannot_issue_client_key_from_sentry(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     auth = AuthService(AuthRepository(store._connect), resolver=None)

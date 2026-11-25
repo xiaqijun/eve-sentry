@@ -229,7 +229,7 @@ sudo chown root:eve-sentry /etc/eve-sentry/eve-sentry.env
 sudo chmod 640 /etc/eve-sentry/eve-sentry.env
 ```
 
-重点字段：
+以下是独立版的主要配置。SeAT 版的配置差异见[服务端版本](#服务端版本)。
 
 ```dotenv
 EVE_SENTRY_SERVER_HOST=127.0.0.1
@@ -240,7 +240,9 @@ EVE_SENTRY_SERVER_HOT_REPORT_LIMIT=5000
 EVE_SENTRY_SERVER_REPORT_RETENTION_DAYS=0
 EVE_SENTRY_SERVER_INACTIVE_INTEL_RETENTION_DAYS=30
 EVE_SENTRY_SERVER_CONFIG=/var/lib/eve-sentry/intel_config.json
-EVE_SENTRY_SERVER_AUTH_MODE=setup
+EVE_SENTRY_SERVER_EDITION=standalone
+EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_ADMIN=admin
+EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_PASSWORD_FILE=/var/lib/eve-sentry/bootstrap-admin-password
 EVE_SENTRY_SERVER_SEAT_INTEGRATION_TOKEN=
 EVE_SENTRY_SERVER_SEAT_AUTH_MODE=off
 EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION=0
@@ -274,15 +276,43 @@ EVE_SENTRY_SERVER_ESI_NO_LOCAL_FALLBACK=0
 不能访问客户端接口。旧数据库中的风控配置和身份任务表仅作为历史兼容数据，
 服务端不会再读取或创建新任务。
 
-SeAT 认证单独由 `EVE_SENTRY_SERVER_SEAT_AUTH_MODE=off|enforce` 控制，默认 `off`；`off`
+### 服务端版本
+
+新部署通过 `EVE_SENTRY_SERVER_EDITION` 选择版本，也可以使用 `python -m app.server --edition`。
+两种版本均使用 PostgreSQL 并强制认证。首次启动通过 `EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_ADMIN`
+和 `EVE_SENTRY_SERVER_AUTH_BOOTSTRAP_PASSWORD_FILE` 初始化本地 Web 管理员。
+
+| 配置 | SeAT 版 | 独立版 |
+| --- | --- | --- |
+| `EVE_SENTRY_SERVER_EDITION` | `seat` | `standalone` |
+| 客户端签发方 | GloryNavy_Seat | Sentry「设备密钥」 |
+| `EVE_SENTRY_SERVER_SEAT_INTEGRATION_TOKEN` | 可选，兼容旧部署 | 可预配，初始停用 |
+| `EVE_SENTRY_SERVER_SEAT_AUTH_MODE` | 自动启用 | 保持 `off` |
+| `EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION` | 按 SeAT 联调要求配置，默认关闭 | 保持关闭 |
+
+独立版用户登录 Web 管理台创建本地设备密钥，再把当前 Sentry 地址和密钥填入原监控端
+或预警端。SeAT 版继续使用从 SeAT 签发的密钥。若在同一主机同时运行两种版本，使用不同
+监听端口、PostgreSQL 数据库和运行配置目录。
+
+### 从 Web 管理台接入 SeAT
+
+1. 用本地管理员登录 Sentry，在「系统管理 → SeAT 接入」选择「生成并保存新令牌」，复制本次显示的令牌，再启用并保存模式。已有令牌也可直接填入。
+2. 用站点管理员登录 SeAT，在 `/sentry` 打开「Sentry 接入设置」，填入同一令牌和 **SeAT 能访问的 Sentry HTTPS 地址**，选择「测试并保存」。配置和令牌替换即时生效。
+3. 在 Sentry 刷新接入页面查看最近一次服务鉴权，在 SeAT 页面签发设备密钥。服务重启后保留配置。
+
+Sentry 数据库只保存管理台令牌的哈希。SeAT 数据库加密保存令牌。已配好的服务端环境变量
+继续作为首次启动默认值，网页保存的配置优先。关闭接入会切回独立版，另一模式的客户端
+密钥会停止鉴权，浏览器登录会话可继续使用。
+
+未设置版本且未从管理台保存模式的现有部署继续按原有认证配置运行。SeAT 认证由
+`EVE_SENTRY_SERVER_SEAT_AUTH_MODE=off|enforce` 控制，默认 `off`。`off`
 表示 Seat 集成未启用，不能作为旧客户端 key 的绕过入口。确认 Seat 密钥投影和权限后即可切
 `enforce`，不需要创建本地用户或 `auth_external_accounts` 绑定。SeAT key 仅能访问认证文档
 列出的 monitor/alert 接口，吊销会让
 SSE 在下一次授权代数检查时结束。普通 desktop/service key 仅保留管理/迁移用途，不能访问
 客户端接口。
 
-预警消费默认关闭。只有 PostgreSQL、有效的 `EVE_SENTRY_SERVER_SEAT_INTEGRATION_TOKEN` 和
-`EVE_SENTRY_SERVER_SEAT_AUTH_MODE=enforce` 才能完成完整联调；
+预警消费默认关闭。完整联调需要 PostgreSQL、有效的 SeAT 服务令牌和已启用的 SeAT 接入。
 `EVE_SENTRY_SERVER_ALLOW_ALERT_CONSUMPTION` 仅作为新库首次启动的默认值。初始化后，
 Seat 管理员保存前端收费开关时会通过 `PUT /api/v1/integrations/seat/alert-consumption`
 同步 `seat_integration_settings`，服务重启仍读取该持久化状态。旧库或未同步时继续保持关闭。
@@ -450,7 +480,7 @@ npm run build
 
 1. 备份 PostgreSQL 和运行配置。
 2. 更新代码并安装 `requirements-server.txt`。
-3. 使用 `setup` 模式创建初始管理员。
+3. 新安装选择服务端版本，并配置初始管理员和密码文件。沿用旧配置时，可使用 `setup` 模式初始化管理员。
 4. 如需 QQ 预警，在 `/etc/eve-sentry/eve-sentry.env` 设置
    `EVE_SENTRY_SERVER_QQ_BOT_ENABLED=1`、QQ AppID/Secret 以及机器人专用 Redis/数据库
 
@@ -461,8 +491,8 @@ npm run build
    连接。服务端会在 `eve-sentry.service` 内嵌启动 `bot/src`，通过进程内事件桥消费
    当前状态，不再配置或下发 `EVE_SENTRY_API_KEY`，也不再启动独立 bot systemd 单元。手动
    战报分析的 worker 仍可按需部署，详见 `bot/README.md`。
-5. 升级桌面客户端并验证密钥、OCR、心跳和 SSE。
-6. 切换到 `enforce`，重启服务并验证健康、登录、OCR、心跳和 SSE。
+5. 使用对应版本的设备密钥验证桌面客户端的 OCR、心跳和 SSE。
+6. 旧配置完成初始化后切换到 `enforce`。重启服务并验证健康和网页登录。
 
 ## 自动部署
 

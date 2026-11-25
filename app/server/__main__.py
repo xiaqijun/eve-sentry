@@ -40,6 +40,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--postgres-dsn", default="")
     parser.add_argument(
+        "--edition",
+        choices=["seat", "standalone"],
+        default=None,
+        help="select SeAT or locally issued client keys; omit for existing auth settings",
+    )
+    parser.add_argument(
         "--hot-report-limit",
         type=int,
         default=5000,
@@ -402,15 +408,30 @@ def _validate_args(
             parser.error("--esi-client-id is required for EVE SSO login")
         if not args.esi_token_file:
             parser.error("--esi-token-file is required for EVE SSO login")
+    if args.edition == "standalone" and (
+        args.seat_auth_mode != "off"
+        or args.allow_alert_consumption
+    ):
+        parser.error("--edition=standalone cannot be combined with SeAT integration")
+    if args.edition is not None:
+        if args.auth_mode == "setup":
+            parser.error("--edition requires enforced authentication; use the bootstrap admin options")
+        args.auth_mode = "enforce"
+    if args.edition == "seat":
+        args.seat_auth_mode = "enforce"
     if args.auth_mode != "off" and args.storage == "json":
         parser.error("authentication requires PostgreSQL storage")
     if args.auth_bootstrap_admin and not args.auth_bootstrap_password_file:
         parser.error(
             "--auth-bootstrap-password-file is required with --auth-bootstrap-admin"
         )
-    if args.seat_integration_token and len(args.seat_integration_token) < 32:
-        parser.error("--seat-integration-token must be at least 32 characters")
-    if args.seat_auth_mode == "enforce" and not args.seat_integration_token:
+    if args.seat_integration_token and (
+        len(args.seat_integration_token.strip()) < 32
+        or not args.seat_integration_token.isascii()
+        or any(character.isspace() for character in args.seat_integration_token)
+    ):
+        parser.error("--seat-integration-token must be at least 32 ASCII characters without whitespace")
+    if args.seat_auth_mode == "enforce" and args.edition != "seat" and not args.seat_integration_token:
         parser.error("--seat-integration-token is required when --seat-auth-mode=enforce")
     if args.allow_alert_consumption:
         if args.storage != "postgres":
@@ -450,6 +471,7 @@ def _build_auth_service(
         resolver,
         enforce_requests=args.auth_mode == "enforce",
         seat_auth_mode=args.seat_auth_mode,
+        local_client_keys_enabled=args.edition == "standalone",
     )
     username = str(args.auth_bootstrap_admin or "").strip()
     if username:

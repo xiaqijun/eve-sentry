@@ -7,6 +7,7 @@ import { AccountKeysPage } from "./features/auth/AccountKeysPage";
 import { AdminEsiGatewayPage } from "./features/auth/AdminEsiGatewayPage";
 import { AdminClientsPage } from "./features/auth/AdminClientsPage";
 import { AdminUsersPage } from "./features/auth/AdminUsersPage";
+import { AdminSeatIntegrationPage } from "./features/auth/AdminSeatIntegrationPage";
 import { LoginPage } from "./features/auth/LoginPage";
 import { ProtectedRoute } from "./features/auth/RouteGuards";
 import { ManagementShell } from "./features/shell/ManagementShell";
@@ -46,6 +47,7 @@ export const router = createBrowserRouter([
       { path: "admin", element: <Navigate replace to="/admin/users" /> },
       { path: "admin/users", element: <ProtectedRoute admin><AdminUsersPage /></ProtectedRoute> },
       { path: "admin/clients", element: <ProtectedRoute admin><AdminClientsPage /></ProtectedRoute> },
+      { path: "admin/seat-integration", element: <ProtectedRoute admin><AdminSeatIntegrationPage /></ProtectedRoute> },
       { path: "admin/esi-gateway", element: <ProtectedRoute admin><AdminEsiGatewayPage /></ProtectedRoute> },
     ],
   },

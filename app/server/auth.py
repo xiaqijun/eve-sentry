@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 import logging
 import secrets
 import threading
@@ -20,6 +22,8 @@ SESSION_HOURS = 12
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_FAILURE_LIMIT = 5
 LOGIN_IP_FAILURE_LIMIT = 25
+LOCAL_CLIENT_KEY_TYPE = "local_client"
+SEAT_RUNTIME_SETTING = "seat_runtime"
 logger = logging.getLogger(__name__)
 
 
@@ -48,6 +52,7 @@ class AuthPrincipal:
     integration: str = ""
     account_id: str = ""
     permissions: tuple[str, ...] = ()
+    seat_enabled_at: str = ""
 
     @property
     def is_admin(self) -> bool:
@@ -82,6 +87,16 @@ class AuthPrincipal:
         return payload
 
 
+@dataclass(frozen=True)
+class SeatRuntimeSettings:
+    """Persisted browser override for the startup edition."""
+
+    enabled: bool | None
+    revision: int
+    enabled_at: str
+    service_token_hash: str = ""
+
+
 class AuthService:
     """Manage users, sessions, and API keys.
 
@@ -96,6 +111,7 @@ class AuthService:
         resolver: Any,
         enforce_requests: bool = True,
         seat_auth_mode: str = "off",
+        local_client_keys_enabled: bool = False,
     ) -> None:
         self.repository = repository
         self.resolver = resolver
@@ -103,12 +119,111 @@ class AuthService:
         normalized_seat_mode = str(seat_auth_mode or "off").strip().casefold()
         if normalized_seat_mode not in {"off", "enforce"}:
             raise ValueError("seat_auth_mode must be off or enforce")
+        if local_client_keys_enabled and (not self.enforce_requests or normalized_seat_mode != "off"):
+            raise ValueError("local client keys require standalone enforced authentication")
         self.seat_auth_mode = normalized_seat_mode
+        self._startup_local_keys = local_client_keys_enabled
+        self._seat_runtime_lock = threading.Lock()
+        self._seat_runtime: SeatRuntimeSettings | None = None
+        self._seat_last_request: tuple[SeatRuntimeSettings | None, str] | None = None
+        if self.enforce_requests:
+            saved = self.repository.setting(SEAT_RUNTIME_SETTING)
+            if saved is not None:
+                self._seat_runtime = SeatRuntimeSettings(**json.loads(saved))
         self._login_failures: dict[str, list[float]] = {}
         self._login_lock = threading.Lock()
         self._authorization_generation = 0
         self._authorization_change_lock = threading.Lock()
         self._authorization_change_listeners: set[Callable[[], None]] = set()
+
+    @property
+    def local_client_keys_enabled(self) -> bool:
+        runtime = self._seat_runtime
+        return not runtime.enabled if runtime is not None and runtime.enabled is not None else self._startup_local_keys
+
+    def seat_integration_status(self, startup_token: str) -> dict[str, Any]:
+        with self._seat_runtime_lock:
+            return self._seat_integration_status(startup_token)
+
+    def _seat_integration_status(self, startup_token: str) -> dict[str, Any]:
+        runtime = self._seat_runtime
+        override = runtime.enabled if runtime is not None else None
+        last_request = self._seat_last_request
+        return {
+            "enabled": override if override is not None else self.seat_auth_mode == "enforce",
+            "local_issuance": self.local_client_keys_enabled,
+            "revision": runtime.revision if runtime is not None else 0,
+            "token_configured": bool(runtime and runtime.service_token_hash) or len(startup_token) >= 32,
+            "editable": self.enforce_requests,
+            "last_authenticated_at": (
+                last_request[1] if last_request is not None and last_request[0] is runtime else None
+            ),
+        }
+
+    def apply_seat_integration_settings(
+        self, payload: dict[str, Any], startup_token: str,
+    ) -> tuple[dict[str, Any], str]:
+        if not self.enforce_requests:
+            raise AuthError("请先启用强制鉴权", 409, "seat_requires_auth")
+        enabled = payload.get("enabled")
+        revision = payload.get("revision")
+        supplied = payload.get("service_token", "")
+        generate = payload.get("generate_service_token", False)
+        if (
+            ("enabled" in payload and type(enabled) is not bool)
+            or type(revision) is not int or revision < 0
+            or type(generate) is not bool or not isinstance(supplied, str)
+            or (generate and supplied) or (enabled is None and not generate and not supplied)
+        ):
+            raise AuthError("请提交有效的启用状态、服务令牌和配置版本", 400, "invalid_seat_settings")
+        if supplied and (not 32 <= len(supplied) <= 512 or any(not 33 <= ord(ch) <= 126 for ch in supplied)):
+            raise AuthError("服务令牌须为 32～512 个不含空白的 ASCII 字符", 400, "invalid_seat_token")
+        generated = secrets.token_hex(32) if generate else ""
+        replacement_hash = _secret_hash(generated or supplied) if generated or supplied else ""
+        auth_changed = False
+        with self._seat_runtime_lock:
+            current = self._seat_runtime or SeatRuntimeSettings(None, 0, "")
+            if revision != current.revision:
+                raise AuthError("设置已被修改，请刷新后重试", 409, "seat_settings_conflict")
+            token_hash = replacement_hash or current.service_token_hash
+            if enabled and not token_hash and len(startup_token) < 32:
+                raise AuthError("请先生成或填入 SeAT 服务令牌", 409, "seat_token_required")
+            override = enabled if enabled is not None else current.enabled
+            if override != current.enabled or token_hash != current.service_token_hash:
+                now = _now_iso()
+                enabled_before = current.enabled if current.enabled is not None else self.seat_auth_mode == "enforce"
+                enabled_at = current.enabled_at
+                if enabled is not None and enabled != enabled_before:
+                    enabled_at = now if enabled else ""
+                updated = SeatRuntimeSettings(override, revision + 1, enabled_at, token_hash)
+                self.repository.set_setting(
+                    SEAT_RUNTIME_SETTING,
+                    json.dumps({
+                        "enabled": updated.enabled,
+                        "revision": updated.revision,
+                        "enabled_at": updated.enabled_at,
+                        "service_token_hash": updated.service_token_hash,
+                    }),
+                    now,
+                )
+                self._seat_runtime = updated
+                auth_changed = override != current.enabled
+            settings = self._seat_integration_status(startup_token)
+        if auth_changed:
+            self._notify_authorization_changed()
+        return settings, generated
+
+    def authenticate_seat_service_token(self, provided: str, startup_token: str) -> None:
+        with self._seat_runtime_lock:
+            runtime = self._seat_runtime
+            token_hash = runtime.service_token_hash if runtime is not None else ""
+            web_token_while_off = bool(token_hash and runtime.enabled is None and self.seat_auth_mode == "off")
+            if self.local_client_keys_enabled or web_token_while_off or (not token_hash and not startup_token):
+                raise AuthError("Seat integration is disabled", 503, "seat_integration_disabled")
+            expected = token_hash or _secret_hash(startup_token)
+            if not provided or not hmac.compare_digest(_secret_hash(provided), expected):
+                raise AuthError("Seat integration service token is invalid", 401, "seat_integration_unauthorized")
+            self._seat_last_request = (runtime, _now_iso())
 
     @property
     def authorization_generation(self) -> int:
@@ -275,30 +390,40 @@ class AuthService:
         self,
         secret: str,
     ) -> AuthPrincipal:
+        runtime = self._seat_runtime
+        override = runtime.enabled if runtime is not None else None
+        seat_enabled = override if override is not None else self.seat_auth_mode == "enforce"
+        local_keys = not override if override is not None else self._startup_local_keys
         secret_hash = _secret_hash(secret)
         key = self.repository.api_key_by_hash(secret_hash)
         if key is None:
-            if self.seat_auth_mode != "off":
-                return self._authenticate_seat_api_key(secret_hash)
+            if seat_enabled:
+                return self._authenticate_seat_api_key(
+                    secret_hash, runtime.enabled_at if runtime is not None else "",
+                )
             raise AuthError("API key is invalid or revoked", 401, "invalid_api_key")
         if str(key.get("status")) != "active":
             raise AuthError("API key is invalid or revoked", 401, "invalid_api_key")
+        key_type = str(key.get("key_type") or "desktop")
+        is_local_client = key_type == LOCAL_CLIENT_KEY_TYPE
+        if is_local_client != local_keys:
+            raise AuthError("API key is invalid for this server edition", 401, "invalid_api_key")
         user = self.repository.user_by_id(str(key["user_id"]))
         if user is None or str(user.get("status")) != "active":
             raise AuthError("user is disabled", 403, "user_disabled")
-        key_type = str(key.get("key_type") or "desktop")
         self.repository.mark_api_key_used(str(key["key_id"]), _now_iso())
         return AuthPrincipal(
             user_id=str(user["user_id"]),
             username=str(user["username"]),
             display_name=str(user["display_name"]),
-            role=str(user["role"]),
+            role="client" if is_local_client else str(user["role"]),
             auth_type="api_key",
             api_key_id=str(key["key_id"]),
             api_key_type=key_type,
+            permissions=("monitor", "alert") if is_local_client else (),
         )
 
-    def _authenticate_seat_api_key(self, secret_hash: str) -> AuthPrincipal:
+    def _authenticate_seat_api_key(self, secret_hash: str, enabled_at: str) -> AuthPrincipal:
         key = self.repository.seat_integration_key_by_hash(secret_hash)
         if key is None:
             raise AuthError("API key is invalid or revoked", 401, "invalid_api_key")
@@ -323,6 +448,7 @@ class AuthService:
             api_key_type="seat",
             integration="seat",
             account_id=account_id,
+            seat_enabled_at=enabled_at,
             permissions=tuple(
                 sorted(
                     {
@@ -338,6 +464,12 @@ class AuthService:
     def is_principal_active(self, principal: AuthPrincipal) -> bool:
         """Return whether an already-authenticated SSE principal remains valid."""
         if principal.is_seat:
+            runtime = self._seat_runtime
+            override = runtime.enabled if runtime is not None else None
+            if override is False or (override is None and self.seat_auth_mode == "off"):
+                return False
+            if runtime is not None and principal.seat_enabled_at != runtime.enabled_at:
+                return False
             key = self.repository.seat_integration_key_by_id(principal.api_key_id)
             return bool(
                 key
@@ -348,6 +480,8 @@ class AuthService:
         if user is None or str(user.get("status")) != "active":
             return False
         if principal.auth_type == "api_key":
+            if (principal.api_key_type == LOCAL_CLIENT_KEY_TYPE) != self.local_client_keys_enabled:
+                return False
             key = self.repository.api_key_by_id(principal.api_key_id)
             return bool(key and str(key.get("status")) == "active")
         if principal.auth_type == "session":
@@ -460,7 +594,8 @@ class AuthService:
             raise AuthError("user not found", 404, "user_not_found")
         if str(user.get("status")) != "active":
             raise AuthError("user is disabled", 403, "user_disabled")
-        if key_type not in {"desktop", "service_readonly"}:
+        key_types = {LOCAL_CLIENT_KEY_TYPE} if self.local_client_keys_enabled else {"desktop", "service_readonly"}
+        if key_type not in key_types:
             raise AuthError("invalid API key type", 400, "invalid_key_type")
         secret = f"eve_{secrets.token_urlsafe(36)}"
         now = _now_iso()
@@ -478,10 +613,10 @@ class AuthService:
             "revoked_at": "",
             "revoked_reason": "",
         }
-        key = self.repository.create_api_key(record)
-        self._audit(actor_user_id, user_id, "api_key.created", {
+        audit = self._audit_record(actor_user_id, user_id, "api_key.created", {
             "key_id": record["key_id"], "key_type": key_type, "name": record["name"],
-        })
+        }, now)
+        key = self.repository.create_api_key(record, audit)
         return {**self._public_api_key_record(key), "secret": secret}
 
     def revoke_api_key(self, key_id: str, principal: AuthPrincipal) -> None:
