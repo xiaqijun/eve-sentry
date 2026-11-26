@@ -39,6 +39,28 @@ before being written to both stores. Expired records remain eligible for stale
 serving during the configured grace period while a background refresher retries
 them in bounded batches.
 
+## 快速部署
+
+网关和 Sentry 需要位于同一个受信私网，例如 ZeroTier 或 WireGuard。下列参数依次为
+网关机器的私网 IPv4、Sentry 服务端发起连接的私网 IPv4，请替换为自己的地址。
+
+**Docker Compose（Linux，容器随宿主机自动重启）**
+
+```bash
+bash esi-gateway/deploy/docker/quickstart.sh 10.0.0.10 10.0.0.20
+```
+
+**Python 3.10+（Linux 或 Windows，前台运行）**
+
+```text
+python3 esi-gateway/scripts/quickstart.py 10.0.0.10 10.0.0.20
+```
+
+两条命令均从仓库根目录执行，Windows 可将 `python3` 换成 `py -3`。
+首次启动时生成 `esi-gateway/gateway.env`，重复执行会沿用其中的服务令牌。
+Relay 模式无需安装 PostgreSQL、Redis 或 Python 第三方依赖。Sentry 侧配置及 systemd 部署见
+[快速接入和运维](docs/operations.md#快速接入)。
+
 ## Run locally
 
 ```powershell
@@ -99,6 +121,8 @@ if enabled by the hosting platform, are validation-only and never deploy product
 The workflow runs dependency checks, Ruff, byte-code compilation, the full test
 suite, Bash syntax checks, and ShellCheck. Only a validated `main` revision can
 enter the protected GitHub `production` environment.
+PR and release validation run each documented quick-start command on a fresh Linux runner.
+Production packaging waits for both the Docker Compose and Python startup checks.
 
 Deployment artifacts are deterministic tar archives with a SHA-256 checksum and
 an embedded revision manifest. The remote deployer stores immutable releases in

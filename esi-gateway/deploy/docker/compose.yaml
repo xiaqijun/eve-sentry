@@ -1,0 +1,19 @@
+name: eve-sentry-esi-gateway
+
+services:
+  esi-gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    env_file: ../../gateway.env
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: [CMD, python, healthcheck.py]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

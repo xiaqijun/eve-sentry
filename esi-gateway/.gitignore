@@ -4,4 +4,5 @@ __pycache__/
 .venv/
 *.egg-info/
 gateway.env
+.gateway.env.*
 *.log
