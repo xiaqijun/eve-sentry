@@ -88,7 +88,7 @@ export async function fetchCurrentSeatServiceToken(): Promise<string> {
 }
 
 type SeatIntegrationEdit = { revision: number } & (
-  { enabled: boolean } | { service_token: string } | { generate_service_token: true }
+  { enabled: boolean } | { generate_service_token: true; return_service_token: false }
 );
 
 function writeSeatIntegration(edit: SeatIntegrationEdit) {
@@ -102,10 +102,8 @@ export async function updateSeatIntegration(enabled: boolean, revision: number):
   return (await writeSeatIntegration({ enabled, revision })).settings;
 }
 
-export function saveSeatServiceToken(revision: number, token?: string) {
-  return writeSeatIntegration(token === undefined
-    ? { revision, generate_service_token: true }
-    : { revision, service_token: token });
+export async function saveSeatServiceToken(revision: number): Promise<SeatIntegrationSettings> {
+  return (await writeSeatIntegration({ revision, generate_service_token: true, return_service_token: false })).settings;
 }
 
 export async function fetchMe(): Promise<AuthUser> {
