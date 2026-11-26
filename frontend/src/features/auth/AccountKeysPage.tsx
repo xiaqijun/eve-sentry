@@ -8,6 +8,7 @@ import {
   ManagementPageHeader,
   ManagementSummary,
 } from "../../components/ManagementPage";
+import { showOperationError } from "../../components/operationFeedback";
 import { createMyKey, deleteKey, enableKey, listMyKeys, revokeKey } from "./api";
 import type { ApiKeyRecord } from "./types";
 
@@ -58,9 +59,9 @@ export function AccountKeysPage() {
     setError("");
     try {
       await action();
-      await loadKeys();
+      await loadKeys().catch((reason) => setError(reason instanceof Error ? reason.message : "设备密钥加载失败"));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "密钥操作失败");
+      showOperationError(reason, "密钥操作失败");
     }
   };
 
@@ -76,7 +77,7 @@ export function AccountKeysPage() {
       setPage(1);
       setDeviceName("");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "创建设备密钥失败");
+      showOperationError(reason, "创建设备密钥失败");
     } finally {
       setCreating(false);
     }

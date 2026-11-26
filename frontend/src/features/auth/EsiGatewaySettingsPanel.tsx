@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { Button, Card, Descriptions, Input, Select, Space, Tag } from "@arco-design/web-react";
+import { Button, Card, Descriptions, Input, Message, Select, Space, Tag } from "@arco-design/web-react";
 
 import { ManagementError } from "../../components/ManagementPage";
+import { showOperationError } from "../../components/operationFeedback";
 import { apiRequest } from "./api";
 
 const SETTINGS_PATH = "/api/v1/admin/esi-gateway/settings";
@@ -21,13 +22,13 @@ export function EsiGatewaySettingsPanel({ onSaved }: { onSaved: () => void }) {
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [saveFailed, setSaveFailed] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
-    setNotice("");
+    setSaveFailed(false);
     try {
       const result = await apiRequest<{ settings: GatewaySettings }>(SETTINGS_PATH);
       setSettings(result.settings);
@@ -45,8 +46,7 @@ export function EsiGatewaySettingsPanel({ onSaved }: { onSaved: () => void }) {
   async function runCheck(save: boolean) {
     if (!settings || busy) return;
     setBusy(true);
-    setError("");
-    setNotice("");
+    setSaveFailed(false);
     try {
       if (save) {
         const result = await apiRequest<{ settings: GatewaySettings }>(SETTINGS_PATH, {
@@ -56,14 +56,15 @@ export function EsiGatewaySettingsPanel({ onSaved }: { onSaved: () => void }) {
         setSettings(result.settings);
         setEditing(false);
         setToken("");
-        setNotice("网关设置已保存");
+        Message.success("网关设置已保存");
         onSaved();
       } else {
         await apiRequest("/api/v1/admin/esi-gateway/test", { method: "POST" });
-        setNotice("连接与鉴权通过");
+        Message.success("连接与鉴权通过");
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "验证网关连接失败");
+      setSaveFailed(save);
+      showOperationError(reason, save ? "保存网关设置失败" : "验证网关连接失败");
     } finally {
       setBusy(false);
     }
@@ -76,7 +77,6 @@ export function EsiGatewaySettingsPanel({ onSaved }: { onSaved: () => void }) {
     <Card className="arco-management-card" title="ESI 网关接入" loading={loading}>
       <Space direction="vertical" size="medium" style={{ width: "100%" }}>
         <ManagementError error={error} />
-        {notice && <div role="status">{notice}</div>}
         {settings ? (
           editing ? (
             <form onSubmit={(event) => { event.preventDefault(); if (canSave) void runCheck(true); }}>
@@ -87,8 +87,8 @@ export function EsiGatewaySettingsPanel({ onSaved }: { onSaved: () => void }) {
                   maxLength={512} value={token} onChange={setToken} disabled={busy} />
                 <Space wrap>
                   <Button type="primary" htmlType="submit" loading={busy} disabled={!canSave}>测试并保存</Button>
-                  <Button disabled={busy} onClick={() => { setEditing(false); setToken(""); setError(""); }}>取消</Button>
-                  {error && <Button disabled={busy} onClick={() => void load()}>重新读取</Button>}
+                  <Button disabled={busy} onClick={() => { setEditing(false); setToken(""); setSaveFailed(false); }}>取消</Button>
+                  {saveFailed && <Button disabled={busy} onClick={() => void load()}>重新读取</Button>}
                 </Space>
               </Space>
             </form>
@@ -106,7 +106,6 @@ export function EsiGatewaySettingsPanel({ onSaved }: { onSaved: () => void }) {
                     setUrl(settings.url);
                     setEditing(true);
                     setError("");
-                    setNotice("");
                   }}>编辑设置</Button>
                   <Button loading={busy} disabled={!settings.url || !settings.token_configured}
                     onClick={() => void runCheck(false)}>测试连接</Button>

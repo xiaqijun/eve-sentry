@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Descriptions, Space, Tag, Typography } from "@arco-design/web-react";
+import { showOperationError } from "../../components/operationFeedback";
 import { fetchEsiLoginStatus, fetchEsiStatus, startEsiLogin } from "./api";
 import type { EsiAuthStatus, EsiLoginSnapshot } from "./types";
 
@@ -58,7 +59,7 @@ export function EsiAuthPanel() {
       setLogin(next);
       if (next.authorization_url) window.open(next.authorization_url, "_blank", "noopener,noreferrer");
     } catch (reason) {
-      if (mounted.current) setError(reason instanceof Error ? reason.message : "无法启动 ESI 登录");
+      if (mounted.current) showOperationError(reason, "无法启动 ESI 登录");
     } finally {
       if (mounted.current) setStarting(false);
     }

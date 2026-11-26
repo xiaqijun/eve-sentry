@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+import { Message } from "@arco-design/web-react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -32,7 +33,10 @@ describe("login page", () => {
   });
 
   afterEach(async () => {
-    await act(async () => root.unmount());
+    await act(async () => {
+      Message.clear();
+      root.unmount();
+    });
     container.remove();
   });
 
@@ -67,6 +71,7 @@ describe("login page", () => {
       );
     });
 
-    expect(container).toHaveTextContent("用户名或密码错误");
+    expect(document.querySelector('.arco-message-error[role="alert"]')).toHaveTextContent("用户名或密码错误");
+    expect(container).not.toHaveTextContent("用户名或密码错误");
   });
 });

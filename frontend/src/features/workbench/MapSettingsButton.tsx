@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Alert, Button, Form, Message, Modal, Select, Space, Spin, Switch, Typography } from "@arco-design/web-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { showOperationError } from "../../components/operationFeedback";
 import { apiRequest, fetchMe } from "../auth/api";
 
 interface MapSettings {
@@ -21,8 +22,9 @@ export function MapSettingsButton() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [saveFailed, setSaveFailed] = useState(false);
   const load = async () => {
-    setLoading(true); setError(""); setDraft(null);
+    setLoading(true); setError(""); setSaveFailed(false); setDraft(null);
     try {
       const result = await apiRequest<{ settings: MapSettings }>("/api/v1/admin/map-settings");
       setDraft(result.settings);
@@ -37,7 +39,7 @@ export function MapSettingsButton() {
   }, [draft]);
   const save = async () => {
     if (!draft || saving || count === 0) return;
-    setSaving(true); setError("");
+    setSaving(true); setSaveFailed(false);
     try {
       const { regions: _regions, systems: _systems, ...payload } = draft;
       await apiRequest("/api/v1/admin/map-settings", { method: "PUT", body: JSON.stringify(payload) });
@@ -45,7 +47,8 @@ export function MapSettingsButton() {
       setVisible(false);
       Message.success("星图监控范围已保存，客户端将自动同步");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "保存失败，原配置未改变");
+      setSaveFailed(true);
+      showOperationError(reason, "保存失败，原配置未改变");
     } finally { setSaving(false); }
   };
   if (account.data?.role !== "admin") return null;
@@ -59,6 +62,7 @@ export function MapSettingsButton() {
       <div style={{ maxHeight: "65vh", overflowY: "auto" }}>
         <Typography.Paragraph type="secondary">选择整个星域，再增补或排除个别星系。区域外客户端仅保留本地检测和预警，不参与远端敌情、节点统计及 QQ 推送。</Typography.Paragraph>
         {error && <Alert type="error" content={<Space direction="vertical"><span>{error}</span><Button disabled={saving} onClick={() => void load()}>重新加载配置</Button></Space>} />}
+        {saveFailed && <Button disabled={saving} onClick={() => void load()}>重新加载配置</Button>}
         {loading && <Spin tip="正在读取星域和星系…" />}
         {draft && <Form layout="vertical">
           <Form.Item label="启用区域限制"><Switch aria-label="启用区域限制" checked={draft.enabled} disabled={saving}

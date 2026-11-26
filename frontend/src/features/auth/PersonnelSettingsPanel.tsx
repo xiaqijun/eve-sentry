@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Divider, Radio, Space, Switch, Tag, Typography } from "@arco-design/web-react";
+import { Alert, Button, Divider, Message, Radio, Space, Switch, Tag, Typography } from "@arco-design/web-react";
+import { showOperationError } from "../../components/operationFeedback";
 import { OrganizationShadowSummary } from "./OrganizationShadowSummary";
 import {
   fetchPersonnelSettings, updatePersonnelSettings,
@@ -19,7 +20,6 @@ export function PersonnelSettingsPanel() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
   const busy = useRef(false);
   const mounted = useRef(false);
 
@@ -28,7 +28,6 @@ export function PersonnelSettingsPanel() {
     busy.current = true;
     setLoading(true);
     setError("");
-    setMessage("");
     try {
       const next = await fetchPersonnelSettings();
       if (mounted.current) { setSnapshot(next); setDraft({ ...next.values }); }
@@ -52,17 +51,18 @@ export function PersonnelSettingsPanel() {
     busy.current = true;
     setSaving(true);
     setError("");
-    setMessage("");
     try {
       const next = await updatePersonnelSettings(draft, snapshot.revision);
       if (!mounted.current) return;
       setSnapshot(next);
       setDraft({ ...next.values });
-      setMessage(next.apply_required || next.restart_required ? "配置已保存但尚未生效，请重新读取并重试应用。" :
-        next.effective.mode === "off" ? "配置已保存，档案关闭期间不执行后台任务。" :
-          "配置已保存并生效，无需重启；正在执行的任务会安全收尾。");
+      if (next.apply_required || next.restart_required) {
+        Message.warning({ content: "配置已保存但尚未生效，请重新读取并重试应用。", duration: 5000 });
+      } else {
+        Message.success(next.effective.mode === "off" ? "配置已保存，人员档案已关闭" : "配置已保存并生效");
+      }
     } catch (reason) {
-      if (mounted.current) setError(reason instanceof Error ? reason.message : "保存失败，请重新读取确认实际配置。");
+      if (mounted.current) showOperationError(reason, "保存失败，请重新读取确认实际配置。");
     } finally {
       busy.current = false;
       if (mounted.current) setSaving(false);
@@ -71,7 +71,6 @@ export function PersonnelSettingsPanel() {
 
   const change = (values: Partial<PersonnelValues>) => {
     setDraft((current) => current ? { ...current, ...values } : current);
-    setMessage("");
   };
   const dirty = !!draft && !!snapshot && JSON.stringify(draft) !== JSON.stringify(snapshot.values);
   const disabled = loading || saving || !snapshot?.writable;
@@ -153,13 +152,11 @@ export function PersonnelSettingsPanel() {
             <Button type="primary" htmlType="submit" loading={saving} disabled={disabled || (!dirty && !pending)}>
               {pending && !dirty ? "重试应用" : "保存配置"}
             </Button>
-            <Button disabled={loading || saving} onClick={() => { setDraft({ ...snapshot.values }); setMessage(""); setError(""); }}>撤销未保存修改</Button>
+            <Button disabled={loading || saving} onClick={() => { setDraft({ ...snapshot.values }); setError(""); }}>撤销未保存修改</Button>
             <Button disabled={loading || saving || dirty} loading={loading} onClick={() => void load()}>重新读取配置</Button>
             <Typography.Text type="secondary">{dirty ? "有未保存修改" : "无未保存修改"}</Typography.Text>
           </Space>
-          <div role="status" aria-live="polite" style={{ marginTop: 12 }}>
-            {saving ? "正在准备并应用配置，监控保持连接…" : message || (snapshot.effective.mode === "off" ? "当前档案已关闭，调度配置保留但不执行。" : "配置保存后在线生效，已执行中的任务安全收尾。")}
-          </div>
+          {saving ? <div role="status" style={{ marginTop: 12 }}>正在准备并应用配置，监控保持连接…</div> : null}
         </form>
       )}
       <Divider />

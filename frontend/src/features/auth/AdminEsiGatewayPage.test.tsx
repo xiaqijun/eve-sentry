@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+import { Message } from "@arco-design/web-react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -96,7 +97,10 @@ describe("AdminEsiGatewayPage", () => {
   });
 
   afterEach(async () => {
-    if (root) await act(async () => root?.unmount());
+    await act(async () => {
+      Message.clear();
+      root?.unmount();
+    });
     vi.useRealTimers();
     container.remove();
   });
@@ -133,7 +137,8 @@ describe("AdminEsiGatewayPage", () => {
     expect(testButton).toBeDefined();
     await act(async () => testButton?.click());
     expect(apiRequestMock).toHaveBeenLastCalledWith("/api/v1/admin/esi-gateway/test", { method: "POST" });
-    expect(container).toHaveTextContent("连接与鉴权通过");
+    expect(document.querySelector('.arco-message-success[role="alert"]')).toHaveTextContent("连接与鉴权通过");
+    expect(container).not.toHaveTextContent("连接与鉴权通过");
   });
 
   it("prefills the active address and leaves the token blank when editing", async () => {
@@ -150,6 +155,8 @@ describe("AdminEsiGatewayPage", () => {
       method: "POST",
       body: JSON.stringify({ url: "http://10.233.53.17:8787", revision: "environment" }),
     });
+    expect(document.querySelector('.arco-message-success[role="alert"]')).toHaveTextContent("网关设置已保存");
+    expect(container).not.toHaveTextContent("网关设置已保存");
   });
 
   it("recognizes relay and does not display legacy zero cache or latency", async () => {
