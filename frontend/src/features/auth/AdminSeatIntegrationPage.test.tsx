@@ -69,13 +69,17 @@ describe("SeAT integration page", () => {
     api.fetchSeatIntegration.mockResolvedValue({ ...standalone, token_configured: false });
     api.saveSeatServiceToken.mockResolvedValue({ settings: standalone, service_token: generated });
     await render();
+    expect(element.querySelector("details")).not.toHaveAttribute("open");
+    expect(element.querySelector('[aria-label="复制令牌"]')).toBeNull();
     const button = Array.from(element.querySelectorAll("button")).find((item) => item.textContent === "生成并保存新令牌")!;
     await act(async () => button.click());
     expect(api.saveSeatServiceToken).toHaveBeenCalledWith(2, undefined);
     expect(element).toHaveTextContent(generated);
+    expect(element.querySelector('[aria-label="复制令牌"]')).toHaveTextContent("复制令牌");
     const hide = Array.from(element.querySelectorAll("button")).find((item) => item.textContent === "隐藏令牌")!;
     await act(async () => hide.click());
     expect(element).not.toHaveTextContent(generated);
+    expect(element.querySelector('[aria-label="复制令牌"]')).toBeNull();
   });
 
   it("shows the missing token and prevents enabling before setup", async () => {

@@ -117,25 +117,34 @@ export function AdminSeatIntegrationPage() {
       </Card>
       <Card className="arco-management-card" title="服务令牌">
         <Space direction="vertical" size="medium">
-          <label htmlFor="seat-service-token">输入现有令牌</label>
-          <Input.Password id="seat-service-token" autoComplete="new-password" maxLength={512}
-            value={serviceToken} disabled={busy || !settings?.editable} onChange={setServiceToken} />
-          <Space wrap>
-            <Button disabled={busy || !settings?.editable || serviceToken.trim().length < 32}
-              onClick={() => void saveToken(false)}>保存令牌</Button>
-            <Button disabled={busy || !settings?.editable}
-              onClick={() => void saveToken(true)}>生成并保存新令牌</Button>
-          </Space>
-          {settings?.token_configured ? (
-            <Typography.Text type="secondary">保存新令牌后，请同步更新 SeAT 中的令牌。</Typography.Text>
-          ) : null}
           {generatedToken ? (
             <div>
               <Typography.Text>新令牌仅在本次保存后显示，请复制到 SeAT。</Typography.Text>
-              <Typography.Paragraph code copyable>{generatedToken}</Typography.Paragraph>
+              <Typography.Paragraph
+                code
+                copyable={{ icon: <span>复制令牌</span>, tooltips: ["复制令牌", "已复制"] }}
+              >
+                {generatedToken}
+              </Typography.Paragraph>
               <Button onClick={() => setGeneratedToken("")}>隐藏令牌</Button>
             </div>
+          ) : (
+            <Button type="primary" disabled={busy || !settings?.editable}
+              onClick={() => void saveToken(true)}>生成并保存新令牌</Button>
+          )}
+          {settings?.token_configured && !generatedToken ? (
+            <Typography.Text type="secondary">保存新令牌后，请同步更新 SeAT 中的令牌。</Typography.Text>
           ) : null}
+          <details className="seat-service-token-import">
+            <summary>导入现有令牌</summary>
+            <Space direction="vertical" size="medium">
+              <label htmlFor="seat-service-token">输入现有令牌</label>
+              <Input.Password id="seat-service-token" autoComplete="new-password" maxLength={512}
+                value={serviceToken} disabled={busy || !settings?.editable} onChange={setServiceToken} />
+              <Button disabled={busy || !settings?.editable || serviceToken.trim().length < 32}
+                onClick={() => void saveToken(false)}>保存令牌</Button>
+            </Space>
+          </details>
         </Space>
       </Card>
       <Card className="arco-management-card" title="在 SeAT 完成接入">
