@@ -28,13 +28,13 @@ class SeatTokenVault:
             return ""
         return Fernet(self._read_key()).decrypt(ciphertext.encode("ascii")).decode("ascii")
 
-    def save(self, token: str, now: str) -> None:
+    def save(self, token: str, now: str, *, settings: dict[str, str] | None = None) -> None:
         try:
             key = self._read_key()
         except FileNotFoundError:
             key = self._create_key()
         ciphertext = Fernet(key).encrypt(token.encode("ascii")).decode("ascii")
-        self.repository.set_setting(SEAT_TOKEN_COPY_SETTING, ciphertext, now)
+        self.repository.set_settings({**(settings or {}), SEAT_TOKEN_COPY_SETTING: ciphertext}, now)
 
     def _read_key(self) -> bytes:
         if self.key_path.is_symlink():

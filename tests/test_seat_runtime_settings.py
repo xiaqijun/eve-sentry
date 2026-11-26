@@ -226,6 +226,70 @@ def test_startup_token_is_copyable_without_a_seat_request(tmp_path):
         store.close()
 
 
+def test_admin_can_copy_an_updated_token_after_restart_without_a_seat_request(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    repository = AuthRepository(store._connect)
+    vault = SeatTokenVault(repository, tmp_path / "seat-token.key")
+    auth = AuthService(repository, None, seat_auth_mode="enforce", seat_token_vault=vault)
+    admin = auth.create_user("admin", "test-password", role="admin")
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    try:
+        session = browser_session(auth, "admin")
+        status, _, body = authenticated_request(server.url + ADMIN_PATH, "POST", {
+            "revision": 0, "generate_service_token": True, "return_service_token": False,
+        }, session)
+        assert status == 200 and "service_token" not in body
+        assert body["settings"]["token_copy_available"]
+        assert body["settings"]["last_authenticated_at"] is None
+
+        status, _, copied = authenticated_request(server.url + COPY_PATH, "POST", {}, session)
+        assert status == 200
+        token = copied["service_token"]
+        assert len(token) == 64
+        assert token not in str(authenticated_request(server.url + ADMIN_PATH, headers=session)[2])
+        assert token not in repository.setting(SEAT_TOKEN_COPY_SETTING)
+
+        restarted = AuthService(repository, None, seat_auth_mode="enforce", seat_token_vault=vault)
+        assert restarted.seat_integration_status("")["token_copy_available"]
+        assert restarted.copy_seat_service_token("", admin["user_id"]) == token
+    finally:
+        server.stop()
+        store.close()
+
+
+def test_failed_token_copy_write_preserves_the_active_token_and_revision(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    repository = AuthRepository(store._connect)
+    vault = SeatTokenVault(repository, tmp_path / "seat-token.key")
+    auth = AuthService(repository, None, seat_auth_mode="enforce", seat_token_vault=vault)
+    admin = auth.create_user("admin", "test-password", role="admin")
+    token = "unchanged-token-" * 3
+    auth.apply_seat_integration_settings({"revision": 0, "service_token": token}, "")
+    with store._connect() as connection:
+        connection.execute("""
+            CREATE TRIGGER reject_token_copy BEFORE UPDATE ON auth_settings
+            WHEN NEW.setting_key = 'seat_service_token_copy'
+            BEGIN SELECT RAISE(ABORT, 'copy write failed'); END
+        """)
+    server = IntelHTTPServer(store, port=0, auth_service=auth)
+    server.start()
+    try:
+        session = browser_session(auth, "admin")
+        status, _, body = authenticated_request(server.url + ADMIN_PATH, "POST", {
+            "revision": 1, "generate_service_token": True, "return_service_token": False,
+        }, session)
+        assert status == 503 and body["code"] == "seat_token_save_failed"
+        restarted = AuthService(repository, None, seat_auth_mode="enforce", seat_token_vault=vault)
+        for service in (auth, restarted):
+            assert service.seat_integration_status("")["revision"] == 1
+            assert service.copy_seat_service_token("", admin["user_id"]) == token
+            service.authenticate_seat_service_token(token, "")
+    finally:
+        server.stop()
+        store.close()
+
+
 def test_existing_token_authenticates_when_copy_cannot_be_persisted(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     repository = AuthRepository(store._connect)

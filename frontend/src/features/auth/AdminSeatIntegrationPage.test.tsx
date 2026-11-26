@@ -20,6 +20,7 @@ const standalone = {
   enabled: false,
   local_issuance: true,
   token_configured: true,
+  token_copy_available: true,
   revision: 2,
   editable: true,
   last_authenticated_at: null,
@@ -80,11 +81,14 @@ describe("SeAT integration page", () => {
     const refresh = buttons.find((button) => button.textContent === "刷新状态")!;
     expect(update.closest(".arco-card")?.querySelectorAll("button")).toHaveLength(2);
     expect(element).not.toHaveTextContent("导入现有令牌");
+    expect(element.querySelector('[aria-label="已隐藏的服务令牌"]')).toHaveTextContent("••••••••");
     expect(copy).toBeEnabled();
     expect(element).not.toHaveTextContent(token);
+    expect(api.fetchCurrentSeatServiceToken).not.toHaveBeenCalled();
     await act(async () => copy.click());
     expect(clipboard).toHaveBeenCalledWith(token);
     expect(element.querySelector('[role="status"]')).toHaveTextContent("令牌已复制");
+    expect(element).not.toHaveTextContent(token);
     expect(api.saveSeatServiceToken).not.toHaveBeenCalled();
     await act(async () => refresh.click());
     expect(copy).toBeEnabled();
@@ -92,8 +96,22 @@ describe("SeAT integration page", () => {
     expect(api.fetchCurrentSeatServiceToken).toHaveBeenCalledTimes(2);
   });
 
+  it("shows when a legacy token is pending recovery and enables copy after refreshing", async () => {
+    api.fetchSeatIntegration.mockResolvedValueOnce({ ...standalone, token_copy_available: false });
+    api.fetchSeatIntegration.mockResolvedValueOnce(standalone);
+    await render();
+    const buttons = Array.from(element.querySelectorAll("button"));
+    const copy = buttons.find((button) => button.textContent === "复制令牌")!;
+    const refresh = buttons.find((button) => button.textContent === "刷新状态")!;
+    expect(element).toHaveTextContent("待恢复");
+    expect(copy).toBeDisabled();
+    await act(async () => refresh.click());
+    expect(element).not.toHaveTextContent("待恢复");
+    expect(copy).toBeEnabled();
+  });
+
   it("shows the missing token and prevents enabling before setup", async () => {
-    api.fetchSeatIntegration.mockResolvedValue({ ...standalone, token_configured: false });
+    api.fetchSeatIntegration.mockResolvedValue({ ...standalone, token_configured: false, token_copy_available: false });
     const { toggle, save } = await render();
     await act(async () => toggle.click());
     expect(element).toHaveTextContent("请先更新令牌");

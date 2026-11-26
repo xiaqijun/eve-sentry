@@ -239,8 +239,11 @@ class AuthRepository:
         return str(row["setting_value"]) if row is not None else None
 
     def set_setting(self, key: str, value: str, updated_at: str) -> None:
+        self.set_settings({key: value}, updated_at)
+
+    def set_settings(self, settings: dict[str, str], updated_at: str) -> None:
         with self._connect() as connection:
-            connection.execute(
+            connection.executemany(
                 """
                 INSERT INTO auth_settings (setting_key, setting_value, updated_at)
                 VALUES (?, ?, ?)
@@ -248,7 +251,7 @@ class AuthRepository:
                     setting_value = excluded.setting_value,
                     updated_at = excluded.updated_at
                 """,
-                (str(key), str(value), str(updated_at)),
+                [(str(key), str(value), str(updated_at)) for key, value in settings.items()],
             )
 
     def create_user(self, record: dict[str, Any]) -> dict[str, Any]:

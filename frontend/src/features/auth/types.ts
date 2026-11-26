@@ -251,6 +251,7 @@ export type SeatIntegrationSettings = {
   local_issuance: boolean;
   revision: number;
   token_configured: boolean;
+  token_copy_available: boolean;
   editable: boolean;
   last_authenticated_at: string | null;
 };

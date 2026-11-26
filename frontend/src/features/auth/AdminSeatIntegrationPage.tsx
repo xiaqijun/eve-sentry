@@ -56,8 +56,7 @@ export function AdminSeatIntegrationPage() {
     setError("");
     setNotice("");
     try {
-      const result = await saveSeatServiceToken(settings.revision);
-      setSettings(result.settings);
+      setSettings(await saveSeatServiceToken(settings.revision));
       setNotice("令牌已更新");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "保存服务令牌失败");
@@ -126,12 +125,13 @@ export function AdminSeatIntegrationPage() {
       <Card
         className="arco-management-card"
         title="服务令牌"
-        extra={settings && <Tag color={settings.token_configured ? "green" : "gray"}>
-          {settings.token_configured ? "已配置" : "未配置"}
+        extra={settings && <Tag color={settings.token_copy_available ? "green" : settings.token_configured ? "orange" : "gray"}>
+          {settings.token_copy_available ? "已配置" : settings.token_configured ? "待恢复" : "未配置"}
         </Tag>}
       >
         <Space wrap>
-          <Button type="primary" disabled={busy || !settings?.editable || !settings.token_configured}
+          {settings?.token_configured && <Typography.Text code aria-label="已隐藏的服务令牌">••••••••</Typography.Text>}
+          <Button type="primary" disabled={busy || !settings?.editable || !settings.token_copy_available}
             loading={copying} onClick={() => void copyToken()}>
             复制令牌
           </Button>

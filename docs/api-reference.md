@@ -323,13 +323,17 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 `GET /api/v1/admin/seat-integration` 和 `POST /api/v1/admin/seat-integration`
 仅接受本地管理员登录会话。POST 需要 `X-CSRF-Token`，提交
 `{"enabled":true,"revision":0}`。返回 `settings` 对象，包含 `enabled`、
-`local_issuance`、`revision`、`token_configured`、`editable`
+`local_issuance`、`revision`、`token_configured`、`token_copy_available`、`editable`
 及 `last_authenticated_at`。最后一个字段为当前进程最近一次成功验证 SeAT 服务令牌的
-UTC 时间，没有记录时为 `null`。设置读接口只提供令牌的配置状态。
+UTC 时间，没有记录时为 `null`。`token_copy_available` 表示管理员可复制原令牌，
+只有历史令牌的哈希时为 `false`。设置读接口只提供令牌的状态。
 
 POST 可提交 `{"generate_service_token":true,"revision":0}` 生成并保存新令牌，或提交
 `{"service_token":"…","revision":0}` 保存已有令牌。生成请求的响应在
-`settings` 同级返回 `service_token`，手工输入的令牌不回显。保存后的令牌优先于启动环境变量。
+`settings` 同级返回 `service_token`。新版管理页附加 `"return_service_token":false`，
+只在管理员点击复制时请求原值。手工输入的令牌不回显。保存后的令牌优先于启动环境变量。
+网页更新时，令牌校验哈希和加密副本在同一事务中保存。失败返回 `503 seat_token_save_failed`，
+继续使用原令牌和原配置版本。
 
 `POST /api/v1/admin/seat-integration/copy-token` 要求本地管理员登录会话和
 `X-CSRF-Token`，使用 `Cache-Control: no-store` 返回 `{"service_token":"…"}`。

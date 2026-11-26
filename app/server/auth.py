@@ -153,12 +153,17 @@ class AuthService:
     def _seat_integration_status(self, startup_token: str) -> dict[str, Any]:
         runtime = self._seat_runtime
         override = runtime.enabled if runtime is not None else None
+        token_hash = runtime.service_token_hash if runtime is not None else ""
+        startup_available = len(startup_token) >= 32 and (
+            not token_hash or hmac.compare_digest(_secret_hash(startup_token), token_hash)
+        )
         last_request = self._seat_last_request
         return {
             "enabled": override if override is not None else self.seat_auth_mode == "enforce",
             "local_issuance": self.local_client_keys_enabled,
             "revision": runtime.revision if runtime is not None else 0,
-            "token_configured": bool(runtime and runtime.service_token_hash) or len(startup_token) >= 32,
+            "token_configured": bool(token_hash) or len(startup_token) >= 32,
+            "token_copy_available": self.enforce_requests and bool(self._seat_copy_token or startup_available),
             "editable": self.enforce_requests,
             "last_authenticated_at": (
                 last_request[1] if last_request is not None and last_request[0] is runtime else None
@@ -174,17 +179,21 @@ class AuthService:
         revision = payload.get("revision")
         supplied = payload.get("service_token", "")
         generate = payload.get("generate_service_token", False)
+        return_service_token = payload.get("return_service_token", True)
         if (
             ("enabled" in payload and type(enabled) is not bool)
             or type(revision) is not int or revision < 0
-            or type(generate) is not bool or not isinstance(supplied, str)
+            or type(generate) is not bool or type(return_service_token) is not bool or not isinstance(supplied, str)
             or (generate and supplied) or (enabled is None and not generate and not supplied)
         ):
             raise AuthError("请提交有效的启用状态、服务令牌和配置版本", 400, "invalid_seat_settings")
         if supplied and (not 32 <= len(supplied) <= 512 or any(not 33 <= ord(ch) <= 126 for ch in supplied)):
             raise AuthError("服务令牌须为 32～512 个不含空白的 ASCII 字符", 400, "invalid_seat_token")
+        if generate and not return_service_token and self._seat_token_vault is None:
+            raise AuthError("无法保存可复制的令牌", 503, "seat_token_save_failed")
         generated = secrets.token_hex(32) if generate else ""
-        replacement_hash = _secret_hash(generated or supplied) if generated or supplied else ""
+        replacement = generated or supplied
+        replacement_hash = _secret_hash(replacement) if replacement else ""
         auth_changed = False
         with self._seat_runtime_lock:
             current = self._seat_runtime or SeatRuntimeSettings(None, 0, "")
@@ -194,31 +203,37 @@ class AuthService:
             if enabled and not token_hash and len(startup_token) < 32:
                 raise AuthError("请先生成或填入 SeAT 服务令牌", 409, "seat_token_required")
             override = enabled if enabled is not None else current.enabled
+            settings_to_save: dict[str, str] = {}
+            now = _now_iso()
             if override != current.enabled or token_hash != current.service_token_hash:
-                now = _now_iso()
                 enabled_before = current.enabled if current.enabled is not None else self.seat_auth_mode == "enforce"
                 enabled_at = current.enabled_at
                 if enabled is not None and enabled != enabled_before:
                     enabled_at = now if enabled else ""
                 updated = SeatRuntimeSettings(override, revision + 1, enabled_at, token_hash)
-                self.repository.set_setting(
-                    SEAT_RUNTIME_SETTING,
-                    json.dumps({
-                        "enabled": updated.enabled,
-                        "revision": updated.revision,
-                        "enabled_at": updated.enabled_at,
-                        "service_token_hash": updated.service_token_hash,
-                    }),
-                    now,
-                )
+                settings_to_save[SEAT_RUNTIME_SETTING] = json.dumps({
+                    "enabled": updated.enabled,
+                    "revision": updated.revision,
+                    "enabled_at": updated.enabled_at,
+                    "service_token_hash": updated.service_token_hash,
+                })
+            if replacement and self._seat_token_vault is not None:
+                try:
+                    self._seat_token_vault.save(replacement, now, settings=settings_to_save)
+                except Exception as exc:
+                    logger.warning("SeAT token update could not be saved (%s)", type(exc).__name__)
+                    raise AuthError("令牌保存失败，当前令牌保持原值", 503, "seat_token_save_failed") from None
+            elif settings_to_save:
+                self.repository.set_settings(settings_to_save, now)
+            if settings_to_save:
                 self._seat_runtime = updated
                 auth_changed = override != current.enabled
-            if replacement_hash:
-                self._remember_seat_copy_token(generated or supplied)
+            if replacement:
+                self._seat_copy_token = replacement
             settings = self._seat_integration_status(startup_token)
         if auth_changed:
             self._notify_authorization_changed()
-        return settings, generated
+        return settings, generated if return_service_token else ""
 
     def authenticate_seat_service_token(self, provided: str, startup_token: str) -> None:
         with self._seat_runtime_lock:
