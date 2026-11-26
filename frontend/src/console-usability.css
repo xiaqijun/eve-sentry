@@ -135,6 +135,50 @@ body[data-theme="dark"] .management-navigation-drawer { --console-link: #8bd7ba;
 .dashboard-page .dashboard-card .arco-table table { max-width: none; }
 .dashboard-page .dashboard-secondary-grid { row-gap: 16px; }
 
+.account-page:has(#seat-service-token) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+
+.account-page:has(#seat-service-token) > :not(.arco-management-card),
+.account-page:has(#seat-service-token) > .arco-management-card:last-child {
+  grid-column: 1 / -1;
+}
+
+.account-page:has(#seat-service-token) > .arco-management-card,
+.account-page:has(#seat-service-token) > .content-page-header {
+  min-width: 0;
+  margin: 0;
+}
+
+.account-page:has(#seat-service-token) > .arco-management-card > .arco-card-body {
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+
+.account-page:has(#seat-service-token) .arco-card-body > .arco-space-vertical {
+  display: flex;
+  align-items: stretch;
+}
+
+.account-page:has(#seat-service-token) .arco-card-body > ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-inline-start: 1.25rem;
+}
+
+.account-page:has(#seat-service-token) li > .arco-typography {
+  margin: 4px 0 0;
+}
+
+@media (min-width: 1024px) {
+  .account-page:has(#seat-service-token) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 1000px) {
   .management-shell > .management-sidebar { display: none; }
   .management-shell .management-navigation-trigger.arco-btn {
