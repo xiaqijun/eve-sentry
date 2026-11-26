@@ -31,6 +31,8 @@ gh workflow run configure-esi-transport.yml --ref main -f mode=relay
 
 固定生产文件为 `/etc/eve-sentry/eve-sentry.env`、`/etc/eve-sentry-esi/gateway.env`；仅写 transport mode，
 不更换 SSH/SSO/Gateway 凭据。部署布局若偏离仓库默认值，先调整受保护脚本及验证，不临时改成公网监听。
+服务器预检使用切换后会生效的网关配置。网页设置的目标与工作流指定的网关不同时，
+先在部署配置中对齐切换目标，再运行工作流。
 
 旧 ZeroTier 网不可达且备用路由使 ESI Gateway 拒绝来源时，可在同一受保护工作流
 运行 `-f mode=prefer-old-source`。此操作仅让本机发往 Gateway TCP 8787 的连接
@@ -80,6 +82,19 @@ ESI status `config.transport` 提供进程内请求/尝试/失败数和最近 5 
 
 本轮增量迁移还增加 `personnel_profiles.affiliation_expires_at`，不回填虚构获取时间；旧版服务端回滚
 可以忽略该可空字段。联系人在进程启动/授权上下文切换后先重新验证权限，再用于确认友军。
+
+### 从 Web 管理台配置 ESI 网关
+
+在「系统管理 → ESI 网关观测 → ESI 网关接入」查看当前地址和令牌状态，
+可测试当前连接，或编辑地址和令牌后选择「测试并保存」。Relay 模式会验证网关鉴权及官方
+ESI TLS，旧 JSON 网关模式验证一次受鉴权的公共星系查询。验证通过后新请求即时使用新配置，
+在途请求自然完成，共用限流和业务缓存继续工作。
+
+首次部署沿用服务端启动参数中的网关地址和令牌。额外允许的地址可由部署侧通过
+`EVE_SENTRY_SERVER_ESI_GATEWAY_ALLOWED_URLS` 设置，多个入口用逗号分隔。
+保存的覆盖配置保存在 `--config` 同目录的 `*.esi-gateway.json` 私有设置文件中，
+Linux 权限为 0600，随服务状态备份。重启后使用已保存且仍在允许列表内的配置。
+传输模式和网关本身的监听、来源白名单与令牌仍由部署配置管理。
 
 ### ESI 固定目标转发（已生产切换，继续业务验收）
 

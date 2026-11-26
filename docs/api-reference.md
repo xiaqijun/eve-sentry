@@ -301,12 +301,22 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 | `GET/POST` | `/api/v1/admin/users` | 用户列表和创建用户 |
 | `GET` | `/api/v1/admin/clients` | 管理员读取包含归属信息的完整客户端心跳和状态 |
 | `GET` | `/api/v1/admin/esi-gateway` | ESI Gateway 健康和客户端指标（管理员） |
+| `GET/POST` | `/api/v1/admin/esi-gateway/settings` | 读取或验证并保存 ESI 网关接入配置 |
+| `POST` | `/api/v1/admin/esi-gateway/test` | 测试当前网关鉴权 |
 | `POST` | `/api/v1/admin/users/{id}/status` | 启用或禁用用户 |
 | `POST` | `/api/v1/admin/users/{id}/reset-password` | 重置管理员密码 |
 | `DELETE` | `/api/v1/admin/users/{id}` | 删除用户 |
 | `POST` | `/api/v1/admin/users/{id}/keys` | 独立版管理员为指定用户签发设备密钥 |
 | `POST` | `/api/v1/admin/users/{id}/service-keys` | 已下线，返回 `410 seat_key_management_required` |
 | `GET` | `/api/v1/admin/audit` | 审计日志 |
+
+### Web 管理员配置 ESI 网关
+
+设置和测试接口要求管理员登录会话。POST 需要 `X-CSRF-Token`。读取与保存返回
+`settings`，包含 `url`、`token_configured`、`revision`、`allowed_urls` 和 `editable`。
+保存提交 `url`、`revision` 和可选的 `token`。地址保持不变时可省略令牌；
+更换地址须同时填写令牌。配置已被更新返回 409，连接或鉴权失败返回 502，均保留原配置。
+测试接口返回 `{"ok":true}`，不会保存配置。读取、保存和测试均不返回令牌原文。
 
 ### Web 管理员切换 SeAT 接入
 

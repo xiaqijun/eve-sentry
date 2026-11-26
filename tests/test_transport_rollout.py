@@ -1,6 +1,7 @@
 """Configuration edits preserve unrelated settings, and rollback on failure."""
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 
@@ -22,6 +23,37 @@ def test_mode_edit_preserves_other_settings_and_removes_duplicate_mode_lines():
         "TOKEN": "secret with spaces",
         "MODE": "relay",
     }
+
+
+def test_preflight_uses_saved_credential_and_rejects_a_different_gateway(tmp_path, monkeypatch):
+    from app.esi.transport import TransportEsiClient
+
+    startup = "http://10.1.2.3:8787"
+    alternative = "http://10.1.2.4:8787"
+    token = "updated-gateway-token-" + "a" * 20
+    override = tmp_path / "intel.esi-gateway.json"
+    checked = []
+
+    def get_system(client, system_id):
+        checked.append(client.connections.relay_target)
+        return {"name": "Jita"}
+
+    monkeypatch.setattr(TransportEsiClient, "get_system", get_system)
+    env = {
+        "EVE_SENTRY_SERVER_CONFIG": str(tmp_path / "intel.json"),
+        "EVE_SENTRY_SERVER_ESI_GATEWAY_URL": startup,
+        "EVE_SENTRY_SERVER_ESI_GATEWAY_TOKEN": "z" * 32,
+        "EVE_SENTRY_SERVER_ESI_GATEWAY_ALLOWED_URLS": alternative,
+    }
+    for url in (startup, alternative):
+        override.write_text(json.dumps({"url": url, "token": token, "revision": "saved"}), encoding="utf-8")
+        override.chmod(0o600)
+        if url == startup:
+            rollout.preflight("server", "relay", env)
+        else:
+            with pytest.raises(RuntimeError, match="deployment target"):
+                rollout.preflight("server", "relay", env)
+    assert checked == [("10.1.2.3", 8787, token)]
 
 
 @pytest.mark.skipif(

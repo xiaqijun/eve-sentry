@@ -491,6 +491,7 @@ class AuthHttpMixin:
             "/api/v1/admin/clients",
             "/api/v1/admin/audit",
             "/api/v1/admin/esi-gateway",
+            "/api/v1/admin/esi-gateway/settings",
             "/api/v1/admin/personnel-settings",
             "/api/v1/admin/seat-integration",
         }
@@ -498,6 +499,9 @@ class AuthHttpMixin:
             return False
         if path == "/api/v1/admin/seat-integration":
             self._handle_seat_admin_settings(write=False)
+            return True
+        if path == "/api/v1/admin/esi-gateway/settings":
+            self._handle_esi_gateway_settings("read")
             return True
         principal = self._require_principal()
         if path == "/api/v1/auth/me":
@@ -551,6 +555,8 @@ class AuthHttpMixin:
             "/api/v1/admin/users",
             "/api/v1/admin/personnel-settings",
             "/api/v1/admin/seat-integration",
+            "/api/v1/admin/esi-gateway/settings",
+            "/api/v1/admin/esi-gateway/test",
         }
         user_action = self._admin_user_action(path)
         key_action = self._api_key_action(path)
@@ -558,6 +564,9 @@ class AuthHttpMixin:
             return False
         if path == "/api/v1/admin/seat-integration":
             self._handle_seat_admin_settings(write=True)
+            return True
+        if path in {"/api/v1/admin/esi-gateway/settings", "/api/v1/admin/esi-gateway/test"}:
+            self._handle_esi_gateway_settings("test" if path.endswith("/test") else "write")
             return True
         try:
             if path == "/api/v1/auth/login":
@@ -659,6 +668,24 @@ class AuthHttpMixin:
             self._send_auth_exception(exc)
             return True
         return False
+
+    def _handle_esi_gateway_settings(self, action: str) -> None:
+        try:
+            principal = self._require_principal()
+            if not principal.is_admin or principal.auth_type != "session":
+                raise AuthError("请使用管理员会话", 403, "admin_session_required")
+            settings = getattr(self._store(), "_esi_gateway_settings", None)
+            if settings is None:
+                raise AuthError("ESI 网关设置暂不可用", 503, "esi_gateway_unavailable")
+            if action == "test":
+                self._read_optional_json()
+                settings.test()
+                self._send_auth_json({"ok": True})
+                return
+            view = settings.update(self._read_optional_json()) if action == "write" else settings.snapshot()
+            self._send_auth_json({"settings": view})
+        except (AuthError, ValueError, json.JSONDecodeError) as exc:
+            self._send_auth_exception(exc)
 
     def _personnel_settings(self):
         settings = getattr(self._store(), "_personnel_settings", None)

@@ -42,7 +42,7 @@ class EsiConnections:
                 raise ValueError("relay requires a private address and gateway credential")
         if any(char in relay_token for char in "\r\n"):
             raise ValueError("invalid relay credential")
-        self.relay_host, self.relay_port, self.relay_token = relay_host, int(relay_port), relay_token
+        self.relay_target = (relay_host, int(relay_port), relay_token)
         self.context = ssl.create_default_context()
         self.pool = queue.LifoQueue(size)
         for _ in range(size):
@@ -53,12 +53,30 @@ class EsiConnections:
         self.local = threading.local()
         self.telemetry = TransportMetrics()
 
+    @property
+    def relay_host(self):
+        return self.relay_target[0]
+
+    @property
+    def relay_port(self):
+        return self.relay_target[1]
+
+    def set_relay(self, target):
+        self.relay_target = target
+
+    def test_relay(self):
+        connection = self._connection(5)
+        try:
+            connection.connect()
+        finally:
+            connection.close()
+
     def _connection(self, timeout):
-        connection = http.client.HTTPSConnection(self.relay_host or HOST,
-                                                self.relay_port if self.relay_host else 443,
+        host, port, token = self.relay_target
+        connection = http.client.HTTPSConnection(host or HOST, port if host else 443,
                                                 timeout=timeout, context=self.context)
-        if self.relay_host:
-            connection.set_tunnel(HOST, 443, headers={"Authorization": f"Bearer {self.relay_token}"})
+        if host:
+            connection.set_tunnel(HOST, 443, headers={"Authorization": f"Bearer {token}"})
         return connection
 
     def _permit(self, deadline):
@@ -102,13 +120,14 @@ class EsiConnections:
         except queue.Empty as exc:
             raise URLError("ESI connection budget unavailable") from exc
         connection, reusable = entry[0] if entry else None, False
+        relay_target = self.relay_target
         try:
             # Check the shared cooldown after waiting for a connection. A permit
             # issued before queueing could otherwise escape a newer 429 pause.
             self._permit(deadline)
             if entry:
-                connection, used_at = entry
-                if time.monotonic() - used_at >= 20:
+                connection, used_at, used_target = entry
+                if used_target is not relay_target or time.monotonic() - used_at >= 20:
                     connection.close()
                     connection = None
             remaining = max(0.001, deadline - time.monotonic())
@@ -158,7 +177,7 @@ class EsiConnections:
             if connection and not reusable:
                 connection.close()
                 connection = None
-            self.pool.put((connection, time.monotonic()) if connection else None)
+            self.pool.put((connection, time.monotonic(), relay_target) if connection else None)
 
 
 class TransportEsiClient(EsiClient):

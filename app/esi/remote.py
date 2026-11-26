@@ -139,14 +139,27 @@ class RemoteEsiClient(EsiClient):
         metrics: EsiRequestMetrics | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
-        self.gateway_url = str(gateway_url or "").rstrip("/")
-        self.gateway_token = str(gateway_token or "").strip()
-        if not self.gateway_url or not self.gateway_token:
-            raise ValueError("gateway_url and gateway_token are required")
-        self._remote_opener = opener or urlopen
+        self.set_gateway(gateway_url, gateway_token, opener or urlopen)
         self.fallback = fallback
         self.metrics = metrics or EsiRequestMetrics()
         self._freshness_local = threading.local()
+
+    @property
+    def gateway_url(self):
+        return self._gateway[0]
+
+    @property
+    def gateway_token(self):
+        return self._gateway[1]
+
+    def set_gateway(self, url, token, opener):
+        url, token = str(url or "").rstrip("/"), str(token or "").strip()
+        if not url or not token:
+            raise ValueError("gateway_url and gateway_token are required")
+        self._gateway = (url, token, opener)
+
+    def use_gateway(self, candidate):
+        self._gateway = candidate._gateway
 
     def response_freshness(self) -> dict[str, Any]:
         """Metadata belongs to the last public call on this worker thread only."""
@@ -164,17 +177,18 @@ class RemoteEsiClient(EsiClient):
     def gateway_health(self) -> dict[str, Any]:
         """Read the private gateway health document without exposing its token."""
         started = time.monotonic()
+        url, token, opener = self._gateway
         request = Request(
-            f"{self.gateway_url}/health",
+            f"{url}/health",
             headers={
                 "Accept": "application/json",
-                "Authorization": f"Bearer {self.gateway_token}",
+                "Authorization": f"Bearer {token}",
                 "User-Agent": self.user_agent,
             },
             method="GET",
         )
         try:
-            with self._remote_opener(request, timeout=self.timeout) as response:
+            with opener(request, timeout=self.timeout) as response:
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
             raise EsiApiError(self._read_error_message(exc)) from exc
@@ -253,18 +267,19 @@ class RemoteEsiClient(EsiClient):
             return result
 
     def _request_gateway(self, method: str, path: str, payload: Any) -> tuple[Any, str]:
+        url, token, opener = self._gateway
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         headers = {
             "Accept": "application/json",
-            "Authorization": f"Bearer {self.gateway_token}",
+            "Authorization": f"Bearer {token}",
             "User-Agent": self.user_agent,
             "X-Request-ID": uuid.uuid4().hex,
         }
         if data is not None:
             headers["Content-Type"] = "application/json"
-        request = Request(f"{self.gateway_url}{path}", data=data, headers=headers, method=method)
+        request = Request(f"{url}{path}", data=data, headers=headers, method=method)
         try:
-            with self._remote_opener(request, timeout=self.timeout) as response:
+            with opener(request, timeout=self.timeout) as response:
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
             raise EsiApiError(self._read_error_message(exc)) from exc

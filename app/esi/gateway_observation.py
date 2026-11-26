@@ -13,16 +13,17 @@ def transport_gateway(client):
     if not isinstance(client, TransportEsiClient):
         return None
     pool = client.connections
+    relay_host, relay_port, _ = pool.relay_target
     result = {
-        "transport_mode": "relay" if pool.relay_host else "direct",
-        "configured": bool(pool.relay_host),
+        "transport_mode": "relay" if relay_host else "direct",
+        "configured": bool(relay_host),
         "reachable": False,
     }
-    if not pool.relay_host:
+    if not relay_host:
         return result
-    host = f"[{pool.relay_host}]" if ":" in pool.relay_host else pool.relay_host
-    result["url"] = f"http://{host}:{pool.relay_port}"
-    connection = http.client.HTTPConnection(pool.relay_host, pool.relay_port, timeout=2)
+    host = f"[{relay_host}]" if ":" in relay_host else relay_host
+    result["url"] = f"http://{host}:{relay_port}"
+    connection = http.client.HTTPConnection(relay_host, relay_port, timeout=2)
     deadline = time.monotonic() + 2
     try:
         # Separate health connection, not an ESI request/permit or CONNECT tunnel.

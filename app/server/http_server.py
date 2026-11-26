@@ -4209,6 +4209,9 @@ class IntelRequestHandler(AuthHttpMixin, BaseHTTPRequestHandler):
         config = getattr(self.server, "esi_config", None)
         if not isinstance(config, dict):
             return {"authenticated_esi_enabled": False}
+        gateway_settings = getattr(self._store(), "_esi_gateway_settings", None)
+        if gateway_settings is not None:
+            config = {**config, "gateway_url": gateway_settings.snapshot()["url"]}
         return {
             key: config[key]
             for key in (

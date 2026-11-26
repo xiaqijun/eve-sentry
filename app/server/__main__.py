@@ -157,8 +157,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from app.server.esi_gateway_settings import EsiGatewaySettings
+
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    gateway_settings = EsiGatewaySettings(args)
+    gateway_settings.load(args)
     _validate_args(parser, args)
 
     logging.basicConfig(
@@ -183,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     if enable_esi:
         from app.esi.resolver import EsiResolver
         resolver_client = _build_public_esi_client(args)
+        gateway_settings.bind(resolver_client)
 
         resolver = EsiResolver(client=resolver_client, cache=esi_cache)
         if args.esi_client_id:
@@ -231,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         enricher=enricher,
     )
     auth_service = _build_auth_service(args, store, resolver)
+    store._esi_gateway_settings = gateway_settings
     server_options = {
         "host": args.host,
         "port": args.port,
