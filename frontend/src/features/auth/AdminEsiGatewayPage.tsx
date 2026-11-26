@@ -1,17 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Alert,
-  Card,
-  Descriptions,
-  Grid,
-  Progress,
-  Space,
-  Statistic,
-  Table,
-  Tag,
-  Typography,
-} from "@arco-design/web-react";
-import { IconCloud, IconRefresh } from "@arco-design/web-react/icon";
+import { Alert, Card, Descriptions, Grid, Progress, Space, Statistic, Table, Tag, Typography } from "@/components/ui";
+import { Cloud as IconCloud, RefreshCw as IconRefresh } from "lucide-react";
 
 import {
   ManagementError,
@@ -194,7 +183,7 @@ export function AdminEsiGatewayPage() {
           value: relayMode ? health.relay?.connected ?? "暂无" : directMode ? "不适用" : upstreamRequestCount },
       ]} />
 
-      <Card className="arco-management-card" title="全量人员档案">
+      <Card className="ui-management-card" title="全量人员档案">
         <PersonnelSettingsPanel />
         {!archive ? <Typography.Text type="secondary">未启用人员档案，或服务端尚未提供指标。</Typography.Text> : (
           <Space direction="vertical" size={16} style={{ width: "100%" }}>
@@ -221,7 +210,7 @@ export function AdminEsiGatewayPage() {
       </Card>
 
       <Card
-        className="arco-management-card"
+        className="ui-management-card"
         title="114 业务缓存"
         extra={<Typography.Text type="secondary">按单个人员或资料查询统计</Typography.Text>}
       >
@@ -266,7 +255,7 @@ export function AdminEsiGatewayPage() {
       <Grid.Row gutter={16}>
         <Grid.Col flex="1" xs={24} md={14}>
           <Card
-            className="arco-management-card"
+            className="ui-management-card"
             title={<Space><IconCloud /><span>Gateway 状态</span></Space>}
             extra={<Tag color={state.color}>{state.label}</Tag>}
           >
@@ -305,7 +294,7 @@ export function AdminEsiGatewayPage() {
           </Card>
         </Grid.Col>
         <Grid.Col flex="1" xs={24} md={10}>
-          <Card className="arco-management-card" title="延迟与缓存">
+          <Card className="ui-management-card" title="延迟与缓存">
             {relayMode || directMode ? <Alert type="info" content={relayMode
               ? "Relay 不解析 ESI 请求，网关业务缓存命中率与上游请求延迟不适用。业务缓存位于 114。"
               : "直连模式不使用 Gateway 缓存；业务缓存位于 114。"} /> : (
@@ -316,7 +305,7 @@ export function AdminEsiGatewayPage() {
               </Grid.Row>
               <div>
                 <Typography.Text type="secondary">缓存命中率</Typography.Text>
-                <Progress percent={cacheRate} showText />
+                <Progress label="缓存命中率" percent={cacheRate} showText />
               </div>
               <Typography.Text type="secondary">当前缓存条目：{numberValue(health.cache_entries)}</Typography.Text>
               <Typography.Text type="secondary">缓存未命中：{cacheMisses}</Typography.Text>
@@ -327,7 +316,7 @@ export function AdminEsiGatewayPage() {
       </Grid.Row>
 
       <Card
-        className="arco-management-card"
+        className="ui-management-card"
         title="114 远端客户端请求"
         extra={<Typography.Text type="secondary">最近 1000 次调用的分位延迟</Typography.Text>}
       >

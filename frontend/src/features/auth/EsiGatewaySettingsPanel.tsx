@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { Button, Card, Descriptions, Input, Message, Select, Space, Tag } from "@arco-design/web-react";
+import { Button, Card, Descriptions, Input, Select, Space, Tag } from "@/components/ui";
 
 import { ManagementError } from "../../components/ManagementPage";
-import { showOperationError } from "../../components/operationFeedback";
+import { useOperationFeedback } from "../../components/operationFeedback";
 import { apiRequest } from "./api";
 
 const SETTINGS_PATH = "/api/v1/admin/esi-gateway/settings";
@@ -16,6 +16,7 @@ interface GatewaySettings {
 }
 
 export function EsiGatewaySettingsPanel({ onSaved }: { onSaved: () => void }) {
+  const feedback = useOperationFeedback();
   const [settings, setSettings] = useState<GatewaySettings | null>(null);
   const [editing, setEditing] = useState(false);
   const [url, setUrl] = useState("");
@@ -56,15 +57,15 @@ export function EsiGatewaySettingsPanel({ onSaved }: { onSaved: () => void }) {
         setSettings(result.settings);
         setEditing(false);
         setToken("");
-        Message.success("网关设置已保存");
+        feedback.success("网关设置已保存");
         onSaved();
       } else {
         await apiRequest("/api/v1/admin/esi-gateway/test", { method: "POST" });
-        Message.success("连接与鉴权通过");
+        feedback.success("连接与鉴权通过");
       }
     } catch (reason) {
       setSaveFailed(save);
-      showOperationError(reason, save ? "保存网关设置失败" : "验证网关连接失败");
+      feedback.operationError(reason, save ? "保存网关设置失败" : "验证网关连接失败");
     } finally {
       setBusy(false);
     }
@@ -74,19 +75,19 @@ export function EsiGatewaySettingsPanel({ onSaved }: { onSaved: () => void }) {
     (!token.trim() && url === settings?.url && settings.token_configured)));
 
   return (
-    <Card className="arco-management-card" title="ESI 网关接入" loading={loading}>
+    <Card className="ui-management-card" title="ESI 网关接入" loading={loading}>
       <Space direction="vertical" size="medium" style={{ width: "100%" }}>
         <ManagementError error={error} />
         {settings ? (
           editing ? (
             <form onSubmit={(event) => { event.preventDefault(); if (canSave) void runCheck(true); }}>
               <Space direction="vertical" size="medium" style={{ width: "100%" }}>
-                <Select aria-label="网关地址" placeholder="选择网关地址" value={url || undefined}
-                  options={settings.allowed_urls} onChange={setUrl} disabled={busy} />
+                <Select label="网关地址" placeholder="选择网关地址" value={url || undefined}
+                  options={settings.allowed_urls.map((address) => ({ value: address, label: address }))} onValueChange={setUrl} disabled={busy} />
                 <Input.Password aria-label="服务令牌" placeholder="服务令牌" autoComplete="new-password"
                   maxLength={512} value={token} onChange={setToken} disabled={busy} />
                 <Space wrap>
-                  <Button type="primary" htmlType="submit" loading={busy} disabled={!canSave}>测试并保存</Button>
+                  <Button variant="default" type="submit" loading={busy} disabled={!canSave}>测试并保存</Button>
                   <Button disabled={busy} onClick={() => { setEditing(false); setToken(""); setSaveFailed(false); }}>取消</Button>
                   {saveFailed && <Button disabled={busy} onClick={() => void load()}>重新读取</Button>}
                 </Space>

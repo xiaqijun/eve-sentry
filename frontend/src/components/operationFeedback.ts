@@ -1,8 +1,11 @@
-import { Message } from "@arco-design/web-react";
+import { useToast } from "./ui/toast";
 
-export function showOperationError(reason: unknown, fallback: string) {
-  Message.error({
-    content: reason instanceof Error && reason.message ? reason.message : fallback,
-    duration: 5000,
-  });
+export function useOperationFeedback() {
+  const toast = useToast();
+  return {
+    ...toast,
+    operationError(reason: unknown, fallback: string) {
+      toast.error(reason instanceof Error && reason.message ? reason.message : fallback);
+    },
+  };
 }

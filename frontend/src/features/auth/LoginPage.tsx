@@ -1,13 +1,14 @@
 import { FormEvent, useState } from "react";
-import { Button, Card, Input, Typography } from "@arco-design/web-react";
+import { Button, Card, Input, Typography } from "@/components/ui";
 import { LogIn, ShieldCheck } from "lucide-react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 
-import { showOperationError } from "../../components/operationFeedback";
+import { useOperationFeedback } from "../../components/operationFeedback";
 import { useAuth } from "./AuthContext";
 import { ThemeToggle } from "../shell/ThemeToggle";
 
 export function LoginPage() {
+  const feedback = useOperationFeedback();
   const { authEnabled, loading, login, user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -27,7 +28,7 @@ export function LoginPage() {
       const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname;
       navigate(from || "/", { replace: true });
     } catch (reason) {
-      showOperationError(reason, "登录失败");
+      feedback.operationError(reason, "登录失败");
     } finally {
       setSubmitting(false);
     }
@@ -53,7 +54,7 @@ export function LoginPage() {
               <span>密码</span>
               <Input.Password autoComplete="current-password" required value={password} onChange={setPassword} />
             </label>
-            <Button htmlType="submit" icon={<LogIn size={16} />} loading={submitting} long type="primary" disabled={loading}>
+            <Button type="submit" icon={<LogIn size={16} />} loading={submitting} long variant="default" disabled={loading}>
               {submitting ? "正在登录" : "登录"}
             </Button>
           </form>

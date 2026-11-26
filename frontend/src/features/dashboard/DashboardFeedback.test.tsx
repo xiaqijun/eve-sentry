@@ -47,7 +47,7 @@ describe("dashboard data feedback", () => {
     expect(container.querySelector('[aria-busy="true"]')).toBeInTheDocument();
     expect(container).toHaveTextContent("正在获取监控与敌情数据");
     expect(container).not.toHaveTextContent("当前监控范围内没有敌对");
-    const values = container.querySelectorAll(".arco-statistic-value");
+    const values = container.querySelectorAll(".ui-statistic-value");
     expect(values).toHaveLength(4);
     values.forEach((value) => expect(value).toHaveTextContent("—"));
   });
@@ -75,7 +75,7 @@ describe("dashboard data feedback", () => {
     await renderPage();
     expect(container).toHaveTextContent("以下为上次成功获取的数据，不代表最新态势");
     expect(container).toHaveTextContent("上次数据");
-    expect(container.querySelectorAll(".arco-statistic-value")[0]).toHaveTextContent("0");
+    expect(container.querySelectorAll(".ui-statistic-value")[0]).toHaveTextContent("0");
   });
 
   it("supports manual recovery and links to existing pages", async () => {

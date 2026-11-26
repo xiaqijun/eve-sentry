@@ -41,6 +41,10 @@ Seat 联调保持两端事实源分离：Sentry 保存主节点监控贡献区�
 
 ## 组件验证
 
+Web Console 使用 React 19、React Router 7、TanStack Query、TypeScript、Vite 8、Tailwind CSS 4，
+以及 `frontend/src/components/ui/` 下基于 Radix UI 的 shadcn/ui 组件。开发和 CI 使用 Node.js 22，
+执行 `npm ci`、`npm test` 和 `npm run build`。
+
 - 服务端：在仓库根目录运行 `python -m pytest -q tests`，并在 `frontend/` 执行前端测试
   和构建。
 - 客户端：在 `client/` 依次用两个独立进程运行：

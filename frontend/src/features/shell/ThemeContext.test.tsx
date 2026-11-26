@@ -23,7 +23,6 @@ describe("ThemeProvider", () => {
     localStorage.clear();
     document.documentElement.removeAttribute("data-theme");
     document.body.removeAttribute("data-theme");
-    document.body.removeAttribute("arco-theme");
     vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -43,7 +42,7 @@ describe("ThemeProvider", () => {
     expect(container).toHaveTextContent("dark");
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     expect(document.body).toHaveAttribute("data-theme", "dark");
-    expect(document.body).toHaveAttribute("arco-theme", "dark");
+    expect(document.body).toHaveAttribute("data-theme", "dark");
   });
 
   it("follows the system preference when no saved value exists", async () => {
@@ -60,6 +59,6 @@ describe("ThemeProvider", () => {
     await act(async () => button.click());
     expect(button).toHaveAttribute("aria-pressed", "true");
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("dark");
-    expect(document.body).toHaveAttribute("arco-theme", "dark");
+    expect(document.body).toHaveAttribute("data-theme", "dark");
   });
 });

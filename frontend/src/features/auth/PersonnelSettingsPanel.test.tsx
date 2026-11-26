@@ -1,5 +1,5 @@
+import { ToastProvider } from "@/components/ui";
 import "@testing-library/jest-dom/vitest";
-import { Message } from "@arco-design/web-react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,10 +25,10 @@ describe("PersonnelSettingsPanel", () => {
     mocks.fetch.mockResolvedValue(initial);
   });
   afterEach(async () => {
-    await act(async () => { Message.clear(); root.unmount(); });
+    await act(async () => { root.unmount(); });
     container.remove();
   });
-  const render = async () => { await act(async () => { root.render(<PersonnelSettingsPanel />); }); };
+  const render = async () => { await act(async () => { root.render(<ToastProvider><PersonnelSettingsPanel /></ToastProvider>); }); };
   const button = (text: string) => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes(text))!;
   const mode = (value: string) => container.querySelector<HTMLInputElement>(`input[type=radio][value="${value}"]`)!;
   const click = async (element: HTMLElement) => { await act(async () => element.click()); };
@@ -48,7 +48,7 @@ describe("PersonnelSettingsPanel", () => {
     expect(mocks.update).toHaveBeenCalledWith({ ...initial.values, mode: "shadow" }, "environment");
     expect(container).toHaveTextContent("当前运行：影子运行");
     expect(container).toHaveTextContent("已保存：影子运行");
-    expect(document.querySelector('.arco-message-success[role="alert"]')).toHaveTextContent("配置已保存并生效");
+    expect(document.querySelector('.toast-success[role="status"]')).toHaveTextContent("配置已保存并生效");
     expect(container).not.toHaveTextContent("配置已保存并生效");
     expect(button("保存配置")).toBeDisabled();
   });
@@ -67,7 +67,7 @@ describe("PersonnelSettingsPanel", () => {
     mocks.update.mockRejectedValue(new Error("配置已被其他管理员修改，请重新读取后保存"));
     await render(); await click(mode("on")); await click(button("保存配置"));
     expect(mode("on")).toBeChecked();
-    expect(document.querySelector('.arco-message-error[role="alert"]')).toHaveTextContent("其他管理员");
+    expect(document.querySelector('.toast-error[role="alert"]')).toHaveTextContent("其他管理员");
     expect(container).not.toHaveTextContent("其他管理员");
     expect(button("重新读取配置")).toBeDisabled();
     await click(button("撤销未保存修改"));

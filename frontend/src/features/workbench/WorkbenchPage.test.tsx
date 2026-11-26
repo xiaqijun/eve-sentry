@@ -1,3 +1,4 @@
+import { ToastProvider } from "@/components/ui";
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, forwardRef } from "react";
@@ -287,9 +288,9 @@ describe("WorkbenchPage", () => {
 
     await act(async () => {
       root.render(
-        <QueryClientProvider client={queryClient}>
+        <ToastProvider><QueryClientProvider client={queryClient}>
           <MemoryRouter><WorkbenchPage /></MemoryRouter>
-        </QueryClientProvider>,
+        </QueryClientProvider></ToastProvider>,
       );
     });
 

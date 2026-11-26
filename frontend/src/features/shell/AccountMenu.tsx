@@ -1,13 +1,14 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Avatar, Button, Card, Form, Input, Message, Space, Tag, Typography } from "@arco-design/web-react";
+import { Avatar, Button, Card, Field, Input, Space, Tag, Typography } from "@/components/ui";
 import { ChevronDown, LockKeyhole, LogOut, ShieldCheck, UserRound } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
-import { showOperationError } from "../../components/operationFeedback";
+import { useOperationFeedback } from "../../components/operationFeedback";
 import { changePassword } from "../auth/api";
 import { useAuth } from "../auth/AuthContext";
 
 export function AccountMenu() {
+  const feedback = useOperationFeedback();
   const { logout, refresh, user } = useAuth();
   const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -41,10 +42,10 @@ export function AccountMenu() {
       await changePassword(currentPassword, newPassword);
       setCurrentPassword("");
       setNewPassword("");
-      Message.success("密码已更新");
-      await refresh().catch((reason) => showOperationError(reason, "账号状态刷新失败"));
+      feedback.success("密码已更新");
+      await refresh().catch((reason) => feedback.operationError(reason, "账号状态刷新失败"));
     } catch (reason) {
-      showOperationError(reason, "密码更新失败");
+      feedback.operationError(reason, "密码更新失败");
     } finally {
       setBusy(false);
     }
@@ -56,7 +57,7 @@ export function AccountMenu() {
       await logout();
       navigate("/login", { replace: true });
     } catch (reason) {
-      showOperationError(reason, "退出登录失败");
+      feedback.operationError(reason, "退出登录失败");
       setBusy(false);
     }
   };
@@ -68,7 +69,7 @@ export function AccountMenu() {
         aria-haspopup="dialog"
         aria-label="账号设置"
         className="management-topbar-user"
-        type="text"
+        variant="ghost"
         onClick={() => setOpen((current) => !current)}
       >
         <Avatar size={30}>{(user.display_name || user.username).slice(0, 1).toUpperCase()}</Avatar>
@@ -99,18 +100,18 @@ export function AccountMenu() {
           {user.role === "admin" ? (
             <form className="management-account-password" onSubmit={updatePassword}>
               <div className="management-account-section-title"><ShieldCheck size={15} /><strong>修改登录密码</strong></div>
-              <Form.Item label="当前密码">
+              <Field label="当前密码">
                 <Input.Password autoComplete="current-password" required value={currentPassword} onChange={setCurrentPassword} />
-              </Form.Item>
-              <Form.Item label="新密码">
+              </Field>
+              <Field label="新密码">
                 <Input.Password autoComplete="new-password" minLength={12} required value={newPassword} onChange={setNewPassword} />
-              </Form.Item>
-              <Button htmlType="submit" icon={<LockKeyhole size={14} />} loading={busy} long type="primary">更新密码</Button>
+              </Field>
+              <Button type="submit" icon={<LockKeyhole size={14} />} loading={busy} long variant="default">更新密码</Button>
             </form>
           ) : null}
 
           <Space direction="vertical" size={0} style={{ width: "100%" }}>
-            <Button className="management-account-logout" icon={<LogOut size={15} />} loading={busy} long status="danger" type="outline" onClick={() => void signOut()}>退出登录</Button>
+            <Button className="management-account-logout" icon={<LogOut size={15} />} loading={busy} long status="danger" variant="outline" onClick={() => void signOut()}>退出登录</Button>
           </Space>
         </Card>
       ) : null}

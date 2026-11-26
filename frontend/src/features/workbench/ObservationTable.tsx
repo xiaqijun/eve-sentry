@@ -1,4 +1,4 @@
-import { Table } from "@arco-design/web-react";
+import { Table } from "@/components/ui";
 
 import type { PilotObservation } from "./types";
 

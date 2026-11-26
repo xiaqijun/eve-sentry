@@ -1,4 +1,4 @@
-/* SeAT shared palette, with Arco tokens for console controls and portals. */
+/* SeAT shared palette for console controls and portals. */
 :root {
   color-scheme: light;
   font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
@@ -17,6 +17,12 @@
   --theme-accent-border: #bfdbfe;
   --theme-radius: 8px;
   --theme-card-shadow: 0 1px 2px rgb(15 23 42 / 6%);
+  --ui-success: #15803d;
+  --ui-success-surface: #f0fdf4;
+  --ui-warning: #92400e;
+  --ui-warning-surface: #fffbeb;
+  --ui-danger: #b91c1c;
+  --ui-danger-surface: #fef2f2;
   background: var(--theme-page);
 }
 
@@ -36,10 +42,16 @@
   --theme-accent-surface: #172b49;
   --theme-accent-border: #365d88;
   --theme-card-shadow: 0 1px 2px rgb(0 0 0 / 16%);
+  --ui-success: #86efac;
+  --ui-success-surface: #112e25;
+  --ui-warning: #fcd34d;
+  --ui-warning-surface: #33291a;
+  --ui-danger: #fca5a5;
+  --ui-danger-surface: #3d202b;
 }
 
 body,
-body[arco-theme="dark"] {
+body[data-theme="dark"] {
   --color-bg-1: var(--theme-page);
   --color-bg-2: var(--theme-surface);
   --color-bg-3: var(--theme-surface);
@@ -67,34 +79,34 @@ body {
   --primary-7: 30, 64, 175;
 }
 
-body[arco-theme="dark"] {
+body[data-theme="dark"] {
   --primary-5: 147, 197, 253;
   --primary-6: 96, 165, 250;
   --primary-7: 191, 219, 254;
 }
 
-body .arco-btn-primary:not(.arco-btn-status-danger, .arco-btn-status-warning, .arco-btn-status-success, .arco-btn-disabled) {
+body .ui-btn-primary:not(.ui-btn-status-danger, .ui-btn-status-warning, .ui-btn-status-success, .ui-btn-disabled) {
   border-color: transparent;
   color: var(--theme-accent-text);
   background: var(--theme-accent);
 }
 
-body .arco-btn-primary:not(.arco-btn-status-danger, .arco-btn-status-warning, .arco-btn-status-success, .arco-btn-disabled):hover {
+body .ui-btn-primary:not(.ui-btn-status-danger, .ui-btn-status-warning, .ui-btn-status-success, .ui-btn-disabled):hover {
   color: var(--theme-accent-text);
   background: var(--console-link);
 }
 
-.arco-management-shell,
-.management-main.arco-layout,
-.management-content.arco-layout-content,
-.management-content.arco-layout-content:not(.management-content-workbench),
-body[data-theme="dark"] .management-content.arco-layout-content {
+.ui-management-shell,
+.management-main.ui-layout,
+.management-content.ui-layout-content,
+.management-content.ui-layout-content:not(.management-content-workbench),
+body[data-theme="dark"] .management-content.ui-layout-content {
   color: var(--theme-text);
   background: var(--theme-page);
 }
 
-.management-shell .management-sidebar.arco-layout-sider,
-body[data-theme="dark"] .arco-management-shell .management-sidebar {
+.management-shell .management-sidebar.ui-layout-sider,
+body[data-theme="dark"] .ui-management-shell .management-sidebar {
   flex: 0 0 236px;
   min-width: 236px;
   max-width: 236px;
@@ -104,7 +116,7 @@ body[data-theme="dark"] .arco-management-shell .management-sidebar {
   background: var(--theme-surface);
 }
 
-.management-shell .management-sidebar > .arco-layout-sider-children {
+.management-shell .management-sidebar > .ui-layout-sider-children {
   overflow: visible;
 }
 
@@ -187,7 +199,7 @@ body[data-theme="dark"] .arco-management-shell .management-sidebar {
 }
 
 .management-shell .management-topbar,
-body[data-theme="dark"] .arco-management-shell .management-topbar {
+body[data-theme="dark"] .ui-management-shell .management-topbar {
   justify-content: flex-start;
   flex: 0 0 64px;
   height: 64px;
@@ -208,7 +220,7 @@ body[data-theme="dark"] .arco-management-shell .management-topbar {
   line-height: 1.4;
 }
 
-.management-shell .management-topbar .management-live-status.arco-tag {
+.management-shell .management-topbar .management-live-status.ui-tag {
   color: var(--theme-muted);
   background: transparent;
 }
@@ -220,12 +232,12 @@ body[data-theme="dark"] .arco-management-shell .management-topbar {
 
 .management-topbar .management-topbar-user-copy strong { color: var(--theme-text); }
 .management-topbar .management-topbar-user-copy small { color: var(--theme-muted); }
-.management-shell .management-topbar-user .arco-avatar {
+.management-shell .management-topbar-user .ui-avatar {
   color: var(--theme-accent);
   background: var(--theme-accent-surface);
 }
 
-body :is(.management-shell, .auth-page) .global-theme-toggle.arco-btn {
+body :is(.management-shell, .auth-page) .global-theme-toggle.ui-btn {
   width: 44px;
   height: 44px;
   padding: 0;
@@ -235,13 +247,13 @@ body :is(.management-shell, .auth-page) .global-theme-toggle.arco-btn {
   background: transparent;
 }
 
-body :is(.management-shell, .auth-page) .global-theme-toggle.arco-btn:hover {
+body :is(.management-shell, .auth-page) .global-theme-toggle.ui-btn:hover {
   background: var(--theme-accent-surface);
 }
 
-:is(.management-shell, .auth-page) .global-theme-toggle.arco-btn > span:not(.arco-btn-icon) { display: none; }
+:is(.management-shell, .auth-page) .global-theme-toggle.ui-btn > span:not(.ui-btn-icon) { display: none; }
 
-.management-content.arco-layout-content:not(.management-content-workbench) {
+.management-content.ui-layout-content:not(.management-content-workbench) {
   padding: 32px 40px 40px;
 }
 
@@ -255,39 +267,39 @@ body :is(.management-shell, .auth-page) .global-theme-toggle.arco-btn:hover {
   line-height: 1.4;
 }
 
-body[data-theme] .management-content :is(.dashboard-card, .arco-management-card, .management-table-panel, .account-panel, .arco-summary-grid .arco-summary-card, .dashboard-kpis .arco-card) {
+body[data-theme] .management-content :is(.dashboard-card, .ui-management-card, .management-table-panel, .account-panel, .ui-summary-grid .ui-summary-card, .dashboard-kpis .ui-card) {
   border-color: var(--theme-border);
   border-radius: var(--theme-radius);
   background: var(--theme-surface);
   box-shadow: var(--theme-card-shadow);
 }
 
-.management-content .arco-card > .arco-card-header {
+.management-content .ui-card > .ui-card-header {
   border-bottom-color: var(--theme-border);
 }
 
-.management-content .arco-card > .arco-card-header .arco-card-header-title,
-.management-content .dashboard-card > .arco-card-header .arco-card-header-title > span {
+.management-content .ui-card > .ui-card-header .ui-card-header-title,
+.management-content .dashboard-card > .ui-card-header .ui-card-header-title > span {
   color: var(--theme-text);
   font-size: 15px;
 }
 
-.management-content .arco-empty-description {
+.management-content .ui-empty-description {
   color: var(--theme-muted);
 }
 
-.seat-integration-page .arco-management-card > .arco-card-header {
+.seat-integration-page .ui-management-card > .ui-card-header {
   align-items: center;
   flex-direction: row;
   justify-content: space-between;
 }
 
-.management-content .arco-table .arco-table-th {
+.management-content .ui-table .ui-table-th {
   color: var(--theme-secondary);
   background: var(--theme-surface-raised);
 }
 
-.management-content .arco-table .arco-table-td {
+.management-content .ui-table .ui-table-td {
   color: var(--theme-text);
   border-bottom-color: var(--theme-border);
 }
@@ -296,25 +308,25 @@ body[data-theme] .management-content :is(.dashboard-card, .arco-management-card,
   color: var(--theme-muted);
 }
 
-.management-content .arco-btn-outline:not(.arco-btn-disabled, .arco-btn-status-danger) {
+.management-content .ui-btn-outline:not(.ui-btn-disabled, .ui-btn-status-danger) {
   color: var(--console-link);
   border-color: var(--theme-input-border);
   background: var(--theme-surface);
 }
 
-.management-content .arco-btn-outline:not(.arco-btn-disabled, .arco-btn-status-danger):hover {
+.management-content .ui-btn-outline:not(.ui-btn-disabled, .ui-btn-status-danger):hover {
   border-color: var(--theme-accent-border);
   background: var(--theme-accent-surface);
 }
 
-body[data-theme] .management-content-workbench .arco-btn:not(.arco-btn-disabled, .arco-btn-primary) {
+body[data-theme] .management-content-workbench .ui-btn:not(.ui-btn-disabled, .ui-btn-primary) {
   border-color: var(--theme-input-border);
   color: var(--theme-secondary);
   background: var(--theme-surface);
 }
 
-body[data-theme] .management-content-workbench .arco-btn:not(.arco-btn-disabled):hover,
-body[data-theme] .management-content-workbench .arco-btn.arco-btn-primary {
+body[data-theme] .management-content-workbench .ui-btn:not(.ui-btn-disabled):hover,
+body[data-theme] .management-content-workbench .ui-btn.ui-btn-primary {
   border-color: var(--theme-accent-border);
   color: var(--console-link);
   background: var(--theme-accent-surface);
@@ -373,13 +385,13 @@ body[data-theme] .management-content :is(.star-map-status, .star-map-selection, 
     url("./assets/deep-space-hud-bg.png") center / cover no-repeat;
 }
 
-body[data-theme] .auth-page .auth-login-panel.arco-card {
+body[data-theme] .auth-page .auth-login-panel.ui-card {
   padding: 0;
   background: var(--theme-surface);
   box-shadow: none;
 }
 
-.auth-page .auth-login-panel > .arco-card-body {
+.auth-page .auth-login-panel > .ui-card-body {
   width: min(100%, 360px);
   margin: 0 auto;
   padding: 32px 24px;
@@ -392,7 +404,7 @@ body[data-theme] .auth-page .auth-login-panel.arco-card {
   margin-bottom: 28px;
 }
 
-.auth-page .auth-login-heading h1.arco-typography {
+.auth-page .auth-login-heading h1.ui-typography {
   margin: 4px 0 0;
   color: var(--theme-text);
   font-size: 26px;
@@ -400,54 +412,32 @@ body[data-theme] .auth-page .auth-login-panel.arco-card {
   line-height: 1.4;
 }
 
-.auth-page .auth-login-heading .arco-typography-secondary {
+.auth-page .auth-login-heading .ui-typography-secondary {
   color: var(--theme-muted);
   font-size: 14px;
 }
 
 .auth-page .admin-login-form label { color: var(--theme-text); }
 .auth-page .admin-login-form > button { min-height: 44px; }
-.auth-page .admin-login-form :is(label > .arco-input, .arco-input-inner-wrapper) {
+.auth-page .admin-login-form :is(label > .ui-input, .ui-input-inner-wrapper) {
   border-color: var(--theme-input-border);
   border-radius: var(--theme-radius);
   background: var(--theme-surface);
 }
 
-.auth-page .admin-login-form :is(label > .arco-input:focus, .arco-input-inner-wrapper:focus-within) {
+.auth-page .admin-login-form :is(label > .ui-input:focus, .ui-input-inner-wrapper:focus-within) {
   border-color: var(--theme-accent);
-}
-
-.arco-message-wrapper-top {
-  top: 12px;
-  padding-inline: 16px;
-}
-
-.arco-message-wrapper-top > div {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.arco-message-wrapper-top .arco-message {
-  max-inline-size: min(100%, 420px);
-  margin-block-end: 8px;
-  border-color: var(--theme-border);
-  text-align: start;
-}
-
-.arco-message-wrapper-top .arco-message-content {
-  line-height: 1.5;
-  overflow-wrap: anywhere;
 }
 
 @media (max-width: 1000px) {
   .management-shell .management-topbar,
-  body[data-theme="dark"] .arco-management-shell .management-topbar {
+  body[data-theme="dark"] .ui-management-shell .management-topbar {
     padding-inline: 24px;
   }
 }
 
 @media (max-width: 760px) {
-  .management-content.arco-layout-content:not(.management-content-workbench) { padding: 24px 16px 32px; }
+  .management-content.ui-layout-content:not(.management-content-workbench) { padding: 24px 16px 32px; }
   .management-content .dashboard-header h1,
   .management-content .content-page-header .management-page-heading :is(h1, h2, h3, h4) { font-size: 24px; }
   .auth-page .auth-layout {
@@ -460,7 +450,7 @@ body[data-theme] .auth-page .auth-login-panel.arco-card {
 
 @media (max-width: 600px) {
   .management-shell .management-topbar,
-  body[data-theme="dark"] .arco-management-shell .management-topbar {
+  body[data-theme="dark"] .ui-management-shell .management-topbar {
     padding-inline: 12px;
   }
   .management-shell .management-topbar .management-map-title { font-size: 16px; }
@@ -468,11 +458,7 @@ body[data-theme] .auth-page .auth-login-panel.arco-card {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :is(.management-shell, .auth-page) :is(.management-nav-link, .arco-summary-card, .arco-btn) {
-    transition: none;
-  }
-  .arco-message-wrapper-top :is(.arco-message, .arco-message-icon) {
-    animation: none;
+  :is(.management-shell, .auth-page) :is(.management-nav-link, .ui-summary-card, .ui-btn) {
     transition: none;
   }
 }

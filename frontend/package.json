@@ -10,23 +10,32 @@
     "test": "vitest run --environment jsdom --no-cache"
   },
   "dependencies": {
-    "@arco-design/web-react": "^2.66.16",
-    "@tanstack/react-query": "^5.62.7",
-    "lucide-react": "^1.23.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "@tanstack/react-query": "5.102.8",
+    "lucide-react": "1.45.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "react-force-graph-2d": "^1.29.1",
-    "react-router-dom": "^6.28.0",
-    "zustand": "^5.0.1"
+    "react-router-dom": "7.18.3",
+    "zustand": "^5.0.1",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "radix-ui": "1.6.7",
+    "tailwind-merge": "3.7.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.6.3",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@vitejs/plugin-react": "6.1.1",
     "jsdom": "^25.0.1",
-    "typescript": "^5.6.3",
-    "vite": "^5.4.10",
-    "vitest": "^2.1.5"
+    "typescript": "6.0.2",
+    "vite": "8.3.0",
+    "vitest": "5.0.0",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "24.13.3",
+    "tailwindcss": "4.3.3"
+  },
+  "engines": {
+    "node": "^22.12.0 || ^24.0.0 || >=26.0.0"
   }
 }

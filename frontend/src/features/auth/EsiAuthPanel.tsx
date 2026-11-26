@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Card, Descriptions, Space, Tag, Typography } from "@arco-design/web-react";
-import { showOperationError } from "../../components/operationFeedback";
+import { Alert, Button, Card, Descriptions, Space, Tag, Typography } from "@/components/ui";
+import { useOperationFeedback } from "../../components/operationFeedback";
 import { fetchEsiLoginStatus, fetchEsiStatus, startEsiLogin } from "./api";
 import type { EsiAuthStatus, EsiLoginSnapshot } from "./types";
 
@@ -11,6 +11,7 @@ function formatExpiry(value?: number): string {
 }
 
 export function EsiAuthPanel() {
+  const feedback = useOperationFeedback();
   const [status, setStatus] = useState<EsiAuthStatus | null>(null);
   const [login, setLogin] = useState<EsiLoginSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -59,7 +60,7 @@ export function EsiAuthPanel() {
       setLogin(next);
       if (next.authorization_url) window.open(next.authorization_url, "_blank", "noopener,noreferrer");
     } catch (reason) {
-      if (mounted.current) showOperationError(reason, "无法启动 ESI 登录");
+      if (mounted.current) feedback.operationError(reason, "无法启动 ESI 登录");
     } finally {
       if (mounted.current) setStarting(false);
     }
@@ -69,7 +70,7 @@ export function EsiAuthPanel() {
   const disabled = loading || starting || !status?.config?.client_id_configured;
 
   return (
-    <Card className="arco-management-card" title="EVE ESI 授权（组织声望）">
+    <Card className="ui-management-card" title="EVE ESI 授权（组织声望）">
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
         {error ? <Alert type="error" content={error} /> : null}
         {status && !status.config?.client_id_configured ? (
@@ -91,7 +92,7 @@ export function EsiAuthPanel() {
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
           授权只用于服务端读取联系人关系并判断敌我；访问令牌和刷新令牌不会返回浏览器，也不会写入客户端。
         </Typography.Paragraph>
-        <Button type="primary" loading={starting} disabled={disabled} onClick={() => void beginLogin()}>
+        <Button variant="default" loading={starting} disabled={disabled} onClick={() => void beginLogin()}>
           {authenticated ? "重新授权 EVE 账号" : "连接 EVE 账号"}
         </Button>
       </Space>

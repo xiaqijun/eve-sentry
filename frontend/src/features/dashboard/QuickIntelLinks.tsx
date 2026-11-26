@@ -1,4 +1,4 @@
-import { Tooltip } from "@arco-design/web-react";
+import { Tooltip } from "@/components/ui";
 
 export function SystemLink({ name }: { name?: string }) {
   if (!name || name === "未知星系") return <span>未知星系</span>;

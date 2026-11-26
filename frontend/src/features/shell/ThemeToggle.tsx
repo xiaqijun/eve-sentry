@@ -1,4 +1,4 @@
-import { Button } from "@arco-design/web-react";
+import { Button } from "@/components/ui";
 import { MoonStar, Sun } from "lucide-react";
 
 import { useTheme } from "./ThemeContext";
@@ -15,7 +15,7 @@ export function ThemeToggle({ className = "" }: { className?: string }) {
       className={`global-theme-toggle ${className}`.trim()}
       icon={dark ? <Sun aria-hidden size={15} /> : <MoonStar aria-hidden size={15} />}
       title={label}
-      type="outline"
+      variant="outline"
       onClick={toggleTheme}
     >
       <span>{dark ? "明亮" : "暗黑"}</span>

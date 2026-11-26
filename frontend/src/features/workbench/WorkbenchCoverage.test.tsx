@@ -1,3 +1,4 @@
+import { ToastProvider } from "@/components/ui";
 import "@testing-library/jest-dom/vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -29,7 +30,7 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); query.clear(); });
 async function openMap() {
-  await act(async () => root.render(<MemoryRouter initialEntries={["/?system=S-KSWL"]}><QueryClientProvider client={query}><WorkbenchPage /></QueryClientProvider></MemoryRouter>));
+  await act(async () => root.render(<ToastProvider><MemoryRouter initialEntries={["/?system=S-KSWL"]}><QueryClientProvider client={query}><WorkbenchPage /></QueryClientProvider></MemoryRouter></ToastProvider>));
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 describe("nonblocking coverage status", () => {

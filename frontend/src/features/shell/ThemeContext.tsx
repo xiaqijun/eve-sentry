@@ -33,11 +33,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
     document.body.dataset.theme = theme;
-    if (theme === "dark") {
-      document.body.setAttribute("arco-theme", "dark");
-    } else {
-      document.body.removeAttribute("arco-theme");
-    }
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, theme);
     } catch {
@@ -47,7 +42,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       delete document.documentElement.dataset.theme;
       document.documentElement.style.colorScheme = "";
       delete document.body.dataset.theme;
-      document.body.removeAttribute("arco-theme");
     };
   }, [theme]);
 
