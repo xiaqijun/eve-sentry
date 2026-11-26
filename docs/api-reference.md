@@ -328,8 +328,14 @@ SeAT 密钥管理使用独立的服务端 Bearer Token，不接受网页登录�
 UTC 时间，没有记录时为 `null`。设置读接口只提供令牌的配置状态。
 
 POST 可提交 `{"generate_service_token":true,"revision":0}` 生成并保存新令牌，或提交
-`{"service_token":"…","revision":0}` 保存已有令牌。服务端只保存哈希。生成请求的响应在
-`settings` 同级一次性返回 `service_token`，手工输入的令牌不回显。保存后的令牌优先于启动环境变量。
+`{"service_token":"…","revision":0}` 保存已有令牌。生成请求的响应在
+`settings` 同级返回 `service_token`，手工输入的令牌不回显。保存后的令牌优先于启动环境变量。
+
+`POST /api/v1/admin/seat-integration/copy-token` 要求本地管理员登录会话和
+`X-CSRF-Token`，使用 `Cache-Control: no-store` 返回 `{"service_token":"…"}`。
+复制返回当前生效的令牌，记录管理员审计事件，配置版本保持原值。旧部署只有哈希时，Sentry
+在 SeAT 下次成功鉴权时恢复可复制的令牌。恢复前返回 `409 seat_token_copy_pending`，
+未配置令牌返回 `409 seat_token_required`。
 
 成功切换后保存的模式覆盖启动默认值。版本冲突返回 `409 seat_settings_conflict`，
 缺少启用所需的服务令牌时返回 `409 seat_token_required`。关闭后 SeAT 服务接口返回

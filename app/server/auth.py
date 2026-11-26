@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 
 from app.server.auth_store import AuthRepository
+from app.server.seat_token_vault import SeatTokenVault
 
 
 SESSION_COOKIE_NAME = "eve_sentry_session"
@@ -112,6 +113,7 @@ class AuthService:
         enforce_requests: bool = True,
         seat_auth_mode: str = "off",
         local_client_keys_enabled: bool = False,
+        seat_token_vault: SeatTokenVault | None = None,
     ) -> None:
         self.repository = repository
         self.resolver = resolver
@@ -126,10 +128,13 @@ class AuthService:
         self._seat_runtime_lock = threading.Lock()
         self._seat_runtime: SeatRuntimeSettings | None = None
         self._seat_last_request: tuple[SeatRuntimeSettings | None, str] | None = None
+        self._seat_token_vault = seat_token_vault
+        self._seat_copy_token = ""
         if self.enforce_requests:
             saved = self.repository.setting(SEAT_RUNTIME_SETTING)
             if saved is not None:
                 self._seat_runtime = SeatRuntimeSettings(**json.loads(saved))
+                self._restore_seat_copy_token(self._seat_runtime.service_token_hash)
         self._login_failures: dict[str, list[float]] = {}
         self._login_lock = threading.Lock()
         self._authorization_generation = 0
@@ -208,6 +213,8 @@ class AuthService:
                 )
                 self._seat_runtime = updated
                 auth_changed = override != current.enabled
+            if replacement_hash:
+                self._remember_seat_copy_token(generated or supplied)
             settings = self._seat_integration_status(startup_token)
         if auth_changed:
             self._notify_authorization_changed()
@@ -224,6 +231,51 @@ class AuthService:
             if not provided or not hmac.compare_digest(_secret_hash(provided), expected):
                 raise AuthError("Seat integration service token is invalid", 401, "seat_integration_unauthorized")
             self._seat_last_request = (runtime, _now_iso())
+            if token_hash:
+                self._remember_seat_copy_token(provided)
+
+    def copy_seat_service_token(self, startup_token: str, actor_user_id: str) -> str:
+        if not self.enforce_requests:
+            raise AuthError("请先启用强制鉴权", 409, "seat_requires_auth")
+        with self._seat_runtime_lock:
+            runtime = self._seat_runtime
+            token_hash = runtime.service_token_hash if runtime is not None else ""
+            if token_hash:
+                token = next(
+                    (value for value in (self._seat_copy_token, startup_token)
+                     if value and hmac.compare_digest(_secret_hash(value), token_hash)),
+                    "",
+                )
+                if not token:
+                    raise AuthError("等待 SeAT 成功鉴权后再复制", 409, "seat_token_copy_pending")
+            else:
+                token = startup_token
+                if len(token) < 32:
+                    raise AuthError("服务令牌尚未配置", 409, "seat_token_required")
+            self._audit(actor_user_id, "", "seat.integration.token_copy", {})
+            return token
+
+    def _restore_seat_copy_token(self, token_hash: str) -> None:
+        if not token_hash or self._seat_token_vault is None:
+            return
+        try:
+            token = self._seat_token_vault.load()
+        except Exception as exc:
+            logger.warning("SeAT token copy could not be restored (%s)", type(exc).__name__)
+            return
+        if token and hmac.compare_digest(_secret_hash(token), token_hash):
+            self._seat_copy_token = token
+
+    def _remember_seat_copy_token(self, token: str) -> None:
+        if self._seat_copy_token == token:
+            return
+        self._seat_copy_token = token
+        if self._seat_token_vault is not None:
+            try:
+                self._seat_token_vault.save(token, _now_iso())
+            except Exception as exc:
+                # Copy availability must not affect an already valid SeAT request.
+                logger.warning("SeAT token copy could not be persisted (%s)", type(exc).__name__)
 
     @property
     def authorization_generation(self) -> int:
