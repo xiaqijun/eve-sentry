@@ -162,6 +162,17 @@ body[data-theme="dark"] .management-navigation-drawer { --console-link: #8bd7ba;
   align-items: stretch;
 }
 
+.seat-service-token-import > summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.seat-service-token-import > .arco-space-vertical {
+  display: flex;
+  align-items: stretch;
+  margin-block-start: 12px;
+}
+
 .account-page:has(#seat-service-token) .arco-card-body > ol {
   display: grid;
   gap: 8px;
