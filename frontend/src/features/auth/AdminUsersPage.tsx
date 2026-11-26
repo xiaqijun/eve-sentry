@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { DropdownMenu } from "radix-ui";
-import { Button, Card, Drawer, Field, Input, Modal, Pagination, Select, Space, Table, Tag, Tooltip, Typography } from "@/components/ui";
-import { Eye as IconEye, Ellipsis as IconMore, Plus as IconPlus, UserPlus as IconUserAdd, Users as IconUserGroup } from "lucide-react";
+import { Button, Card, Drawer, Field, FormDialog, Input, Pagination, Select, Space, Table, Tag, Tooltip, Typography } from "@/components/ui";
+import { Eye as IconEye, Ellipsis as IconMore, Plus as IconPlus, Users as IconUserGroup } from "lucide-react";
 import {
   Ban,
   RotateCcw,
@@ -191,7 +191,7 @@ export function AdminUsersPage() {
         extra={(
           <Space wrap>
             <Input.Search aria-label="搜索用户" placeholder="搜索用户名或显示名称" value={search} onChange={setSearch} />
-            <Select label="筛选用户状态" value={statusFilter} style={{ width: 120 }} onValueChange={(value) => setStatusFilter(value as UserStatusFilter)}
+            <Select label="筛选用户状态" value={statusFilter} className="w-[120px]" onValueChange={(value) => setStatusFilter(value as UserStatusFilter)}
               options={[{ value: "all", label: "全部状态" }, { value: "active", label: "正常" }, { value: "disabled", label: "已禁用" }]} />
             <Button icon={<IconPlus />} variant="default" onClick={() => setCreateOpen(true)}>新建用户</Button>
           </Space>
@@ -202,27 +202,22 @@ export function AdminUsersPage() {
         {filteredUsers.length > USER_PAGE_SIZE ? <Pagination current={page} pageSize={USER_PAGE_SIZE} showTotal total={filteredUsers.length} onChange={setPage} /> : null}
       </Card>
 
-      <Modal
-        className="management-user-modal"
-        footer={null}
+      {createOpen ? <FormDialog
+        className="management-dialog-form"
         title="创建平台用户"
-        open={createOpen}
-        onClose={() => { setCreateRole("member"); setCreateOpen(false); }}
+        submitLabel="创建用户"
+        close={() => { setCreateRole("member"); setCreateOpen(false); }}
+        onSubmit={submitUser}
       >
-        <form className="management-dialog-form" onSubmit={submitUser}>
-          <Field label="用户名"><Input name="username" placeholder="用于登录" required /></Field>
-          <Field label="显示名称"><Input name="display_name" placeholder="页面展示名称" /></Field>
-          <Field label="权限角色">
-            <Select label="权限角色" value={createRole} onValueChange={(value) => setCreateRole(value === "admin" ? "admin" : "member")}
-              options={[{ value: "member", label: "普通用户" }, { value: "admin", label: "管理员" }]} />
-          </Field>
-          <Field label="初始密码"><Input.Password name="password" placeholder="至少 12 位" required minLength={12} autoComplete="new-password" /></Field>
-          <div className="management-dialog-actions">
-            <Button variant="secondary" onClick={() => { setCreateRole("member"); setCreateOpen(false); }}>取消</Button>
-            <Button type="submit" icon={<IconUserAdd />} variant="default">创建用户</Button>
-          </div>
-        </form>
-      </Modal>
+        <Field label="用户名"><Input name="username" placeholder="用于登录" required /></Field>
+        <Field label="显示名称"><Input name="display_name" placeholder="页面展示名称" /></Field>
+        <div className="ui-form-item">
+          <span className="ui-form-label-item">权限角色</span>
+          <Select label="权限角色" value={createRole} onValueChange={(value) => setCreateRole(value === "admin" ? "admin" : "member")}
+            options={[{ value: "member", label: "普通用户" }, { value: "admin", label: "管理员" }]} />
+        </div>
+        <Field label="初始密码"><Input.Password name="password" placeholder="至少 12 位" required minLength={12} autoComplete="new-password" /></Field>
+      </FormDialog> : null}
 
       <Drawer
         className="management-user-drawer"

@@ -19,7 +19,7 @@ type DialogProps = {
   restoreFocus?: () => void;
 };
 
-function DialogSurface({ open, title, label, id, children, footer, className, style, width, busy, onClose, restoreFocus, placement }:
+export function Drawer({ open, title, label, id, children, footer, className, style, width, busy, onClose, restoreFocus, placement = "right" }:
   DialogProps & { placement?: "left" | "right" }) {
   const opener = useRef<HTMLElement | null>(null);
   const titleContent = label ? <><Primitive.Title className="sr-only">{label}</Primitive.Title>{title}</> :
@@ -29,7 +29,7 @@ function DialogSurface({ open, title, label, id, children, footer, className, st
       <Primitive.Overlay className="ui-dialog-overlay" />
       <Primitive.Content id={id} aria-label={label ?? (typeof title === "string" ? title : undefined)}
         aria-modal="true" aria-describedby={undefined} aria-busy={busy || undefined}
-        className={cn("ui-dialog-surface", placement ? "ui-drawer" : "ui-modal", className)}
+        className={cn("ui-dialog-surface ui-drawer", className)}
         data-placement={placement} style={{ width, ...style }}
         onOpenAutoFocus={() => { opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
         onCloseAutoFocus={(event) => {
@@ -39,25 +39,17 @@ function DialogSurface({ open, title, label, id, children, footer, className, st
         }}
         onPointerDownOutside={(event) => { if (busy) event.preventDefault(); }}
         onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}>
-        <div className={cn(placement && "ui-drawer-content")}>
-          <header className={cn("ui-dialog-header", placement ? "ui-drawer-header" : "ui-modal-header")}>
+        <div className="ui-drawer-content">
+          <header className="ui-dialog-header ui-drawer-header">
             {titleContent}
             <Primitive.Close asChild>
               <Button aria-label="关闭" title="关闭" variant="ghost" size="sm" disabled={busy} icon={<X size={18} />} />
             </Primitive.Close>
           </header>
-          <div className={cn("ui-dialog-body", placement ? "ui-drawer-body" : "ui-modal-body")}>{children}</div>
+          <div className="ui-dialog-body ui-drawer-body">{children}</div>
           {footer ? <div className="ui-dialog-footer">{footer}</div> : null}
         </div>
       </Primitive.Content>
     </Primitive.Portal>
   </Primitive.Root>;
-}
-
-export function Modal(props: DialogProps) {
-  return <DialogSurface {...props} />;
-}
-
-export function Drawer({ placement = "right", ...props }: DialogProps & { placement?: "left" | "right" }) {
-  return <DialogSurface {...props} placement={placement} />;
 }

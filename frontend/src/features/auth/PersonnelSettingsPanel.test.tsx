@@ -49,7 +49,7 @@ describe("PersonnelSettingsPanel", () => {
     expect(container).toHaveTextContent("当前运行：影子运行");
     expect(container).toHaveTextContent("已保存：影子运行");
     expect(document.querySelector('.toast-success[role="status"]')).toHaveTextContent("配置已保存并生效");
-    expect(container).not.toHaveTextContent("配置已保存并生效");
+    expect(container.querySelector(".personnel-settings-panel")).not.toHaveTextContent("配置已保存并生效");
     expect(button("保存配置")).toBeDisabled();
   });
   it("permits retrying saved but unapplied configuration without editing", async () => {
@@ -68,7 +68,7 @@ describe("PersonnelSettingsPanel", () => {
     await render(); await click(mode("on")); await click(button("保存配置"));
     expect(mode("on")).toBeChecked();
     expect(document.querySelector('.toast-error[role="alert"]')).toHaveTextContent("其他管理员");
-    expect(container).not.toHaveTextContent("其他管理员");
+    expect(container.querySelector(".personnel-settings-panel")).not.toHaveTextContent("其他管理员");
     expect(button("重新读取配置")).toBeDisabled();
     await click(button("撤销未保存修改"));
     expect(mode("off")).toBeChecked();

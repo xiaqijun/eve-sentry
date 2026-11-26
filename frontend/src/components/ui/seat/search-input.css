@@ -1,0 +1,31 @@
+.search-field {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+.search-field .search-field-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding-right: 44px;
+}
+.search-field-clear {
+  position: absolute;
+  right: 0;
+  top: 0;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 100%;
+  min-height: 44px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.search-field-clear:hover {
+  color: var(--foreground);
+  background: var(--background);
+}

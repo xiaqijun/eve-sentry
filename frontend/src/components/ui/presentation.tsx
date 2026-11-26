@@ -2,23 +2,26 @@ import { CircleAlert, Info, LoaderCircle, PackageOpen } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import type { ComponentProps, CSSProperties, ReactElement, ReactNode } from "react";
 import { cn } from "../../lib/utils";
+import {
+  Card as SeatCard, CardAction, CardContent, CardHeader, CardTitle,
+} from "./seat/card";
 
 type ContentProps = { children?: ReactNode; className?: string; style?: CSSProperties };
 
 export function Card({ title, extra, loading, children, className, ...props }:
   Omit<ComponentProps<"div">, "title"> & { title?: ReactNode; extra?: ReactNode; loading?: boolean }) {
   return (
-    <div data-slot="card" className={cn("ui-card rounded-lg border border-border bg-card text-card-foreground", className)} aria-busy={loading || undefined} {...props}>
+    <SeatCard className={cn("ui-card gap-0 py-0", className)} aria-busy={loading || undefined} {...props}>
       {title != null || extra != null ? (
-        <header data-slot="card-header" className="ui-card-header flex min-w-0 items-center justify-between gap-3 border-b border-border p-4">
-          <div data-slot="card-title" className="ui-card-header-title min-w-0 font-semibold">{title}</div>
-          {extra != null ? <div className="ui-card-extra">{extra}</div> : null}
-        </header>
+        <CardHeader className="ui-card-header flex min-w-0 items-center justify-between gap-3 border-b border-border p-4">
+          <CardTitle className="ui-card-header-title min-w-0">{title}</CardTitle>
+          {extra != null ? <CardAction className="ui-card-extra self-center">{extra}</CardAction> : null}
+        </CardHeader>
       ) : null}
-      <div data-slot="card-content" className="ui-card-body min-w-0 p-4">
+      <CardContent className="ui-card-body min-w-0 p-4">
         {loading && !children ? <Spin /> : children}
-      </div>
-    </div>
+      </CardContent>
+    </SeatCard>
   );
 }
 

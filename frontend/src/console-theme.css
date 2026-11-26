@@ -23,6 +23,16 @@
   --ui-warning-surface: #fffbeb;
   --ui-danger: #b91c1c;
   --ui-danger-surface: #fef2f2;
+  --card: var(--theme-surface);
+  --foreground: var(--theme-text);
+  --muted: var(--theme-muted);
+  --muted-foreground: var(--theme-muted);
+  --surface-muted: var(--theme-surface-raised);
+  --border: var(--theme-border);
+  --primary: var(--theme-accent);
+  --success: var(--ui-success);
+  --destructive: var(--ui-danger);
+  --overlay: rgb(15 23 42 / 40%);
   background: var(--theme-page);
 }
 
@@ -48,6 +58,7 @@
   --ui-warning-surface: #33291a;
   --ui-danger: #fca5a5;
   --ui-danger-surface: #3d202b;
+  --overlay: rgb(0 0 0 / 65%);
 }
 
 body,

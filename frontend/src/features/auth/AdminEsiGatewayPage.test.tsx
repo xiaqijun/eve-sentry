@@ -138,7 +138,7 @@ describe("AdminEsiGatewayPage", () => {
     await act(async () => testButton?.click());
     expect(apiRequestMock).toHaveBeenLastCalledWith("/api/v1/admin/esi-gateway/test", { method: "POST" });
     expect(document.querySelector('.toast-success[role="status"]')).toHaveTextContent("连接与鉴权通过");
-    expect(container).not.toHaveTextContent("连接与鉴权通过");
+    expect(container.querySelector(".admin-shell")).not.toHaveTextContent("连接与鉴权通过");
   });
 
   it("prefills the active address and leaves the token blank when editing", async () => {
@@ -156,7 +156,7 @@ describe("AdminEsiGatewayPage", () => {
       body: JSON.stringify({ url: "http://10.233.53.17:8787", revision: "environment" }),
     });
     expect(document.querySelector('.toast-success[role="status"]')).toHaveTextContent("网关设置已保存");
-    expect(container).not.toHaveTextContent("网关设置已保存");
+    expect(container.querySelector(".admin-shell")).not.toHaveTextContent("网关设置已保存");
   });
 
   it("recognizes relay and does not display legacy zero cache or latency", async () => {

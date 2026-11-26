@@ -92,7 +92,7 @@ describe("SeAT integration page", () => {
     await act(async () => copy.click());
     expect(clipboard).toHaveBeenCalledWith(token);
     expect(document.body.querySelector('.toast-success[role="status"]')).toHaveTextContent("令牌已复制");
-    expect(element).not.toHaveTextContent("令牌已复制");
+    expect(element.querySelector(".seat-integration-page")).not.toHaveTextContent("令牌已复制");
     expect(element).not.toHaveTextContent(token);
     expect(api.saveSeatServiceToken).not.toHaveBeenCalled();
     await act(async () => refresh.click());
@@ -127,7 +127,7 @@ describe("SeAT integration page", () => {
     await act(async () => copyAddress.click());
     expect(clipboard).toHaveBeenLastCalledWith(window.location.origin);
     expect(successMessages()).toContain("Sentry 地址已复制");
-    expect(element).not.toHaveTextContent("Sentry 地址已复制");
+    expect(element.querySelector(".seat-integration-page")).not.toHaveTextContent("Sentry 地址已复制");
     expect(api.fetchCurrentSeatServiceToken).not.toHaveBeenCalled();
   });
 

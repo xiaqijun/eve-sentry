@@ -1,8 +1,9 @@
-import { Check, ChevronDown, Eye, EyeOff, Search, X } from "lucide-react";
-import { Popover, Select as SelectPrimitive, Switch as SwitchPrimitive } from "radix-ui";
+import { ChevronDown, Eye, EyeOff } from "lucide-react";
+import { Popover, Switch as SwitchPrimitive } from "radix-ui";
 import { cloneElement, createContext, useContext, useId, useState } from "react";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { cn } from "../../lib/utils";
+import { SearchInput as SeatSearchInput } from "./seat/search-input";
 
 type InputProps = Omit<ComponentProps<"input">, "onChange"> & {
   onChange?: (value: string) => void;
@@ -26,14 +27,9 @@ function Password({ className, ...props }: InputProps) {
   </div>;
 }
 
-function SearchInput({ className, allowClear, ...props }: InputProps) {
-  return <div className={cn("ui-input-inner-wrapper", className)}>
-    <Search className="ui-input-prefix" aria-hidden="true" size={16} />
-    <TextInput {...props} type="search" />
-    {allowClear && props.value && !props.disabled ? (
-      <button type="button" className="ui-input-action" aria-label="清除搜索" onClick={() => props.onChange?.("")}><X size={16} /></button>
-    ) : null}
-  </div>;
+function SearchInput({ allowClear, value, onChange, className, ...props }: InputProps) {
+  return <SeatSearchInput {...props} role="searchbox" className={cn("ui-input", className, !allowClear && "search-without-clear")}
+    value={String(value ?? "")} onChange={(event) => onChange?.(event.currentTarget.value)} onClear={() => onChange?.("")} />;
 }
 
 export const Input = Object.assign(TextInput, { Password, Search: SearchInput });
@@ -53,29 +49,6 @@ export function Switch({ checked, onChange, className, ...props }: Omit<Componen
   return <SwitchPrimitive.Root {...props} type="button" checked={checked} onCheckedChange={onChange} className={cn("ui-switch", className)}>
     <SwitchPrimitive.Thumb className="ui-switch-thumb" />
   </SwitchPrimitive.Root>;
-}
-
-type SelectOption = { value: string; label: string };
-
-export function Select({ id, label, value, onValueChange, options, placeholder = "请选择", className, disabled, style }:
-  { id?: string; label: string; value?: string; onValueChange: (value: string) => void; options: SelectOption[]; placeholder?: string;
-    className?: string; disabled?: boolean; style?: React.CSSProperties; }) {
-  const actualValue = options.find((option) => option.value === value);
-  return <SelectPrimitive.Root value={actualValue ? `option:${actualValue.value}` : ""} onValueChange={(next) => onValueChange(next.slice(7))} disabled={disabled}>
-    <SelectPrimitive.Trigger id={id} aria-label={label} className={cn("ui-select-trigger", className)} style={style}>
-      <SelectPrimitive.Value placeholder={placeholder} /><SelectPrimitive.Icon asChild><ChevronDown size={16} aria-hidden="true" /></SelectPrimitive.Icon>
-    </SelectPrimitive.Trigger>
-    <SelectPrimitive.Portal>
-      <SelectPrimitive.Content className="ui-select-content" position="popper" align="start" sideOffset={4} collisionPadding={8}>
-        <SelectPrimitive.Viewport>
-          {options.map((option) => <SelectPrimitive.Item className="ui-select-option" key={option.value} value={`option:${option.value}`}>
-            <SelectPrimitive.ItemText>{option.label}</SelectPrimitive.ItemText>
-            <SelectPrimitive.ItemIndicator><Check size={15} aria-hidden="true" /></SelectPrimitive.ItemIndicator>
-          </SelectPrimitive.Item>)}
-        </SelectPrimitive.Viewport>
-      </SelectPrimitive.Content>
-    </SelectPrimitive.Portal>
-  </SelectPrimitive.Root>;
 }
 
 export function MultiSelect({ id, label, value, onValueChange, options, disabled, placeholder }:

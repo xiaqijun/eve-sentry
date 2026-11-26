@@ -42,8 +42,10 @@ Seat 联调保持两端事实源分离：Sentry 保存主节点监控贡献区�
 ## 组件验证
 
 Web Console 使用 React 19、React Router 7、TanStack Query、TypeScript、Vite 8、Tailwind CSS 4，
-以及 `frontend/src/components/ui/` 下基于 Radix UI 的 shadcn/ui 组件。开发和 CI 使用 Node.js 22，
-执行 `npm ci`、`npm test` 和 `npm run build`。
+以及基于 Radix UI 的组件。公共组件源码同步自 GloryNavy_Seat，版本记录在
+`frontend/src/components/ui/seat/source.json`。从 `frontend/` 运行
+`node tooling/sync-seat-ui.mjs <SeAT 工作树路径> <提交>` 更新，追加 `--check` 核对源码。
+开发和 CI 使用 Node.js 22，执行 `npm ci`、`npm test` 和 `npm run build`。
 
 - 服务端：在仓库根目录运行 `python -m pytest -q tests`，并在 `frontend/` 执行前端测试
   和构建。
