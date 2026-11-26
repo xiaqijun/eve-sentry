@@ -79,6 +79,14 @@ export async function fetchSeatIntegration(): Promise<SeatIntegrationSettings> {
   return payload.settings;
 }
 
+export async function fetchCurrentSeatServiceToken(): Promise<string> {
+  const payload = await apiRequest<{ service_token: string }>("/api/v1/admin/seat-integration/copy-token", { method: "POST" });
+  if (typeof payload.service_token !== "string" || !payload.service_token) {
+    throw new ApiError("无法读取当前令牌", 502, "invalid_seat_token_response");
+  }
+  return payload.service_token;
+}
+
 type SeatIntegrationEdit = { revision: number } & (
   { enabled: boolean } | { service_token: string } | { generate_service_token: true }
 );

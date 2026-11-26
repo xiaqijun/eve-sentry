@@ -3,7 +3,7 @@ import { Button, Card, Space, Switch, Tag, Typography } from "@arco-design/web-r
 import copyToClipboard from "@arco-design/web-react/es/_util/clipboard";
 
 import { ManagementError, ManagementPageHeader } from "../../components/ManagementPage";
-import { apiPath, fetchSeatIntegration, saveSeatServiceToken, updateSeatIntegration } from "./api";
+import { apiPath, fetchCurrentSeatServiceToken, fetchSeatIntegration, saveSeatServiceToken, updateSeatIntegration } from "./api";
 import type { SeatIntegrationSettings } from "./types";
 
 export function AdminSeatIntegrationPage() {
@@ -11,16 +11,15 @@ export function AdminSeatIntegrationPage() {
   const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [copying, setCopying] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [generatedToken, setGeneratedToken] = useState("");
   const sentryOrigin = new URL(apiPath("/"), window.location.origin).origin;
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     setNotice("");
-    setGeneratedToken("");
     try {
       const next = await fetchSeatIntegration();
       setSettings(next);
@@ -56,11 +55,9 @@ export function AdminSeatIntegrationPage() {
     setSaving(true);
     setError("");
     setNotice("");
-    setGeneratedToken("");
     try {
       const result = await saveSeatServiceToken(settings.revision);
       setSettings(result.settings);
-      setGeneratedToken(result.service_token || "");
       setNotice("令牌已更新");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "保存服务令牌失败");
@@ -70,17 +67,21 @@ export function AdminSeatIntegrationPage() {
   }
 
   async function copyToken() {
+    setCopying(true);
     setError("");
     setNotice("");
     try {
-      await copyToClipboard(generatedToken);
+      const token = await fetchCurrentSeatServiceToken();
+      await copyToClipboard(token);
       setNotice("令牌已复制");
-    } catch {
-      setError("复制令牌失败");
+    } catch (reason) {
+      setError(reason instanceof Error && !(reason instanceof DOMException) ? reason.message : "复制令牌失败");
+    } finally {
+      setCopying(false);
     }
   }
 
-  const busy = loading || saving;
+  const busy = loading || saving || copying;
   const canSave = settings?.editable
     && (settings.enabled !== enabled || (!enabled && !settings.local_issuance))
     && (!enabled || settings.token_configured);
@@ -130,7 +131,8 @@ export function AdminSeatIntegrationPage() {
         </Tag>}
       >
         <Space wrap>
-          <Button type="primary" disabled={busy || !generatedToken} onClick={() => void copyToken()}>
+          <Button type="primary" disabled={busy || !settings?.editable || !settings.token_configured}
+            loading={copying} onClick={() => void copyToken()}>
             复制令牌
           </Button>
           <Button disabled={busy || !settings?.editable} onClick={() => void saveToken()}>

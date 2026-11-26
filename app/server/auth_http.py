@@ -480,6 +480,18 @@ class AuthHttpMixin:
         except (AuthError, ValueError, json.JSONDecodeError) as exc:
             self._send_auth_exception(exc)
 
+    def _handle_seat_admin_token_copy(self) -> None:
+        try:
+            principal = self._require_principal()
+            if not principal.is_admin or principal.auth_type != "session":
+                raise AuthError("请使用管理员会话", 403, "admin_session_required")
+            self._read_optional_json()
+            service = self._auth_service()
+            startup_token = str(getattr(type(self), "seat_integration_token", "") or "").strip()
+            self._send_auth_json({"service_token": service.copy_seat_service_token(startup_token, principal.user_id)})
+        except (AuthError, ValueError, json.JSONDecodeError) as exc:
+            self._send_auth_exception(exc)
+
     def _handle_auth_get(self, path: str) -> bool:
         service = self._auth_service()
         if service is None:
@@ -555,6 +567,7 @@ class AuthHttpMixin:
             "/api/v1/admin/users",
             "/api/v1/admin/personnel-settings",
             "/api/v1/admin/seat-integration",
+            "/api/v1/admin/seat-integration/copy-token",
             "/api/v1/admin/esi-gateway/settings",
             "/api/v1/admin/esi-gateway/test",
         }
@@ -564,6 +577,9 @@ class AuthHttpMixin:
             return False
         if path == "/api/v1/admin/seat-integration":
             self._handle_seat_admin_settings(write=True)
+            return True
+        if path == "/api/v1/admin/seat-integration/copy-token":
+            self._handle_seat_admin_token_copy()
             return True
         if path in {"/api/v1/admin/esi-gateway/settings", "/api/v1/admin/esi-gateway/test"}:
             self._handle_esi_gateway_settings("test" if path.endswith("/test") else "write")

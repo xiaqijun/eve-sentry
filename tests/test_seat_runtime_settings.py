@@ -1,13 +1,17 @@
+import hashlib
+import json
 from urllib.request import Request, urlopen
 
 from app.server.auth import AuthService, SESSION_COOKIE_NAME
 from app.server.auth_store import AuthRepository
 from app.server.http_server import IntelHTTPServer
+from app.server.seat_token_vault import SEAT_TOKEN_COPY_SETTING, SeatTokenVault
 from tests.auth_test_store import AuthTestStore
 from tests.test_http_server import _create_seat_http_key, authenticated_request
 
 
 ADMIN_PATH = "/api/v1/admin/seat-integration"
+COPY_PATH = ADMIN_PATH + "/copy-token"
 SEAT_PATH = "/api/v1/integrations/seat/alert-consumption"
 
 
@@ -108,7 +112,7 @@ def test_unconfigured_server_refuses_to_enable_seat(tmp_path):
         store.close()
 
 
-def test_web_token_is_shown_once_then_persisted_as_hash(tmp_path):
+def test_web_token_is_returned_on_generation_but_not_in_settings(tmp_path):
     store = AuthTestStore(tmp_path / "intel.json")
     repository = AuthRepository(store._connect)
     auth = AuthService(repository, None, seat_auth_mode="enforce")
@@ -144,6 +148,100 @@ def test_web_token_is_shown_once_then_persisted_as_hash(tmp_path):
         assert authenticated_request(integration, headers={"Authorization": "Bearer " + supplied})[0] == 200
     finally:
         server.stop()
+        store.close()
+
+
+def test_admin_copies_existing_token_after_seat_authentication(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    repository = AuthRepository(store._connect)
+    token = "current-seat-token-" * 3
+    startup = "previous-startup-token-" * 3
+    service_headers = {"Authorization": "Bearer " + token}
+    repository.set_setting("seat_runtime", json.dumps({
+        "enabled": True,
+        "revision": 4,
+        "enabled_at": "",
+        "service_token_hash": hashlib.sha256(token.encode()).hexdigest(),
+    }), "2026-11-26T00:00:00+00:00")
+    key_path = tmp_path / "seat-token.key"
+    vault = SeatTokenVault(repository, key_path)
+    auth = AuthService(repository, None, seat_auth_mode="enforce", seat_token_vault=vault)
+    administrator = auth.create_user("admin", "test-password", role="admin")
+    auth.create_user("member", "test-password")
+    server = IntelHTTPServer(store, port=0, auth_service=auth, seat_integration_token=startup)
+    server.start()
+    try:
+        admin = browser_session(auth, "admin")
+        member = browser_session(auth, "member")
+        copy_url = server.url + COPY_PATH
+        assert authenticated_request(copy_url, "POST", {})[0] == 401
+        assert authenticated_request(copy_url, "POST", {}, member)[0] == 403
+        assert authenticated_request(copy_url, "POST", {}, {"Cookie": admin["Cookie"]})[0] == 403
+        assert authenticated_request(copy_url, headers=admin)[0] == 404
+        status, _, payload = authenticated_request(copy_url, "POST", {}, admin)
+        assert status == 409 and payload["code"] == "seat_token_copy_pending"
+
+        integration_url = server.url + SEAT_PATH
+        assert authenticated_request(integration_url, headers={"Authorization": "Bearer " + startup})[0] == 401
+        assert repository.setting(SEAT_TOKEN_COPY_SETTING) is None
+        assert authenticated_request(integration_url, headers=service_headers)[0] == 200
+
+        status, headers, payload = authenticated_request(copy_url, "POST", {}, admin)
+        assert status == 200 and headers["Cache-Control"] == "no-store"
+        assert payload == {"service_token": token}
+        settings = authenticated_request(server.url + ADMIN_PATH, headers=admin)[2]
+        assert settings["settings"]["revision"] == 4 and token not in str(settings)
+        ciphertext = repository.setting(SEAT_TOKEN_COPY_SETTING)
+        assert ciphertext and token not in ciphertext
+        audit = next(row for row in repository.list_audit() if row["action"] == "seat.integration.token_copy")
+        assert audit["actor_user_id"] == administrator["user_id"] and token not in str(audit)
+
+        restarted = AuthService(
+            repository, None, seat_auth_mode="enforce", seat_token_vault=SeatTokenVault(repository, key_path),
+        )
+        assert restarted.copy_seat_service_token(startup, administrator["user_id"]) == token
+        assert restarted.seat_integration_status(startup)["revision"] == 4
+
+        status, _, payload = authenticated_request(
+            server.url + ADMIN_PATH, "POST", {"revision": 4, "generate_service_token": True}, admin,
+        )
+        assert status == 200
+        replacement = payload["service_token"]
+        assert replacement != token
+        assert authenticated_request(copy_url, "POST", {}, admin)[2]["service_token"] == replacement
+        assert authenticated_request(integration_url, headers=service_headers)[0] == 401
+    finally:
+        server.stop()
+        store.close()
+
+
+def test_startup_token_is_copyable_without_a_seat_request(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    auth = AuthService(AuthRepository(store._connect), None, seat_auth_mode="enforce")
+    token = "startup-token-" * 3
+    try:
+        assert auth.copy_seat_service_token(token, "admin") == token
+        assert auth.seat_integration_status(token)["revision"] == 0
+    finally:
+        store.close()
+
+
+def test_existing_token_authenticates_when_copy_cannot_be_persisted(tmp_path):
+    store = AuthTestStore(tmp_path / "intel.json")
+    repository = AuthRepository(store._connect)
+    token = "legacy-service-token-" * 3
+    key_path = tmp_path / "seat-token.key"
+    key_path.mkdir()
+    old_service = AuthService(repository, None, seat_auth_mode="enforce")
+    old_service.apply_seat_integration_settings({"revision": 0, "service_token": token}, "")
+    auth = AuthService(
+        repository, None, seat_auth_mode="enforce", seat_token_vault=SeatTokenVault(repository, key_path),
+    )
+    try:
+        auth.authenticate_seat_service_token(token, "")
+        assert auth.copy_seat_service_token("", "admin") == token
+        assert repository.setting(SEAT_TOKEN_COPY_SETTING) is None
+    finally:
         store.close()
 
 

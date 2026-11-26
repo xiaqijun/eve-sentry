@@ -471,13 +471,16 @@ def _build_auth_service(
         raise RuntimeError("authentication requires a SQL-backed store")
     from app.server.auth import AuthService
     from app.server.auth_store import AuthRepository
+    from app.server.seat_token_vault import SeatTokenVault
 
+    repository = AuthRepository(connect)
     service = AuthService(
-        AuthRepository(connect),
+        repository,
         resolver,
         enforce_requests=args.auth_mode == "enforce",
         seat_auth_mode=args.seat_auth_mode,
         local_client_keys_enabled=args.edition == "standalone",
+        seat_token_vault=SeatTokenVault(repository, Path(args.config).with_suffix(".seat-token.key")),
     )
     username = str(args.auth_bootstrap_admin or "").strip()
     if username:

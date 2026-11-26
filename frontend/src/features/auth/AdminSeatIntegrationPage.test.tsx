@@ -7,6 +7,7 @@ import { AdminSeatIntegrationPage } from "./AdminSeatIntegrationPage";
 
 const api = vi.hoisted(() => ({
   apiPath: (path: string) => path,
+  fetchCurrentSeatServiceToken: vi.fn(),
   fetchSeatIntegration: vi.fn(),
   updateSeatIntegration: vi.fn(),
   saveSeatServiceToken: vi.fn(),
@@ -36,6 +37,7 @@ describe("SeAT integration page", () => {
     document.body.appendChild(element);
     root = createRoot(element);
     api.fetchSeatIntegration.mockReset();
+    api.fetchCurrentSeatServiceToken.mockReset();
     api.updateSeatIntegration.mockReset();
     api.saveSeatServiceToken.mockReset();
     clipboard.mockReset().mockResolvedValue(undefined);
@@ -67,13 +69,10 @@ describe("SeAT integration page", () => {
     expect(element.querySelector('[role="status"]')).toHaveTextContent("已切换至 SeAT 版");
   });
 
-  it("copies only the token just returned by an update", async () => {
-    const generated = "f".repeat(64);
+  it("copies the current token without generating a replacement", async () => {
+    const token = "f".repeat(64);
     api.fetchSeatIntegration.mockResolvedValue(standalone);
-    api.saveSeatServiceToken.mockResolvedValue({
-      settings: { ...standalone, revision: 3 },
-      service_token: generated,
-    });
+    api.fetchCurrentSeatServiceToken.mockResolvedValue(token);
     await render();
     const buttons = Array.from(element.querySelectorAll("button"));
     const copy = buttons.find((button) => button.textContent === "复制令牌")!;
@@ -81,17 +80,16 @@ describe("SeAT integration page", () => {
     const refresh = buttons.find((button) => button.textContent === "刷新状态")!;
     expect(update.closest(".arco-card")?.querySelectorAll("button")).toHaveLength(2);
     expect(element).not.toHaveTextContent("导入现有令牌");
-    expect(copy).toBeDisabled();
-    await act(async () => update.click());
-    expect(api.saveSeatServiceToken).toHaveBeenCalledWith(2);
     expect(copy).toBeEnabled();
-    expect(element).not.toHaveTextContent(generated);
+    expect(element).not.toHaveTextContent(token);
     await act(async () => copy.click());
-    expect(clipboard).toHaveBeenCalledWith(generated);
+    expect(clipboard).toHaveBeenCalledWith(token);
     expect(element.querySelector('[role="status"]')).toHaveTextContent("令牌已复制");
-    expect(api.saveSeatServiceToken).toHaveBeenCalledTimes(1);
+    expect(api.saveSeatServiceToken).not.toHaveBeenCalled();
     await act(async () => refresh.click());
-    expect(copy).toBeDisabled();
+    expect(copy).toBeEnabled();
+    await act(async () => copy.click());
+    expect(api.fetchCurrentSeatServiceToken).toHaveBeenCalledTimes(2);
   });
 
   it("shows the missing token and prevents enabling before setup", async () => {
