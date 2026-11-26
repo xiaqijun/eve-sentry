@@ -73,12 +73,62 @@ jobs:
         run: |
           bash -n deploy/ci/build_esi_gateway_archive.sh
           bash -n deploy/ci/deploy_esi_gateway.sh
-          shellcheck deploy/ci/*.sh
+          bash -n deploy/docker/quickstart.sh
+          shellcheck deploy/ci/*.sh deploy/docker/quickstart.sh
+
+  quickstart:
+    name: Quick start (${{ matrix.method }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    defaults:
+      run:
+        working-directory: esi-gateway
+    strategy:
+      fail-fast: false
+      matrix:
+        method: [docker-compose, python]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+      - name: Run documented quick start command and check readiness
+        env:
+          QUICKSTART_METHOD: ${{ matrix.method }}
+        run: |
+          set -euo pipefail
+          gateway_ip=10.253.254.10
+          sentry_ip=10.253.254.20
+          sudo ip address add "$gateway_ip/32" dev lo
+          sudo ip address add "$sentry_ip/32" dev lo
+          compose=(docker compose -f deploy/docker/compose.yaml)
+          gateway_pid=
+          cleanup() {
+            if [[ "$QUICKSTART_METHOD" == docker-compose ]]; then
+              "${compose[@]}" down --remove-orphans
+            elif [[ -n "$gateway_pid" ]]; then
+              kill -- "-$gateway_pid" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+          if [[ "$QUICKSTART_METHOD" == docker-compose ]]; then
+            bash deploy/docker/quickstart.sh "$gateway_ip" "$sentry_ip"
+          else
+            setsid python scripts/quickstart.py "$gateway_ip" "$sentry_ip" &
+            gateway_pid=$!
+          fi
+          curl --noproxy '*' --interface "$sentry_ip" --fail --silent --show-error \
+            --max-time 3 --retry 10 --retry-connrefused --retry-delay 1 \
+            "http://$gateway_ip:8787/health" | python -c 'import json, sys; p=json.load(sys.stdin); assert p.get("ok") is True and p.get("transport_mode") == "relay"'
+          test "$(stat -c %a gateway.env)" = 600
+          grep -Fxq "EVE_SENTRY_ESI_GATEWAY_ALLOWED_CLIENTS=$sentry_ip" gateway.env
+          grep -Eq '^EVE_SENTRY_ESI_GATEWAY_TOKEN=[0-9a-f]{64}$' gateway.env
+          echo "Quick start passed: $QUICKSTART_METHOD"
 
   package:
     name: Build verified deployment artifact
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: validate
+    needs: [validate, quickstart]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:

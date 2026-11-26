@@ -1,0 +1,9 @@
+**
+!deploy/
+!deploy/docker/
+!deploy/docker/Dockerfile
+!deploy/docker/healthcheck.py
+!esi_gateway/
+!esi_gateway/*.py
+!scripts/
+!scripts/esi_gateway.py

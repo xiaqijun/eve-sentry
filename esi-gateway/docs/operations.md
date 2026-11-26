@@ -1,25 +1,44 @@
 # Operations runbook
 
+## 快速接入
+
+在网关主机克隆本仓库，按 [快速部署](../README.md#快速部署) 选择 Docker Compose 或 Python。
+两种方式均以 Relay 模式启动，监听指定的私网地址和端口 `8787`，只接受所填的 Sentry 来源地址。
+首次启动在仓库中生成 `esi-gateway/gateway.env`，使用本机文件中的服务令牌完成接入。
+
+首次使用网关的 Sentry 服务端设置以下环境变量，地址换成网关输出的地址。
+
+```ini
+EVE_SENTRY_SERVER_ENABLE_ESI=1
+EVE_SENTRY_ESI_TRANSPORT=relay
+EVE_SENTRY_SERVER_ESI_GATEWAY_URL=http://10.0.0.10:8787
+EVE_SENTRY_SERVER_ESI_GATEWAY_TOKEN=网关文件中的服务令牌
+```
+
+启动 Sentry 后，在「系统管理 → ESI 网关观测」查看连接。Docker 方式再次运行同一命令可重建容器，
+服务令牌保留。停止 Docker 网关时从仓库根目录运行
+`docker compose -f esi-gateway/deploy/docker/compose.yaml down`。Python 方式按 Ctrl+C 停止。
+Linux 原生常驻部署可使用下文的 systemd 单元。
+
 ## Prerequisites
 
-The production host should provide:
+For the systemd installation, provide:
 
 - Python 3.10 or newer and a virtual environment at
   `/opt/eve-sentry-esi-gateway/.venv`;
-- PostgreSQL reachable using the configured DSN;
-- Redis reachable using the configured URL;
+- PostgreSQL and Redis reachable when the optional legacy/dual ID cache is configured;
 - the service environment file at
   `/etc/eve-sentry-esi/gateway.env`;
 - the `eve-sentry-esi-gateway` systemd unit and a service account;
 - outbound HTTPS access to `esi.evetech.net`.
 
-Install the storage drivers in the production virtual environment:
+Install storage drivers when using the optional ID cache:
 
 ```bash
 /opt/eve-sentry-esi-gateway/.venv/bin/pip install '.[storage]'
 ```
 
-The gateway creates its PostgreSQL table during startup. Operators can inspect
+When PostgreSQL storage is configured, the gateway creates its table during startup. Operators can inspect
 or pre-apply the equivalent migration in
 [`deploy/postgres/001_esi_id_cache.sql`](../deploy/postgres/001_esi_id_cache.sql).
 
