@@ -1,5 +1,5 @@
+import { ToastProvider } from "@/components/ui";
 import "@testing-library/jest-dom/vitest";
-import { Message } from "@arco-design/web-react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -34,7 +34,7 @@ describe("login page", () => {
 
   afterEach(async () => {
     await act(async () => {
-      Message.clear();
+
       root.unmount();
     });
     container.remove();
@@ -43,9 +43,9 @@ describe("login page", () => {
   it("shows local account credentials without an EVE login link", async () => {
     await act(async () => {
       root.render(
-        <MemoryRouter initialEntries={[{ pathname: "/login", state: { from: { pathname: "/dashboard" } } }]}>
+        <ToastProvider><MemoryRouter initialEntries={[{ pathname: "/login", state: { from: { pathname: "/dashboard" } } }]}>
           <LoginPage />
-        </MemoryRouter>,
+        </MemoryRouter></ToastProvider>,
       );
     });
 
@@ -59,9 +59,9 @@ describe("login page", () => {
     loginMock.mockRejectedValueOnce(new Error("用户名或密码错误"));
     await act(async () => {
       root.render(
-        <MemoryRouter initialEntries={["/login"]}>
+        <ToastProvider><MemoryRouter initialEntries={["/login"]}>
           <LoginPage />
-        </MemoryRouter>
+        </MemoryRouter></ToastProvider>
       );
     });
 
@@ -71,7 +71,7 @@ describe("login page", () => {
       );
     });
 
-    expect(document.querySelector('.arco-message-error[role="alert"]')).toHaveTextContent("用户名或密码错误");
+    expect(document.querySelector('.toast-error[role="alert"]')).toHaveTextContent("用户名或密码错误");
     expect(container).not.toHaveTextContent("用户名或密码错误");
   });
 });

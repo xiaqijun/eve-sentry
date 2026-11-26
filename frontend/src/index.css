@@ -1,0 +1,22 @@
+@import "tailwindcss";
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme inline {
+  --color-background: var(--theme-page);
+  --color-foreground: var(--theme-text);
+  --color-card: var(--theme-surface);
+  --color-card-foreground: var(--theme-text);
+  --color-primary: var(--theme-accent);
+  --color-primary-hover: var(--console-link);
+  --color-primary-foreground: var(--theme-accent-text);
+  --color-secondary: var(--theme-surface-raised);
+  --color-secondary-foreground: var(--theme-secondary);
+  --color-muted: var(--theme-surface-raised);
+  --color-muted-foreground: var(--theme-muted);
+  --color-accent: var(--theme-accent-surface);
+  --color-accent-foreground: var(--console-link);
+  --color-border: var(--theme-border);
+  --color-input: var(--theme-input-border);
+  --color-ring: var(--theme-accent);
+  --color-destructive: #b91c1c;
+}

@@ -1,5 +1,5 @@
-import { Alert, Avatar, Button, Card, Grid, Statistic, Tag, Typography } from "@arco-design/web-react";
-import { IconRefresh } from "@arco-design/web-react/icon";
+import { Alert, Avatar, Button, Card, Grid, Statistic, Tag, Typography } from "@/components/ui";
+import { RefreshCw as IconRefresh } from "lucide-react";
 
 export function ManagementPageHeader({
   title,
@@ -19,16 +19,16 @@ export function ManagementPageHeader({
   extra?: React.ReactNode;
 }) {
   return (
-    <header className="content-page-header account-header arco-page-header">
+    <header className="content-page-header account-header ui-page-header">
       <div className="management-page-heading">
         {kicker ? <Typography.Text className="content-page-kicker">{kicker}</Typography.Text> : null}
         <Typography.Title heading={4}>{title}</Typography.Title>
         {subtitle ? <Typography.Text className="management-page-subtitle" type="secondary">{subtitle}</Typography.Text> : null}
       </div>
-      <div aria-label="页面操作" className="arco-page-header-actions" role="toolbar">
+      <div aria-label="页面操作" className="ui-page-header-actions" role="toolbar">
         {extra}
         {onRefresh ? (
-          <Button icon={<IconRefresh />} loading={loading} type="outline" onClick={onRefresh}>
+          <Button icon={<IconRefresh />} loading={loading} variant="outline" onClick={onRefresh}>
             {refreshLabel}
           </Button>
         ) : null}
@@ -39,7 +39,7 @@ export function ManagementPageHeader({
 
 export function ManagementError({ error }: { error: string }) {
   return error ? (
-    <div aria-live="assertive" className="arco-page-alert" role="alert">
+    <div aria-live="assertive" className="ui-page-alert" role="alert">
       <Alert closable={false} content={error} type="error" />
     </div>
   ) : null;
@@ -54,11 +54,11 @@ export function ManagementSummary({
 }) {
   const span = items.length === 3 ? 8 : 6;
   return (
-    <section aria-label={ariaLabel} className="arco-summary-grid">
+    <section aria-label={ariaLabel} className="ui-summary-grid">
       <Grid.Row gutter={16}>
         {items.map((item) => (
           <Grid.Col key={item.label} md={span} sm={12} xs={24}>
-            <Card className="arco-summary-card">
+            <Card className="ui-summary-card">
               <Statistic title={item.label} value={item.value} />
             </Card>
           </Grid.Col>
@@ -79,7 +79,7 @@ export function KeyStatusTag({ status }: { status: "active" | "revoked" }) {
 export function UserIdentity({ displayName, username }: { displayName: string; username: string }) {
   const name = displayName || username;
   return (
-    <div className="arco-user-identity management-user-cell">
+    <div className="ui-user-identity management-user-cell">
       <Avatar size={32}>{name.slice(0, 1).toUpperCase()}</Avatar>
       <span><strong>{name}</strong><small>@{username}</small></span>
     </div>

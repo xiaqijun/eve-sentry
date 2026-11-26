@@ -1,3 +1,4 @@
+import { ToastProvider } from "@/components/ui";
 import "@testing-library/jest-dom/vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -46,13 +47,13 @@ describe("ManagementShell", () => {
 
     await act(async () => {
       root.render(
-        <MemoryRouter initialEntries={["/dashboard"]}>
+        <ToastProvider><MemoryRouter initialEntries={["/dashboard"]}>
           <Routes>
             <Route element={<ManagementShell />} path="/">
               <Route element={<div>工作台内容</div>} path="dashboard" />
             </Route>
           </Routes>
-        </MemoryRouter>,
+        </MemoryRouter></ToastProvider>,
       );
     });
 
@@ -83,13 +84,13 @@ describe("ManagementShell", () => {
 
     await act(async () => {
       root.render(
-        <MemoryRouter>
+        <ToastProvider><MemoryRouter>
           <Routes>
             <Route element={<ManagementShell />} path="/">
               <Route index element={<div>工作台内容</div>} />
             </Route>
           </Routes>
-        </MemoryRouter>,
+        </MemoryRouter></ToastProvider>,
       );
     });
 
@@ -113,13 +114,13 @@ describe("ManagementShell", () => {
 
     await act(async () => {
       root.render(
-        <MemoryRouter>
+        <ToastProvider><MemoryRouter>
           <Routes>
             <Route element={<ManagementShell />} path="/">
               <Route index element={<div>工作台内容</div>} />
             </Route>
           </Routes>
-        </MemoryRouter>,
+        </MemoryRouter></ToastProvider>,
       );
     });
 

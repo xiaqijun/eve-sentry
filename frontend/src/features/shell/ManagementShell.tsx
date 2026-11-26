@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Drawer, Layout, Tag } from "@arco-design/web-react";
+import { Button, Drawer, Tag } from "@/components/ui";
 import {
   Cloud, KeyRound, LayoutDashboard, Link2, Menu, Monitor, Orbit, ShieldCheck, Users,
 } from "lucide-react";
@@ -8,8 +8,6 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { AccountMenu } from "./AccountMenu";
 import { ThemeToggle } from "./ThemeToggle";
-
-const { Header, Content, Sider } = Layout;
 
 function navigationClass({ isActive }: { isActive: boolean }) {
   return isActive ? "management-nav-link active" : "management-nav-link";
@@ -62,31 +60,27 @@ export function ManagementShell() {
   );
 
   return (
-    <Layout className="management-shell arco-management-shell">
+    <div className="management-shell ui-management-shell">
       <a className="management-skip-link" href="#management-content">跳到页面内容</a>
-      <Sider className="management-sidebar arco-management-sider" width={236}>
+      <aside className="management-sidebar ui-management-sider ui-layout-sider">
         {navigation}
-      </Sider>
+      </aside>
       <Drawer
         className="management-navigation-drawer"
         title="页面导航"
         placement="left"
         width="min(320px, 88vw)"
-        visible={navigationOpen}
-        footer={null}
-        unmountOnExit
-        focusLock
-        autoFocus
-        escToExit
-        onCancel={() => setNavigationOpen(false)}
-        afterClose={() => navigationTrigger.current?.focus()}
+        id="mobile-navigation"
+        open={navigationOpen}
+        onClose={() => setNavigationOpen(false)}
+        restoreFocus={() => navigationTrigger.current?.focus()}
       >
-        <div id="mobile-navigation" role="dialog" aria-label="页面导航" aria-modal="true" onClick={(event) => {
+        <div onClick={(event) => {
           if ((event.target as HTMLElement).closest("a")) setNavigationOpen(false);
         }}>{navigation}</div>
       </Drawer>
-      <Layout className="management-main">
-        <Header className="management-topbar arco-management-header">
+      <div className="management-main ui-layout">
+        <header className="management-topbar ui-management-header">
           <Button
             ref={navigationTrigger}
             className="management-navigation-trigger"
@@ -104,11 +98,11 @@ export function ManagementShell() {
             </Tag>
             <AccountMenu />
           </div>
-        </Header>
-        <Content id="management-content" role="main" tabIndex={-1} className={`management-content${isStarMap ? " management-content-workbench" : ""}`}>
+        </header>
+        <main id="management-content" tabIndex={-1} className={`ui-layout-content management-content${isStarMap ? " management-content-workbench" : ""}`}>
           <Outlet />
-        </Content>
-      </Layout>
-    </Layout>
+        </main>
+      </div>
+    </div>
   );
 }

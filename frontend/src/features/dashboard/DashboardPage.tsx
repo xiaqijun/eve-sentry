@@ -1,19 +1,6 @@
 import { useMemo, useRef, useState } from "react";
-import {
-  Alert,
-  Button,
-  Card,
-  Drawer,
-  Empty,
-  Grid,
-  Spin,
-  Statistic,
-  Table,
-  Tag,
-  Typography,
-  type TableColumnProps,
-} from "@arco-design/web-react";
-import { IconRefresh } from "@arco-design/web-react/icon";
+import { Alert, Button, Card, Drawer, Empty, Grid, Spin, Statistic, Table, Tag, Typography, type TableColumnProps } from "@/components/ui";
+import { RefreshCw as IconRefresh } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BellRing,
@@ -254,7 +241,7 @@ export function DashboardPage() {
 
   return (
     <div className="dashboard-page">
-      <header className="arco-page-header dashboard-header">
+      <header className="ui-page-header dashboard-header">
         <div>
           <h1>工作台</h1>
           <Typography.Text type="secondary">先看当前敌情，再检查监控覆盖与异常。</Typography.Text>
@@ -263,7 +250,7 @@ export function DashboardPage() {
           <nav aria-label="工作台快捷入口" className="dashboard-shortcuts">
             <a href="/">打开星图</a>
           </nav>
-          <Button icon={<IconRefresh />} loading={refreshing} type="outline" onClick={() => void bootstrapQuery.refetch()}>刷新实时数据</Button>
+          <Button icon={<IconRefresh />} loading={refreshing} variant="outline" onClick={() => void bootstrapQuery.refetch()}>刷新实时数据</Button>
         </div>
       </header>
 
@@ -277,7 +264,7 @@ export function DashboardPage() {
           : "实时态势数据加载失败，请刷新后重试。"} />
       ) : null}
 
-      <Grid.Row className="arco-summary-grid dashboard-kpis" gutter={[16, 16]}>
+      <Grid.Row className="ui-summary-grid dashboard-kpis" gutter={[16, 16]}>
         <Grid.Col lg={6} xs={12}><Card><Statistic prefix={<MonitorCheck size={17} />} title="在线监控星系" value={hasData ? onlineSystems : "—"} /></Card></Grid.Col>
         <Grid.Col lg={6} xs={12}><Card><Statistic prefix={<Skull size={17} />} title="当前敌对人数" value={hasData ? currentHostiles : "—"} /></Card></Grid.Col>
         <Grid.Col lg={6} xs={12}><Card><Statistic prefix={<BellRing size={17} />} title="当前告警事件" value={hasData ? liveAlerts.length : "—"} /></Card></Grid.Col>
@@ -316,7 +303,8 @@ export function DashboardPage() {
         </Grid.Col>
       </Grid.Row>
       </>}
-      <Drawer title="监控节点详情" visible={detailId !== null} onCancel={() => setDetailId(null)} afterClose={() => detailTrigger.current?.focus()} footer={null} width="min(460px, 94vw)" focusLock autoFocus escToExit unmountOnExit>
+      <Drawer title="监控节点详情" open={detailId !== null} onClose={() => setDetailId(null)}
+        restoreFocus={() => detailTrigger.current?.focus()} width="min(460px, 94vw)">
         <div role="dialog" aria-label="监控节点详情" aria-modal="true">
         {selectedClient ? <div className="console-node-detail">
           <p>{bootstrapQuery.isError ? "更新失败，以下为上次数据。" : "以下信息来自最近一次成功获取的节点上报。"}</p>

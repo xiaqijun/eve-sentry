@@ -1,4 +1,4 @@
-import { Button, Card, Space, Typography } from "@arco-design/web-react";
+import { Button, Card, Space, Typography } from "@/components/ui";
 import { createBrowserRouter, isRouteErrorResponse, Navigate, useRouteError } from "react-router-dom";
 
 import { DashboardPage } from "./features/dashboard/DashboardPage";
@@ -24,7 +24,7 @@ function RouteErrorPage() {
           <Typography.Text type="secondary">{message}</Typography.Text>
           <Typography.Text type="secondary">错误编号：{String(Date.now()).slice(-6)}</Typography.Text>
           <Space>
-            <Button type="primary" onClick={() => window.location.reload()}>重新加载</Button>
+            <Button variant="default" onClick={() => window.location.reload()}>重新加载</Button>
             <Button onClick={() => { window.location.assign("/"); }}>返回工作台</Button>
           </Space>
         </Space>

@@ -1,14 +1,14 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { ConfigProvider } from "@arco-design/web-react";
-import zhCN from "@arco-design/web-react/es/locale/zh-CN";
+import { ToastProvider } from "@/components/ui";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "react-router-dom";
 
 import { router } from "./router";
 import { AuthProvider } from "./features/auth/AuthContext";
 import { ThemeProvider } from "./features/shell/ThemeContext";
-import "@arco-design/web-react/dist/css/arco.css";
+import "./index.css";
+import "./components/ui/ui.css";
 import "./styles.css";
 import "./console-usability.css";
 import "./console-theme.css";
@@ -18,13 +18,13 @@ const queryClient = new QueryClient();
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ThemeProvider>
-      <ConfigProvider locale={zhCN}>
+      <ToastProvider>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
             <RouterProvider router={router} />
           </AuthProvider>
         </QueryClientProvider>
-      </ConfigProvider>
+      </ToastProvider>
     </ThemeProvider>
   </React.StrictMode>,
 );

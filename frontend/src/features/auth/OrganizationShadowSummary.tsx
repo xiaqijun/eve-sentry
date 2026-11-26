@@ -1,4 +1,4 @@
-import { Typography } from "@arco-design/web-react";
+import { Typography } from "@/components/ui";
 
 export function OrganizationShadowSummary({ counts }: { counts?: Record<string, number> }) {
   if (counts?.comparable === undefined) {

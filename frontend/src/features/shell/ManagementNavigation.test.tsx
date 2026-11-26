@@ -1,3 +1,4 @@
+import { ToastProvider } from "@/components/ui";
 import "@testing-library/jest-dom/vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -28,12 +29,12 @@ describe("responsive management navigation", () => {
   });
   async function renderShell() {
     await act(async () => root.render(
-      <MemoryRouter initialEntries={["/dashboard"]}>
+      <ToastProvider><MemoryRouter initialEntries={["/dashboard"]}>
         <Routes><Route element={<ManagementShell />}>
           <Route path="dashboard" element={<p>工作台正文</p>} />
           <Route path="admin/clients" element={<p>设备页面正文</p>} />
         </Route></Routes>
-      </MemoryRouter>,
+      </MemoryRouter></ToastProvider>,
     ));
     return container.querySelector('[aria-label="打开导航菜单"]') as HTMLButtonElement;
   }

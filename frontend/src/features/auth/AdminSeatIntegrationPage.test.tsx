@@ -1,5 +1,5 @@
+import { ToastProvider } from "@/components/ui";
 import "@testing-library/jest-dom/vitest";
-import { Message } from "@arco-design/web-react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,7 +15,7 @@ const api = vi.hoisted(() => ({
 }));
 const clipboard = vi.hoisted(() => vi.fn());
 vi.mock("./api", () => api);
-vi.mock("@arco-design/web-react/es/_util/clipboard", () => ({ default: clipboard }));
+vi.mock("../../lib/clipboard", () => ({ copyToClipboard: clipboard }));
 
 const standalone = {
   enabled: false,
@@ -47,14 +47,14 @@ describe("SeAT integration page", () => {
 
   afterEach(async () => {
     await act(async () => {
-      Message.clear();
+
       root.unmount();
     });
     element.remove();
   });
 
   async function render() {
-    await act(async () => root.render(<AdminSeatIntegrationPage />));
+    await act(async () => root.render(<ToastProvider><AdminSeatIntegrationPage /></ToastProvider>));
     const toggle = element.querySelector<HTMLButtonElement>('[aria-label="启用 SeAT"]')!;
     const save = Array.from(element.querySelectorAll("button")).find((button) => button.textContent === "保存模式")!;
     return { toggle, save };
@@ -71,7 +71,7 @@ describe("SeAT integration page", () => {
     expect(api.updateSeatIntegration).not.toHaveBeenCalled();
     await act(async () => save.click());
     expect(api.updateSeatIntegration).toHaveBeenCalledWith(true, 2);
-    expect(document.body.querySelector('.arco-message[role="alert"]')).toHaveTextContent("已切换至 SeAT 版");
+    expect(document.body.querySelector('.toast-success[role="status"]')).toHaveTextContent("已切换至 SeAT 版");
   });
 
   it("copies the current token without generating a replacement", async () => {
@@ -83,7 +83,7 @@ describe("SeAT integration page", () => {
     const copy = buttons.find((button) => button.textContent === "复制令牌")!;
     const update = buttons.find((button) => button.textContent === "更新令牌")!;
     const refresh = buttons.find((button) => button.textContent === "刷新状态")!;
-    expect(update.closest(".arco-card")?.querySelectorAll("button")).toHaveLength(2);
+    expect(update.closest(".ui-card")?.querySelectorAll("button")).toHaveLength(2);
     expect(element).not.toHaveTextContent("导入现有令牌");
     expect(element.querySelector('[aria-label="已隐藏的服务令牌"]')).toHaveTextContent("••••••••");
     expect(copy).toBeEnabled();
@@ -91,7 +91,7 @@ describe("SeAT integration page", () => {
     expect(api.fetchCurrentSeatServiceToken).not.toHaveBeenCalled();
     await act(async () => copy.click());
     expect(clipboard).toHaveBeenCalledWith(token);
-    expect(document.body.querySelector('.arco-message[role="alert"]')).toHaveTextContent("令牌已复制");
+    expect(document.body.querySelector('.toast-success[role="status"]')).toHaveTextContent("令牌已复制");
     expect(element).not.toHaveTextContent("令牌已复制");
     expect(element).not.toHaveTextContent(token);
     expect(api.saveSeatServiceToken).not.toHaveBeenCalled();
@@ -120,9 +120,9 @@ describe("SeAT integration page", () => {
     clipboard.mockRejectedValueOnce(new DOMException("Clipboard unavailable", "NotAllowedError"));
     await render();
     const copyAddress = element.querySelector<HTMLButtonElement>('[aria-label="复制地址"]')!;
-    const successMessages = () => Array.from(document.querySelectorAll(".arco-message-success"), (toast) => toast.textContent);
+    const successMessages = () => Array.from(document.querySelectorAll(".toast-success"), (toast) => toast.textContent);
     await act(async () => copyAddress.click());
-    expect(document.querySelector('.arco-message-error[role="alert"]')).toHaveTextContent("复制地址失败");
+    expect(document.querySelector('.toast-error[role="alert"]')).toHaveTextContent("复制地址失败");
     expect(successMessages()).not.toContain("Sentry 地址已复制");
     await act(async () => copyAddress.click());
     expect(clipboard).toHaveBeenLastCalledWith(window.location.origin);

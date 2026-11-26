@@ -1,23 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Button,
-  Card,
-  Descriptions,
-  Drawer,
-  Empty,
-  Input,
-  Pagination,
-  Select,
-  Space,
-  Tabs,
-  Tag,
-  Typography,
-} from "@arco-design/web-react";
-import {
-  IconDesktop,
-  IconEye,
-  IconLock,
-} from "@arco-design/web-react/icon";
+import { Tabs } from "radix-ui";
+import { Button, Card, Descriptions, Drawer, Empty, Input, Pagination, Select, Space, Tag, Typography } from "@/components/ui";
+import { Monitor as IconDesktop, Eye as IconEye, LockKeyhole as IconLock } from "lucide-react";
 
 import {
   ManagementError,
@@ -262,7 +246,7 @@ function ClientRows({
               <time dateTime={client.seen_at} title={formatDate(client.seen_at)}>{formatDate(client.seen_at)}</time>
             </span>
             <span className="admin-client-row-action" role="cell">
-              <Button aria-label={`查看 ${client.label || client.client_id}`} icon={<IconEye />} shape="square" size="mini" title="查看详情" type="text" onClick={() => onOpen(client)} />
+              <Button aria-label={`查看 ${client.label || client.client_id}`} icon={<IconEye />} shape="square" size="xs" title="查看详情" variant="ghost" onClick={() => onOpen(client)} />
             </span>
           </div>
         );
@@ -443,24 +427,21 @@ export function AdminClientsPage() {
         { label: "监控目标", value: targetCount },
       ]} />
 
-      <Card className="arco-management-card admin-clients-card">
-        <Tabs defaultActiveTab="clients">
-          <Tabs.TabPane key="clients" title={<Space><IconDesktop />客户端实例</Space>}>
+      <Card className="ui-management-card admin-clients-card">
+        <Tabs.Root defaultValue="clients">
+          <Tabs.List className="ui-tabs-list" aria-label="客户端管理分类">
+            <Tabs.Trigger className="ui-tabs-tab" value="clients"><Space><IconDesktop size={16} />客户端实例</Space></Tabs.Trigger>
+            <Tabs.Trigger className="ui-tabs-tab" value="keys"><Space><IconLock size={16} />密钥使用</Space></Tabs.Trigger>
+          </Tabs.List>
+          <Tabs.Content value="clients">
             <div className="admin-client-toolbar" aria-label="客户端筛选">
               <Input.Search aria-label="搜索客户端" allowClear placeholder="搜索客户端、用户、密钥、主机或目标" value={search} onChange={setSearch} />
-              <Select aria-label="客户端类型" value={clientType} onChange={setClientType}>
-                <Select.Option value="all">全部类型</Select.Option>
-                {clientTypes.map((type) => <Select.Option key={type} value={type}>{clientTypeLabel(type)}</Select.Option>)}
-              </Select>
-              <Select aria-label="在线状态" value={online} onChange={(value) => setOnline(value as OnlineFilter)}>
-                <Select.Option value="all">全部状态</Select.Option>
-                <Select.Option value="online">在线</Select.Option>
-                <Select.Option value="offline">离线</Select.Option>
-              </Select>
-              <Select aria-label="所属用户" value={userId} onChange={setUserId}>
-                <Select.Option value="all">全部用户</Select.Option>
-                {userOptions.map((option) => <Select.Option key={option.id} value={option.id}>{option.label}</Select.Option>)}
-              </Select>
+              <Select label="客户端类型" value={clientType} onValueChange={setClientType}
+                options={[{ value: "all", label: "全部类型" }, ...clientTypes.map((value) => ({ value, label: clientTypeLabel(value) }))]} />
+              <Select label="在线状态" value={online} onValueChange={(value) => setOnline(value as OnlineFilter)}
+                options={[{ value: "all", label: "全部状态" }, { value: "online", label: "在线" }, { value: "offline", label: "离线" }]} />
+              <Select label="所属用户" value={userId} onValueChange={setUserId}
+                options={[{ value: "all", label: "全部用户" }, ...userOptions.map(({ id, label }) => ({ value: id, label }))]} />
               <Typography.Text type="secondary">{filteredClients.length} / {clients.length} 个实例</Typography.Text>
             </div>
             <ClientRows clients={visibleClients} loading={loading} onOpen={(client) => setSelectedClientId(client.client_id)} />
@@ -473,15 +454,12 @@ export function AdminClientsPage() {
                 onChange={setClientPage}
               />
             ) : null}
-          </Tabs.TabPane>
-          <Tabs.TabPane key="keys" title={<Space><IconLock />密钥使用</Space>}>
+          </Tabs.Content>
+          <Tabs.Content value="keys">
             <div className="admin-client-toolbar admin-key-toolbar" aria-label="密钥筛选">
               <Input.Search aria-label="搜索密钥使用" allowClear placeholder="搜索密钥、用户、客户端或来源 IP" value={keySearch} onChange={setKeySearch} />
-              <Select aria-label="密钥状态" value={keyStatus} onChange={setKeyStatus}>
-                <Select.Option value="all">全部状态</Select.Option>
-                <Select.Option value="active">有效</Select.Option>
-                <Select.Option value="revoked">已吊销</Select.Option>
-              </Select>
+              <Select label="密钥状态" value={keyStatus} onValueChange={setKeyStatus}
+                options={[{ value: "all", label: "全部状态" }, { value: "active", label: "有效" }, { value: "revoked", label: "已吊销" }]} />
               <Typography.Text type="secondary">{filteredKeys.length} / {snapshot.keys.length} 个密钥</Typography.Text>
             </div>
             <KeyRows keys={visibleKeys} loading={loading} />
@@ -494,17 +472,17 @@ export function AdminClientsPage() {
                 onChange={setKeyPage}
               />
             ) : null}
-          </Tabs.TabPane>
-        </Tabs>
+          </Tabs.Content>
+        </Tabs.Root>
       </Card>
 
       <Drawer
         className="management-drawer admin-client-drawer"
         footer={null}
         title={selectedClient ? selectedClient.label || "客户端详情" : "客户端详情"}
-        visible={Boolean(selectedClient)}
+        open={Boolean(selectedClient)}
         width={580}
-        onCancel={() => setSelectedClientId(undefined)}
+        onClose={() => setSelectedClientId(undefined)}
       >
         {selectedClient ? <Descriptions border column={1} data={detailItems} size="small" /> : null}
       </Drawer>

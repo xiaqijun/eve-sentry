@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Button, Tooltip } from "@arco-design/web-react";
+import { Button, Tooltip } from "@/components/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 
@@ -262,7 +262,7 @@ export function WorkbenchPage() {
             <span>当前定位</span>
             <strong>{selected?.name || "全部星系"}</strong>
           </div>
-          <Button aria-label="Fit 星图" size="small" type="outline" onClick={() => {
+          <Button aria-label="Fit 星图" size="sm" variant="outline" onClick={() => {
             const next = new URLSearchParams(searchParams);
             next.delete("system");
             setSearchParams(next, { replace: true });

@@ -1,5 +1,5 @@
+import { ToastProvider } from "@/components/ui";
 import "@testing-library/jest-dom/vitest";
-import { Message } from "@arco-design/web-react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -98,7 +98,7 @@ describe("AdminEsiGatewayPage", () => {
 
   afterEach(async () => {
     await act(async () => {
-      Message.clear();
+
       root?.unmount();
     });
     vi.useRealTimers();
@@ -107,7 +107,7 @@ describe("AdminEsiGatewayPage", () => {
 
   async function renderPage() {
     await act(async () => {
-      root?.render(<AdminEsiGatewayPage />);
+      root?.render(<ToastProvider><AdminEsiGatewayPage /></ToastProvider>);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -137,7 +137,7 @@ describe("AdminEsiGatewayPage", () => {
     expect(testButton).toBeDefined();
     await act(async () => testButton?.click());
     expect(apiRequestMock).toHaveBeenLastCalledWith("/api/v1/admin/esi-gateway/test", { method: "POST" });
-    expect(document.querySelector('.arco-message-success[role="alert"]')).toHaveTextContent("连接与鉴权通过");
+    expect(document.querySelector('.toast-success[role="status"]')).toHaveTextContent("连接与鉴权通过");
     expect(container).not.toHaveTextContent("连接与鉴权通过");
   });
 
@@ -155,7 +155,7 @@ describe("AdminEsiGatewayPage", () => {
       method: "POST",
       body: JSON.stringify({ url: "http://10.233.53.17:8787", revision: "environment" }),
     });
-    expect(document.querySelector('.arco-message-success[role="alert"]')).toHaveTextContent("网关设置已保存");
+    expect(document.querySelector('.toast-success[role="status"]')).toHaveTextContent("网关设置已保存");
     expect(container).not.toHaveTextContent("网关设置已保存");
   });
 

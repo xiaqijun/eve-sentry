@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { Button, Card, Message, Space, Switch, Tag, Typography } from "@arco-design/web-react";
-import { IconCopy } from "@arco-design/web-react/icon";
-import copyToClipboard from "@arco-design/web-react/es/_util/clipboard";
+import { Button, Card, Space, Switch, Tag, Typography } from "@/components/ui";
+import { Copy as IconCopy } from "lucide-react";
+import { copyToClipboard } from "../../lib/clipboard";
 
 import { ManagementError, ManagementPageHeader } from "../../components/ManagementPage";
-import { showOperationError } from "../../components/operationFeedback";
+import { useOperationFeedback } from "../../components/operationFeedback";
 import { apiPath, fetchCurrentSeatServiceToken, fetchSeatIntegration, saveSeatServiceToken, updateSeatIntegration } from "./api";
 import type { SeatIntegrationSettings } from "./types";
 
 export function AdminSeatIntegrationPage() {
+  const feedback = useOperationFeedback();
   const [settings, setSettings] = useState<SeatIntegrationSettings | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -41,9 +42,9 @@ export function AdminSeatIntegrationPage() {
       const next = await updateSeatIntegration(enabled, settings.revision);
       setSettings(next);
       setEnabled(next.enabled);
-      Message.success(next.enabled ? "已切换至 SeAT 版" : "已切换至独立版");
+      feedback.success(next.enabled ? "已切换至 SeAT 版" : "已切换至独立版");
     } catch (reason) {
-      showOperationError(reason, "保存 SeAT 设置失败");
+      feedback.operationError(reason, "保存 SeAT 设置失败");
     } finally {
       setSaving(false);
     }
@@ -55,9 +56,9 @@ export function AdminSeatIntegrationPage() {
     setError("");
     try {
       setSettings(await saveSeatServiceToken(settings.revision));
-      Message.success("令牌已更新");
+      feedback.success("令牌已更新");
     } catch (reason) {
-      showOperationError(reason, "保存服务令牌失败");
+      feedback.operationError(reason, "保存服务令牌失败");
     } finally {
       setSaving(false);
     }
@@ -69,9 +70,9 @@ export function AdminSeatIntegrationPage() {
     try {
       const token = await fetchCurrentSeatServiceToken();
       await copyToClipboard(token);
-      Message.success("令牌已复制");
+      feedback.success("令牌已复制");
     } catch (reason) {
-      showOperationError(reason instanceof DOMException ? undefined : reason, "复制令牌失败");
+      feedback.operationError(reason instanceof DOMException ? undefined : reason, "复制令牌失败");
     } finally {
       setCopying(false);
     }
@@ -80,9 +81,9 @@ export function AdminSeatIntegrationPage() {
   async function copyAddress() {
     try {
       await copyToClipboard(sentryOrigin);
-      Message.success("Sentry 地址已复制");
+      feedback.success("Sentry 地址已复制");
     } catch {
-      showOperationError(undefined, "复制地址失败");
+      feedback.operationError(undefined, "复制地址失败");
     }
   }
 
@@ -92,14 +93,14 @@ export function AdminSeatIntegrationPage() {
     && (!enabled || settings.token_configured);
 
   return (
-    <section className="content-page account-page arco-management-page seat-integration-page">
+    <section className="content-page account-page ui-management-page seat-integration-page">
       <ManagementPageHeader
         title="SeAT 接入"
         loading={loading}
         extra={<Button disabled={busy} onClick={() => void load()}>刷新状态</Button>}
       />
       <ManagementError error={error} />
-      <Card className="arco-management-card" title="运行模式" loading={loading}>
+      <Card className="ui-management-card" title="运行模式" loading={loading}>
         {settings ? (
           <Space direction="vertical" size="medium">
             <Tag color={settings.enabled ? "green" : "gray"}>
@@ -109,7 +110,7 @@ export function AdminSeatIntegrationPage() {
               <Typography.Text>启用 SeAT</Typography.Text>
               <Switch aria-label="启用 SeAT" checked={enabled} disabled={busy || !settings.editable}
                 onChange={setEnabled} />
-              <Button type="primary" disabled={busy || !canSave} loading={saving} onClick={() => void save()}>
+              <Button variant="default" disabled={busy || !canSave} loading={saving} onClick={() => void save()}>
                 保存模式
               </Button>
             </Space>
@@ -128,7 +129,7 @@ export function AdminSeatIntegrationPage() {
         ) : null}
       </Card>
       <Card
-        className="arco-management-card"
+        className="ui-management-card"
         title="服务令牌"
         extra={settings && <Tag color={settings.token_copy_available ? "green" : settings.token_configured ? "orange" : "gray"}>
           {settings.token_copy_available ? "已配置" : settings.token_configured ? "待恢复" : "未配置"}
@@ -136,7 +137,7 @@ export function AdminSeatIntegrationPage() {
       >
         <Space wrap>
           {settings?.token_configured && <Typography.Text code aria-label="已隐藏的服务令牌">••••••••</Typography.Text>}
-          <Button type="primary" disabled={busy || !settings?.editable || !settings.token_copy_available}
+          <Button variant="default" disabled={busy || !settings?.editable || !settings.token_copy_available}
             loading={copying} onClick={() => void copyToken()}>
             复制令牌
           </Button>
@@ -145,10 +146,10 @@ export function AdminSeatIntegrationPage() {
           </Button>
         </Space>
       </Card>
-      <Card className="arco-management-card" title="Sentry 地址">
+      <Card className="ui-management-card" title="Sentry 地址">
         <Space wrap size={4}>
           <Typography.Text code>{sentryOrigin}</Typography.Text>
-          <Button aria-label="复制地址" title="复制地址" type="text" size="mini" icon={<IconCopy />}
+          <Button aria-label="复制地址" title="复制地址" variant="ghost" size="xs" icon={<IconCopy />}
             onClick={() => void copyAddress()} />
         </Space>
       </Card>

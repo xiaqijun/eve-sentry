@@ -13,15 +13,15 @@
 }
 
 .management-skip-link:focus { transform: translateY(0); }
-.management-navigation-trigger.arco-btn { display: none; }
+.management-navigation-trigger.ui-btn { display: none; }
 .management-content:focus { outline: none; }
-.management-topbar .management-live-status.arco-tag {
+.management-topbar .management-live-status.ui-tag {
   color: var(--color-text-2);
   background: var(--color-fill-2);
   white-space: nowrap;
 }
 
-.management-navigation-drawer .arco-drawer-body { padding: 0 16px 20px; }
+.management-navigation-drawer .ui-drawer-body { padding: 0 16px 20px; }
 .management-nav-link:focus-visible,
 .dashboard-shortcuts a:focus-visible {
   outline: 2px solid rgb(var(--primary-6));
@@ -30,10 +30,10 @@
 
 .dashboard-page .dashboard-header { gap: 16px; flex-wrap: wrap; }
 .dashboard-header h1 { margin: 0 0 4px; font-size: 24px; line-height: 1.4; color: var(--color-text-1); }
-.dashboard-page .dashboard-kpis .arco-card-body { padding-block: 16px; }
-.dashboard-page .dashboard-kpis .arco-statistic-title { font-size: 13px; }
-.dashboard-page .arco-table-th { font-size: 12px; }
-.dashboard-page .arco-table-td { font-size: 13px; }
+.dashboard-page .dashboard-kpis .ui-card-body { padding-block: 16px; }
+.dashboard-page .dashboard-kpis .ui-statistic-title { font-size: 13px; }
+.dashboard-page .ui-table-th { font-size: 12px; }
+.dashboard-page .ui-table-td { font-size: 13px; }
 .console-data-link {
   appearance: none; border: 0; padding: 4px 0; background: transparent;
   color: var(--console-link); cursor: pointer; font: inherit;
@@ -45,8 +45,8 @@
 .dashboard-page .table-token-list { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .console-snapshot-time { white-space: nowrap; cursor: help; }
 .dashboard-alert-details summary { cursor: pointer; min-height: 36px; line-height: 36px; color: var(--color-text-1); }
-.dashboard-alert-details summary svg { vertical-align: middle; margin-inline: 4px 8px; }
-.dashboard-page .dashboard-alert-summary .arco-card-body { padding-block: 10px; }
+.dashboard-alert-details summary svg { display: inline-block; vertical-align: middle; margin-inline: 4px 8px; }
+.dashboard-page .dashboard-alert-summary .ui-card-body { padding-block: 10px; }
 .dashboard-alert-details p, .console-node-detail p { color: var(--color-text-2); line-height: 1.6; }
 .console-node-detail dl { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 20px 12px; }
 .console-node-detail dt { color: var(--color-text-2); }
@@ -58,7 +58,7 @@
 .star-map-empty-actions { display: flex; justify-content: center; align-items: center; gap: 16px; pointer-events: auto; }
 .star-map-empty-actions a { color: var(--console-link); text-decoration: underline; }
 .star-map-feedback-banner { position: absolute; top: 96px; left: 16px; right: 16px; z-index: 3; padding: 10px 14px; border: 1px solid var(--color-border-3); background: var(--color-bg-2); color: var(--color-text-1); border-radius: 6px; }
-.dashboard-page .dashboard-header .arco-typography-secondary {
+.dashboard-page .dashboard-header .ui-typography-secondary {
   font-size: 14px;
   font-weight: 400;
   line-height: 1.6;
@@ -87,10 +87,10 @@
   color: var(--color-text-2);
   font-size: 13px;
 }
-.dashboard-page > .arco-alert { margin-bottom: 16px; }
+.dashboard-page > .ui-alert { margin-bottom: 16px; }
 .dashboard-page .dashboard-kpis { padding-bottom: 20px; }
 .dashboard-page .dashboard-card { height: auto; }
-.dashboard-page .dashboard-card .arco-empty {
+.dashboard-page .dashboard-card .ui-empty {
   min-height: 140px;
   padding-block: 24px;
   color: var(--color-text-2);
@@ -100,11 +100,11 @@
   text-align: center;
   color: var(--color-text-2);
 }
-.dashboard-initial-state > .arco-card-body { padding-block: 64px; }
-.dashboard-page .dashboard-card .arco-table-container,
-.dashboard-page .dashboard-card .arco-table-content-inner,
-.dashboard-page .dashboard-card .arco-table-body { overflow-x: auto; }
-.dashboard-page .dashboard-card .arco-table table { max-width: none; }
+.dashboard-initial-state > .ui-card-body { padding-block: 64px; }
+.dashboard-page .dashboard-card .ui-table-container,
+.dashboard-page .dashboard-card .ui-table-content-inner,
+.dashboard-page .dashboard-card .ui-table-body { overflow-x: auto; }
+.dashboard-page .dashboard-card .ui-table table { max-width: none; }
 .dashboard-page .dashboard-secondary-grid { row-gap: 16px; }
 
 .seat-integration-page {
@@ -113,23 +113,23 @@
   gap: 16px;
 }
 
-.seat-integration-page > :not(.arco-management-card),
-.seat-integration-page > .arco-management-card:last-child {
+.seat-integration-page > :not(.ui-management-card),
+.seat-integration-page > .ui-management-card:last-child {
   grid-column: 1 / -1;
 }
 
-.seat-integration-page > .arco-management-card,
+.seat-integration-page > .ui-management-card,
 .seat-integration-page > .content-page-header {
   min-width: 0;
   margin: 0;
 }
 
-.seat-integration-page > .arco-management-card > .arco-card-body {
+.seat-integration-page > .ui-management-card > .ui-card-body {
   padding: 16px;
   overflow-wrap: anywhere;
 }
 
-.seat-integration-page .arco-card-body > .arco-space-vertical {
+.seat-integration-page .ui-card-body > .ui-space-vertical {
   display: flex;
   align-items: stretch;
 }
@@ -142,7 +142,7 @@
 
 @media (max-width: 1000px) {
   .management-shell > .management-sidebar { display: none; }
-  .management-shell .management-navigation-trigger.arco-btn {
+  .management-shell .management-navigation-trigger.ui-btn {
     display: inline-flex;
     width: 44px;
     height: 44px;
@@ -161,17 +161,17 @@
   .console-data-link { display: inline-flex; align-items: center; min-height: 36px; }
   .management-shell .management-topbar { padding: 0 12px; gap: 8px; }
   .management-shell .management-live-status { display: none; }
-  .management-shell .management-topbar .arco-typography { font-size: 16px; }
+  .management-shell .management-topbar .ui-typography { font-size: 16px; }
   .management-shell .management-topbar .global-theme-toggle,
-  .management-shell .management-topbar-user.arco-btn { min-width: 44px; min-height: 44px; padding: 0 8px; }
+  .management-shell .management-topbar-user.ui-btn { min-width: 44px; min-height: 44px; padding: 0 8px; }
   .dashboard-header-actions { width: 100%; justify-content: space-between; gap: 8px; }
-  .dashboard-header-actions > .arco-btn { min-height: 44px; }
+  .dashboard-header-actions > .ui-btn { min-height: 44px; }
   .dashboard-shortcuts { gap: 4px; }
   .dashboard-shortcuts a { padding: 0 6px; }
-  .dashboard-page .dashboard-kpis .arco-card-body { padding: 16px 12px; }
-  .dashboard-page .dashboard-kpis .arco-statistic-title { font-size: 12px; }
-  .dashboard-page .dashboard-card > .arco-card-header { padding: 0 12px; }
-  .dashboard-page .dashboard-card > .arco-card-body { padding: 12px; }
-  .dashboard-page .dashboard-card .arco-card-header-title { min-width: 0; }
+  .dashboard-page .dashboard-kpis .ui-card-body { padding: 16px 12px; }
+  .dashboard-page .dashboard-kpis .ui-statistic-title { font-size: 12px; }
+  .dashboard-page .dashboard-card > .ui-card-header { padding: 0 12px; }
+  .dashboard-page .dashboard-card > .ui-card-body { padding: 12px; }
+  .dashboard-page .dashboard-card .ui-card-header-title { min-width: 0; }
   .dashboard-freshness { gap: 6px 10px; }
 }

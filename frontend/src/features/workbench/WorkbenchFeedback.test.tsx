@@ -1,3 +1,4 @@
+import { ToastProvider } from "@/components/ui";
 import "@testing-library/jest-dom/vitest";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
@@ -38,7 +39,7 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); query.clear(); });
 async function flush() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); }
 async function open(path = "/") {
-  await act(async () => root.render(<MemoryRouter initialEntries={[path]}><QueryClientProvider client={query}><WorkbenchPage /></QueryClientProvider></MemoryRouter>));
+  await act(async () => root.render(<ToastProvider><MemoryRouter initialEntries={[path]}><QueryClientProvider client={query}><WorkbenchPage /></QueryClientProvider></MemoryRouter></ToastProvider>));
   await flush();
 }
 describe("star map feedback and location", () => {

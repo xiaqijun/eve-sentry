@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Avatar, Button, Drawer, Empty, List, Tag, Tooltip } from "@arco-design/web-react";
+import { Avatar, Button, Drawer, Empty, Tag, Tooltip } from "@/components/ui";
 import { ExternalLink } from "lucide-react";
 import ForceGraph2D, {
   type ForceGraphMethods,
@@ -567,7 +567,7 @@ export function TacticalStarMap({
   const { theme } = useTheme();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const graphRef =
-    useRef<ForceGraphMethods<TacticalGraphNode, TacticalGraphLink>>();
+    useRef<ForceGraphMethods<TacticalGraphNode, TacticalGraphLink> | undefined>(undefined);
   const [size, setSize] = useState({ height: 560, width: 900 });
   const [expandedHostileSystemId, setExpandedHostileSystemId] = useState<number | null>(null);
   const [hostileDetailSystemId, setHostileDetailSystemId] = useState<number | null>(null);
@@ -792,9 +792,9 @@ export function TacticalStarMap({
         title={selectedHostileSummary
           ? `${selectedHostileSummary.name} · 敌对详情`
           : "敌对详情"}
-        visible={Boolean(selectedHostileSummary)}
+        open={Boolean(selectedHostileSummary)}
         width={440}
-        onCancel={closeHostileDetail}
+        onClose={closeHostileDetail}
       >
         <div className="hostile-detail-summary">
           <span>当前侦测</span>
@@ -802,12 +802,9 @@ export function TacticalStarMap({
           <Tag color="red">实时态势</Tag>
         </div>
         {selectedHostiles.length > 0 ? (
-          <List
-            className="hostile-detail-list"
-            dataSource={selectedHostiles}
-            render={(intel) => {
-              return (
-                <List.Item key={`${intel.characterId ?? "unknown"}:${intel.name}`}>
+          <ul className="hostile-detail-list">
+            {selectedHostiles.map((intel) => (
+                <li className="ui-list-item" key={`${intel.characterId ?? "unknown"}:${intel.name}`}>
                   <div className="hostile-detail-item">
                     <Avatar size={44}>
                       {portraitUrl(intel.characterId) ? (
@@ -826,24 +823,18 @@ export function TacticalStarMap({
                     </div>
                     {intel.characterId !== null ? (
                       <Tooltip content="在 zKillboard 查看战报">
-                        <Button
-                          aria-label={`查看 ${intel.name} 的 zKillboard 战报`}
-                          className="hostile-detail-zkill"
-                          href={`https://zkillboard.com/character/${intel.characterId}/`}
-                          icon={<ExternalLink size={14} />}
-                          rel="noopener noreferrer"
-                          shape="square"
-                          size="small"
-                          target="_blank"
-                          type="outline"
-                        />
+                        <Button asChild size="sm" variant="outline" className="hostile-detail-zkill">
+                          <a aria-label={`查看 ${intel.name} 的 zKillboard 战报`}
+                            href={`https://zkillboard.com/character/${intel.characterId}/`} rel="noopener noreferrer" target="_blank">
+                            <ExternalLink size={14} aria-hidden="true" />
+                          </a>
+                        </Button>
                       </Tooltip>
                     ) : null}
                   </div>
-                </List.Item>
-              );
-            }}
-          />
+                </li>
+            ))}
+          </ul>
         ) : (
           <Empty description="已发现敌对信号，尚未收到可用人员名单" />
         )}

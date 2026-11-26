@@ -1,3 +1,4 @@
+import { ToastProvider } from "@/components/ui";
 import "@testing-library/jest-dom/vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -66,7 +67,7 @@ describe("split management pages", () => {
 
   const render = async (component: React.ReactNode) => {
     await act(async () => {
-      root.render(component);
+      root.render(<ToastProvider>{component}</ToastProvider>);
       await Promise.resolve();
     });
   };
@@ -91,11 +92,13 @@ describe("split management pages", () => {
     expect(viewScout).toBeDefined();
     await act(async () => viewScout?.click());
 
-    const actionButton = container.querySelector('[aria-label="用户操作"]') as HTMLButtonElement | null;
-    await act(async () => actionButton?.click());
-    expect(container).toHaveTextContent("删除用户");
+    const actionButton = document.querySelector('[aria-label="用户操作"]');
+    expect(actionButton).toBeInTheDocument();
+    await act(async () => actionButton?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    const actionMenu = document.querySelector('[role="menu"][aria-label="用户操作菜单"]');
+    expect(actionMenu).toHaveTextContent("删除用户");
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    const deleteButton = Array.from(container.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+    const deleteButton = Array.from(actionMenu!.querySelectorAll<HTMLElement>('[role="menuitem"]'))
       .find((item) => item.textContent?.includes("删除用户"));
     expect(deleteButton).toBeDefined();
     await act(async () => {
@@ -116,14 +119,15 @@ describe("split management pages", () => {
       .find((button) => button.getAttribute("aria-label") === "查看 侦察员");
     await act(async () => viewScout?.click());
 
-    const header = container.querySelector(".management-drawer-header-content");
-    const body = container.querySelector(".management-drawer-body");
+    const drawer = document.querySelector('[role="dialog"][aria-label="用户详情"]');
+    const header = drawer?.querySelector(".management-drawer-header-content");
+    const body = drawer?.querySelector(".management-drawer-body");
     expect(header?.querySelector('[aria-label="用户操作"]')).toBeInTheDocument();
     expect(body).not.toHaveTextContent("禁用用户");
 
     const actionButton = header?.querySelector('[aria-label="用户操作"]') as HTMLButtonElement | null;
-    await act(async () => actionButton?.click());
-    expect(container.querySelector('[aria-label="用户操作菜单"]')).toHaveTextContent("禁用用户");
+    await act(async () => actionButton?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    expect(document.querySelector('[role="menu"][aria-label="用户操作菜单"]')).toHaveTextContent("禁用用户");
     expect(body).not.toHaveTextContent("禁用用户");
   });
 
@@ -141,11 +145,12 @@ describe("split management pages", () => {
     const viewMember = Array.from(container.querySelectorAll("button"))
       .find((button) => button.getAttribute("aria-label") === "查看 侦察员");
     await act(async () => viewMember?.click());
-    const actionButton = container.querySelector(
+    const actionButton = document.querySelector(
       '[aria-label="用户操作"]',
     ) as HTMLButtonElement | null;
-    await act(async () => actionButton?.click());
-    expect(container.querySelector('[role="menuitem"]'))
+    expect(actionButton).toBeInTheDocument();
+    await act(async () => actionButton?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    expect(document.querySelector('[role="menu"][aria-label="用户操作菜单"]'))
       .not.toHaveTextContent("创建设备密钥");
   });
 

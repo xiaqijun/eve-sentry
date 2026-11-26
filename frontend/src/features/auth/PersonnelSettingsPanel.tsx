@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Divider, Message, Radio, Space, Switch, Tag, Typography } from "@arco-design/web-react";
-import { showOperationError } from "../../components/operationFeedback";
+import { Alert, Button, Divider, Radio, Space, Switch, Tag, Typography } from "@/components/ui";
+import { useOperationFeedback } from "../../components/operationFeedback";
 import { OrganizationShadowSummary } from "./OrganizationShadowSummary";
 import {
   fetchPersonnelSettings, updatePersonnelSettings,
@@ -15,6 +15,7 @@ const MODE_HELP: Record<PersonnelMode, string> = {
 };
 
 export function PersonnelSettingsPanel() {
+  const feedback = useOperationFeedback();
   const [snapshot, setSnapshot] = useState<PersonnelSettingsSnapshot | null>(null);
   const [draft, setDraft] = useState<PersonnelValues | null>(null);
   const [loading, setLoading] = useState(true);
@@ -57,12 +58,12 @@ export function PersonnelSettingsPanel() {
       setSnapshot(next);
       setDraft({ ...next.values });
       if (next.apply_required || next.restart_required) {
-        Message.warning({ content: "配置已保存但尚未生效，请重新读取并重试应用。", duration: 5000 });
+        feedback.warning("配置已保存但尚未生效，请重新读取并重试应用。");
       } else {
-        Message.success(next.effective.mode === "off" ? "配置已保存，人员档案已关闭" : "配置已保存并生效");
+        feedback.success(next.effective.mode === "off" ? "配置已保存，人员档案已关闭" : "配置已保存并生效");
       }
     } catch (reason) {
-      if (mounted.current) showOperationError(reason, "保存失败，请重新读取确认实际配置。");
+      if (mounted.current) feedback.operationError(reason, "保存失败，请重新读取确认实际配置。");
     } finally {
       busy.current = false;
       if (mounted.current) setSaving(false);
@@ -149,7 +150,7 @@ export function PersonnelSettingsPanel() {
           </div>
           <Divider />
           <Space wrap>
-            <Button type="primary" htmlType="submit" loading={saving} disabled={disabled || (!dirty && !pending)}>
+            <Button variant="default" type="submit" loading={saving} disabled={disabled || (!dirty && !pending)}>
               {pending && !dirty ? "重试应用" : "保存配置"}
             </Button>
             <Button disabled={loading || saving} onClick={() => { setDraft({ ...snapshot.values }); setError(""); }}>撤销未保存修改</Button>

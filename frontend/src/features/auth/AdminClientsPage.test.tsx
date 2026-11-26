@@ -157,7 +157,8 @@ describe("AdminClientsPage", () => {
     const keyTab = Array.from(container.querySelectorAll<HTMLElement>('[role="tab"]'))
       .find((tab) => tab.textContent?.includes("密钥使用"));
 
-    await act(async () => keyTab?.click());
+    expect(keyTab).toBeDefined();
+    await act(async () => keyTab?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
 
     expect(container).toHaveTextContent("eve_alpha");
     expect(container).toHaveTextContent("2");
@@ -200,7 +201,7 @@ describe("AdminClientsPage", () => {
     expect(listAdminClientsMock).toHaveBeenCalledTimes(2);
     const refreshButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("刷新客户端"));
-    expect(refreshButton).not.toHaveClass("arco-btn-loading");
+    expect(refreshButton).not.toHaveClass("ui-btn-loading");
     expect(drawer).toHaveTextContent("ocr_snapshot:3");
 
     await act(async () => {
@@ -230,7 +231,7 @@ describe("AdminClientsPage", () => {
     });
     await renderPage();
 
-    const secondPage = Array.from(container.querySelectorAll<HTMLElement>(".arco-pagination-item"))
+    const secondPage = Array.from(container.querySelectorAll<HTMLElement>(".ui-pagination-item"))
       .find((item) => item.textContent?.trim() === "2");
     expect(secondPage).toBeDefined();
     expect(container).toHaveTextContent("巡逻客户端 01");
@@ -247,7 +248,7 @@ describe("AdminClientsPage", () => {
       searchInput?.dispatchEvent(new Event("input", { bubbles: true }));
     });
 
-    expect(container.querySelector(".arco-pagination-item-active")).toHaveTextContent("1");
+    expect(container.querySelector(".ui-pagination-item-active")).toHaveTextContent("1");
     expect(container).toHaveTextContent("巡逻客户端 01");
     expect(container).not.toHaveTextContent("巡逻客户端 21");
   });
