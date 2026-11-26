@@ -11,7 +11,9 @@ const api = vi.hoisted(() => ({
   updateSeatIntegration: vi.fn(),
   saveSeatServiceToken: vi.fn(),
 }));
+const clipboard = vi.hoisted(() => vi.fn());
 vi.mock("./api", () => api);
+vi.mock("@arco-design/web-react/es/_util/clipboard", () => ({ default: clipboard }));
 
 const standalone = {
   enabled: false,
@@ -36,6 +38,7 @@ describe("SeAT integration page", () => {
     api.fetchSeatIntegration.mockReset();
     api.updateSeatIntegration.mockReset();
     api.saveSeatServiceToken.mockReset();
+    clipboard.mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(async () => {
@@ -50,7 +53,7 @@ describe("SeAT integration page", () => {
     return { toggle, save };
   }
 
-  it("shows setup steps and saves the selected mode with the loaded revision", async () => {
+  it("shows the Sentry address and saves the selected mode with the loaded revision", async () => {
     api.fetchSeatIntegration.mockResolvedValue(standalone);
     api.updateSeatIntegration.mockResolvedValue({ ...standalone, enabled: true, local_issuance: false, revision: 3 });
     const { toggle, save } = await render();
@@ -64,29 +67,38 @@ describe("SeAT integration page", () => {
     expect(element.querySelector('[role="status"]')).toHaveTextContent("已切换至 SeAT 版");
   });
 
-  it("generates a service token and displays it once after saving", async () => {
+  it("copies only the token just returned by an update", async () => {
     const generated = "f".repeat(64);
-    api.fetchSeatIntegration.mockResolvedValue({ ...standalone, token_configured: false });
-    api.saveSeatServiceToken.mockResolvedValue({ settings: standalone, service_token: generated });
+    api.fetchSeatIntegration.mockResolvedValue(standalone);
+    api.saveSeatServiceToken.mockResolvedValue({
+      settings: { ...standalone, revision: 3 },
+      service_token: generated,
+    });
     await render();
-    expect(element.querySelector("details")).not.toHaveAttribute("open");
-    expect(element.querySelector('[aria-label="复制令牌"]')).toBeNull();
-    const button = Array.from(element.querySelectorAll("button")).find((item) => item.textContent === "生成并保存新令牌")!;
-    await act(async () => button.click());
-    expect(api.saveSeatServiceToken).toHaveBeenCalledWith(2, undefined);
-    expect(element).toHaveTextContent(generated);
-    expect(element.querySelector('[aria-label="复制令牌"]')).toHaveTextContent("复制令牌");
-    const hide = Array.from(element.querySelectorAll("button")).find((item) => item.textContent === "隐藏令牌")!;
-    await act(async () => hide.click());
+    const buttons = Array.from(element.querySelectorAll("button"));
+    const copy = buttons.find((button) => button.textContent === "复制令牌")!;
+    const update = buttons.find((button) => button.textContent === "更新令牌")!;
+    const refresh = buttons.find((button) => button.textContent === "刷新状态")!;
+    expect(update.closest(".arco-card")?.querySelectorAll("button")).toHaveLength(2);
+    expect(element).not.toHaveTextContent("导入现有令牌");
+    expect(copy).toBeDisabled();
+    await act(async () => update.click());
+    expect(api.saveSeatServiceToken).toHaveBeenCalledWith(2);
+    expect(copy).toBeEnabled();
     expect(element).not.toHaveTextContent(generated);
-    expect(element.querySelector('[aria-label="复制令牌"]')).toBeNull();
+    await act(async () => copy.click());
+    expect(clipboard).toHaveBeenCalledWith(generated);
+    expect(element.querySelector('[role="status"]')).toHaveTextContent("令牌已复制");
+    expect(api.saveSeatServiceToken).toHaveBeenCalledTimes(1);
+    await act(async () => refresh.click());
+    expect(copy).toBeDisabled();
   });
 
   it("shows the missing token and prevents enabling before setup", async () => {
     api.fetchSeatIntegration.mockResolvedValue({ ...standalone, token_configured: false });
     const { toggle, save } = await render();
     await act(async () => toggle.click());
-    expect(element).toHaveTextContent("请先生成或保存服务令牌");
+    expect(element).toHaveTextContent("请先更新令牌");
     expect(save).toBeDisabled();
   });
 });
