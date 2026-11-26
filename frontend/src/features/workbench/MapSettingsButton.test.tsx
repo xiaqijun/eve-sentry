@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+import { Message } from "@arco-design/web-react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -18,7 +19,11 @@ beforeEach(() => {
   query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   api.fetchMe.mockResolvedValue({ role: "admin" }); api.apiRequest.mockResolvedValue({ settings });
 });
-afterEach(async () => { await act(async () => root.unmount()); container.remove(); query.clear(); });
+afterEach(async () => {
+  await act(async () => { Message.clear(); root.unmount(); });
+  container.remove();
+  query.clear();
+});
 async function render() {
   await act(async () => root.render(<QueryClientProvider client={query}><MapSettingsButton /></QueryClientProvider>));
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -41,7 +46,7 @@ describe("map region settings", () => {
   it("does not close the dialog when save fails", async () => {
     await render(); await click("监控范围");
     api.apiRequest.mockRejectedValueOnce(new Error("配置已被修改")); await click("保存并应用");
-    expect(document.body).toHaveTextContent("配置已被修改");
+    expect(document.querySelector('.arco-message-error[role="alert"]')).toHaveTextContent("配置已被修改");
     expect(document.body).toHaveTextContent("重新加载配置");
   });
   it("disables saving an empty effective scope", async () => {

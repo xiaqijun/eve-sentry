@@ -30,6 +30,7 @@ import {
   ManagementSummary,
   UserIdentity,
 } from "../../components/ManagementPage";
+import { showOperationError } from "../../components/operationFeedback";
 import {
   createUser,
   deleteKey,
@@ -105,7 +106,7 @@ export function AdminUsersPage() {
       await load();
       return true;
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "操作失败");
+      showOperationError(reason, "操作失败");
       return false;
     }
   };
@@ -150,7 +151,7 @@ export function AdminUsersPage() {
       setSelectedUserId("");
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "删除用户失败");
+      showOperationError(reason, "删除用户失败");
     }
   };
 

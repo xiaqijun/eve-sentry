@@ -11,6 +11,7 @@ import { ThemeProvider } from "./features/shell/ThemeContext";
 import "@arco-design/web-react/dist/css/arco.css";
 import "./styles.css";
 import "./console-usability.css";
+import "./console-theme.css";
 
 const queryClient = new QueryClient();
 

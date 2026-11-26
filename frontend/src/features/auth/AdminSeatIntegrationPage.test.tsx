@@ -115,6 +115,22 @@ describe("SeAT integration page", () => {
     expect(copy).toBeEnabled();
   });
 
+  it("confirms an address copy only after the clipboard write succeeds", async () => {
+    api.fetchSeatIntegration.mockResolvedValue(standalone);
+    clipboard.mockRejectedValueOnce(new DOMException("Clipboard unavailable", "NotAllowedError"));
+    await render();
+    const copyAddress = element.querySelector<HTMLButtonElement>('[aria-label="复制地址"]')!;
+    const successMessages = () => Array.from(document.querySelectorAll(".arco-message-success"), (toast) => toast.textContent);
+    await act(async () => copyAddress.click());
+    expect(document.querySelector('.arco-message-error[role="alert"]')).toHaveTextContent("复制地址失败");
+    expect(successMessages()).not.toContain("Sentry 地址已复制");
+    await act(async () => copyAddress.click());
+    expect(clipboard).toHaveBeenLastCalledWith(window.location.origin);
+    expect(successMessages()).toContain("Sentry 地址已复制");
+    expect(element).not.toHaveTextContent("Sentry 地址已复制");
+    expect(api.fetchCurrentSeatServiceToken).not.toHaveBeenCalled();
+  });
+
   it("shows the missing token and prevents enabling before setup", async () => {
     api.fetchSeatIntegration.mockResolvedValue({ ...standalone, token_configured: false, token_copy_available: false });
     const { toggle, save } = await render();

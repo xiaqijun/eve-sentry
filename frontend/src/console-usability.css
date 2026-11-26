@@ -1,9 +1,4 @@
 /* Console navigation and data feedback, shared by light and dark themes. */
-.management-shell, .arco-drawer { --console-link: #176b50; }
-body[data-theme="dark"] .management-shell,
-body[data-theme="dark"] .arco-drawer { --console-link: #8bd7ba; }
-body[data-theme="dark"] .dashboard-page,
-body[data-theme="dark"] .management-navigation-drawer { --console-link: #8bd7ba; }
 .management-skip-link {
   position: fixed;
   z-index: 2000;
@@ -27,26 +22,6 @@ body[data-theme="dark"] .management-navigation-drawer { --console-link: #8bd7ba;
 }
 
 .management-navigation-drawer .arco-drawer-body { padding: 0 16px 20px; }
-.management-navigation-drawer .management-brand { display: flex; justify-content: flex-start; gap: 10px; }
-.management-navigation-drawer .management-brand > div { display: block; }
-.management-navigation-drawer .management-brand strong { display: block; color: var(--color-text-1); }
-.management-navigation-drawer .arco-management-menu .management-nav-link {
-  justify-content: flex-start;
-  min-height: 44px;
-  padding: 0 12px;
-  color: var(--color-text-2);
-}
-.management-navigation-drawer .arco-management-menu .management-nav-link.active {
-  color: var(--console-link);
-  background: var(--color-primary-light-1);
-}
-.management-navigation-drawer .arco-management-menu .management-nav-link span,
-.management-navigation-drawer .arco-management-menu .arco-menu-group-title,
-.management-navigation-drawer .arco-management-menu .arco-menu-item-group-title {
-  display: block;
-}
-.management-navigation-drawer .arco-management-menu .arco-menu-item { height: 44px; }
-.management-navigation-drawer .management-nav-link svg { flex-shrink: 0; }
 .management-nav-link:focus-visible,
 .dashboard-shortcuts a:focus-visible {
   outline: 2px solid rgb(var(--primary-6));
@@ -55,9 +30,6 @@ body[data-theme="dark"] .management-navigation-drawer { --console-link: #8bd7ba;
 
 .dashboard-page .dashboard-header { gap: 16px; flex-wrap: wrap; }
 .dashboard-header h1 { margin: 0 0 4px; font-size: 24px; line-height: 1.4; color: var(--color-text-1); }
-.management-map-title { margin: 0; font-size: 18px; line-height: 1.4; color: var(--color-text-1); }
-.management-shell .management-breadcrumb { display: block; font-size: 13px; }
-.management-shell .management-breadcrumb .arco-breadcrumb-item:last-child { color: var(--color-text-1); }
 .dashboard-page .dashboard-kpis .arco-card-body { padding-block: 16px; }
 .dashboard-page .dashboard-kpis .arco-statistic-title { font-size: 13px; }
 .dashboard-page .arco-table-th { font-size: 12px; }
@@ -181,7 +153,6 @@ body[data-theme="dark"] .management-navigation-drawer { --console-link: #8bd7ba;
     background: var(--color-fill-2);
   }
   .management-shell .management-topbar { gap: 12px; }
-  .management-shell .management-page-context { flex: 1; min-width: 0; }
   .management-shell .management-topbar-actions { gap: 8px; flex-shrink: 0; }
 }
 
@@ -193,7 +164,6 @@ body[data-theme="dark"] .management-navigation-drawer { --console-link: #8bd7ba;
   .management-shell .management-topbar .arco-typography { font-size: 16px; }
   .management-shell .management-topbar .global-theme-toggle,
   .management-shell .management-topbar-user.arco-btn { min-width: 44px; min-height: 44px; padding: 0 8px; }
-  .management-shell .management-topbar .global-theme-toggle span { display: none; }
   .dashboard-header-actions { width: 100%; justify-content: space-between; gap: 8px; }
   .dashboard-header-actions > .arco-btn { min-height: 44px; }
   .dashboard-shortcuts { gap: 4px; }

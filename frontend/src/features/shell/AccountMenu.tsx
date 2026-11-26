@@ -1,8 +1,9 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Avatar, Button, Card, Form, Input, Space, Tag, Typography } from "@arco-design/web-react";
+import { Avatar, Button, Card, Form, Input, Message, Space, Tag, Typography } from "@arco-design/web-react";
 import { ChevronDown, LockKeyhole, LogOut, ShieldCheck, UserRound } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
+import { showOperationError } from "../../components/operationFeedback";
 import { changePassword } from "../auth/api";
 import { useAuth } from "../auth/AuthContext";
 
@@ -13,8 +14,6 @@ export function AccountMenu() {
   const [open, setOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -38,16 +37,14 @@ export function AccountMenu() {
   const updatePassword = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setBusy(true);
-    setError("");
-    setMessage("");
     try {
       await changePassword(currentPassword, newPassword);
       setCurrentPassword("");
       setNewPassword("");
-      setMessage("密码已更新");
-      await refresh();
+      Message.success("密码已更新");
+      await refresh().catch((reason) => showOperationError(reason, "账号状态刷新失败"));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "密码更新失败");
+      showOperationError(reason, "密码更新失败");
     } finally {
       setBusy(false);
     }
@@ -55,12 +52,11 @@ export function AccountMenu() {
 
   const signOut = async () => {
     setBusy(true);
-    setError("");
     try {
       await logout();
       navigate("/login", { replace: true });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "退出登录失败");
+      showOperationError(reason, "退出登录失败");
       setBusy(false);
     }
   };
@@ -99,8 +95,6 @@ export function AccountMenu() {
             <div><dt>登录方式</dt><dd>账号密码</dd></div>
           </dl>
 
-          {error ? <div className="management-account-message error" role="alert">{error}</div> : null}
-          {message ? <div className="management-account-message">{message}</div> : null}
 
           {user.role === "admin" ? (
             <form className="management-account-password" onSubmit={updatePassword}>

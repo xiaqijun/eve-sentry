@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button, Card, Message, Space, Switch, Tag, Typography } from "@arco-design/web-react";
+import { IconCopy } from "@arco-design/web-react/icon";
 import copyToClipboard from "@arco-design/web-react/es/_util/clipboard";
 
 import { ManagementError, ManagementPageHeader } from "../../components/ManagementPage";
+import { showOperationError } from "../../components/operationFeedback";
 import { apiPath, fetchCurrentSeatServiceToken, fetchSeatIntegration, saveSeatServiceToken, updateSeatIntegration } from "./api";
 import type { SeatIntegrationSettings } from "./types";
 
@@ -41,7 +43,7 @@ export function AdminSeatIntegrationPage() {
       setEnabled(next.enabled);
       Message.success(next.enabled ? "已切换至 SeAT 版" : "已切换至独立版");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "保存 SeAT 设置失败");
+      showOperationError(reason, "保存 SeAT 设置失败");
     } finally {
       setSaving(false);
     }
@@ -55,7 +57,7 @@ export function AdminSeatIntegrationPage() {
       setSettings(await saveSeatServiceToken(settings.revision));
       Message.success("令牌已更新");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "保存服务令牌失败");
+      showOperationError(reason, "保存服务令牌失败");
     } finally {
       setSaving(false);
     }
@@ -69,9 +71,18 @@ export function AdminSeatIntegrationPage() {
       await copyToClipboard(token);
       Message.success("令牌已复制");
     } catch (reason) {
-      setError(reason instanceof Error && !(reason instanceof DOMException) ? reason.message : "复制令牌失败");
+      showOperationError(reason instanceof DOMException ? undefined : reason, "复制令牌失败");
     } finally {
       setCopying(false);
+    }
+  }
+
+  async function copyAddress() {
+    try {
+      await copyToClipboard(sentryOrigin);
+      Message.success("Sentry 地址已复制");
+    } catch {
+      showOperationError(undefined, "复制地址失败");
     }
   }
 
@@ -135,9 +146,11 @@ export function AdminSeatIntegrationPage() {
         </Space>
       </Card>
       <Card className="arco-management-card" title="Sentry 地址">
-        <Typography.Text code copyable={{ tooltips: ["复制地址", "已复制"] }}>
-          {sentryOrigin}
-        </Typography.Text>
+        <Space wrap size={4}>
+          <Typography.Text code>{sentryOrigin}</Typography.Text>
+          <Button aria-label="复制地址" title="复制地址" type="text" size="mini" icon={<IconCopy />}
+            onClick={() => void copyAddress()} />
+        </Space>
       </Card>
     </section>
   );
