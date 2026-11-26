@@ -79,10 +79,20 @@ def preflight(component, mode, values):
     sys.path.insert(0, "/opt/eve-sentry")
     from app.esi.transport import TransportEsiClient, configured_connections
     from app.esi.remote import RemoteEsiClient
-    url = values.get("EVE_SENTRY_SERVER_ESI_GATEWAY_URL", "")
-    token = values.get("EVE_SENTRY_SERVER_ESI_GATEWAY_TOKEN", "")
+    from app.server.__main__ import build_arg_parser
+    from app.server.esi_gateway_settings import EsiGatewaySettings
+    from scripts.run_server import build_server_argv
+
+    args = build_arg_parser().parse_args(build_server_argv(values))
+    startup_url = args.esi_gateway_url
+    settings = EsiGatewaySettings(args, environment={**values, "EVE_SENTRY_ESI_TRANSPORT": mode})
+    settings.load(args)
+    url, token = args.esi_gateway_url, args.esi_gateway_token
+    if settings.values.revision != "environment" and url != startup_url.strip().rstrip("/"):
+        raise RuntimeError("effective ESI gateway differs from this rollout's deployment target")
     client = (TransportEsiClient(configured_connections("relay", url, token), timeout=15)
               if mode == "relay" else RemoteEsiClient(url, gateway_token=token, timeout=15))
+    settings.bind(client)
     # One normal public query; no cache bypass or alternate exit retry.
     if client.get_system(30000142).get("name") != "Jita":
         raise RuntimeError("ESI route probe failed")

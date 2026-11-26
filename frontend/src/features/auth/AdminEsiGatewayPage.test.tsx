@@ -10,12 +10,14 @@ const fetchEsiGatewayMock = vi.hoisted(() => vi.fn());
 const fetchEsiStatusMock = vi.hoisted(() => vi.fn());
 const fetchEsiLoginStatusMock = vi.hoisted(() => vi.fn());
 const startEsiLoginMock = vi.hoisted(() => vi.fn());
+const apiRequestMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./api", () => ({
   fetchEsiGateway: fetchEsiGatewayMock,
   fetchEsiStatus: fetchEsiStatusMock,
   fetchEsiLoginStatus: fetchEsiLoginStatusMock,
   startEsiLogin: startEsiLoginMock,
+  apiRequest: apiRequestMock,
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -72,6 +74,20 @@ describe("AdminEsiGatewayPage", () => {
     fetchEsiStatusMock.mockReset();
     fetchEsiLoginStatusMock.mockReset();
     startEsiLoginMock.mockReset();
+    apiRequestMock.mockReset().mockImplementation(async (path: string) => {
+      if (path.endsWith("/personnel-settings")) {
+        const values = { mode: "off", background_refresh: true, history_backfill: true, background_max: 4 };
+        return { settings: { revision: "environment", values, effective: values, available: true } };
+      }
+      if (path.endsWith("/test")) return { ok: true };
+      return { settings: {
+        url: "http://10.233.53.17:8787",
+        token_configured: true,
+        revision: "environment",
+        allowed_urls: ["http://10.233.53.17:8787"],
+        editable: true,
+      } };
+    });
     fetchEsiStatusMock.mockResolvedValue({
       enabled: false,
       authenticated: false,
@@ -98,6 +114,8 @@ describe("AdminEsiGatewayPage", () => {
     await renderPage();
 
     expect(container).toHaveTextContent("网关在线");
+    expect(container).toHaveTextContent("ESI 网关接入");
+    expect(container).toHaveTextContent("http://10.233.53.17:8787");
     expect(container).toHaveTextContent("12");
     expect(container).toHaveTextContent("67%");
     expect(container).toHaveTextContent("114 名单命中率");
@@ -106,6 +124,32 @@ describe("AdminEsiGatewayPage", () => {
     expect(container).toHaveTextContent("eve-sentry-esi-gateway");
     expect(container).toHaveTextContent("get_system");
     expect(container).toHaveTextContent("P95 (ms)");
+  });
+
+  it("tests the active gateway without submitting settings or a token", async () => {
+    fetchEsiGatewayMock.mockResolvedValue(snapshot);
+    await renderPage();
+    const testButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "测试连接");
+    expect(testButton).toBeDefined();
+    await act(async () => testButton?.click());
+    expect(apiRequestMock).toHaveBeenLastCalledWith("/api/v1/admin/esi-gateway/test", { method: "POST" });
+    expect(container).toHaveTextContent("连接与鉴权通过");
+  });
+
+  it("prefills the active address and leaves the token blank when editing", async () => {
+    fetchEsiGatewayMock.mockResolvedValue(snapshot);
+    await renderPage();
+    const edit = [...container.querySelectorAll("button")].find((button) => button.textContent === "编辑设置");
+    expect(edit).toBeDefined();
+    await act(async () => edit?.click());
+    expect(container.querySelector("input[type=password]")).toHaveValue("");
+    const form = container.querySelector("input[type=password]")?.closest("form");
+    expect(form).not.toBeNull();
+    await act(async () => form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(apiRequestMock).toHaveBeenLastCalledWith("/api/v1/admin/esi-gateway/settings", {
+      method: "POST",
+      body: JSON.stringify({ url: "http://10.233.53.17:8787", revision: "environment" }),
+    });
   });
 
   it("recognizes relay and does not display legacy zero cache or latency", async () => {

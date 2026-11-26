@@ -54,6 +54,19 @@ def test_pool_reuses_fully_read_responses_and_preserves_304(monkeypatch):
     assert len(created) == 1 and not connection.closed
 
 
+def test_relay_change_retires_pooled_connections(monkeypatch):
+    pool = EsiConnections(relay_host="10.1.2.3", relay_token="a" * 32, size=1, rate=100000)
+    old = Connection([Response(b'{"name":"old"}')])
+    new = Connection([Response(b'{"name":"new"}')])
+    connections = iter([old, new])
+    monkeypatch.setattr(pool, "_connection", lambda timeout: next(connections))
+    client = TransportEsiClient(pool)
+    assert client.get_character(1) == {"name": "old"}
+    pool.set_relay(("10.1.2.4", 8787, "b" * 32))
+    assert client.get_character(1) == {"name": "new"}
+    assert old.closed and not new.closed
+
+
 def test_throttle_blocks_all_subsequent_requests_without_exit_fallback(monkeypatch):
     pool = EsiConnections(size=1)
     connection = Connection([Response(status=429, **{"Retry-After": "900"})])

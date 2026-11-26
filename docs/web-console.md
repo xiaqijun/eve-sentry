@@ -35,7 +35,7 @@ Relay 展示连接和当前隧道计数，不把旧 JSON 缓存的零计数当�
 | `/account/keys` | 设备密钥列表 | 登录用户 |
 | `/admin/users` | 用户管理 | 管理员 |
 | `/admin/clients` | 客户端管理 | 管理员 |
-| `/admin/esi-gateway` | ESI 网关运行观测 | 管理员 |
+| `/admin/esi-gateway` | ESI 网关接入配置、连接测试和运行观测 | 管理员 |
 | `/login` | 管理员和普通用户平台账号密码登录 | 未登录用户 |
 
 `/account` 和兼容路由 `/account/security` 重定向到 `/account/keys`，`/admin` 重定向到

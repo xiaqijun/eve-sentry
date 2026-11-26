@@ -38,6 +38,8 @@ whitelist.json
 region_prefs.json
 intel_config.json
 *.monitoring.json
+*.esi-gateway.json
+*.esi-gateway.json.*
 intel_reports.json
 intel.sqlite3
 channel_offsets.json

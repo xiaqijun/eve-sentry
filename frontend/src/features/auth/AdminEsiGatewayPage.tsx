@@ -22,6 +22,7 @@ import { fetchEsiGateway } from "./api";
 import type { EsiGatewayHealth, EsiGatewaySnapshot } from "./types";
 import { PersonnelSettingsPanel } from "./PersonnelSettingsPanel";
 import { EsiAuthPanel } from "./EsiAuthPanel";
+import { EsiGatewaySettingsPanel } from "./EsiGatewaySettingsPanel";
 
 const EMPTY_SNAPSHOT: EsiGatewaySnapshot = {
   gateway: { configured: false, reachable: false },
@@ -181,6 +182,7 @@ export function AdminEsiGatewayPage() {
       />
       <ManagementError error={error} />
 
+      <EsiGatewaySettingsPanel onSaved={() => void load()} />
       <EsiAuthPanel />
 
       <ManagementSummary ariaLabel="ESI 网关摘要" items={[
@@ -282,7 +284,6 @@ export function AdminEsiGatewayPage() {
                   column={1}
                   data={relayMode ? [
                     { label: "传输模式", value: "Relay TLS 转发" },
-                    { label: "地址", value: snapshot.gateway.url || "未配置" },
                     { label: "运行时间", value: health.uptime_seconds === undefined ? "暂无" : formatUptime(health.uptime_seconds) },
                     { label: "当前隧道", value: health.relay?.active ?? "暂无" },
                     { label: "已建立连接", value: health.relay?.connected ?? "暂无" },
@@ -292,7 +293,6 @@ export function AdminEsiGatewayPage() {
                   ] : [
                     { label: "服务", value: health.service || "eve-sentry-esi-gateway" },
                     { label: "版本", value: health.version || "未知" },
-                    { label: "地址", value: snapshot.gateway.url || "未配置" },
                     { label: "运行时间", value: formatUptime(health.uptime_seconds) },
                     { label: "近 60 秒请求率", value: `${requestRate.toFixed(2)} req/s` },
                     { label: "最后检查", value: formatCheckedAt(snapshot.gateway.checked_at) },
