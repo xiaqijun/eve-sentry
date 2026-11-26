@@ -135,57 +135,35 @@ body[data-theme="dark"] .management-navigation-drawer { --console-link: #8bd7ba;
 .dashboard-page .dashboard-card .arco-table table { max-width: none; }
 .dashboard-page .dashboard-secondary-grid { row-gap: 16px; }
 
-.account-page:has(#seat-service-token) {
+.seat-integration-page {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 
-.account-page:has(#seat-service-token) > :not(.arco-management-card),
-.account-page:has(#seat-service-token) > .arco-management-card:last-child {
+.seat-integration-page > :not(.arco-management-card),
+.seat-integration-page > .arco-management-card:last-child {
   grid-column: 1 / -1;
 }
 
-.account-page:has(#seat-service-token) > .arco-management-card,
-.account-page:has(#seat-service-token) > .content-page-header {
+.seat-integration-page > .arco-management-card,
+.seat-integration-page > .content-page-header {
   min-width: 0;
   margin: 0;
 }
 
-.account-page:has(#seat-service-token) > .arco-management-card > .arco-card-body {
+.seat-integration-page > .arco-management-card > .arco-card-body {
   padding: 16px;
   overflow-wrap: anywhere;
 }
 
-.account-page:has(#seat-service-token) .arco-card-body > .arco-space-vertical {
+.seat-integration-page .arco-card-body > .arco-space-vertical {
   display: flex;
   align-items: stretch;
-}
-
-.seat-service-token-import > summary {
-  width: fit-content;
-  cursor: pointer;
-}
-
-.seat-service-token-import > .arco-space-vertical {
-  display: flex;
-  align-items: stretch;
-  margin-block-start: 12px;
-}
-
-.account-page:has(#seat-service-token) .arco-card-body > ol {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding-inline-start: 1.25rem;
-}
-
-.account-page:has(#seat-service-token) li > .arco-typography {
-  margin: 4px 0 0;
 }
 
 @media (min-width: 1024px) {
-  .account-page:has(#seat-service-token) {
+  .seat-integration-page {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
