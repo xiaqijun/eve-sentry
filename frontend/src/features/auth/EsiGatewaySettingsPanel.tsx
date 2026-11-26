@@ -82,7 +82,7 @@ export function EsiGatewaySettingsPanel({ onSaved }: { onSaved: () => void }) {
           editing ? (
             <form onSubmit={(event) => { event.preventDefault(); if (canSave) void runCheck(true); }}>
               <Space direction="vertical" size="medium" style={{ width: "100%" }}>
-                <Select label="网关地址" placeholder="选择网关地址" value={url || undefined}
+                <Select label="网关地址" placeholder="选择网关地址" value={url}
                   options={settings.allowed_urls.map((address) => ({ value: address, label: address }))} onValueChange={setUrl} disabled={busy} />
                 <Input.Password aria-label="服务令牌" placeholder="服务令牌" autoComplete="new-password"
                   maxLength={512} value={token} onChange={setToken} disabled={busy} />

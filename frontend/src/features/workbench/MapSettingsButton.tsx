@@ -56,8 +56,8 @@ export function MapSettingsButton() {
   const systemOptions = draft?.systems.map((s) => ({ value: s.id, label: s.name })) || [];
   return <>
     <Button size="sm" variant="outline" onClick={() => { setVisible(true); void load(); }}>监控范围</Button>
-    <Modal title="星图监控范围" open={visible} width="min(720px, calc(100vw - 32px))"
-      busy={saving} onClose={() => setVisible(false)}
+    {visible ? <Modal title="星图监控范围" className="map-settings-modal"
+      busy={saving} close={() => setVisible(false)}
       footer={<Space><Button disabled={saving} onClick={() => setVisible(false)}>取消</Button>
         <Button variant="default" loading={saving} disabled={loading || !draft || count === 0} onClick={() => void save()}>保存并应用</Button></Space>}>
       <div style={{ maxHeight: "65vh", overflowY: "auto" }}>
@@ -88,6 +88,6 @@ export function MapSettingsButton() {
             : "请至少保留一个星系，空范围不能保存。"} />
         </div>}
       </div>
-    </Modal>
+    </Modal> : null}
   </>;
 }

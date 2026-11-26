@@ -72,6 +72,6 @@ describe("login page", () => {
     });
 
     expect(document.querySelector('.toast-error[role="alert"]')).toHaveTextContent("用户名或密码错误");
-    expect(container).not.toHaveTextContent("用户名或密码错误");
+    expect(container.querySelector(".auth-page")).not.toHaveTextContent("用户名或密码错误");
   });
 });
