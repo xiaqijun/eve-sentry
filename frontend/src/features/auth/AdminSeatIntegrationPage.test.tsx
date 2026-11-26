@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+import { Message } from "@arco-design/web-react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -45,7 +46,10 @@ describe("SeAT integration page", () => {
   });
 
   afterEach(async () => {
-    await act(async () => root.unmount());
+    await act(async () => {
+      Message.clear();
+      root.unmount();
+    });
     element.remove();
   });
 
@@ -67,7 +71,7 @@ describe("SeAT integration page", () => {
     expect(api.updateSeatIntegration).not.toHaveBeenCalled();
     await act(async () => save.click());
     expect(api.updateSeatIntegration).toHaveBeenCalledWith(true, 2);
-    expect(element.querySelector('[role="status"]')).toHaveTextContent("已切换至 SeAT 版");
+    expect(document.body.querySelector('.arco-message[role="alert"]')).toHaveTextContent("已切换至 SeAT 版");
   });
 
   it("copies the current token without generating a replacement", async () => {
@@ -87,7 +91,8 @@ describe("SeAT integration page", () => {
     expect(api.fetchCurrentSeatServiceToken).not.toHaveBeenCalled();
     await act(async () => copy.click());
     expect(clipboard).toHaveBeenCalledWith(token);
-    expect(element.querySelector('[role="status"]')).toHaveTextContent("令牌已复制");
+    expect(document.body.querySelector('.arco-message[role="alert"]')).toHaveTextContent("令牌已复制");
+    expect(element).not.toHaveTextContent("令牌已复制");
     expect(element).not.toHaveTextContent(token);
     expect(api.saveSeatServiceToken).not.toHaveBeenCalled();
     await act(async () => refresh.click());

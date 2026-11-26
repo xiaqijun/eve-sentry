@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Button, Card, Space, Switch, Tag, Typography } from "@arco-design/web-react";
+import { Button, Card, Message, Space, Switch, Tag, Typography } from "@arco-design/web-react";
 import copyToClipboard from "@arco-design/web-react/es/_util/clipboard";
 
 import { ManagementError, ManagementPageHeader } from "../../components/ManagementPage";
@@ -13,13 +13,11 @@ export function AdminSeatIntegrationPage() {
   const [saving, setSaving] = useState(false);
   const [copying, setCopying] = useState(false);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const sentryOrigin = new URL(apiPath("/"), window.location.origin).origin;
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
-    setNotice("");
     try {
       const next = await fetchSeatIntegration();
       setSettings(next);
@@ -37,12 +35,11 @@ export function AdminSeatIntegrationPage() {
     if (!settings || saving) return;
     setSaving(true);
     setError("");
-    setNotice("");
     try {
       const next = await updateSeatIntegration(enabled, settings.revision);
       setSettings(next);
       setEnabled(next.enabled);
-      setNotice(next.enabled ? "已切换至 SeAT 版" : "已切换至独立版");
+      Message.success(next.enabled ? "已切换至 SeAT 版" : "已切换至独立版");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "保存 SeAT 设置失败");
     } finally {
@@ -54,10 +51,9 @@ export function AdminSeatIntegrationPage() {
     if (!settings || saving) return;
     setSaving(true);
     setError("");
-    setNotice("");
     try {
       setSettings(await saveSeatServiceToken(settings.revision));
-      setNotice("令牌已更新");
+      Message.success("令牌已更新");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "保存服务令牌失败");
     } finally {
@@ -68,11 +64,10 @@ export function AdminSeatIntegrationPage() {
   async function copyToken() {
     setCopying(true);
     setError("");
-    setNotice("");
     try {
       const token = await fetchCurrentSeatServiceToken();
       await copyToClipboard(token);
-      setNotice("令牌已复制");
+      Message.success("令牌已复制");
     } catch (reason) {
       setError(reason instanceof Error && !(reason instanceof DOMException) ? reason.message : "复制令牌失败");
     } finally {
@@ -93,7 +88,6 @@ export function AdminSeatIntegrationPage() {
         extra={<Button disabled={busy} onClick={() => void load()}>刷新状态</Button>}
       />
       <ManagementError error={error} />
-      {notice ? <div role="status">{notice}</div> : null}
       <Card className="arco-management-card" title="运行模式" loading={loading}>
         {settings ? (
           <Space direction="vertical" size="medium">
@@ -103,7 +97,7 @@ export function AdminSeatIntegrationPage() {
             <Space wrap>
               <Typography.Text>启用 SeAT</Typography.Text>
               <Switch aria-label="启用 SeAT" checked={enabled} disabled={busy || !settings.editable}
-                onChange={(value) => { setEnabled(value); setNotice(""); }} />
+                onChange={setEnabled} />
               <Button type="primary" disabled={busy || !canSave} loading={saving} onClick={() => void save()}>
                 保存模式
               </Button>
